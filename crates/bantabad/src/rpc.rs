@@ -195,7 +195,7 @@ async fn dispatch(method: &str, raw_params: Value, state: &AppState) -> CoreResu
             let room_id = sup.create_room(&p.name)?;
             Ok(json!({ "room_id": room_id }))
         }
-        "room.list" => Ok(json!({ "rooms": sup.list_rooms()? })),
+        "room.list" => Ok(json!({ "rooms": sup.list_rooms().await? })),
         "room.open" => {
             let p: OpenRoomParams = params(raw_params)?;
             sup.open_room(&p.room_id, p.peers.as_deref().unwrap_or(&[]))
@@ -212,7 +212,7 @@ async fn dispatch(method: &str, raw_params: Value, state: &AppState) -> CoreResu
         }
         "room.members" => {
             let p: RoomIdParams = params(raw_params)?;
-            Ok(json!({ "members": sup.members(&p.room_id)? }))
+            Ok(json!({ "members": sup.members(&p.room_id).await? }))
         }
         "invite.create" => {
             let p: InviteParams = params(raw_params)?;
@@ -291,7 +291,7 @@ async fn dispatch(method: &str, raw_params: Value, state: &AppState) -> CoreResu
         }
 
         // ---- Agents (fleet reads) --------------------------------------------
-        "agents.fleet" => sup.agents_fleet(),
+        "agents.fleet" => sup.agents_fleet().await,
         "agent.history" => {
             let p: AgentHistoryParams = params(raw_params)?;
             sup.agent_history(&p.room_id, &p.identity_id, p.limit)

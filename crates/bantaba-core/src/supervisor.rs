@@ -138,6 +138,16 @@ pub struct RoomSupervisor {
     loopback: bool,
     sessions: StdMutex<HashMap<RoomId, Arc<RoomSession>>>,
     structural: TokioMutex<()>,
+    /// Per-room membership-fold cache for CLOSED rooms, keyed on a cheap
+    /// fingerprint of the room's stored event set (its `EventStore::count`, a
+    /// single `SELECT COUNT(*)` with no crypto/fold). A closed room's store
+    /// cannot change during a daemon run, so a hit (same count) returns the
+    /// cached snapshot and a miss folds exactly once — retiring the old
+    /// O(full-history) re-fold that `room.list` / `agents.fleet` paid on every
+    /// call. OPEN rooms never consult this cache: their live engine already
+    /// maintains the same fold incrementally (`Node::snapshot`), so the cache
+    /// can never go stale against a growing open room.
+    snapshot_cache: StdMutex<HashMap<RoomId, (u64, MembershipSnapshot)>>,
 }
 
 fn internal(context: &str, err: impl std::fmt::Display) -> CoreError {
@@ -160,6 +170,7 @@ impl RoomSupervisor {
             loopback,
             sessions: StdMutex::new(HashMap::new()),
             structural: TokioMutex::new(()),
+            snapshot_cache: StdMutex::new(HashMap::new()),
         })
     }
 
@@ -336,6 +347,77 @@ impl RoomSupervisor {
         let membership = RoomMembership::from_events(*room_id, validated);
         let snapshot = membership.snapshot();
         Ok((membership, snapshot))
+    }
+
+    /// A room's current [`MembershipSnapshot`] — byte-for-byte the SAME
+    /// projection [`fold`](Self::fold) produces, but WITHOUT re-validating and
+    /// re-folding the whole log on every call (the O(full-history)-per-call
+    /// cost that made `room.list` / `agents.fleet` unusable, ~25s on a room
+    /// with real history).
+    ///
+    /// * **Open room** — the live [`SyncEngine`] already maintains this exact
+    ///   membership fold incrementally, so `Node::snapshot` returns it in O(1)
+    ///   and always reflects the newest ingested event (a just-joined member is
+    ///   visible immediately; the cache is never consulted, so it can never go
+    ///   stale against a growing open room).
+    /// * **Closed room** — folded once and cached, keyed on the room's stored
+    ///   event count (`EventStore::count`, a single `SELECT COUNT(*)`, no
+    ///   crypto/fold). A hit (same count) returns the cached snapshot; a miss
+    ///   folds once and caches. A closed room's log is *append-only* but not
+    ///   frozen (e.g. `create_invite` can still append to it), so the count is
+    ///   the invalidation signal: any appended event bumps it and forces a
+    ///   re-fold. See the load-bearing count-before-fold ordering note below.
+    ///
+    /// Never takes an `&EventStore` argument: an async fn captures its
+    /// parameters for the whole future, and `&EventStore` is `!Send`, so the
+    /// closed path opens its own short-lived read handle (WAL allows many).
+    async fn snapshot_for(&self, room_id: &RoomId) -> CoreResult<MembershipSnapshot> {
+        if let Some(session) = self.session_opt(room_id) {
+            return session
+                .node
+                .snapshot()
+                .await
+                .map_err(|e| internal("could not read the membership snapshot", e));
+        }
+        // Closed room: no `.await` from here on, so the `!Sync` store never
+        // crosses an await and this future stays `Send`.
+        let store = self.open_store()?;
+        // LOAD-BEARING ORDER: read the fingerprint (count) BEFORE folding, and
+        // cache under this pre-fold count — never re-read count at insert time
+        // or after the fold. A closed room is not truly immutable within a run
+        // (e.g. `create_invite` appends directly to a closed room's store on its
+        // own connection without the structural lock or a cache invalidation),
+        // and `count`/`fold` are separate autocommit SELECTs on one WAL handle,
+        // not one transaction. So a concurrent writer can commit `k` events
+        // between the two reads, yielding a snapshot of `N+k` events cached under
+        // key `N`. Because per-room event count is append-only/monotonic, the
+        // true count is already `>= N+k > N` and can never fall back to `N`, so
+        // this "ahead-of-key" entry is never hit — safe, merely a wasted slot.
+        // Reversing the order (caching a snapshot of `N` events under key `N+k`)
+        // WOULD be returned at true count `N+k`: a genuine stale snapshot.
+        let fingerprint = store
+            .count(room_id)
+            .map_err(|e| internal("could not count the room's stored events", e))?;
+        if let Some(snapshot) = self.cached_snapshot(room_id, fingerprint) {
+            return Ok(snapshot);
+        }
+        let (_, snapshot) = self.fold(&store, room_id)?;
+        self.snapshot_cache
+            .lock()
+            .expect("snapshot cache poisoned")
+            .insert(*room_id, (fingerprint, snapshot.clone()));
+        Ok(snapshot)
+    }
+
+    /// The cached closed-room snapshot iff its fingerprint still matches the
+    /// room's current stored event count.
+    fn cached_snapshot(&self, room_id: &RoomId, fingerprint: u64) -> Option<MembershipSnapshot> {
+        self.snapshot_cache
+            .lock()
+            .expect("snapshot cache poisoned")
+            .get(room_id)
+            .filter(|(fp, _)| *fp == fingerprint)
+            .map(|(_, snapshot)| snapshot.clone())
     }
 
     /// Current DAG heads for `prev_events` from the live engine, truncated
@@ -572,29 +654,39 @@ impl RoomSupervisor {
     }
 
     /// `room.list`: every locally known room with name/role/member count/open.
-    pub fn list_rooms(&self) -> CoreResult<Vec<Value>> {
+    pub async fn list_rooms(&self) -> CoreResult<Vec<Value>> {
         if !self.db_path().exists() {
             return Ok(Vec::new());
         }
-        let store = self.open_store()?;
-        let room_ids = store
-            .room_ids()
-            .map_err(|e| internal("could not enumerate rooms", e))?;
-        let self_id = crate::identity::load_profile(&self.data_dir)?
-            .map(|p| p.identity_id);
-        let mut rooms = Vec::with_capacity(room_ids.len());
-        for room_id in room_ids {
-            let Ok((_, snapshot)) = self.fold(&store, &room_id) else {
+        let self_key = crate::identity::load_profile(&self.data_dir)?
+            .map(|p| p.identity_id)
+            .and_then(|id| id.parse::<IdentityKey>().ok());
+        // Sync scope: gather each room's id + display name, then DROP the store
+        // before any `.await` (the `!Sync` store must not be held across the
+        // `snapshot_for` awaits below, or this future would not be `Send`).
+        let room_meta: Vec<(RoomId, Option<String>)> = {
+            let store = self.open_store()?;
+            let room_ids = store
+                .room_ids()
+                .map_err(|e| internal("could not enumerate rooms", e))?;
+            room_ids
+                .into_iter()
+                .map(|room_id| {
+                    let name = genesis_name(&store, &room_id)
+                        .or_else(|| localstate::local_name(&self.data_dir, &room_id.to_string()));
+                    (room_id, name)
+                })
+                .collect()
+        };
+        let mut rooms = Vec::with_capacity(room_meta.len());
+        for (room_id, name) in room_meta {
+            let Ok(snapshot) = self.snapshot_for(&room_id).await else {
                 continue; // a corrupt room fails its own reads, not the index
             };
-            let name = genesis_name(&store, &room_id)
-                .or_else(|| localstate::local_name(&self.data_dir, &room_id.to_string()));
-            let role = self_id.as_deref().and_then(|id| {
-                id.parse::<IdentityKey>()
-                    .ok()
-                    .and_then(|key| snapshot.role(&key))
-                    .map(role_label)
-            });
+            let role = self_key
+                .as_ref()
+                .and_then(|key| snapshot.role(key))
+                .map(role_label);
             rooms.push(json!({
                 "room_id": room_id.to_string(),
                 "name": name,
@@ -637,7 +729,7 @@ impl RoomSupervisor {
         // close/share cannot pull the session we just resolved. These reads are
         // all fast and bounded; the message/fetch/pipe/push paths never take
         // this lock, so nothing daemon-wide is blocked.
-        let members = self.members(room_id_str)?;
+        let members = self.members(room_id_str).await?;
         let session = self.session(&room_id)?;
         let rows = session
             .node
@@ -708,10 +800,10 @@ impl RoomSupervisor {
 
     /// `room.members`: the folded roster with the display-status refinement
     /// (`active|invited|removed|left`, mirroring the CLI's D5 projection).
-    pub fn members(&self, room_id_str: &str) -> CoreResult<Vec<Value>> {
+    pub async fn members(&self, room_id_str: &str) -> CoreResult<Vec<Value>> {
         let room_id = parse_room_id(room_id_str)?;
+        let snapshot = self.snapshot_for(&room_id).await?;
         let store = self.open_store()?;
-        let (_, snapshot) = self.fold(&store, &room_id)?;
         let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
         Ok(snapshot
             .members()
@@ -1989,38 +2081,71 @@ impl RoomSupervisor {
     /// `working` latest status with no connected peer reports `stale`, never
     /// `working`, and a room without an open session can never read
     /// `online-idle`/`working` (no live peer state exists to support it).
-    pub fn agents_fleet(&self) -> CoreResult<Value> {
+    pub async fn agents_fleet(&self) -> CoreResult<Value> {
         let now = crate::now_ms();
         // Known rooms: everything in the event store plus the localstate
         // index (a room remembered before/without any synced events still
         // counts toward rooms_total — it is honestly known, just unreadable).
         let mut known: BTreeSet<String> =
             localstate::load(&self.data_dir)?.rooms.keys().cloned().collect();
-        let store = if self.db_path().exists() {
-            Some(self.open_store()?)
-        } else {
-            None
-        };
-        if let Some(store) = &store {
+
+        // Phase 1 (sync): enumerate the store's rooms and read each room's
+        // display name. The `!Sync` store is opened, fully used, and DROPPED
+        // inside this scope — it must not be held across the `snapshot_for`
+        // awaits in phase 2, or this future would not be `Send`. Neither the
+        // membership snapshots nor the timeline rows are taken here: for open
+        // rooms the snapshot comes from the live engine (async), and taking it
+        // via `snapshot_for` in phase 2 is exactly what retires the
+        // O(full-history) re-fold. The rows are likewise deferred to phase 2 so
+        // they are read *after* the snapshot (see the read-order note there).
+        let scans: Vec<RoomScan> = if self.db_path().exists() {
+            let store = self.open_store()?;
             for id in store
                 .room_ids()
                 .map_err(|e| internal("could not enumerate rooms", e))?
             {
                 known.insert(id.to_string());
             }
-        }
-        let rooms_total = known.len();
-        let mut rooms_covered = 0usize;
-        let mut agents: BTreeMap<String, FleetAgentAgg> = BTreeMap::new();
-
-        if let Some(store) = &store {
+            let mut scans = Vec::new();
             for room_str in &known {
                 let Ok(room_id) = room_str.parse::<RoomId>() else {
                     continue;
                 };
-                let Ok((_, snapshot)) = self.fold(store, &room_id) else {
-                    // A room with no readable/foldable log contributes nothing
-                    // knowable beyond its rooms_total slot — never a guess.
+                let room_name = genesis_name(&store, &room_id)
+                    .or_else(|| localstate::local_name(&self.data_dir, room_str));
+                scans.push(RoomScan {
+                    room_id,
+                    room_str: room_str.clone(),
+                    room_name,
+                });
+            }
+            scans
+        } else {
+            Vec::new()
+        };
+        let rooms_total = known.len();
+        let mut rooms_covered = 0usize;
+        let mut agents: BTreeMap<String, FleetAgentAgg> = BTreeMap::new();
+
+        // Phase 2 (async): fold-free membership via `snapshot_for` (O(1) for
+        // open rooms, cached for closed rooms), aggregated over each room's
+        // timeline rows. A room whose log will not fold (no readable membership)
+        // contributes nothing beyond its rooms_total slot — never a guess.
+        //
+        // READ ORDER: the snapshot is taken first, then the rows are read from a
+        // fresh short-lived store *after* it. Because a room's log is
+        // append-only/monotonic, rows read at this later instant are never older
+        // than the snapshot, so every member the snapshot reports has its
+        // `member.joined` present in the rows — the snapshot and the row-derived
+        // signals can never diverge into a just-joined agent that shows up in
+        // `agent_ids` yet has no device binding/status in the rows (which would
+        // mis-report an active agent as offline). The store is opened, used, and
+        // dropped without crossing an `.await`, so this future stays `Send`.
+        {
+            for scan in &scans {
+                let room_id = scan.room_id;
+                let room_str = &scan.room_str;
+                let Ok(snapshot) = self.snapshot_for(&room_id).await else {
                     continue;
                 };
                 let agent_ids: BTreeSet<IdentityKey> = snapshot
@@ -2032,17 +2157,20 @@ impl RoomSupervisor {
                     continue;
                 }
                 rooms_covered += 1;
-                let room_name = genesis_name(store, &room_id)
-                    .or_else(|| localstate::local_name(&self.data_dir, room_str));
-                let rows = store
-                    .room_tail(&room_id, u32::MAX)
-                    .map_err(|e| internal("could not read the timeline", e))?;
+                let room_name = scan.room_name.clone();
+                let rows = {
+                    let store = self.open_store()?;
+                    store
+                        .room_tail(&room_id, u32::MAX)
+                        .map_err(|e| internal("could not read the timeline", e))?
+                };
+                let rows = &rows;
 
                 // Per-agent signals from the room's real stored events only:
                 // device keys (member.joined bindings + authored device_ids),
                 // the newest agent_status, and the newest event of any kind.
                 let mut signals: BTreeMap<IdentityKey, AgentRoomSignals> = BTreeMap::new();
-                for se in &rows {
+                for se in rows {
                     let Ok(ev) = SignedEvent::decode(&se.wire.signed) else {
                         continue;
                     };
@@ -2175,7 +2303,21 @@ impl RoomSupervisor {
             CoreError::invalid(format!("invalid identity_id (expected 64-char hex): {e}"))
         })?;
         let store = self.open_store()?;
-        let (_, _snapshot) = self.fold(&store, &room_id)?; // room_unknown when absent
+        // Existence check only — this read needs no folded membership (it
+        // decodes each row independently below), so surface RoomUnknown via the
+        // cheap `count` (a single `SELECT COUNT(*)`, no crypto) rather than a
+        // full O(full-history) signature-verifying `fold`. `fold` returns
+        // RoomUnknown exactly when the room has no stored events, i.e. count 0.
+        if store
+            .count(&room_id)
+            .map_err(|e| internal("could not count the room's stored events", e))?
+            == 0
+        {
+            return Err(CoreError::new(
+                ErrorKind::RoomUnknown,
+                format!("no room {room_id} in {}", self.data_dir.display()),
+            ));
+        }
         let rows = store
             .room_tail(&room_id, u32::MAX)
             .map_err(|e| internal("could not read the timeline", e))?;
@@ -2207,6 +2349,19 @@ impl RoomSupervisor {
         }
         Ok(json!({ "points": points }))
     }
+}
+
+/// A closed-over, store-free view of one room for `agents.fleet`'s async
+/// aggregation phase: its id, its protocol-string key, and its display name.
+/// Collected while the `!Sync` store is briefly open (phase 1) so the store is
+/// dropped before any `snapshot_for` await (phase 2). Deliberately does NOT
+/// carry the timeline rows: those are read per room in phase 2, *after* the
+/// membership snapshot, so the rows are never older than the snapshot they are
+/// aggregated against (see the read-order note in `agents_fleet`).
+struct RoomScan {
+    room_id: RoomId,
+    room_str: String,
+    room_name: Option<String>,
 }
 
 /// One agent's per-room evidence for the fleet read: its known device keys
@@ -2667,6 +2822,24 @@ mod tests {
         insert_wire(sup, &room_id, &wire);
     }
 
+    /// Persist a `message.text` authored by the given keys at `ts`.
+    fn seed_message(
+        sup: &RoomSupervisor,
+        room_id_str: &str,
+        identity: &SigningKey,
+        device: &SigningKey,
+        body: &str,
+        ts: u64,
+    ) {
+        let room_id: RoomId = room_id_str.parse().unwrap();
+        let mut heads = sup.open_store().unwrap().heads(&room_id).unwrap();
+        heads.truncate(super::MAX_PREV_EVENTS);
+        let wire = super::build_message_text(
+            identity, device, &room_id, body, None, None, &[], &heads, ts,
+        );
+        insert_wire(sup, &room_id, &wire);
+    }
+
     /// Poll `agents.fleet` until `pred` holds (or fail after a deadline).
     async fn wait_fleet(
         sup: &RoomSupervisor,
@@ -2675,7 +2848,7 @@ mod tests {
     ) -> serde_json::Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
-            let fleet = sup.agents_fleet().unwrap();
+            let fleet = sup.agents_fleet().await.unwrap();
             if pred(&fleet) {
                 return fleet;
             }
@@ -2687,14 +2860,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fleet_is_empty_and_honest_on_a_fresh_daemon() {
+    #[tokio::test]
+    async fn fleet_is_empty_and_honest_on_a_fresh_daemon() {
         let dir = tempdir().unwrap();
         crate::identity::create(dir.path()).unwrap();
         let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
 
         // No rooms at all: every count is a real zero, never a guess.
-        let fleet = sup.agents_fleet().unwrap();
+        let fleet = sup.agents_fleet().await.unwrap();
         assert_eq!(fleet["total"], 0);
         assert_eq!(fleet["active"], 0);
         assert_eq!(fleet["working"], 0);
@@ -2704,7 +2877,7 @@ mod tests {
 
         // A room with no agent-role member counts toward rooms_total only.
         sup.create_room("No Agents Here").unwrap();
-        let fleet = sup.agents_fleet().unwrap();
+        let fleet = sup.agents_fleet().await.unwrap();
         assert_eq!(fleet["rooms_total"], 1);
         assert_eq!(fleet["rooms_covered"], 0);
         assert_eq!(fleet["total"], 0);
@@ -2723,7 +2896,7 @@ mod tests {
 
         // Agent member, no status, room not open: offline — with the real
         // member.joined ts as last_seen (an event timestamp, never "now").
-        let fleet = sup.agents_fleet().unwrap();
+        let fleet = sup.agents_fleet().await.unwrap();
         assert_eq!(fleet["total"], 1);
         assert_eq!(fleet["rooms_total"], 1);
         assert_eq!(fleet["rooms_covered"], 1);
@@ -2739,7 +2912,7 @@ mod tests {
         // connected peer reads stale — never working, never active.
         let t1 = crate::now_ms();
         seed_status(&sup, &room_id, &agent_identity, &agent_device, "working", Some(40), t1);
-        let fleet = sup.agents_fleet().unwrap();
+        let fleet = sup.agents_fleet().await.unwrap();
         let agent = &fleet["agents"][0];
         assert_eq!(agent["liveness"], "stale");
         assert_eq!(fleet["active"], 0);
@@ -2752,7 +2925,7 @@ mod tests {
 
         // An idle-class latest with no peer reads offline.
         seed_status(&sup, &room_id, &agent_identity, &agent_device, "idle", None, t1 + 1);
-        let fleet = sup.agents_fleet().unwrap();
+        let fleet = sup.agents_fleet().await.unwrap();
         assert_eq!(fleet["agents"][0]["liveness"], "offline");
         assert_eq!(fleet["agents"][0]["latest"]["label"], "idle");
 
@@ -2850,6 +3023,153 @@ mod tests {
         owner.close_room(&room_id).await.unwrap();
     }
 
+    /// (identity, role-label) pairs from a snapshot, in the snapshot's
+    /// deterministic member order — the "members/roles" projection the fix
+    /// must preserve exactly.
+    fn members_roles(snapshot: &super::MembershipSnapshot) -> Vec<(String, &'static str)> {
+        snapshot
+            .members()
+            .map(|m| (m.identity.to_string(), super::role_label(m.role)))
+            .collect()
+    }
+
+    /// CORRECTNESS: `snapshot_for` — both the closed cache path and the live
+    /// open-session path — yields byte-identical membership to a direct
+    /// `fold()` over a log with membership events INTERLEAVED with many
+    /// message/agent_status events; and an open room never serves a stale
+    /// cache after a new member appears.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_for_matches_fold_over_interleaved_history() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id_str = sup.create_room("Interleave").unwrap();
+        let room_id: RoomId = room_id_str.parse().unwrap();
+
+        // Interleave membership (invite+joined per agent) with dozens of
+        // message.text / agent_status events authored by the members, so the
+        // non-membership events sit between membership events as prev_events
+        // ancestors (the exact shape the fold must fold through).
+        let mut ts = crate::now_ms();
+        let mut agents = Vec::new();
+        for a in 0..3 {
+            let identity = SigningKey::generate();
+            let device = SigningKey::generate();
+            seed_agent_member(&sup, &room_id_str, &identity, &device).await;
+            for i in 0..20 {
+                ts += 1;
+                seed_status(&sup, &room_id_str, &identity, &device, "working", Some(i), ts);
+                ts += 1;
+                seed_message(&sup, &room_id_str, &identity, &device, &format!("m{a}-{i}"), ts);
+            }
+            agents.push((identity, device));
+        }
+
+        // Oracle: a direct fold over the whole persisted log.
+        let fold_snapshot = {
+            let store = sup.open_store().unwrap();
+            sup.fold(&store, &room_id).unwrap().1
+        };
+        assert!(fold_snapshot.members().count() >= 4); // owner + 3 agents
+
+        // Closed-room path: first call MISSES the cache and folds once; the
+        // second HITS the cache (same event count). Both equal the oracle.
+        assert!(!sup.is_open(&room_id));
+        let closed_miss = sup.snapshot_for(&room_id).await.unwrap();
+        let closed_hit = sup.snapshot_for(&room_id).await.unwrap();
+        assert_eq!(fold_snapshot, closed_miss, "closed miss != fold");
+        assert_eq!(fold_snapshot, closed_hit, "closed hit != fold");
+        assert_eq!(members_roles(&fold_snapshot), members_roles(&closed_hit));
+
+        // Open-room path: the live engine's incremental fold must match the
+        // store fold byte-for-byte — and it must NOT be served from the
+        // closed-room cache populated above.
+        sup.open_room(&room_id_str, &[]).await.unwrap();
+        assert!(sup.is_open(&room_id));
+        let open_snapshot = sup.snapshot_for(&room_id).await.unwrap();
+        assert_eq!(fold_snapshot, open_snapshot, "open live snapshot != fold");
+        assert_eq!(members_roles(&fold_snapshot), members_roles(&open_snapshot));
+
+        // A NEW member appears while the room is OPEN: snapshot_for must
+        // reflect it immediately (open rooms never read the cache, so the
+        // count cannot be stale). A fresh invite adds one Invited member.
+        let before = open_snapshot.members().count();
+        let newcomer = SigningKey::generate();
+        sup.create_invite(&room_id_str, &newcomer.identity_key().to_string(), "agent", None)
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let grown = loop {
+            let snap = sup.snapshot_for(&room_id).await.unwrap();
+            if snap.members().count() == before + 1 {
+                break snap;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "open snapshot_for never reflected the new member (stale cache?)"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        // The live snapshot still equals a fresh store fold (the invite was
+        // persisted through the engine), proving equality holds as it grows.
+        let fold_after = {
+            let store = sup.open_store().unwrap();
+            sup.fold(&store, &room_id).unwrap().1
+        };
+        assert_eq!(fold_after, grown, "grown open snapshot != fold after invite");
+
+        sup.close_room(&room_id_str).await.unwrap();
+    }
+
+    /// PERF: the O(full-history)-per-call re-fold is gone. With ~1000
+    /// agent_status events in one room, warm `room.list` / `agents.fleet`
+    /// calls must be fast (the old fold was ~25s at ~2000 events). Ignored by
+    /// default — it authors 1000 events; run with `--ignored`.
+    #[tokio::test]
+    #[ignore = "perf: authors ~1000 events; run explicitly with --ignored"]
+    async fn hot_reads_are_fast_on_a_room_with_real_history() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id_str = sup.create_room("Busy").unwrap();
+
+        let identity = SigningKey::generate();
+        let device = SigningKey::generate();
+        seed_agent_member(&sup, &room_id_str, &identity, &device).await;
+        let mut ts = crate::now_ms();
+        for i in 0..1000 {
+            ts += 1;
+            seed_status(&sup, &room_id_str, &identity, &device, "working", Some(i % 101), ts);
+        }
+
+        // Warm the closed-room fold cache once (this call pays the single fold).
+        sup.list_rooms().await.unwrap();
+        sup.agents_fleet().await.unwrap();
+
+        // Warm calls must be well under the old ~25s (and under the 4s poll):
+        // list_rooms is a count() + cache hit; agents_fleet is a linear
+        // row-decode + cache hit — no superlinear re-fold.
+        let t0 = std::time::Instant::now();
+        for _ in 0..5 {
+            sup.list_rooms().await.unwrap();
+        }
+        let list_avg = t0.elapsed() / 5;
+        let t1 = std::time::Instant::now();
+        for _ in 0..5 {
+            sup.agents_fleet().await.unwrap();
+        }
+        let fleet_avg = t1.elapsed() / 5;
+
+        assert!(
+            list_avg < std::time::Duration::from_millis(300),
+            "warm room.list too slow: {list_avg:?}"
+        );
+        assert!(
+            fleet_avg < std::time::Duration::from_millis(300),
+            "warm agents.fleet too slow: {fleet_avg:?}"
+        );
+    }
+
     #[test]
     fn room_name_bounds() {
         assert!(validate_room_name("Build Iroh Rooms MVP").is_ok());
@@ -2894,15 +3214,15 @@ mod tests {
         assert_eq!(err.kind, ErrorKind::IdentityMissing);
     }
 
-    #[test]
-    fn create_room_then_offline_reads_work() {
+    #[tokio::test]
+    async fn create_room_then_offline_reads_work() {
         let dir = tempdir().unwrap();
         crate::identity::create(dir.path()).unwrap();
         let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
         let room_id = sup.create_room("Build Room").unwrap();
         assert!(room_id.starts_with("blake3:"));
 
-        let rooms = sup.list_rooms().unwrap();
+        let rooms = sup.list_rooms().await.unwrap();
         assert_eq!(rooms.len(), 1);
         assert_eq!(rooms[0]["name"], "Build Room");
         assert_eq!(rooms[0]["role"], "owner");
@@ -2913,7 +3233,7 @@ mod tests {
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0]["kind"], "room_created");
 
-        let members = sup.members(&room_id).unwrap();
+        let members = sup.members(&room_id).await.unwrap();
         assert_eq!(members.len(), 1);
         assert_eq!(members[0]["role"], "owner");
         assert_eq!(members[0]["status"], "active");
