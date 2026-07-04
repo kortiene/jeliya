@@ -1,0 +1,424 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-04T00:00:00Z",
+  "title": "Design System: Bantaba",
+  "extensions": {
+    "colorMeta": {
+      "emerald": {
+        "role": "primary",
+        "displayName": "Emerald Voice",
+        "canonical": "#2fd6a4",
+        "tonalRamp": [
+          "#0d4031",
+          "#166f54",
+          "#1f9e78",
+          "#28cc9b",
+          "#55ddb4",
+          "#88e7cb",
+          "#bbf2e1",
+          "#eafbf6"
+        ]
+      },
+      "emerald-deep": {
+        "role": "primary",
+        "displayName": "Deep Emerald",
+        "canonical": "#1fb4a8",
+        "tonalRamp": [
+          "#0b413d",
+          "#13716a",
+          "#1ca196",
+          "#24d1c3",
+          "#51e1d5",
+          "#85eae2",
+          "#b9f3ee",
+          "#e9fbfa"
+        ]
+      },
+      "amber": {
+        "role": "secondary",
+        "displayName": "Degraded Amber",
+        "canonical": "#f5b453",
+        "tonalRamp": [
+          "#482d04",
+          "#7d4e07",
+          "#b26f0a",
+          "#e7900d",
+          "#f4ab3e",
+          "#f7c478",
+          "#fbddb2",
+          "#fef4e7"
+        ]
+      },
+      "red": {
+        "role": "secondary",
+        "displayName": "Failure Red",
+        "canonical": "#f26d6d",
+        "tonalRamp": [
+          "#460606",
+          "#7a0b0b",
+          "#ad0f0f",
+          "#e11414",
+          "#ee4444",
+          "#f37c7c",
+          "#f8b4b4",
+          "#fde8e8"
+        ]
+      },
+      "blue": {
+        "role": "secondary",
+        "displayName": "Waiting Blue",
+        "canonical": "#6aa8f7",
+        "tonalRamp": [
+          "#042249",
+          "#073b7e",
+          "#0a54b3",
+          "#0c6de8",
+          "#3d8ef5",
+          "#77b0f8",
+          "#b2d2fb",
+          "#e7f1fe"
+        ]
+      },
+      "ground": {
+        "role": "neutral",
+        "displayName": "Teal-Black Ground",
+        "canonical": "#070d10",
+        "tonalRamp": [
+          "#172b35",
+          "#284b5c",
+          "#396b83",
+          "#4b8aaa",
+          "#71a6c1",
+          "#9cc1d4",
+          "#c6dce6",
+          "#edf4f7"
+        ]
+      },
+      "chrome": {
+        "role": "neutral",
+        "displayName": "Chrome Layer",
+        "canonical": "#0a1116",
+        "tonalRamp": [
+          "#182935",
+          "#29465b",
+          "#3b6482",
+          "#4d82a8",
+          "#739fbf",
+          "#9dbcd2",
+          "#c7d9e5",
+          "#edf3f7"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "Card Surface",
+        "canonical": "#0e161b",
+        "tonalRamp": [
+          "#1a2932",
+          "#2d4757",
+          "#40657c",
+          "#5483a1",
+          "#79a0b9",
+          "#a1bdce",
+          "#c9d9e3",
+          "#eef3f6"
+        ]
+      },
+      "card-nested": {
+        "role": "neutral",
+        "displayName": "Nested Surface",
+        "canonical": "#111b21",
+        "tonalRamp": [
+          "#1a2932",
+          "#2d4858",
+          "#40667d",
+          "#5384a2",
+          "#78a1ba",
+          "#a1bdce",
+          "#c9d9e3",
+          "#eef3f6"
+        ]
+      },
+      "input-well": {
+        "role": "neutral",
+        "displayName": "Input Well",
+        "canonical": "#0c1419",
+        "tonalRamp": [
+          "#192934",
+          "#2b485a",
+          "#3d6680",
+          "#4f84a5",
+          "#75a1bd",
+          "#9fbdd1",
+          "#c8dae5",
+          "#eef3f7"
+        ]
+      },
+      "border-quiet": {
+        "role": "neutral",
+        "displayName": "Quiet Border",
+        "canonical": "#16232a",
+        "tonalRamp": [
+          "#1a2a32",
+          "#2e4957",
+          "#41677c",
+          "#5486a1",
+          "#79a3b9",
+          "#a1bece",
+          "#c9dae3",
+          "#eef3f6"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Strong Border",
+        "canonical": "#21343c",
+        "tonalRamp": [
+          "#1b2b31",
+          "#2f4a56",
+          "#436a7a",
+          "#57899e",
+          "#7ba5b7",
+          "#a3c0cc",
+          "#cadbe2",
+          "#eff4f6"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#dcebe6",
+        "tonalRamp": [
+          "#1c312a",
+          "#305448",
+          "#457867",
+          "#599c86",
+          "#7db5a2",
+          "#a4cbbe",
+          "#cbe1da",
+          "#eff6f3"
+        ]
+      },
+      "ink-dim": {
+        "role": "neutral",
+        "displayName": "Dim Ink",
+        "canonical": "#8aa39d",
+        "tonalRamp": [
+          "#222b29",
+          "#3a4a46",
+          "#536a64",
+          "#6c8982",
+          "#8da59f",
+          "#afc0bc",
+          "#d1dbd9",
+          "#f1f4f3"
+        ]
+      },
+      "ink-mute": {
+        "role": "neutral",
+        "displayName": "Mute Ink (AA-audited)",
+        "canonical": "#7a938c",
+        "tonalRamp": [
+          "#222a28",
+          "#3b4945",
+          "#556863",
+          "#6e8780",
+          "#8ea49e",
+          "#b0bfbb",
+          "#d2dad8",
+          "#f1f4f3"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Boot and onboarding headings only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Room title, fleet title, brand name."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Names, tabs, modal headings, card titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Messages, forms, general UI; prose caps at 72ch."
+      },
+      "label": {
+        "displayName": "Micro-label",
+        "purpose": "Uppercase tracked section/identity labels in mute ink."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Machine truth only: ids, addresses, error codes, commands."
+      }
+    },
+    "shadows": [
+      {
+        "name": "modal-lift",
+        "value": "0 24px 60px rgba(0, 0, 0, 0.5)",
+        "purpose": "The modal dialog — the only elevation shadow in the system."
+      },
+      {
+        "name": "status-glow",
+        "value": "0 0 6px rgba(47, 214, 164, 0.7)",
+        "purpose": "Live/error/info dot glows (per hue at 70% alpha). Signal, not depth."
+      }
+    ],
+    "motion": [
+      {
+        "name": "hover-shift",
+        "value": "border-color 0.15s, background 0.15s",
+        "purpose": "Button hover; the default interactive transition."
+      },
+      {
+        "name": "progress-fill",
+        "value": "transform 0.25s ease-out",
+        "purpose": "Progress bar fill via scaleX (compositor-only)."
+      },
+      {
+        "name": "spin",
+        "value": "0.8s linear infinite",
+        "purpose": "Fetch spinner; disabled under prefers-reduced-motion."
+      },
+      {
+        "name": "pulse",
+        "value": "1.1s ease-in-out infinite",
+        "purpose": "Connecting-dot pulse; static 0.7 opacity under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow-desktop",
+        "value": "1100px"
+      },
+      {
+        "name": "mobile-shell",
+        "value": "900px"
+      },
+      {
+        "name": "fleet-stack",
+        "value": "720px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "description": "Base ",
+      "html": "<button class=\"ds-btn\">Share File</button>\n<button class=\"ds-btn ds-btn-primary\">Invite</button>\n<button class=\"ds-btn ds-btn-ghost ds-btn-sm\">Copy</button>\n<button class=\"ds-btn ds-btn-sm ds-btn-danger\">Retry</button>\n<button class=\"ds-btn ds-btn-sm\" disabled><span class=\"ds-spinner\" aria-hidden=\"true\"></span> Fetching…</button>\n<button class=\"ds-icon-btn\" aria-label=\"Close\">✕</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:9px;border:1px solid var(--border-strong);background:var(--bg-card);color:var(--text);font:inherit;cursor:pointer;white-space:nowrap;transition:border-color .15s,background .15s}\n.ds-btn:hover:not(:disabled){border-color:var(--accent-line)}\n.ds-btn:disabled{opacity:.55;cursor:default}\n.ds-btn-primary{background:var(--accent-dim);border-color:var(--accent-line);color:var(--accent)}\n.ds-btn-primary:hover:not(:disabled){background:rgba(47,214,164,.2)}\n.ds-btn-ghost{background:transparent;border-color:transparent;color:var(--text-dim)}\n.ds-btn-ghost:hover:not(:disabled){color:var(--text);border-color:var(--border-strong)}\n.ds-btn-danger{color:var(--red);border-color:rgba(242,109,109,.4)}\n.ds-btn-sm{padding:5px 11px;font-size:12.5px;border-radius:8px}\n.ds-icon-btn{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px;border:1px solid var(--border-strong);background:transparent;color:var(--text-dim);line-height:1;cursor:pointer}\n.ds-icon-btn:hover{color:var(--accent);border-color:var(--accent-line)}\n.ds-spinner{display:inline-block;width:11px;height:11px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:ds-spin .8s linear infinite}\n@keyframes ds-spin{to{transform:rotate(360deg)}}\n.ds-btn:focus-visible,.ds-icon-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-color:var(--accent)}"
+    },
+    {
+      "name": "Input / Composer",
+      "kind": "input",
+      "description": "Global element styling (no class): bg var(--bg-input), 1px solid var(--border-strong), radius 9px, padding 8px 11px, color var(--text), outline none; :focus border var(--accent-lin",
+      "html": "<div class=\"ds-composer\">\n  <div class=\"ds-composer-bar\">\n    <textarea rows=\"1\" placeholder=\"Message Build Iroh Rooms MVP\"></textarea>\n    <button class=\"ds-btn ds-btn-primary ds-composer-send\" aria-label=\"Send message\">➤</button>\n  </div>\n  <div class=\"ds-composer-hint\">Enter to send · Shift+Enter for a new line</div>\n</div>",
+      "css": ".ds-composer{padding:12px 24px 14px;border-top:1px solid var(--border);background:var(--bg-raise)}\n.ds-composer-bar{display:flex;align-items:flex-end;gap:10px;padding:8px 10px;border-radius:13px;background:var(--bg-input);border:1px solid var(--border-strong)}\n.ds-composer-bar:focus-within{border-color:var(--accent-line)}\n.ds-composer-bar textarea{flex:1;resize:none;background:transparent;border:none;outline:none;color:var(--text);max-height:120px;padding:6px 4px;font:inherit}\n.ds-composer-bar textarea::placeholder{color:var(--text-mute)}\n.ds-composer-send{padding:8px 16px}\n.ds-composer-hint{margin-top:6px;font-size:11.5px;text-align:right;color:var(--text-dim)}"
+    },
+    {
+      "name": "Chips / status pills",
+      "kind": "chip",
+      "description": "All pills: radius 999px, 1px border, 11px text. Base .chip: padding 2px 8px, border var(--border-strong), color var(--text-dim), ls .02em. Tone system (color + 0.4α border + 0.1–0",
+      "html": "<span class=\"ds-chip ds-chip-role\">AGENT</span>\n<span class=\"ds-chip ds-tone-green\"><span class=\"ds-dot\"></span> Running tests</span>\n<span class=\"ds-chip ds-tone-blue\">Awaiting review</span>\n<span class=\"ds-chip ds-tone-red\">Failed</span>\n<span class=\"ds-live-pill ds-live-live\"><span class=\"ds-dot\"></span> Live</span>\n<span class=\"ds-conn-badge ds-conn-connected\"><span class=\"ds-dot\"></span> Connected</span>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;font-size:11px;letter-spacing:.02em;border:1px solid var(--border-strong);color:var(--text-dim);white-space:nowrap}\n.ds-chip-role{font-size:9.5px;font-weight:700;letter-spacing:.08em;padding:1px 6px;color:var(--text-mute)}\n.ds-tone-green{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}\n.ds-tone-blue{color:var(--blue);border-color:rgba(106,168,247,.4);background:rgba(106,168,247,.1)}\n.ds-tone-red{color:var(--red);border-color:rgba(242,109,109,.4);background:rgba(242,109,109,.1)}\n.ds-live-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid var(--border-strong);color:var(--text-dim)}\n.ds-live-pill .ds-dot{width:6px;height:6px}\n.ds-live-live{color:var(--accent);border-color:var(--accent-line);background:var(--accent-dim)}\n.ds-live-live .ds-dot{box-shadow:0 0 6px rgba(47,214,164,.7)}\n.ds-conn-badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--border-strong);color:var(--text-mute)}\n.ds-conn-connected{color:var(--accent);border-color:var(--accent-line)}\n.ds-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}"
+    },
+    {
+      "name": "Sidebar nav + room list",
+      "kind": "nav",
+      "description": "Sidebar: 272px column (232px ≤1100px), bg var(--bg-raise), border-right 1px var(--border); brand 18px 18px 14px (HexMark 30px gradient logo + 19px w700 name); profile-card r12 bg-c",
+      "html": "<nav class=\"ds-nav-list\">\n  <button class=\"ds-nav-item ds-active\"><span class=\"ds-nav-glyph\">▦</span><span class=\"ds-nav-label\">Rooms</span></button>\n  <button class=\"ds-nav-item\"><span class=\"ds-nav-glyph\">✦</span><span class=\"ds-nav-label\">Agents</span></button>\n  <button class=\"ds-nav-item\" disabled><span class=\"ds-nav-glyph\">✆</span><span class=\"ds-nav-label\">Calls</span><span class=\"ds-nav-soon\">Soon</span></button>\n</nav>\n<button class=\"ds-room-item ds-selected\">\n  <span class=\"ds-room-hex\" style=\"color:#2fd6a4;background:rgba(47,214,164,.12)\">⬡</span>\n  <span class=\"ds-room-info\"><strong class=\"ds-room-name\">Build Iroh Rooms MVP</strong><span class=\"ds-room-meta\">6 members · Active</span></span>\n</button>",
+      "css": ".ds-nav-list{display:flex;flex-direction:column;gap:2px;padding:4px 10px 8px;border-bottom:1px solid var(--border)}\n.ds-nav-item{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:8px 10px;border-radius:10px;border:1px solid transparent;background:transparent;color:var(--text-dim);font-size:13.5px;font-family:inherit;cursor:pointer}\n.ds-nav-item:not(:disabled):hover{background:var(--bg-card);color:var(--text)}\n.ds-nav-item.ds-active{background:var(--accent-dim);border-color:var(--accent-line);color:var(--text)}\n.ds-nav-item.ds-active .ds-nav-glyph{color:var(--accent)}\n.ds-nav-item:disabled{opacity:.5;cursor:default}\n.ds-nav-glyph{width:18px;text-align:center;color:var(--text-mute);font-size:15px;flex:none}\n.ds-nav-label{flex:1}\n.ds-nav-soon{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:1px 6px;border-radius:999px;background:var(--bg-card-2);color:var(--text-mute);border:1px solid var(--border)}\n.ds-room-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 10px;border-radius:11px;border:1px solid transparent;background:transparent;font-family:inherit;cursor:pointer;color:var(--text)}\n.ds-room-item:hover{background:var(--bg-card)}\n.ds-room-item.ds-selected{background:var(--accent-dim);border-color:var(--accent-line)}\n.ds-room-hex{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border-radius:9px;font-size:18px;flex:none}\n.ds-room-info{display:flex;flex-direction:column;min-width:0;flex:1}\n.ds-room-name{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.ds-room-meta{font-size:11.5px;color:var(--text-mute)}"
+    },
+    {
+      "name": "Timeline message + event card",
+      "kind": "custom",
+      "description": "Timeline: flex column, gap 4px + 5px row margins, padding 18px 26px, max-width 78% per ",
+      "html": "<div class=\"ds-msg-row\">\n  <span class=\"ds-avatar\" style=\"width:34px;height:34px;color:#6aa8f7;background:#6aa8f726;font-size:12px\">MR</span>\n  <div class=\"ds-msg-col\">\n    <div class=\"ds-msg-meta\"><button class=\"ds-sender-name\">Maya R.</button><time>10:28 AM</time></div>\n    <div class=\"ds-msg-bubble\">Here's the updated PRD with rooms, pipes, and agent runtime.</div>\n  </div>\n</div>",
+      "css": ".ds-msg-row{display:flex;gap:12px;max-width:78%;margin:5px 0}\n.ds-avatar{display:inline-flex;align-items:center;justify-content:center;clip-path:polygon(25% 3%,75% 3%,98% 50%,75% 97%,25% 97%,2% 50%);font-weight:700;flex:none;user-select:none}\n.ds-msg-col{display:flex;flex-direction:column;gap:4px;min-width:0}\n.ds-msg-meta{display:flex;align-items:center;gap:8px;font-size:12px}\n.ds-msg-meta time{color:var(--text-mute);font-size:11.5px}\n.ds-sender-name{background:none;border:none;padding:0;color:var(--text);font-weight:600;font-size:inherit;font-family:inherit;cursor:pointer}\n.ds-sender-name:hover{color:var(--accent);text-decoration:underline dotted}\n.ds-msg-bubble{padding:10px 14px;border-radius:4px 14px 14px 14px;background:var(--bg-card);border:1px solid var(--border);white-space:pre-wrap;overflow-wrap:break-word;color:var(--text)}"
+    },
+    {
+      "name": "Right panel tabs",
+      "kind": "nav",
+      "description": ".right-panel: 360px (300px ≤1100px), bg var(--bg-raise), border-left var(--border). ",
+      "html": "<div class=\"ds-panel-tabs\">\n  <button class=\"ds-active\">Agents <span class=\"ds-count\">3</span></button>\n  <button>Files <span class=\"ds-count\">4</span></button>\n  <button>Live Pipes <span class=\"ds-count\">2</span></button>\n</div>",
+      "css": ".ds-panel-tabs{display:flex;gap:4px;padding:12px 14px 0;border-bottom:1px solid var(--border)}\n.ds-panel-tabs button{background:none;border:none;border-bottom:2px solid transparent;padding:8px 12px 10px;color:var(--text-dim);font-weight:600;font-size:13.5px;font-family:inherit;cursor:pointer}\n.ds-panel-tabs button:hover{color:var(--text)}\n.ds-panel-tabs button.ds-active{color:var(--text);border-bottom-color:var(--accent)}\n.ds-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:5px;border-radius:999px;font-size:10.5px;background:var(--bg-card-2);border:1px solid var(--border-strong);color:var(--text-dim)}"
+    },
+    {
+      "name": "Modal",
+      "kind": "custom",
+      "description": "Backdrop: fixed inset 0, z-index 100, rgba(3,7,9,0.72) + backdrop-filter blur(3px), flex-centered, padding 24px; mousedown on backdrop closes",
+      "html": "<div class=\"ds-modal-backdrop\">\n  <div class=\"ds-modal\" role=\"dialog\" aria-modal=\"true\" aria-label=\"Invite to room\" tabindex=\"-1\">\n    <header class=\"ds-modal-head\"><h3>Invite to room</h3><button class=\"ds-icon-btn\" aria-label=\"Close\">✕</button></header>\n    <div class=\"ds-modal-body\">…</div>\n  </div>\n</div>",
+      "css": ".ds-modal-backdrop{position:fixed;inset:0;z-index:100;background:rgba(3,7,9,.72);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:24px}\n.ds-modal{width:100%;max-width:440px;max-height:86vh;overflow-y:auto;border-radius:16px;background:var(--bg-raise);border:1px solid var(--border-strong);box-shadow:0 24px 60px rgba(0,0,0,.5)}\n.ds-modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 12px;border-bottom:1px solid var(--border)}\n.ds-modal-head h3{font-size:16px;margin:0;color:var(--text)}\n.ds-modal-body{padding:16px 18px 20px}"
+    },
+    {
+      "name": "Fleet card (agent dashboard)",
+      "kind": "card",
+      "description": "Grid: repeat(auto-fill, minmax(320px,1fr)) gap 14px, under a 3-tile stat row (r14, 38px tinted icon squares icon-green/amber/blue at 0.12α bg; value 26px w700 lh1.1)",
+      "html": "<article class=\"ds-fleet-card ds-tone-live\">\n  <div class=\"ds-fleet-card-top\">\n    <span class=\"ds-fleet-hex\" style=\"color:#2fd6a4;background:#2fd6a41f\">⬡</span>\n    <div class=\"ds-fleet-card-id\">\n      <div class=\"ds-fleet-name-row\"><strong class=\"ds-fleet-name\">Backend Agent</strong><span class=\"ds-live-pill ds-live-live\"><span class=\"ds-dot\"></span> Live</span></div>\n      <code class=\"ds-fleet-idhex\">12D3KooWAb4…</code>\n    </div>\n  </div>\n  <p class=\"ds-fleet-msg\">Running integration tests…</p>\n  <div class=\"ds-fleet-rooms\"><span class=\"ds-room-chip\">Build Iroh Rooms MVP</span></div>\n</article>",
+      "css": ".ds-fleet-card{display:flex;flex-direction:column;gap:12px;padding:15px;border-radius:15px;background:var(--bg-card);border:1px solid var(--border)}\n.ds-fleet-card.ds-tone-live{border-color:var(--accent-line)}\n.ds-fleet-card.ds-tone-warn{border-color:rgba(245,180,83,.35)}\n.ds-fleet-card.ds-tone-off{background:var(--bg-raise)}\n.ds-fleet-card.ds-tone-off .ds-fleet-hex{opacity:.5}\n.ds-fleet-card-top{display:flex;align-items:center;gap:11px}\n.ds-fleet-hex{display:inline-flex;align-items:center;justify-content:center;border-radius:10px;padding:3px;flex:none}\n.ds-fleet-card-id{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}\n.ds-fleet-name-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}\n.ds-fleet-name{font-size:14.5px}\n.ds-fleet-idhex{font-size:11px;color:var(--text-mute);font-family:var(--mono)}\n.ds-fleet-msg{margin:0;font-size:13px;color:var(--text-dim);overflow-wrap:break-word}\n.ds-fleet-rooms{display:flex;flex-wrap:wrap;gap:6px}\n.ds-room-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:3px 10px;border-radius:999px;border:1px solid var(--border-strong);background:var(--bg-card-2);color:var(--text-dim);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.ds-room-chip:hover{color:var(--accent);border-color:var(--accent-line)}"
+    },
+    {
+      "name": "Mobile tab bar",
+      "kind": "nav",
+      "description": "Fixed bottom, height 58px, z-index 50, bg var(--bg-raise), border-top 1px var(--border); display:none on desktop, flex ≤900px (all panes get padding-bottom 58px). Five ",
+      "html": "<nav class=\"ds-mobile-tabbar\" aria-label=\"Primary (mobile)\">\n  <button class=\"ds-mtab ds-active\" aria-current=\"page\"><span class=\"ds-mtab-glyph\">▦</span><span>Rooms</span></button>\n  <button class=\"ds-mtab\"><span class=\"ds-mtab-glyph\">✦</span><span>Agents</span></button>\n  <button class=\"ds-mtab\"><span class=\"ds-mtab-glyph\">⤳</span><span>Pipes</span></button>\n  <button class=\"ds-mtab\"><span class=\"ds-mtab-glyph\">▤</span><span>Files</span></button>\n  <button class=\"ds-mtab\"><span class=\"ds-mtab-glyph\">⚙</span><span>Settings</span></button>\n</nav>",
+      "css": ".ds-mobile-tabbar{position:fixed;bottom:0;left:0;right:0;z-index:50;height:58px;display:flex;align-items:stretch;background:var(--bg-raise);border-top:1px solid var(--border)}\n.ds-mtab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:none;border:none;color:var(--text-mute);font-size:10.5px;padding:6px 0;font-family:inherit;cursor:pointer}\n.ds-mtab-glyph{font-size:17px;line-height:1}\n.ds-mtab.ds-active{color:var(--accent)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Meeting Tree",
+    "overview": "Bantaba is the Mandinka word for the gathering place under the village meeting tree, and the interface holds that posture: a quiet, dark room where a team's work — humans and AI agents together — gathers and stays legible. The ground is a near-black teal, surfaces step up through four close-set tonal layers, and a single emerald voice marks what is actively alive. This is a product surface: design serves the task, with earned familiarity executed in terminal-adjacent confidence — mono identifiers, hexagonal marks, truthful status language.",
+    "keyCharacteristics": [
+      "Dark teal-black tonal layering; depth by surface steps and 1px borders, not shadows",
+      "One emerald accent reserved for actions, selection, and live/healthy state",
+      "Truthful status hues: amber = degraded, red = failed, blue = waiting — always dot + label",
+      "System sans at a fixed px scale; mono strictly for machine truth",
+      "Hexagons as the single brand motif",
+      "Motion is minimal and state-bound; WCAG 2.1 AA is the enforced floor"
+    ],
+    "rules": [
+      {
+        "name": "The One Emerald Voice Rule",
+        "body": "The accent appears on at most ~10% of any screen: primary actions, current selection, live/healthy state. Emerald as decoration is prohibited.",
+        "section": "colors"
+      },
+      {
+        "name": "The Truthful Hue Rule",
+        "body": "A status color may only render a state the signed event log proves. Status is never conveyed by color alone — always a dot (or glyph) plus a text label.",
+        "section": "colors"
+      },
+      {
+        "name": "The Quiet Mono Rule",
+        "body": "Mono marks machine truth only — ids, addresses, error codes, commands, progress numbers. Mono headings or decorative mono are prohibited.",
+        "section": "typography"
+      },
+      {
+        "name": "The Border-Not-Shadow Rule",
+        "body": "Surfaces separate by tonal step and 1px border. If a new component seems to need a shadow, it's either a modal or it's wrong.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the emerald voice under ~10% of any screen — actions, selection, live state only.",
+      "Do pair every status color with a dot/glyph and a text label; render only states the event log proves.",
+      "Do hold the AA floor: ≥4.5:1 for body and small info-bearing text on its actual surface — recede via muted grounds and dimmed marks, never blanket opacity over text.",
+      "Do ship every interactive state: default, hover, focus-visible, active, disabled — plus honest loading skeletons and empty states that teach.",
+      "Do use the token system (--*-dim / --*-line companions, the z-index scale) instead of raw rgba/z literals.",
+      "Do honor prefers-reduced-motion for any animation; keep transitions in the 150–250ms band, easing out."
+    ],
+    "donts": [
+      "Don't produce generic SaaS dashboard slop: cream/light defaults, purple-blue gradients, identical KPI card grids, hero-metric tiles.",
+      "Don't build fake-state UI: optimistic delivered checks, spinners implying progress that isn't happening, silent partial fetches.",
+      "Don't drift toward the crypto/web3 aesthetic: glow-everything, gradient text, neon hexagons — the HexMark logo is the only gradient and dots the only glow.",
+      "Don't skin it like a chat app: agents, files, and pipes are first-class panes, not bolted-on integrations.",
+      "Don't nest bordered cards. One card level; inner tiles sit on the nested surface inside flat rows.",
+      "Don't use side-stripe borders, decorative glassmorphism, or display/mono fonts in UI labels.",
+      "Don't let unbroken tokens (64-hex ids, URLs, paths) overflow: every text surface carries truncation or overflow-wrap."
+    ]
+  }
+}

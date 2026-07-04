@@ -23,10 +23,22 @@ export const DEFAULT_DAEMON_URL = 'ws://127.0.0.1:7420/ws';
 
 export function daemonUrl(search: string = window.location.search): string {
   const value = new URLSearchParams(search).get('daemon');
-  if (!value) return DEFAULT_DAEMON_URL;
-  if (/^\d+$/.test(value)) return `ws://127.0.0.1:${value}/ws`;
-  // Escape hatch: a full ws:// URL is accepted too.
-  if (/^wss?:\/\//.test(value)) return value;
+  if (value) {
+    if (/^\d+$/.test(value)) return `ws://127.0.0.1:${value}/ws`;
+    // Escape hatch: a full ws:// URL is accepted too.
+    if (/^wss?:\/\//.test(value)) return value;
+    return DEFAULT_DAEMON_URL;
+  }
+  // In a production build the daemon serves this SPA from its own loopback
+  // origin, so the control socket is same-origin: derive it from the page host
+  // (and matching ws/wss scheme). This tracks the daemon's actual port for free
+  // — including a port-collision fallback — with no hardcoded value. The Vite
+  // dev server serves the UI on a different origin than the daemon, so there we
+  // keep the fixed default instead.
+  if (import.meta.env.PROD && typeof window !== 'undefined' && window.location.host) {
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${window.location.host}/ws`;
+  }
   return DEFAULT_DAEMON_URL;
 }
 

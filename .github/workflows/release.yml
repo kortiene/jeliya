@@ -1,0 +1,144 @@
+name: release
+
+# Build and publish per-target `bantabad` release binaries when a version tag
+# (e.g. `v0.1.0`) is pushed.
+#
+# PHASE 0 / INERT: there is no git remote or GitHub repo yet, and no `v*` tag
+# has ever been pushed, so this workflow cannot run today. It hardcodes NO org
+# or repo slug — it always builds the repo it runs in. Once a remote exists and
+# you push a `v*` tag, GitHub runs this and attaches the artifacts to the
+# auto-created Release. See packaging/README.md for the Phase-0 prerequisites.
+#
+# PHASE 2 (deferred): macOS notarization + Windows Authenticode signing. The
+# artifacts produced here are UNSIGNED. A *browser* download of an unsigned
+# binary trips Gatekeeper (macOS) / SmartScreen (Windows). The curl|sh and
+# Homebrew install paths in packaging/ do NOT set the quarantine bit, so they
+# install cleanly. Signing/notarization is tracked for Phase 2 and is
+# intentionally out of scope here.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # required to create the Release and attach assets
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14 # Apple-silicon runner (native arm64)
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13 # Intel runner (native x86_64)
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            zigbuild: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            zigbuild: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest # native x86_64
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # `@stable` is always >= the repo MSRV (workspace rust-version = 1.80).
+      # `targets` installs the cross target's std via rustup so cargo/zigbuild
+      # can link against it.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # --- UI FIRST -----------------------------------------------------------
+      # The `embed-ui` feature bakes ui/dist into the binary via rust-embed, so
+      # ui/dist MUST exist before the cargo build. Built once per job.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build UI (produces ui/dist)
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      # --- musl cross-compile via cargo-zigbuild ------------------------------
+      # zig cc is the C linker; produces static musl binaries and dodges
+      # glibc-version breakage (the approach the iroh project uses). The tree
+      # has C deps (ring, libsqlite3-sys) + a QUIC/UDP stack (iroh), hence the
+      # C toolchain requirement.
+      - name: Setup Zig
+        if: ${{ matrix.zigbuild }}
+        uses: mlugg/setup-zig@v1
+
+      - name: Install cargo-zigbuild
+        if: ${{ matrix.zigbuild }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build bantabad (zigbuild / musl)
+        if: ${{ matrix.zigbuild }}
+        run: cargo zigbuild --release -p bantabad --features embed-ui --target ${{ matrix.target }}
+
+      - name: Build bantabad (native)
+        if: ${{ !matrix.zigbuild }}
+        run: cargo build --release -p bantabad --features embed-ui --target ${{ matrix.target }}
+
+      # --- package: tar.gz for unix, zip for windows --------------------------
+      # Asset name: bantabad-<tag>-<target>.<ext> (e.g.
+      # bantabad-v0.1.0-x86_64-apple-darwin.tar.gz). A .sha256 sidecar is
+      # emitted alongside each archive to fill the Homebrew formula placeholders.
+      - name: Package (tar.gz)
+        if: ${{ matrix.archive == 'tar.gz' }}
+        shell: bash
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME}"
+          asset="bantabad-${version}-${{ matrix.target }}.tar.gz"
+          stage="$(mktemp -d)"
+          cp "target/${{ matrix.target }}/release/bantabad" "$stage/"
+          tar -czf "$asset" -C "$stage" bantabad
+          shasum -a 256 "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Package (zip)
+        if: ${{ matrix.archive == 'zip' }}
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          $asset = "bantabad-$version-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/bantabad.exe" -DestinationPath $asset -Force
+          ((Get-FileHash -Algorithm SHA256 $asset).Hash.ToLower() + "  $asset") | Out-File -Encoding ascii "$asset.sha256"
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The tag being built (github.ref) is the Release; created if absent.
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256

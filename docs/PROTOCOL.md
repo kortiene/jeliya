@@ -171,8 +171,9 @@ eventual coordination, not a lock — see `docs/agent-orchestration.md` §2.
 1. Delivery is best-effort P2P: there is no "delivered" state. Files show
    `available` / provider counts; never fabricate sync confirmation.
 2. Peer path (`direct`/`relay`) is shown truthfully from the runtime's
-   diagnostics; real-NAT traversal (Gate A upstream) is unproven — do not
-   hide relay fallback.
+   diagnostics. Gate A has confirmed direct P2P across one different-network
+   pair (see `docs/gate-a-result.md`), but relay fallback remains expected on
+   NAT pairs that cannot hole-punch — do not hide relay fallback.
 3. Fetch failures surface the taxonomy (`unavailable` / `unauthorized` /
    `hash_mismatch`) — a verification failure is a hard stop, not a retry.
 4. Agent liveness and fleet counts derive only from real events and real

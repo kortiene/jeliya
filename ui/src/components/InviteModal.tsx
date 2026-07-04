@@ -98,7 +98,14 @@ export function InviteModal({
         <div>
           <p className="muted">Send this ticket to the invitee. They join with it (room.join).</p>
           <div className="ticket-box">
-            <textarea className="mono" readOnly value={ticket} rows={4} onFocus={(e) => e.target.select()} />
+            <textarea
+              className="mono"
+              readOnly
+              value={ticket}
+              rows={4}
+              aria-label="Invite ticket"
+              onFocus={(e) => e.target.select()}
+            />
             <CopyButton text={ticket} label="Copy ticket" />
           </div>
           {endpointAddr ? (
@@ -118,7 +125,7 @@ export function InviteModal({
             </p>
           )}
           <button type="button" className="btn btn-ghost" onClick={() => setTicket(null)}>
-            ← New invite
+            <span aria-hidden="true">←</span> New invite
           </button>
         </div>
       )}

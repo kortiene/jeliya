@@ -1,0 +1,120 @@
+#!/bin/sh
+# Bantaba installer (POSIX sh). Mirrors the iroh / sendme install recipe:
+# detect platform, download the matching release archive, drop `bantabad` on
+# PATH. This script does NOT run the binary.
+#
+# PHASE 0: `OWNER/REPO` below is a placeholder. This script is inert until a
+# GitHub remote + a first `v*` release exist. See packaging/README.md.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/packaging/install.sh | sh
+#
+# Env overrides:
+#   BANTABA_VERSION=v0.1.0   pin a specific release tag (default: latest)
+#   INSTALL_DIR=/some/bin    install location (default: /usr/local/bin, else ~/.local/bin)
+set -eu
+
+# --- config -----------------------------------------------------------------
+REPO="OWNER/REPO" # <-- FILL IN once a remote exists (e.g. your-org/bantaba)
+BIN="bantabad"
+
+VERSION="${BANTABA_VERSION:-}"
+INSTALL_DIR="${INSTALL_DIR:-}"
+
+err() { printf 'error: %s\n' "$1" >&2; exit 1; }
+info() { printf '%s\n' "$1" >&2; }
+
+# --- pick a downloader ------------------------------------------------------
+if command -v curl >/dev/null 2>&1; then
+  DL="curl"
+elif command -v wget >/dev/null 2>&1; then
+  DL="wget"
+else
+  err "need either curl or wget on PATH"
+fi
+
+download() { # download <url> <dest-file>
+  if [ "$DL" = "curl" ]; then
+    curl -fsSL "$1" -o "$2"
+  else
+    wget -q "$1" -O "$2"
+  fi
+}
+
+fetch_stdout() { # fetch_stdout <url>  -> prints body to stdout
+  if [ "$DL" = "curl" ]; then
+    curl -fsSL "$1"
+  else
+    wget -qO- "$1"
+  fi
+}
+
+# --- detect platform --------------------------------------------------------
+os="$(uname -s)"
+arch="$(uname -m)"
+
+case "$os" in
+  Darwin) os_part="apple-darwin" ;;
+  Linux) os_part="unknown-linux-musl" ;;
+  *) err "unsupported OS: $os (this installer supports macOS and Linux)" ;;
+esac
+
+case "$arch" in
+  x86_64 | amd64) arch_part="x86_64" ;;
+  arm64 | aarch64) arch_part="aarch64" ;;
+  *) err "unsupported architecture: $arch (supported: x86_64, aarch64)" ;;
+esac
+
+TARGET="${arch_part}-${os_part}"
+
+# --- resolve version --------------------------------------------------------
+# Release assets are versioned (bantabad-<tag>-<target>.tar.gz), so the static
+# /releases/latest/download/ alias cannot name them. Resolve the latest tag via
+# the GitHub API (as sendme does) unless BANTABA_VERSION pins one.
+if [ -z "$VERSION" ]; then
+  info "resolving latest release of ${REPO} ..."
+  VERSION="$(fetch_stdout "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep '"tag_name"' | head -n1 | cut -d'"' -f4 || true)"
+  [ -n "$VERSION" ] || err "could not resolve latest version; set BANTABA_VERSION=vX.Y.Z to pin one"
+fi
+
+ASSET="${BIN}-${VERSION}-${TARGET}.tar.gz"
+URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+
+# --- download + extract -----------------------------------------------------
+tmp="$(mktemp -d 2>/dev/null || mktemp -d -t bantaba)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+info "downloading ${ASSET} ..."
+download "$URL" "$tmp/$ASSET" || err "download failed: $URL"
+[ -s "$tmp/$ASSET" ] || err "downloaded archive is empty or missing: $URL"
+
+info "extracting ..."
+tar -xzf "$tmp/$ASSET" -C "$tmp" || err "failed to extract $ASSET"
+[ -f "$tmp/$BIN" ] || err "archive did not contain '$BIN'"
+chmod +x "$tmp/$BIN"
+
+# --- choose install dir -----------------------------------------------------
+if [ -n "$INSTALL_DIR" ]; then
+  dest="$INSTALL_DIR"
+elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+  dest="/usr/local/bin"
+else
+  dest="$HOME/.local/bin"
+fi
+
+mkdir -p "$dest" || err "cannot create install dir: $dest"
+mv "$tmp/$BIN" "$dest/$BIN" || err "cannot write to $dest (set INSTALL_DIR=... or re-run with sudo)"
+chmod +x "$dest/$BIN"
+
+info ""
+info "installed ${BIN} ${VERSION} -> ${dest}/${BIN}"
+
+# PATH hint if the chosen dir is not already on PATH.
+case ":$PATH:" in
+  *":$dest:"*) : ;;
+  *) info "note: ${dest} is not on your PATH -- add it, e.g.:  export PATH=\"${dest}:\$PATH\"" ;;
+esac
+
+info ""
+info "next: run \`${BIN}\` -- it opens the Bantaba UI in your browser."

@@ -54,9 +54,11 @@ export default function App({ client }: { client: Client }) {
   const [peers, setPeers] = useState<PeerStatus[]>([]);
   const [endpointAddr, setEndpointAddr] = useState<string | null>(null);
   const [roomError, setRoomError] = useState<DaemonErrorShape | null>(null);
+  const [roomLoading, setRoomLoading] = useState(false);
 
   const [fetches, setFetches] = useState<Record<string, FetchState>>({});
   const [pipeConns, setPipeConns] = useState<Record<string, PipeConnState>>({});
+  const [closingPipes, setClosingPipes] = useState<Set<string>>(new Set());
 
   const [tab, setTab] = useState<PanelTab>(() => {
     const t = new URLSearchParams(window.location.search).get('tab');
@@ -125,6 +127,7 @@ export default function App({ client }: { client: Client }) {
         /* ignore */
       }
       setRoomError(null);
+      setRoomLoading(true);
       setMembers([]);
       setTimeline([]);
       setFiles([]);
@@ -141,6 +144,7 @@ export default function App({ client }: { client: Client }) {
         if (roomIdRef.current !== rid) return;
         setMembers(opened.members);
         setTimeline(opened.timeline);
+        setRoomLoading(false);
         setEndpointAddr(opened.endpoint.addr ?? null);
         const [f, p, ps] = await Promise.all([
           client.call('file.list', { room_id: rid }),
@@ -153,7 +157,10 @@ export default function App({ client }: { client: Client }) {
         setPeers(ps.peers);
         void refreshRooms(); // open flag changed
       } catch (e) {
-        if (roomIdRef.current === rid) setRoomError(errorShape(e));
+        if (roomIdRef.current === rid) {
+          setRoomError(errorShape(e));
+          setRoomLoading(false);
+        }
       }
     },
     [client, refreshRooms],
@@ -314,9 +321,17 @@ export default function App({ client }: { client: Client }) {
   const pipeClose = (pipeId: string) => {
     const rid = roomIdRef.current;
     if (!rid) return;
+    setClosingPipes((s) => new Set(s).add(pipeId));
+    const doneClosing = () =>
+      setClosingPipes((s) => {
+        const next = new Set(s);
+        next.delete(pipeId);
+        return next;
+      });
     void (async () => {
       try {
         await client.call('pipe.close', { room_id: rid, pipe_id: pipeId });
+        doneClosing();
         setPipeConns((m) => {
           const next = { ...m };
           delete next[pipeId];
@@ -324,6 +339,7 @@ export default function App({ client }: { client: Client }) {
         });
         void refreshPipes(rid);
       } catch (e) {
+        doneClosing();
         setPipeConns((m) => ({ ...m, [pipeId]: { phase: 'error', error: errorShape(e) } }));
       }
     })();
@@ -402,7 +418,7 @@ export default function App({ client }: { client: Client }) {
     <NamesContext.Provider value={names}>
       <div className={`app mv-${mobileView}${activeNav === 'agents' ? ' app-fleet' : ''}`}>
         {conn !== 'connected' ? (
-          <div className={`conn-banner conn-${conn}`}>
+          <div className={`conn-banner conn-${conn}`} role="status">
             {conn === 'reconnecting' || conn === 'connecting'
               ? `Connection to daemon lost — reconnecting… (${client.describe()})`
               : 'Disconnected from daemon.'}
@@ -439,10 +455,14 @@ export default function App({ client }: { client: Client }) {
                   <ErrorNote error={roomError} />
                 </div>
               ) : null}
+              {/* Keyed by room so the role="log" live region resets on room switch
+                  instead of announcing the whole backlog as new content. */}
               <Timeline
+                key={roomId}
                 events={timeline}
                 files={files}
                 fetches={fetches}
+                loading={roomLoading}
                 onFetch={fetchFile}
                 onShowPipes={() => setTab('pipes')}
               />
@@ -465,6 +485,7 @@ export default function App({ client }: { client: Client }) {
           onFetch={fetchFile}
           onShareFile={shareFile}
           pipeConns={pipeConns}
+          closingPipes={closingPipes}
           onPipeConnect={pipeConnect}
           onPipeClose={pipeClose}
           onPipeExpose={pipeExpose}

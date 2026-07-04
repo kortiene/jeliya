@@ -97,7 +97,9 @@ function FilesTab({
 
   return (
     <div className="panel-list">
-      {files.length === 0 ? <div className="panel-empty muted">No files shared in this room yet.</div> : null}
+      {files.length === 0 ? (
+        <div className="panel-empty muted">No files yet — share one below; peers fetch it over P2P.</div>
+      ) : null}
       {files.map((file) => {
         const tint = fileTint(file.name);
         const ext = extOf(file.name).toUpperCase() || 'FILE';
@@ -132,13 +134,14 @@ function FilesTab({
           void share();
         }}
       >
-        <h4>Share a file</h4>
+        <h2>Share a file</h2>
         <p className="muted">Path on this machine — the daemon imports it into the blob store.</p>
         <div className="form-row">
           <input
             value={path}
             onChange={(e) => setPath(e.target.value)}
             placeholder="/path/to/file.pdf"
+            aria-label="File path to share"
             spellCheck={false}
           />
           <button type="submit" className="btn" disabled={sharing || !path.trim()}>
@@ -158,6 +161,7 @@ function PipesTab({
   members,
   selfId,
   conns,
+  closing,
   onConnect,
   onClose,
   onExpose,
@@ -166,6 +170,7 @@ function PipesTab({
   members: Member[];
   selfId: string | null;
   conns: Record<string, PipeConnState>;
+  closing: Set<string>;
   onConnect(pipeId: string): void;
   onClose(pipeId: string): void;
   onExpose(target: string, peerIdentity: string): Promise<void>;
@@ -195,7 +200,9 @@ function PipesTab({
 
   return (
     <div className="panel-list">
-      {pipes.length === 0 ? <div className="panel-empty muted">No pipes in this room yet.</div> : null}
+      {pipes.length === 0 ? (
+        <div className="panel-empty muted">No pipes yet — expose a local port to one authorized peer below.</div>
+      ) : null}
       {pipes.map((pipe) => {
         const conn = conns[pipe.pipe_id];
         return (
@@ -236,9 +243,15 @@ function PipesTab({
                     </a>
                   </>
                 )}
-                <button type="button" className="btn btn-sm btn-ghost" onClick={() => onClose(pipe.pipe_id)}>
-                  Close
-                </button>
+                {closing.has(pipe.pipe_id) ? (
+                  <button type="button" className="btn btn-sm btn-ghost" disabled>
+                    <span className="spinner" aria-hidden="true" /> Closing…
+                  </button>
+                ) : (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => onClose(pipe.pipe_id)}>
+                    Close
+                  </button>
+                )}
               </div>
             ) : null}
             {conn?.phase === 'error' ? <ErrorNote error={conn.error} /> : null}
@@ -253,18 +266,23 @@ function PipesTab({
           void expose();
         }}
       >
-        <h4>Expose a pipe</h4>
+        <h2>Expose a pipe</h2>
         <p className="muted">Forward a local port to exactly one authorized peer.</p>
         <div className="form-row">
           <input
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             placeholder="127.0.0.1:3000"
+            aria-label="Local target (host:port)"
             spellCheck={false}
           />
         </div>
         <div className="form-row">
-          <select value={peer || peerChoices[0]?.identity_id || ''} onChange={(e) => setPeer(e.target.value)}>
+          <select
+            value={peer || peerChoices[0]?.identity_id || ''}
+            onChange={(e) => setPeer(e.target.value)}
+            aria-label="Authorized peer"
+          >
             {peerChoices.length === 0 ? <option value="">no other members</option> : null}
             {peerChoices.map((m) => (
               <option key={m.identity_id} value={m.identity_id}>
@@ -296,6 +314,7 @@ export function RightPanel({
   onFetch,
   onShareFile,
   pipeConns,
+  closingPipes,
   onPipeConnect,
   onPipeClose,
   onPipeExpose,
@@ -311,6 +330,7 @@ export function RightPanel({
   onFetch(fileId: string): void;
   onShareFile(path: string): Promise<void>;
   pipeConns: Record<string, PipeConnState>;
+  closingPipes: Set<string>;
   onPipeConnect(pipeId: string): void;
   onPipeClose(pipeId: string): void;
   onPipeExpose(target: string, peerIdentity: string): Promise<void>;
@@ -368,6 +388,7 @@ export function RightPanel({
             members={members}
             selfId={selfId}
             conns={pipeConns}
+            closing={closingPipes}
             onConnect={onPipeConnect}
             onClose={onPipeClose}
             onExpose={onPipeExpose}

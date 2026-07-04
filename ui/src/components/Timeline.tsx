@@ -88,7 +88,7 @@ function EventCard({
             <div className="msg-meta">
               <SenderName id={senderId} className="msg-sender" />
               {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
-              <time>{time}</time>
+              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
             </div>
             <div className="msg-bubble">{event.body}</div>
           </div>
@@ -106,7 +106,7 @@ function EventCard({
             <div className="event-head">
               <SenderName id={senderId} className="event-sender" />
               {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
-              <time>{time}</time>
+              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
               <span className={`chip chip-label tone-${labelTone(label)}`}>{prettyLabel(label)}</span>
             </div>
             {event.status_message ? <p className="event-text">{event.status_message}</p> : null}
@@ -122,7 +122,8 @@ function EventCard({
                   const file = files.find((f) => f.file_id === fileId);
                   return (
                     <span key={fileId} className="chip chip-artifact" title={fileId}>
-                      ⎘ {file ? file.name : shortId(fileId)}
+                      <span aria-hidden="true">⎘</span>
+                      {file ? file.name : shortId(fileId)}
                     </span>
                   );
                 })}
@@ -143,7 +144,7 @@ function EventCard({
               <SenderName id={senderId} className="event-sender" />
               {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
               <span className="muted">shared a file</span>
-              <time>{time}</time>
+              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
             </div>
             <FileTile file={event.file} state={fetches[event.file.file_id]} onFetch={onFetch} />
           </div>
@@ -161,7 +162,7 @@ function EventCard({
               <SenderName id={senderId} className="event-sender" />
               {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
               <span className="muted">opened a pipe</span>
-              <time>{time}</time>
+              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
             </div>
             <div className="pipe-tile">
               <span className="pipe-icon" aria-hidden="true">
@@ -198,12 +199,14 @@ export function Timeline({
   events,
   files,
   fetches,
+  loading,
   onFetch,
   onShowPipes,
 }: {
   events: TimelineEvent[];
   files: FileEntry[];
   fetches: Record<string, FetchState>;
+  loading: boolean;
   onFetch(fileId: string): void;
   onShowPipes(): void;
 }) {
@@ -247,13 +250,41 @@ export function Timeline({
   }
 
   return (
-    <div className="timeline" ref={scroller} onScroll={onScroll}>
+    <div className="timeline" ref={scroller} onScroll={onScroll} role="log" aria-label="Room timeline" aria-busy={loading}>
+      {loading ? (
+        <div aria-hidden="true">
+          <div className="skel-row">
+            <span className="skel-avatar skel" />
+            <div className="skel-lines">
+              <span className="skel-line skel" style={{ width: '32%' }} />
+              <span className="skel-line skel" style={{ width: '74%' }} />
+            </div>
+          </div>
+          <div className="skel-row">
+            <span className="skel-avatar skel" />
+            <div className="skel-lines">
+              <span className="skel-line skel" style={{ width: '24%' }} />
+              <span className="skel-line skel" style={{ width: '86%' }} />
+              <span className="skel-line skel" style={{ width: '58%' }} />
+            </div>
+          </div>
+          <div className="skel-row">
+            <span className="skel-avatar skel" />
+            <div className="skel-lines">
+              <span className="skel-line skel" style={{ width: '40%' }} />
+              <span className="skel-line skel" style={{ width: '66%' }} />
+            </div>
+          </div>
+        </div>
+      ) : null}
       {rows.map((row) => (
         <div key={row.key} className="timeline-row">
           {row.node}
         </div>
       ))}
-      {events.length === 0 ? <div className="timeline-empty muted">No events yet — say something below.</div> : null}
+      {!loading && events.length === 0 ? (
+        <div className="timeline-empty muted">No events yet — say something below.</div>
+      ) : null}
     </div>
   );
 }

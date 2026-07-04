@@ -7,6 +7,7 @@
 //! "MUST refuse to bind non-loopback interfaces" holds trivially.
 
 mod rpc;
+mod serve;
 
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -15,12 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
-use tokio_tungstenite::tungstenite::Message;
 
 use bantaba_core::error::ErrorKind;
 use bantaba_core::supervisor::RoomSupervisor;
@@ -34,12 +32,21 @@ const PUSH_TICK: Duration = Duration::from_millis(300);
 #[derive(Parser, Debug)]
 #[command(name = "bantabad", version, about = "Bantaba daemon (local WebSocket, iroh-rooms core)")]
 struct Args {
-    /// TCP port on 127.0.0.1 to serve `ws://127.0.0.1:<port>/ws`.
+    /// TCP port on 127.0.0.1 to serve `http://127.0.0.1:<port>/` and `/ws`.
     #[arg(long, default_value_t = 7420)]
     port: u16,
     /// Data directory (identity, rooms.db, blobs, downloads, local state).
-    #[arg(long, default_value = "./.bantaba-data")]
-    data_dir: PathBuf,
+    /// Defaults to a per-user platform data directory so a GUI launch from an
+    /// arbitrary working directory never scatters or duplicates identities.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// Serve the web UI from this directory instead of any embedded assets
+    /// (decouples UI iteration from a daemon rebuild).
+    #[arg(long)]
+    ui_dir: Option<PathBuf>,
+    /// Do not open the web UI in a browser on startup.
+    #[arg(long, default_value_t = false)]
+    no_open: bool,
     /// Use the SDK's loopback/CI network mode instead of the real network.
     #[arg(long, default_value_t = false)]
     loopback: bool,
@@ -61,7 +68,8 @@ struct AppState {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let supervisor = match RoomSupervisor::new(args.data_dir.clone(), args.loopback) {
+    let data_dir = args.data_dir.clone().unwrap_or_else(default_data_dir);
+    let supervisor = match RoomSupervisor::new(data_dir.clone(), args.loopback) {
         Ok(sup) => sup,
         Err(err) => {
             eprintln!("error: could not initialize the data dir: {err}");
@@ -71,29 +79,61 @@ async fn main() {
     let (push_tx, _) = broadcast::channel(1024);
     let state = AppState {
         supervisor: Arc::new(supervisor),
-        data_dir: args.data_dir.clone(),
+        data_dir: data_dir.clone(),
         push_tx,
     };
 
-    // Bind loopback ONLY (see the module doc).
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, args.port));
-    let listener = match TcpListener::bind(addr).await {
-        Ok(listener) => listener,
-        Err(err) => {
-            eprintln!("error: could not bind {addr}: {err}");
+    // Where the web UI is served from: an explicit --ui-dir wins; otherwise the
+    // assets embedded at build time (present only in an `embed-ui` build).
+    let ui = serve::UiSource::resolve(args.ui_dir.clone());
+
+    // Bind loopback ONLY (see the module doc). On a port collision, scan a small
+    // range upward rather than dying: a second launch (or a leftover daemon)
+    // must not hard-fail a GUI start, and because the served UI is same-origin
+    // the actual bound port propagates to the page automatically.
+    let (listener, addr) = match bind_loopback(args.port, 20).await {
+        Some(bound) => bound,
+        None => {
+            eprintln!(
+                "error: no free loopback port in {}..={}",
+                args.port,
+                args.port.saturating_add(20)
+            );
             std::process::exit(1);
         }
     };
-    println!("bantabad listening on ws://{addr}/ws (data dir: {})", args.data_dir.display());
+    if addr.port() != args.port {
+        eprintln!("note: port {} was in use; bound {} instead", args.port, addr.port());
+    }
+
+    if ui.is_serving() {
+        println!(
+            "bantabad on http://{addr}/  (ws://{addr}/ws)  data dir: {}",
+            data_dir.display()
+        );
+    } else {
+        println!("bantabad listening on ws://{addr}/ws (data dir: {})", data_dir.display());
+    }
 
     tokio::spawn(push_loop(state.clone()));
+
+    // Open the UI once we're bound and actually serving it (best-effort, never
+    // fatal). Scripts and headless runs build without the UI (or pass --no-open)
+    // so nothing pops a browser there.
+    if ui.is_serving() && !args.no_open {
+        let url = format!("http://{addr}/");
+        if let Err(err) = webbrowser::open(&url) {
+            eprintln!("note: could not open a browser ({err}); open {url} yourself");
+        }
+    }
 
     loop {
         match listener.accept().await {
             Ok((stream, _peer)) => {
                 let state = state.clone();
+                let ui = ui.clone();
                 tokio::spawn(async move {
-                    handle_client(stream, state).await;
+                    serve::handle_conn(stream, state, ui).await;
                 });
             }
             Err(err) => {
@@ -102,6 +142,32 @@ async fn main() {
             }
         }
     }
+}
+
+/// The default per-user data directory (`~/Library/Application Support/Bantaba`,
+/// `$XDG_DATA_HOME/Bantaba`, or `%APPDATA%\Bantaba`), falling back to a
+/// cwd-relative dir only when no platform path is discoverable.
+fn default_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .map(|dir| dir.join("Bantaba"))
+        .unwrap_or_else(|| PathBuf::from("./.bantaba-data"))
+}
+
+/// Bind `127.0.0.1:port`, scanning up to `tries` ports upward past a collision.
+/// Only `AddrInUse` advances the scan; any other bind error is fatal (`None`).
+async fn bind_loopback(port: u16, tries: u16) -> Option<(TcpListener, SocketAddr)> {
+    for candidate in port..=port.saturating_add(tries) {
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, candidate));
+        match TcpListener::bind(addr).await {
+            Ok(listener) => return Some((listener, addr)),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(err) => {
+                eprintln!("error: could not bind {addr}: {err}");
+                return None;
+            }
+        }
+    }
+    None
 }
 
 /// Drive the room-event push fan-out (issue #83).
@@ -191,37 +257,6 @@ async fn push_loop(state: AppState) {
     }
 }
 
-/// The handshake gate: only the `/ws` path upgrades, and only from a
-/// same-machine (or non-browser) origin. tungstenite's callback signature fixes
-/// the (large) `ErrorResponse` error type, so the `result_large_err` lint is
-/// structurally unavoidable here.
-#[allow(clippy::result_large_err)]
-fn require_ws_path(req: &Request, resp: Response) -> Result<Response, ErrorResponse> {
-    if req.uri().path() != "/ws" {
-        let mut refusal = ErrorResponse::new(Some("not found; connect to /ws".to_owned()));
-        *refusal.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND;
-        return Err(refusal);
-    }
-    // Cross-Site WebSocket Hijacking guard. A loopback bind is not a security
-    // boundary against browsers: same-origin policy does NOT block a remote page
-    // (https://evil.example) the user has open from opening a WebSocket to
-    // ws://127.0.0.1:<port>/ws and then driving every daemon method. We reject
-    // any request whose `Origin` is a real remote site. Non-browser clients
-    // (the UI dev server proxy, the e2e/CLI, native shells) send no `Origin`, or
-    // a loopback one, and are allowed.
-    if let Some(origin) = req.headers().get("origin") {
-        let allowed = origin.to_str().is_ok_and(is_local_origin);
-        if !allowed {
-            let mut refusal = ErrorResponse::new(Some(
-                "forbidden: cross-origin WebSocket connections are refused".to_owned(),
-            ));
-            *refusal.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
-            return Err(refusal);
-        }
-    }
-    Ok(resp)
-}
-
 /// Whether an `Origin` header value denotes a loopback origin (the local UI),
 /// as opposed to a remote website mounting a cross-site WebSocket hijack.
 fn is_local_origin(origin: &str) -> bool {
@@ -246,49 +281,6 @@ fn is_local_origin(origin: &str) -> bool {
             .parse::<IpAddr>()
             .map(|ip| ip.is_loopback())
             .unwrap_or(false)
-}
-
-/// One WebSocket client: `/ws` path only, JSON text frames, interleaved with
-/// broadcast pushes.
-async fn handle_client(stream: TcpStream, state: AppState) {
-    let ws = tokio_tungstenite::accept_hdr_async(stream, require_ws_path).await;
-    let ws = match ws {
-        Ok(ws) => ws,
-        Err(_) => return, // handshake refused (wrong path) or transport error
-    };
-    let (mut sink, mut messages) = ws.split();
-    let mut push_rx = state.push_tx.subscribe();
-
-    loop {
-        tokio::select! {
-            msg = messages.next() => match msg {
-                Some(Ok(Message::Text(text))) => {
-                    let reply = rpc::handle_frame(text.as_str(), &state).await;
-                    if sink.send(Message::text(reply)).await.is_err() {
-                        break;
-                    }
-                }
-                Some(Ok(Message::Ping(payload))) => {
-                    if sink.send(Message::Pong(payload)).await.is_err() {
-                        break;
-                    }
-                }
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                Some(Ok(_)) => {} // binary/pong frames: ignored
-            },
-            push = push_rx.recv() => match push {
-                Ok(frame) => {
-                    if sink.send(Message::text(frame)).await.is_err() {
-                        break;
-                    }
-                }
-                // A lagged subscriber just misses pushes; the request/response
-                // surface (room.timeline / peers.status) re-syncs it.
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => break,
-            },
-        }
-    }
 }
 
 #[cfg(test)]

@@ -55,7 +55,14 @@ export function labelTone(label: string): 'red' | 'blue' | 'green' {
   return 'green';
 }
 
-const AVATAR_PALETTE = ['#2fd6a4', '#6aa8f7', '#a78bfa', '#fb923c', '#f472b6', '#22d3ee'];
+// Must stay in sync with the corresponding tokens in styles.css.
+const ACCENT = '#2fd6a4'; // --accent
+const BLUE = '#6aa8f7'; // --blue
+const RED = '#f26d6d'; // --red
+const TEXT_DIM = '#8aa39d'; // --text-dim
+const VIOLET = '#a78bfa'; // no CSS token — shared here by AVATAR_PALETTE and fileTint
+
+const AVATAR_PALETTE = [ACCENT, BLUE, VIOLET, '#fb923c', '#f472b6', '#22d3ee'];
 
 export function colorForId(id: string): string {
   let h = 0;
@@ -78,24 +85,24 @@ export function extOf(name: string): string {
 export function fileTint(name: string): string {
   switch (extOf(name)) {
     case 'pdf':
-      return '#f26d6d';
+      return RED;
     case 'md':
     case 'txt':
     case 'doc':
     case 'docx':
-      return '#6aa8f7';
+      return BLUE;
     case 'json':
     case 'js':
     case 'ts':
-      return '#2fd6a4';
+      return ACCENT;
     case 'png':
     case 'jpg':
     case 'jpeg':
     case 'gif':
     case 'svg':
     case 'webp':
-      return '#a78bfa';
+      return VIOLET;
     default:
-      return '#8aa39d';
+      return TEXT_DIM;
   }
 }

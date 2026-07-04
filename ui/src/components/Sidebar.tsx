@@ -147,7 +147,7 @@ export function Sidebar({
             {endpointId ? <span className="identity-ep" title={`endpoint ${endpointId}`}> · ep {shortId(endpointId)}</span> : null}
           </span>
         </div>
-        {identityId ? <CopyButton text={identityId} label="⧉" /> : null}
+        {identityId ? <CopyButton text={identityId} label="⧉" ariaLabel="Copy identity ID" /> : null}
         <span className={`conn-badge conn-${conn}`} title={CONN_LABEL[conn]}>
           <span className="dot" /> {CONN_LABEL[conn]}
         </span>

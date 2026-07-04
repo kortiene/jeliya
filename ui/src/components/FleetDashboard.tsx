@@ -47,12 +47,24 @@ function bandFor(p: HistoryPoint): number {
   return tone === 'red' ? 0.18 : tone === 'blue' ? 0.62 : 0.8;
 }
 
-function Sparkline({ points, color, muted }: { points: HistoryPoint[]; color: string; muted: boolean }) {
+function Sparkline({ points, color, muted }: { points: HistoryPoint[] | null; color: string; muted: boolean }) {
   const gid = useId().replace(/[:]/g, '');
   const W = 132;
   const H = 40;
   const pad = 4;
   const stroke = muted ? 'var(--text-mute)' : color;
+
+  // null = history not fetched yet — solid baseline placeholder, same size, so
+  // the dashed "no history" treatment is never flashed before data arrives.
+  if (points === null) {
+    return (
+      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Loading status history">
+        <title>Loading status history</title>
+        <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="var(--border-strong)" strokeWidth="1.5" />
+      </svg>
+    );
+  }
+
   const label =
     points.length === 0
       ? 'No status history yet'
@@ -120,7 +132,7 @@ function AgentCard({
   client: Client;
   onOpenRoom(roomId: string): void;
 }) {
-  const [points, setPoints] = useState<HistoryPoint[]>([]);
+  const [points, setPoints] = useState<HistoryPoint[] | null>(null);
   const historyRoom = agent.latest?.room_id ?? agent.rooms[0]?.room_id ?? null;
 
   useEffect(() => {
@@ -166,7 +178,7 @@ function AgentCard({
             {agent.identity_id.slice(0, 12)}…
           </code>
         </div>
-        <CopyButton text={agent.identity_id} label="⧉" />
+        <CopyButton text={agent.identity_id} label="⧉" ariaLabel="Copy identity ID" />
       </div>
 
       <div className="fleet-card-mid">
@@ -199,7 +211,8 @@ function AgentCard({
             onClick={() => onOpenRoom(r.room_id)}
             title={r.name ?? r.room_id}
           >
-            <span aria-hidden="true">⬡</span> {r.name ?? shortId(r.room_id)}
+            <span aria-hidden="true">⬡</span>
+            <span className="room-chip-name">{r.name ?? shortId(r.room_id)}</span>
           </button>
         ))}
       </div>
@@ -366,7 +379,14 @@ function AddAgentModal({
             copied and run by a human on purpose.
           </p>
           <div className="ticket-box">
-            <textarea className="mono" readOnly value={command} rows={4} onFocus={(e) => e.target.select()} />
+            <textarea
+              className="mono"
+              readOnly
+              value={command}
+              rows={4}
+              aria-label="Agent launch command"
+              onFocus={(e) => e.target.select()}
+            />
             <CopyButton text={command} label="Copy command" />
           </div>
           <div className="addr-box">
@@ -382,7 +402,7 @@ function AddAgentModal({
             </p>
           ) : null}
           <button type="button" className="btn btn-ghost" onClick={() => setResult(null)}>
-            ← New invite
+            <span aria-hidden="true">←</span> New invite
           </button>
         </div>
       )}
@@ -503,14 +523,48 @@ export function FleetDashboard({
         </div>
       </header>
 
-      <div className="fleet-body">
+      <div className="fleet-body" aria-busy={!loaded || undefined}>
         {error ? <ErrorNote error={error} /> : null}
         {fleet ? <StatTiles fleet={fleet} /> : null}
 
         {!loaded ? (
-          <div className="fleet-empty muted">
-            <span className="spinner" aria-hidden="true" /> Loading fleet…
-          </div>
+          <>
+            {/* Skeleton mirrors the real anatomy (stat tiles + cards) so the
+                data swap is layout-shift-free. No sr-only utility class exists,
+                hence the inline visually-hidden style on the status text. */}
+            <div
+              role="status"
+              style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clipPath: 'inset(50%)' }}
+            >
+              Loading agents
+            </div>
+            <div className="fleet-stats" aria-hidden="true">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="fleet-stat">
+                  <span className="skel-icon skel" />
+                  <div className="skel-lines">
+                    <span className="skel-line skel" style={{ width: 92, height: 10 }} />
+                    <span className="skel-line skel" style={{ width: 52, height: 22 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="fleet-grid" aria-hidden="true">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="fleet-card">
+                  <div className="skel-row">
+                    <span className="skel-avatar skel" />
+                    <div className="skel-lines">
+                      <span className="skel-line skel" style={{ width: 120, height: 12 }} />
+                      <span className="skel-line skel" style={{ width: 96, height: 10 }} />
+                    </div>
+                  </div>
+                  <span className="skel-line skel" style={{ width: '100%', height: 40 }} />
+                  <span className="skel-line skel" style={{ width: '60%', height: 10 }} />
+                </div>
+              ))}
+            </div>
+          </>
         ) : visible.length === 0 ? (
           <div className="fleet-empty muted">
             {fleet && fleet.total === 0

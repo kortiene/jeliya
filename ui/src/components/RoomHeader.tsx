@@ -45,18 +45,18 @@ export function RoomHeader({
         </div>
         <div className="room-actions">
           <button type="button" className="btn" onClick={onShareFile}>
-            ⎘ Share File
+            <span aria-hidden="true">⎘</span> Share File
           </button>
           <button type="button" className="btn" onClick={onOpenPipe}>
-            ⤳ Open Pipe
+            <span aria-hidden="true">⤳</span> Open Pipe
           </button>
           <button type="button" className="btn btn-primary" onClick={onInvite}>
-            ⊕ Invite
+            <span aria-hidden="true">⊕</span> Invite
           </button>
         </div>
       </div>
       {peers.length > 0 ? (
-        <div className="peer-strip" aria-label="Peer connections">
+        <div className="peer-strip" role="group" aria-label="Peer connections">
           {peers.map((p) => (
             <PeerChip key={p.endpoint_id} peer={p} />
           ))}

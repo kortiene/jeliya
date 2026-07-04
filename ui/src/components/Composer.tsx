@@ -45,6 +45,7 @@ export function Composer({
             }
           }}
           placeholder={`Message ${roomName}`}
+          aria-label={`Message ${roomName}`}
           rows={1}
           disabled={disabled}
         />

@@ -125,7 +125,11 @@ function parseCli(argv) {
     room: null,
     port: 7461,
     dataDir: ".bantaba-agent",
-    worker: "claude",
+    // Default to the inert echo worker. Real host execution (`--worker claude`)
+    // is arbitrary code/file execution for any allowlisted sender, so it must be
+    // an explicit, informed opt-in — never the default a packaged shortcut or a
+    // copied command line inherits silently.
+    worker: "echo",
     workspace: null,
     trigger: "@agent",
     allowSenders: [],
@@ -174,6 +178,18 @@ if (!Number.isInteger(cfg.port) || cfg.port <= 0) {
 if (!Number.isInteger(cfg.maxTurns) || cfg.maxTurns <= 0) {
   console.error("agent: --max-turns must be a positive integer");
   usage(2);
+}
+if (cfg.worker !== "echo" && cfg.worker !== "claude") {
+  console.error(`agent: --worker must be "echo" or "claude" (got ${cfg.worker})`);
+  usage(2);
+}
+if (cfg.worker === "claude") {
+  console.error(
+    "agent: WARNING — --worker claude runs the `claude` CLI with --permission-mode\n" +
+      "       acceptEdits on every triggered message from an allowlisted sender. That\n" +
+      "       is arbitrary code / file execution on this host. Only enable it for a\n" +
+      "       room and senders you trust.",
+  );
 }
 for (const s of cfg.allowSenders) {
   if (!/^[0-9a-f]{64}$/.test(s)) {

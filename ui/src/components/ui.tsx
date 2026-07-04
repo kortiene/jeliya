@@ -61,35 +61,38 @@ export function Avatar({ id, size = 34 }: { id: string; size?: number }) {
 
 export function SenderName({ id, className = '' }: { id: string; className?: string }) {
   const names = useNames();
-  const self = names.isSelf(id);
-  const label = self ? 'You' : names.display(id);
+  // "You" is not renameable — plain text, not a dead button.
+  if (names.isSelf(id)) {
+    return (
+      <span className={`sender-name ${className}`} title={id}>
+        You
+      </span>
+    );
+  }
   return (
     <button
       type="button"
       className={`sender-name ${className}`}
-      title={self ? id : `${id}\nClick to set a local name`}
-      onClick={() => {
-        if (!self) names.requestRename(id);
-      }}
-      disabled={self}
+      title={`${id}\nClick to set a local name`}
+      onClick={() => names.requestRename(id)}
     >
-      {label}
+      {names.display(id)}
     </button>
   );
 }
 
 // -- small widgets --------------------------------------------------------------
 
-export function ProgressBar({ value }: { value: number }) {
+export function ProgressBar({ value, label = 'Task progress' }: { value: number; label?: string }) {
   const v = Math.max(0, Math.min(100, value));
   return (
-    <div className="progress" role="progressbar" aria-valuenow={v} aria-valuemin={0} aria-valuemax={100}>
+    <div className="progress" role="progressbar" aria-label={label} aria-valuenow={v} aria-valuemin={0} aria-valuemax={100}>
       <div className="progress-fill" style={{ width: `${v}%` }} />
     </div>
   );
 }
 
-export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
+export function CopyButton({ text, label = 'Copy', ariaLabel }: { text: string; label?: string; ariaLabel?: string }) {
   const [done, setDone] = useState(false);
   const copy = async () => {
     try {
@@ -105,8 +108,15 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
     setDone(true);
     window.setTimeout(() => setDone(false), 1400);
   };
+  // aria-label only while idle — the visible "Copied ✓" swap must stay the
+  // accessible name so the confirmation is announced.
   return (
-    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void copy()}>
+    <button
+      type="button"
+      className="btn btn-ghost btn-sm"
+      onClick={() => void copy()}
+      aria-label={done ? undefined : ariaLabel}
+    >
       {done ? 'Copied ✓' : label}
     </button>
   );
@@ -207,7 +217,7 @@ export function Modal({
         tabIndex={-1}
       >
         <header className="modal-head">
-          <h3>{title}</h3>
+          <h2>{title}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
             ✕
           </button>

@@ -7,3 +7,9 @@ ui/dist/
 .DS_Store
 .bantaba-realnet*/
 .bantaba-gatea/
+
+# Local agent/tooling metadata; not part of product source.
+.claude/
+
+# impeccable live-mode ephemeral session state (config.json + design.json are shared)
+.impeccable/live/sessions/
