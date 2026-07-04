@@ -56,20 +56,24 @@ export async function pollUntil(fn, timeoutMs, what, intervalMs = 500) {
 }
 
 /**
- * Spawn a real-mode bantabad (NO --loopback) and register teardown.
+ * Spawn a bantabad and register teardown. Defaults to real network mode
+ * (NO --loopback), which is what the realnet scripts need; pass
+ * `loopback: true` for the SDK's offline 127.0.0.1 stack (agent harness/e2e).
  * Returns the child process. The caller's data dir persists across runs on
  * purpose (identity continuity); only the process is cleaned up.
  */
-export function startRealDaemon({ port, dataDir, label, onExit }) {
+export function startRealDaemon({ port, dataDir, label, onExit, loopback = false }) {
   if (!existsSync(BINARY)) {
     console.error(
       `error: ${BINARY} not found — run \`cargo build --workspace\` first`,
     );
     process.exit(1);
   }
-  const proc = spawn(BINARY, ["--port", String(port), "--data-dir", dataDir], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const proc = spawn(
+    BINARY,
+    [...(loopback ? ["--loopback"] : []), "--port", String(port), "--data-dir", dataDir],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
   proc.stdout.on("data", (d) => process.stdout.write(`[${label}] ${d}`));
   proc.stderr.on("data", (d) => process.stderr.write(`[${label}] ${d}`));
   proc.on("exit", (code, signal) => onExit?.(code, signal));

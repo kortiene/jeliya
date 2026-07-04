@@ -1,0 +1,466 @@
+#!/usr/bin/env node
+// Deterministic end-to-end proof of the real-agent harness (echo worker,
+// loopback only — no LLM, no network beyond 127.0.0.1). Node 22+, no npm deps.
+//
+// Topology:
+//   - human daemon   : port 7462, spawned here (loopback)
+//   - agent daemon   : port 7463, spawned BY the runner (scripts/bantaba-agent.mjs)
+//   - intruder daemon: port 7464, spawned here (loopback) — a room member NOT
+//     on the agent's allowlist, used to prove the trust model
+//
+// Flow with hard assertions:
+//   1. human: identity + room + open (capture dial addr)
+//   2. runner --identity-only prints the agent identity; human mints an
+//      agent-role invite for it
+//   3. intruder joins (member role) while the room log is still
+//      membership-only — see the known-limitation note below
+//   4. runner starts with --worker echo; human sees member_joined, the
+//      "online" status, and the announce message
+//   5. human sends "@agent build the thing": "working" status (no fabricated
+//      progress), file_shared result.txt fetched verified:true with content
+//      "echo: build the thing", final summary message, "done" status with
+//      progress 100 + the shared artifact id
+//   6. the intruder sends a triggered message: the runner provably receives
+//      it (it logs the SECURITY-ignored line, which only happens after its
+//      own daemon delivered the event and the allowlist rejected it) and
+//      emits NOTHING (no execution, no reply — the trust model holds and
+//      leaks no oracle)
+//   7. a second legit task still executes (the loop survived the intruder)
+//   8. SIGTERM: the runner posts "offline" best-effort and exits 0
+//
+// KNOWN DAEMON LIMITATION (pre-existing, found while building this test, and
+// reproduced with plain three-daemon probes in BOTH loopback and real mode):
+// room.join only bootstraps into a room whose event log is membership-only.
+// Once any message / agent_status / file_shared event exists, every later
+// join times out with peer_unreachable ("could not reach the room admin...").
+// That is a bantaba-core/SDK join-bootstrap bug, out of scope here (crates/
+// untouched) — this flow therefore performs ALL joins before the first chat
+// message, which is also the operational guidance in docs/agent-guide.md.
+//
+// Usage: node scripts/agent-e2e.mjs [--scratch <dir>]   (dir is wiped/reused)
+
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { Client, parseArgs, sleep, startRealDaemon } from "./realnet-lib.mjs";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const AGENT_SCRIPT = join(repoRoot, "scripts", "bantaba-agent.mjs");
+
+const PORT_HUMAN = 7462;
+const PORT_AGENT = 7463;
+const PORT_INTRUDER = 7464;
+const TRIGGER = "@agent";
+
+const args = parseArgs(process.argv.slice(2));
+const SCRATCH = typeof args.scratch === "string"
+  ? resolve(args.scratch)
+  : mkdtempSync(join(tmpdir(), "bantaba-agent-e2e-"));
+
+// ---------------------------------------------------------------------------
+// Teardown discipline: everything spawned/created is registered and torn down
+// on ANY exit path. The runner owns the 7463 daemon; a SIGKILLed runner can't
+// reap it, so we also hard-kill whatever still listens on the agent port.
+// ---------------------------------------------------------------------------
+const daemons = [];
+const clients = [];
+const scratchDirs = [];
+let runner = null;
+let runnerExited = false;
+let tearingDown = false;
+
+function killPortListeners(port) {
+  try {
+    const out = execFileSync("lsof", ["-ti", `tcp:${port}`], { encoding: "utf8" });
+    for (const pidStr of out.split("\n").filter(Boolean)) {
+      const pid = Number(pidStr);
+      if (!Number.isInteger(pid) || pid === process.pid) continue;
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+  } catch {} // lsof exits nonzero when nothing listens — fine
+}
+
+function teardown() {
+  tearingDown = true;
+  for (const c of clients) c.close();
+  if (runner && !runnerExited) {
+    try {
+      runner.kill("SIGKILL");
+    } catch {}
+  }
+  for (const d of daemons) {
+    try {
+      d.kill("SIGKILL");
+    } catch {}
+  }
+  killPortListeners(PORT_AGENT); // the runner's orphaned daemon, if any
+  for (const dir of scratchDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+process.on("exit", teardown);
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    teardown();
+    process.exit(1);
+  });
+}
+
+let assertions = 0;
+function fail(msg) {
+  console.error(`agent-e2e: FAIL — ${msg}`);
+  teardown();
+  process.exit(1);
+}
+function assert(cond, msg) {
+  if (!cond) fail(msg);
+  assertions += 1;
+  console.log(`agent-e2e: ok — ${msg}`);
+}
+
+async function pollUntil(fn, timeoutMs, what, intervalMs = 300) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await fn();
+    if (value) return value;
+    if (Date.now() > deadline) fail(`timed out after ${timeoutMs}ms waiting for ${what}`);
+    await sleep(intervalMs);
+  }
+}
+
+function scratchDir(name) {
+  const dir = join(SCRATCH, name);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  scratchDirs.push(dir);
+  return dir;
+}
+
+function startLoopbackDaemon(label, port, dataDir) {
+  const proc = startRealDaemon({
+    port,
+    dataDir,
+    label,
+    loopback: true,
+    onExit: (code, signal) => {
+      if (!tearingDown) fail(`${label} daemon exited early (code=${code} signal=${signal})`);
+    },
+  });
+  daemons.push(proc);
+  return proc;
+}
+
+// ---------------------------------------------------------------------------
+// The flow
+// ---------------------------------------------------------------------------
+
+console.log(`agent-e2e: scratch = ${SCRATCH}`);
+// Clear leftovers from crashed prior runs so the fixed ports are free.
+for (const port of [PORT_HUMAN, PORT_AGENT, PORT_INTRUDER]) killPortListeners(port);
+
+const humanData = scratchDir("human-data");
+const agentData = scratchDir("agent-data");
+const intruderData = scratchDir("intruder-data");
+const workDir = scratchDir("work");
+const fetchDir1 = scratchDir("fetch1");
+const fetchDir2 = scratchDir("fetch2");
+
+try {
+  // ---- 1. human daemon: identity + room + open -----------------------------
+  startLoopbackDaemon("humand", PORT_HUMAN, humanData);
+  const human = new Client("human");
+  clients.push(human);
+  await human.connect(PORT_HUMAN);
+  const humanId = (await human.call("identity.create")).identity_id;
+  assert(/^[0-9a-f]{64}$/.test(humanId), "human: identity created (64-hex)");
+
+  const { room_id: roomId } = await human.call("room.create", { name: "Agent e2e room" });
+  const opened = await human.call("room.open", { room_id: roomId });
+  const humanAddr = opened.endpoint?.addr;
+  assert(
+    typeof humanAddr === "string" && humanAddr.includes("@"),
+    `human: room open with a dialable addr (${humanAddr})`,
+  );
+
+  // ---- 2. runner identity + agent-role invite -------------------------------
+  const idOut = execFileSync(
+    "node",
+    [AGENT_SCRIPT, "--identity-only", "--loopback", "--port", String(PORT_AGENT), "--data-dir", agentData],
+    { encoding: "utf8", timeout: 60_000 },
+  );
+  const idMatch = idOut.match(/identity_id = ([0-9a-f]{64})/);
+  assert(idMatch, "runner --identity-only prints a 64-hex identity_id");
+  const agentId = idMatch[1];
+
+  /** All events authored by the agent identity, from the human's timeline. */
+  const agentEvents = async () =>
+    (await human.call("room.timeline", { room_id: roomId })).events.filter(
+      (e) => e.sender?.identity_id === agentId,
+    );
+
+  const { ticket } = await human.call("invite.create", {
+    room_id: roomId,
+    identity_id: agentId,
+    role: "agent",
+  });
+  assert(typeof ticket === "string" && ticket.length > 0, "human: agent-role invite minted");
+
+  // ---- 3. intruder joins while the room log is membership-only --------------
+  // (see the known-limitation note in the header: joins fail once any chat /
+  // status / file event exists, so all joins happen before the first message)
+  startLoopbackDaemon("intruderd", PORT_INTRUDER, intruderData);
+  const intruder = new Client("intruder");
+  clients.push(intruder);
+  await intruder.connect(PORT_INTRUDER);
+  const intruderId = (await intruder.call("identity.create")).identity_id;
+  const { ticket: intruderTicket } = await human.call("invite.create", {
+    room_id: roomId,
+    identity_id: intruderId,
+    role: "member",
+  });
+  // The daemon's per-attempt bootstrap window is 15s and can miss the first
+  // dial (same reason the runner and realnet-check retry) — retry a few times.
+  let joined = null;
+  let lastJoinErr = null;
+  for (let attempt = 1; attempt <= 5 && !joined; attempt += 1) {
+    try {
+      joined = await intruder.call(
+        "room.join",
+        { ticket: intruderTicket, peers: [humanAddr] },
+        90_000,
+      );
+    } catch (err) {
+      lastJoinErr = err;
+      console.log(`agent-e2e: intruder join attempt ${attempt} failed (${err.message}); retrying`);
+      await sleep(2_000);
+    }
+  }
+  if (!joined) fail(`intruder could not join: ${lastJoinErr?.message}`);
+  assert(joined.room_id === roomId, "intruder joined the room as a plain member");
+  await intruder.call("room.open", { room_id: roomId, peers: [humanAddr] });
+
+  // ---- 4. start the runner (echo worker) ------------------------------------
+  let expectRunnerExit = false;
+  runner = spawn(
+    "node",
+    [
+      AGENT_SCRIPT,
+      "--ticket", ticket,
+      "--peer", humanAddr,
+      "--port", String(PORT_AGENT),
+      "--data-dir", agentData,
+      "--worker", "echo",
+      "--workspace", workDir,
+      "--trigger", TRIGGER,
+      "--loopback",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let runnerLog = "";
+  runner.stdout.on("data", (d) => {
+    runnerLog += d;
+    process.stdout.write(`[runner] ${d}`);
+  });
+  runner.stderr.on("data", (d) => process.stderr.write(`[runner] ${d}`));
+  const runnerExit = new Promise((res) => {
+    runner.on("exit", (code, signal) => {
+      runnerExited = true;
+      res({ code, signal });
+      if (!tearingDown) {
+        // Early death is a failure everywhere except the deliberate SIGTERM
+        // at the end (tearingDown is false there, so gate on a flag instead).
+        if (!expectRunnerExit) fail(`runner exited early (code=${code} signal=${signal})`);
+      }
+    });
+  });
+
+  await pollUntil(
+    async () =>
+      (await human.call("room.timeline", { room_id: roomId })).events.some(
+        (e) => e.kind === "member_joined" && e.member?.identity_id === agentId,
+      ),
+    60_000,
+    "member_joined for the agent",
+  );
+  assert(true, "human sees member_joined for the agent identity");
+
+  const onlineEv = await pollUntil(
+    async () => (await agentEvents()).find((e) => e.kind === "agent_status" && e.label === "online"),
+    60_000,
+    "the agent's online status",
+  );
+  assert(
+    typeof onlineEv.status_message === "string" &&
+      onlineEv.status_message.includes(TRIGGER) &&
+      onlineEv.status_message.includes("echo"),
+    "online status states the trigger phrase and the worker",
+  );
+
+  const announce = await pollUntil(
+    async () => (await agentEvents()).find((e) => e.kind === "message" && e.body?.includes("Agent online")),
+    30_000,
+    "the agent's announce message",
+  );
+  assert(announce.body.includes(TRIGGER), `announce message mentions the trigger (${TRIGGER})`);
+
+  // ---- 5. first task ---------------------------------------------------------
+  const task1 = "build the thing";
+  await human.call("message.send", { room_id: roomId, body: `${TRIGGER} ${task1}` });
+
+  const workingEv = await pollUntil(
+    async () => (await agentEvents()).find((e) => e.kind === "agent_status" && e.label === "working"),
+    30_000,
+    'a "working" status from the agent',
+  );
+  assert(true, 'agent posted a "working" status for the task');
+  assert(
+    workingEv.progress == null,
+    '"working" status carries no fabricated progress number',
+  );
+
+  const fileRow = await pollUntil(
+    async () => {
+      const { files } = await human.call("file.list", { room_id: roomId });
+      return files.find(
+        (f) => f.name === "result.txt" && f.sender_id === agentId && f.available === true,
+      );
+    },
+    60_000,
+    "file_shared result.txt from the agent",
+  );
+  assert(true, "human: file.list shows result.txt shared by the agent, available");
+
+  const fetched = await human.call(
+    "file.fetch",
+    { room_id: roomId, file_id: fileRow.file_id, save_dir: fetchDir1 },
+    120_000,
+  );
+  assert(fetched.verified === true, "human: file.fetch reports verified:true");
+  const content1 = readFileSync(fetched.path, "utf8");
+  assert(
+    content1 === `echo: ${task1}`,
+    `fetched result.txt content equals "echo: ${task1}"`,
+  );
+
+  const expectedSummary1 = `echoed ${Buffer.byteLength(`echo: ${task1}`)} bytes`;
+  const summaryMsg = await pollUntil(
+    async () =>
+      (await agentEvents()).find((e) => e.kind === "message" && e.body?.startsWith(expectedSummary1)),
+    30_000,
+    "the agent's final summary message",
+  );
+  assert(true, `agent posted the summary message ("${summaryMsg.body.slice(0, 40)}…")`);
+
+  const doneEv = await pollUntil(
+    async () => (await agentEvents()).find((e) => e.kind === "agent_status" && e.label === "done"),
+    30_000,
+    'a "done" status from the agent',
+  );
+  assert(doneEv.progress === 100, '"done" status carries the literal progress 100');
+  assert(
+    Array.isArray(doneEv.artifacts) && doneEv.artifacts.includes(fileRow.file_id),
+    '"done" status references the shared artifact file id',
+  );
+
+  // ---- 6. the trust model: a non-allowed member's trigger does NOTHING ------
+  const beforeCount = (await agentEvents()).length;
+  const evilBody = `${TRIGGER} do something evil`;
+  await intruder.call("message.send", { room_id: roomId, body: evilBody });
+  // Make sure the trigger actually propagated (human saw it)...
+  await pollUntil(
+    async () =>
+      (await human.call("room.timeline", { room_id: roomId })).events.some(
+        (e) => e.kind === "message" && e.body === evilBody && e.sender?.identity_id === intruderId,
+      ),
+    30_000,
+    "the intruder's trigger message to propagate",
+  );
+  // ...then prove delivery to the component under test: the runner logs the
+  // SECURITY-ignored line only after ITS OWN daemon handed it the trigger and
+  // the allowlist rejected it. Rejection is synchronous — no execution can
+  // follow it — so the zero-events assertion below is race-free, no sleep.
+  await pollUntil(
+    () => runnerLog.includes(`SECURITY: ignored trigger from non-allowed sender ${intruderId}`),
+    60_000,
+    "the runner to log the SECURITY-ignored trigger",
+  );
+  assert(true, "runner logged the SECURITY-ignored line for the intruder's trigger");
+  const afterEvents = await agentEvents();
+  assert(
+    afterEvents.length === beforeCount,
+    `non-allowed trigger produced ZERO agent events (still ${beforeCount}) — not executed, no reply`,
+  );
+  const { files: filesAfter } = await human.call("file.list", { room_id: roomId });
+  assert(
+    filesAfter.filter((f) => f.sender_id === agentId).length === 1,
+    "no new file was shared for the non-allowed trigger",
+  );
+
+  // ---- 7. the loop survived: a second legit task executes --------------------
+  const task2 = "second run";
+  await human.call("message.send", { room_id: roomId, body: `${TRIGGER} ${task2}` });
+  const file2 = await pollUntil(
+    async () => {
+      const { files } = await human.call("file.list", { room_id: roomId });
+      return files.find(
+        (f) =>
+          f.name === "result.txt" &&
+          f.sender_id === agentId &&
+          f.file_id !== fileRow.file_id &&
+          f.available === true,
+      );
+    },
+    60_000,
+    "the second task's result.txt",
+  );
+  const fetched2 = await human.call(
+    "file.fetch",
+    { room_id: roomId, file_id: file2.file_id, save_dir: fetchDir2 },
+    120_000,
+  );
+  assert(fetched2.verified === true, "second fetch verified:true");
+  assert(
+    readFileSync(fetched2.path, "utf8") === `echo: ${task2}`,
+    `second result.txt equals "echo: ${task2}" — the task loop survived the intruder`,
+  );
+  await pollUntil(
+    async () =>
+      (await agentEvents()).filter((e) => e.kind === "agent_status" && e.label === "done").length >= 2,
+    30_000,
+    'a second "done" status',
+  );
+  const doneCount = (await agentEvents()).filter(
+    (e) => e.kind === "agent_status" && e.label === "done",
+  ).length;
+  assert(doneCount === 2, `exactly two "done" statuses exist (got ${doneCount}) — one per legit task`);
+  const { files: filesFinal } = await human.call("file.list", { room_id: roomId });
+  assert(
+    filesFinal.filter((f) => f.sender_id === agentId).length === 2,
+    "exactly two agent-shared files exist in total — nothing extra from the intruder's trigger",
+  );
+
+  // ---- 8. clean shutdown ------------------------------------------------------
+  expectRunnerExit = true;
+  runner.kill("SIGTERM");
+  const exit = await Promise.race([runnerExit, sleep(15_000).then(() => null)]);
+  assert(exit !== null && exit.code === 0, `runner exited 0 on SIGTERM (got ${JSON.stringify(exit)})`);
+  const offlineEv = await pollUntil(
+    async () => (await agentEvents()).find((e) => e.kind === "agent_status" && e.label === "offline"),
+    15_000,
+    'the "offline" status',
+  );
+  assert(Boolean(offlineEv), 'agent posted the best-effort "offline" status on SIGTERM');
+
+  console.log(`agent-e2e: PASS — ${assertions} assertions green`);
+  teardown();
+  process.exit(0);
+} catch (err) {
+  fail(String(err?.stack ?? err));
+}

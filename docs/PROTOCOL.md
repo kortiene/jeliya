@@ -127,7 +127,7 @@ present only for that kind.
 
 | Push | Data | When |
 |---|---|---|
-| `room.event` | `{ room_id, event: TimelineEvent }` | a new validated event is ingested (own or remote), exactly once per event |
+| `room.event` | `{ room_id, event: TimelineEvent }` | a new validated event is ingested (own or remote), at most once per event — a slow/lagging session may miss pushes (bounded broadcast buffer) and they are never re-sent; consumers needing completeness must re-sync via `room.timeline` |
 | `peers.changed` | `{ room_id, peers: [PeerStatus] }` | any peer connection state change |
 
 ## Honesty rules (bind the UI too)

@@ -17,7 +17,7 @@ over Iroh Rooms' signed event log. No central server holds your rooms.
 | `ui/` | The Bantaba shell: Vite + React, implements `mockups/` |
 | `docs/PROTOCOL.md` | The daemon ⇄ shell contract (the spine) |
 | `mockups/` | The original product mockups the UI is built to |
-| `scripts/` | Demo + e2e harnesses (two-daemon loopback flows) |
+| `scripts/` | Harnesses: the two-daemon loopback demo + e2e, the real-agent runner (real network stack by default — see `docs/agent-guide.md`) with its three-daemon agent e2e, and the two-machine realnet NAT scripts |
 
 ## Quickstart
 
@@ -32,6 +32,16 @@ cd ui && npm install && npm run dev
 # Full two-peer demo (two daemons, invite/join, messages, file, agent status):
 scripts/demo.sh
 ```
+
+### Real agent
+
+`scripts/bantaba-agent.mjs` joins a room as a working agent: chat messages
+starting with a trigger (default `@agent`) from allowlisted senders become
+tasks run by a worker — the `claude` CLI for real work, or a deterministic
+`echo` worker used by the proof (`node scripts/agent-e2e.mjs`). Statuses,
+artifacts and results are posted back to the room honestly. Trust model
+(this is room-driven code execution — read it) and quickstart:
+`docs/agent-guide.md`.
 
 ## Architecture
 
