@@ -17,7 +17,7 @@ reviewing an agent run, connecting a pipe.
 
 ## Product Purpose
 
-Bantaba is the product shell over the Iroh Rooms P2P runtime — the gathering
+Jeliya is the product shell over the Iroh Rooms P2P runtime — the gathering
 place where a team's chat timeline, shared files, live pipes, and agent
 statuses come together. Everything rendered is a fold over a signed event
 log; no central server holds the rooms. Success looks like a room you can
@@ -26,11 +26,13 @@ they can, and agents report what actually happened.
 
 ## Brand Personality
 
-Calm, truthful, communal. *Bantaba* is the Mandinka word for the gathering
-place under the village meeting tree — the interface is a quiet, dark room
-where work gathers, not a dashboard shouting metrics. Terminal-adjacent
-confidence (mono identifiers, dense panels, emerald signal) without terminal
-coldness: rounded surfaces, human avatars, warm status language.
+Calm, truthful, communal. *Jeliya* is the Manding word for the art of the
+jeli — the hereditary keeper of the community's true record, who speaks
+where the village gathers — and the interface holds that office: a quiet,
+dark room where work gathers and nothing is quietly rewritten, not a
+dashboard shouting metrics. Terminal-adjacent confidence (mono identifiers,
+dense panels, emerald signal) without terminal coldness: rounded surfaces,
+human avatars, warm status language.
 
 ## Anti-references
 
@@ -40,7 +42,7 @@ coldness: rounded surfaces, human avatars, warm status language.
   progress that isn't happening, silent partial file fetches. The runtime's
   honesty rules (README) forbid these outright.
 - **Crypto/web3 aesthetic**: glow-everything, gradient text, neon hexagons —
-  Bantaba is P2P but must not look like a token dashboard.
+  Jeliya is P2P but must not look like a token dashboard.
 - **Chat-app skin**: this is not a Slack/Discord clone; agents, files, and
   pipes are first-class panes, not bolted-on integrations.
 

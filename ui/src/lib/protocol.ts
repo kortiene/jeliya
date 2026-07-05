@@ -1,4 +1,4 @@
-// Wire contract between bantabad and this shell.
+// Wire contract between jeliyad and this shell.
 // Mirrors docs/PROTOCOL.md (v1) exactly — that document is binding.
 
 export type Role = 'owner' | 'member' | 'agent';

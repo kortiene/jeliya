@@ -17,7 +17,7 @@ import { loadAliases, saveAliases, suggestedNames } from './lib/names';
 import { shortId } from './lib/format';
 import { NamesContext } from './components/names';
 import type { NameApi } from './components/names';
-import { ErrorNote, HexMark, Modal } from './components/ui';
+import { ErrorNote, Modal, TreeMark, Wordmark } from './components/ui';
 import type { FetchState } from './components/ui';
 import { Onboarding } from './components/Onboarding';
 import { Sidebar } from './components/Sidebar';
@@ -37,7 +37,7 @@ type Phase = 'boot' | 'no-identity' | 'no-rooms' | 'ready';
  *  where all three columns are visible at once. */
 type MobileView = 'rooms' | 'chat' | 'agents' | 'pipes' | 'files' | 'settings';
 
-const LAST_ROOM_KEY = 'bantaba.lastRoom';
+const LAST_ROOM_KEY = 'jeliya.lastRoom';
 
 export default function App({ client }: { client: Client }) {
   const [conn, setConn] = useState<ConnectionState>(client.getState());
@@ -408,14 +408,14 @@ export default function App({ client }: { client: Client }) {
   if (phase === 'boot') {
     return (
       <div className="boot-screen">
-        <HexMark size={48} />
-        <h1>Bantaba</h1>
+        <TreeMark size={48} />
+        <Wordmark as="h1" />
         <p className="muted">
           {conn === 'connected' ? 'Syncing…' : conn === 'disconnected' ? 'Not connected.' : 'Contacting daemon…'}
         </p>
         <p className="boot-target mono">{client.describe()}</p>
         {conn === 'reconnecting' ? (
-          <p className="muted">Retrying with backoff — start <code>bantabad</code> or pass <code>?daemon=&lt;port&gt;</code>.</p>
+          <p className="muted">Retrying with backoff — start <code>jeliyad</code> or pass <code>?daemon=&lt;port&gt;</code>.</p>
         ) : null}
       </div>
     );
@@ -427,6 +427,7 @@ export default function App({ client }: { client: Client }) {
         <Onboarding
           step={phase === 'no-identity' ? 'identity' : 'rooms'}
           client={client}
+          identityId={status?.identity?.identity_id ?? null}
           onAdvance={() => setBootNonce((n) => n + 1)}
         />
       </NamesContext.Provider>

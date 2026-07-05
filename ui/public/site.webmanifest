@@ -1,0 +1,13 @@
+{
+  "name": "Jeliya",
+  "short_name": "Jeliya",
+  "description": "A private peer-to-peer workspace for humans and AI agents.",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "theme_color": "#070d10",
+  "background_color": "#070d10",
+  "display": "standalone",
+  "start_url": "/"
+}

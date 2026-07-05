@@ -2,7 +2,7 @@
 // identity_id and never leave this machine — the protocol has no display
 // names, so we never pretend otherwise.
 
-const STORAGE_KEY = 'bantaba.aliases.v1';
+const STORAGE_KEY = 'jeliya.aliases.v1';
 
 export function loadAliases(): Record<string, string> {
   try {

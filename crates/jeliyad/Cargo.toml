@@ -1,24 +1,24 @@
 [package]
-name = "bantabad"
-version = "0.2.0"
+name = "jeliyad"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Bantaba daemon: local-only WebSocket server implementing docs/PROTOCOL.md over bantaba-core"
+description = "Jeliya daemon: local-only WebSocket server implementing docs/PROTOCOL.md over jeliya-core"
 
 [[bin]]
-name = "bantabad"
+name = "jeliyad"
 path = "src/main.rs"
 
 [features]
-# Embed the built web UI (ui/dist) into the binary so a single `bantabad`
+# Embed the built web UI (ui/dist) into the binary so a single `jeliyad`
 # serves the SPA on its own loopback origin. Requires `ui/dist` to exist at
 # build time (run `npm run build` in ui/ first). Off by default so a plain
 # `cargo build` stays a lean WS-only daemon with no UI-build dependency.
 embed-ui = ["dep:rust-embed"]
 
 [dependencies]
-bantaba-core = { path = "../bantaba-core" }
+jeliya-core = { path = "../jeliya-core" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tokio-tungstenite = "0.26"

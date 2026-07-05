@@ -2,10 +2,10 @@
 
 The pinned contract between the three builders:
 
-- **Rust daemon** (`crates/bantabad` + `crates/bantaba-core`) — implements the
-  fleet read RPCs and the liveness derivation. `bantaba-core` remains the sole
+- **Rust daemon** (`crates/jeliyad` + `crates/jeliya-core`) — implements the
+  fleet read RPCs and the liveness derivation. `jeliya-core` remains the sole
   consumer of `iroh_rooms` (SDK pinned at rev `3cb9bfd`).
-- **JS runner** (`scripts/bantaba-agent.mjs`, new `scripts/bantaba-fleet.mjs`)
+- **JS runner** (`scripts/jeliya-agent.mjs`, new `scripts/jeliya-fleet.mjs`)
   — implements the status-vocabulary additions and the task-claim protocol.
   Node 22 (global `WebSocket`), zero npm deps.
 - **React UI** (`ui/`) — implements the fleet dashboard behind the existing
@@ -33,7 +33,7 @@ Ground rules that bind every section below:
 
 The runner posts plain `status.post` events with these labels. Two labels are
 **reserved** by this contract (`claiming`, and `idle` as the post-task state);
-the rest already exist in `bantaba-agent.mjs`:
+the rest already exist in `jeliya-agent.mjs`:
 
 | Label | When the runner posts it | Class |
 |---|---|---|
@@ -150,7 +150,7 @@ gossiped — no coordinator, no clock comparison.
 ### 2.3 Runner protocol
 
 On an allowed, fresh, non-busy trigger (all existing checks in
-`bantaba-agent.mjs` — allowlist, staleness, `current` busy gate — run first
+`jeliya-agent.mjs` — allowlist, staleness, `current` busy gate — run first
 and unchanged):
 
 1. **Address filter (§2.4).** If the trigger is addressed to a different
@@ -202,7 +202,7 @@ word-boundary rule (`matchesTrigger`): the addressed form is
 
 ## 3. Fleet read RPCs (daemon; pure reads, no SDK change)
 
-Two new WS methods in `bantabad`'s dispatch. Both are **pure reads** over the
+Two new WS methods in `jeliyad`'s dispatch. Both are **pure reads** over the
 existing folds (`room_event_ids` → `validate_wire_bytes` → materialize) and
 live session state (`peer_state` / `peer_entries`) — they author nothing,
 open no room, and invent no counts. Full rows in `docs/PROTOCOL.md`.
@@ -285,10 +285,10 @@ identity; an identity with no statuses returns `{ "points": [] }`.
 
 ---
 
-## 4. Fleet config schema (`scripts/bantaba-fleet.mjs`)
+## 4. Fleet config schema (`scripts/jeliya-fleet.mjs`)
 
-A supervisor script that spawns several `bantaba-agent.mjs` runners from one
-JSON file (`node scripts/bantaba-fleet.mjs --config fleet.json`). It only
+A supervisor script that spawns several `jeliya-agent.mjs` runners from one
+JSON file (`node scripts/jeliya-fleet.mjs --config fleet.json`). It only
 spawns/monitors child processes and prefixes their logs; all room logic stays
 in the runner.
 
@@ -303,7 +303,7 @@ in the runner.
       "worker": "claude",
       "trigger": "@agent",
       "allow_sender": ["…64-hex…"],
-      "data_dir": ".bantaba-agent-builder-1",
+      "data_dir": ".jeliya-agent-builder-1",
       "port": 7481,
       "loopback": false
     }
@@ -369,11 +369,11 @@ those two results.
 **Add Agent** flow (security boundary — keep it):
 
 1. User picks a room they own and pastes the agent's `identity_id` (obtained
-   by running `bantaba-agent.mjs --identity-only` on the agent machine).
+   by running `jeliya-agent.mjs --identity-only` on the agent machine).
 2. UI calls existing `invite.create` (`role: "agent"`) and reads the room's
    dialable `addr` from `room.open`/`daemon.status`.
 3. UI shows the ticket plus a **copyable runner command**, e.g.
-   `node scripts/bantaba-agent.mjs --ticket <T> --peer <ADDR> --worker claude`.
+   `node scripts/jeliya-agent.mjs --ticket <T> --peer <ADDR> --worker claude`.
 
 The browser **never spawns processes**; the daemon gets no "spawn agent" RPC.
 Executing the command on the target machine is deliberately a human step.

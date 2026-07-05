@@ -2,21 +2,26 @@
 
 **Status: PASS (direct P2P across different networks).** 2026-07-04.
 
+> Historical note: this run predates the 2026-07-05 rename to Jeliya (see
+> `docs/naming.md`). It was executed with the pre-rename `bantabad` binary;
+> the equivalent binary today is `jeliyad`. The evidence paths below are the
+> original, pre-rename paths — kept verbatim because this is a record.
+
 Gate A is the one open risk the iroh-rooms runtime's own go/no-go memo left
 `CONDITIONAL`: real-network NAT hole-punching, "the manual two-host run has not
-[been done]." This is that run, for Bantaba's daemon on the pinned SDK.
+[been done]." This is that run, for Jeliya's daemon on the pinned SDK.
 
 ## What was measured
 
-Two `bantabad` daemons in real network mode (iroh N0 stack: public n0 relays +
-DNS discovery), on **genuinely different networks**, driven by
-`scripts/gate-a.mjs`:
+Two `bantabad` daemons (pre-rename) in real network mode (iroh N0 stack:
+public n0 relays + DNS discovery), on **genuinely different networks**,
+driven by `scripts/gate-a.mjs`:
 
 | | machine A (host) | machine B (joiner) |
 |---|---|---|
 | host | this Mac | `demo1` (Hetzner cloud VM) |
 | public IPv4 | `75.190.11.42` | `46.4.115.57` |
-| binary | `target/debug/bantabad` | shipped static `x86_64-unknown-linux-musl` |
+| binary | `target/debug/bantabad` (pre-rename) | shipped static `x86_64-unknown-linux-musl` |
 
 The orchestrator fingerprinted both public IPs and confirmed they differ
 (`status: different`) **before** certifying — a same-network run is rejected as
@@ -36,7 +41,8 @@ GATE A: PASS — direct P2P across different networks. NAT hole-punch CONFIRMED 
 ```
 
 Raw evidence (fingerprints, per-side paths, verdict) is emitted per run under
-`.bantaba-gatea/gate-a-<ts>.json`.
+`.jeliya-gatea/gate-a-<ts>.json` (this 2026-07-04 run's evidence lives at the
+pre-rename path `.bantaba-gatea/gate-a-1783173361798.json`).
 
 ## Reproduce
 

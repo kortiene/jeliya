@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Bantaba fleet supervisor: spawn several bantaba-agent.mjs runners from one
+// Jeliya fleet supervisor: spawn several jeliya-agent.mjs runners from one
 // JSON config, restart crashed runners with backoff, forward shutdown
 // signals, and log each child's liveness. Node 22+, no npm deps.
 //
 // Usage:
-//   node scripts/bantaba-fleet.mjs --config fleet.json [--max-restarts 3]
+//   node scripts/jeliya-fleet.mjs --config fleet.json [--max-restarts 3]
 //
 // Config schema (docs/agent-orchestration.md §4):
 //   {
@@ -18,7 +18,7 @@
 //         "worker": "claude" | "echo",         // required
 //         "trigger": "@agent",                 // optional (--trigger)
 //         "allow_sender": ["…64-hex…"],        // optional (--allow-sender)
-//         "data_dir": ".bantaba-agent-b1",     // required, unique per agent
+//         "data_dir": ".jeliya-agent-b1",     // required, unique per agent
 //         "port": 7481,                        // required, unique per agent
 //         "loopback": false                    // optional (--loopback)
 //       }
@@ -40,7 +40,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const AGENT_SCRIPT = join(repoRoot, "scripts", "bantaba-agent.mjs");
+const AGENT_SCRIPT = join(repoRoot, "scripts", "jeliya-agent.mjs");
 
 const DEFAULT_MAX_RESTARTS = 3; // per child, per fleet lifetime
 const BACKOFF_BASE_MS = 2_000; // restart delay: BASE * 2^(restarts-1)
@@ -57,7 +57,7 @@ function die(msg) {
 }
 
 function usage(code) {
-  console.error("usage: node scripts/bantaba-fleet.mjs --config <fleet.json> [--max-restarts N]");
+  console.error("usage: node scripts/jeliya-fleet.mjs --config <fleet.json> [--max-restarts N]");
   process.exit(code);
 }
 
@@ -185,7 +185,7 @@ log(`config OK — ${agents.length} agent(s): ${agents.map((a) => a.name).join("
 let shuttingDown = false;
 
 /**
- * A hard-killed runner cannot reap the bantabad it spawned, leaving the
+ * A hard-killed runner cannot reap the jeliyad it spawned, leaving the
  * agent's dedicated port bound and every restart failing with "Address
  * already in use". Before a restart, SIGKILL whatever still listens on that
  * port — by config contract the port belongs to this agent alone (same

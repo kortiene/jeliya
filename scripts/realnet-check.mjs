@@ -4,7 +4,7 @@
 //
 // Two phases:
 //   1. `node scripts/realnet-check.mjs --identity-only`
-//      Spawns a REAL-mode bantabad, ensures an identity, prints the
+//      Spawns a REAL-mode jeliyad, ensures an identity, prints the
 //      identity_id to hand to machine A (realnet-host.mjs --peer-identity ...).
 //   2. `node scripts/realnet-check.mjs --ticket <T> --peer <ADDR>`
 //      Joins A's room with the ticket (+ dial addr hint), opens it, and
@@ -17,7 +17,7 @@
 //      Then sends a final "realnet-check: PASS ..." message so the host can
 //      finish, and exits 0.
 //
-// Options: [--port 7432] [--data-dir .bantaba-realnet-b] [--wait-mins 15]
+// Options: [--port 7432] [--data-dir .jeliya-realnet-b] [--wait-mins 15]
 
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -40,7 +40,7 @@ import {
 
 const args = parseArgs(process.argv.slice(2));
 const PORT = Number(args.port ?? 7432);
-const DATA_DIR = resolve(String(args["data-dir"] ?? ".bantaba-realnet-b"));
+const DATA_DIR = resolve(String(args["data-dir"] ?? ".jeliya-realnet-b"));
 const WAIT_MS = Number(args["wait-mins"] ?? 15) * 60_000;
 const IDENTITY_ONLY = Boolean(args["identity-only"]);
 const TICKET = typeof args.ticket === "string" ? args.ticket : null;
@@ -112,7 +112,7 @@ try {
   console.log(`check: identity ${me.identity_id}`);
 
   // Join with the ticket + A's dial addr. The daemon's per-attempt bootstrap
-  // window is 15s (bantaba-core JOIN_TIMEOUT); across a real NAT the first
+  // window is 15s (jeliya-core JOIN_TIMEOUT); across a real NAT the first
   // dial can miss it while discovery/relay warm up, so retry a few times.
   const peers = PEER_ADDR ? [PEER_ADDR] : [];
   let roomId = null;

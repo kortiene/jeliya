@@ -11,7 +11,7 @@ import type {
 import { errorShape } from '../lib/protocol';
 import { colorForId, labelTone, prettyLabel, relTime, shortId } from '../lib/format';
 import { useNames } from './names';
-import { Avatar, CopyButton, ErrorNote, HexMark, Modal, ProgressBar, SenderName } from './ui';
+import { Avatar, CopyButton, ErrorNote, Modal, ProgressBar, SenderName, TreeMark } from './ui';
 
 // -- liveness presentation (the four §1.2 states, truthful) -------------------
 //
@@ -44,7 +44,9 @@ const LIVENESS_TONE: Record<Liveness, 'live' | 'idle' | 'warn' | 'off'> = {
 function bandFor(p: HistoryPoint): number {
   if (typeof p.progress === 'number') return Math.max(0, Math.min(100, p.progress)) / 100;
   const tone = labelTone(p.label);
-  return tone === 'red' ? 0.18 : tone === 'blue' ? 0.62 : 0.8;
+  // neutral (unknown label) sits low-mid: not a failure, but not an earned
+  // healthy band either.
+  return tone === 'red' ? 0.18 : tone === 'neutral' ? 0.45 : tone === 'blue' ? 0.62 : 0.8;
 }
 
 function Sparkline({ points, color, muted }: { points: HistoryPoint[] | null; color: string; muted: boolean }) {
@@ -326,7 +328,7 @@ function AddAgentModal({
   };
 
   const command = result
-    ? `node scripts/bantaba-agent.mjs --ticket ${result.ticket}${result.addr ? ` --peer ${result.addr}` : ''} --worker claude`
+    ? `node scripts/jeliya-agent.mjs --ticket ${result.ticket}${result.addr ? ` --peer ${result.addr}` : ''} --worker claude`
     : '';
 
   return (
@@ -361,7 +363,7 @@ function AddAgentModal({
             <input
               value={identityId}
               onChange={(e) => setIdentityId(e.target.value)}
-              placeholder="64-hex identity id (from bantaba-agent.mjs --identity-only)"
+              placeholder="64-hex identity id (from jeliya-agent.mjs --identity-only)"
               className="mono"
               spellCheck={false}
               autoFocus
@@ -389,6 +391,12 @@ function AddAgentModal({
             />
             <CopyButton text={command} label="Copy command" />
           </div>
+          <p className="muted">
+            The runner lives in the repo — clone it and run this from the checkout (no <code>npm install</code>{' '}
+            needed; Node 22+ required). Installed <code>jeliyad</code> via brew/script instead of building? Prefix
+            the command with <code>JELIYAD=&quot;$(command -v jeliyad)&quot;</code> so the runner finds it. Full guide:{' '}
+            <code>docs/agent-guide.md</code>.
+          </p>
           <div className="addr-box">
             <p className="muted">Ticket only (if you assemble the command yourself):</p>
             <div className="ticket-box">
@@ -487,7 +495,7 @@ export function FleetDashboard({
       <header className="fleet-head">
         <div className="fleet-head-top">
           <div className="fleet-title">
-            <HexMark size={26} />
+            <TreeMark size={26} />
             <h1>Agents</h1>
           </div>
           <div className="fleet-head-actions">

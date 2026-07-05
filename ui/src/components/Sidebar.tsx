@@ -1,6 +1,6 @@
 import type { ConnectionState, DaemonStatus, RoomSummary } from '../lib/protocol';
 import { colorForId, shortId } from '../lib/format';
-import { CopyButton, HexMark } from './ui';
+import { CopyButton, TreeMark, Wordmark } from './ui';
 import { useNames } from './names';
 
 const CONN_LABEL: Record<ConnectionState, string> = {
@@ -52,8 +52,8 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <HexMark size={30} />
-        <span className="brand-name">Bantaba</span>
+        <TreeMark size={30} />
+        <Wordmark className="brand-name" />
       </div>
 
       <button type="button" className="profile-card" onClick={() => onNav('settings')} title="Profile & settings">
@@ -138,7 +138,7 @@ export function Sidebar({
 
       <footer className="identity-footer">
         <span className="identity-hex" aria-hidden="true">
-          <HexMark size={22} />
+          <TreeMark size={22} />
         </span>
         <div className="identity-info">
           <span className="identity-label">P2P Identity</span>

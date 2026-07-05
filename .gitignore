@@ -1,10 +1,16 @@
 /target
 node_modules/
 ui/dist/
-.bantaba-data*/
-.bantaba-demo*/
+.jeliya-data*/
+.jeliya-demo*/
 *.log
 .DS_Store
+.jeliya-realnet*/
+.jeliya-gatea/
+
+# Legacy pre-rename local state (identity secrets, room dbs) — never commit.
+.bantaba-data*/
+.bantaba-demo*/
 .bantaba-realnet*/
 .bantaba-gatea/
 

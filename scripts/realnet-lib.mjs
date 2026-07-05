@@ -2,7 +2,7 @@
 // (realnet-host.mjs on machine A, realnet-check.mjs on machine B).
 //
 // Node 22+ only (global WebSocket, no npm deps). Everything here talks to a
-// locally spawned `bantabad` in REAL network mode (no --loopback): the SDK's
+// locally spawned `jeliyad` in REAL network mode (no --loopback): the SDK's
 // iroh N0 stack with public relays + DNS discovery.
 
 import { spawn } from "node:child_process";
@@ -11,9 +11,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// BANTABAD overrides the binary location (e.g. a shipped static binary on a
+// JELIYAD overrides the binary location (e.g. a shipped static binary on a
 // machine that never built the workspace).
-export const BINARY = process.env.BANTABAD || join(repoRoot, "target", "debug", "bantabad");
+export const BINARY = process.env.JELIYAD || join(repoRoot, "target", "debug", "jeliyad");
 
 // The tiny cross-machine protocol the two scripts agree on.
 export const HOST_HELLO = "realnet-host: hello from A";
@@ -56,7 +56,7 @@ export async function pollUntil(fn, timeoutMs, what, intervalMs = 500) {
 }
 
 /**
- * Spawn a bantabad and register teardown. Defaults to real network mode
+ * Spawn a jeliyad and register teardown. Defaults to real network mode
  * (NO --loopback), which is what the realnet scripts need; pass
  * `loopback: true` for the SDK's offline 127.0.0.1 stack (agent harness/e2e).
  * Returns the child process. The caller's data dir persists across runs on
@@ -80,7 +80,7 @@ export function startRealDaemon({ port, dataDir, label, onExit, loopback = false
   return proc;
 }
 
-/** One WebSocket JSON-RPC client against a local bantabad. */
+/** One WebSocket JSON-RPC client against a local jeliyad. */
 export class Client {
   constructor(label) {
     this.label = label;

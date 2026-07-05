@@ -1,6 +1,6 @@
-//! `bantabad` — the Bantaba daemon: a local-only WebSocket server at
+//! `jeliyad` — the Jeliya daemon: a local-only WebSocket server at
 //! `ws://127.0.0.1:<port>/ws` implementing `docs/PROTOCOL.md` over
-//! `bantaba-core` (the sole consumer of the iroh-rooms SDK).
+//! `jeliya-core` (the sole consumer of the iroh-rooms SDK).
 //!
 //! Local-only by construction: the listener binds `127.0.0.1` and nothing
 //! else — there is no flag to bind another interface, so the protocol's
@@ -20,8 +20,8 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 
-use bantaba_core::error::ErrorKind;
-use bantaba_core::supervisor::RoomSupervisor;
+use jeliya_core::error::ErrorKind;
+use jeliya_core::supervisor::RoomSupervisor;
 
 /// The daemon tick for the reconcile safety net + peer-change drain (~300ms per
 /// the protocol build notes). Since issue #83 live `room.event` pushes arrive
@@ -30,7 +30,11 @@ use bantaba_core::supervisor::RoomSupervisor;
 const PUSH_TICK: Duration = Duration::from_millis(300);
 
 #[derive(Parser, Debug)]
-#[command(name = "bantabad", version, about = "Bantaba daemon (local WebSocket, iroh-rooms core)")]
+#[command(
+    name = "jeliyad",
+    version,
+    about = "The Jeliya daemon — private peer-to-peer rooms for humans and AI agents.\nServes the app at http://127.0.0.1:7420/ (change with --port)."
+)]
 struct Args {
     /// TCP port on 127.0.0.1 to serve `http://127.0.0.1:<port>/` and `/ws`.
     #[arg(long, default_value_t = 7420)]
@@ -108,11 +112,11 @@ async fn main() {
 
     if ui.is_serving() {
         println!(
-            "bantabad on http://{addr}/  (ws://{addr}/ws)  data dir: {}",
+            "jeliyad on http://{addr}/  (ws://{addr}/ws)  data dir: {}",
             data_dir.display()
         );
     } else {
-        println!("bantabad listening on ws://{addr}/ws (data dir: {})", data_dir.display());
+        println!("jeliyad listening on ws://{addr}/ws (data dir: {})", data_dir.display());
     }
 
     tokio::spawn(push_loop(state.clone()));
@@ -144,13 +148,13 @@ async fn main() {
     }
 }
 
-/// The default per-user data directory (`~/Library/Application Support/Bantaba`,
-/// `$XDG_DATA_HOME/Bantaba`, or `%APPDATA%\Bantaba`), falling back to a
+/// The default per-user data directory (`~/Library/Application Support/Jeliya`,
+/// `$XDG_DATA_HOME/Jeliya`, or `%APPDATA%\Jeliya`), falling back to a
 /// cwd-relative dir only when no platform path is discoverable.
 fn default_data_dir() -> PathBuf {
     dirs::data_dir()
-        .map(|dir| dir.join("Bantaba"))
-        .unwrap_or_else(|| PathBuf::from("./.bantaba-data"))
+        .map(|dir| dir.join("Jeliya"))
+        .unwrap_or_else(|| PathBuf::from("./.jeliya-data"))
 }
 
 /// Bind `127.0.0.1:port`, scanning up to `tries` ports upward past a collision.

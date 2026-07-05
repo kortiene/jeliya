@@ -24,7 +24,7 @@ const PROFILE_VERSION: u32 = 1;
 const SEED_LEN: usize = 32;
 /// Display name recorded in the profile — the daemon protocol has no name
 /// parameter on `identity.create`, so a fixed local default is used.
-const DEFAULT_NAME: &str = "bantaba";
+const DEFAULT_NAME: &str = "jeliya";
 
 /// The public identity profile (no secret bytes; safe to serialize/log).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

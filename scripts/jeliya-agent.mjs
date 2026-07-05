@@ -1,26 +1,26 @@
 #!/usr/bin/env node
-// Bantaba real-agent harness: a room participant that does REAL work driven
+// Jeliya real-agent harness: a room participant that does REAL work driven
 // by chat messages. Node 22+ (global WebSocket), no npm deps.
 //
 // Usage:
-//   node scripts/bantaba-agent.mjs --identity-only [--port 7461] [--data-dir .bantaba-agent] [--loopback]
+//   node scripts/jeliya-agent.mjs --identity-only [--port 7461] [--data-dir .jeliya-agent] [--loopback]
 //       Spawn the daemon, ensure an identity, print the identity_id (hand it
 //       to the room owner so they can mint an agent-role invite), exit.
 //
-//   node scripts/bantaba-agent.mjs --ticket <T> --peer <ADDRS> [--room <room_id>]
-//       [--port 7461] [--data-dir .bantaba-agent] [--worker claude|echo]
+//   node scripts/jeliya-agent.mjs --ticket <T> --peer <ADDRS> [--room <room_id>]
+//       [--port 7461] [--data-dir .jeliya-agent] [--worker claude|echo]
 //       [--workspace <dir>] [--trigger @agent] [--allow-sender <64hex>]...
 //       [--max-turns 40] [--loopback]
 //       Join the room with the ticket (retrying — realnet-check pattern),
 //       open it, announce itself, then serve tasks from chat.
 //
-//   node scripts/bantaba-agent.mjs --room <room_id> [...same flags, no --ticket]
+//   node scripts/jeliya-agent.mjs --room <room_id> [...same flags, no --ticket]
 //       Rejoin mode: this identity is already a member — skip the join, just
 //       open the room and serve.
 //
 // --peer is repeatable; each value is one dialable "<endpoint_id>@<ip:port,...>"
 // string (printed by the inviter's room.open). --loopback runs the spawned
-// bantabad on the SDK's offline 127.0.0.1 stack (must match the room's other
+// jeliyad on the SDK's offline 127.0.0.1 stack (must match the room's other
 // daemons); default is the real network stack.
 //
 // =========================== TRUST MODEL ====================================
@@ -109,12 +109,12 @@ const CLAIM_TOKEN_RE = /^task:([0-9a-f]{16})(\s|$)/; // claim status_message par
 function usage(code) {
   console.error(
     "usage:\n" +
-      "  node scripts/bantaba-agent.mjs --identity-only [--port 7461] [--data-dir .bantaba-agent] [--loopback]\n" +
-      "  node scripts/bantaba-agent.mjs --ticket <T> --peer <ADDRS> [--room <room_id>]\n" +
-      "      [--port 7461] [--data-dir .bantaba-agent] [--worker claude|echo]\n" +
+      "  node scripts/jeliya-agent.mjs --identity-only [--port 7461] [--data-dir .jeliya-agent] [--loopback]\n" +
+      "  node scripts/jeliya-agent.mjs --ticket <T> --peer <ADDRS> [--room <room_id>]\n" +
+      "      [--port 7461] [--data-dir .jeliya-agent] [--worker claude|echo]\n" +
       "      [--workspace <dir>] [--trigger @agent] [--allow-sender <64hex>]...\n" +
       "      [--max-turns 40] [--loopback]\n" +
-      "  node scripts/bantaba-agent.mjs --room <room_id> [...]   (rejoin: already a member)",
+      "  node scripts/jeliya-agent.mjs --room <room_id> [...]   (rejoin: already a member)",
   );
   process.exit(code);
 }
@@ -124,7 +124,7 @@ function parseCli(argv) {
     ticket: null,
     room: null,
     port: 7461,
-    dataDir: ".bantaba-agent",
+    dataDir: ".jeliya-agent",
     // Default to the inert echo worker. Real host execution (`--worker claude`)
     // is arbitrary code/file execution for any allowlisted sender, so it must be
     // an explicit, informed opt-in — never the default a packaged shortcut or a
@@ -796,7 +796,7 @@ try {
     console.log("agent: =========== HAND THIS TO THE ROOM OWNER ===========");
     console.log(`agent: identity_id = ${me.identity_id}`);
     console.log("agent: mint an agent-role invite for this identity, then run:");
-    console.log("agent:   node scripts/bantaba-agent.mjs --ticket <T> --peer <ADDRS> [--worker claude|echo]");
+    console.log("agent:   node scripts/jeliya-agent.mjs --ticket <T> --peer <ADDRS> [--worker claude|echo]");
     console.log("agent: ===================================================");
     console.log(`agent: identity persisted in ${DATA_DIR} — re-runs reuse it`);
     client.close();
@@ -903,7 +903,7 @@ try {
   );
   log(`online — waiting for "${TRIGGER} <task>" (worker: ${cfg.worker})`);
 
-  if (!WORK_PARENT) WORK_PARENT = mkdtempSync(join(tmpdir(), "bantaba-agent-work-"));
+  if (!WORK_PARENT) WORK_PARENT = mkdtempSync(join(tmpdir(), "jeliya-agent-work-"));
   if (WORK_PARENT === DATA_DIR || isUnder(WORK_PARENT, DATA_DIR)) {
     log(
       `WARNING: workspace ${WORK_PARENT} is inside the daemon data dir — task prompts ` +

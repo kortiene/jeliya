@@ -1,5 +1,5 @@
 //! `RoomSupervisor` — the daemon's map of `room_id -> open RoomSession`, plus
-//! every room flow `bantabad` exposes over the protocol.
+//! every room flow `jeliyad` exposes over the protocol.
 //!
 //! A [`RoomSession`] owns one experimental SDK [`Node`] (one node per open
 //! room, spawned via `Node::spawn_room` exactly the way the reference CLI's
@@ -3304,7 +3304,7 @@ mod tests {
         assert!(opened["endpoint"]["endpoint_id"].is_string());
         assert_eq!(opened["timeline"][0]["kind"], "room_created");
 
-        let event_id = sup.send_message(&room_id, "hello bantaba").await.unwrap();
+        let event_id = sup.send_message(&room_id, "hello jeliya").await.unwrap();
         assert_eq!(event_id.len(), 64);
 
         // The freshly published message is pushed exactly once...
@@ -3312,7 +3312,7 @@ mod tests {
         let pushed = sup.poll_new_events(&typed_room).await.unwrap();
         assert_eq!(pushed.len(), 1);
         assert_eq!(pushed[0]["kind"], "message");
-        assert_eq!(pushed[0]["body"], "hello bantaba");
+        assert_eq!(pushed[0]["body"], "hello jeliya");
         assert!(sup.poll_new_events(&typed_room).await.unwrap().is_empty());
 
         // ...and the offline timeline read sees genesis + message in order.
@@ -3338,7 +3338,7 @@ mod tests {
         sup.open_room(&room_id, &[]).await.unwrap();
 
         let path = dir.path().join("shared.txt");
-        std::fs::write(&path, b"hello bantaba file").unwrap();
+        std::fs::write(&path, b"hello jeliya file").unwrap();
         let shared = sup
             .share_file(&room_id, path.to_str().unwrap(), None, None)
             .await

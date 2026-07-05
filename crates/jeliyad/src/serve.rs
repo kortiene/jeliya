@@ -1,4 +1,4 @@
-//! HTTP + WebSocket multiplexing for `bantabad` on one loopback port.
+//! HTTP + WebSocket multiplexing for `jeliyad` on one loopback port.
 //!
 //! A single `127.0.0.1:<port>` serves both the control channel (`/ws`, the
 //! `docs/PROTOCOL.md` WebSocket) and, when built with the `embed-ui` feature
@@ -19,8 +19,8 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 
-use bantaba_core::error::CoreError;
-use bantaba_core::supervisor::FILE_UPLOAD_MAX_BYTES;
+use jeliya_core::error::CoreError;
+use jeliya_core::supervisor::FILE_UPLOAD_MAX_BYTES;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -167,7 +167,7 @@ async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<
             return json_error(
                 StatusCode::FORBIDDEN,
                 &CoreError::invalid("cross-origin file uploads are refused")
-                    .with_hint("open Bantaba from the local daemon UI"),
+                    .with_hint("open Jeliya from the local daemon UI"),
             );
         }
     }
@@ -337,7 +337,7 @@ fn serve_static(path: &str, ui: &UiSource) -> Response<Full<Bytes>> {
     if let UiSource::None = ui {
         return text(
             StatusCode::OK,
-            "bantabad is running. No web UI is bundled in this build — start the dev UI \
+            "jeliyad is running. No web UI is bundled in this build — start the dev UI \
              (npm run dev), pass --ui-dir <path>, or use an embed-ui build. The control \
              channel is at /ws.",
         );
@@ -423,6 +423,7 @@ fn guess_mime(path: &str) -> &'static str {
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "json" | "map" => "application/json; charset=utf-8",
+        "webmanifest" => "application/manifest+json; charset=utf-8",
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",

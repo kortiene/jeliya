@@ -1,4 +1,4 @@
-// Typed WebSocket client for the bantabad protocol (docs/PROTOCOL.md).
+// Typed WebSocket client for the jeliyad protocol (docs/PROTOCOL.md).
 //
 // - request/response correlated by numeric `id`, surfaced as promises
 // - push frames (`room.event`, `peers.changed`) fan out to subscribers
@@ -68,7 +68,7 @@ export async function uploadFileToRoom(roomId: string, file: File): Promise<{ fi
     throw new RequestError({
       code: 'internal',
       message: `upload failed with HTTP ${response.status}`,
-      hint: 'is bantabad serving the local UI endpoint?',
+      hint: 'is jeliyad serving the local UI endpoint?',
     });
   }
   const envelope = payload as {
@@ -249,7 +249,7 @@ export class WsClient implements Client {
     const error = new RequestError({
       code: 'connection_lost',
       message,
-      hint: 'is bantabad running? start it, or pass ?daemon=<port>',
+      hint: 'is jeliyad running? start it, or pass ?daemon=<port>',
     });
     for (const id of this.sent) {
       const pending = this.pending.get(id);
@@ -268,7 +268,7 @@ export class WsClient implements Client {
     const error = new RequestError({
       code: 'connection_lost',
       message,
-      hint: 'is bantabad running? start it, or pass ?daemon=<port>',
+      hint: 'is jeliyad running? start it, or pass ?daemon=<port>',
     });
     for (const { id } of this.queue) {
       const pending = this.pending.get(id);

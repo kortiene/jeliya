@@ -288,7 +288,7 @@ function FilesTab({
           <div>
             <h2>Choose a file to share</h2>
             <p className="muted" id={shareHelpId}>
-              Pick a local file. Bantaba uploads it to this daemon, imports it into the room blob store, and verifies it by content hash.
+              Pick a local file. Jeliya uploads it to this daemon, imports it into the room blob store, and verifies it by content hash.
             </p>
           </div>
           <span className="file-share-badge" aria-label="Verified by content hash">
@@ -387,7 +387,7 @@ function FilesTab({
         // (the daemon excludes THIS device), so a file you shared reads as
         // not-available from your own view even though peers can fetch it. Label
         // by ownership so that is never shown as a fault. See list_files() in
-        // crates/bantaba-core/src/supervisor.rs.
+        // crates/jeliya-core/src/supervisor.rs.
         const health = file.available
           ? { tone: 'ok', text: 'Ready to fetch' }
           : mine

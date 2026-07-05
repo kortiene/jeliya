@@ -1,23 +1,23 @@
 #!/bin/sh
-# Bantaba installer (POSIX sh). Mirrors the iroh / sendme install recipe:
-# detect platform, download the matching release archive, drop `bantabad` on
+# Jeliya installer (POSIX sh). Mirrors the iroh / sendme install recipe:
+# detect platform, download the matching release archive, drop `jeliyad` on
 # PATH. This script does NOT run the binary.
 #
-# Requires a published GitHub Release with bantabad assets attached.
+# Requires a published GitHub Release with jeliyad assets attached.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/kortiene/bantaba/main/packaging/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/kortiene/jeliya/main/packaging/install.sh | sh
 #
 # Env overrides:
-#   BANTABA_VERSION=v0.1.0   pin a specific release tag (default: latest)
+#   JELIYA_VERSION=v0.1.0   pin a specific release tag (default: latest)
 #   INSTALL_DIR=/some/bin    install location (default: /usr/local/bin, else ~/.local/bin)
 set -eu
 
 # --- config -----------------------------------------------------------------
-REPO="kortiene/bantaba"
-BIN="bantabad"
+REPO="kortiene/jeliya"
+BIN="jeliyad"
 
-VERSION="${BANTABA_VERSION:-}"
+VERSION="${JELIYA_VERSION:-}"
 INSTALL_DIR="${INSTALL_DIR:-}"
 
 err() { printf 'error: %s\n' "$1" >&2; exit 1; }
@@ -67,21 +67,21 @@ esac
 TARGET="${arch_part}-${os_part}"
 
 # --- resolve version --------------------------------------------------------
-# Release assets are versioned (bantabad-<tag>-<target>.tar.gz), so the static
+# Release assets are versioned (jeliyad-<tag>-<target>.tar.gz), so the static
 # /releases/latest/download/ alias cannot name them. Resolve the latest tag via
-# the GitHub API (as sendme does) unless BANTABA_VERSION pins one.
+# the GitHub API (as sendme does) unless JELIYA_VERSION pins one.
 if [ -z "$VERSION" ]; then
   info "resolving latest release of ${REPO} ..."
   VERSION="$(fetch_stdout "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep '"tag_name"' | head -n1 | cut -d'"' -f4 || true)"
-  [ -n "$VERSION" ] || err "could not resolve latest version; set BANTABA_VERSION=vX.Y.Z to pin one"
+  [ -n "$VERSION" ] || err "could not resolve latest version; set JELIYA_VERSION=vX.Y.Z to pin one"
 fi
 
 ASSET="${BIN}-${VERSION}-${TARGET}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
 
 # --- download + extract -----------------------------------------------------
-tmp="$(mktemp -d 2>/dev/null || mktemp -d -t bantaba)"
+tmp="$(mktemp -d 2>/dev/null || mktemp -d -t jeliya)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 info "downloading ${ASSET} ..."
@@ -116,4 +116,4 @@ case ":$PATH:" in
 esac
 
 info ""
-info "next: run \`${BIN}\` -- it opens the Bantaba UI in your browser."
+info "next: run \`${BIN}\` -- it opens the Jeliya UI in your browser."

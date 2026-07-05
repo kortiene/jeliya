@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Bantaba daemon smoke test (Node 22+, global WebSocket — no npm deps).
+// Jeliya daemon smoke test (Node 22+, global WebSocket — no npm deps).
 //
-// Starts `bantabad --loopback --port 7431 --data-dir <fresh tmp dir>`, then
+// Starts `jeliyad --loopback --port 7431 --data-dir <fresh tmp dir>`, then
 // over the WebSocket protocol: daemon.status -> identity.create ->
 // room.create -> room.open -> message.send -> room.timeline, asserting the
 // timeline shows room_created + the message with the correct kinds.
 //
-// Usage: node scripts/smoke.mjs [path-to-bantabad]
-//   (default binary: target/debug/bantabad, relative to the repo root)
+// Usage: node scripts/smoke.mjs [path-to-jeliyad]
+//   (default binary: target/debug/jeliyad, relative to the repo root)
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const PORT = 7431;
 const URL = `ws://127.0.0.1:${PORT}/ws`;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const binary = process.argv[2] ?? join(repoRoot, "target", "debug", "bantabad");
+const binary = process.argv[2] ?? join(repoRoot, "target", "debug", "jeliyad");
 
 if (!existsSync(binary)) {
   console.error(`smoke: daemon binary not found at ${binary}`);
@@ -26,7 +26,7 @@ if (!existsSync(binary)) {
   process.exit(1);
 }
 
-const dataDir = mkdtempSync(join(tmpdir(), "bantaba-smoke-"));
+const dataDir = mkdtempSync(join(tmpdir(), "jeliya-smoke-"));
 console.log(`smoke: data dir ${dataDir}`);
 console.log(`smoke: starting ${binary} --loopback --port ${PORT}`);
 
@@ -163,7 +163,7 @@ try {
     "room.open timeline starts with room_created");
 
   // 5. message.send
-  r = await call("message.send", { room_id: roomId, body: "hello bantaba" });
+  r = await call("message.send", { room_id: roomId, body: "hello jeliya" });
   assert(r.ok === true, "message.send responds ok");
   assert(/^[0-9a-f]{64}$/.test(r.result.event_id), "message event_id is 64-hex");
 
@@ -174,7 +174,7 @@ try {
   assert(kinds[0] === "room_created", "timeline[0] is room_created");
   assert(kinds.includes("message"), "timeline includes the message");
   const msg = r.result.events.find((e) => e.kind === "message");
-  assert(msg.body === "hello bantaba", "message body round-trips");
+  assert(msg.body === "hello jeliya", "message body round-trips");
   assert(msg.sender && /^[0-9a-f]{64}$/.test(msg.sender.identity_id),
     "message sender is attributed");
 

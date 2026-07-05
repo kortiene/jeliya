@@ -1,6 +1,8 @@
 # Signing and notarization plan (Phase 2)
 
-Bantaba `v0.1.0` binaries are intentionally unsigned. The `curl | sh` and
+Release binaries to date are intentionally unsigned (`v0.1.0`/`v0.2.0` were
+released under the project's former name Bantaba — see `docs/naming.md`).
+The `curl | sh` and
 Homebrew paths install cleanly because they do not set the macOS quarantine bit,
 but browser downloads can still trip Gatekeeper on macOS and SmartScreen on
 Windows. This document tracks the work needed to ship signed desktop binaries.
@@ -36,8 +38,8 @@ Suggested GitHub secrets:
 Workflow outline:
 
 1. Import the Developer ID certificate into a temporary keychain on macOS jobs.
-2. Build `bantabad` with `embed-ui` as today.
-3. `codesign --timestamp --options runtime --sign "Developer ID Application: ..." bantabad`.
+2. Build `jeliyad` with `embed-ui` as today.
+3. `codesign --timestamp --options runtime --sign "Developer ID Application: ..." jeliyad`.
 4. Package the signed binary into the `.tar.gz` asset.
 5. Submit the archive or a zipped staging bundle with `xcrun notarytool submit --wait`.
 6. Keep `.sha256` sidecars over the final signed/notarized asset bytes.
@@ -70,15 +72,15 @@ Suggested GitHub secrets for `.pfx` mode:
 Workflow outline:
 
 1. Import the certificate in the Windows release job.
-2. Build `bantabad.exe` with `embed-ui` as today.
-3. Sign with `signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256 ... bantabad.exe`.
-4. Verify with `signtool verify /pa /v bantabad.exe`.
+2. Build `jeliyad.exe` with `embed-ui` as today.
+3. Sign with `signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256 ... jeliyad.exe`.
+4. Verify with `signtool verify /pa /v jeliyad.exe`.
 5. Zip the signed executable and generate `.sha256` from final bytes.
 
 ## Acceptance checklist
 
 - macOS `spctl --assess` / `codesign --verify --deep --strict` passes for signed artifacts.
-- Windows `signtool verify /pa /v` passes for `bantabad.exe`.
+- Windows `signtool verify /pa /v` passes for `jeliyad.exe`.
 - Release artifacts remain named exactly as installers expect.
 - Installer smoke tests still pass for macOS/Linux and PowerShell.
 - Signing failures fail closed: no unsigned artifact is uploaded from a signing-enabled job.

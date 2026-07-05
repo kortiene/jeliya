@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Bantaba demo orchestrator (Node 22+, global WebSocket, no npm deps).
+// Jeliya demo orchestrator (Node 22+, global WebSocket, no npm deps).
 //
 // Drives the developer demo against an already-running human daemon
 // (default ws://127.0.0.1:7420/ws):
 //   1. ensures the human daemon has an identity and the demo room, open
-//   2. spawns a second `bantabad` (the agent daemon) on --agent-port
+//   2. spawns a second `jeliyad` (the agent daemon) on --agent-port
 //   3. invites the agent identity (role agent) and joins it to the room
 //   4. posts periodic agent.status updates (plus an occasional message)
 //      until Ctrl-C
 //
 // Usage: node scripts/demo-agent.mjs [--human-port 7420] [--agent-port 7421]
-//                                    [--agent-data-dir .bantaba-demo/agent]
+//                                    [--agent-data-dir .jeliya-demo/agent]
 
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -18,7 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const BINARY = join(repoRoot, "target", "debug", "bantabad");
+const BINARY = join(repoRoot, "target", "debug", "jeliyad");
 const ROOM_NAME = "Build Iroh Rooms MVP";
 
 function arg(name, fallback) {
@@ -27,7 +27,7 @@ function arg(name, fallback) {
 }
 const HUMAN_PORT = Number(arg("human-port", "7420"));
 const AGENT_PORT = Number(arg("agent-port", "7421"));
-const AGENT_DIR = resolve(repoRoot, arg("agent-data-dir", ".bantaba-demo/agent"));
+const AGENT_DIR = resolve(repoRoot, arg("agent-data-dir", ".jeliya-demo/agent"));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

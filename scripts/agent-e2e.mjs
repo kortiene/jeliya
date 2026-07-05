@@ -4,7 +4,7 @@
 //
 // Topology:
 //   - human daemon   : port 7462, spawned here (loopback)
-//   - agent daemon   : port 7463, spawned BY the runner (scripts/bantaba-agent.mjs)
+//   - agent daemon   : port 7463, spawned BY the runner (scripts/jeliya-agent.mjs)
 //   - intruder daemon: port 7464, spawned here (loopback) — a room member NOT
 //     on the agent's allowlist, used to prove the trust model
 //
@@ -33,7 +33,7 @@
 // room.join only bootstraps into a room whose event log is membership-only.
 // Once any message / agent_status / file_shared event exists, every later
 // join times out with peer_unreachable ("could not reach the room admin...").
-// That is a bantaba-core/SDK join-bootstrap bug, out of scope here (crates/
+// That is a jeliya-core/SDK join-bootstrap bug, out of scope here (crates/
 // untouched) — this flow therefore performs ALL joins before the first chat
 // message, which is also the operational guidance in docs/agent-guide.md.
 //
@@ -48,7 +48,7 @@ import { fileURLToPath } from "node:url";
 import { Client, parseArgs, sleep, startRealDaemon } from "./realnet-lib.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const AGENT_SCRIPT = join(repoRoot, "scripts", "bantaba-agent.mjs");
+const AGENT_SCRIPT = join(repoRoot, "scripts", "jeliya-agent.mjs");
 
 const PORT_HUMAN = 7462;
 const PORT_AGENT = 7463;
@@ -58,7 +58,7 @@ const TRIGGER = "@agent";
 const args = parseArgs(process.argv.slice(2));
 const SCRATCH = typeof args.scratch === "string"
   ? resolve(args.scratch)
-  : mkdtempSync(join(tmpdir(), "bantaba-agent-e2e-"));
+  : mkdtempSync(join(tmpdir(), "jeliya-agent-e2e-"));
 
 // ---------------------------------------------------------------------------
 // Teardown discipline: everything spawned/created is registered and torn down

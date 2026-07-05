@@ -4,8 +4,8 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use bantaba_core::error::{CoreError, CoreResult};
-use bantaba_core::{identity, supervisor::RoomSupervisor};
+use jeliya_core::error::{CoreError, CoreResult};
+use jeliya_core::{identity, supervisor::RoomSupervisor};
 
 use crate::AppState;
 

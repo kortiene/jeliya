@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Jeliya meeting-tree mark, 16px-legible variant: canopy + trunk + one
+       gathered peer. Flat single accent on the ground tile — no gradients. -->
+  <rect width="32" height="32" rx="7" fill="#070d10"/>
+  <path d="M8.5 15.5 A7.5 7.5 0 0 1 23.5 15.5" fill="none" stroke="#2fd6a4" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M16 14 V21.5" fill="none" stroke="#2fd6a4" stroke-width="2.6" stroke-linecap="round"/>
+  <circle cx="16" cy="25.5" r="2" fill="#2fd6a4"/>
+</svg>

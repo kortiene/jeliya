@@ -1,5 +1,5 @@
 ---
-name: Bantaba
+name: Jeliya
 description: Private P2P workspace shell for humans and AI agents — dark teal-black ground, one emerald voice
 colors:
   ground: "#070d10"
@@ -111,15 +111,17 @@ components:
     padding: "16px 18px"
 ---
 
-# Design System: Bantaba
+# Design System: Jeliya
 
 ## 1. Overview
 
 **Creative North Star: "The Meeting Tree"**
 
-*Bantaba* is the Mandinka word for the gathering place under the village
-meeting tree, and the interface holds that posture: a quiet, dark room where
-a team's work — humans and AI agents together — gathers and stays legible.
+*Jeliya* is the Manding word for the art of the jeli — the keeper of the
+community's true record, who speaks where the village gathers under the
+meeting tree — and the interface holds that posture: a quiet, dark room where
+a team's work — humans and AI agents together — gathers, stays legible, and
+is never quietly rewritten.
 The ground is a near-black teal (#070d10), surfaces step up through four
 close-set tonal layers, and a single emerald voice (#2fd6a4) marks what is
 actively alive: the primary action, the current selection, a healthy peer, a
@@ -128,8 +130,8 @@ running agent. Everything else stays calm so the few signals read instantly.
 This is a **product** surface: design serves the task. The vocabulary is
 earned familiarity — standard buttons, tabs with a 2px underline, pill
 chips, dense bordered cards — executed with terminal-adjacent confidence:
-mono identifiers, hexagonal avatars and marks (the brand's one geometric
-signature), truthful status language. The system explicitly rejects generic
+mono identifiers, the flat meeting-tree brand mark, hexagonal identity
+avatars, truthful status language. The system explicitly rejects generic
 SaaS dashboard slop, fake-state UI, the crypto/web3 glow aesthetic, and the
 Slack/Discord chat-app skin (see PRODUCT.md anti-references).
 
@@ -138,7 +140,8 @@ Slack/Discord chat-app skin (see PRODUCT.md anti-references).
 - One emerald accent reserved for actions, selection, and live/healthy state
 - Truthful status hues: amber = degraded, red = failed, blue = waiting — always dot + label, never color alone
 - System sans at a fixed px scale; mono strictly for machine truth (ids, addresses, error codes)
-- Hexagons as the single brand motif (logo, avatars, agent marks)
+- The meeting-tree mark as the brand motif; hexagonal clip avatars as the
+  identity signature for people and agents
 - Motion is minimal and state-bound; WCAG 2.1 AA is the enforced floor
 
 ## 2. Colors
@@ -151,8 +154,7 @@ truthful status hues.
   glyph, selected-tab underline, focus ring, live dots, verified checks, the
   P2P badge. Used as tint fills at 12% alpha (`--accent-dim`) and borders at
   40% alpha (`--accent-line`) — never as a solid button fill.
-- **Deep Emerald** (#1fb4a8): gradient partner in the progress fill and the
-  HexMark logo only.
+- **Deep Emerald** (#1fb4a8): gradient partner in the progress fill only.
 
 ### Secondary
 - **Amber** (#f5b453): degraded-but-working — reconnecting, relay path,
@@ -286,11 +288,14 @@ spinners with text.
 - **Mobile tab bar:** fixed 58px bottom bar, five glyph+label tabs, active =
   emerald text, `aria-current="page"`
 
-### Hexagonal Identity Marks (signature)
-The hexagon is the one brand motif: the HexMark logo (the only sanctioned
-gradient, emerald→deep emerald), clip-path hexagonal avatars tinted by a
-6-color identity hash at ~15% alpha, and fleet agent marks. Nothing else in
-the system is hexagonal, and nothing else gets a gradient.
+### Identity Marks (signature)
+The brand mark is the flat single-accent meeting tree (`TreeMark` — see
+"Brand mark & wordmark" below); it carries no gradient. Clip-path hexagonal
+avatars tinted by a 6-color identity hash at ~15% alpha remain the identity
+signature for people and agents — flat clips, never glowing, never gradient.
+Nothing else in the system is hexagonal; the progress fill is the only
+sanctioned accent gradient (faint tonal tint washes on card surfaces are a
+separate, quieter device).
 
 ## 6. Do's and Don'ts
 
@@ -318,8 +323,9 @@ the system is hexagonal, and nothing else gets a gradient.
 - **Don't** build "fake-state UI" (PRODUCT.md): optimistic delivered checks,
   spinners implying progress that isn't happening, silent partial fetches.
 - **Don't** drift toward the "crypto/web3 aesthetic" (PRODUCT.md):
-  glow-everything, gradient text, neon hexagons — the HexMark logo is the
-  only gradient and dots the only glow.
+  glow-everything, gradient text, neon hexagons — the TreeMark brand mark is
+  a flat single-accent stroke, the progress fill is the only accent gradient,
+  and dots are the only glow.
 - **Don't** skin it like a chat app (PRODUCT.md): agents, files, and pipes
   are first-class panes, not bolted-on integrations.
 - **Don't** nest bordered cards. One card level; inner tiles sit on the
@@ -330,3 +336,28 @@ the system is hexagonal, and nothing else gets a gradient.
 - **Don't** let unbroken tokens (64-hex ids, URLs, paths) overflow: every
   surface that renders user or agent text carries truncation or
   overflow-wrap.
+
+## Brand mark & wordmark
+
+- **Mark — the meeting tree.** Canopy arc + trunk + three gathered peer-dots
+  (the community gathered under the village tree where the jeli speaks —
+  the team, humans and agents, keeping one true record), drawn flat in the single
+  accent `#2fd6a4`: round caps, no gradients, no glow, no hexagons. One
+  source of truth in the app — `TreeMark` in `ui/src/components/ui.tsx` —
+  with static twins in `ui/public/favicon.svg` (16px variant: canopy +
+  trunk + one dot) and the icon set in `ui/public/`.
+- **Wordmark.** "Jeliya" in the display stack, weight 700, letter-spacing
+  0.01em, color ink (`--text`) — **never emerald**: the mark carries the
+  accent, and a green wordmark would spend signal on decoration. In the app,
+  always via `Wordmark` (`ui/src/components/ui.tsx`); size comes from the
+  surrounding context class.
+- **Lockups.** Canonical static lockups live in `assets/banner.svg` (README)
+  and `assets/og.png` (social preview); reuse them rather than re-deriving
+  spacing per surface.
+- **Asset a11y receipts.** All text in static assets sits on `#070d10`:
+  ink 15.9:1, text-dim 7.3:1, accent 10.5:1 (AA floor is 4.5:1). Every
+  README image carries descriptive alt text. Keep both bars for any new
+  asset.
+- **Mockups are layout reference only** (`mockups/README.md`): their
+  cube/hexagon logo and multi-hue glows predate this identity and are
+  anti-references for chrome.

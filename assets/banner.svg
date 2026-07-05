@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="240" viewBox="0 0 1200 240" role="img" aria-label="Jeliya — the keeper of the true record: private peer-to-peer rooms for humans and AI agents">
+  <!-- Self-backgrounded so it renders identically on GitHub light and dark
+       themes. Flat single-accent meeting-tree mark; no gradients, no glow. -->
+  <rect width="1200" height="240" rx="14" fill="#070d10"/>
+  <g transform="translate(600 74) scale(2.6) translate(-16 -16)">
+    <path d="M7 15 A9 9 0 0 1 25 15" fill="none" stroke="#2fd6a4" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M16 13.5 V22" fill="none" stroke="#2fd6a4" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="9.5" cy="24.5" r="1.7" fill="#2fd6a4"/>
+    <circle cx="16" cy="26.5" r="1.7" fill="#2fd6a4"/>
+    <circle cx="22.5" cy="24.5" r="1.7" fill="#2fd6a4"/>
+  </g>
+  <text x="600" y="176" text-anchor="middle" font-family="Helvetica Neue, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="52" font-weight="700" letter-spacing="0.5" fill="#dcebe6">Jeliya</text>
+  <text x="600" y="212" text-anchor="middle" font-family="Helvetica Neue, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="19" fill="#8aa39d">The keeper of the true record — private peer-to-peer rooms for humans and AI agents</text>
+</svg>

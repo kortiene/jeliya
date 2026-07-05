@@ -1,6 +1,6 @@
-//! Bantaba resident core — the only crate in the project that imports the
+//! Jeliya resident core — the only crate in the project that imports the
 //! `iroh_rooms` SDK (stable tier for authoring/validation, experimental tier
-//! for the online runtime), consumed by the `bantabad` daemon.
+//! for the online runtime), consumed by the `jeliyad` daemon.
 //!
 //! Modules:
 //! * [`fleet`] — pure agent-liveness derivation (the `agents.fleet` /

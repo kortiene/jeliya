@@ -55,8 +55,8 @@ export function InviteModal({
           }}
         >
           <p className="muted">
-            Tickets are bound to one identity. Ask the invitee for their identity id (they can read it from their
-            daemon status).
+            Tickets are bound to one identity. Ask the invitee for their identity id — it is shown on their onboarding
+            screen and in their sidebar footer, with a copy button.
           </p>
           <label className="field">
             <span>Invitee identity id</span>
@@ -94,6 +94,45 @@ export function InviteModal({
           </button>
           <ErrorNote error={error} />
         </form>
+      ) : endpointAddr ? (
+        <div>
+          <p className="muted">
+            Send this one paste to the invitee — it is the ticket and your dialable address together. They paste it
+            into “Join with a ticket” and the address fills in automatically.
+          </p>
+          <div className="ticket-box">
+            <textarea
+              className="mono"
+              readOnly
+              value={`${ticket}#${endpointAddr}`}
+              rows={4}
+              aria-label="Combined invite (ticket and peer address)"
+              onFocus={(e) => e.target.select()}
+            />
+            <CopyButton text={`${ticket}#${endpointAddr}`} label="Copy invite" />
+          </div>
+          <details className="invite-advanced">
+            <summary className="muted">Send the ticket and address separately</summary>
+            <div className="ticket-box">
+              <textarea
+                className="mono"
+                readOnly
+                value={ticket}
+                rows={4}
+                aria-label="Invite ticket"
+                onFocus={(e) => e.target.select()}
+              />
+              <CopyButton text={ticket} label="Copy ticket" />
+            </div>
+            <div className="ticket-box">
+              <code className="mono addr-code">{endpointAddr}</code>
+              <CopyButton text={endpointAddr} label="Copy address" />
+            </div>
+          </details>
+          <button type="button" className="btn btn-ghost" onClick={() => setTicket(null)}>
+            <span aria-hidden="true">←</span> New invite
+          </button>
+        </div>
       ) : (
         <div>
           <p className="muted">Send this ticket to the invitee. They join with it (room.join).</p>
@@ -108,22 +147,9 @@ export function InviteModal({
             />
             <CopyButton text={ticket} label="Copy ticket" />
           </div>
-          {endpointAddr ? (
-            <div className="addr-box">
-              <p className="muted">
-                Also share your dialable address — the joiner passes it as the optional peer address to connect
-                directly:
-              </p>
-              <div className="ticket-box">
-                <code className="mono addr-code">{endpointAddr}</code>
-                <CopyButton text={endpointAddr} label="Copy address" />
-              </div>
-            </div>
-          ) : (
-            <p className="muted">
-              This daemon has not reported a dialable address — the joiner may connect via relay or discovery.
-            </p>
-          )}
+          <p className="muted">
+            This daemon has not reported a dialable address — the joiner may connect via relay or discovery.
+          </p>
           <button type="button" className="btn btn-ghost" onClick={() => setTicket(null)}>
             <span aria-hidden="true">←</span> New invite
           </button>

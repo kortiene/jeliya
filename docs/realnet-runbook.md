@@ -1,8 +1,11 @@
 # Real-network NAT runbook
 
-How to prove Bantaba works across **two different networks** — machine A (this
+> Internal operator notes — the manual procedure behind the Gate A result
+> (`docs/gate-a-result.md`). Not needed to use or contribute to Jeliya.
+
+How to prove Jeliya works across **two different networks** — machine A (this
 Mac) and machine B (any second Mac or Linux box on another network: a phone
-hotspot, an office LAN, a cloud VM). Everything runs `bantabad` in **real
+hotspot, an office LAN, a cloud VM). Everything runs `jeliyad` in **real
 network mode** (no `--loopback`): the iroh N0 stack with public n0 relays and
 DNS discovery, exactly what the SDK's CLI uses for real networking.
 
@@ -29,7 +32,7 @@ trivially report `direct` and prove nothing about NAT traversal.
 `scripts/gate-a.mjs` runs the whole test from machine A: it fingerprints both
 sides' public IPs, **refuses to certify a pass when they share one** (a
 same-NAT run cannot test hole punching), starts the host here, drives machine
-B, and prints a single Gate A verdict. It ships a static Linux `bantabad` +
+B, and prints a single Gate A verdict. It ships a static Linux `jeliyad` +
 the two scripts B needs, so a Linux B only needs **Node 22** — no Rust build.
 
 **Recommended: a cloud VM as machine B.** A VM has a public IP that A can SSH
@@ -40,7 +43,7 @@ not even have to move this Mac:
 cargo build --workspace                      # A: debug binary for the host side
 # (ship path is a static musl build; make it once:)
 rustup target add x86_64-unknown-linux-musl
-cargo zigbuild --release --target x86_64-unknown-linux-musl -p bantabad
+cargo zigbuild --release --target x86_64-unknown-linux-musl -p jeliyad
 
 node scripts/gate-a.mjs --remote user@<vm-public-ip>
 ```
@@ -65,7 +68,7 @@ node scripts/gate-a.mjs --local-dryrun
 Verdicts: `PASS` (direct path both sides — hole punch confirmed) · `PARTIAL`
 (connected across networks but via relay fallback) · `NOT A GATE A` /
 `UNVERIFIED NETWORK` (same network, or B's public IP unseen — nothing
-certified). Evidence JSON is written under `.bantaba-gatea/`.
+certified). Evidence JSON is written under `.jeliya-gatea/`.
 
 The manual, step-by-step flow below is the fallback (and what `gate-a.mjs`
 automates); use it when B is a Mac, or when you want to drive each side by hand.
@@ -94,14 +97,14 @@ This repo has no remote; distribution is a git bundle.
 On **A**:
 
 ```sh
-scripts/make-bundle.sh            # writes ./bantaba.bundle from branch main
+scripts/make-bundle.sh            # writes ./jeliya.bundle from branch main
 ```
 
-Copy `bantaba.bundle` to B (scp / AirDrop / USB). On **B**:
+Copy `jeliya.bundle` to B (scp / AirDrop / USB). On **B**:
 
 ```sh
-git clone -b main bantaba.bundle bantaba
-cd bantaba
+git clone -b main jeliya.bundle jeliya
+cd jeliya
 cargo build --workspace           # first build fetches the pinned SDK; takes a while
 ```
 
@@ -114,7 +117,7 @@ node scripts/realnet-check.mjs --identity-only
 ```
 
 This starts a real-mode daemon, creates (or reuses) B's identity in
-`.bantaba-realnet-b/`, and prints:
+`.jeliya-realnet-b/`, and prints:
 
 ```
 check: identity_id = <64 hex chars>
@@ -193,8 +196,8 @@ path and exits 0. Record both paths.
 ## Re-runs and cleanup
 
 - Re-run = repeat Steps 2 and 3 (fresh room + invite each time). Identities in
-  `.bantaba-realnet-host/` (A) and `.bantaba-realnet-b/` (B) are reused.
-- Full reset: `rm -rf .bantaba-realnet-host` on A, `rm -rf .bantaba-realnet-b`
+  `.jeliya-realnet-host/` (A) and `.jeliya-realnet-b/` (B) are reused.
+- Full reset: `rm -rf .jeliya-realnet-host` on A, `rm -rf .jeliya-realnet-b`
   on B (Step 1 must then be repeated, since B's identity changes).
 - The scripts kill their own daemons on exit (success, failure, or Ctrl-C).
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// End-to-end proof of Bantaba AGENT-FLEET orchestration (echo workers,
+// End-to-end proof of Jeliya AGENT-FLEET orchestration (echo workers,
 // loopback only — no LLM, no network beyond 127.0.0.1). Node 22+, no npm deps.
 // Reuses the realnet-lib plumbing (Client / startRealDaemon / sleep).
 //
@@ -49,7 +49,7 @@ import { fileURLToPath } from "node:url";
 import { Client, parseArgs, sleep, startRealDaemon } from "./realnet-lib.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const AGENT_SCRIPT = join(repoRoot, "scripts", "bantaba-agent.mjs");
+const AGENT_SCRIPT = join(repoRoot, "scripts", "jeliya-agent.mjs");
 
 const PORT_HUMAN = 7482;
 const PORT_AGENT1 = 7483;
@@ -60,7 +60,7 @@ const args = parseArgs(process.argv.slice(2));
 const TRIALS = Number.isInteger(Number(args.trials)) && Number(args.trials) > 0 ? Number(args.trials) : 5;
 const SCRATCH = typeof args.scratch === "string"
   ? resolve(args.scratch)
-  : mkdtempSync(join(tmpdir(), "bantaba-fleet-e2e-"));
+  : mkdtempSync(join(tmpdir(), "jeliya-fleet-e2e-"));
 
 // The double-run guard: after the first executor finishes a trial, wait this
 // long for a would-be SECOND executor to also surface before counting.

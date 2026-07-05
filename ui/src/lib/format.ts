@@ -46,13 +46,29 @@ export function prettyLabel(label: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : label;
 }
 
-/** Tone for an agent-status label: red for failures, blue for waiting, else
- *  green. Shared so the timeline chip and the Agents panel dot agree. */
-export function labelTone(label: string): 'red' | 'blue' | 'green' {
-  const l = label.toLowerCase();
+/** Tone for an agent-status label. Shared so the timeline chip and the Agents
+ *  panel dot agree.
+ *
+ *  Green is earned, never the fallback: only labels carrying a known
+ *  healthy/active token render the accent. Labels are free-form wire data —
+ *  a label this English-token contract can't read (including any non-English
+ *  label, e.g. `échec`) must render neutral, because guessing green for it
+ *  would be exactly the reassuring-but-untrue state the honesty rules forbid.
+ *  The token contract is documented in docs/agent-guide.md. */
+const GREEN_TOKENS =
+  /\b(done|working|online|ready|pass|passed|success|successful|ok|complete|completed|connected|healthy|active|running|verified|live)\b/;
+// Word-boundary tokens, not substrings: `review` must not match inside
+// `preview` (preview_ready is a success label, not a waiting one).
+const BLUE_TOKENS = /\b(await(ing)?|review(ing|ed)?|pend(ing)?)\b/;
+
+export function labelTone(label: string): 'red' | 'blue' | 'green' | 'neutral' {
+  const l = label.toLowerCase().replace(/[_-]+/g, ' ');
+  // Substrings on purpose for red: a false alarm is the honest direction to
+  // err in — never the reverse.
   if (l.includes('fail') || l.includes('error') || l.includes('block')) return 'red';
-  if (l.includes('await') || l.includes('review') || l.includes('pend')) return 'blue';
-  return 'green';
+  if (BLUE_TOKENS.test(l)) return 'blue';
+  if (GREEN_TOKENS.test(l)) return 'green';
+  return 'neutral';
 }
 
 // Must stay in sync with the corresponding tokens in styles.css.

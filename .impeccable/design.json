@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "generatedAt": "2026-07-04T00:00:00Z",
-  "title": "Design System: Bantaba",
+  "title": "Design System: Jeliya",
   "extensions": {
     "colorMeta": {
       "emerald": {
@@ -330,7 +330,7 @@
     {
       "name": "Sidebar nav + room list",
       "kind": "nav",
-      "description": "Sidebar: 272px column (232px ≤1100px), bg var(--bg-raise), border-right 1px var(--border); brand 18px 18px 14px (HexMark 30px gradient logo + 19px w700 name); profile-card r12 bg-c",
+      "description": "Sidebar: 272px column (232px ≤1100px), bg var(--bg-raise), border-right 1px var(--border); brand 18px 18px 14px (TreeMark 30px flat single-accent meeting-tree mark + 19px w700 wordmark); profile-card r12 bg-c",
       "html": "<nav class=\"ds-nav-list\">\n  <button class=\"ds-nav-item ds-active\"><span class=\"ds-nav-glyph\">▦</span><span class=\"ds-nav-label\">Rooms</span></button>\n  <button class=\"ds-nav-item\"><span class=\"ds-nav-glyph\">✦</span><span class=\"ds-nav-label\">Agents</span></button>\n  <button class=\"ds-nav-item\" disabled><span class=\"ds-nav-glyph\">✆</span><span class=\"ds-nav-label\">Calls</span><span class=\"ds-nav-soon\">Soon</span></button>\n</nav>\n<button class=\"ds-room-item ds-selected\">\n  <span class=\"ds-room-hex\" style=\"color:#2fd6a4;background:rgba(47,214,164,.12)\">⬡</span>\n  <span class=\"ds-room-info\"><strong class=\"ds-room-name\">Build Iroh Rooms MVP</strong><span class=\"ds-room-meta\">6 members · Active</span></span>\n</button>",
       "css": ".ds-nav-list{display:flex;flex-direction:column;gap:2px;padding:4px 10px 8px;border-bottom:1px solid var(--border)}\n.ds-nav-item{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:8px 10px;border-radius:10px;border:1px solid transparent;background:transparent;color:var(--text-dim);font-size:13.5px;font-family:inherit;cursor:pointer}\n.ds-nav-item:not(:disabled):hover{background:var(--bg-card);color:var(--text)}\n.ds-nav-item.ds-active{background:var(--accent-dim);border-color:var(--accent-line);color:var(--text)}\n.ds-nav-item.ds-active .ds-nav-glyph{color:var(--accent)}\n.ds-nav-item:disabled{opacity:.5;cursor:default}\n.ds-nav-glyph{width:18px;text-align:center;color:var(--text-mute);font-size:15px;flex:none}\n.ds-nav-label{flex:1}\n.ds-nav-soon{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:1px 6px;border-radius:999px;background:var(--bg-card-2);color:var(--text-mute);border:1px solid var(--border)}\n.ds-room-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 10px;border-radius:11px;border:1px solid transparent;background:transparent;font-family:inherit;cursor:pointer;color:var(--text)}\n.ds-room-item:hover{background:var(--bg-card)}\n.ds-room-item.ds-selected{background:var(--accent-dim);border-color:var(--accent-line)}\n.ds-room-hex{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border-radius:9px;font-size:18px;flex:none}\n.ds-room-info{display:flex;flex-direction:column;min-width:0;flex:1}\n.ds-room-name{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.ds-room-meta{font-size:11.5px;color:var(--text-mute)}"
     },
@@ -372,7 +372,7 @@
   ],
   "narrative": {
     "northStar": "The Meeting Tree",
-    "overview": "Bantaba is the Mandinka word for the gathering place under the village meeting tree, and the interface holds that posture: a quiet, dark room where a team's work — humans and AI agents together — gathers and stays legible. The ground is a near-black teal, surfaces step up through four close-set tonal layers, and a single emerald voice marks what is actively alive. This is a product surface: design serves the task, with earned familiarity executed in terminal-adjacent confidence — mono identifiers, hexagonal marks, truthful status language.",
+    "overview": "Jeliya is the Manding word for the art of the jeli — the keeper of the community's true record, who speaks where the village gathers under the meeting tree — and the interface holds that posture: a quiet, dark room where a team's work — humans and AI agents together — gathers and stays legible. The ground is a near-black teal, surfaces step up through four close-set tonal layers, and a single emerald voice marks what is actively alive. This is a product surface: design serves the task, with earned familiarity executed in terminal-adjacent confidence — mono identifiers, the flat meeting-tree brand mark, hexagonal identity avatars, truthful status language.",
     "keyCharacteristics": [
       "Dark teal-black tonal layering; depth by surface steps and 1px borders, not shadows",
       "One emerald accent reserved for actions, selection, and live/healthy state",
@@ -414,7 +414,7 @@
     "donts": [
       "Don't produce generic SaaS dashboard slop: cream/light defaults, purple-blue gradients, identical KPI card grids, hero-metric tiles.",
       "Don't build fake-state UI: optimistic delivered checks, spinners implying progress that isn't happening, silent partial fetches.",
-      "Don't drift toward the crypto/web3 aesthetic: glow-everything, gradient text, neon hexagons — the HexMark logo is the only gradient and dots the only glow.",
+      "Don't drift toward the crypto/web3 aesthetic: glow-everything, gradient text, neon hexagons — the TreeMark brand mark is a flat single-accent stroke, the progress fill is the only accent gradient, and dots are the only glow.",
       "Don't skin it like a chat app: agents, files, and pipes are first-class panes, not bolted-on integrations.",
       "Don't nest bordered cards. One card level; inner tiles sit on the nested surface inside flat rows.",
       "Don't use side-stripe borders, decorative glassmorphism, or display/mono fonts in UI labels.",

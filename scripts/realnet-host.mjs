@@ -2,7 +2,7 @@
 // Machine A (host) side of the cross-NAT real-network test.
 // See docs/realnet-runbook.md. Node 22+, no npm deps.
 //
-// Spawns a REAL-mode bantabad (no --loopback), ensures an identity, creates a
+// Spawns a REAL-mode jeliyad (no --loopback), ensures an identity, creates a
 // FRESH room, opens it, mints an invite bound to machine B's identity, prints
 // exactly what to paste on B, then waits and reports:
 //   - B's member_joined
@@ -12,7 +12,7 @@
 //
 // Usage:
 //   node scripts/realnet-host.mjs --peer-identity <B_IDENTITY_64HEX>
-//     [--port 7431] [--data-dir .bantaba-realnet-host]
+//     [--port 7431] [--data-dir .jeliya-realnet-host]
 //     [--room-name "Realnet NAT test"] [--wait-mins 15]
 
 import { randomBytes } from "node:crypto";
@@ -38,7 +38,7 @@ import {
 
 const args = parseArgs(process.argv.slice(2));
 const PORT = Number(args.port ?? 7431);
-const DATA_DIR = resolve(String(args["data-dir"] ?? ".bantaba-realnet-host"));
+const DATA_DIR = resolve(String(args["data-dir"] ?? ".jeliya-realnet-host"));
 const ROOM_NAME = String(args["room-name"] ?? "Realnet NAT test");
 const WAIT_MS = Number(args["wait-mins"] ?? 15) * 60_000;
 const PEER_IDENTITY = args["peer-identity"];
@@ -129,7 +129,7 @@ try {
   const payloadPath = join(DATA_DIR, PAYLOAD_NAME);
   writeFileSync(
     payloadPath,
-    Buffer.concat([Buffer.from("bantaba realnet payload\n"), randomBytes(256 * 1024)]),
+    Buffer.concat([Buffer.from("jeliya realnet payload\n"), randomBytes(256 * 1024)]),
   );
   const sharedFile = await client.call(
     "file.share",

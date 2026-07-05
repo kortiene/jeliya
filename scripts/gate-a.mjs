@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Gate A: the real-NAT hole-punching test, orchestrated from machine A (this host).
 //
-// Everything in Bantaba's P2P claims rests on Gate A: two nodes on DIFFERENT
+// Everything in Jeliya's P2P claims rests on Gate A: two nodes on DIFFERENT
 // networks connecting directly (hole-punch) or, failing that, over a relay.
 // A same-network run proves nothing — so this wrapper fingerprints both sides'
 // public IPs and REFUSES to certify a pass when they share one.
@@ -18,8 +18,8 @@
 // Options:
 //   --remote <ssh-target>   machine B, reachable by ssh (cloud VM ip, or a host alias)
 //   --remote-node <path>    node on B (default: try `node`, then ~/tools/node22/bin/node)
-//   --remote-dir <path>     working dir on B (default: ~/bantaba-gatea)
-//   --linux-bin <path>      static linux bantabad to ship (default: the musl release build)
+//   --remote-dir <path>     working dir on B (default: ~/jeliya-gatea)
+//   --linux-bin <path>      static linux jeliyad to ship (default: the musl release build)
 //   --skip-provision        B already has the binary + scripts from a prior run
 //   --manual                do not ssh; print the exact command to run on B yourself
 //   --local-dryrun          run B as a local subprocess (always same-network: machinery test)
@@ -34,19 +34,19 @@ import { parseArgs } from "./realnet-lib.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const REPO = fileURLToPath(new URL("..", import.meta.url));
-const SCRATCH = join(REPO, ".bantaba-gatea");
+const SCRATCH = join(REPO, ".jeliya-gatea");
 mkdirSync(SCRATCH, { recursive: true });
 
 const LOCAL_DRYRUN = Boolean(args["local-dryrun"]);
 const MANUAL = Boolean(args.manual);
 const REMOTE = args.remote ? String(args.remote) : null;
-const REMOTE_DIR = String(args["remote-dir"] ?? "~/bantaba-gatea");
+const REMOTE_DIR = String(args["remote-dir"] ?? "~/jeliya-gatea");
 const REMOTE_NODE = args["remote-node"] ? String(args["remote-node"]) : null;
 const LINUX_BIN = String(
-  args["linux-bin"] ?? join(REPO, "target/x86_64-unknown-linux-musl/release/bantabad"),
+  args["linux-bin"] ?? join(REPO, "target/x86_64-unknown-linux-musl/release/jeliyad"),
 );
 const WAIT_MINS = Number(args["wait-mins"] ?? 10);
-const LOCAL_BIN = join(REPO, "target/debug/bantabad");
+const LOCAL_BIN = join(REPO, "target/debug/jeliyad");
 
 const die = (msg) => { console.error(`gate-a: ${msg}`); process.exit(2); };
 if (!LOCAL_DRYRUN && !REMOTE && !MANUAL) die("need --remote <ssh-target>, --manual, or --local-dryrun. See --help header.");
@@ -100,21 +100,21 @@ function netStatus(a, b) {
 }
 
 async function provision() {
-  if (!existsSync(LINUX_BIN)) die(`${LINUX_BIN} missing — build it:\n  rustup target add x86_64-unknown-linux-musl && cargo zigbuild --release --target x86_64-unknown-linux-musl -p bantabad`);
+  if (!existsSync(LINUX_BIN)) die(`${LINUX_BIN} missing — build it:\n  rustup target add x86_64-unknown-linux-musl && cargo zigbuild --release --target x86_64-unknown-linux-musl -p jeliyad`);
   console.log(`gate-a: provisioning ${REMOTE}:${REMOTE_DIR} …`);
   const mk = await ssh(`mkdir -p ${REMOTE_DIR}/scripts`);
   if (mk.code !== 0) die(`cannot ssh/mkdir on ${REMOTE}: ${mk.err.trim()}`);
   const scp = (src, dst) => run("scp", ["-q", "-o", "BatchMode=yes", src, `${REMOTE}:${dst}`]);
   const dir = REMOTE_DIR.replace(/^~\//, "");
   for (const [src, dst] of [
-    [LINUX_BIN, `${dir}/bantabad`],
+    [LINUX_BIN, `${dir}/jeliyad`],
     [join(REPO, "scripts/realnet-lib.mjs"), `${dir}/scripts/realnet-lib.mjs`],
     [join(REPO, "scripts/realnet-check.mjs"), `${dir}/scripts/realnet-check.mjs`],
   ]) {
     const r = await scp(src, dst);
     if (r.code !== 0) die(`scp ${src} failed: ${r.err.trim()}`);
   }
-  await ssh(`chmod +x ${REMOTE_DIR}/bantabad`);
+  await ssh(`chmod +x ${REMOTE_DIR}/jeliyad`);
   // Resolve a working node on B.
   const candidates = REMOTE_NODE ? [REMOTE_NODE] : ["node", "$HOME/tools/node22/bin/node"];
   for (const c of candidates) {
@@ -134,7 +134,7 @@ async function bIdentity(remoteNode, bDir) {
     const r = await run("node", ["scripts/realnet-check.mjs", "--identity-only", "--data-dir", bDir], { onLine: (l) => process.stdout.write(`  [B] ${l}\n`) });
     return r.out.match(/identity_id = ([0-9a-f]{64})/)?.[1];
   }
-  const r = await ssh(`cd ${REMOTE_DIR} && BANTABAD=${REMOTE_DIR}/bantabad ${remoteNode} scripts/realnet-check.mjs --identity-only --data-dir ${REMOTE_DIR}/b`);
+  const r = await ssh(`cd ${REMOTE_DIR} && JELIYAD=${REMOTE_DIR}/jeliyad ${remoteNode} scripts/realnet-check.mjs --identity-only --data-dir ${REMOTE_DIR}/b`);
   process.stdout.write(r.out.replace(/^/gm, "  [B] "));
   return r.out.match(/identity_id = ([0-9a-f]{64})/)?.[1];
 }
@@ -144,7 +144,7 @@ async function bCheck(remoteNode, bDir, ticket, peer) {
   if (LOCAL_DRYRUN) {
     return run("node", ["scripts/realnet-check.mjs", "--ticket", ticket, "--peer", peer, "--data-dir", bDir, "--wait-mins", String(WAIT_MINS)], { onLine: (l) => process.stdout.write(`  [B] ${l}\n`) });
   }
-  const r = await ssh(`cd ${REMOTE_DIR} && BANTABAD=${REMOTE_DIR}/bantabad ${remoteNode} scripts/realnet-check.mjs --ticket '${ticket}' --peer '${peer}' --data-dir ${REMOTE_DIR}/b --wait-mins ${WAIT_MINS}`);
+  const r = await ssh(`cd ${REMOTE_DIR} && JELIYAD=${REMOTE_DIR}/jeliyad ${remoteNode} scripts/realnet-check.mjs --ticket '${ticket}' --peer '${peer}' --data-dir ${REMOTE_DIR}/b --wait-mins ${WAIT_MINS}`);
   process.stdout.write(r.out.replace(/^/gm, "  [B] "));
   return r;
 }

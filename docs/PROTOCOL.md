@@ -1,7 +1,7 @@
-# Bantaba daemon protocol (v1)
+# Jeliya daemon protocol (v1)
 
-The contract between `bantabad` (the resident Rust core, sole consumer of the
-`iroh-rooms` SDK) and any Bantaba shell (desktop web UI, scripts, e2e tests).
+The contract between `jeliyad` (the resident Rust core, sole consumer of the
+`iroh-rooms` SDK) and any Jeliya shell (desktop web UI, scripts, e2e tests).
 
 - Transport: **WebSocket**, JSON text frames, `ws://127.0.0.1:<port>/ws`
   (default port **7420**, `--port` to override). Local-only: the daemon binds
@@ -109,7 +109,7 @@ present only for that kind.
 | `file.fetch` | `{ room_id, file_id, save_dir? }` | `{ path, bytes, verified: true }` — errors use `file_unavailable` / `file_unauthorized` / `hash_mismatch`, never a silent partial |
 
 Browser UI upload helper: because a browser file picker cannot reveal a real
-local filesystem path, `bantabad` also serves `POST /api/files/share` on the
+local filesystem path, `jeliyad` also serves `POST /api/files/share` on the
 same loopback origin as the UI. Query params are `{ room_id, name, mime? }`; the
 request body is the raw file bytes. The endpoint rejects non-local `Origin`s,
 stages the bytes under the daemon data dir, calls the same confined

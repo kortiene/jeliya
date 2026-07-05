@@ -1,27 +1,33 @@
 import { useState } from 'react';
 import type { Client, DaemonErrorShape } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
-import { ErrorNote, HexMark } from './ui';
+import { CopyButton, ErrorNote, TreeMark, Wordmark } from './ui';
 
 /** No identity yet → create one. No rooms yet → create or join by ticket.
  *  Mirrors identity.create / room.create / room.join exactly. */
 export function Onboarding({
   step,
   client,
+  identityId,
   onAdvance,
 }: {
   step: 'identity' | 'rooms';
   client: Client;
+  identityId: string | null;
   onAdvance(): void;
 }) {
   return (
     <div className="onboarding">
       <div className="onboarding-brand">
-        <HexMark size={44} />
-        <h1>Bantaba</h1>
+        <TreeMark size={44} />
+        <Wordmark as="h1" />
         <p className="onboarding-tag">Your rooms, your data. Private by default — built for humans &amp; agents.</p>
       </div>
-      {step === 'identity' ? <IdentityStep client={client} onAdvance={onAdvance} /> : <RoomsStep client={client} onAdvance={onAdvance} />}
+      {step === 'identity' ? (
+        <IdentityStep client={client} onAdvance={onAdvance} />
+      ) : (
+        <RoomsStep client={client} identityId={identityId} onAdvance={onAdvance} />
+      )}
     </div>
   );
 }
@@ -63,7 +69,15 @@ function IdentityStep({ client, onAdvance }: { client: Client; onAdvance(): void
   );
 }
 
-function RoomsStep({ client, onAdvance }: { client: Client; onAdvance(): void }) {
+function RoomsStep({
+  client,
+  identityId,
+  onAdvance,
+}: {
+  client: Client;
+  identityId: string | null;
+  onAdvance(): void;
+}) {
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<DaemonErrorShape | null>(null);
@@ -92,9 +106,18 @@ function RoomsStep({ client, onAdvance }: { client: Client; onAdvance(): void })
     setJoining(true);
     setJoinError(null);
     try {
-      const addr = peerAddr.trim();
+      // A combined invite is `<ticket>#<peer addr>` in one paste (what the
+      // invite modal hands out). Neither part can contain `#`, so a plain
+      // split is unambiguous; an explicitly typed peer address wins.
+      let t = ticket.trim();
+      let addr = peerAddr.trim();
+      const hash = t.indexOf('#');
+      if (hash > 0) {
+        if (!addr) addr = t.slice(hash + 1).trim();
+        t = t.slice(0, hash).trim();
+      }
       await client.call('room.join', {
-        ticket: ticket.trim(),
+        ticket: t,
         ...(addr ? { peers: [addr] } : {}),
       });
       onAdvance();
@@ -106,7 +129,18 @@ function RoomsStep({ client, onAdvance }: { client: Client; onAdvance(): void })
   };
 
   return (
-    <div className="onboarding-columns">
+    <div className="onboarding-rooms">
+      {identityId ? (
+        <div className="onboarding-identity">
+          <div className="onboarding-identity-head">
+            <span className="identity-label">Your identity id</span>
+            <CopyButton text={identityId} label="Copy" ariaLabel="Copy identity ID" />
+          </div>
+          <code className="mono onboarding-identity-id">{identityId}</code>
+          <p className="muted">Being invited to a room? Send this id to the inviter first — tickets are bound to it.</p>
+        </div>
+      ) : null}
+      <div className="onboarding-columns">
       <form
         className="onboarding-card"
         onSubmit={(e) => {
@@ -139,13 +173,16 @@ function RoomsStep({ client, onAdvance }: { client: Client; onAdvance(): void })
         }}
       >
         <h2>Join with a ticket</h2>
-        <p className="muted">Paste the invite ticket you received. Add the inviter&apos;s address to dial directly.</p>
+        <p className="muted">
+          Paste the invite you received. A combined invite (<code>ticket#address</code>) fills in the peer address
+          automatically.
+        </p>
         <label className="field">
           <span>Ticket</span>
           <textarea
             value={ticket}
             onChange={(e) => setTicket(e.target.value)}
-            placeholder="roomtkt1…"
+            placeholder="roomtkt1… or roomtkt1…#<endpoint_id>@host:port"
             rows={3}
             spellCheck={false}
           />
@@ -166,6 +203,7 @@ function RoomsStep({ client, onAdvance }: { client: Client; onAdvance(): void })
         </button>
         <ErrorNote error={joinError} />
       </form>
+      </div>
     </div>
   );
 }

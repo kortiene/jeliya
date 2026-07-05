@@ -1,4 +1,4 @@
-/* Bantaba shell — hand-rolled, dark teal-black ground + emerald accent,
+/* Jeliya shell — hand-rolled, dark teal-black ground + emerald accent,
    matching mockups/desktop-room.png. */
 
 :root {
@@ -467,6 +467,12 @@ select {
   background: var(--red-dim);
 }
 
+/* Unknown labels: quiet, not green — the accent is earned, never a fallback. */
+.chip-label.tone-neutral {
+  color: var(--text-dim);
+  border-color: var(--border-strong);
+}
+
 .chip-artifact {
   color: var(--text-dim);
   background: var(--bg-card-2);
@@ -503,6 +509,11 @@ select {
 .dot-blue {
   background: var(--blue);
   box-shadow: 0 0 6px rgba(106, 168, 247, 0.7);
+}
+
+/* No glow: a glow implies a live signal, which an unknown label hasn't earned. */
+.dot-neutral {
+  background: var(--text-mute);
 }
 
 .spinner {
@@ -621,6 +632,14 @@ button.sender-name:not(:disabled):hover {
   align-items: center;
   gap: 10px;
   padding: 18px 18px 14px;
+}
+
+/* The codified wordmark: display stack, 700, 0.01em tracking, ink — never
+   emerald (the mark carries the accent). Size comes from the context class. */
+.wordmark {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--text);
 }
 
 .brand-name {
@@ -2341,6 +2360,65 @@ select {
   /* min() lets cards shrink with the container on sub-368px viewports
      instead of overflowing past the 24px page padding. */
   min-width: min(320px, 100%);
+}
+
+.onboarding-rooms {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  max-width: 880px;
+}
+
+/* The invitee's own id, surfaced before they have any room — the prescribed
+   invite flow starts with them sending it to the inviter. Real state only. */
+.onboarding-identity {
+  width: 100%;
+  padding: 14px 18px;
+  border-radius: 13px;
+  background: var(--bg-raise);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboarding-identity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.onboarding-identity-id {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.onboarding-identity .muted {
+  font-size: 12.5px;
+}
+
+.invite-advanced {
+  margin: 10px 0 14px;
+}
+
+.invite-advanced summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.invite-advanced summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.invite-advanced .ticket-box {
+  margin-top: 10px;
 }
 
 /* ---------- fleet dashboard (mockups/mobile-agents.png) ----------

@@ -1,6 +1,6 @@
 name: release
 
-# Build and publish per-target `bantabad` release binaries when a version tag
+# Build and publish per-target `jeliyad` release binaries when a version tag
 # (e.g. `v0.1.0`) is pushed.
 #
 # This workflow hardcodes no org or repo slug — it always builds the repo it
@@ -112,17 +112,17 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      - name: Build bantabad (zigbuild / musl)
+      - name: Build jeliyad (zigbuild / musl)
         if: ${{ matrix.zigbuild }}
-        run: cargo zigbuild --release -p bantabad --features embed-ui --target ${{ matrix.target }}
+        run: cargo zigbuild --release -p jeliyad --features embed-ui --target ${{ matrix.target }}
 
-      - name: Build bantabad (native)
+      - name: Build jeliyad (native)
         if: ${{ !matrix.zigbuild }}
-        run: cargo build --release -p bantabad --features embed-ui --target ${{ matrix.target }}
+        run: cargo build --release -p jeliyad --features embed-ui --target ${{ matrix.target }}
 
       # --- package: tar.gz for unix, zip for windows --------------------------
-      # Asset name: bantabad-<tag>-<target>.<ext> (e.g.
-      # bantabad-v0.1.0-x86_64-apple-darwin.tar.gz). A .sha256 sidecar is
+      # Asset name: jeliyad-<tag>-<target>.<ext> (e.g.
+      # jeliyad-v0.1.0-x86_64-apple-darwin.tar.gz). A .sha256 sidecar is
       # emitted alongside each archive to fill the Homebrew formula placeholders.
       - name: Package (tar.gz)
         if: ${{ matrix.archive == 'tar.gz' }}
@@ -130,10 +130,10 @@ jobs:
         run: |
           set -eu
           version="${GITHUB_REF_NAME}"
-          asset="bantabad-${version}-${{ matrix.target }}.tar.gz"
+          asset="jeliyad-${version}-${{ matrix.target }}.tar.gz"
           stage="$(mktemp -d)"
-          cp "target/${{ matrix.target }}/release/bantabad" "$stage/"
-          tar -czf "$asset" -C "$stage" bantabad
+          cp "target/${{ matrix.target }}/release/jeliyad" "$stage/"
+          tar -czf "$asset" -C "$stage" jeliyad
           shasum -a 256 "$asset" > "$asset.sha256"
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 
@@ -142,8 +142,8 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME
-          $asset = "bantabad-$version-${{ matrix.target }}.zip"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/bantabad.exe" -DestinationPath $asset -Force
+          $asset = "jeliyad-$version-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/jeliyad.exe" -DestinationPath $asset -Force
           ((Get-FileHash -Algorithm SHA256 $asset).Hash.ToLower() + "  $asset") | Out-File -Encoding ascii "$asset.sha256"
           "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
@@ -151,6 +151,29 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           # The tag being built (github.ref) is the Release; created if absent.
+          # The fixed body codifies the release voice (calm, truthful): what
+          # this is, how to install, the unsigned-binary caveat, and how to
+          # verify — generate_release_notes appends the changelog below it.
+          generate_release_notes: true
+          body: |
+            `jeliyad` — the Jeliya peer-to-peer daemon. One binary: serves the app at `http://127.0.0.1:7420/`, holds your data locally, syncs rooms device-to-device.
+
+            **Install**
+
+            ```sh
+            # macOS (Homebrew)
+            brew install kortiene/jeliya/jeliya
+            # macOS / Linux
+            curl -fsSL https://raw.githubusercontent.com/kortiene/jeliya/main/packaging/install.sh | sh
+            ```
+            ```powershell
+            # Windows
+            irm https://raw.githubusercontent.com/kortiene/jeliya/main/packaging/install.ps1 | iex
+            ```
+
+            **These binaries are not yet signed.** A browser-downloaded archive will be blocked by macOS Gatekeeper / Windows SmartScreen. Homebrew and the install scripts install the same bytes without the quarantine bit — prefer them.
+
+            Every archive has a `.sha256` sidecar — verify with `shasum -a 256 -c <asset>.sha256`.
           files: |
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256

@@ -1,22 +1,22 @@
 <#
-  Bantaba installer for Windows PowerShell (PowerShell 5.1+ / pwsh).
+  Jeliya installer for Windows PowerShell (PowerShell 5.1+ / pwsh).
   Detects arch, downloads the Windows release zip, expands it to a
-  user-writable dir, and puts `bantabad.exe` on your PATH. Does NOT run it.
+  user-writable dir, and puts `jeliyad.exe` on your PATH. Does NOT run it.
 
-  Requires a published GitHub Release with bantabad assets attached.
+  Requires a published GitHub Release with jeliyad assets attached.
 
   Usage (from an elevated-or-normal PowerShell):
-    irm https://raw.githubusercontent.com/kortiene/bantaba/main/packaging/install.ps1 | iex
+    irm https://raw.githubusercontent.com/kortiene/jeliya/main/packaging/install.ps1 | iex
 
   Env overrides:
-    $env:BANTABA_VERSION = 'v0.1.0'   # pin a release tag (default: latest)
+    $env:JELIYA_VERSION = 'v0.1.0'   # pin a release tag (default: latest)
 #>
 
 #Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'kortiene/bantaba'
-$Bin  = 'bantabad'
+$Repo = 'kortiene/jeliya'
+$Bin  = 'jeliyad'
 
 # --- detect arch ------------------------------------------------------------
 # Only x86_64-pc-windows-msvc is built today; arm64 Windows runs it under
@@ -33,21 +33,21 @@ switch ($archRaw) {
 
 # --- resolve version --------------------------------------------------------
 # Assets are versioned, so resolve the latest tag via the GitHub API unless
-# $env:BANTABA_VERSION pins one.
-$version = $env:BANTABA_VERSION
+# $env:JELIYA_VERSION pins one.
+$version = $env:JELIYA_VERSION
 if (-not $version) {
   Write-Host "resolving latest release of $Repo ..."
   $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
-    -Headers @{ 'User-Agent' = 'bantaba-installer' }
+    -Headers @{ 'User-Agent' = 'jeliya-installer' }
   $version = $rel.tag_name
-  if (-not $version) { throw 'could not resolve latest version; set $env:BANTABA_VERSION to pin one.' }
+  if (-not $version) { throw 'could not resolve latest version; set $env:JELIYA_VERSION to pin one.' }
 }
 
 $asset = "$Bin-$version-$target.zip"
 $url   = "https://github.com/$Repo/releases/download/$version/$asset"
 
 # --- download + expand ------------------------------------------------------
-$installDir = Join-Path $env:LOCALAPPDATA 'Programs\Bantaba'
+$installDir = Join-Path $env:LOCALAPPDATA 'Programs\Jeliya'
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) $asset
@@ -74,4 +74,4 @@ if (($userPath -split ';') -notcontains $installDir) {
 
 Write-Host ''
 Write-Host "installed $Bin $version -> $exe"
-Write-Host "next: run '$Bin' -- it opens the Bantaba UI in your browser."
+Write-Host "next: run '$Bin' -- it opens the Jeliya UI in your browser."

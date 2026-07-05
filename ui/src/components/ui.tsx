@@ -5,35 +5,37 @@ import { colorForId, formatBytes, initials } from '../lib/format';
 import { useNames } from './names';
 
 // -- brand mark ---------------------------------------------------------------
+//
+// The meeting tree: a canopy, a trunk, and three peers gathered under it —
+// the village tree where the jeli (whose art is jeliya: keeping the
+// community's true record) speaks to the gathered community. Flat
+// single-accent stroke only (PRODUCT.md forbids gradient text, glow, and
+// neon hexagons); the dots reuse the presence-dot vocabulary.
 
-let gradientSeq = 0;
-
-export function HexMark({ size = 30 }: { size?: number }) {
-  const [gid] = useState(() => `hexg-${gradientSeq++}`);
+export function TreeMark({ size = 30 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <path
-        d="M16 2.5 27.5 9v14L16 29.5 4.5 23V9L16 2.5Z"
-        stroke={`url(#${gid})`}
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M16 9.5 21.5 12.7v6.6L16 22.5l-5.5-3.2v-6.6L16 9.5Z"
-        stroke={`url(#${gid})`}
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-        opacity="0.9"
-      />
-      <path d="M16 9.5v-7M21.5 19.3l6 3.7M10.5 19.3l-6 3.7" stroke={`url(#${gid})`} strokeWidth="1.2" opacity="0.55" />
-      <defs>
-        <linearGradient id={gid} x1="4" y1="4" x2="28" y2="28" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#3ee6b0" />
-          <stop offset="1" stopColor="#1fb4a8" />
-        </linearGradient>
-      </defs>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 32 32"
+      fill="none"
+      aria-hidden="true"
+      style={{ color: 'var(--accent)' }}
+    >
+      <path d="M7 15 A9 9 0 0 1 25 15" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+      <path d="M16 13.5 V22" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+      <circle cx="9.5" cy="24.5" r="1.7" fill="currentColor" />
+      <circle cx="16" cy="26.5" r="1.7" fill="currentColor" />
+      <circle cx="22.5" cy="24.5" r="1.7" fill="currentColor" />
     </svg>
   );
+}
+
+// The wordmark: "Jeliya" in the display stack, weight 700, 0.01em tracking,
+// ink — never emerald (the mark carries the accent; a green wordmark would
+// spend signal on decoration). Size comes from the surrounding context class.
+export function Wordmark({ as: Tag = 'span', className }: { as?: 'span' | 'h1'; className?: string }) {
+  return <Tag className={className ? `wordmark ${className}` : 'wordmark'}>Jeliya</Tag>;
 }
 
 // -- avatars & names ----------------------------------------------------------

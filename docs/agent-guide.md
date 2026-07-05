@@ -1,14 +1,14 @@
-# The Bantaba real agent
+# The Jeliya real agent
 
-`scripts/bantaba-agent.mjs` turns a room into a place where an AI agent does
-real work. It spawns its own `bantabad`, joins a room by invite ticket, and
+`scripts/jeliya-agent.mjs` turns a room into a place where an AI agent does
+real work. It spawns its own `jeliyad`, joins a room by invite ticket, and
 watches chat: any message from an allowed sender that starts with the trigger
 phrase (default `@agent`) becomes a task. The task runs in a fresh workspace,
 progress is posted as honest `agent_status` events, artifacts are shared as
 room files, and the result lands back in chat.
 
-Node 22+, zero npm deps. The daemon binary is `target/debug/bantabad`
-(override with the `BANTABAD` env var, same as the realnet scripts).
+Node 22+, zero npm deps. The daemon binary is `target/debug/jeliyad`
+(override with the `JELIYAD` env var, same as the realnet scripts).
 
 ## Trust model — read this first
 
@@ -45,19 +45,27 @@ provably does nothing — no execution, no status, no reply, no file.
 
 ## Quickstart
 
+> **Installed `jeliyad` via Homebrew or the install script?** You don't need
+> to build the workspace — but the agent runner is a repo script, so you
+> still need a checkout: `git clone` the repo, skip step 0, and prefix every
+> `node scripts/jeliya-agent.mjs …` command with
+> `JELIYAD="$(command -v jeliyad)"` so the runner uses your installed daemon
+> instead of `target/debug/jeliyad`. (Node 22+ required; no `npm install`
+> needed — the scripts have no dependencies.)
+
 ```bash
 # 0. Build once
 cargo build --workspace
 
 # 1. On the agent machine: create the agent identity, note the printed id
-node scripts/bantaba-agent.mjs --identity-only
+node scripts/jeliya-agent.mjs --identity-only
 
-# 2. In the Bantaba UI (or over WS: invite.create with role "agent" and the
+# 2. In the Jeliya UI (or over WS: invite.create with role "agent" and the
 #    identity id from step 1), mint an agent-role invite and copy the ticket
 #    plus the room's dial addr shown by room.open.
 
 # 3. Run the agent for real (claude CLI must be on PATH)
-node scripts/bantaba-agent.mjs --ticket <TICKET> --peer <ID@IP:PORT,...> --worker claude
+node scripts/jeliya-agent.mjs --ticket <TICKET> --peer <ID@IP:PORT,...> --worker claude
 
 # 4. In the room chat:
 #    @agent write a haiku about NAT traversal into haiku.txt
@@ -72,7 +80,7 @@ If the agent identity is already a room member (e.g. the runner was
 restarted), skip the ticket and rejoin:
 
 ```bash
-node scripts/bantaba-agent.mjs --room <room_id> --worker claude
+node scripts/jeliya-agent.mjs --room <room_id> --worker claude
 ```
 
 > **Resolved: stale dial address after `file.share`** (upstream issue #84,
@@ -95,8 +103,8 @@ node scripts/bantaba-agent.mjs --room <room_id> --worker claude
 | `--ticket <T>` | — | Invite ticket to join with (join mode) |
 | `--peer <ADDRS>` | — | Dial addr hint `<endpoint_id>@<ip:port,...>` from the inviter's `room.open`; repeatable |
 | `--room <room_id>` | — | With `--ticket`: assert the joined room. Alone: rejoin mode (already a member — skip join, just open) |
-| `--port <n>` | `7461` | WS port for the spawned `bantabad` |
-| `--data-dir <dir>` | `.bantaba-agent` | Daemon data dir; the identity persists here across runs |
+| `--port <n>` | `7461` | WS port for the spawned `jeliyad` |
+| `--data-dir <dir>` | `.jeliya-agent` | Daemon data dir; the identity persists here across runs |
 | `--worker claude\|echo` | `claude` | `claude`: real work via the claude CLI. `echo`: deterministic test worker |
 | `--workspace <dir>` | fresh OS temp dir | Parent dir; each task gets a fresh numbered subdir. The default is deliberately OUTSIDE `--data-dir` (which holds `identity.secret`) — keep any override outside it too |
 | `--trigger <phrase>` | `@agent` | Task trigger; matched case-insensitively at the start of a message |
@@ -109,7 +117,7 @@ node scripts/bantaba-agent.mjs --room <room_id> --worker claude
 
 A worker is `async worker(task, ctx) -> { summary, artifacts }` with
 `ctx = { workspace, postStatus(label, message), log }` — see the registry in
-`scripts/bantaba-agent.mjs` to add one.
+`scripts/jeliya-agent.mjs` to add one.
 
 - **echo** — writes `result.txt` containing `echo: <task>`, posts one
   `working` status, returns `echoed <n> bytes`. Exists so the e2e proves the
@@ -145,6 +153,15 @@ These bind the agent the same way the daemon's honesty rules bind the UI:
    the text and says so.
 5. All outbound strings are truncated to the wire limits (status label 64 B,
    status message 4 KiB, message body 16 KiB) instead of erroring.
+6. **Status labels are an English-token contract for display tone.** The UI
+   colors a status chip/dot from known English tokens only (`done`, `working`,
+   `failed`, `awaiting_review`, …; see `labelTone` in `ui/src/lib/format.ts`).
+   A label it can't read — including any non-English label — renders in a
+   neutral tone, never green: the healthy color is earned, not a fallback.
+   Idle-class labels (`idle`, `offline`, `claiming`) also render neutral by
+   design — neutral is not an error state, it just isn't the earned green.
+   Liveness itself comes from the daemon's derived states (§1.2 of
+   `docs/agent-orchestration.md`), not from label color.
 
 ## Proof
 

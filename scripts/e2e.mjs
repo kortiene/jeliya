@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Bantaba two-daemon end-to-end test (Node 22+, global WebSocket, no npm deps).
+// Jeliya two-daemon end-to-end test (Node 22+, global WebSocket, no npm deps).
 //
-// Spawns TWO `bantabad` daemons (A on 7411, B on 7412, separate scratch data
+// Spawns TWO `jeliyad` daemons (A on 7411, B on 7412, separate scratch data
 // dirs) and drives the full product flow with hard assertions:
 //
 //   a. both: daemon.status + identity.create
@@ -25,7 +25,7 @@
 //     stack (iroh N0 preset: relay + DNS discovery). Same 67 assertions; the
 //     explicit dial addrs passed by the flow make same-host direct
 //     connections work even when relays are unreachable.
-//   The BANTABA_E2E_MODE env var is honored; the flag wins over the env.
+//   The JELIYA_E2E_MODE env var is honored; the flag wins over the env.
 
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -36,13 +36,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const BINARY = join(repoRoot, "target", "debug", "bantabad");
+const BINARY = join(repoRoot, "target", "debug", "jeliyad");
 const PORT_A = 7411;
 const PORT_B = 7412;
 
 /** Network mode: "loopback" (default) or "real". Flag > env > default. */
 function parseMode() {
-  let mode = process.env.BANTABA_E2E_MODE || "loopback";
+  let mode = process.env.JELIYA_E2E_MODE || "loopback";
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--mode") mode = argv[i + 1];
@@ -122,7 +122,7 @@ async function pollUntil(fn, timeoutMs, what) {
 // ---------------------------------------------------------------------------
 
 function startDaemon(label, port) {
-  const dataDir = mkdtempSync(join(tmpdir(), `bantaba-e2e-${label}-`));
+  const dataDir = mkdtempSync(join(tmpdir(), `jeliya-e2e-${label}-`));
   dataDirs.push(dataDir);
   const proc = spawn(
     BINARY,
@@ -376,7 +376,7 @@ try {
 
   // ---- e. file share + verified fetch --------------------------------------
   const fileBytes = Buffer.concat([
-    Buffer.from("bantaba e2e payload\n"),
+    Buffer.from("jeliya e2e payload\n"),
     randomBytes(128 * 1024),
   ]);
   const filePath = join(daemons[0].dataDir, "e2e-shared.bin");
@@ -441,7 +441,7 @@ try {
   );
 
   // ---- g. live pipe -----------------------------------------------------------
-  const pipeBody = `bantaba pipe demo ${randomBytes(8).toString("hex")}`;
+  const pipeBody = `jeliya pipe demo ${randomBytes(8).toString("hex")}`;
   httpServer = createServer((_req, res) => {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end(pipeBody);
