@@ -8,14 +8,19 @@
 //! Network Access prompt, and the cross-origin `Origin` guard is unchanged.
 
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::{CONTENT_TYPE, ORIGIN};
+use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, ORIGIN};
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
+use serde_json::{json, Value};
+
+use bantaba_core::error::CoreError;
+use bantaba_core::supervisor::FILE_UPLOAD_MAX_BYTES;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -90,7 +95,7 @@ pub async fn handle_conn(stream: TcpStream, state: AppState, ui: UiSource) {
     let service = service_fn(move |req: Request<Incoming>| {
         let state = state.clone();
         let ui = ui.clone();
-        async move { Ok::<_, Infallible>(route(req, state, ui)) }
+        async move { Ok::<_, Infallible>(route(req, state, ui).await) }
     });
     // `with_upgrades` is required for the WebSocket upgrade on `/ws`. A
     // connection-level error just means the client went away; nothing to do.
@@ -100,12 +105,23 @@ pub async fn handle_conn(stream: TcpStream, state: AppState, ui: UiSource) {
         .await;
 }
 
-/// Route a single request: `/ws` → WebSocket upgrade; anything else → static UI.
-fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Response<Full<Bytes>> {
-    if req.uri().path() == "/ws" {
+/// Route a single request: `/ws` → WebSocket upgrade; `/api/files/share` →
+/// local browser upload/import; anything else → static UI.
+async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Response<Full<Bytes>> {
+    let path = req.uri().path().to_owned();
+    if path == "/ws" {
         return ws_upgrade(&mut req, state);
     }
-    serve_static(req.uri().path(), &ui)
+    if path == "/api/files/share" {
+        if req.method() != Method::POST {
+            return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        }
+        return share_upload(req, state).await;
+    }
+    if path.starts_with("/api/") {
+        return text(StatusCode::NOT_FOUND, "not found");
+    }
+    serve_static(&path, &ui)
 }
 
 /// The WebSocket handshake gate, preserving the pre-hyper behavior exactly:
@@ -138,6 +154,180 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
         }
         Err(_) => text(StatusCode::BAD_REQUEST, "malformed websocket upgrade"),
     }
+}
+
+/// Browser-backed file sharing. The browser cannot reveal a real local path for
+/// a selected file, so it POSTs the file bytes to this local-only endpoint. The
+/// daemon stages those bytes under its data dir, then uses the normal confined
+/// `file.share` path so protocol authorship and blob import remain centralized.
+async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<Bytes>> {
+    if let Some(origin) = req.headers().get(ORIGIN) {
+        let allowed = origin.to_str().map(is_local_origin).unwrap_or(false);
+        if !allowed {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                &CoreError::invalid("cross-origin file uploads are refused")
+                    .with_hint("open Bantaba from the local daemon UI"),
+            );
+        }
+    }
+
+    if let Some(content_length) = req.headers().get(CONTENT_LENGTH) {
+        match content_length.to_str().ok().and_then(|v| v.parse::<u64>().ok()) {
+            Some(n) if n <= FILE_UPLOAD_MAX_BYTES => {}
+            Some(n) => {
+                return json_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &CoreError::invalid(format!(
+                        "upload is {n} bytes; the share limit is {FILE_UPLOAD_MAX_BYTES} bytes"
+                    )),
+                )
+            }
+            None => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    &CoreError::invalid("invalid Content-Length for file upload"),
+                )
+            }
+        }
+    }
+
+    let query = parse_query(req.uri().query().unwrap_or(""));
+    let Some(room_id) = query.get("room_id").filter(|v| !v.trim().is_empty()) else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            &CoreError::invalid("missing room_id for file upload"),
+        );
+    };
+    let display_name = match upload_display_name(query.get("name").map(String::as_str)) {
+        Ok(name) => name,
+        Err(err) => return json_error(StatusCode::BAD_REQUEST, &err),
+    };
+    let mime = query
+        .get("mime")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            req.headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.split(';').next().unwrap_or(value).trim().to_owned())
+                .filter(|value| !value.is_empty())
+        });
+
+    let body = match read_limited(req.into_body(), FILE_UPLOAD_MAX_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(err) => return json_error(StatusCode::PAYLOAD_TOO_LARGE, &err),
+    };
+    let stage_dir = state.data_dir.join("uploads");
+    if let Err(err) = std::fs::create_dir_all(&stage_dir) {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CoreError::internal(format!("could not create upload staging dir: {err}")),
+        );
+    }
+    let stage_path = stage_dir.join(unique_stage_name(&display_name));
+    if let Err(err) = std::fs::write(&stage_path, &body) {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CoreError::internal(format!("could not stage upload: {err}")),
+        );
+    }
+
+    let path = stage_path.to_string_lossy().to_string();
+    let result = state
+        .supervisor
+        .share_file(room_id, &path, Some(&display_name), mime.as_deref())
+        .await;
+    let _ = std::fs::remove_file(&stage_path);
+    match result {
+        Ok(value) => json_ok(value),
+        Err(err) => json_error(StatusCode::BAD_REQUEST, &err),
+    }
+}
+
+async fn read_limited(mut body: Incoming, max: u64) -> Result<Bytes, CoreError> {
+    let mut out = Vec::new();
+    let mut total = 0_u64;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| CoreError::invalid(format!("could not read upload body: {e}")))?;
+        if let Ok(data) = frame.into_data() {
+            total += data.len() as u64;
+            if total > max {
+                return Err(CoreError::invalid(format!(
+                    "upload is larger than the share limit of {max} bytes"
+                )));
+            }
+            out.extend_from_slice(&data);
+        }
+    }
+    Ok(Bytes::from(out))
+}
+
+fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
+    url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect()
+}
+
+fn upload_display_name(raw: Option<&str>) -> Result<String, CoreError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err(CoreError::invalid("missing file name for upload"));
+    };
+    let base = Path::new(raw)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(raw)
+        .trim();
+    let cleaned: String = base
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect::<String>()
+        .trim_matches(|ch| ch == '.' || ch == ' ')
+        .chars()
+        .take(180)
+        .collect();
+    if cleaned.is_empty() {
+        return Err(CoreError::invalid("file name is empty after sanitizing"));
+    }
+    Ok(cleaned)
+}
+
+fn unique_stage_name(display_name: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    format!("{}-{now}-{display_name}", std::process::id())
+}
+
+fn json_ok(result: Value) -> Response<Full<Bytes>> {
+    json_response(StatusCode::OK, json!({ "ok": true, "result": result }))
+}
+
+fn json_error(status: StatusCode, err: &CoreError) -> Response<Full<Bytes>> {
+    json_response(
+        status,
+        json!({
+            "ok": false,
+            "error": {
+                "code": err.kind.code(),
+                "message": err.message,
+                "hint": err.hint,
+            },
+        }),
+    )
+}
+
+fn json_response(status: StatusCode, body: Value) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Full::new(Bytes::from(body.to_string())))
+        .expect("json response is well-formed")
 }
 
 /// Serve a static UI asset. `/` maps to `index.html`; an unknown *route-like*

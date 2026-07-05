@@ -11,6 +11,7 @@ import type {
   RoomSummary,
   TimelineEvent,
 } from './lib/protocol';
+import { uploadFileToRoom } from './lib/client';
 import { errorShape } from './lib/protocol';
 import { loadAliases, saveAliases, suggestedNames } from './lib/names';
 import { shortId } from './lib/format';
@@ -62,7 +63,7 @@ export default function App({ client }: { client: Client }) {
 
   const [tab, setTab] = useState<PanelTab>(() => {
     const t = new URLSearchParams(window.location.search).get('tab');
-    return t === 'files' || t === 'pipes' || t === 'agents' ? t : 'agents';
+    return t === 'members' || t === 'files' || t === 'pipes' || t === 'agents' ? t : 'members';
   });
   const [mobileView, setMobileView] = useState<MobileView>('rooms');
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -294,10 +295,26 @@ export default function App({ client }: { client: Client }) {
     })();
   };
 
-  const shareFile = async (path: string) => {
+  const shareFilePath = async (path: string) => {
     const rid = roomIdRef.current;
     if (!rid) return;
     await client.call('file.share', { room_id: rid, path });
+    void refreshFiles(rid);
+  };
+
+  const shareBrowserFile = async (file: File) => {
+    const rid = roomIdRef.current;
+    if (!rid) return;
+    if (import.meta.env.VITE_MOCK === '1') {
+      await client.call('file.share', {
+        room_id: rid,
+        path: file.name || 'upload.bin',
+        name: file.name || 'upload.bin',
+        mime: file.type || undefined,
+      });
+    } else {
+      await uploadFileToRoom(rid, file);
+    }
     void refreshFiles(rid);
   };
 
@@ -365,7 +382,9 @@ export default function App({ client }: { client: Client }) {
           ? 'pipes'
           : mobileView === 'files'
             ? 'files'
-            : 'rooms';
+            : mobileView === 'chat'
+              ? 'home'
+              : 'rooms';
 
   const navigate = useCallback((key: NavKey) => {
     if (key === 'agents') {
@@ -416,7 +435,11 @@ export default function App({ client }: { client: Client }) {
 
   return (
     <NamesContext.Provider value={names}>
-      <div className={`app mv-${mobileView}${activeNav === 'agents' ? ' app-fleet' : ''}`}>
+      <div
+        className={`app mv-${mobileView}${activeNav === 'agents' ? ' app-fleet' : ''}${
+          activeNav === 'settings' ? ' app-settings' : ''
+        }`}
+      >
         {conn !== 'connected' ? (
           <div className={`conn-banner conn-${conn}`} role="status">
             {conn === 'reconnecting' || conn === 'connecting'
@@ -483,7 +506,8 @@ export default function App({ client }: { client: Client }) {
           selfId={selfId}
           fetches={fetches}
           onFetch={fetchFile}
-          onShareFile={shareFile}
+          onSharePath={shareFilePath}
+          onShareBrowserFile={shareBrowserFile}
           pipeConns={pipeConns}
           closingPipes={closingPipes}
           onPipeConnect={pipeConnect}

@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "bantaba-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "bantabad"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bantaba-core",
  "clap",
@@ -276,6 +276,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "url",
  "webbrowser",
 ]
 

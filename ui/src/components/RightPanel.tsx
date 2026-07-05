@@ -7,12 +7,123 @@ import { useNames } from './names';
 import { Avatar, ErrorNote, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
 import type { FetchState } from './ui';
 
-export type PanelTab = 'agents' | 'files' | 'pipes';
+export type PanelTab = 'members' | 'agents' | 'files' | 'pipes';
 
 export type PipeConnState =
   | { phase: 'connecting' }
   | { phase: 'connected'; local_addr: string }
   | { phase: 'error'; error: DaemonErrorShape };
+
+// -- Members -------------------------------------------------------------------
+
+function roleRank(role: Member['role']): number {
+  if (role === 'owner') return 0;
+  if (role === 'agent') return 1;
+  return 2;
+}
+
+function statusRank(status: string): number {
+  if (status === 'active') return 0;
+  if (status === 'invited') return 1;
+  if (status === 'left') return 2;
+  if (status === 'removed') return 3;
+  return 4;
+}
+
+function statusTone(status: string): 'active' | 'invited' | 'left' | 'removed' | 'unknown' {
+  if (status === 'active' || status === 'invited' || status === 'left' || status === 'removed') return status;
+  return 'unknown';
+}
+
+function displayStatus(status: string): string {
+  return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Unknown';
+}
+
+function displayRole(role: Member['role']): string {
+  return role === 'owner' ? 'Owner' : role === 'agent' ? 'Agent' : 'Member';
+}
+
+function shortMemberId(id: string): string {
+  return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
+}
+
+function MembersTab({ members, selfId }: { members: Member[]; selfId: string | null }) {
+  const names = useNames();
+  const sorted = [...members].sort((a, b) => {
+    const aSelf = selfId !== null && a.identity_id === selfId;
+    const bSelf = selfId !== null && b.identity_id === selfId;
+    if (aSelf !== bSelf) return aSelf ? -1 : 1;
+    const byStatus = statusRank(a.status) - statusRank(b.status);
+    if (byStatus !== 0) return byStatus;
+    const byRole = roleRank(a.role) - roleRank(b.role);
+    if (byRole !== 0) return byRole;
+    return names.display(a.identity_id).localeCompare(names.display(b.identity_id));
+  });
+  const activeCount = members.filter((m) => m.status === 'active').length;
+  const invitedCount = members.filter((m) => m.status === 'invited').length;
+  const agentCount = members.filter((m) => m.role === 'agent').length;
+
+  if (members.length === 0) {
+    return <div className="panel-empty muted">No members have synced for this room yet.</div>;
+  }
+
+  return (
+    <div className="panel-list members-panel">
+      <section className="members-summary" aria-label="Room members summary">
+        <div className="members-summary-copy">
+          <h2>
+            {members.length} room member{members.length === 1 ? '' : 's'}
+          </h2>
+          <p>Roster from the signed room history. Statuses reflect membership events, not live peer reachability.</p>
+        </div>
+        <dl className="member-stats" aria-label="Member counts">
+          <div>
+            <dt>Active</dt>
+            <dd>{activeCount}</dd>
+          </div>
+          <div>
+            <dt>Agents</dt>
+            <dd>{agentCount}</dd>
+          </div>
+          {invitedCount > 0 ? (
+            <div>
+              <dt>Invited</dt>
+              <dd>{invitedCount}</dd>
+            </div>
+          ) : null}
+        </dl>
+      </section>
+
+      <div className="members-section-head">
+        <h3>Room roster</h3>
+        <span>{activeCount} active</span>
+      </div>
+
+      {sorted.map((member) => {
+        const mine = selfId !== null && member.identity_id === selfId;
+        const tone = statusTone(member.status);
+        return (
+          <div key={member.identity_id} className={`member-row member-row-${tone}`} title={member.identity_id}>
+            <Avatar id={member.identity_id} size={38} />
+            <div className="member-main">
+              <div className="member-title-row">
+                <SenderName id={member.identity_id} className="member-name" />
+                {mine ? <span className="member-self-chip">this device</span> : null}
+              </div>
+              <code className="member-id mono">{shortMemberId(member.identity_id)}</code>
+            </div>
+            <div className="member-badges" aria-label={`${displayRole(member.role)}, ${displayStatus(member.status)}`}>
+              <span className={`member-role role-${member.role}`}>{displayRole(member.role)}</span>
+              <span className={`member-status status-${tone}`}>
+                <span className="dot" /> {displayStatus(member.status)}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // -- Agents --------------------------------------------------------------------
 
@@ -65,29 +176,74 @@ function AgentsTab({ members, timeline }: { members: Member[]; timeline: Timelin
 
 // -- Files ---------------------------------------------------------------------
 
+function mimeTypeLabel(mime: string, fallback: string): string {
+  if (!mime) return fallback || 'file';
+  const [type, subtype] = mime.split('/');
+  if (!subtype) return mime;
+  if (subtype === 'octet-stream') return fallback || 'binary';
+  if (type === 'text' && subtype === 'plain') return 'text';
+  return subtype.replace(/[.+-]/g, ' ');
+}
+
+function fileTypeLabel(file: FileEntry, ext: string): string {
+  return mimeTypeLabel(file.mime, ext || 'file');
+}
+
+function selectedFileTypeLabel(file: File): string {
+  const ext = extOf(file.name).toLowerCase();
+  return mimeTypeLabel(file.type, ext || 'file');
+}
+
 function FilesTab({
   files,
+  selfId,
   fetches,
   onFetch,
-  onShare,
+  onSharePath,
+  onShareBrowserFile,
 }: {
   files: FileEntry[];
+  selfId: string | null;
   fetches: Record<string, FetchState>;
   onFetch(fileId: string): void;
-  onShare(path: string): Promise<void>;
+  onSharePath(path: string): Promise<void>;
+  onShareBrowserFile(file: File): Promise<void>;
 }) {
   const [path, setPath] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [pickerKey, setPickerKey] = useState(0);
   const [sharing, setSharing] = useState(false);
   const [shareError, setShareError] = useState<DaemonErrorShape | null>(null);
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const availableCount = files.filter((file) => file.available).length;
+  const providerCount = files.reduce((sum, file) => sum + file.providers, 0);
+  // A file this device shared reports available:false from its own view (the
+  // daemon excludes self from the provider set), so it is neither fetchable here
+  // nor a fault. Count those separately to keep the summary honest.
+  const servingCount = files.filter((file) => !file.available && selfId !== null && file.sender_id === selfId).length;
+  const waitingProviderCount = files.length - availableCount - servingCount;
+  const heroDetail =
+    files.length === 0
+      ? 'Share a readable path and peers can fetch a verified copy over P2P.'
+      : `${formatBytes(totalBytes)} in the room · ${availableCount} fetchable here` +
+        (servingCount > 0 ? ` · ${servingCount} served by you` : '');
+  const shareHelpId = 'file-share-help';
+  const selectedType = selectedFile ? selectedFileTypeLabel(selectedFile) : null;
 
   const share = async () => {
     const p = path.trim();
-    if (!p || sharing) return;
+    if (sharing || (!selectedFile && !p)) return;
     setSharing(true);
     setShareError(null);
     try {
-      await onShare(p);
-      setPath('');
+      if (selectedFile) {
+        await onShareBrowserFile(selectedFile);
+        setSelectedFile(null);
+        setPickerKey((key) => key + 1);
+      } else {
+        await onSharePath(p);
+        setPath('');
+      }
     } catch (e) {
       setShareError(errorShape(e));
     } finally {
@@ -96,60 +252,185 @@ function FilesTab({
   };
 
   return (
-    <div className="panel-list">
-      {files.length === 0 ? (
-        <div className="panel-empty muted">No files yet — share one below; peers fetch it over P2P.</div>
-      ) : null}
-      {files.map((file) => {
-        const tint = fileTint(file.name);
-        const ext = extOf(file.name).toUpperCase() || 'FILE';
-        return (
-          <div key={file.file_id} className="file-row">
-            <div className="file-row-main">
-              <span className="file-icon" style={{ background: `${tint}22`, color: tint }}>
-                {ext.slice(0, 4)}
-              </span>
-              <div className="file-row-info">
-                <strong>{file.name}</strong>
-                <span className="muted">
-                  {formatBytes(file.size)} · <SenderName id={file.sender_id} /> · {formatTime(file.ts)}
-                </span>
-                <span className={`file-avail ${file.available ? 'ok' : 'warn'}`}>
-                  <span className="dot" />
-                  {file.available ? 'Available' : 'Unavailable'} · {file.providers} provider
-                  {file.providers === 1 ? '' : 's'}
-                </span>
-              </div>
-              <FetchControl state={fetches[file.file_id]} onFetch={() => onFetch(file.file_id)} />
+    <div className="panel-list files-panel">
+      <section className={`files-hero${files.length === 0 ? ' is-empty' : ''}`} aria-label="Files summary">
+        <span className="files-hero-mark" aria-hidden="true">
+          ▤
+        </span>
+        <div className="files-hero-copy">
+          <h2>{files.length === 0 ? 'No shared files yet' : `${files.length} shared file${files.length === 1 ? '' : 's'}`}</h2>
+          <p>{heroDetail}</p>
+        </div>
+        {files.length > 0 ? (
+          <dl className="files-stats" aria-label="File availability">
+            <div>
+              <dt>Fetchable now</dt>
+              <dd>
+                {availableCount}/{files.length}
+              </dd>
             </div>
-            <FetchDetail state={fetches[file.file_id]} />
-          </div>
-        );
-      })}
+            <div>
+              <dt>Provider devices</dt>
+              <dd>{providerCount}</dd>
+            </div>
+          </dl>
+        ) : null}
+      </section>
 
       <form
-        className="panel-form"
+        className="panel-form file-share-card"
         onSubmit={(e) => {
           e.preventDefault();
           void share();
         }}
       >
-        <h2>Share a file</h2>
-        <p className="muted">Path on this machine — the daemon imports it into the blob store.</p>
-        <div className="form-row">
-          <input
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="/path/to/file.pdf"
-            aria-label="File path to share"
-            spellCheck={false}
-          />
-          <button type="submit" className="btn" disabled={sharing || !path.trim()}>
-            {sharing ? 'Sharing…' : 'Share'}
-          </button>
+        <div className="panel-form-head">
+          <div>
+            <h2>Choose a file to share</h2>
+            <p className="muted" id={shareHelpId}>
+              Pick a local file. Bantaba uploads it to this daemon, imports it into the room blob store, and verifies it by content hash.
+            </p>
+          </div>
+          <span className="file-share-badge" aria-label="Verified by content hash">
+            hash checked
+          </span>
         </div>
+
+        <div className="file-picker-shell">
+          <input
+            key={pickerKey}
+            className="file-picker-input"
+            type="file"
+            onChange={(e) => {
+              const file = e.currentTarget.files?.[0] ?? null;
+              setSelectedFile(file);
+              if (file) setPath('');
+            }}
+            aria-label="Choose file to share"
+            aria-describedby={shareHelpId}
+          />
+          {selectedFile ? (
+            <div className="selected-file-card" aria-live="polite">
+              <span className="selected-file-icon" aria-hidden="true">
+                {extOf(selectedFile.name).toUpperCase().slice(0, 4) || 'FILE'}
+              </span>
+              <div className="selected-file-info">
+                <strong>{selectedFile.name}</strong>
+                <span className="muted">
+                  {formatBytes(selectedFile.size)} · {selectedType}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => {
+                  setSelectedFile(null);
+                  setPickerKey((key) => key + 1);
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          ) : (
+            <p className="file-picker-empty muted">No file selected yet.</p>
+          )}
+        </div>
+
+        <button type="submit" className="btn btn-primary file-share-submit" disabled={sharing || (!selectedFile && !path.trim())}>
+          {sharing ? 'Sharing…' : 'Share'}
+        </button>
+
+        <details className="file-advanced-path">
+          <summary>Advanced: paste a daemon-readable path</summary>
+          <div className="form-row file-share-row">
+            <input
+              value={path}
+              onChange={(e) => {
+                setPath(e.target.value);
+                if (e.target.value.trim()) {
+                  setSelectedFile(null);
+                  setPickerKey((key) => key + 1);
+                }
+              }}
+              placeholder="/path/to/report.pdf"
+              aria-label="File path to share"
+              spellCheck={false}
+            />
+          </div>
+          <p className="form-hint muted">Use this only for files already under the daemon data directory.</p>
+        </details>
         <ErrorNote error={shareError} />
       </form>
+
+      {files.length > 0 ? (
+        <div className="files-section-head">
+          <h3>Shared in this room</h3>
+          <span>
+            {availableCount === files.length
+              ? 'All fetchable'
+              : [
+                  servingCount > 0 ? `${servingCount} served by you` : null,
+                  waitingProviderCount > 0 ? `${waitingProviderCount} awaiting a provider` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+          </span>
+        </div>
+      ) : null}
+
+      {files.map((file) => {
+        const tint = fileTint(file.name);
+        const ext = extOf(file.name).toUpperCase() || 'FILE';
+        const type = fileTypeLabel(file, ext.toLowerCase());
+        const mine = selfId !== null && file.sender_id === selfId;
+        // `available` is "another provider device is a connected peer right now"
+        // (the daemon excludes THIS device), so a file you shared reads as
+        // not-available from your own view even though peers can fetch it. Label
+        // by ownership so that is never shown as a fault. See list_files() in
+        // crates/bantaba-core/src/supervisor.rs.
+        const health = file.available
+          ? { tone: 'ok', text: 'Ready to fetch' }
+          : mine
+            ? { tone: 'self', text: 'Serving to peers' }
+            : { tone: 'warn', text: 'No provider online' };
+        const providerText = `${file.providers} provider${file.providers === 1 ? '' : 's'}`;
+        return (
+          <div
+            key={file.file_id}
+            className={`file-row${!file.available && !mine ? ' unavailable' : ''}`}
+            title={file.file_id}
+          >
+            <div className="file-row-main">
+              <span className="file-icon" style={{ background: `${tint}22`, color: tint }} aria-hidden="true">
+                {ext.slice(0, 4)}
+              </span>
+              <div className="file-row-info">
+                <div className="file-title-row">
+                  <strong>{file.name}</strong>
+                  <span className="file-kind">{type}</span>
+                </div>
+                <span className="file-meta muted">
+                  {formatBytes(file.size)} · <SenderName id={file.sender_id} /> · {formatTime(file.ts)}
+                </span>
+                <span className={`file-health ${health.tone}`}>
+                  <span className="dot" />
+                  {health.text} · {providerText}
+                </span>
+              </div>
+              <div className="file-row-action">
+                {mine && !file.available && !fetches[file.file_id] ? (
+                  <span className="file-self-note" title="This daemon is already serving this file to peers.">
+                    Serving
+                  </span>
+                ) : (
+                  <FetchControl state={fetches[file.file_id]} onFetch={() => onFetch(file.file_id)} />
+                )}
+              </div>
+            </div>
+            <FetchDetail state={fetches[file.file_id]} />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -302,6 +583,10 @@ function PipesTab({
 
 // -- panel shell -----------------------------------------------------------------
 
+function tabCountLabel(count: number): string {
+  return count > 99 ? '99+' : String(count);
+}
+
 export function RightPanel({
   tab,
   onTab,
@@ -312,7 +597,8 @@ export function RightPanel({
   selfId,
   fetches,
   onFetch,
-  onShareFile,
+  onSharePath,
+  onShareBrowserFile,
   pipeConns,
   closingPipes,
   onPipeConnect,
@@ -328,7 +614,8 @@ export function RightPanel({
   selfId: string | null;
   fetches: Record<string, FetchState>;
   onFetch(fileId: string): void;
-  onShareFile(path: string): Promise<void>;
+  onSharePath(path: string): Promise<void>;
+  onShareBrowserFile(file: File): Promise<void>;
   pipeConns: Record<string, PipeConnState>;
   closingPipes: Set<string>;
   onPipeConnect(pipeId: string): void;
@@ -339,9 +626,10 @@ export function RightPanel({
   const openPipes = pipes.filter((p) => p.state === 'open').length;
 
   const tabs: { id: PanelTab; label: string; count: number }[] = [
+    { id: 'members', label: 'Members', count: members.length },
     { id: 'agents', label: 'Agents', count: agentCount },
     { id: 'files', label: 'Files', count: files.length },
-    { id: 'pipes', label: 'Live Pipes', count: openPipes },
+    { id: 'pipes', label: 'Pipes', count: openPipes },
   ];
 
   // Full ARIA tabs keyboard pattern: arrow keys move between tabs (a single tab
@@ -375,13 +663,24 @@ export function RightPanel({
             className={tab === t.id ? 'active' : ''}
             onClick={() => onTab(t.id)}
           >
-            {t.label} <span className="count">{t.count}</span>
+            <span className="panel-tab-label">{t.label}</span>
+            {t.count > 0 ? <span className="count">{tabCountLabel(t.count)}</span> : null}
           </button>
         ))}
       </div>
       <div className="panel-body" id="panel-body" role="tabpanel" aria-labelledby={`panel-tab-${tab}`}>
+        {tab === 'members' ? <MembersTab members={members} selfId={selfId} /> : null}
         {tab === 'agents' ? <AgentsTab members={members} timeline={timeline} /> : null}
-        {tab === 'files' ? <FilesTab files={files} fetches={fetches} onFetch={onFetch} onShare={onShareFile} /> : null}
+        {tab === 'files' ? (
+          <FilesTab
+            files={files}
+            selfId={selfId}
+            fetches={fetches}
+            onFetch={onFetch}
+            onSharePath={onSharePath}
+            onShareBrowserFile={onShareBrowserFile}
+          />
+        ) : null}
         {tab === 'pipes' ? (
           <PipesTab
             pipes={pipes}

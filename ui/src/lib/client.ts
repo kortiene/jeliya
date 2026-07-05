@@ -42,6 +42,54 @@ export function daemonUrl(search: string = window.location.search): string {
   return DEFAULT_DAEMON_URL;
 }
 
+export function daemonHttpBase(search: string = window.location.search): string {
+  const ws = new URL(daemonUrl(search));
+  ws.protocol = ws.protocol === 'wss:' ? 'https:' : 'http:';
+  ws.pathname = '/';
+  ws.search = '';
+  ws.hash = '';
+  return ws.toString().replace(/\/$/, '');
+}
+
+export async function uploadFileToRoom(roomId: string, file: File): Promise<{ file_id: string; event_id: string }> {
+  const url = new URL('/api/files/share', daemonHttpBase());
+  url.searchParams.set('room_id', roomId);
+  url.searchParams.set('name', file.name || 'upload.bin');
+  if (file.type) url.searchParams.set('mime', file.type);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new RequestError({
+      code: 'internal',
+      message: `upload failed with HTTP ${response.status}`,
+      hint: 'is bantabad serving the local UI endpoint?',
+    });
+  }
+  const envelope = payload as {
+    ok?: boolean;
+    result?: { file_id?: string; event_id?: string };
+    error?: Partial<DaemonErrorShape>;
+  };
+  if (!response.ok || envelope.ok !== true) {
+    const err = envelope.error ?? {};
+    throw new RequestError({
+      code: err.code ?? 'internal',
+      message: err.message ?? `upload failed with HTTP ${response.status}`,
+      hint: err.hint ?? null,
+    });
+  }
+  if (!envelope.result?.file_id || !envelope.result.event_id) {
+    throw new RequestError({ code: 'internal', message: 'upload response was missing file_id', hint: null });
+  }
+  return { file_id: envelope.result.file_id, event_id: envelope.result.event_id };
+}
+
 interface Pending {
   resolve(value: never): void;
   reject(error: unknown): void;

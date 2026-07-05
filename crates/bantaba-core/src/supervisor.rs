@@ -60,6 +60,9 @@ use crate::{localstate, now_ms};
 pub const DB_FILE: &str = "rooms.db";
 /// Root for the per-room durable blob stores.
 const BLOBS_DIR: &str = "blobs";
+/// Maximum number of bytes accepted for one shared file, exposed so the daemon's
+/// browser-upload endpoint can reject over-limit bodies before staging them.
+pub const FILE_UPLOAD_MAX_BYTES: u64 = MAX_SHARED_FILE_BYTES as u64;
 /// Default downloads directory for `file.fetch` when `save_dir` is omitted.
 const DOWNLOADS_DIR: &str = "downloads";
 /// Room-name cap, mirroring the CLI (spec IR-0102 D7).
