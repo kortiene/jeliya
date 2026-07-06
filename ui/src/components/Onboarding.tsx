@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { splitInvite } from '../lib/invite';
 import type { Client, DaemonErrorShape } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { CopyButton, ErrorNote, TreeMark, Wordmark } from './ui';
@@ -106,16 +107,7 @@ function RoomsStep({
     setJoining(true);
     setJoinError(null);
     try {
-      // A combined invite is `<ticket>#<peer addr>` in one paste (what the
-      // invite modal hands out). Neither part can contain `#`, so a plain
-      // split is unambiguous; an explicitly typed peer address wins.
-      let t = ticket.trim();
-      let addr = peerAddr.trim();
-      const hash = t.indexOf('#');
-      if (hash > 0) {
-        if (!addr) addr = t.slice(hash + 1).trim();
-        t = t.slice(0, hash).trim();
-      }
+      const { ticket: t, peerAddr: addr } = splitInvite(ticket, peerAddr);
       await client.call('room.join', {
         ticket: t,
         ...(addr ? { peers: [addr] } : {}),

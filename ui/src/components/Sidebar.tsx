@@ -33,6 +33,7 @@ export function Sidebar({
   onNav,
   onSelectRoom,
   onCreateRoom,
+  onJoinRoom,
 }: {
   rooms: RoomSummary[];
   currentRoomId: string | null;
@@ -42,6 +43,7 @@ export function Sidebar({
   onNav(key: NavKey): void;
   onSelectRoom(roomId: string): void;
   onCreateRoom(): void;
+  onJoinRoom(): void;
 }) {
   const names = useNames();
   const identityId = status?.identity?.identity_id ?? null;
@@ -134,6 +136,9 @@ export function Sidebar({
 
       <button type="button" className="create-room" onClick={onCreateRoom}>
         <span aria-hidden="true">⊕</span> Create Room
+      </button>
+      <button type="button" className="create-room join-room" onClick={onJoinRoom}>
+        <span aria-hidden="true">⇥</span> Join with Ticket
       </button>
 
       <footer className="identity-footer">

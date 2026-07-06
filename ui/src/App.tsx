@@ -15,6 +15,7 @@ import { uploadFileToRoom } from './lib/client';
 import { errorShape } from './lib/protocol';
 import { loadAliases, saveAliases, suggestedNames } from './lib/names';
 import { shortId } from './lib/format';
+import { splitInvite } from './lib/invite';
 import { NamesContext } from './components/names';
 import type { NameApi } from './components/names';
 import { ErrorNote, Modal, TreeMark, Wordmark } from './components/ui';
@@ -68,6 +69,7 @@ export default function App({ client }: { client: Client }) {
   const [mobileView, setMobileView] = useState<MobileView>('rooms');
   const [inviteOpen, setInviteOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [aliases, setAliases] = useState<Record<string, string>>(loadAliases);
 
@@ -461,6 +463,7 @@ export default function App({ client }: { client: Client }) {
             if (rid !== roomId) void openRoom(rid);
           }}
           onCreateRoom={() => setCreateOpen(true)}
+          onJoinRoom={() => setJoinOpen(true)}
         />
 
         <main className="center">
@@ -566,6 +569,18 @@ export default function App({ client }: { client: Client }) {
           />
         ) : null}
 
+        {joinOpen ? (
+          <JoinRoomModal
+            client={client}
+            onClose={() => setJoinOpen(false)}
+            onJoined={(rid) => {
+              setJoinOpen(false);
+              void refreshRooms();
+              void openRoom(rid);
+            }}
+          />
+        ) : null}
+
         {renameTarget ? (
           <RenameModal
             id={renameTarget}
@@ -580,6 +595,80 @@ export default function App({ client }: { client: Client }) {
 }
 
 // -- small modals -------------------------------------------------------------------
+
+function JoinRoomModal({
+  client,
+  onClose,
+  onJoined,
+}: {
+  client: Client;
+  onClose(): void;
+  onJoined(roomId: string): void;
+}) {
+  const [ticket, setTicket] = useState('');
+  const [peerAddr, setPeerAddr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<DaemonErrorShape | null>(null);
+
+  const join = async () => {
+    if (!ticket.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { ticket: t, peerAddr: addr } = splitInvite(ticket, peerAddr);
+      const { room_id } = await client.call('room.join', {
+        ticket: t,
+        ...(addr ? { peers: [addr] } : {}),
+      });
+      onJoined(room_id);
+    } catch (e) {
+      setError(errorShape(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Join with a ticket" onClose={onClose}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void join();
+        }}
+      >
+        <p className="muted">
+          Paste the invite you received. A combined invite (<code>ticket#address</code>) fills in the peer address
+          automatically.
+        </p>
+        <label className="field">
+          <span>Ticket</span>
+          <textarea
+            value={ticket}
+            onChange={(e) => setTicket(e.target.value)}
+            placeholder="roomtkt1… or roomtkt1…#<endpoint_id>@host:port"
+            rows={3}
+            spellCheck={false}
+            autoFocus
+          />
+        </label>
+        <label className="field">
+          <span>
+            Peer address <em className="muted">(optional)</em>
+          </span>
+          <input
+            value={peerAddr}
+            onChange={(e) => setPeerAddr(e.target.value)}
+            placeholder="<endpoint_id>@203.0.113.7:4242"
+            spellCheck={false}
+          />
+        </label>
+        <button type="submit" className="btn btn-primary" disabled={busy || !ticket.trim()}>
+          {busy ? 'Joining…' : 'Join room'}
+        </button>
+        <ErrorNote error={error} />
+      </form>
+    </Modal>
+  );
+}
 
 function CreateRoomModal({
   client,

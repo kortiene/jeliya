@@ -870,6 +870,16 @@ button.sender-name:not(:disabled):hover {
   border-color: var(--accent-line);
 }
 
+/* Quieter sibling of Create Room — joining is the invitee's path, not the
+   primary action, but it must exist outside onboarding (a second invitation
+   previously had no UI path at all). */
+.join-room {
+  margin-top: 0;
+  border-style: solid;
+  border-color: var(--border);
+  color: var(--text-mute);
+}
+
 .identity-footer {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
