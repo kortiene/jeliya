@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a Jeliya problem with optional copied diagnostics.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. If you can open Jeliya, go to **Settings -> Copy diagnostics** and paste the output below.
+
+        The diagnostics bundle is designed to exclude message bodies, invite tickets, file names, full local paths, pipe targets, and full identity IDs.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+      placeholder: I tried to fetch a shared file, but...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the shortest path that reproduces the problem.
+      placeholder: |
+        1. Open room...
+        2. Click...
+        3. See...
+    validations:
+      required: false
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Jeliya diagnostics
+      description: Paste the output from Settings -> Copy diagnostics.
+      render: markdown
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Jeliya version
+      description: Run `jeliyad --version` if the app is not reachable.
+      placeholder: jeliyad 0.4.2
+    validations:
+      required: false
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - Homebrew
+        - install.sh
+        - install.ps1
+        - GitHub release asset
+        - Built from source
+        - Other
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Extra context
+      description: Add screenshots, logs with secrets removed, or anything else useful.
+    validations:
+      required: false

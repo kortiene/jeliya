@@ -13,11 +13,14 @@ import type {
 } from './lib/protocol';
 import { uploadFileToRoom } from './lib/client';
 import { errorShape } from './lib/protocol';
+import { buildDiagnostics } from './lib/diagnostics';
+import type { DiagnosticEvent } from './lib/diagnostics';
 import { loadAliases, saveAliases, suggestedNames } from './lib/names';
 import { shortId } from './lib/format';
 import { splitInvite } from './lib/invite';
 import { joinRoomWithRetry } from './lib/join';
 import type { JoinProgress } from './lib/join';
+import uiPackage from '../package.json';
 import { NamesContext } from './components/names';
 import type { NameApi } from './components/names';
 import { ErrorNote, Modal, TreeMark, Wordmark } from './components/ui';
@@ -34,6 +37,7 @@ import { RightPanel } from './components/RightPanel';
 import type { PanelTab, PipeConnState } from './components/RightPanel';
 import { InviteModal } from './components/InviteModal';
 import { FleetDashboard } from './components/FleetDashboard';
+import { SettingsPanel } from './components/SettingsPanel';
 
 type Phase = 'boot' | 'no-identity' | 'no-rooms' | 'ready';
 
@@ -42,6 +46,22 @@ type Phase = 'boot' | 'no-identity' | 'no-rooms' | 'ready';
 type MobileView = 'rooms' | 'chat' | 'agents' | 'pipes' | 'files' | 'settings';
 
 const LAST_ROOM_KEY = 'jeliya.lastRoom';
+const ISSUE_URL = 'https://github.com/kortiene/jeliya/issues/new';
+
+type DiagnosticErrorRecorder = (context: string, error: unknown) => DaemonErrorShape;
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
 
 function localFileUrl(roomId: string, fileId: string): string {
   const params = new URLSearchParams({ room_id: roomId, file_id: fileId });
@@ -95,6 +115,8 @@ export default function App({ client }: { client: Client }) {
   const [endpointAddr, setEndpointAddr] = useState<string | null>(null);
   const [roomError, setRoomError] = useState<DaemonErrorShape | null>(null);
   const [roomLoading, setRoomLoading] = useState(false);
+  const [lastDiagnosticError, setLastDiagnosticError] = useState<DiagnosticEvent | null>(null);
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
 
   const [fetches, setFetches] = useState<Record<string, FetchState>>({});
   const [pipeConns, setPipeConns] = useState<Record<string, PipeConnState>>({});
@@ -111,6 +133,18 @@ export default function App({ client }: { client: Client }) {
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [aliases, setAliases] = useState<Record<string, string>>(loadAliases);
+
+  const rememberError = useCallback<DiagnosticErrorRecorder>((context, e) => {
+    const err = errorShape(e);
+    setLastDiagnosticError({
+      context,
+      code: err.code,
+      message: err.message,
+      hint: err.hint,
+      at: new Date().toISOString(),
+    });
+    return err;
+  }, []);
 
   // -- data refresh helpers (stable: only touch client + setters) -------------
 
@@ -214,12 +248,12 @@ export default function App({ client }: { client: Client }) {
         void refreshRooms(); // open flag changed
       } catch (e) {
         if (roomIdRef.current === rid) {
-          setRoomError(errorShape(e));
+          setRoomError(rememberError('room.open', e));
           setRoomLoading(false);
         }
       }
     },
-    [client, refreshRooms],
+    [client, refreshRooms, rememberError],
   );
 
   useEffect(() => {
@@ -393,9 +427,10 @@ export default function App({ client }: { client: Client }) {
             ),
       );
     } catch (e) {
+      const err = rememberError('message.send', e);
       updatePendingForRoom(rid, (messages) =>
         messages.map((message) =>
-          message.clientId === clientId ? { ...message, phase: 'failed', error: errorShape(e) } : message,
+          message.clientId === clientId ? { ...message, phase: 'failed', error: err } : message,
         ),
       );
     }
@@ -438,7 +473,7 @@ export default function App({ client }: { client: Client }) {
         }));
       } catch (e) {
         if (roomIdRef.current !== rid) return;
-        setFetches((m) => ({ ...m, [fileId]: { phase: 'error', error: errorShape(e) } }));
+        setFetches((m) => ({ ...m, [fileId]: { phase: 'error', error: rememberError('file.fetch', e) } }));
       }
       void refreshFiles(rid);
     })();
@@ -447,24 +482,34 @@ export default function App({ client }: { client: Client }) {
   const shareFilePath = async (path: string) => {
     const rid = roomIdRef.current;
     if (!rid) return;
-    await client.call('file.share', { room_id: rid, path });
-    void refreshFiles(rid);
+    try {
+      await client.call('file.share', { room_id: rid, path });
+      void refreshFiles(rid);
+    } catch (e) {
+      rememberError('file.share', e);
+      throw e;
+    }
   };
 
   const shareBrowserFile = async (file: File) => {
     const rid = roomIdRef.current;
     if (!rid) return;
-    if (import.meta.env.VITE_MOCK === '1') {
-      await client.call('file.share', {
-        room_id: rid,
-        path: file.name || 'upload.bin',
-        name: file.name || 'upload.bin',
-        mime: file.type || undefined,
-      });
-    } else {
-      await uploadFileToRoom(rid, file);
+    try {
+      if (import.meta.env.VITE_MOCK === '1') {
+        await client.call('file.share', {
+          room_id: rid,
+          path: file.name || 'upload.bin',
+          name: file.name || 'upload.bin',
+          mime: file.type || undefined,
+        });
+      } else {
+        await uploadFileToRoom(rid, file);
+      }
+      void refreshFiles(rid);
+    } catch (e) {
+      rememberError('file.share', e);
+      throw e;
     }
-    void refreshFiles(rid);
   };
 
   const pipeConnect = (pipeId: string) => {
@@ -479,7 +524,7 @@ export default function App({ client }: { client: Client }) {
         void refreshPipes(rid);
       } catch (e) {
         if (roomIdRef.current !== rid) return;
-        setPipeConns((m) => ({ ...m, [pipeId]: { phase: 'error', error: errorShape(e) } }));
+        setPipeConns((m) => ({ ...m, [pipeId]: { phase: 'error', error: rememberError('pipe.connect', e) } }));
       }
     })();
   };
@@ -506,7 +551,7 @@ export default function App({ client }: { client: Client }) {
         void refreshPipes(rid);
       } catch (e) {
         doneClosing();
-        setPipeConns((m) => ({ ...m, [pipeId]: { phase: 'error', error: errorShape(e) } }));
+        setPipeConns((m) => ({ ...m, [pipeId]: { phase: 'error', error: rememberError('pipe.close', e) } }));
       }
     })();
   };
@@ -514,8 +559,13 @@ export default function App({ client }: { client: Client }) {
   const pipeExpose = async (target: string, peerIdentity: string) => {
     const rid = roomIdRef.current;
     if (!rid) return;
-    await client.call('pipe.expose', { room_id: rid, target, peer_identity: peerIdentity });
-    void refreshPipes(rid);
+    try {
+      await client.call('pipe.expose', { room_id: rid, target, peer_identity: peerIdentity });
+      void refreshPipes(rid);
+    } catch (e) {
+      rememberError('pipe.expose', e);
+      throw e;
+    }
   };
 
   const leaveCurrentRoom = () => {
@@ -545,6 +595,40 @@ export default function App({ client }: { client: Client }) {
   };
 
   const currentRoom = rooms.find((r) => r.room_id === roomId) ?? null;
+
+  const makeDiagnostics = useCallback(
+    () =>
+      buildDiagnostics({
+        generatedAt: new Date().toISOString(),
+        uiVersion: uiPackage.version,
+        browser: navigator.userAgent,
+        platform: navigator.platform || 'unknown',
+        transport: client.describe(),
+        connection: conn,
+        status,
+        rooms,
+        currentRoomId: roomId,
+        members,
+        files,
+        fetches,
+        pipes,
+        peers,
+        lastError: lastDiagnosticError,
+      }),
+    [client, conn, files, fetches, lastDiagnosticError, members, peers, pipes, roomId, rooms, status],
+  );
+
+  const copyDiagnostics = useCallback(async () => {
+    await copyText(makeDiagnostics());
+    setDiagnosticsCopied(true);
+    window.setTimeout(() => setDiagnosticsCopied(false), 1600);
+  }, [makeDiagnostics]);
+
+  const reportIssue = useCallback(() => {
+    void copyDiagnostics();
+    const params = new URLSearchParams({ title: 'Jeliya issue report' });
+    window.open(`${ISSUE_URL}?${params.toString()}`, '_blank', 'noopener,noreferrer');
+  }, [copyDiagnostics]);
 
   // -- primary navigation (desktop left rail + mobile bottom bar) ----------------
 
@@ -722,27 +806,15 @@ export default function App({ client }: { client: Client }) {
           />
         ) : null}
 
-        <section className="mobile-settings" aria-label="Settings">
-          <h2 className="mobile-settings-title">Settings</h2>
-          <div className="settings-card">
-            <span className="settings-label">P2P Identity</span>
-            <code className="mono settings-val">{status?.identity?.identity_id ?? '—'}</code>
-          </div>
-          <p className="muted">Unrecoverable if this device or its data folder is lost.</p>
-          <div className="settings-card">
-            <span className="settings-label">Endpoint</span>
-            <code className="mono settings-val">{status?.endpoint?.endpoint_id ?? '—'}</code>
-          </div>
-          <div className="settings-card">
-            <span className="settings-label">Daemon</span>
-            <span className="settings-val">
-              {status?.mode ?? '—'} · {conn}
-            </span>
-          </div>
-          <button type="button" className="btn btn-primary" onClick={() => setCreateOpen(true)}>
-            Create a room
-          </button>
-        </section>
+        <SettingsPanel
+          status={status}
+          conn={conn}
+          diagnosticsCopied={diagnosticsCopied}
+          lastDiagnosticError={lastDiagnosticError}
+          onCopyDiagnostics={() => void copyDiagnostics()}
+          onReportIssue={reportIssue}
+          onCreateRoom={() => setCreateOpen(true)}
+        />
 
         <MobileTabBar active={activeNav} onNav={navigate} />
 
@@ -753,6 +825,7 @@ export default function App({ client }: { client: Client }) {
         {createOpen ? (
           <CreateRoomModal
             client={client}
+            onDiagnosticError={rememberError}
             onClose={() => setCreateOpen(false)}
             onCreated={(rid) => {
               setCreateOpen(false);
@@ -765,6 +838,7 @@ export default function App({ client }: { client: Client }) {
         {joinOpen ? (
           <JoinRoomModal
             client={client}
+            onDiagnosticError={rememberError}
             onClose={() => setJoinOpen(false)}
             onJoined={(rid) => {
               setJoinOpen(false);
@@ -779,6 +853,7 @@ export default function App({ client }: { client: Client }) {
             client={client}
             roomId={roomId}
             roomName={currentRoom.name}
+            onDiagnosticError={rememberError}
             onClose={() => setLeaveOpen(false)}
             onLeft={() => {
               setLeaveOpen(false);
@@ -804,10 +879,12 @@ export default function App({ client }: { client: Client }) {
 
 function JoinRoomModal({
   client,
+  onDiagnosticError,
   onClose,
   onJoined,
 }: {
   client: Client;
+  onDiagnosticError: DiagnosticErrorRecorder;
   onClose(): void;
   onJoined(roomId: string): void;
 }) {
@@ -830,7 +907,7 @@ function JoinRoomModal({
       }, setProgress);
       onJoined(room_id);
     } catch (e) {
-      setError(errorShape(e));
+      setError(onDiagnosticError('room.join', e));
       setProgress(null);
       setBusy(false);
     }
@@ -890,10 +967,12 @@ function JoinRoomModal({
 
 function CreateRoomModal({
   client,
+  onDiagnosticError,
   onClose,
   onCreated,
 }: {
   client: Client;
+  onDiagnosticError: DiagnosticErrorRecorder;
   onClose(): void;
   onCreated(roomId: string): void;
 }) {
@@ -909,7 +988,7 @@ function CreateRoomModal({
       const { room_id } = await client.call('room.create', { name: name.trim() });
       onCreated(room_id);
     } catch (e) {
-      setError(errorShape(e));
+      setError(onDiagnosticError('room.create', e));
       setBusy(false);
     }
   };
@@ -939,12 +1018,14 @@ function LeaveRoomModal({
   client,
   roomId,
   roomName,
+  onDiagnosticError,
   onClose,
   onLeft,
 }: {
   client: Client;
   roomId: string;
   roomName: string;
+  onDiagnosticError: DiagnosticErrorRecorder;
   onClose(): void;
   onLeft(): void;
 }) {
@@ -959,7 +1040,7 @@ function LeaveRoomModal({
       await client.call('room.leave', { room_id: roomId });
       onLeft();
     } catch (e) {
-      setError(errorShape(e));
+      setError(onDiagnosticError('room.leave', e));
       setBusy(false);
     }
   };

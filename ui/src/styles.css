@@ -216,6 +216,67 @@ select {
   color: var(--text);
 }
 
+.settings-note {
+  margin: -4px 0 2px;
+}
+
+.diagnostics-card {
+  gap: 10px;
+}
+
+.diagnostics-title {
+  margin-top: 3px;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.diagnostics-copy {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.diagnostics-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-mute);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.diagnostics-last-error {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.diagnostics-last-error .settings-label {
+  grid-column: 1 / -1;
+}
+
+.diagnostics-last-error code {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostics-empty {
+  margin: 0;
+  font-size: 13px;
+}
+
+.diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 @media (max-width: 900px) {
   .app {
     grid-template-columns: 1fr;
