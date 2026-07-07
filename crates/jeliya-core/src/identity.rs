@@ -73,7 +73,10 @@ pub fn ensure_dir(dir: &Path) -> CoreResult<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
-            CoreError::internal(format!("could not set permissions on {}: {e}", dir.display()))
+            CoreError::internal(format!(
+                "could not set permissions on {}: {e}",
+                dir.display()
+            ))
         })?;
     }
     Ok(())
@@ -216,8 +219,8 @@ impl SecretKeys {
 
 /// Decode a 32-byte seed from lowercase hex; intermediates are zeroized.
 fn signing_key_from_seed_hex(seed_hex: &str) -> CoreResult<SigningKey> {
-    let mut raw = hex::decode(seed_hex)
-        .map_err(|_| CoreError::internal("secret seed is not valid hex"))?;
+    let mut raw =
+        hex::decode(seed_hex).map_err(|_| CoreError::internal("secret seed is not valid hex"))?;
     let key = if let Ok(seed) = <[u8; SEED_LEN]>::try_from(raw.as_slice()) {
         let seed = Zeroizing::new(seed);
         SigningKey::from_seed(&seed)
@@ -274,7 +277,10 @@ mod tests {
         let loaded = load_profile(dir.path()).unwrap().unwrap();
         assert_eq!(loaded.identity_id, profile.identity_id);
         let keys = SecretKeys::load(dir.path()).unwrap();
-        assert_eq!(keys.identity.identity_key().to_string(), profile.identity_id);
+        assert_eq!(
+            keys.identity.identity_key().to_string(),
+            profile.identity_id
+        );
         assert_eq!(keys.device.device_key().to_string(), profile.device_id);
     }
 

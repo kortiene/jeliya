@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DaemonErrorShape } from '../lib/protocol';
 import { colorForId, formatBytes, initials } from '../lib/format';
+import { friendlyError } from '../lib/errors';
 import { useNames } from './names';
 
 // -- brand mark ---------------------------------------------------------------
@@ -126,10 +127,17 @@ export function CopyButton({ text, label = 'Copy', ariaLabel }: { text: string; 
 
 export function ErrorNote({ error }: { error: DaemonErrorShape | null }) {
   if (!error) return null;
+  const friendly = friendlyError(error);
   return (
     <div className="error-note" role="alert">
-      <code className="error-code">{error.code}</code> {error.message}
-      {error.hint ? <div className="error-hint">→ {error.hint}</div> : null}
+      <strong className="error-title">{friendly.title}</strong>
+      <span>{friendly.message}</span>
+      {friendly.action ? <div className="error-hint">{friendly.action}</div> : null}
+      <details className="error-details">
+        <summary>Technical details</summary>
+        <code className="error-code">{error.code}</code> {error.message}
+        {error.hint ? <div>{error.hint}</div> : null}
+      </details>
     </div>
   );
 }
@@ -234,7 +242,8 @@ export function Modal({
 
 export type FetchState =
   | { phase: 'pending' }
-  | { phase: 'verified'; path: string; bytes: number }
+  | { phase: 'verified'; path: string; bytes: number; url?: string }
+  | { phase: 'fetched'; path: string; bytes: number; url?: string }
   | { phase: 'error'; error: DaemonErrorShape };
 
 export function FetchControl({ state, onFetch }: { state?: FetchState; onFetch(): void }) {
@@ -252,10 +261,10 @@ export function FetchControl({ state, onFetch }: { state?: FetchState; onFetch()
       </button>
     );
   }
-  if (state.phase === 'verified') {
+  if (state.phase === 'verified' || state.phase === 'fetched') {
     return (
-      <span className="fetch-ok" title={`verified · ${state.path}`}>
-        ✓ Verified
+      <span className="fetch-ok" title={`${state.phase === 'verified' ? 'verified' : 'fetched'} · ${state.path}`}>
+        {state.phase === 'verified' ? '✓ Verified' : '✓ Fetched'}
       </span>
     );
   }
@@ -272,10 +281,18 @@ export function FetchControl({ state, onFetch }: { state?: FetchState; onFetch()
 
 export function FetchDetail({ state }: { state?: FetchState }) {
   if (!state) return null;
-  if (state.phase === 'verified') {
+  if (state.phase === 'verified' || state.phase === 'fetched') {
+    const path = state.url ? (
+      <a className="fetch-path-link" href={state.url} target="_blank" rel="noreferrer" title="Open local file copy">
+        <code>{state.path}</code>
+      </a>
+    ) : (
+      <code>{state.path}</code>
+    );
     return (
       <div className="fetch-detail ok">
-        Verified · {formatBytes(state.bytes)} · saved to <code>{state.path}</code>
+        {state.phase === 'verified' ? 'Verified' : 'Fetched'} · {formatBytes(state.bytes)} · saved to{' '}
+        {path}
       </div>
     );
   }

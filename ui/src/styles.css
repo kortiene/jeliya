@@ -603,6 +603,26 @@ button.sender-name:not(:disabled):hover {
   border: 1px solid rgba(242, 109, 109, 0.35);
   color: var(--text);
   font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.error-title {
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.error-details {
+  margin-top: 2px;
+  color: var(--text-mute);
+  font-size: 12px;
+}
+
+.error-details summary {
+  width: max-content;
+  cursor: pointer;
+  color: var(--text-dim);
 }
 
 .error-code {
@@ -613,9 +633,28 @@ button.sender-name:not(:disabled):hover {
 }
 
 .error-hint {
-  margin-top: 3px;
   color: var(--text-dim);
   font-size: 12.5px;
+}
+
+.join-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-line);
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.join-progress em {
+  margin-left: auto;
+  color: var(--text-mute);
+  font-style: normal;
+  white-space: nowrap;
 }
 
 .progress {
@@ -1068,6 +1107,10 @@ button.sender-name:not(:disabled):hover {
   color: var(--accent);
 }
 
+.pending-invites {
+  color: var(--amber);
+}
+
 .room-actions {
   display: flex;
   gap: 8px;
@@ -1141,6 +1184,13 @@ button.sender-name:not(:disabled):hover {
 
 /* ---------- timeline ---------- */
 
+.timeline-shell {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
 .timeline {
   flex: 1;
   overflow-y: auto;
@@ -1152,7 +1202,28 @@ button.sender-name:not(:disabled):hover {
 }
 
 .timeline-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   margin: 5px 0;
+}
+
+.timeline-row.side-own {
+  align-items: flex-end;
+}
+
+.timeline-row.side-remote {
+  align-items: flex-start;
+}
+
+.timeline-row.side-own + .timeline-row.side-remote,
+.timeline-row.side-remote + .timeline-row.side-own {
+  margin-top: 12px;
+}
+
+.timeline-row.is-compact {
+  margin-top: -2px;
 }
 
 .timeline-empty {
@@ -1188,7 +1259,28 @@ button.sender-name:not(:disabled):hover {
 .msg-row {
   display: flex;
   gap: 12px;
-  max-width: 78%;
+  max-width: min(78%, 760px);
+}
+
+.msg-row.own {
+  justify-content: flex-end;
+}
+
+.msg-row.compact {
+  margin-top: 0;
+}
+
+.msg-row.own .msg-col {
+  align-items: flex-end;
+}
+
+.msg-row.own .msg-meta {
+  justify-content: flex-end;
+}
+
+.avatar-spacer {
+  width: 34px;
+  flex: none;
 }
 
 .msg-col {
@@ -1223,6 +1315,72 @@ button.sender-name:not(:disabled):hover {
   max-width: 72ch;
 }
 
+.msg-row:not(.own) .msg-bubble {
+  border-left: 2px solid rgba(106, 168, 247, 0.34);
+  background: #0c1519;
+}
+
+.msg-row.own .msg-bubble {
+  border-color: rgba(47, 214, 164, 0.42);
+  border-radius: 14px 4px 14px 14px;
+  background: linear-gradient(135deg, rgba(47, 214, 164, 0.2), rgba(31, 180, 168, 0.13));
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.16);
+}
+
+.msg-row.compact .msg-bubble {
+  border-top-left-radius: 8px;
+}
+
+.msg-row.own.compact .msg-bubble {
+  border-top-left-radius: 14px;
+  border-top-right-radius: 8px;
+}
+
+.msg-row.pending .msg-bubble {
+  color: var(--text-dim);
+}
+
+.pending-line {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--text-mute);
+  font-size: 11.5px;
+}
+
+.pending-line .spinner {
+  width: 11px;
+  height: 11px;
+}
+
+.text-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.text-btn:hover {
+  text-decoration: underline;
+}
+
+.new-messages {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  background: var(--bg-card-2);
+  color: var(--accent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
 /* Event rows share the flat message anatomy (avatar + content column); the
    inner file/pipe tile is the single card level — never a card-in-card. */
 .event-card {
@@ -1231,9 +1389,37 @@ button.sender-name:not(:disabled):hover {
   padding: 4px 0;
 }
 
+.event-card.own {
+  width: min(78%, 760px);
+  justify-content: flex-end;
+}
+
 .event-main {
   flex: 1;
   min-width: 0;
+}
+
+.event-card.own .event-main {
+  flex: 0 1 100%;
+}
+
+.event-card.own .event-head {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.event-card.own .file-tile,
+.event-card.own .pipe-tile {
+  border-color: rgba(47, 214, 164, 0.34);
+  background: rgba(47, 214, 164, 0.1);
+}
+
+.agent-work-card .event-main {
+  max-width: 78ch;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: rgba(106, 168, 247, 0.08);
+  border: 1px solid rgba(106, 168, 247, 0.22);
 }
 
 .event-head {
@@ -1246,6 +1432,19 @@ button.sender-name:not(:disabled):hover {
 
 .event-head .chip-label {
   margin-left: auto;
+}
+
+.agent-work-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.agent-work-title span {
+  color: var(--blue);
 }
 
 .event-text {
@@ -1350,6 +1549,18 @@ button.sender-name:not(:disabled):hover {
   color: var(--text-dim);
 }
 
+.fetch-path-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent), transparent 45%);
+  text-underline-offset: 3px;
+}
+
+.fetch-path-link:hover code,
+.fetch-path-link:focus-visible code {
+  color: var(--accent-strong);
+}
+
 .fetch-detail.err {
   color: var(--red);
 }
@@ -1380,6 +1591,11 @@ button.sender-name:not(:disabled):hover {
   border-color: var(--accent-line);
 }
 
+.composer-bar.is-dragging {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
 .composer-bar textarea {
   flex: 1;
   resize: none;
@@ -1387,7 +1603,7 @@ button.sender-name:not(:disabled):hover {
   border: none;
   outline: none;
   color: var(--text);
-  max-height: 120px;
+  max-height: 150px;
   padding: 6px 4px;
 }
 
@@ -2482,6 +2698,42 @@ select {
 
 .invite-advanced {
   margin: 10px 0 14px;
+}
+
+.invite-readiness {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0 14px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+}
+
+.invite-readiness strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text);
+}
+
+.invite-readiness p {
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.invite-ready {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+}
+
+.invite-caution {
+  background: var(--amber-dim);
+  border-color: var(--amber-line);
+}
+
+.invite-caution .dot {
+  color: var(--amber);
 }
 
 .invite-advanced summary {

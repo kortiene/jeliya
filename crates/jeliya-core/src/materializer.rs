@@ -269,10 +269,10 @@ mod tests {
         // by) when the fixture validates statelessly; kind-only fixtures that
         // deliberately skip a real invite handshake (member.joined) fall back
         // to a fixed placeholder id — the shape assertions never depend on it.
-        let event_id = validate_wire_bytes(&wire.to_bytes(), &ctx).map_or(
-            iroh_rooms::events::EventId::from_bytes([0x0f; 32]),
-            |v| v.event_id,
-        );
+        let event_id = validate_wire_bytes(&wire.to_bytes(), &ctx)
+            .map_or(iroh_rooms::events::EventId::from_bytes([0x0f; 32]), |v| {
+                v.event_id
+            });
         materialize_signed(&fx.room_id, &event_id, &ev, &snapshot).expect("materializes")
     }
 
@@ -342,11 +342,8 @@ mod tests {
         let fx = fixture();
         let joiner_identity = SigningKey::generate();
         let joiner_device = SigningKey::generate();
-        let binding = DeviceBinding::create(
-            &fx.room_id,
-            &joiner_identity,
-            joiner_device.device_key(),
-        );
+        let binding =
+            DeviceBinding::create(&fx.room_id, &joiner_identity, joiner_device.device_key());
         let wire = build_member_joined(
             &joiner_identity,
             &joiner_device,
@@ -493,7 +490,10 @@ mod tests {
         let id = iroh_rooms::events::EventId::from_bytes([0x01; 32]);
         let v = materialize_signed(&fx.room_id, &id, &ev, &snapshot).expect("left materializes");
         assert_eq!(v["kind"], "member_left");
-        assert_eq!(v["member"]["identity_id"], fx.identity.identity_key().to_string());
+        assert_eq!(
+            v["member"]["identity_id"],
+            fx.identity.identity_key().to_string()
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@
 //! protocol has no rename event.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{CoreError, CoreResult};
 use crate::identity::ensure_dir;
@@ -34,6 +34,17 @@ pub struct RoomMeta {
     /// `room.join`/`room.open`, plus addresses harvested from live sessions.
     #[serde(default)]
     pub peer_hints: Vec<String>,
+    /// Files this daemon fetched and verified locally, keyed by `file_<hex>`.
+    #[serde(default)]
+    pub fetched_files: BTreeMap<String, FetchedFileMeta>,
+}
+
+/// Daemon-local record of a verified file fetch.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FetchedFileMeta {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub fetched_at_ms: u64,
 }
 
 /// The whole daemon-local state file.
@@ -59,9 +70,7 @@ pub fn load(data_dir: &Path) -> CoreResult<LocalState> {
     let path = data_dir.join(STATE_FILE);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(LocalState::default())
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(LocalState::default()),
         Err(err) => {
             return Err(CoreError::internal(format!(
                 "could not read {}: {err}",
@@ -94,6 +103,7 @@ pub fn remember_room(data_dir: &Path, room_id: &str, name: Option<&str>) -> Core
         name: None,
         added_at_ms: crate::now_ms(),
         peer_hints: Vec::new(),
+        fetched_files: BTreeMap::new(),
     });
     if let Some(name) = name {
         entry.name = Some(name.to_owned());
@@ -120,6 +130,7 @@ pub fn add_peer_hints(data_dir: &Path, room_id: &str, hints: &[String]) -> CoreR
         name: None,
         added_at_ms: crate::now_ms(),
         peer_hints: Vec::new(),
+        fetched_files: BTreeMap::new(),
     });
     for hint in hints {
         let id_part = hint.split('@').next().unwrap_or(hint).trim().to_owned();
@@ -140,9 +151,51 @@ pub fn peer_hints(data_dir: &Path, room_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Record a verified local copy produced by `file.fetch`.
+pub fn remember_fetched_file(
+    data_dir: &Path,
+    room_id: &str,
+    file_id: &str,
+    path: &Path,
+    bytes: u64,
+) -> CoreResult<()> {
+    let mut state = load(data_dir)?;
+    let entry = state.rooms.entry(room_id.to_owned()).or_insert(RoomMeta {
+        name: None,
+        added_at_ms: crate::now_ms(),
+        peer_hints: Vec::new(),
+        fetched_files: BTreeMap::new(),
+    });
+    entry.fetched_files.insert(
+        file_id.to_owned(),
+        FetchedFileMeta {
+            path: path.to_path_buf(),
+            bytes,
+            fetched_at_ms: crate::now_ms(),
+        },
+    );
+    save(data_dir, &state)
+}
+
+/// A verified local fetch record if the file still exists with the expected
+/// byte length. If the user deleted or replaced the file, do not surface a stale
+/// "fetched" state.
+#[must_use]
+pub fn fetched_file(data_dir: &Path, room_id: &str, file_id: &str) -> Option<FetchedFileMeta> {
+    let meta = load(data_dir)
+        .ok()?
+        .rooms
+        .get(room_id)?
+        .fetched_files
+        .get(file_id)?
+        .clone();
+    let ok = std::fs::metadata(&meta.path).is_ok_and(|m| m.is_file() && m.len() == meta.bytes);
+    ok.then_some(meta)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{load, local_name, remember_room};
+    use super::{fetched_file, load, local_name, remember_fetched_file, remember_room};
     use tempfile::tempdir;
 
     #[test]
@@ -164,5 +217,20 @@ mod tests {
         );
         assert_eq!(local_name(dir.path(), "blake3:cd"), None);
         assert_eq!(load(dir.path()).unwrap().rooms.len(), 2);
+    }
+
+    #[test]
+    fn fetched_file_roundtrips_only_while_file_exists_with_expected_size() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("download.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        remember_fetched_file(dir.path(), "blake3:ab", "file_01", &file, 5).unwrap();
+
+        let fetched = fetched_file(dir.path(), "blake3:ab", "file_01").unwrap();
+        assert_eq!(fetched.path, file);
+        assert_eq!(fetched.bytes, 5);
+
+        std::fs::write(&file, b"changed").unwrap();
+        assert!(fetched_file(dir.path(), "blake3:ab", "file_01").is_none());
     }
 }

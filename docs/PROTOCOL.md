@@ -108,7 +108,7 @@ present only for that kind.
 | Method | Params | Result |
 |---|---|---|
 | `file.share` | `{ room_id, path, name?, mime? }` | `{ file_id, event_id }` — imports into the blob store and authors `file.shared` |
-| `file.list` | `{ room_id }` | `{ files: [{ file_id, name, size, mime, sender_id, ts, available, providers }] }` |
+| `file.list` | `{ room_id }` | `{ files: [{ file_id, name, size, mime, sender_id, ts, available, providers, fetched?, local_path?, local_bytes?, fetched_at_ms? }] }` |
 | `file.fetch` | `{ room_id, file_id, save_dir? }` | `{ path, bytes, verified: true }` — errors use `file_unavailable` / `file_unauthorized` / `hash_mismatch`, never a silent partial |
 
 Browser UI upload helper: because a browser file picker cannot reveal a real
@@ -119,6 +119,13 @@ stages the bytes under the daemon data dir, calls the same confined
 `file.share` import path, then removes the staged copy. Its JSON envelope is
 `{ ok: true, result: { file_id, event_id } }` or
 `{ ok: false, error: { code, message, hint } }`.
+
+Browser UI local-open helper: `GET /api/files/local?room_id=<room_id>&file_id=<file_id>`
+serves a previously fetched local copy from the daemon's loopback origin. The
+browser never supplies a filesystem path; the daemon resolves `(room_id,
+file_id)` against verified local fetch state or the default downloads path,
+then returns the file inline with `Content-Disposition`. Missing or stale local
+copies return the standard JSON error envelope.
 
 ### Pipes
 

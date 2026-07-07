@@ -116,6 +116,10 @@ export interface FileEntry {
   ts: number;
   available: boolean;
   providers: number;
+  fetched?: boolean;
+  local_path?: string | null;
+  local_bytes?: number | null;
+  fetched_at_ms?: number | null;
 }
 
 export type PipeState = 'open' | 'closed';

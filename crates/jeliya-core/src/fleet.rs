@@ -107,14 +107,25 @@ pub fn aggregate_liveness<I: IntoIterator<Item = Liveness>>(per_room: I) -> Live
 
 #[cfg(test)]
 mod tests {
-    use super::{aggregate_liveness, derive_liveness, is_working_class, Liveness, STALE_WORKING_MS};
+    use super::{
+        aggregate_liveness, derive_liveness, is_working_class, Liveness, STALE_WORKING_MS,
+    };
 
     const NOW: u64 = 1_783_190_000_000;
 
     #[test]
     fn only_the_exact_working_label_is_working_class() {
         assert!(is_working_class("working"));
-        for label in ["online", "done", "failed", "idle", "offline", "claiming", "Working", "working_hard"] {
+        for label in [
+            "online",
+            "done",
+            "failed",
+            "idle",
+            "offline",
+            "claiming",
+            "Working",
+            "working_hard",
+        ] {
             assert!(!is_working_class(label), "{label} must be idle-class");
         }
     }

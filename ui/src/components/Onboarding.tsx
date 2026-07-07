@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { splitInvite } from '../lib/invite';
 import type { Client, DaemonErrorShape } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
+import { joinRoomWithRetry } from '../lib/join';
+import type { JoinProgress } from '../lib/join';
 import { CopyButton, ErrorNote, TreeMark, Wordmark } from './ui';
 
 /** No identity yet → create one. No rooms yet → create or join by ticket.
@@ -91,6 +93,7 @@ function RoomsStep({
   const [peerAddr, setPeerAddr] = useState('');
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<DaemonErrorShape | null>(null);
+  const [joinProgress, setJoinProgress] = useState<JoinProgress | null>(null);
 
   const create = async () => {
     if (!name.trim()) return;
@@ -110,15 +113,17 @@ function RoomsStep({
     if (!ticket.trim()) return;
     setJoining(true);
     setJoinError(null);
+    setJoinProgress(null);
     try {
       const { ticket: t, peerAddr: addr } = splitInvite(ticket, peerAddr);
-      await client.call('room.join', {
+      await joinRoomWithRetry(client, {
         ticket: t,
         ...(addr ? { peers: [addr] } : {}),
-      });
+      }, setJoinProgress);
       onAdvance();
     } catch (e) {
       setJoinError(errorShape(e));
+      setJoinProgress(null);
     } finally {
       setJoining(false);
     }
@@ -201,6 +206,15 @@ function RoomsStep({
         <button type="submit" className="btn btn-primary" disabled={joining || !ticket.trim()}>
           {joining ? 'Joining…' : 'Join room'}
         </button>
+        {joinProgress ? (
+          <div className="join-progress" role="status">
+            <span className="spinner" aria-hidden="true" />
+            <span>{joinProgress.message}</span>
+            <em>
+              Attempt {joinProgress.attempt}/{joinProgress.maxAttempts}
+            </em>
+          </div>
+        ) : null}
         <ErrorNote error={joinError} />
       </form>
       </div>

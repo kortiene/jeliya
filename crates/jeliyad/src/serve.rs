@@ -14,14 +14,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, ORIGIN};
+use hyper::header::{HeaderValue, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN};
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 
+use hyper_util::rt::TokioIo;
 use jeliya_core::error::CoreError;
 use jeliya_core::supervisor::FILE_UPLOAD_MAX_BYTES;
-use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -77,9 +77,8 @@ impl UiSource {
     fn load(&self, rel: &str) -> Option<(Bytes, &'static str)> {
         match self {
             #[cfg(feature = "embed-ui")]
-            UiSource::Embedded => {
-                UiAssets::get(rel).map(|file| (Bytes::from(file.data.into_owned()), guess_mime(rel)))
-            }
+            UiSource::Embedded => UiAssets::get(rel)
+                .map(|file| (Bytes::from(file.data.into_owned()), guess_mime(rel))),
             UiSource::Dir(base) => std::fs::read(base.join(rel))
                 .ok()
                 .map(|bytes| (Bytes::from(bytes), guess_mime(rel))),
@@ -118,6 +117,12 @@ async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Res
         }
         return share_upload(req, state).await;
     }
+    if path == "/api/files/local" {
+        if req.method() != Method::GET {
+            return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        }
+        return local_file(req, state);
+    }
     if path.starts_with("/api/") {
         return text(StatusCode::NOT_FOUND, "not found");
     }
@@ -141,7 +146,10 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
         }
     }
     if !hyper_tungstenite::is_upgrade_request(&*req) {
-        return text(StatusCode::BAD_REQUEST, "expected a websocket upgrade; connect to /ws");
+        return text(
+            StatusCode::BAD_REQUEST,
+            "expected a websocket upgrade; connect to /ws",
+        );
     }
     match hyper_tungstenite::upgrade(req, None) {
         Ok((response, websocket)) => {
@@ -154,6 +162,57 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
         }
         Err(_) => text(StatusCode::BAD_REQUEST, "malformed websocket upgrade"),
     }
+}
+
+/// Serve a verified local file copy by `(room_id, file_id)`. The browser never
+/// supplies a filesystem path; the core maps protocol ids to a previously
+/// verified local copy.
+fn local_file(req: Request<Incoming>, state: AppState) -> Response<Full<Bytes>> {
+    let query = parse_query(req.uri().query().unwrap_or(""));
+    let Some(room_id) = query.get("room_id").filter(|v| !v.trim().is_empty()) else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            &CoreError::invalid("missing room_id for local file"),
+        );
+    };
+    let Some(file_id) = query.get("file_id").filter(|v| !v.trim().is_empty()) else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            &CoreError::invalid("missing file_id for local file"),
+        );
+    };
+    let file = match state.supervisor.local_file(room_id, file_id) {
+        Ok(file) => file,
+        Err(err) => return json_error(StatusCode::BAD_REQUEST, &err),
+    };
+    let bytes = match std::fs::read(&file.path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                &CoreError::internal(format!("could not read local file copy: {err}")),
+            )
+        }
+    };
+    if bytes.len() as u64 != file.bytes {
+        return json_error(
+            StatusCode::CONFLICT,
+            &CoreError::internal("local file copy changed before it could be served"),
+        );
+    }
+    let display_name =
+        upload_display_name(Some(&file.name)).unwrap_or_else(|_| "download".to_owned());
+    let content_type = HeaderValue::from_str(&file.mime)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    let content_disposition = HeaderValue::from_str(&content_disposition_value(&display_name))
+        .unwrap_or_else(|_| HeaderValue::from_static("inline; filename=\"download\""));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_LENGTH, file.bytes.to_string())
+        .header(CONTENT_DISPOSITION, content_disposition)
+        .body(Full::new(Bytes::from(bytes)))
+        .expect("local file response is well-formed")
 }
 
 /// Browser-backed file sharing. The browser cannot reveal a real local path for
@@ -173,7 +232,11 @@ async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<
     }
 
     if let Some(content_length) = req.headers().get(CONTENT_LENGTH) {
-        match content_length.to_str().ok().and_then(|v| v.parse::<u64>().ok()) {
+        match content_length
+            .to_str()
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
             Some(n) if n <= FILE_UPLOAD_MAX_BYTES => {}
             Some(n) => {
                 return json_error(
@@ -250,7 +313,8 @@ async fn read_limited(mut body: Incoming, max: u64) -> Result<Bytes, CoreError> 
     let mut out = Vec::new();
     let mut total = 0_u64;
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|e| CoreError::invalid(format!("could not read upload body: {e}")))?;
+        let frame =
+            frame.map_err(|e| CoreError::invalid(format!("could not read upload body: {e}")))?;
         if let Ok(data) = frame.into_data() {
             total += data.len() as u64;
             if total > max {
@@ -295,6 +359,55 @@ fn upload_display_name(raw: Option<&str>) -> Result<String, CoreError> {
         return Err(CoreError::invalid("file name is empty after sanitizing"));
     }
     Ok(cleaned)
+}
+
+fn disposition_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|ch| match ch {
+            '"' | '\\' | '\r' | '\n' => '_',
+            ch if ch == ' ' || ch.is_ascii_graphic() => ch,
+            _ => '_',
+        })
+        .collect();
+    if cleaned.trim_matches('_').is_empty() {
+        "download".to_owned()
+    } else {
+        cleaned
+    }
+}
+
+fn content_disposition_value(name: &str) -> String {
+    format!(
+        "inline; filename=\"{}\"; filename*=UTF-8''{}",
+        disposition_filename(name),
+        rfc5987_filename(name)
+    )
+}
+
+fn rfc5987_filename(name: &str) -> String {
+    let mut out = String::new();
+    for byte in name.as_bytes() {
+        match *byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'!'
+            | b'#'
+            | b'$'
+            | b'&'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~' => out.push(*byte as char),
+            byte => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn unique_stage_name(display_name: &str) -> String {
@@ -345,7 +458,11 @@ fn serve_static(path: &str, ui: &UiSource) -> Response<Full<Bytes>> {
     let Some(rel) = safe_rel(path) else {
         return text(StatusCode::BAD_REQUEST, "bad path");
     };
-    let rel = if rel.is_empty() { "index.html".to_owned() } else { rel };
+    let rel = if rel.is_empty() {
+        "index.html".to_owned()
+    } else {
+        rel
+    };
 
     if let Some((bytes, mime)) = ui.load(&rel) {
         return asset(bytes, mime);

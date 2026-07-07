@@ -236,16 +236,26 @@ function FilesTab({
   const [shareError, setShareError] = useState<DaemonErrorShape | null>(null);
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   const availableCount = files.filter((file) => file.available).length;
+  const fetchedCount = files.filter((file) => {
+    const state = fetches[file.file_id];
+    return state?.phase === 'verified' || state?.phase === 'fetched' || file.fetched;
+  }).length;
   const providerCount = files.reduce((sum, file) => sum + file.providers, 0);
   // A file this device shared reports available:false from its own view (the
   // daemon excludes self from the provider set), so it is neither fetchable here
   // nor a fault. Count those separately to keep the summary honest.
   const servingCount = files.filter((file) => !file.available && selfId !== null && file.sender_id === selfId).length;
-  const waitingProviderCount = files.length - availableCount - servingCount;
+  const waitingProviderCount = files.filter((file) => {
+    const state = fetches[file.file_id];
+    const fetched = state?.phase === 'verified' || state?.phase === 'fetched' || file.fetched;
+    const serving = !file.available && selfId !== null && file.sender_id === selfId;
+    return !file.available && !serving && !fetched;
+  }).length;
   const heroDetail =
     files.length === 0
       ? 'Share a readable path and peers can fetch a verified copy over P2P.'
       : `${formatBytes(totalBytes)} in the room · ${availableCount} fetchable here` +
+        (fetchedCount > 0 ? ` · ${fetchedCount} fetched` : '') +
         (servingCount > 0 ? ` · ${servingCount} served by you` : '');
   const shareHelpId = 'file-share-help';
   const selectedType = selectedFile ? selectedFileTypeLabel(selectedFile) : null;
@@ -403,6 +413,8 @@ function FilesTab({
         const ext = extOf(file.name).toUpperCase() || 'FILE';
         const type = fileTypeLabel(file, ext.toLowerCase());
         const mine = selfId !== null && file.sender_id === selfId;
+        const fetchState = fetches[file.file_id];
+        const fetched = fetchState?.phase === 'verified' || fetchState?.phase === 'fetched' || file.fetched;
         // `available` is "another provider device is a connected peer right now"
         // (the daemon excludes THIS device), so a file you shared reads as
         // not-available from your own view even though peers can fetch it. Label
@@ -410,6 +422,8 @@ function FilesTab({
         // crates/jeliya-core/src/supervisor.rs.
         const health = mine
           ? { tone: 'self', text: 'Serving to peers' }
+          : fetched
+            ? { tone: 'ok', text: 'Fetched locally' }
           : file.available
             ? { tone: 'ok', text: 'Ready to fetch' }
             : { tone: 'warn', text: 'No provider online' };
@@ -417,7 +431,7 @@ function FilesTab({
         return (
           <div
             key={file.file_id}
-            className={`file-row${!file.available && !mine ? ' unavailable' : ''}`}
+            className={`file-row${!file.available && !mine && !fetched ? ' unavailable' : ''}`}
             title={file.file_id}
           >
             <div className="file-row-main">
@@ -443,11 +457,11 @@ function FilesTab({
                     Serving
                   </span>
                 ) : (
-                  <FetchControl state={fetches[file.file_id]} onFetch={() => onFetch(file.file_id)} />
+                  <FetchControl state={fetchState} onFetch={() => onFetch(file.file_id)} />
                 )}
               </div>
             </div>
-            {mine ? null : <FetchDetail state={fetches[file.file_id]} />}
+            {mine ? null : <FetchDetail state={fetchState} />}
           </div>
         );
       })}

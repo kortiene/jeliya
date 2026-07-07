@@ -107,7 +107,11 @@ async fn main() {
         }
     };
     if addr.port() != args.port {
-        eprintln!("note: port {} was in use; bound {} instead", args.port, addr.port());
+        eprintln!(
+            "note: port {} was in use; bound {} instead",
+            args.port,
+            addr.port()
+        );
     }
 
     if ui.is_serving() {
@@ -116,7 +120,10 @@ async fn main() {
             data_dir.display()
         );
     } else {
-        println!("jeliyad listening on ws://{addr}/ws (data dir: {})", data_dir.display());
+        println!(
+            "jeliyad listening on ws://{addr}/ws (data dir: {})",
+            data_dir.display()
+        );
     }
 
     tokio::spawn(push_loop(state.clone()));

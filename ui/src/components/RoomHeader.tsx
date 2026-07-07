@@ -1,4 +1,4 @@
-import type { PeerStatus } from '../lib/protocol';
+import type { Member, PeerStatus } from '../lib/protocol';
 import { shortId } from '../lib/format';
 import { useNames } from './names';
 
@@ -22,6 +22,7 @@ function PeerChip({ peer }: { peer: PeerStatus }) {
 export function RoomHeader({
   name,
   memberCount,
+  members,
   peers,
   onInvite,
   onShareFile,
@@ -29,11 +30,15 @@ export function RoomHeader({
 }: {
   name: string;
   memberCount: number;
+  members: Member[];
   peers: PeerStatus[];
   onInvite(): void;
   onShareFile(): void;
   onOpenPipe(): void;
 }) {
+  const activeCount = members.length > 0 ? members.filter((m) => m.status === 'active').length : memberCount;
+  const invitedCount = members.filter((m) => m.status === 'invited').length;
+  const agentCount = members.filter((m) => m.role === 'agent').length;
   const connected = peers.filter((p) => p.state === 'connected');
   const hasDirect = connected.some((p) => p.path === 'direct');
   // Three honest states: nobody here, a live direct link, or relay-only
@@ -55,8 +60,24 @@ export function RoomHeader({
           <h1>{name}</h1>
           <div className="room-subtitle">
             <span>
-              {memberCount} member{memberCount === 1 ? '' : 's'}
+              {activeCount} active
             </span>
+            {agentCount > 0 ? (
+              <>
+                <span className="sep">|</span>
+                <span>
+                  {agentCount} agent{agentCount === 1 ? '' : 's'}
+                </span>
+              </>
+            ) : null}
+            {invitedCount > 0 ? (
+              <>
+                <span className="sep">|</span>
+                <span className="pending-invites">
+                  {invitedCount} invite{invitedCount === 1 ? '' : 's'} pending
+                </span>
+              </>
+            ) : null}
             <span className="sep">|</span>
             <span className="p2p-badge">
               <span

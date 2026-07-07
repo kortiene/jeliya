@@ -16,6 +16,8 @@ import { errorShape } from './lib/protocol';
 import { loadAliases, saveAliases, suggestedNames } from './lib/names';
 import { shortId } from './lib/format';
 import { splitInvite } from './lib/invite';
+import { joinRoomWithRetry } from './lib/join';
+import type { JoinProgress } from './lib/join';
 import { NamesContext } from './components/names';
 import type { NameApi } from './components/names';
 import { ErrorNote, Modal, TreeMark, Wordmark } from './components/ui';
@@ -26,6 +28,7 @@ import type { NavKey } from './components/Sidebar';
 import { MobileTabBar } from './components/MobileTabBar';
 import { RoomHeader } from './components/RoomHeader';
 import { Timeline } from './components/Timeline';
+import type { PendingMessage } from './components/Timeline';
 import { Composer } from './components/Composer';
 import { RightPanel } from './components/RightPanel';
 import type { PanelTab, PipeConnState } from './components/RightPanel';
@@ -40,6 +43,38 @@ type MobileView = 'rooms' | 'chat' | 'agents' | 'pipes' | 'files' | 'settings';
 
 const LAST_ROOM_KEY = 'jeliya.lastRoom';
 
+function localFileUrl(roomId: string, fileId: string): string {
+  const params = new URLSearchParams({ room_id: roomId, file_id: fileId });
+  return `/api/files/local?${params.toString()}`;
+}
+
+function persistedFetchState(roomId: string, file: FileEntry): FetchState | null {
+  if (!file.fetched || !file.local_path) return null;
+  return {
+    phase: 'fetched',
+    path: file.local_path,
+    bytes: file.local_bytes ?? file.size,
+    url: localFileUrl(roomId, file.file_id),
+  };
+}
+
+function mergeFetchedFiles(
+  previous: Record<string, FetchState>,
+  roomId: string,
+  files: FileEntry[],
+): Record<string, FetchState> {
+  let next = previous;
+  for (const file of files) {
+    const persisted = persistedFetchState(roomId, file);
+    if (!persisted) continue;
+    const current = next[file.file_id];
+    if (current?.phase === 'pending' || current?.phase === 'verified') continue;
+    if (next === previous) next = { ...previous };
+    next[file.file_id] = persisted;
+  }
+  return next;
+}
+
 export default function App({ client }: { client: Client }) {
   const [conn, setConn] = useState<ConnectionState>(client.getState());
   const [phase, setPhase] = useState<Phase>('boot');
@@ -51,6 +86,9 @@ export default function App({ client }: { client: Client }) {
   const roomIdRef = useRef<string | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const timelineRef = useRef<TimelineEvent[]>([]);
+  const pendingSeq = useRef(0);
+  const [pendingMessages, setPendingMessages] = useState<Record<string, PendingMessage[]>>({});
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [pipes, setPipes] = useState<PipeEntry[]>([]);
   const [peers, setPeers] = useState<PeerStatus[]>([]);
@@ -80,7 +118,10 @@ export default function App({ client }: { client: Client }) {
     async (rid: string) => {
       try {
         const { files } = await client.call('file.list', { room_id: rid });
-        if (roomIdRef.current === rid) setFiles(files);
+        if (roomIdRef.current === rid) {
+          setFiles(files);
+          setFetches((current) => mergeFetchedFiles(current, rid, files));
+        }
       } catch {
         /* transient — next push retries */
       }
@@ -148,6 +189,16 @@ export default function App({ client }: { client: Client }) {
         if (roomIdRef.current !== rid) return;
         setMembers(opened.members);
         setTimeline(opened.timeline);
+        setPendingMessages((byRoom) => {
+          const list = byRoom[rid];
+          if (!list?.some((message) => message.eventId)) return byRoom;
+          const eventIds = new Set(opened.timeline.map((event) => event.event_id));
+          const nextList = list.filter((message) => !message.eventId || !eventIds.has(message.eventId));
+          const next = { ...byRoom };
+          if (nextList.length > 0) next[rid] = nextList;
+          else delete next[rid];
+          return next;
+        });
         setRoomLoading(false);
         setEndpointAddr(opened.endpoint.addr ?? null);
         const [f, p, ps] = await Promise.all([
@@ -157,6 +208,7 @@ export default function App({ client }: { client: Client }) {
         ]);
         if (roomIdRef.current !== rid) return;
         setFiles(f.files);
+        setFetches((current) => mergeFetchedFiles(current, rid, f.files));
         setPipes(p.pipes);
         setPeers(ps.peers);
         void refreshRooms(); // open flag changed
@@ -169,6 +221,10 @@ export default function App({ client }: { client: Client }) {
     },
     [client, refreshRooms],
   );
+
+  useEffect(() => {
+    timelineRef.current = timeline;
+  }, [timeline]);
 
   // -- lifecycle: connect once, subscribe pushes -------------------------------
 
@@ -189,6 +245,17 @@ export default function App({ client }: { client: Client }) {
         next.splice(i, 0, event);
         return next;
       });
+      if (event.kind === 'message') {
+        setPendingMessages((byRoom) => {
+          const list = byRoom[room_id];
+          if (!list?.some((message) => message.eventId === event.event_id)) return byRoom;
+          const nextList = list.filter((message) => message.eventId !== event.event_id);
+          const next = { ...byRoom };
+          if (nextList.length > 0) next[room_id] = nextList;
+          else delete next[room_id];
+          return next;
+        });
+      }
       if (event.kind === 'file_shared') void refreshFiles(room_id);
       if (event.kind === 'pipe_opened' || event.kind === 'pipe_closed') void refreshPipes(room_id);
       if (event.kind === 'member_joined' || event.kind === 'member_invited' || event.kind === 'member_left') {
@@ -281,10 +348,65 @@ export default function App({ client }: { client: Client }) {
 
   // -- actions --------------------------------------------------------------------
 
-  const sendMessage = async (body: string) => {
+  const updatePendingForRoom = (rid: string, updater: (messages: PendingMessage[]) => PendingMessage[]) => {
+    setPendingMessages((byRoom) => {
+      const nextList = updater(byRoom[rid] ?? []);
+      const next = { ...byRoom };
+      if (nextList.length > 0) next[rid] = nextList;
+      else delete next[rid];
+      return next;
+    });
+  };
+
+  const sendMessage = async (body: string, retryClientId?: string) => {
     if (!roomIdRef.current) return;
-    await client.call('message.send', { room_id: roomIdRef.current, body });
-    // The event itself arrives via the room.event push (exactly once).
+    const rid = roomIdRef.current;
+    const clientId = retryClientId ?? `pending-${Date.now()}-${pendingSeq.current++}`;
+    const ts = Date.now();
+
+    if (retryClientId) {
+      updatePendingForRoom(rid, (messages) =>
+        messages.map((message) =>
+          message.clientId === clientId ? { ...message, phase: 'sending', ts, error: undefined } : message,
+        ),
+      );
+    } else {
+      updatePendingForRoom(rid, (messages) => [
+        ...messages,
+        {
+          clientId,
+          body,
+          ts,
+          phase: 'sending',
+        },
+      ]);
+    }
+
+    try {
+      const { event_id } = await client.call('message.send', { room_id: rid, body });
+      const alreadyVisible = timelineRef.current.some((event) => event.event_id === event_id);
+      updatePendingForRoom(rid, (messages) =>
+        alreadyVisible
+          ? messages.filter((message) => message.clientId !== clientId)
+          : messages.map((message) =>
+              message.clientId === clientId ? { ...message, phase: 'syncing', eventId: event_id } : message,
+            ),
+      );
+    } catch (e) {
+      updatePendingForRoom(rid, (messages) =>
+        messages.map((message) =>
+          message.clientId === clientId ? { ...message, phase: 'failed', error: errorShape(e) } : message,
+        ),
+      );
+    }
+  };
+
+  const retryPendingMessage = (clientId: string) => {
+    const rid = roomIdRef.current;
+    if (!rid) return;
+    const pending = (pendingMessages[rid] ?? []).find((message) => message.clientId === clientId);
+    if (!pending) return;
+    void sendMessage(pending.body, clientId);
   };
 
   const fetchFile = (fileId: string) => {
@@ -305,7 +427,15 @@ export default function App({ client }: { client: Client }) {
       try {
         const result = await client.call('file.fetch', { room_id: rid, file_id: fileId });
         if (roomIdRef.current !== rid) return;
-        setFetches((m) => ({ ...m, [fileId]: { phase: 'verified', path: result.path, bytes: result.bytes } }));
+        setFetches((m) => ({
+          ...m,
+          [fileId]: {
+            phase: 'verified',
+            path: result.path,
+            bytes: result.bytes,
+            url: localFileUrl(rid, fileId),
+          },
+        }));
       } catch (e) {
         if (roomIdRef.current !== rid) return;
         setFetches((m) => ({ ...m, [fileId]: { phase: 'error', error: errorShape(e) } }));
@@ -520,6 +650,7 @@ export default function App({ client }: { client: Client }) {
               <RoomHeader
                 name={currentRoom.name}
                 memberCount={members.length || currentRoom.member_count}
+                members={members}
                 peers={peers}
                 onInvite={() => setInviteOpen(true)}
                 onShareFile={() => setTab('files')}
@@ -535,14 +666,22 @@ export default function App({ client }: { client: Client }) {
               <Timeline
                 key={roomId}
                 events={timeline}
+                pendingMessages={roomId ? (pendingMessages[roomId] ?? []) : []}
                 files={files}
                 fetches={fetches}
                 loading={roomLoading}
                 selfId={selfId}
                 onFetch={fetchFile}
+                onRetryPendingMessage={retryPendingMessage}
                 onShowPipes={() => setTab('pipes')}
               />
-              <Composer roomName={currentRoom.name} disabled={conn !== 'connected'} onSend={sendMessage} />
+              <Composer
+                roomId={currentRoom.room_id}
+                roomName={currentRoom.name}
+                disabled={conn !== 'connected'}
+                onSend={sendMessage}
+                onShareFile={shareBrowserFile}
+              />
             </>
           ) : (
             <div className="center-empty muted">Select a room</div>
@@ -676,20 +815,23 @@ function JoinRoomModal({
   const [peerAddr, setPeerAddr] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
+  const [progress, setProgress] = useState<JoinProgress | null>(null);
 
   const join = async () => {
     if (!ticket.trim() || busy) return;
     setBusy(true);
     setError(null);
+    setProgress(null);
     try {
       const { ticket: t, peerAddr: addr } = splitInvite(ticket, peerAddr);
-      const { room_id } = await client.call('room.join', {
+      const { room_id } = await joinRoomWithRetry(client, {
         ticket: t,
         ...(addr ? { peers: [addr] } : {}),
-      });
+      }, setProgress);
       onJoined(room_id);
     } catch (e) {
       setError(errorShape(e));
+      setProgress(null);
       setBusy(false);
     }
   };
@@ -731,6 +873,15 @@ function JoinRoomModal({
         <button type="submit" className="btn btn-primary" disabled={busy || !ticket.trim()}>
           {busy ? 'Joining…' : 'Join room'}
         </button>
+        {progress ? (
+          <div className="join-progress" role="status">
+            <span className="spinner" aria-hidden="true" />
+            <span>{progress.message}</span>
+            <em>
+              Attempt {progress.attempt}/{progress.maxAttempts}
+            </em>
+          </div>
+        ) : null}
         <ErrorNote error={error} />
       </form>
     </Modal>

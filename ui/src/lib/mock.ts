@@ -892,7 +892,12 @@ class MockClient implements Client {
               return;
             }
             const dir = p.save_dir ?? '~/Downloads/Jeliya';
-            resolve({ path: `${dir}/${file.name}`, bytes: file.size, verified: true as const });
+            const path = `${dir}/${file.name}`;
+            file.fetched = true;
+            file.local_path = path;
+            file.local_bytes = file.size;
+            file.fetched_at_ms = Date.now();
+            resolve({ path, bytes: file.size, verified: true as const });
           }, 900 + Math.random() * 500);
         });
       }

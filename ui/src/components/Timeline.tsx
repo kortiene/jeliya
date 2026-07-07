@@ -1,9 +1,23 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { FileEntry, FileRef, TimelineEvent } from '../lib/protocol';
+import type { DaemonErrorShape, FileEntry, FileRef, TimelineEvent } from '../lib/protocol';
 import { dayLabel, extOf, fileTint, formatBytes, formatTime, labelTone, prettyLabel, shortId } from '../lib/format';
 import { Avatar, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
 import type { FetchState } from './ui';
+
+export interface PendingMessage {
+  clientId: string;
+  body: string;
+  ts: number;
+  phase: 'sending' | 'syncing' | 'failed';
+  eventId?: string;
+  error?: DaemonErrorShape;
+}
+
+type TimelineItem = { type: 'event'; event: TimelineEvent } | { type: 'pending'; pending: PendingMessage };
+type TimelineSide = 'own' | 'remote' | 'system';
+
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
 function FileTile({
   file,
@@ -48,6 +62,7 @@ function EventCard({
   files,
   fetches,
   selfId,
+  compact,
   onFetch,
   onShowPipes,
 }: {
@@ -55,11 +70,13 @@ function EventCard({
   files: FileEntry[];
   fetches: Record<string, FetchState>;
   selfId: string | null;
+  compact: boolean;
   onFetch(fileId: string): void;
   onShowPipes(): void;
 }) {
   const senderId = event.sender.identity_id;
   const time = formatTime(event.ts);
+  const isOwn = selfId !== null && senderId === selfId;
 
   switch (event.kind) {
     case 'room_created':
@@ -98,17 +115,17 @@ function EventCard({
     }
 
     case 'message': {
-      // The desktop mockup renders every message uniformly left-aligned with an
-      // avatar — not a two-sided chat — so own messages are not special-cased.
       return (
-        <div className="msg-row">
-          <Avatar id={senderId} />
+        <div className={`msg-row${isOwn ? ' own' : ''}${compact ? ' compact' : ''}`}>
+          {isOwn ? null : compact ? <span className="avatar-spacer" aria-hidden="true" /> : <Avatar id={senderId} />}
           <div className="msg-col">
-            <div className="msg-meta">
-              <SenderName id={senderId} className="msg-sender" />
-              {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
-              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
-            </div>
+            {!compact ? (
+              <div className="msg-meta">
+                <SenderName id={senderId} className="msg-sender" />
+                {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
+                <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
+              </div>
+            ) : null}
             <div className="msg-bubble">{event.body}</div>
           </div>
         </div>
@@ -119,14 +136,18 @@ function EventCard({
       const label = event.label ?? 'status';
       const artifacts = event.artifacts ?? [];
       return (
-        <div className="event-card">
-          <Avatar id={senderId} />
+        <div className={`event-card agent-work-card${isOwn ? ' own' : ''}`}>
+          {isOwn ? null : <Avatar id={senderId} />}
           <div className="event-main">
             <div className="event-head">
               <SenderName id={senderId} className="event-sender" />
-              {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
+              <span className="chip chip-role">AGENT</span>
               <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
               <span className={`chip chip-label tone-${labelTone(label)}`}>{prettyLabel(label)}</span>
+            </div>
+            <div className="agent-work-title">
+              <span aria-hidden="true">✦</span>
+              <strong>{prettyLabel(label)}</strong>
             </div>
             {event.status_message ? <p className="event-text">{event.status_message}</p> : null}
             {typeof event.progress === 'number' ? (
@@ -156,8 +177,8 @@ function EventCard({
     case 'file_shared': {
       if (!event.file) return null;
       return (
-        <div className="event-card">
-          <Avatar id={senderId} />
+        <div className={`event-card${isOwn ? ' own' : ''}`}>
+          {isOwn ? null : <Avatar id={senderId} />}
           <div className="event-main">
             <div className="event-head">
               <SenderName id={senderId} className="event-sender" />
@@ -167,7 +188,7 @@ function EventCard({
             </div>
             <FileTile
               file={event.file}
-              isSelfOwned={selfId !== null && senderId === selfId}
+              isSelfOwned={isOwn}
               state={fetches[event.file.file_id]}
               onFetch={onFetch}
             />
@@ -179,8 +200,8 @@ function EventCard({
     case 'pipe_opened': {
       if (!event.pipe) return null;
       return (
-        <div className="event-card">
-          <Avatar id={senderId} />
+        <div className={`event-card${isOwn ? ' own' : ''}`}>
+          {isOwn ? null : <Avatar id={senderId} />}
           <div className="event-main">
             <div className="event-head">
               <SenderName id={senderId} className="event-sender" />
@@ -219,47 +240,144 @@ function EventCard({
   }
 }
 
+function PendingMessageCard({
+  message,
+  compact,
+  onRetry,
+}: {
+  message: PendingMessage;
+  compact: boolean;
+  onRetry(clientId: string): void;
+}) {
+  const label =
+    message.phase === 'failed'
+      ? "Couldn't send"
+      : message.phase === 'syncing'
+        ? 'Sent locally, syncing...'
+        : 'Sending...';
+  return (
+    <div className={`msg-row own pending ${message.phase}${compact ? ' compact' : ''}`}>
+      <div className="msg-col">
+        {!compact ? (
+          <div className="msg-meta pending-meta">
+            <span>You</span>
+            <time dateTime={new Date(message.ts).toISOString()}>{formatTime(message.ts)}</time>
+          </div>
+        ) : null}
+        <div className="msg-bubble">{message.body}</div>
+        <div className="pending-line">
+          {message.phase !== 'failed' ? <span className="spinner" aria-hidden="true" /> : null}
+          <span>{label}</span>
+          {message.phase === 'failed' ? (
+            <button type="button" className="text-btn" onClick={() => onRetry(message.clientId)}>
+              Retry
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function itemTs(item: TimelineItem): number {
+  return item.type === 'event' ? item.event.ts : item.pending.ts;
+}
+
+function itemSender(item: TimelineItem, selfId: string | null): string | null {
+  if (item.type === 'pending') return selfId;
+  return item.event.kind === 'message' ? item.event.sender.identity_id : null;
+}
+
+function shouldGroup(prev: TimelineItem | null, item: TimelineItem, selfId: string | null): boolean {
+  if (!prev) return false;
+  const sender = itemSender(item, selfId);
+  const prevSender = itemSender(prev, selfId);
+  if (!sender || !prevSender || sender !== prevSender) return false;
+  return itemTs(item) - itemTs(prev) <= GROUP_WINDOW_MS;
+}
+
+function itemSide(item: TimelineItem, selfId: string | null): TimelineSide {
+  if (item.type === 'pending') return 'own';
+  const { event } = item;
+  if (!['message', 'agent_status', 'file_shared', 'pipe_opened'].includes(event.kind)) {
+    return 'system';
+  }
+  return selfId !== null && event.sender.identity_id === selfId ? 'own' : 'remote';
+}
+
 export function Timeline({
   events,
+  pendingMessages,
   files,
   fetches,
   loading,
   selfId,
   onFetch,
+  onRetryPendingMessage,
   onShowPipes,
 }: {
   events: TimelineEvent[];
+  pendingMessages: PendingMessage[];
   files: FileEntry[];
   fetches: Record<string, FetchState>;
   loading: boolean;
   selfId: string | null;
   onFetch(fileId: string): void;
+  onRetryPendingMessage(clientId: string): void;
   onShowPipes(): void;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
+  const previousItemCount = useRef(0);
+  const [newItemCount, setNewItemCount] = useState(0);
+
+  const items: TimelineItem[] = [
+    ...events.map((event) => ({ type: 'event' as const, event })),
+    ...pendingMessages.map((pending) => ({ type: 'pending' as const, pending })),
+  ].sort((a, b) => itemTs(a) - itemTs(b));
 
   useEffect(() => {
     const el = scroller.current;
-    if (el && stickToBottom.current) {
-      el.scrollTop = el.scrollHeight;
+    const previous = previousItemCount.current;
+    const delta = Math.max(0, items.length - previous);
+    if (el) {
+      if (stickToBottom.current) {
+        el.scrollTop = el.scrollHeight;
+        setNewItemCount(0);
+      } else if (delta > 0) {
+        setNewItemCount((count) => count + delta);
+      }
     }
-  }, [events.length]);
+    previousItemCount.current = items.length;
+  }, [items.length]);
 
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+    if (stickToBottom.current) setNewItemCount(0);
+  };
+
+  const scrollToBottom = () => {
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    stickToBottom.current = true;
+    setNewItemCount(0);
   };
 
   let lastDay = '';
-  const rows: { key: string; node: ReactNode }[] = [];
-  for (const event of events) {
-    const day = dayLabel(event.ts);
+  const rows: { key: string; node: ReactNode; side: TimelineSide; compact: boolean }[] = [];
+  let prevItem: TimelineItem | null = null;
+  for (const item of items) {
+    const ts = itemTs(item);
+    const day = dayLabel(ts);
     if (day !== lastDay) {
       lastDay = day;
       rows.push({
-        key: `day-${day}-${event.event_id}`,
+        key: `day-${day}-${item.type === 'event' ? item.event.event_id : item.pending.clientId}`,
+        side: 'system',
+        compact: false,
         node: (
           <div className="day-divider">
             <span>{day}</span>
@@ -267,23 +385,40 @@ export function Timeline({
         ),
       });
     }
+    const compact = shouldGroup(prevItem, item, selfId);
+    const side = itemSide(item, selfId);
     rows.push({
-      key: event.event_id,
-      node: (
-        <EventCard
-          event={event}
-          files={files}
-          fetches={fetches}
-          selfId={selfId}
-          onFetch={onFetch}
-          onShowPipes={onShowPipes}
-        />
-      ),
+      key: item.type === 'event' ? item.event.event_id : item.pending.clientId,
+      side,
+      compact,
+      node:
+        item.type === 'event' ? (
+          <EventCard
+            event={item.event}
+            files={files}
+            fetches={fetches}
+            selfId={selfId}
+            compact={compact}
+            onFetch={onFetch}
+            onShowPipes={onShowPipes}
+          />
+        ) : (
+          <PendingMessageCard message={item.pending} compact={compact} onRetry={onRetryPendingMessage} />
+        ),
     });
+    prevItem = item;
   }
 
   return (
-    <div className="timeline" ref={scroller} onScroll={onScroll} role="log" aria-label="Room timeline" aria-busy={loading}>
+    <div className="timeline-shell">
+      <div
+        className="timeline"
+        ref={scroller}
+        onScroll={onScroll}
+        role="log"
+        aria-label="Room timeline"
+        aria-busy={loading}
+      >
       {loading ? (
         <div aria-hidden="true">
           <div className="skel-row">
@@ -311,12 +446,21 @@ export function Timeline({
         </div>
       ) : null}
       {rows.map((row) => (
-        <div key={row.key} className="timeline-row">
+        <div
+          key={row.key}
+          className={`timeline-row side-${row.side}${row.compact ? ' is-compact' : ''}`}
+        >
           {row.node}
         </div>
       ))}
-      {!loading && events.length === 0 ? (
+      {!loading && items.length === 0 ? (
         <div className="timeline-empty muted">No events yet — say something below.</div>
+      ) : null}
+      </div>
+      {newItemCount > 0 ? (
+        <button type="button" className="new-messages" onClick={scrollToBottom}>
+          {newItemCount} new message{newItemCount === 1 ? '' : 's'}
+        </button>
       ) : null}
     </div>
   );

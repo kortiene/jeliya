@@ -30,7 +30,17 @@ export function InviteModal({
     setError(null);
     setTicket(null);
     try {
-      const expirySecs = expiry.trim() ? Number(expiry.trim()) : undefined;
+      const expiryText = expiry.trim();
+      const expiryValue = expiryText ? Number(expiryText) : undefined;
+      if (expiryText && (expiryValue === undefined || !Number.isInteger(expiryValue) || expiryValue <= 0)) {
+        setError({
+          code: 'invalid_params',
+          message: 'expiry must be a positive number of seconds',
+          hint: 'leave it blank or use a value like 3600',
+        });
+        return;
+      }
+      const expirySecs = expiryValue;
       const result = await client.call('invite.create', {
         room_id: roomId,
         identity_id: invitee,
@@ -58,6 +68,13 @@ export function InviteModal({
             Tickets are bound to one identity. Ask the invitee for their identity id — it is shown on their onboarding
             screen and in their sidebar footer, with a copy button.
           </p>
+          <div className="invite-readiness">
+            <span className="dot dot-green" aria-hidden="true" />
+            <div>
+              <strong>This room is open for inviting.</strong>
+              <p>Keep it open until the invitee finishes joining. Jeliya can only bootstrap them while an owner is reachable.</p>
+            </div>
+          </div>
           <label className="field">
             <span>Invitee identity id</span>
             <input
@@ -96,6 +113,13 @@ export function InviteModal({
         </form>
       ) : endpointAddr ? (
         <div>
+          <div className="invite-readiness invite-ready">
+            <span className="dot dot-green" aria-hidden="true" />
+            <div>
+              <strong>Ready to send.</strong>
+              <p>Stay in this room until they join. If they still see “couldn't reach inviter,” copy a fresh invite and retry.</p>
+            </div>
+          </div>
           <p className="muted">
             Send this one paste to the invitee — it is the ticket and your dialable address together. They paste it
             into “Join with a ticket” and the address fills in automatically.
@@ -135,6 +159,13 @@ export function InviteModal({
         </div>
       ) : (
         <div>
+          <div className="invite-readiness invite-caution">
+            <span className="dot" aria-hidden="true" />
+            <div>
+              <strong>No dialable address reported yet.</strong>
+              <p>Keep this room open. The joiner may still connect via discovery or relay, but a fresh room address is more reliable.</p>
+            </div>
+          </div>
           <p className="muted">Send this ticket to the invitee. They join with it (room.join).</p>
           <div className="ticket-box">
             <textarea

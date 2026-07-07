@@ -82,9 +82,7 @@ impl ErrorKind {
             Self::HashMismatch => Some("do not trust this file; ask for a fresh file.share"),
             Self::PeerUnreachable => Some("ask the peer to open the room, then retry"),
             Self::NotAMember => Some("ask the room admin for an invite"),
-            Self::InvalidParams
-            | Self::PipeDenied
-            | Self::Internal => None,
+            Self::InvalidParams | Self::PipeDenied | Self::Internal => None,
         }
     }
 }

@@ -32,8 +32,8 @@ use iroh_rooms::events::constants::{
     MAX_STATUS_LABEL_BYTES, MAX_STATUS_MESSAGE_BYTES, SHORT_ID_LEN,
 };
 use iroh_rooms::events::{
-    build_agent_status, build_message_text, capability_hash, validate_wire_bytes, Content,
-    EventId, EventType, RejectReason, SignedEvent, ValidationContext, WireEvent,
+    build_agent_status, build_message_text, capability_hash, validate_wire_bytes, Content, EventId,
+    EventType, RejectReason, SignedEvent, ValidationContext, WireEvent,
 };
 use iroh_rooms::experimental::pipe_runtime::{is_loopback_target, PipeError, PipeForwarder};
 use iroh_rooms::experimental::session::{
@@ -47,8 +47,8 @@ use iroh_rooms::files::build_file_shared;
 use iroh_rooms::identity::{DeviceBinding, DeviceKey, IdentityKey};
 use iroh_rooms::room::{
     build_member_invited, build_member_joined, build_member_left, build_room_created,
-    derive_room_id, Ingest, MembershipSnapshot, Role, RoomId, RoomInviteTicket,
-    RoomMembership, Status,
+    derive_room_id, Ingest, MembershipSnapshot, Role, RoomId, RoomInviteTicket, RoomMembership,
+    Status,
 };
 
 use crate::error::{CoreError, CoreResult, ErrorKind};
@@ -84,6 +84,24 @@ const PIPE_SYNC_WAIT: Duration = Duration::from_secs(10);
 /// Backoff between attempts to reclaim an owned `Node` for shutdown while an
 /// in-flight network op still borrows the session (see `reclaim_session`).
 const RECLAIM_POLL: Duration = Duration::from_millis(50);
+/// Event types that the sync protocol serves through the never-windowed
+/// authorization pull.
+const MEMBERSHIP_EVENT_TYPES: [EventType; 5] = [
+    EventType::RoomCreated,
+    EventType::MemberInvited,
+    EventType::MemberJoined,
+    EventType::MemberLeft,
+    EventType::MemberRemoved,
+];
+
+/// A verified local file copy that can be served by the loopback HTTP endpoint.
+#[derive(Debug, Clone)]
+pub struct LocalFile {
+    pub path: PathBuf,
+    pub name: String,
+    pub mime: String,
+    pub bytes: u64,
+}
 
 /// One open room: the SDK node (transport + engine + blob serving), the live
 /// connection-event subscription, connector-side pipe forwarders, and the
@@ -250,8 +268,11 @@ impl RoomSupervisor {
         // WAL allows a single writer at a time. The busy_timeout lets a colliding
         // writer wait inside SQLite instead of erroring instantly, which retires
         // the old application-level `with_busy_retry` backoff loop.
-        EventStore::open_with(&self.db_path(), &StoreOptions::new(Some(Duration::from_millis(5000))))
-            .map_err(|e| internal("could not open the event store", e))
+        EventStore::open_with(
+            &self.db_path(),
+            &StoreOptions::new(Some(Duration::from_millis(5000))),
+        )
+        .map_err(|e| internal("could not open the event store", e))
     }
 
     /// Confine `file.share` to files inside the daemon's data dir, excluding the
@@ -287,10 +308,10 @@ impl RoomSupervisor {
                         || name.starts_with(localstate::STATE_FILE)
                 });
         if is_reserved_child {
-            return Err(CoreError::invalid(
-                "refusing to share a daemon secret/state file",
-            )
-            .with_hint("that path holds daemon-private data"));
+            return Err(
+                CoreError::invalid("refusing to share a daemon secret/state file")
+                    .with_hint("that path holds daemon-private data"),
+            );
         }
         Ok(())
     }
@@ -303,7 +324,10 @@ impl RoomSupervisor {
     /// The map lock is released before the caller does any network work.
     fn session(&self, room_id: &RoomId) -> CoreResult<Arc<RoomSession>> {
         self.sessions().get(room_id).cloned().ok_or_else(|| {
-            CoreError::new(ErrorKind::RoomNotOpen, format!("room {room_id} is not open"))
+            CoreError::new(
+                ErrorKind::RoomNotOpen,
+                format!("room {room_id} is not open"),
+            )
         })
     }
 
@@ -433,6 +457,86 @@ impl RoomSupervisor {
             .map_err(|e| internal("could not read the room heads", e))?;
         heads.truncate(MAX_PREV_EVENTS);
         Ok(heads)
+    }
+
+    /// Current heads inside the never-windowed authorization class: every
+    /// membership event plus every admin-authored event. Membership writes use
+    /// these heads so late join bootstrap can pull every parent via
+    /// `WantMembership`, while admin-authored writes still advance the admin
+    /// sequence through admin content events.
+    fn authorization_class_heads(
+        store: &EventStore,
+        room_id: &RoomId,
+        admin: &IdentityKey,
+    ) -> CoreResult<Vec<EventId>> {
+        let mut ids = BTreeSet::new();
+        let mut events = Vec::new();
+        for ty in MEMBERSHIP_EVENT_TYPES {
+            for stored in store
+                .by_type(room_id, ty)
+                .map_err(|e| internal("could not read membership events", e))?
+            {
+                if ids.insert(stored.event_id) {
+                    events.push(stored);
+                }
+            }
+        }
+        for stored in store
+            .by_sender(room_id, admin)
+            .map_err(|e| internal("could not read admin-authored events", e))?
+        {
+            if ids.insert(stored.event_id) {
+                events.push(stored);
+            }
+        }
+
+        let mut cited = BTreeSet::new();
+        for stored in &events {
+            let validated = validate_wire_bytes(
+                &stored.wire.to_bytes(),
+                &ValidationContext::for_room(*room_id),
+            )
+            .map_err(|reason| {
+                CoreError::internal(format!(
+                    "stored authorization event failed validation ({})",
+                    reason.code()
+                ))
+            })?;
+            for parent in validated.event.prev_events {
+                if ids.contains(&parent) {
+                    cited.insert(parent);
+                }
+            }
+        }
+
+        let mut heads: Vec<EventId> = ids.difference(&cited).copied().collect();
+        heads.truncate(MAX_PREV_EVENTS);
+        Ok(heads)
+    }
+
+    fn downloaded_file_meta(
+        &self,
+        file_id: &[u8; SHORT_ID_LEN],
+        name: &str,
+        bytes: u64,
+    ) -> Option<localstate::FetchedFileMeta> {
+        let clean_name = sanitize_name(name, *file_id);
+        let dir = self.data_dir.join(DOWNLOADS_DIR);
+        let candidates = [
+            dir.join(&clean_name),
+            dir.join(format!("{}_{}", hex::encode(file_id), clean_name)),
+        ];
+        for path in candidates {
+            let ok = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == bytes);
+            if ok {
+                return Some(localstate::FetchedFileMeta {
+                    path,
+                    bytes,
+                    fetched_at_ms: 0,
+                });
+            }
+        }
+        None
     }
 
     /// Self-validate a freshly authored wire event and publish it through the
@@ -605,7 +709,12 @@ impl RoomSupervisor {
     /// clone — those ops are all bounded by their own timeouts, so this
     /// terminates. Tears any local pipe forwarders down first.
     async fn reclaim_session(session: Arc<RoomSession>) -> Node {
-        for (_, forwarder) in session.forwarders.lock().expect("forwarders poisoned").drain() {
+        for (_, forwarder) in session
+            .forwarders
+            .lock()
+            .expect("forwarders poisoned")
+            .drain()
+        {
             forwarder.shutdown();
         }
         let mut arc = session;
@@ -631,23 +740,27 @@ impl RoomSupervisor {
         let secret = self.secrets()?;
 
         let mut room_nonce = [0u8; ROOM_NONCE_LEN];
-        getrandom::fill(&mut room_nonce)
-            .map_err(|e| internal("OS CSPRNG unavailable", e))?;
+        getrandom::fill(&mut room_nonce).map_err(|e| internal("OS CSPRNG unavailable", e))?;
         let created_at = now_ms();
         let sender_id = secret.identity.identity_key();
         let room_id = derive_room_id(&sender_id, &room_nonce, created_at);
 
-        let wire = build_room_created(&secret.identity, &secret.device, name, &room_nonce, created_at);
-        let validated = validate_wire_bytes(
-            &wire.to_bytes(),
-            &ValidationContext::for_room(room_id),
-        )
-        .map_err(|reason| {
-            CoreError::internal(format!(
-                "freshly built genesis failed validation ({})",
-                reason.code()
-            ))
-        })?;
+        let wire = build_room_created(
+            &secret.identity,
+            &secret.device,
+            name,
+            &room_nonce,
+            created_at,
+        );
+        let validated =
+            validate_wire_bytes(&wire.to_bytes(), &ValidationContext::for_room(room_id)).map_err(
+                |reason| {
+                    CoreError::internal(format!(
+                        "freshly built genesis failed validation ({})",
+                        reason.code()
+                    ))
+                },
+            )?;
 
         let mut store = self.open_store()?;
         store
@@ -687,6 +800,22 @@ impl RoomSupervisor {
             let Ok(snapshot) = self.snapshot_for(&room_id).await else {
                 continue; // a corrupt room fails its own reads, not the index
             };
+            // "YOUR ROOMS" must mean rooms this identity actually belongs (or
+            // belonged) to. A room can land in the local store purely because a
+            // shared peer's sync backfilled its membership sub-DAG — e.g. the
+            // room's owner is also our peer in a DIFFERENT room — even though we
+            // were never invited to it. Such a room has no entry for us in the
+            // member set. Listing it would both leak a room we are not in (its
+            // name and member count) and hand the UI a room that answers every
+            // `room.open` with `not_a_member`. Skip it. `member.left`/
+            // `member.removed` keep the subject in the member set, so archived
+            // (left/removed) rooms still list.
+            let self_member = self_key
+                .as_ref()
+                .and_then(|key| snapshot.members().find(|member| &member.identity == key));
+            if self_key.is_some() && self_member.is_none() {
+                continue;
+            }
             let role = self_key
                 .as_ref()
                 .and_then(|key| snapshot.role(key))
@@ -694,10 +823,7 @@ impl RoomSupervisor {
             let status = if let Some(key) = self_key.as_ref() {
                 let store = self.open_store()?;
                 let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
-                snapshot
-                    .members()
-                    .find(|member| &member.identity == key)
-                    .map(|member| status_label(member.status, key, &removed_ids, &left_ids))
+                self_member.map(|member| status_label(member.status, key, &removed_ids, &left_ids))
             } else {
                 None
             };
@@ -772,13 +898,18 @@ impl RoomSupervisor {
     }
 
     /// Shut down an already-removed session (pipes first, then the node).
-    async fn shutdown_session(&self, room_id: &RoomId, session: Arc<RoomSession>) -> CoreResult<()> {
+    async fn shutdown_session(
+        &self,
+        room_id: &RoomId,
+        session: Arc<RoomSession>,
+    ) -> CoreResult<()> {
         // Keep the freshest peer addresses so a later re-open can redial them.
         // This write is best-effort: a corrupt/unwritable state.json must never
         // leave the live node leaked (its pump + blob-store lock) by aborting
         // before shutdown.
         let harvested = Self::harvest_peer_hints(&session.node).await;
-        if let Err(err) = localstate::add_peer_hints(&self.data_dir, &room_id.to_string(), &harvested)
+        if let Err(err) =
+            localstate::add_peer_hints(&self.data_dir, &room_id.to_string(), &harvested)
         {
             eprintln!("warning: could not persist peer hints for {room_id}: {err}");
         }
@@ -819,18 +950,30 @@ impl RoomSupervisor {
                 .await
                 .map_err(|e| internal("could not read the membership snapshot", e))?;
             ensure_can_leave(&snapshot, &self_id, &room_id)?;
-            let heads = Self::node_heads(&session.node).await?;
-            let wire = build_member_left(&secret.identity, &secret.device, &room_id, None, &heads, now_ms());
-            let validated = validate_wire_bytes(
-                &wire.to_bytes(),
-                &ValidationContext::for_room(room_id),
-            )
-            .map_err(|reason| {
-                CoreError::internal(format!(
-                    "freshly built member.left failed validation ({})",
-                    reason.code()
-                ))
-            })?;
+            let admin_identity = snapshot
+                .admin()
+                .copied()
+                .ok_or_else(|| CoreError::internal("room snapshot has no admin"))?;
+            let heads = {
+                let store = self.open_store()?;
+                Self::authorization_class_heads(&store, &room_id, &admin_identity)?
+            };
+            let wire = build_member_left(
+                &secret.identity,
+                &secret.device,
+                &room_id,
+                None,
+                &heads,
+                now_ms(),
+            );
+            let validated =
+                validate_wire_bytes(&wire.to_bytes(), &ValidationContext::for_room(room_id))
+                    .map_err(|reason| {
+                        CoreError::internal(format!(
+                            "freshly built member.left failed validation ({})",
+                            reason.code()
+                        ))
+                    })?;
             let event_id = validated.event_id;
             {
                 let store = self.open_store()?;
@@ -868,21 +1011,27 @@ impl RoomSupervisor {
             let mut store = self.open_store()?;
             let (mut membership, snapshot) = self.fold(&store, &room_id)?;
             ensure_can_leave(&snapshot, &self_id, &room_id)?;
-            let mut heads = store
-                .heads(&room_id)
-                .map_err(|e| internal("could not read the room heads", e))?;
-            heads.truncate(MAX_PREV_EVENTS);
-            let wire = build_member_left(&secret.identity, &secret.device, &room_id, None, &heads, now_ms());
-            let validated = validate_wire_bytes(
-                &wire.to_bytes(),
-                &ValidationContext::for_room(room_id),
-            )
-            .map_err(|reason| {
-                CoreError::internal(format!(
-                    "freshly built member.left failed validation ({})",
-                    reason.code()
-                ))
-            })?;
+            let admin_identity = snapshot
+                .admin()
+                .copied()
+                .ok_or_else(|| CoreError::internal("room snapshot has no admin"))?;
+            let heads = Self::authorization_class_heads(&store, &room_id, &admin_identity)?;
+            let wire = build_member_left(
+                &secret.identity,
+                &secret.device,
+                &room_id,
+                None,
+                &heads,
+                now_ms(),
+            );
+            let validated =
+                validate_wire_bytes(&wire.to_bytes(), &ValidationContext::for_room(room_id))
+                    .map_err(|reason| {
+                        CoreError::internal(format!(
+                            "freshly built member.left failed validation ({})",
+                            reason.code()
+                        ))
+                    })?;
             match membership.ingest(validated.clone()) {
                 Ingest::Accepted { .. } => {}
                 Ingest::Rejected { reason, .. } => {
@@ -998,10 +1147,7 @@ impl RoomSupervisor {
                     format!("only the room owner can issue invites for {room_id}"),
                 ));
             }
-            let mut heads = store
-                .heads(&room_id)
-                .map_err(|e| internal("could not read the room heads", e))?;
-            heads.truncate(MAX_PREV_EVENTS);
+            let heads = Self::authorization_class_heads(&store, &room_id, &admin_identity)?;
 
             let wire = build_member_invited(
                 &secret.identity,
@@ -1016,16 +1162,14 @@ impl RoomSupervisor {
                 &heads,
                 created_at,
             );
-            let validated = validate_wire_bytes(
-                &wire.to_bytes(),
-                &ValidationContext::for_room(room_id),
-            )
-            .map_err(|reason| {
-                CoreError::internal(format!(
-                    "freshly built member.invited failed validation ({})",
-                    reason.code()
-                ))
-            })?;
+            let validated =
+                validate_wire_bytes(&wire.to_bytes(), &ValidationContext::for_room(room_id))
+                    .map_err(|reason| {
+                        CoreError::internal(format!(
+                            "freshly built member.invited failed validation ({})",
+                            reason.code()
+                        ))
+                    })?;
             match membership.ingest(validated.clone()) {
                 Ingest::Accepted { .. } => {}
                 Ingest::Rejected { reason, .. } => {
@@ -1083,9 +1227,16 @@ impl RoomSupervisor {
         display_name: Option<&str>,
         peers: &[String],
     ) -> CoreResult<String> {
-        let ticket: RoomInviteTicket = ticket_str.trim().parse().map_err(|e: iroh_rooms::room::TicketError| {
-            CoreError::new(ErrorKind::BadTicket, format!("bad ticket ({}): {e}", e.code()))
-        })?;
+        let ticket: RoomInviteTicket =
+            ticket_str
+                .trim()
+                .parse()
+                .map_err(|e: iroh_rooms::room::TicketError| {
+                    CoreError::new(
+                        ErrorKind::BadTicket,
+                        format!("bad ticket ({}): {e}", e.code()),
+                    )
+                })?;
         let secret = self.secrets()?;
         let self_id = secret.identity.identity_key();
         if self_id != ticket.invitee_key {
@@ -1217,13 +1368,10 @@ impl RoomSupervisor {
             tokio::time::sleep(POLL_INTERVAL).await;
         }
 
-        let mut heads = {
+        let heads = {
             let store = self.open_store()?;
-            store
-                .heads(&room_id)
-                .map_err(|e| internal("could not read the room heads", e))?
+            Self::authorization_class_heads(&store, &room_id, &ticket.inviter_identity)?
         };
-        heads.truncate(MAX_PREV_EVENTS);
         let created_at = now_ms();
         let binding = DeviceBinding::create(&room_id, &secret.identity, secret.device.device_key());
         let wire = build_member_joined(
@@ -1238,16 +1386,15 @@ impl RoomSupervisor {
             &heads,
             created_at,
         );
-        let validated = validate_wire_bytes(
-            &wire.to_bytes(),
-            &ValidationContext::for_room(room_id),
-        )
-        .map_err(|reason| {
-            CoreError::internal(format!(
-                "freshly built member.joined failed validation ({})",
-                reason.code()
-            ))
-        })?;
+        let validated =
+            validate_wire_bytes(&wire.to_bytes(), &ValidationContext::for_room(room_id)).map_err(
+                |reason| {
+                    CoreError::internal(format!(
+                        "freshly built member.joined failed validation ({})",
+                        reason.code()
+                    ))
+                },
+            )?;
 
         // Local fold-check: the deterministic verdict every peer reaches —
         // a bad secret / expiry / role fails here instead of a doomed push.
@@ -1434,9 +1581,8 @@ impl RoomSupervisor {
         // Classify + confine the path before touching anything (a bad or
         // out-of-bounds share writes nothing).
         let path = Path::new(path_str);
-        let meta = std::fs::metadata(path).map_err(|e| {
-            CoreError::invalid(format!("cannot read {}: {e}", path.display()))
-        })?;
+        let meta = std::fs::metadata(path)
+            .map_err(|e| CoreError::invalid(format!("cannot read {}: {e}", path.display())))?;
         if meta.is_dir() {
             return Err(CoreError::invalid(format!(
                 "{} is a directory, not a file",
@@ -1544,6 +1690,7 @@ impl RoomSupervisor {
             .by_type(&room_id, EventType::FileShared)
             .map_err(|e| internal("could not read file.shared events", e))?;
         let session = self.session_opt(&room_id);
+        let room_id_str = room_id.to_string();
 
         let mut files = Vec::with_capacity(events.len());
         for se in &events {
@@ -1559,13 +1706,15 @@ impl RoomSupervisor {
             };
             let provider_online = session.as_deref().is_some_and(|s| {
                 providers.iter().any(|p| {
-                    endpoint_id_of(*p).is_ok_and(|id| {
-                        s.node.peer_state(id) == Some(PeerConnState::Connected)
-                    })
+                    endpoint_id_of(*p)
+                        .is_ok_and(|id| s.node.peer_state(id) == Some(PeerConnState::Connected))
                 })
             });
+            let file_id = file_handle(&f.file_id);
+            let fetched = localstate::fetched_file(&self.data_dir, &room_id_str, &file_id)
+                .or_else(|| self.downloaded_file_meta(&f.file_id, &f.name, f.size_bytes));
             files.push(json!({
-                "file_id": file_handle(&f.file_id),
+                "file_id": file_id,
                 "name": f.name,
                 "size": f.size_bytes,
                 "mime": f.mime_type,
@@ -1573,6 +1722,10 @@ impl RoomSupervisor {
                 "ts": ev.created_at,
                 "available": provider_online,
                 "providers": providers.len(),
+                "fetched": fetched.is_some(),
+                "local_path": fetched.as_ref().map(|meta| meta.path.display().to_string()),
+                "local_bytes": fetched.as_ref().map(|meta| meta.bytes),
+                "fetched_at_ms": fetched.as_ref().map(|meta| meta.fetched_at_ms),
             }));
         }
         Ok(files)
@@ -1715,12 +1868,63 @@ impl RoomSupervisor {
             ));
         }
         save_atomic(&target, &data)?;
+        localstate::remember_fetched_file(
+            &self.data_dir,
+            &room_id.to_string(),
+            &file_handle(&file_id),
+            &target,
+            data.len() as u64,
+        )?;
 
         Ok(json!({
             "path": target.display().to_string(),
             "bytes": data.len(),
             "verified": true,
         }))
+    }
+
+    /// A previously verified local copy addressed by protocol identifiers, never
+    /// by a browser-supplied filesystem path.
+    pub fn local_file(&self, room_id_str: &str, file_id_str: &str) -> CoreResult<LocalFile> {
+        let room_id = parse_room_id(room_id_str)?;
+        let file_id = parse_file_id(file_id_str)?;
+        let store = self.open_store()?;
+        if store
+            .count(&room_id)
+            .map_err(|e| internal("could not count the room's stored events", e))?
+            == 0
+        {
+            return Err(CoreError::new(
+                ErrorKind::RoomUnknown,
+                format!("no room {room_id} in {}", self.data_dir.display()),
+            ));
+        }
+        let events = store
+            .by_type(&room_id, EventType::FileShared)
+            .map_err(|e| internal("could not read file.shared events", e))?;
+        let Some((shared, _)) = find_file_shared(&events, file_id) else {
+            return Err(CoreError::new(
+                ErrorKind::FileUnavailable,
+                format!("no such file {file_id_str} in room {room_id}"),
+            ));
+        };
+        let file_id_handle = file_handle(&file_id);
+        let room_id_key = room_id.to_string();
+        let Some(local) = localstate::fetched_file(&self.data_dir, &room_id_key, &file_id_handle)
+            .or_else(|| self.downloaded_file_meta(&file_id, &shared.name, shared.size_bytes))
+        else {
+            return Err(CoreError::new(
+                ErrorKind::FileUnavailable,
+                format!("file {file_id_str} has not been fetched on this daemon"),
+            )
+            .with_hint("fetch the file first, then open the local copy"));
+        };
+        Ok(LocalFile {
+            path: local.path,
+            name: shared.name,
+            mime: shared.mime_type,
+            bytes: local.bytes,
+        })
     }
 
     // ------------------------------------------------------------------
@@ -1737,7 +1941,9 @@ impl RoomSupervisor {
     ) -> CoreResult<Value> {
         let room_id = parse_room_id(room_id_str)?;
         let target = SocketAddr::from_str(target_str.trim()).map_err(|e| {
-            CoreError::invalid(format!("invalid target {target_str:?} (expected ip:port): {e}"))
+            CoreError::invalid(format!(
+                "invalid target {target_str:?} (expected ip:port): {e}"
+            ))
         })?;
         if !is_loopback_target(&target) {
             return Err(CoreError::new(
@@ -1777,7 +1983,12 @@ impl RoomSupervisor {
                 now_ms(),
             )
             .await
-            .map_err(|e| CoreError::new(ErrorKind::PipeDenied, format!("could not expose the pipe: {e:#}")))?;
+            .map_err(|e| {
+                CoreError::new(
+                    ErrorKind::PipeDenied,
+                    format!("could not expose the pipe: {e:#}"),
+                )
+            })?;
 
         let event_id = self
             .find_pipe_event(&room_id, EventType::PipeOpened, pipe_id)
@@ -2245,8 +2456,11 @@ impl RoomSupervisor {
         // Known rooms: everything in the event store plus the localstate
         // index (a room remembered before/without any synced events still
         // counts toward rooms_total — it is honestly known, just unreadable).
-        let mut known: BTreeSet<String> =
-            localstate::load(&self.data_dir)?.rooms.keys().cloned().collect();
+        let mut known: BTreeSet<String> = localstate::load(&self.data_dir)?
+            .rooms
+            .keys()
+            .cloned()
+            .collect();
 
         // Phase 1 (sync): enumerate the store's rooms and read each room's
         // display name. The `!Sync` store is opened, fully used, and DROPPED
@@ -2387,7 +2601,8 @@ impl RoomSupervisor {
                         now,
                     );
                     let agg = agents.entry(identity.to_string()).or_default();
-                    agg.rooms.push(json!({ "room_id": room_str, "name": room_name }));
+                    agg.rooms
+                        .push(json!({ "room_id": room_str, "name": room_name }));
                     agg.per_room_liveness.push(liveness);
                     if let Some(latest) = sig.latest {
                         let newer = match &agg.latest {
@@ -2406,8 +2621,7 @@ impl RoomSupervisor {
                         }
                     }
                     if let Some(seen) = sig.last_seen_ts {
-                        agg.last_seen_ts =
-                            Some(agg.last_seen_ts.map_or(seen, |t| t.max(seen)));
+                        agg.last_seen_ts = Some(agg.last_seen_ts.map_or(seen, |t| t.max(seen)));
                     }
                 }
             }
@@ -2583,16 +2797,16 @@ fn parse_room_id(s: &str) -> CoreResult<RoomId> {
 fn parse_file_id(s: &str) -> CoreResult<[u8; SHORT_ID_LEN]> {
     let trimmed = s.trim();
     let hex_part = trimmed.strip_prefix("file_").unwrap_or(trimmed);
-    let bytes = hex::decode(hex_part)
-        .map_err(|_| CoreError::invalid(format!("invalid file_id {s:?}")))?;
+    let bytes =
+        hex::decode(hex_part).map_err(|_| CoreError::invalid(format!("invalid file_id {s:?}")))?;
     <[u8; SHORT_ID_LEN]>::try_from(bytes.as_slice())
         .map_err(|_| CoreError::invalid(format!("invalid file_id {s:?} (expected file_<32-hex>)")))
 }
 
 /// Parse a 32-hex pipe id into 16 bytes.
 fn parse_pipe_id(s: &str) -> CoreResult<[u8; SHORT_ID_LEN]> {
-    let bytes = hex::decode(s.trim())
-        .map_err(|_| CoreError::invalid(format!("invalid pipe_id {s:?}")))?;
+    let bytes =
+        hex::decode(s.trim()).map_err(|_| CoreError::invalid(format!("invalid pipe_id {s:?}")))?;
     <[u8; SHORT_ID_LEN]>::try_from(bytes.as_slice())
         .map_err(|_| CoreError::invalid(format!("invalid pipe_id {s:?} (expected 32 hex chars)")))
 }
@@ -2614,8 +2828,9 @@ fn parse_peers(peers: &[String]) -> CoreResult<Vec<EndpointAddr>> {
                 Some((id, rest)) => (id, Some(rest)),
                 None => (s, None),
             };
-            let id = EndpointId::from_str(id_part.trim())
-                .map_err(|e| CoreError::invalid(format!("invalid peer endpoint id {id_part:?}: {e}")))?;
+            let id = EndpointId::from_str(id_part.trim()).map_err(|e| {
+                CoreError::invalid(format!("invalid peer endpoint id {id_part:?}: {e}"))
+            })?;
             let mut addr = EndpointAddr::new(id);
             if let Some(rest) = addr_part {
                 for sock in rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -2917,8 +3132,8 @@ fn guess_mime(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_expiry, parse_file_id, parse_pipe_id, sanitize_name, validate_room_name,
-        RoomSupervisor,
+        parse_expiry, parse_file_id, parse_pipe_id, sanitize_name, validate_room_name, Content,
+        EventType, RoomSupervisor,
     };
     use crate::error::ErrorKind;
     use iroh_rooms::events::{validate_wire_bytes, ValidationContext, WireEvent};
@@ -3014,7 +3229,15 @@ mod tests {
         let mut heads = sup.open_store().unwrap().heads(&room_id).unwrap();
         heads.truncate(super::MAX_PREV_EVENTS);
         let wire = super::build_message_text(
-            identity, device, &room_id, body, None, None, &[], &heads, ts,
+            identity,
+            device,
+            &room_id,
+            body,
+            None,
+            None,
+            &[],
+            &heads,
+            ts,
         );
         insert_wire(sup, &room_id, &wire);
     }
@@ -3115,7 +3338,15 @@ mod tests {
         // THE RULE at the RPC level: a fresh "working" status with no
         // connected peer reads stale — never working, never active.
         let t1 = crate::now_ms();
-        seed_status(&sup, &room_id, &agent_identity, &agent_device, "working", Some(40), t1);
+        seed_status(
+            &sup,
+            &room_id,
+            &agent_identity,
+            &agent_device,
+            "working",
+            Some(40),
+            t1,
+        );
         let fleet = sup.agents_fleet().await.unwrap();
         let agent = &fleet["agents"][0];
         assert_eq!(agent["liveness"], "stale");
@@ -3128,7 +3359,15 @@ mod tests {
         assert_eq!(agent["last_seen_ts"], t1);
 
         // An idle-class latest with no peer reads offline.
-        seed_status(&sup, &room_id, &agent_identity, &agent_device, "idle", None, t1 + 1);
+        seed_status(
+            &sup,
+            &room_id,
+            &agent_identity,
+            &agent_device,
+            "idle",
+            None,
+            t1 + 1,
+        );
         let fleet = sup.agents_fleet().await.unwrap();
         assert_eq!(fleet["agents"][0]["liveness"], "offline");
         assert_eq!(fleet["agents"][0]["latest"]["label"], "idle");
@@ -3262,9 +3501,24 @@ mod tests {
             seed_agent_member(&sup, &room_id_str, &identity, &device).await;
             for i in 0..20 {
                 ts += 1;
-                seed_status(&sup, &room_id_str, &identity, &device, "working", Some(i), ts);
+                seed_status(
+                    &sup,
+                    &room_id_str,
+                    &identity,
+                    &device,
+                    "working",
+                    Some(i),
+                    ts,
+                );
                 ts += 1;
-                seed_message(&sup, &room_id_str, &identity, &device, &format!("m{a}-{i}"), ts);
+                seed_message(
+                    &sup,
+                    &room_id_str,
+                    &identity,
+                    &device,
+                    &format!("m{a}-{i}"),
+                    ts,
+                );
             }
             agents.push((identity, device));
         }
@@ -3299,9 +3553,14 @@ mod tests {
         // count cannot be stale). A fresh invite adds one Invited member.
         let before = open_snapshot.members().count();
         let newcomer = SigningKey::generate();
-        sup.create_invite(&room_id_str, &newcomer.identity_key().to_string(), "agent", None)
-            .await
-            .unwrap();
+        sup.create_invite(
+            &room_id_str,
+            &newcomer.identity_key().to_string(),
+            "agent",
+            None,
+        )
+        .await
+        .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let grown = loop {
             let snap = sup.snapshot_for(&room_id).await.unwrap();
@@ -3320,9 +3579,151 @@ mod tests {
             let store = sup.open_store().unwrap();
             sup.fold(&store, &room_id).unwrap().1
         };
-        assert_eq!(fold_after, grown, "grown open snapshot != fold after invite");
+        assert_eq!(
+            fold_after, grown,
+            "grown open snapshot != fold after invite"
+        );
 
         sup.close_room(&room_id_str).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invite_after_member_content_does_not_depend_on_chat_heads() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id_str = sup.create_room("Late Join").unwrap();
+        let room_id: RoomId = room_id_str.parse().unwrap();
+
+        let agent_identity = SigningKey::generate();
+        let agent_device = SigningKey::generate();
+        seed_agent_member(&sup, &room_id_str, &agent_identity, &agent_device).await;
+        seed_message(
+            &sup,
+            &room_id_str,
+            &agent_identity,
+            &agent_device,
+            "non-admin chat head",
+            crate::now_ms(),
+        );
+
+        let message_id = {
+            let store = sup.open_store().unwrap();
+            store
+                .by_type(&room_id, EventType::MessageText)
+                .unwrap()
+                .last()
+                .expect("seeded message exists")
+                .event_id
+        };
+        let newcomer = SigningKey::generate();
+        let ticket_str = sup
+            .create_invite(
+                &room_id_str,
+                &newcomer.identity_key().to_string(),
+                "member",
+                None,
+            )
+            .await
+            .unwrap();
+        let ticket: RoomInviteTicket = ticket_str.parse().unwrap();
+
+        let invite = {
+            let store = sup.open_store().unwrap();
+            store
+                .by_type(&room_id, EventType::MemberInvited)
+                .unwrap()
+                .into_iter()
+                .find(|stored| {
+                    let ev = validate_wire_bytes(
+                        &stored.wire.to_bytes(),
+                        &ValidationContext::for_room(room_id),
+                    )
+                    .unwrap();
+                    matches!(
+                        ev.event.content,
+                        Content::MemberInvited(ref invite) if invite.invite_id == ticket.invite_id
+                    )
+                })
+                .expect("new invite event was persisted")
+        };
+        let invite = validate_wire_bytes(
+            &invite.wire.to_bytes(),
+            &ValidationContext::for_room(room_id),
+        )
+        .unwrap();
+
+        assert!(
+            !invite.event.prev_events.contains(&message_id),
+            "member.invited must keep the membership sub-DAG closed; prev_events contained a chat head"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn late_join_after_agent_message_loopback() {
+        let owner_dir = tempdir().unwrap();
+        crate::identity::create(owner_dir.path()).unwrap();
+        let owner = RoomSupervisor::new(owner_dir.path().to_path_buf(), true).unwrap();
+        let room_id = owner.create_room("Late Join Live").unwrap();
+        let opened = owner.open_room(&room_id, &[]).await.unwrap();
+        let owner_addr = opened["endpoint"]["addr"].as_str().unwrap().to_owned();
+
+        let agent_dir = tempdir().unwrap();
+        let agent_profile = crate::identity::create(agent_dir.path()).unwrap();
+        let agent = RoomSupervisor::new(agent_dir.path().to_path_buf(), true).unwrap();
+        let ticket = owner
+            .create_invite(&room_id, &agent_profile.identity_id, "agent", None)
+            .await
+            .unwrap();
+        agent
+            .join_room(&ticket, Some("agent"), std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        agent
+            .open_room(&room_id, std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        wait_member_status(&owner, &room_id, &agent_profile.identity_id, "active").await;
+
+        agent
+            .send_message(&room_id, "agent says hello")
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let timeline = owner.timeline(&room_id, None).await.unwrap();
+            if timeline
+                .iter()
+                .any(|event| event["body"].as_str() == Some("agent says hello"))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owner never synced the agent message; timeline: {timeline:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        let late_dir = tempdir().unwrap();
+        let late_profile = crate::identity::create(late_dir.path()).unwrap();
+        let late = RoomSupervisor::new(late_dir.path().to_path_buf(), true).unwrap();
+        let late_ticket = owner
+            .create_invite(&room_id, &late_profile.identity_id, "member", None)
+            .await
+            .unwrap();
+        late.join_room(
+            &late_ticket,
+            Some("late member"),
+            std::slice::from_ref(&owner_addr),
+        )
+        .await
+        .unwrap();
+        wait_member_status(&owner, &room_id, &late_profile.identity_id, "active").await;
+
+        late.close_room(&room_id).await.ok();
+        agent.close_room(&room_id).await.unwrap();
+        owner.close_room(&room_id).await.unwrap();
     }
 
     /// PERF: the O(full-history)-per-call re-fold is gone. With ~1000
@@ -3343,7 +3744,15 @@ mod tests {
         let mut ts = crate::now_ms();
         for i in 0..1000 {
             ts += 1;
-            seed_status(&sup, &room_id_str, &identity, &device, "working", Some(i % 101), ts);
+            seed_status(
+                &sup,
+                &room_id_str,
+                &identity,
+                &device,
+                "working",
+                Some(i % 101),
+                ts,
+            );
         }
 
         // Warm the closed-room fold cache once (this call pays the single fold).
@@ -3385,7 +3794,10 @@ mod tests {
     #[test]
     fn file_and_pipe_id_codecs() {
         let id = [0xabu8; 16];
-        assert_eq!(parse_file_id(&format!("file_{}", "ab".repeat(16))).unwrap(), id);
+        assert_eq!(
+            parse_file_id(&format!("file_{}", "ab".repeat(16))).unwrap(),
+            id
+        );
         assert_eq!(parse_file_id(&"ab".repeat(16)).unwrap(), id);
         assert!(parse_file_id("file_xyz").is_err());
         assert_eq!(parse_pipe_id(&"ab".repeat(16)).unwrap(), id);
@@ -3407,7 +3819,10 @@ mod tests {
             sanitize_name("../../.ssh/authorized_keys", [0; 16]),
             "authorized_keys"
         );
-        assert_eq!(sanitize_name("..", [0xaa; 16]), format!("file_{}", "aa".repeat(16)));
+        assert_eq!(
+            sanitize_name("..", [0xaa; 16]),
+            format!("file_{}", "aa".repeat(16))
+        );
     }
 
     #[test]
@@ -3441,6 +3856,56 @@ mod tests {
         assert_eq!(members.len(), 1);
         assert_eq!(members[0]["role"], "owner");
         assert_eq!(members[0]["status"], "active");
+    }
+
+    #[tokio::test]
+    async fn list_rooms_excludes_rooms_this_identity_is_not_a_member_of() {
+        // Regression: a foreign room's membership sub-DAG can be backfilled into
+        // our store by a shared peer's sync (that peer is in a room WITH us and
+        // also in this OTHER room), even though we were never invited. Such a
+        // room must not appear in `room.list` — listing it leaks a room we are
+        // not in and hands the UI a room whose every `room.open` returns
+        // `not_a_member` (and then `message.send` returns `room_not_open`).
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+
+        // A room WE own — the control that must still list.
+        let mine = sup.create_room("Mine").unwrap();
+
+        // A room authored entirely by a STRANGER, persisted straight into our
+        // store the way a sync backfill lands it. We author no event in it.
+        let stranger_id = SigningKey::generate();
+        let stranger_dev = SigningKey::generate();
+        let nonce = [0x11; super::ROOM_NONCE_LEN];
+        let created_at = crate::now_ms();
+        let foreign_room_id =
+            super::derive_room_id(&stranger_id.identity_key(), &nonce, created_at);
+        let genesis =
+            super::build_room_created(&stranger_id, &stranger_dev, "Not Yours", &nonce, created_at);
+        insert_wire(&sup, &foreign_room_id, &genesis);
+
+        // Sanity: the foreign room's genesis really is in our store.
+        {
+            let store = sup.open_store().unwrap();
+            assert!(store.count(&foreign_room_id).unwrap() >= 1);
+        }
+
+        let rooms = sup.list_rooms().await.unwrap();
+        let ids: Vec<&str> = rooms.iter().filter_map(|r| r["room_id"].as_str()).collect();
+        assert!(ids.contains(&mine.as_str()), "our own room must list");
+        assert!(
+            !ids.contains(&foreign_room_id.to_string().as_str()),
+            "a room we are not a member of must be excluded from room.list"
+        );
+        assert_eq!(rooms.len(), 1, "only our own room lists; got {rooms:?}");
+
+        // And the honest failure still stands if the UI somehow targets it.
+        let err = sup
+            .open_room(&foreign_room_id.to_string(), &[])
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::NotAMember);
     }
 
     #[tokio::test]
@@ -3540,7 +4005,8 @@ mod tests {
 
         // `room.close` is only a local session shutdown: membership remains active.
         member.close_room(&room_id).await.unwrap();
-        let mine = wait_member_status(&member, &room_id, &member_profile.identity_id, "active").await;
+        let mine =
+            wait_member_status(&member, &room_id, &member_profile.identity_id, "active").await;
         assert_eq!(mine["role"], "member");
 
         // `room.leave` authors member.left, closes the local session, and makes
@@ -3584,12 +4050,102 @@ mod tests {
             .iter()
             .find(|f| f["file_id"] == file_id.as_str())
             .expect("the shared file appears in file.list");
-        assert_eq!(row["available"], false, "self-only provider is not fetchable");
+        assert_eq!(
+            row["available"], false,
+            "self-only provider is not fetchable"
+        );
 
         let err = sup.fetch_file(&room_id, &file_id, None).await.unwrap_err();
         assert_eq!(err.kind, ErrorKind::FileUnavailable);
 
+        let downloads = dir.path().join(super::DOWNLOADS_DIR);
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::write(downloads.join("shared.txt"), b"hello jeliya file").unwrap();
+        let files = sup.list_files(&room_id).await.unwrap();
+        let row = files
+            .iter()
+            .find(|f| f["file_id"] == file_id.as_str())
+            .expect("the shared file appears in file.list");
+        assert_eq!(
+            row["fetched"], true,
+            "a previously downloaded default-path copy should suppress Fetch"
+        );
+
         sup.close_room(&room_id).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetched_file_state_survives_room_reload_loopback() {
+        let owner_dir = tempdir().unwrap();
+        crate::identity::create(owner_dir.path()).unwrap();
+        let owner = RoomSupervisor::new(owner_dir.path().to_path_buf(), true).unwrap();
+        let room_id = owner.create_room("Fetched Files").unwrap();
+        let opened = owner.open_room(&room_id, &[]).await.unwrap();
+        let owner_addr = opened["endpoint"]["addr"].as_str().unwrap().to_owned();
+
+        let path = owner_dir.path().join("report.txt");
+        std::fs::write(&path, b"verified bytes").unwrap();
+        let shared = owner
+            .share_file(&room_id, path.to_str().unwrap(), None, None)
+            .await
+            .unwrap();
+        let file_id = shared["file_id"].as_str().unwrap().to_owned();
+
+        let member_dir = tempdir().unwrap();
+        let member_profile = crate::identity::create(member_dir.path()).unwrap();
+        let member = RoomSupervisor::new(member_dir.path().to_path_buf(), true).unwrap();
+        let ticket = owner
+            .create_invite(&room_id, &member_profile.identity_id, "member", None)
+            .await
+            .unwrap();
+        member
+            .join_room(&ticket, Some("fetcher"), std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        member
+            .open_room(&room_id, std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let files = member.list_files(&room_id).await.unwrap();
+            let row = files
+                .iter()
+                .find(|f| f["file_id"].as_str() == Some(file_id.as_str()));
+            if row.is_some_and(|f| f["available"] == true) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "member never saw the shared file become fetchable; last id: {file_id}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        let fetched = member.fetch_file(&room_id, &file_id, None).await.unwrap();
+        assert_eq!(fetched["verified"], true);
+
+        member.close_room(&room_id).await.unwrap();
+        let member_restarted = RoomSupervisor::new(member_dir.path().to_path_buf(), true).unwrap();
+        let files = member_restarted.list_files(&room_id).await.unwrap();
+        let row = files
+            .iter()
+            .find(|f| f["file_id"].as_str() == Some(file_id.as_str()))
+            .expect("shared file remains listed after restart");
+        assert_eq!(row["fetched"], true);
+        assert_eq!(row["local_bytes"], 14);
+        assert_eq!(row["local_path"], fetched["path"]);
+
+        let local = member_restarted.local_file(&room_id, &file_id).unwrap();
+        assert_eq!(
+            local.path.display().to_string(),
+            fetched["path"].as_str().unwrap()
+        );
+        assert_eq!(local.name, "report.txt");
+        assert_eq!(local.bytes, 14);
+
+        owner.close_room(&room_id).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
