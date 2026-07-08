@@ -5,7 +5,15 @@
 //! Local-only by construction: the listener binds `127.0.0.1` and nothing
 //! else — there is no flag to bind another interface, so the protocol's
 //! "MUST refuse to bind non-loopback interfaces" holds trivially.
+//!
+//! Sidecar-ownable by contract (`docs/PROTOCOL.md`, "Process supervision"):
+//! one instance per data dir (advisory lock; a second launch reports the
+//! running daemon as `already_running` and exits), a machine-readable `ready`
+//! JSON line on stdout plus a `daemon.json` portfile carrying the bound port
+//! and the WS auth token, graceful teardown on SIGTERM/SIGINT, and
+//! `--supervised` mode that exits when the parent closes stdin.
 
+mod lifecycle;
 mod rpc;
 mod serve;
 
@@ -18,10 +26,17 @@ use std::time::Duration;
 use clap::Parser;
 use serde_json::json;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
+use tracing::{error, info, warn};
 
 use jeliya_core::error::ErrorKind;
 use jeliya_core::supervisor::RoomSupervisor;
+
+/// Major version of the protocol spoken on `/ws` (docs/PROTOCOL.md). Part of
+/// the supervision contract: an app adopts a running daemon only when this
+/// matches what it was built against; on mismatch it must not spawn a second
+/// daemon on the same data dir, but stop the old one and respawn.
+pub(crate) const PROTOCOL_VERSION: u32 = 1;
 
 /// The daemon tick for the reconcile safety net + peer-change drain (~300ms per
 /// the protocol build notes). Since issue #83 live `room.event` pushes arrive
@@ -37,6 +52,8 @@ const PUSH_TICK: Duration = Duration::from_millis(300);
 )]
 struct Args {
     /// TCP port on 127.0.0.1 to serve `http://127.0.0.1:<port>/` and `/ws`.
+    /// `0` asks the OS for any free port (read it back from the `ready` line
+    /// or the portfile).
     #[arg(long, default_value_t = 7420)]
     port: u16,
     /// Data directory (identity, rooms.db, blobs, downloads, local state).
@@ -54,6 +71,11 @@ struct Args {
     /// Use the SDK's loopback/CI network mode instead of the real network.
     #[arg(long, default_value_t = false)]
     loopback: bool,
+    /// Sidecar mode for a supervising parent process: shut down gracefully
+    /// when stdin reaches EOF (the portable parent-death signal on all three
+    /// OSes) and never auto-open a browser.
+    #[arg(long, default_value_t = false)]
+    supervised: bool,
 }
 
 /// Shared server state: the supervisor and the push fan-out channel.
@@ -63,96 +85,241 @@ struct Args {
 /// network `.await`, so one client's slow request can no longer freeze every
 /// other client or the push loop.
 #[derive(Clone)]
-struct AppState {
-    supervisor: Arc<RoomSupervisor>,
-    data_dir: PathBuf,
-    push_tx: broadcast::Sender<String>,
+pub(crate) struct AppState {
+    pub(crate) supervisor: Arc<RoomSupervisor>,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) push_tx: broadcast::Sender<String>,
+    /// Per-start WS/API auth token (see `lifecycle::generate_token`).
+    pub(crate) auth_token: Arc<String>,
+    /// Graceful-shutdown trigger; the string is the human-readable reason.
+    pub(crate) shutdown_tx: mpsc::Sender<String>,
+    /// The actually bound port (`--port 0` resolves here).
+    pub(crate) port: u16,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
     let data_dir = args.data_dir.clone().unwrap_or_else(default_data_dir);
-    let supervisor = match RoomSupervisor::new(data_dir.clone(), args.loopback) {
-        Ok(sup) => sup,
+    if let Err(err) = std::fs::create_dir_all(&data_dir) {
+        eprintln!(
+            "error: could not create the data dir {}: {err}",
+            data_dir.display()
+        );
+        std::process::exit(1);
+    }
+    // Canonical form so lock/portfile identity checks compare like with like
+    // regardless of how the path was spelled on the command line.
+    let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
+
+    let log_guard = lifecycle::init_tracing(&data_dir);
+
+    // Single instance per data dir, held for the daemon's whole life. If a
+    // daemon already owns this data dir, `acquire_or_adopt` reports it and
+    // exits 0 (a supervisor then adopts it) — two daemons on one data dir is a
+    // state-corruption scenario (state.json is last-writer-wins). It rides out
+    // the brief overlap of a SIGTERM-then-respawn restart. The OS releases the
+    // lock on any process death, so a crash cannot leave a stale lock behind.
+    let mut instance_lock = match lifecycle::lock_file(&data_dir) {
+        Ok(file) => fd_lock::RwLock::new(file),
         Err(err) => {
-            eprintln!("error: could not initialize the data dir: {err}");
+            error!("could not open the instance lockfile: {err}");
             std::process::exit(1);
         }
     };
-    let (push_tx, _) = broadcast::channel(1024);
-    let state = AppState {
-        supervisor: Arc::new(supervisor),
-        data_dir: data_dir.clone(),
-        push_tx,
+    let _instance_guard = lifecycle::acquire_or_adopt(&mut instance_lock, &data_dir).await;
+
+    let supervisor = match RoomSupervisor::new(data_dir.clone(), args.loopback) {
+        Ok(sup) => sup,
+        Err(err) => {
+            error!("could not initialize the data dir: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let auth_token = match lifecycle::generate_token() {
+        Ok(token) => token,
+        Err(err) => {
+            error!("could not generate the auth token: {err}");
+            std::process::exit(1);
+        }
     };
 
     // Where the web UI is served from: an explicit --ui-dir wins; otherwise the
     // assets embedded at build time (present only in an `embed-ui` build).
     let ui = serve::UiSource::resolve(args.ui_dir.clone());
 
-    // Bind loopback ONLY (see the module doc). On a port collision, scan a small
-    // range upward rather than dying: a second launch (or a leftover daemon)
-    // must not hard-fail a GUI start, and because the served UI is same-origin
-    // the actual bound port propagates to the page automatically.
+    // Bind loopback ONLY (see the module doc). On a collision on an explicit
+    // port, scan a small range upward rather than dying: a second launch (on a
+    // *different* data dir; same-dir duplicates exit above) or an unrelated
+    // occupant must not hard-fail a GUI start. `--port 0` binds exactly once
+    // and lets the OS choose.
     let (listener, addr) = match bind_loopback(args.port, 20).await {
         Some(bound) => bound,
         None => {
-            eprintln!(
-                "error: no free loopback port in {}..={}",
+            error!(
+                "no free loopback port in {}..={}",
                 args.port,
                 args.port.saturating_add(20)
             );
             std::process::exit(1);
         }
     };
-    if addr.port() != args.port {
-        eprintln!(
-            "note: port {} was in use; bound {} instead",
-            args.port,
-            addr.port()
-        );
+    if args.port != 0 && addr.port() != args.port {
+        info!("port {} was in use; bound {} instead", args.port, addr.port());
     }
 
+    let (push_tx, _) = broadcast::channel(1024);
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<String>(4);
+    let state = AppState {
+        supervisor: Arc::new(supervisor),
+        data_dir: data_dir.clone(),
+        push_tx,
+        auth_token: Arc::new(auth_token.clone()),
+        shutdown_tx: shutdown_tx.clone(),
+        port: addr.port(),
+    };
+
+    let portfile = lifecycle::Portfile {
+        schema: 1,
+        pid: std::process::id(),
+        port: addr.port(),
+        http: format!("http://{addr}/"),
+        ws: format!("ws://{addr}/ws"),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol: PROTOCOL_VERSION,
+        data_dir: data_dir.display().to_string(),
+        auth_token,
+        started_at_ms: jeliya_core::now_ms(),
+    };
+    let portfile_path = match lifecycle::write_portfile(&data_dir, &portfile) {
+        Ok(path) => path,
+        Err(err) => {
+            error!("could not write the portfile: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    // The supervision contract: exactly one machine-readable JSON line on
+    // stdout, first, before any human-readable output. The token is NOT here —
+    // it lives in the 0600 portfile.
+    println!(
+        "{}",
+        json!({
+            "event": "ready",
+            "pid": portfile.pid,
+            "port": portfile.port,
+            "http": portfile.http,
+            "ws": portfile.ws,
+            "version": portfile.version,
+            "protocol": portfile.protocol,
+            "data_dir": portfile.data_dir,
+            "portfile": portfile_path.display().to_string(),
+        })
+    );
     if ui.is_serving() {
         println!(
-            "jeliyad on http://{addr}/  (ws://{addr}/ws)  data dir: {}",
+            "jeliyad on {}  ({})  data dir: {}",
+            portfile.http,
+            portfile.ws,
             data_dir.display()
         );
     } else {
         println!(
-            "jeliyad listening on ws://{addr}/ws (data dir: {})",
+            "jeliyad listening on {} (data dir: {})",
+            portfile.ws,
             data_dir.display()
         );
     }
 
     tokio::spawn(push_loop(state.clone()));
 
+    // Shutdown triggers. Ctrl-C covers all three OSes; SIGTERM is the Unix
+    // service-manager/supervisor signal; stdin EOF is the portable
+    // parent-death signal in --supervised mode (the parent holds our stdin
+    // pipe; when it dies — even by kill -9 — the pipe closes).
+    {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = tx.send("interrupt (ctrl-c)".to_owned()).await;
+            }
+        });
+    }
+    #[cfg(unix)]
+    {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            let mut sigterm =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(sig) => sig,
+                    Err(err) => {
+                        warn!("could not install the SIGTERM handler: {err}");
+                        return;
+                    }
+                };
+            if sigterm.recv().await.is_some() {
+                let _ = tx.send("SIGTERM".to_owned()).await;
+            }
+        });
+    }
+    if args.supervised {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut stdin = tokio::io::stdin();
+            let mut buf = [0u8; 256];
+            loop {
+                match stdin.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            let _ = tx.send("stdin closed (parent exited)".to_owned()).await;
+        });
+    }
+
     // Open the UI once we're bound and actually serving it (best-effort, never
-    // fatal). Scripts and headless runs build without the UI (or pass --no-open)
-    // so nothing pops a browser there.
-    if ui.is_serving() && !args.no_open {
+    // fatal). Scripts, headless runs, and supervised sidecar runs never pop a
+    // browser — in sidecar mode the parent app owns all UX.
+    if ui.is_serving() && !args.no_open && !args.supervised {
         let url = format!("http://{addr}/");
         if let Err(err) = webbrowser::open(&url) {
-            eprintln!("note: could not open a browser ({err}); open {url} yourself");
+            info!("could not open a browser ({err}); open {url} yourself");
         }
     }
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, _peer)) => {
-                let state = state.clone();
-                let ui = ui.clone();
-                tokio::spawn(async move {
-                    serve::handle_conn(stream, state, ui).await;
-                });
+    let reason = loop {
+        tokio::select! {
+            reason = shutdown_rx.recv() => {
+                break reason.unwrap_or_else(|| "shutdown channel closed".to_owned());
             }
-            Err(err) => {
-                eprintln!("warning: accept failed: {err}");
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _peer)) => {
+                    let state = state.clone();
+                    let ui = ui.clone();
+                    tokio::spawn(async move {
+                        serve::handle_conn(stream, state, ui).await;
+                    });
+                }
+                Err(err) => {
+                    warn!("accept failed: {err}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             }
         }
-    }
+    };
+
+    // Stop accepting BEFORE teardown: dropping the listener closes the port so a
+    // concurrent restart's health probe fails fast (connection refused) instead
+    // of blocking on a socket whose accept loop has stopped.
+    drop(listener);
+    lifecycle::graceful_shutdown(&state, &reason).await;
+    // Flush the non-blocking file-log worker before the process dies —
+    // std::process::exit runs no destructors, so drop the guard explicitly or
+    // the shutdown records race the writer and are lost.
+    drop(log_guard);
+    std::process::exit(0);
 }
 
 /// The default per-user data directory (`~/Library/Application Support/Jeliya`,
@@ -164,16 +331,25 @@ fn default_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("./.jeliya-data"))
 }
 
-/// Bind `127.0.0.1:port`, scanning up to `tries` ports upward past a collision.
-/// Only `AddrInUse` advances the scan; any other bind error is fatal (`None`).
+/// Bind `127.0.0.1:port`, scanning up to `tries` ports upward past a collision
+/// on an explicit port. `--port 0` binds exactly once (the OS picks). The
+/// returned address is the listener's own `local_addr()` — the only truthful
+/// answer once the OS has chosen a port.
 async fn bind_loopback(port: u16, tries: u16) -> Option<(TcpListener, SocketAddr)> {
-    for candidate in port..=port.saturating_add(tries) {
+    let last = if port == 0 { port } else { port.saturating_add(tries) };
+    for candidate in port..=last {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, candidate));
         match TcpListener::bind(addr).await {
-            Ok(listener) => return Some((listener, addr)),
+            Ok(listener) => match listener.local_addr() {
+                Ok(local) => return Some((listener, local)),
+                Err(err) => {
+                    error!("could not read the bound address for {addr}: {err}");
+                    return None;
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
             Err(err) => {
-                eprintln!("error: could not bind {addr}: {err}");
+                error!("could not bind {addr}: {err}");
                 return None;
             }
         }
@@ -232,7 +408,7 @@ async fn push_loop(state: AppState) {
                             // A transient read error: the reconcile poll still
                             // covers pushes; back off briefly, then keep pumping.
                             Err(err) => {
-                                eprintln!("warning: room-event pump error for {key}: {err}");
+                                warn!("room-event pump error for {key}: {err}");
                                 tokio::time::sleep(Duration::from_millis(200)).await;
                             }
                         }
@@ -253,7 +429,7 @@ async fn push_loop(state: AppState) {
                         let _ = state.push_tx.send(frame.to_string());
                     }
                 }
-                Err(err) => eprintln!("warning: push reconcile failed for {room_str}: {err}"),
+                Err(err) => warn!("push reconcile failed for {room_str}: {err}"),
             }
             if sup.drain_conn_changes(&room_id) {
                 if let Ok(peers) = sup.peers_status(&room_str).await {
@@ -268,16 +444,11 @@ async fn push_loop(state: AppState) {
     }
 }
 
-/// Whether an `Origin` header value denotes a loopback origin (the local UI),
-/// as opposed to a remote website mounting a cross-site WebSocket hijack.
-fn is_local_origin(origin: &str) -> bool {
-    // `Origin` is `scheme://host[:port]` (or the literal "null" for opaque
-    // origins such as sandboxed iframes / file://, which we do NOT trust). We
-    // only accept a loopback host.
-    let Some((_scheme, rest)) = origin.split_once("://") else {
-        return false;
-    };
-    let hostport = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+/// Whether a bare `host[:port]` (the `Host` header shape) denotes loopback.
+/// The Host gate on `/ws` and `/api/*` blocks DNS-rebinding: a hostile page
+/// can point its own domain at 127.0.0.1 and fetch same-origin, but its
+/// requests still carry `Host: evil.example`.
+pub(crate) fn host_header_is_loopback(hostport: &str) -> bool {
     let host = if let Some(bracketed) = hostport.strip_prefix('[') {
         // `[ipv6]` or `[ipv6]:port`
         bracketed.split_once(']').map_or(bracketed, |(h, _)| h)
@@ -294,9 +465,22 @@ fn is_local_origin(origin: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Whether an `Origin` header value denotes a loopback origin (the local UI),
+/// as opposed to a remote website mounting a cross-site WebSocket hijack.
+pub(crate) fn is_local_origin(origin: &str) -> bool {
+    // `Origin` is `scheme://host[:port]` (or the literal "null" for opaque
+    // origins such as sandboxed iframes / file://, which we do NOT trust). We
+    // only accept a loopback host.
+    let Some((_scheme, rest)) = origin.split_once("://") else {
+        return false;
+    };
+    let hostport = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    host_header_is_loopback(hostport)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_local_origin;
+    use super::{bind_loopback, host_header_is_loopback, is_local_origin};
 
     #[test]
     fn loopback_origins_are_allowed() {
@@ -326,5 +510,44 @@ mod tests {
         ] {
             assert!(!is_local_origin(bad), "{bad} must be refused");
         }
+    }
+
+    #[test]
+    fn loopback_hosts_are_allowed() {
+        for ok in [
+            "localhost",
+            "localhost:7420",
+            "127.0.0.1",
+            "127.0.0.1:7420",
+            "127.0.0.5:9000",
+            "[::1]",
+            "[::1]:7420",
+        ] {
+            assert!(host_header_is_loopback(ok), "{ok} should be allowed");
+        }
+    }
+
+    #[test]
+    fn non_loopback_hosts_are_refused() {
+        for bad in [
+            "evil.example",
+            "evil.example:7420",
+            "127.0.0.1.evil.example",
+            "[2606:4700:4700::1111]:7420",
+            "localhost.evil.example",
+            "",
+        ] {
+            assert!(!host_header_is_loopback(bad), "{bad} must be refused");
+        }
+    }
+
+    #[tokio::test]
+    async fn port_zero_reports_the_os_assigned_port() {
+        let (listener, addr) = bind_loopback(0, 20).await.expect("bind --port 0");
+        assert_ne!(addr.port(), 0, "local_addr must report the real port");
+        assert_eq!(
+            addr.port(),
+            listener.local_addr().expect("local_addr").port()
+        );
     }
 }

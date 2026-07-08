@@ -51,11 +51,48 @@ export function daemonHttpBase(search: string = window.location.search): string 
   return ws.toString().replace(/\/$/, '');
 }
 
+// ---------------------------------------------------------------------------
+// Daemon auth token (docs/PROTOCOL.md, "Process supervision")
+//
+// The daemon requires a per-start token on /ws and /api/files/*. The browser
+// UI is handed it by GET /api/session (served only to loopback-Origin browser
+// requests); native clients read it from the portfile instead. The token is
+// re-fetched on every connect attempt so a daemon restart (new token) heals
+// through the normal reconnect loop.
+// ---------------------------------------------------------------------------
+
+let lastToken: string | null = null;
+
+/** The most recently fetched daemon token (for sync URL building). */
+export function daemonToken(): string | null {
+  return lastToken;
+}
+
+export async function fetchDaemonToken(): Promise<string | null> {
+  try {
+    const response = await fetch(new URL('/api/session', daemonHttpBase()), { cache: 'no-store' });
+    if (!response.ok) return null;
+    const payload = (await response.json()) as { token?: unknown };
+    if (typeof payload.token === 'string' && payload.token) {
+      lastToken = payload.token;
+      return payload.token;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function uploadFileToRoom(roomId: string, file: File): Promise<{ file_id: string; event_id: string }> {
   const url = new URL('/api/files/share', daemonHttpBase());
   url.searchParams.set('room_id', roomId);
   url.searchParams.set('name', file.name || 'upload.bin');
   if (file.type) url.searchParams.set('mime', file.type);
+  // Always re-fetch: a cached token can be stale after a daemon restart (new
+  // per-start token), which would 401 a healthy daemon. Fall back to the cached
+  // one only if the refetch fails.
+  const token = (await fetchDaemonToken()) ?? daemonToken();
+  if (token) url.searchParams.set('token', token);
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': file.type || 'application/octet-stream' },
@@ -121,6 +158,9 @@ export class WsClient implements Client {
   private attempts = 0;
   private reconnectTimer: number | null = null;
   private stopped = true;
+  /** Generation counter so a stale async open attempt (token fetch in flight
+   *  across a stop()/start() cycle) can never install its socket. */
+  private openSeq = 0;
 
   constructor(url: string = daemonUrl()) {
     this.url = url;
@@ -197,9 +237,30 @@ export class WsClient implements Client {
   private open(openingState: ConnectionState): void {
     this.reconnectTimer = null;
     this.setState(openingState);
+    void this.openWithToken();
+  }
+
+  private async openWithToken(): Promise<void> {
+    const seq = ++this.openSeq;
+    // Fetch a fresh token every attempt: it costs one loopback GET and makes a
+    // daemon restart (which mints a new token) heal automatically. A null
+    // token still attempts the connect so the failure surfaces through the
+    // normal onclose → reconnect path.
+    const token = await fetchDaemonToken();
+    if (this.stopped || seq !== this.openSeq) return;
+    let url = this.url;
+    if (token) {
+      try {
+        const withToken = new URL(this.url);
+        withToken.searchParams.set('token', token);
+        url = withToken.toString();
+      } catch {
+        // keep the raw URL; the daemon will refuse and we retry
+      }
+    }
     let ws: WebSocket;
     try {
-      ws = new WebSocket(this.url);
+      ws = new WebSocket(url);
     } catch {
       this.scheduleReconnect();
       return;

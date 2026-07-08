@@ -35,6 +35,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { wsUrlFor } from "./daemon-token.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BINARY = join(repoRoot, "target", "debug", "jeliyad");
 const PORT_A = 7411;
@@ -121,9 +123,13 @@ async function pollUntil(fn, timeoutMs, what) {
 // Daemon + protocol client
 // ---------------------------------------------------------------------------
 
+/** Data dir by port so Client.connect can read the portfile's auth token. */
+const dataDirByPort = new Map();
+
 function startDaemon(label, port) {
   const dataDir = mkdtempSync(join(tmpdir(), `jeliya-e2e-${label}-`));
   dataDirs.push(dataDir);
+  dataDirByPort.set(port, dataDir);
   const proc = spawn(
     BINARY,
     [...(REAL ? [] : ["--loopback"]), "--port", String(port), "--data-dir", dataDir],
@@ -150,9 +156,11 @@ class Client {
   }
 
   async connect(port, deadlineMs = 60_000) {
-    const url = `ws://127.0.0.1:${port}/ws`;
     const start = Date.now();
     for (;;) {
+      // Recomputed per attempt: the portfile (with the auth token) appears
+      // when the daemon is ready, and early attempts race it.
+      const url = wsUrlFor(port, dataDirByPort.get(port));
       try {
         const ws = new WebSocket(url);
         await new Promise((res, rej) => {

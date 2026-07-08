@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { wsUrlFor } from "./daemon-token.mjs";
+
 const PORT = 7431;
 const URL = `ws://127.0.0.1:${PORT}/ws`;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -67,8 +69,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function connectWithRetry(deadlineMs) {
   const start = Date.now();
   for (;;) {
+    // Recomputed per attempt: the portfile (with the auth token) appears when
+    // the daemon is ready, and early attempts race it.
+    const url = wsUrlFor(PORT, dataDir);
     try {
-      const ws = new WebSocket(URL);
+      const ws = new WebSocket(url);
       await new Promise((resolveOpen, rejectOpen) => {
         ws.onopen = () => resolveOpen();
         ws.onerror = (e) => rejectOpen(new Error("connect failed"));
@@ -76,7 +81,7 @@ async function connectWithRetry(deadlineMs) {
       return ws;
     } catch {
       if (Date.now() - start > deadlineMs) {
-        fail(`could not connect to ${URL} within ${deadlineMs}ms`);
+        fail(`could not connect to ${url} within ${deadlineMs}ms`);
       }
       await sleep(250);
     }

@@ -17,6 +17,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { defaultDataDir, pipeDaemonOutput, wsUrlFor } from "./daemon-token.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BINARY = join(repoRoot, "target", "debug", "jeliyad");
 const ROOM_NAME = "Build Iroh Rooms MVP";
@@ -50,8 +52,10 @@ function die(msg) {
 }
 
 class Client {
-  constructor(label, port) {
+  constructor(label, port, dataDir = defaultDataDir()) {
     this.label = label;
+    this.port = port;
+    this.dataDir = dataDir;
     this.url = `ws://127.0.0.1:${port}/ws`;
     this.nextId = 1;
     this.pending = new Map();
@@ -61,6 +65,9 @@ class Client {
   async connect(deadlineMs = 60_000) {
     const start = Date.now();
     for (;;) {
+      // Recomputed per attempt: the portfile (with the auth token) appears
+      // when the daemon is ready, and early attempts race it.
+      this.url = wsUrlFor(this.port, this.dataDir);
       try {
         const ws = new WebSocket(this.url);
         await new Promise((res, rej) => {
@@ -139,13 +146,11 @@ agentDaemon = spawn(
   ["--loopback", "--port", String(AGENT_PORT), "--data-dir", AGENT_DIR],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
-agentDaemon.stdout.on("data", (d) => process.stdout.write(`[agentd] ${d}`));
-agentDaemon.stderr.on("data", (d) => process.stderr.write(`[agentd] ${d}`));
-agentDaemon.on("exit", (code, signal) => {
+pipeDaemonOutput(agentDaemon, "agentd", (code, signal) => {
   if (!stopping) die(`agent daemon exited early (code=${code} signal=${signal})`);
 });
 
-const agent = new Client("agent", AGENT_PORT);
+const agent = new Client("agent", AGENT_PORT, AGENT_DIR);
 await agent.connect();
 status = await agent.call("daemon.status");
 let agentIdentity = status.identity?.identity_id;

@@ -10,6 +10,8 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { defaultDataDir, pipeDaemonOutput, wsUrlFor } from "./daemon-token.mjs";
+
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // JELIYAD overrides the binary location (e.g. a shipped static binary on a
 // machine that never built the workspace).
@@ -62,6 +64,17 @@ export async function pollUntil(fn, timeoutMs, what, intervalMs = 500) {
  * Returns the child process. The caller's data dir persists across runs on
  * purpose (identity continuity); only the process is cleaned up.
  */
+/** Data dir by daemon port, so `Client.connect(port)` can find the portfile
+ *  (and its auth token) for a daemon this process spawned. */
+const dataDirByPort = new Map();
+
+/** Where `Client.connect` should look for a daemon's portfile. Registered
+ *  automatically by `startRealDaemon`; call it directly when attaching to a
+ *  daemon spawned some other way. */
+export function registerDaemonDataDir(port, dataDir) {
+  dataDirByPort.set(port, dataDir);
+}
+
 export function startRealDaemon({ port, dataDir, label, onExit, loopback = false }) {
   if (!existsSync(BINARY)) {
     console.error(
@@ -69,14 +82,16 @@ export function startRealDaemon({ port, dataDir, label, onExit, loopback = false
     );
     process.exit(1);
   }
+  registerDaemonDataDir(port, dataDir);
   const proc = spawn(
     BINARY,
     [...(loopback ? ["--loopback"] : []), "--port", String(port), "--data-dir", dataDir],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  proc.stdout.on("data", (d) => process.stdout.write(`[${label}] ${d}`));
-  proc.stderr.on("data", (d) => process.stderr.write(`[${label}] ${d}`));
-  proc.on("exit", (code, signal) => onExit?.(code, signal));
+  // pipeDaemonOutput swallows a clean `already_running` adoption so a persistent
+  // data dir with an orphaned daemon (a prior SIGKILLed run) is adopted rather
+  // than mistaken for an early exit.
+  pipeDaemonOutput(proc, label, onExit);
   return proc;
 }
 
@@ -92,9 +107,11 @@ export class Client {
   }
 
   async connect(port, deadlineMs = 30_000) {
-    const url = `ws://127.0.0.1:${port}/ws`;
     const start = Date.now();
     for (;;) {
+      // Recomputed per attempt: the portfile (carrying the auth token) only
+      // appears once the daemon is ready, and early attempts race it.
+      const url = wsUrlFor(port, dataDirByPort.get(port) ?? defaultDataDir());
       try {
         const ws = new WebSocket(url);
         await new Promise((res, rej) => {

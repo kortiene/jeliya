@@ -181,6 +181,16 @@ async fn dispatch(method: &str, raw_params: Value, state: &AppState) -> CoreResu
     match method {
         // ---- Daemon & identity -------------------------------------------
         "daemon.status" => Ok(daemon_status(sup, state)),
+        "daemon.shutdown" => {
+            // Reply first, then die: the shutdown signal is delayed a beat so
+            // this response flushes to the requesting client before teardown.
+            let tx = state.shutdown_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let _ = tx.send("daemon.shutdown RPC".to_owned()).await;
+            });
+            Ok(json!({ "shutting_down": true }))
+        }
         "identity.create" => {
             let profile = identity::create(&state.data_dir)?;
             Ok(json!({
@@ -320,6 +330,10 @@ fn daemon_status(sup: &RoomSupervisor, state: &AppState) -> Value {
         .map(|p| json!({ "identity_id": p.identity_id, "device_id": p.device_id }));
     json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "protocol": crate::PROTOCOL_VERSION,
+        "pid": std::process::id(),
+        "port": state.port,
+        "data_dir": state.data_dir.display().to_string(),
         "mode": sup.mode(),
         "identity": identity,
         "endpoint": sup.status_endpoint(),

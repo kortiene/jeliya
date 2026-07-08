@@ -35,6 +35,16 @@ dirs = "6"
 webbrowser = "1"
 rust-embed = { version = "8", optional = true, features = ["interpolate-folder-path", "debug-embed"] }
 url = "2"
+# Sidecar lifecycle: single-instance data-dir lock, WS auth token, rolling log.
+fd-lock = "4"
+getrandom = "0.4"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
