@@ -55,7 +55,13 @@ class WsClient implements Client {
   @override
   Stream<Push> get pushes => _pushes.stream;
   @override
-  String describe() => _lastUrl?.replace(queryParameters: {}).toString() ?? 'ws (unconnected)';
+  String describe() {
+    final url = _lastUrl;
+    if (url == null) return 'ws (unconnected)';
+    // Rebuild without the query: `replace(queryParameters: {})` keeps an empty
+    // query and renders a trailing '?'.
+    return Uri(scheme: url.scheme, host: url.host, port: url.port, path: url.path).toString();
+  }
 
   @override
   Future<void> start() {
@@ -150,7 +156,11 @@ class WsClient implements Client {
     ws.listen(
       (data) {
         if (ws != _ws) return;
-        _handleFrame(data is String ? data : utf8.decode(data as List<int>));
+        if (data is String) {
+          _handleFrame(data);
+        } else if (data is List<int>) {
+          _handleFrame(utf8.decode(data, allowMalformed: true));
+        }
       },
       onDone: () {
         if (ws != _ws) return;
@@ -201,6 +211,15 @@ class WsClient implements Client {
   }
 
   void _handleFrame(String raw) {
+    // A frame the daemon sends must never be able to kill this client: this
+    // runs inside the socket's onData callback, where an uncaught throw is an
+    // unhandled async error. Forward-compat rule: drop what we cannot read.
+    try {
+      _handleFrameChecked(raw);
+    } catch (_) {/* malformed frame — ignored */}
+  }
+
+  void _handleFrameChecked(String raw) {
     final dynamic msg;
     try {
       msg = jsonDecode(raw);
@@ -211,8 +230,11 @@ class WsClient implements Client {
     final frame = msg.cast<String, dynamic>();
     final push = frame['push'];
     if (push is String) {
+      // `data` of an unexpected shape still delivers the push (empty payload)
+      // rather than throwing — a future daemon may grow non-object payloads.
+      final data = frame['data'];
       if (!_pushes.isClosed) {
-        _pushes.add(Push(push, (frame['data'] as Map?)?.cast<String, dynamic>() ?? const {}));
+        _pushes.add(Push(push, data is Map ? data.cast<String, dynamic>() : const {}));
       }
       return;
     }
@@ -224,8 +246,9 @@ class WsClient implements Client {
       if (frame['ok'] == true) {
         p.completer.complete(frame['result']);
       } else {
-        final error = (frame['error'] as Map?)?.cast<String, dynamic>() ?? const {};
-        p.completer.completeError(RequestError.fromWire(error));
+        final error = frame['error'];
+        p.completer.completeError(
+            RequestError.fromWire(error is Map ? error.cast<String, dynamic>() : const {}));
       }
     }
   }

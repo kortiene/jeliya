@@ -26,12 +26,19 @@ enum ConnectionState { connecting, connected, reconnecting, disconnected }
 class RequestError implements Exception {
   RequestError(this.code, this.message, {this.hint});
 
-  /// Build from a daemon `error` object.
-  factory RequestError.fromWire(Map<String, dynamic> error) => RequestError(
-        (error['code'] as String?) ?? 'internal',
-        (error['message'] as String?) ?? 'request failed',
-        hint: error['hint'] as String?,
-      );
+  /// Build from a daemon `error` object. Tolerant of mistyped fields — a
+  /// malformed error must still complete the pending call (as `internal`),
+  /// never throw mid-dispatch and leave it hanging.
+  factory RequestError.fromWire(Map<String, dynamic> error) {
+    final code = error['code'];
+    final message = error['message'];
+    final hint = error['hint'];
+    return RequestError(
+      code is String && code.isNotEmpty ? code : 'internal',
+      message is String ? message : 'request failed',
+      hint: hint is String ? hint : null,
+    );
+  }
 
   final String code;
   final String message;
