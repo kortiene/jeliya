@@ -78,6 +78,20 @@ function at(h: number, m: number, s = 0): number {
   return d.getTime();
 }
 
+/** Parse an invite expiry (a number of seconds, or a duration string like
+ *  "24h" / "90m" / "3600") into seconds, or null for none — mirrors the
+ *  daemon's `expiry_spec` (rpc.rs). */
+function parseExpirySeconds(expiry: number | string | undefined): number | null {
+  if (typeof expiry === 'number') return expiry > 0 ? expiry : null;
+  if (typeof expiry !== 'string') return null;
+  const m = expiry.trim().match(/^(\d+)\s*([smhd])?$/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = (m[2] ?? 's').toLowerCase();
+  const mult = unit === 'd' ? 86400 : unit === 'h' ? 3600 : unit === 'm' ? 60 : 1;
+  return n > 0 ? n * mult : null;
+}
+
 // -- people ------------------------------------------------------------------
 
 interface Person {
@@ -277,7 +291,9 @@ function buildMainRoom(): MockRoom {
     room_id: r,
     name: 'Build Iroh Rooms MVP',
     myRole: 'owner',
-    members: EVERYONE.map((p) => member(p, p === QA ? 'offline' : 'active')),
+    // Roster status is membership only (active|invited|left|removed) — QA's
+    // offline-ness is peer/fleet liveness, never a member.status value.
+    members: EVERYONE.map((p) => member(p, 'active')),
     timeline,
     files,
     pipes,
@@ -663,6 +679,12 @@ class MockClient implements Client {
       case 'daemon.status': {
         const status: DaemonStatus = {
           version: '0.1.0-mock',
+          // Must match the real daemon's contract (PROTOCOL.md "Protocol
+          // version"): a client keys its version handshake on this.
+          protocol: 1,
+          pid: 4242,
+          port: 7420,
+          data_dir: '/mock/Jeliya',
           mode: 'loopback',
           identity: this.identity,
           endpoint: this.identity
@@ -672,6 +694,9 @@ class MockClient implements Client {
         };
         return status;
       }
+
+      case 'daemon.shutdown':
+        return { shutting_down: true };
 
       case 'identity.create': {
         if (this.identity) {
@@ -771,8 +796,10 @@ class MockClient implements Client {
 
       case 'invite.create': {
         const p = params as MethodMap['invite.create']['params'];
-        const room = this.needOpenRoom(p.room_id);
-        if (!p.identity_id || !/^[0-9a-f]{16,}$/i.test(p.identity_id.trim())) {
+        // Unlike room.open, the real daemon mints invites on CLOSED rooms too
+        // (it persists member.invited directly), so use needRoom, not needOpenRoom.
+        const room = this.needRoom(p.room_id);
+        if (!p.identity_id || !/^[0-9a-f]{64}$/i.test(p.identity_id.trim())) {
           this.err('invalid_params', 'identity_id must be the invitee\'s hex identity id', 'ask the invitee to copy their identity id from their onboarding screen or sidebar footer');
         }
         const me = this.me(room);
@@ -780,9 +807,11 @@ class MockClient implements Client {
           member: { identity_id: p.identity_id.trim(), role: p.role },
         }));
         const ticket = `roomtkt1${base32ish(`${room.room_id}:${p.identity_id}:${Date.now()}`, 96)}`;
-        // `expiry` is seconds-from-now (see docs/PROTOCOL.md); no expiry means
-        // the ticket is good until redeemed once (single-use, not time-boxed).
-        const expiresAt = typeof p.expiry === 'number' && p.expiry > 0 ? Date.now() + p.expiry * 1000 : null;
+        // `expiry` accepts a duration string ("24h"/"3600") or a number of
+        // seconds (see docs/PROTOCOL.md); no expiry means single-use, not
+        // time-boxed.
+        const expirySecs = parseExpirySeconds(p.expiry);
+        const expiresAt = expirySecs !== null ? Date.now() + expirySecs * 1000 : null;
         this.tickets.set(ticket, { room_id: room.room_id, identity_id: p.identity_id.trim(), role: p.role, expiresAt });
         return { ticket };
       }
@@ -837,7 +866,7 @@ class MockClient implements Client {
           label: p.label,
           ...(p.message !== undefined ? { status_message: p.message } : {}),
           ...(p.progress !== undefined ? { progress: p.progress } : {}),
-          ...(p.artifacts !== undefined ? { artifacts: p.artifacts } : {}),
+          ...(p.artifacts && p.artifacts.length > 0 ? { artifacts: p.artifacts } : {}),
         });
         this.ingest(room, event);
         return { event_id: event.event_id };
@@ -891,7 +920,8 @@ class MockClient implements Client {
               }));
               return;
             }
-            const dir = p.save_dir ?? '~/Downloads/Jeliya';
+            // Default matches the daemon: <data_dir>/downloads (PROTOCOL.md).
+            const dir = p.save_dir ?? '/mock/Jeliya/downloads';
             const path = `${dir}/${file.name}`;
             file.fetched = true;
             file.local_path = path;
@@ -955,8 +985,10 @@ class MockClient implements Client {
         if (!pipe) this.err('pipe_denied', 'unknown pipe for this room', 'pipe.list shows live pipes');
         pipe.state = 'closed';
         pipe.connected = false;
+        // A pipe_closed event nulls both target and authorized_peer, matching
+        // the daemon's materializer (see PROTOCOL.md TimelineEvent field notes).
         const event = ev(room.room_id, Date.now(), this.me(room), 'pipe_closed', {
-          pipe: { pipe_id: pipe.pipe_id, target: pipe.target, authorized_peer: pipe.authorized_peer },
+          pipe: { pipe_id: pipe.pipe_id, target: null, authorized_peer: null },
         });
         this.ingest(room, event);
         return { event_id: event.event_id };
@@ -975,7 +1007,7 @@ class MockClient implements Client {
       case 'agent.history': {
         const p = params as MethodMap['agent.history']['params'];
         const room = this.needRoom(p.room_id);
-        if (typeof p.identity_id !== 'string' || !/^[0-9a-f]{16,}$/i.test(p.identity_id.trim())) {
+        if (typeof p.identity_id !== 'string' || !/^[0-9a-f]{64}$/i.test(p.identity_id.trim())) {
           this.err('invalid_params', 'identity_id must be a hex identity id', null);
         }
         const id = p.identity_id.trim();

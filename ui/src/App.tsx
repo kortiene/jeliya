@@ -11,7 +11,7 @@ import type {
   RoomSummary,
   TimelineEvent,
 } from './lib/protocol';
-import { uploadFileToRoom } from './lib/client';
+import { daemonToken, uploadFileToRoom } from './lib/client';
 import { errorShape } from './lib/protocol';
 import { buildDiagnostics } from './lib/diagnostics';
 import type { DiagnosticEvent } from './lib/diagnostics';
@@ -65,6 +65,10 @@ async function copyText(text: string): Promise<void> {
 
 function localFileUrl(roomId: string, fileId: string): string {
   const params = new URLSearchParams({ room_id: roomId, file_id: fileId });
+  // The daemon token-gates /api/files/*; by the time a file link renders, the
+  // WS client has fetched the session token (links come from protocol data).
+  const token = daemonToken();
+  if (token) params.set('token', token);
   return `/api/files/local?${params.toString()}`;
 }
 
@@ -738,7 +742,7 @@ export default function App({ client }: { client: Client }) {
           {currentRoom ? (
             <>
               <RoomHeader
-                name={currentRoom.name}
+                name={currentRoom.name ?? 'Untitled room'}
                 memberCount={members.length || currentRoom.member_count}
                 members={members}
                 peers={peers}
@@ -768,7 +772,7 @@ export default function App({ client }: { client: Client }) {
               />
               <Composer
                 roomId={currentRoom.room_id}
-                roomName={currentRoom.name}
+                roomName={currentRoom.name ?? 'Untitled room'}
                 disabled={conn !== 'connected'}
                 onSend={sendMessage}
                 onShareFile={shareBrowserFile}
@@ -860,7 +864,7 @@ export default function App({ client }: { client: Client }) {
           <LeaveRoomModal
             client={client}
             roomId={roomId}
-            roomName={currentRoom.name}
+            roomName={currentRoom.name ?? 'Untitled room'}
             onDiagnosticError={rememberError}
             onClose={() => setLeaveOpen(false)}
             onLeft={() => {

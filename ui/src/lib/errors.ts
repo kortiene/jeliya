@@ -44,6 +44,18 @@ export function friendlyError(error: DaemonErrorShape): FriendlyError {
         message: 'The daemon does not have enough room history to open this room.',
         action: 'Join with an invite, or open the room with a reachable peer hint.',
       };
+    case 'file_unauthorized':
+      return {
+        title: 'Not authorized for this file',
+        message: 'Every reachable provider refused the transfer because the signed history does not admit this identity for it.',
+        action: 'Ask the sender to re-share the file or re-invite you, then retry.',
+      };
+    case 'hash_mismatch':
+      return {
+        title: 'Security check failed',
+        message: 'The fetched bytes did not match the file hash. This is a hard stop — the copy is discarded, never shown.',
+        action: 'Ask the sender to re-share the file. Do not retry the same copy.',
+      };
     case 'connection_lost':
       return {
         title: 'Daemon connection lost',

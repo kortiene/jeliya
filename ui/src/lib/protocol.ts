@@ -29,8 +29,11 @@ export interface FileRef {
 
 export interface PipeRef {
   pipe_id: string;
-  target: string;
-  authorized_peer: string;
+  /** null on a pipe_closed event. */
+  target: string | null;
+  /** null when no peer is authorized; a comma-joined list for multi-identity
+   *  authorization; null on a pipe_closed event. */
+  authorized_peer: string | null;
 }
 
 export interface MemberRef {
@@ -86,6 +89,12 @@ export interface EndpointInfo {
 
 export interface DaemonStatus {
   version: string;
+  /** Major protocol version spoken on /ws (docs/PROTOCOL.md). A client reads
+   *  this before assuming a contract; see the "Protocol version" section. */
+  protocol: number;
+  pid: number;
+  port: number;
+  data_dir: string;
   mode: 'loopback' | 'real';
   identity: Identity | null;
   endpoint: EndpointInfo | null;
@@ -94,8 +103,10 @@ export interface DaemonStatus {
 
 export interface RoomSummary {
   room_id: string;
-  name: string;
-  role: Role;
+  /** null for a joined room whose genesis (name-bearing) event has not synced. */
+  name: string | null;
+  /** null when this daemon has no local identity (room.list has no identity guard). */
+  role: Role | null;
   status: string | null;
   member_count: number;
   open: boolean;
@@ -128,7 +139,8 @@ export interface PipeEntry {
   pipe_id: string;
   target: string;
   opened_by: string;
-  authorized_peer: string;
+  /** null when no peer is authorized; a comma-joined list for multi-identity. */
+  authorized_peer: string | null;
   state: PipeState;
   connected: boolean;
 }
@@ -206,11 +218,14 @@ export function errorShape(e: unknown): DaemonErrorShape {
 /** Every method in PROTOCOL.md with its params and result shapes. */
 export interface MethodMap {
   'daemon.status': { params: Record<string, never>; result: DaemonStatus };
+  'daemon.shutdown': { params: Record<string, never>; result: { shutting_down: true } };
   'identity.create': { params: Record<string, never>; result: Identity };
   'room.create': { params: { name: string }; result: { room_id: string } };
   'room.list': { params: Record<string, never>; result: { rooms: RoomSummary[] } };
   'room.open': {
-    params: { room_id: string };
+    /** `peers` are optional dial hints (`<endpoint_id>@<ip:port>`) merged into
+     *  the room's persisted hint set, same shape as room.join. */
+    params: { room_id: string; peers?: string[] };
     result: {
       endpoint: { endpoint_id: string; addr: string | null };
       members: Member[];
@@ -222,7 +237,9 @@ export interface MethodMap {
   'room.timeline': { params: { room_id: string; limit?: number }; result: { events: TimelineEvent[] } };
   'room.members': { params: { room_id: string }; result: { members: Member[] } };
   'invite.create': {
-    params: { room_id: string; identity_id: string; role: 'member' | 'agent'; expiry?: number };
+    /** `expiry` accepts a duration string like "24h" / "3600" or a bare number
+     *  of seconds; omitted means no expiry. */
+    params: { room_id: string; identity_id: string; role: 'member' | 'agent'; expiry?: number | string };
     result: { ticket: string };
   };
   'room.join': { params: { ticket: string; name?: string; peers?: string[] }; result: { room_id: string } };

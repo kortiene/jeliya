@@ -349,9 +349,9 @@ function fetchErrorCopy(error: DaemonErrorShape): { message: string; detail?: st
         message: 'No provider is online for this file yet. Recheck when the sender is back online.',
         detail: error.hint ?? error.message,
       };
-    case 'provider_refused':
+    case 'file_unauthorized':
       return {
-        message: 'The provider refused this fetch. Ask the sender to keep the room open, then retry.',
+        message: 'Every provider refused this fetch — your identity is not authorized for it. Ask the sender to re-share or re-invite you.',
         detail: error.hint ?? error.message,
       };
     default:

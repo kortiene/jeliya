@@ -231,9 +231,10 @@ function EventCard({
                 ⤳
               </span>
               <span className="file-tile-info">
-                <strong className="mono">{event.pipe.target}</strong>
+                <strong className="mono">{event.pipe.target ?? '—'}</strong>
                 <span className="muted">
-                  authorized peer: <SenderName id={event.pipe.authorized_peer} />
+                  authorized peer:{' '}
+                  {event.pipe.authorized_peer ? <SenderName id={event.pipe.authorized_peer} /> : '—'}
                 </span>
               </span>
               <button type="button" className="btn btn-sm" onClick={onShowPipes}>

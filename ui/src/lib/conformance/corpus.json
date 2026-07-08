@@ -1,0 +1,69 @@
+{
+  "note": "Envelope-level conformance vectors for docs/PROTOCOL.md. Replayed against the real daemon and the mock via ui/src/lib/conformance/*.test.ts. Dynamic scalars are compared as type tags (see harness.ts normalize): <hex64>, <hex32>, <room_id>, <ticket>, <file_id>, <addr>, <ts>, <path>, <version>, <number>. Each oracle establishes the shared precondition (an identity exists) in its own setup; scenarios never call identity.create. Tags: 'mockOnly' / 'daemonOnly' skip on the other oracle.",
+  "scenarios": [
+    {
+      "name": "daemon.status carries the version handshake fields",
+      "steps": [
+        {
+          "call": "daemon.status",
+          "expectSubset": {
+            "version": "<version>",
+            "protocol": 1,
+            "pid": "<number>",
+            "port": "<number>",
+            "data_dir": "<path>",
+            "mode": "loopback",
+            "identity": { "identity_id": "<hex64>", "device_id": "<hex64>" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "create → open a room returns an endpoint",
+      "steps": [
+        { "call": "room.create", "params": { "name": "Conformance Room" }, "save": { "rid": "room_id" }, "expect": { "room_id": "<room_id>" } },
+        { "call": "room.open", "params": { "room_id": "$rid" }, "expectSubset": { "endpoint": { "endpoint_id": "<hex64>" } } }
+      ]
+    },
+    {
+      "name": "message.send returns an event_id and echoes it as a room.event push",
+      "steps": [
+        { "call": "room.create", "params": { "name": "Message Room" }, "save": { "rid": "room_id" } },
+        { "call": "room.open", "params": { "room_id": "$rid" } },
+        {
+          "call": "message.send",
+          "params": { "room_id": "$rid", "body": "hello conformance" },
+          "expect": { "event_id": "<hex64>" },
+          "expectPush": {
+            "push": "room.event",
+            "match": { "room_id": "<room_id>", "event": { "event_id": "<hex64>", "kind": "message", "body": "hello conformance" } }
+          }
+        }
+      ]
+    },
+    {
+      "name": "opening an unknown room fails room_unknown",
+      "steps": [
+        { "call": "room.open", "params": { "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000" }, "expectError": "room_unknown" }
+      ]
+    },
+    {
+      "name": "invite.create mints a ticket (on a closed room too)",
+      "steps": [
+        { "call": "room.create", "params": { "name": "Invite Room" }, "save": { "rid": "room_id" } },
+        {
+          "call": "invite.create",
+          "params": { "room_id": "$rid", "identity_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "role": "member" },
+          "expect": { "ticket": "<ticket>" }
+        }
+      ]
+    },
+    {
+      "name": "daemon.shutdown replies before tearing down",
+      "tags": ["mockOnly"],
+      "steps": [
+        { "call": "daemon.shutdown", "expect": { "shutting_down": true } }
+      ]
+    }
+  ]
+}
