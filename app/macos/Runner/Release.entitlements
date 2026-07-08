@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Dev walking-skeleton release build: sandbox OFF so the app can spawn and
+	  reach the jeliyad sidecar. NOT the shipping posture — Phase 5 restores the
+	  sandbox with a co-signed bundled sidecar (network.client/server +
+	  sandbox-inherit) and Developer ID notarization.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

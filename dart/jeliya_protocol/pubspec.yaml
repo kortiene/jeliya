@@ -1,0 +1,20 @@
+name: jeliya_protocol
+description: >-
+  Transport-agnostic Dart client for the Jeliya daemon protocol
+  (docs/PROTOCOL.md). Pure Dart, Flutter-agnostic — the same package backs the
+  desktop sidecar path (WebSocket to jeliyad) today and the mobile in-process
+  FFI transport later. See the architecture decision in the July 2026 native
+  evaluation.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+# Intentionally dependency-free: dart:io covers WebSocket + Process for the
+# desktop sidecar skeleton. A future mobile FFI transport is added behind the
+# same Client interface without changing this surface.
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^4.0.0
