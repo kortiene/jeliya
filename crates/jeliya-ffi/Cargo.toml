@@ -1,0 +1,20 @@
+[package]
+name = "jeliya-ffi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "C-ABI shim over jeliya-core for the mobile in-process (FFI) transport spike"
+
+[lib]
+name = "jeliya_ffi"
+# cdylib → libjeliya_ffi.so for Android/JNI + Flutter dart:ffi; staticlib for iOS later.
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+jeliya-core = { path = "../jeliya-core" }
+
+# NOTE: this crate intentionally does NOT set `[lints] workspace = true`, so it
+# does not inherit the workspace's `unsafe_code = "forbid"` — the C ABI boundary
+# genuinely needs `unsafe`. jeliya-core itself stays unsafe-forbidden.
