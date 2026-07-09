@@ -36,6 +36,7 @@
 - `/ws` and `/api/*` refuse requests whose `Host` header is not loopback (DNS-rebinding guard), and `/api/files/local` is no longer reachable without auth.
 - Files fetched from room peers are now served as downloads (`Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`, inert content-type) instead of rendered inline, so a peer-supplied `text/html`/`svg` cannot run script in the daemon's origin.
 - Daemon diagnostics moved from bare stderr prints to `tracing` (stderr + rolling file).
+- Three `jeliya_protocol` test files located the repo root via the BUILT `target/debug/jeliyad`, so on an unbuilt checkout (CI, fresh clone) they failed to LOAD before their own `jeliyad not built` skip guard could run — ci.yml's first live run caught it. The repo-root marker is now the checked-in `docs/PROTOCOL.md`; daemon-bound suites skip cleanly without the binary and run in full with it.
 - Fixed the file-fetch UI keying friendly copy on a phantom `provider_refused` code the daemon never emits; the authorization-wall case now correctly handles `file_unauthorized`, and `hash_mismatch` gets an explicit hard-stop message. Aligned the TypeScript wire types (`protocol.ts`) and the mock reference client with the daemon: `daemon.status` gains `protocol`/`pid`/`port`/`data_dir`, `daemon.shutdown` is typed, `room.open` documents its `peers` hints, `invite.create` expiry accepts a string or seconds, and pipe/room fields that can be null are typed nullable (surfacing several latent null-handling fixes in the UI).
 
 ## [0.4.3] - 2026-07-07

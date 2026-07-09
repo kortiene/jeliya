@@ -15,10 +15,14 @@ import 'package:jeliya_protocol/jeliya_protocol.dart';
 import 'package:jeliya_protocol/testing.dart';
 import 'package:test/test.dart';
 
+/// Walk up to the repo root by a CHECKED-IN marker (docs/PROTOCOL.md), not
+/// the built binary: on an unbuilt checkout (CI, fresh clone) the root must
+/// still resolve so the `jeliyad not built` skip guard below can run —
+/// using the binary as the marker made loading THROW instead of skipping.
 Directory _repoRoot() {
   var dir = Directory.current;
   for (var i = 0; i < 8; i++) {
-    if (File('${dir.path}/target/debug/jeliyad').existsSync()) return dir;
+    if (File('${dir.path}/docs/PROTOCOL.md').existsSync()) return dir;
     final parent = dir.parent;
     if (parent.path == dir.path) break;
     dir = parent;
