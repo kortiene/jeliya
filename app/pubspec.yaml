@@ -28,6 +28,15 @@ dependencies:
   # External links: pipe previews, fetched-file copies, GitHub issue reports.
   url_launcher: ^6.3.0
 
+  # Platform data dir (mobile has no ~/Library/Application Support); backs the
+  # Android/iOS PrefsStore path and the FFI data dir.
+  path_provider: ^2.1.4
+
+  # dart:ffi helpers (Utf8) for the in-process libjeliya_ffi.so smoke — the
+  # beachhead proving the native lib loads inside the Flutter process before
+  # the full FfiClient transport lands.
+  ffi: ^2.1.3
+
   # The transport-agnostic protocol client (WebSocket sidecar today, FFI later).
   jeliya_protocol:
     path: ../dart/jeliya_protocol

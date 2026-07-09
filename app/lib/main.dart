@@ -4,9 +4,14 @@
 library;
 
 // Hide Flutter's own ConnectionState (async.dart) — we use the protocol's.
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:jeliya_protocol/testing.dart' show MockClient;
+import 'package:path_provider/path_provider.dart';
 
+import 'src/ffi/jeliya_ffi_smoke.dart';
 import 'src/format.dart';
 import 'src/l10n/tokens.dart';
 import 'src/l10n/strings_context.dart';
@@ -15,6 +20,7 @@ import 'src/screens/onboarding_identity.dart';
 import 'src/screens/onboarding_rooms.dart';
 import 'src/screens/shell.dart';
 import 'src/session/daemon_session.dart';
+import 'src/session/prefs_store.dart';
 import 'src/theme.dart';
 
 Future<void> main() async {
@@ -22,7 +28,37 @@ Future<void> main() async {
   // intl date symbols (docs/i18n.md decision 4) — with bundled data ONE call
   // loads every locale, so a live formatting-locale switch never re-inits.
   await initializeDateFormatting();
-  runApp(const JeliyaApp());
+  // Desktop spawns/adopts the jeliyad sidecar; mobile has no subprocess (iOS
+  // forbids it, Android 13 SELinux blocks exec from writable dirs) and runs an
+  // INTERIM fixture transport until the in-process FfiClient lands.
+  if (Platform.isAndroid || Platform.isIOS) {
+    runApp(JeliyaApp(session: await _buildMobileSession()));
+  } else {
+    runApp(const JeliyaApp());
+  }
+}
+
+/// INTERIM mobile bring-up (Phase 4 scaffold). The production transport is an
+/// `FfiClient implements Client` over an expanded jeliya-ffi (request/response
+/// + a push StreamSink via flutter_rust_bridge) — the next milestone. Until
+/// then mobile injects the in-memory fixture [MockClient] so the full UI is
+/// exercisable on-device, reusing the same injection seam widget tests use.
+/// Also fires the FFI beachhead: proving libjeliya_ffi.so loads and runs
+/// inside the Flutter process (the last de-risking step before FfiClient).
+Future<DaemonSession> _buildMobileSession() async {
+  final dataDir = (await getApplicationSupportDirectory()).path;
+  if (Platform.isAndroid) {
+    try {
+      debugPrint('FFI-SMOKE: ${runFfiIdentitySmoke('$dataDir/ffi-smoke')}');
+    } catch (e) {
+      debugPrint('FFI-SMOKE: FAILED to load libjeliya_ffi.so — $e');
+    }
+  }
+  return DaemonSession(
+    client: MockClient(),
+    dataDir: dataDir,
+    prefs: PrefsStore('$dataDir/app_prefs.json'),
+  );
 }
 
 class JeliyaApp extends StatefulWidget {

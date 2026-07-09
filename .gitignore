@@ -20,3 +20,6 @@ ui/dist/
 
 # impeccable live-mode ephemeral session state (config.json + design.json are shared)
 .impeccable/live/sessions/
+
+# Android native libs are built by scripts/build-android-libs.mjs, not committed.
+app/android/app/src/main/jniLibs/
