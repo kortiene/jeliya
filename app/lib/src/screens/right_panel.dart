@@ -237,20 +237,35 @@ class _PanelTabsState extends State<_PanelTabs> {
         decoration: BoxDecoration(
           border: Border(bottom: BorderSide(color: tokens.border)),
         ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            for (final tab in PanelTab.values)
-              Expanded(
-                child: _PanelTabButton(
-                  label: _tabLabel(s, tab),
-                  count: widget.counts[tab] ?? 0,
-                  active: tab == widget.tab,
-                  focusNode: _nodes[tab]!,
-                  onTap: () => widget.onTab(tab),
-                ),
+        // Content-sized tabs, not width quarters: any flex wrapper caps a
+        // tab at 1/4 of the row, truncating the longest label under wider
+        // locales ('Membres' + count badge ellipsized to 'Me…' in fr). The
+        // ConstrainedBox keeps the justified spaceBetween layout whenever
+        // the tabs fit (fr with every badge populated does, with slack);
+        // only pathological states (e.g. four 99+ badges) engage the
+        // horizontal scroll instead of clipping the last tab — a focused
+        // tab auto-scrolls into view (InkResponse ensures visibility).
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: constraints.maxWidth),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  for (final tab in PanelTab.values)
+                    _PanelTabButton(
+                      label: _tabLabel(s, tab),
+                      count: widget.counts[tab] ?? 0,
+                      active: tab == widget.tab,
+                      focusNode: _nodes[tab]!,
+                      onTap: () => widget.onTab(tab),
+                    ),
+                ],
               ),
-          ],
+            ),
+          ),
         ),
       ),
     );
@@ -294,8 +309,10 @@ class _PanelTabButtonState extends State<_PanelTabButton> {
         onFocusChange: (focused) => setState(() => _focused = focused),
         focusColor: Colors.transparent,
         child: Container(
+          // x4, not x6: the four French labels + all four count badges must
+          // fit the 303px strip without engaging the overflow scroll.
           padding: const EdgeInsets.fromLTRB(
-              JeliyaSpacing.x6, JeliyaSpacing.x8, JeliyaSpacing.x6, JeliyaSpacing.x10),
+              JeliyaSpacing.x4, JeliyaSpacing.x8, JeliyaSpacing.x4, JeliyaSpacing.x10),
           decoration: BoxDecoration(
             // 2px active-tab underline; a focus ring for keyboard users.
             border: Border(
@@ -741,6 +758,11 @@ class _MemberRow extends StatelessWidget {
                   const SizedBox(height: JeliyaSpacing.x2),
                   Text(
                     _shortMemberId(member.identityId),
+                    // One line, always: the id is decorative (the Tooltip
+                    // carries the full value) and must never wrap into
+                    // glyph soup when a wide locale squeezes this column.
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: JeliyaText.mono(fontSize: 11, color: tokens.textMute),
                   ),
                 ],
@@ -765,6 +787,32 @@ class _MemberRow extends StatelessWidget {
                   _pill(tokens, _displayStatus(s, member.status), statusColor,
                       tokens.borderStrong,
                       dot: true),
+                  if (ownerCannotLeave) ...[
+                    const SizedBox(height: 5),
+                    // Under the pills, width-capped, wrapping to two lines:
+                    // inline it starved the name column at the 320px panel
+                    // width once French copy ('Le propriétaire reste') got
+                    // ~2x wider than 'Owner stays'.
+                    Tooltip(
+                      message: s.panelOwnerStaysTitle,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                            // Scale-aware: a fixed cap would force
+                            // mid-word breaks under large accessibility
+                            // text factors.
+                            maxWidth:
+                                MediaQuery.textScalerOf(context).scale(96)),
+                        child: Text(
+                          s.panelOwnerStays,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.end,
+                          style:
+                              TextStyle(fontSize: 11, color: tokens.textMute),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -775,16 +823,6 @@ class _MemberRow extends StatelessWidget {
                 size: JeliyaButtonSize.sm,
                 variant: JeliyaButtonVariant.danger,
                 onPressed: onLeaveRoom,
-              ),
-            ],
-            if (ownerCannotLeave) ...[
-              const SizedBox(width: JeliyaSpacing.x10),
-              Tooltip(
-                message: s.panelOwnerStaysTitle,
-                child: Text(
-                  s.panelOwnerStays,
-                  style: TextStyle(fontSize: 11, color: tokens.textMute),
-                ),
               ),
             ],
           ],
