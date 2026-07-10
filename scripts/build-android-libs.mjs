@@ -12,15 +12,17 @@
 // the clang wrapper name, so the native link floor matches the Gradle minSdk.
 //
 // Prereqs: the three rust targets (rustup target add armv7-linux-androideabi
-// aarch64-linux-android x86_64-linux-android) and NDK r29 at
-// ~/Library/Android/sdk/ndk/29.0.14206865 (override with ANDROID_NDK_HOME).
+// aarch64-linux-android x86_64-linux-android), NDK r29 at
+// ~/Library/Android/sdk/ndk/29.0.14206865 (override with ANDROID_NDK_HOME),
+// and a Dart SDK include dir for jeliya-ffi's build.rs (dart_api_dl.c) — set
+// DART_SDK_INCLUDE or FLUTTER_ROOT, or have `flutter` on PATH.
 //
 // Node 22+; no npm deps.
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, existsSync, statSync } from "node:fs";
+import { copyFileSync, mkdirSync, existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,6 +55,31 @@ if (!existsSync(NDK)) {
   process.exit(1);
 }
 
+// jeliya-ffi's build.rs compiles the Dart SDK's dart_api_dl.c and resolves the
+// include dir from DART_SDK_INCLUDE, then FLUTTER_ROOT (crates/jeliya-ffi/
+// build.rs). Its last-ditch `dart`-on-PATH probe is machine-dependent, so when
+// neither override is set, pin FLUTTER_ROOT here from the `flutter` launcher
+// on PATH (symlinks resolved: the real launcher lives at <root>/bin/flutter).
+const FLUTTER_ROOT = (() => {
+  if (process.env.DART_SDK_INCLUDE || process.env.FLUTTER_ROOT) {
+    return process.env.FLUTTER_ROOT;
+  }
+  const launcher = (process.env.PATH ?? "")
+    .split(delimiter)
+    .map((dir) => join(dir, "flutter"))
+    .find((candidate) => existsSync(candidate));
+  if (!launcher) {
+    console.error(
+      "build-android-libs: no DART_SDK_INCLUDE/FLUTTER_ROOT set and no `flutter` on PATH — " +
+        "jeliya-ffi's build.rs needs one of them to locate dart_api_dl.c",
+    );
+    process.exit(1);
+  }
+  const root = dirname(dirname(realpathSync(launcher)));
+  console.log(`build-android-libs: FLUTTER_ROOT=${root} (from \`flutter\` on PATH)`);
+  return root;
+})();
+
 const log = (m) => console.log(`build-android-libs: ${m}`);
 let built = 0;
 
@@ -69,6 +96,7 @@ for (const [triple, { abi, clang }] of Object.entries(TARGETS)) {
   const u = triple.replace(/-/g, "_");
   const env = {
     ...process.env,
+    ...(FLUTTER_ROOT ? { FLUTTER_ROOT } : {}),
     [cargoVar]: clangPath,
     [`CC_${u}`]: clangPath,
     [`CXX_${u}`]: `${clangPath}++`,
