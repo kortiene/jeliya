@@ -156,8 +156,10 @@ sandboxed packaging pipeline (`scripts/package-macos.mjs`, which emits a DMG —
 ad-hoc signed until Apple Developer enrollment completes). **No app release
 has been published yet** — every release so far ships only the `jeliyad`
 daemon — so installing today means the daemon above plus the browser UI.
-`app/` also carries an Android scaffold, currently running on a mock client
-(no real networking on mobile yet).
+`app/` also runs on phones: below 900dp it lays out as a bottom-tab mobile
+app, and the Android build speaks the real protocol through an in-process
+(FFI) engine — host-test-verified, with the on-device pass of the mobile UI
+still pending.
 
 ---
 
@@ -354,7 +356,7 @@ the app is a *fold* (a replay) over Iroh Rooms' signed event log.
 | `crates/jeliyad` | The resident daemon: local-only WebSocket API over `jeliya-core` (see `docs/PROTOCOL.md`). |
 | `crates/jeliya-ffi` | C-ABI shim over `jeliya-core` for the mobile in-process (FFI) transport. |
 | `dart/jeliya_protocol` | Pure-Dart typed client for the daemon protocol: typed models + wrappers for all 26 RPCs, WebSocket transport, sidecar supervisor, mock client for tests. |
-| `app/` | The native Flutter app: the macOS desktop client at parity with the web UI (English + French), plus the Android scaffold (mock client for now). |
+| `app/` | The native Flutter app: the macOS desktop client at parity with the web UI (English + French), plus a phone bottom-tab layout below 900dp and the Android build running the protocol in-process (FFI). |
 | `ui/` | The web UI the daemon serves (`embed-ui`): Vite + React, implements `mockups/`. Still the only GUI on Windows/Linux, and the reference client the native app tracks. |
 | `docs/PROTOCOL.md` | The daemon ⇄ shell contract (the spine). |
 | `docs/agent-guide.md` | How the AI agent works, plus its trust model. |
