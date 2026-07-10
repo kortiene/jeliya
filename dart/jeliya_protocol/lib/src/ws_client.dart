@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'frame_router.dart';
 import 'protocol.dart';
 
 const Duration _backoffBase = Duration(milliseconds: 500);
@@ -210,46 +211,21 @@ class WsClient implements Client {
     _queue.clear();
   }
 
+  // Envelope decoding lives in the shared frame router (frame_router.dart);
+  // this transport only contributes the closed-controller guard and the
+  // `_sent` bookkeeping alongside id correlation.
   void _handleFrame(String raw) {
-    // A frame the daemon sends must never be able to kill this client: this
-    // runs inside the socket's onData callback, where an uncaught throw is an
-    // unhandled async error. Forward-compat rule: drop what we cannot read.
-    try {
-      _handleFrameChecked(raw);
-    } catch (_) {/* malformed frame — ignored */}
-  }
-
-  void _handleFrameChecked(String raw) {
-    final dynamic msg;
-    try {
-      msg = jsonDecode(raw);
-    } catch (_) {
-      return; // not JSON
-    }
-    if (msg is! Map) return;
-    final frame = msg.cast<String, dynamic>();
-    final push = frame['push'];
-    if (push is String) {
-      // `data` of an unexpected shape still delivers the push (empty payload)
-      // rather than throwing — a future daemon may grow non-object payloads.
-      final data = frame['data'];
-      if (!_pushes.isClosed) {
-        _pushes.add(Push(push, data is Map ? data.cast<String, dynamic>() : const {}));
-      }
-      return;
-    }
-    final id = frame['id'];
-    if (id is int) {
-      final p = _pending.remove(id);
-      if (p == null) return; // late reply for a call we gave up on
-      _sent.remove(id);
-      if (frame['ok'] == true) {
-        p.completer.complete(frame['result']);
-      } else {
-        final error = frame['error'];
-        p.completer.completeError(
-            RequestError.fromWire(error is Map ? error.cast<String, dynamic>() : const {}));
-      }
-    }
+    routeFrame(
+      raw,
+      onPush: (push) {
+        if (!_pushes.isClosed) _pushes.add(push);
+      },
+      takePending: (id) {
+        final p = _pending.remove(id);
+        if (p == null) return null;
+        _sent.remove(id);
+        return p.completer;
+      },
+    );
   }
 }
