@@ -8,10 +8,10 @@ import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:intl/date_symbol_data_local.dart';
-import 'package:jeliya_protocol/testing.dart' show MockClient;
+import 'package:jeliya_protocol/ffi.dart' show FfiClient;
+import 'package:jeliya_protocol/jeliya_protocol.dart' show stageAndShareFile;
 import 'package:path_provider/path_provider.dart';
 
-import 'src/ffi/jeliya_ffi_smoke.dart';
 import 'src/format.dart';
 import 'src/l10n/tokens.dart';
 import 'src/l10n/strings_context.dart';
@@ -29,8 +29,8 @@ Future<void> main() async {
   // loads every locale, so a live formatting-locale switch never re-inits.
   await initializeDateFormatting();
   // Desktop spawns/adopts the jeliyad sidecar; mobile has no subprocess (iOS
-  // forbids it, Android 13 SELinux blocks exec from writable dirs) and runs an
-  // INTERIM fixture transport until the in-process FfiClient lands.
+  // forbids it, Android 13 SELinux blocks exec from writable dirs) and runs
+  // the Rust engine in-process behind [FfiClient].
   if (Platform.isAndroid || Platform.isIOS) {
     runApp(JeliyaApp(session: await _buildMobileSession()));
   } else {
@@ -38,26 +38,31 @@ Future<void> main() async {
   }
 }
 
-/// INTERIM mobile bring-up (Phase 4 scaffold). The production transport is an
-/// `FfiClient implements Client` over an expanded jeliya-ffi (request/response
-/// + a push StreamSink via flutter_rust_bridge) — the next milestone. Until
-/// then mobile injects the in-memory fixture [MockClient] so the full UI is
-/// exercisable on-device, reusing the same injection seam widget tests use.
-/// Also fires the FFI beachhead: proving libjeliya_ffi.so loads and runs
-/// inside the Flutter process (the last de-risking step before FfiClient).
+/// The mobile session: [FfiClient] over the in-process Rust engine
+/// (jeliya-ffi), injected through the same seam widget tests use. The
+/// platform-default opener resolves the library (Android soname, iOS
+/// staticlib in-process). The engine owns `<appSupport>/engine` — a dedicated
+/// subdirectory, deliberately distinct from the retired FFI smoke's
+/// 'ffi-smoke' dir so the transport never adopts that phantom identity.
+/// User-file shares go through [stageAndShareFile] against the engine data
+/// dir (pure dart:io — the staging convention needs no daemon HTTP origin),
+/// satisfying the engine's shareable-path invariant.
 Future<DaemonSession> _buildMobileSession() async {
   final dataDir = (await getApplicationSupportDirectory()).path;
-  if (Platform.isAndroid) {
-    try {
-      debugPrint('FFI-SMOKE: ${runFfiIdentitySmoke('$dataDir/ffi-smoke')}');
-    } catch (e) {
-      debugPrint('FFI-SMOKE: FAILED to load libjeliya_ffi.so — $e');
-    }
-  }
+  final engineDataDir = '$dataDir/engine';
+  // loopback: false — production mobile uses the real network path.
+  final client = FfiClient(dataDir: engineDataDir, loopback: false);
   return DaemonSession(
-    client: MockClient(),
+    client: client,
     dataDir: dataDir,
     prefs: PrefsStore('$dataDir/app_prefs.json'),
+    stageAndShare: ({required roomId, required sourcePath, name, mime}) =>
+        stageAndShareFile(client,
+            dataDir: engineDataDir,
+            roomId: roomId,
+            sourcePath: sourcePath,
+            name: name,
+            mime: mime),
   );
 }
 

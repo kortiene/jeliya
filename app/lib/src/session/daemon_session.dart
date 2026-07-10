@@ -1,7 +1,9 @@
 /// The app-scoped session: owns the SidecarSupervisor + Client lifecycle, the
 /// Boot bring-up machine, the bootstrap phase machine
-/// (boot | no-identity | no-rooms | ready), reconnect-driven re-sync, the
-/// current [RoomStore], local names, and the diagnostics error memory.
+/// (boot | no-identity | no-rooms | ready), reconnect-driven re-sync (on
+/// mobile, foreground-resume-driven — the in-process engine never
+/// reconnects), the current [RoomStore], local names, and the diagnostics
+/// error memory.
 ///
 /// Preserves the walking-skeleton supervision seam exactly (phase3-shell.json
 /// keep-list): spawn-or-adopt via `supervisor.start(port: 0)`, pass
@@ -120,15 +122,22 @@ class DaemonSession extends ChangeNotifier {
   /// [client] (e.g. `MockClient` from `jeliya_protocol/testing.dart`) and the
   /// supervisor is skipped entirely; pass [prefs] = [PrefsStore.inMemory] to
   /// keep tests off the disk.
+  ///
+  /// Mobile: also pass [stageAndShare] so user-file shares go through the
+  /// engine's staging convention — with an in-process engine there is no
+  /// supervisor to derive it from. Null (desktop, tests) derives it from the
+  /// supervisor when one exists.
   DaemonSession({
     Client? client,
     ClientFactory? clientFactory,
     String? binaryPath,
     String? dataDir,
     PrefsStore? prefs,
+    StageAndShare? stageAndShare,
   })  : _injectedClient = client,
         _clientFactory = clientFactory ?? WsClient.new,
         _binaryPathOverride = binaryPath,
+        _stageAndShareOverride = stageAndShare,
         dataDir = dataDir ?? defaultDataDir(),
         prefs = prefs ??
             PrefsStore('${dataDir ?? defaultDataDir()}/app_prefs.json');
@@ -136,6 +145,7 @@ class DaemonSession extends ChangeNotifier {
   final Client? _injectedClient;
   final ClientFactory _clientFactory;
   final String? _binaryPathOverride;
+  final StageAndShare? _stageAndShareOverride;
 
   /// The daemon data dir this session supervises against.
   final String dataDir;
@@ -227,6 +237,15 @@ class DaemonSession extends ChangeNotifier {
       Client client;
       if (injected != null) {
         client = injected;
+        // In-process the transport never drops independently of the process,
+        // so the reconnect-driven re-sync in [_onConnectionState] can never
+        // fire on mobile; foreground resume is its honest replacement (pushes
+        // missed while the OS held the app suspended are reconciled by
+        // re-running the bootstrap). Host tests inject too — the platform
+        // gate keeps them listener-free.
+        if (Platform.isAndroid || Platform.isIOS) {
+          _lifecycle ??= AppLifecycleListener(onResume: _onResumed);
+        }
       } else {
         _setBoot(Boot.spawning, BootStage.spawning);
         final binary = _binaryPathOverride ?? resolveJeliyadBinary();
@@ -348,6 +367,15 @@ class DaemonSession extends ChangeNotifier {
     }
   }
 
+  /// Mobile foreground resume → bootstrap re-sync (the reconnect trigger in
+  /// [_onConnectionState] never fires with an in-process engine). Gated on
+  /// 'connected' like the reconnect path: a stopped/failed engine has nothing
+  /// to re-sync against.
+  void _onResumed() {
+    if (_disposed || _conn != ConnectionState.connected) return;
+    unawaited(_runBootstrap());
+  }
+
   // -- bootstrap (App.tsx bootstrap effect) -------------------------------------------
 
   /// daemon.status → identity gate → room.list → phase, then pick the room to
@@ -430,15 +458,24 @@ class DaemonSession extends ChangeNotifier {
       pending: _pendingByRoom.putIfAbsent(roomId, PendingMessages.new),
       recordError: recordError,
       selfId: () => selfId,
+      // Null without a supervisor: `/api/files/local` preview URLs need the
+      // daemon's HTTP origin, which the mobile in-process engine does not
+      // serve — fetched files land on disk but cannot be previewed there yet
+      // (RoomStore tolerates the null; an engine local_file accessor is the
+      // tracked follow-up).
       localFileUrl: supervisor == null
           ? null
           : (rid, fid) =>
               supervisor.localFileUrl(roomId: rid, fileId: fid).toString(),
-      stageAndShare: supervisor == null
-          ? null
-          : ({required roomId, required sourcePath, name, mime}) =>
-              supervisor.shareUserFile(client,
-                  roomId: roomId, sourcePath: sourcePath, name: name, mime: mime),
+      stageAndShare: _stageAndShareOverride ??
+          (supervisor == null
+              ? null
+              : ({required roomId, required sourcePath, name, mime}) =>
+                  supervisor.shareUserFile(client,
+                      roomId: roomId,
+                      sourcePath: sourcePath,
+                      name: name,
+                      mime: mime)),
       onRoomsChanged: () => unawaited(refreshRooms()),
     );
     _room = store;
