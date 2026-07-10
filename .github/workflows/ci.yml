@@ -80,6 +80,19 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+
+      # jeliya-ffi's build.rs compiles the Dart SDK's dart_api_dl.c, so every
+      # cargo invocation that builds the workspace (clippy --all-targets,
+      # cargo test --workspace, the jeliya-ffi build below) needs the SDK
+      # include dir. setup-dart installs the standalone SDK layout — headers
+      # at <sdk>/include next to <sdk>/bin/dart — which build.rs's
+      # DART_SDK_INCLUDE override asserts against (it fails loudly on a dir
+      # without dart_api_dl.c).
+      - name: Export the Dart SDK include dir for jeliya-ffi's build.rs
+        run: echo "DART_SDK_INCLUDE=$(dirname "$(which dart)")/../include" >> "$GITHUB_ENV"
+
       - name: Format
         run: cargo fmt --all --check
 
@@ -96,10 +109,13 @@ jobs:
       - name: Build jeliyad for daemon-bound suites
         run: cargo build -p jeliyad
 
-      - name: Setup Dart
-        uses: dart-lang/setup-dart@v1
+      # Likewise the FFI oracle (test/ffi_conformance_test.dart) skips itself
+      # when target/debug/libjeliya_ffi.so is missing. Build the engine
+      # library so the same corpus replays against the in-process transport.
+      - name: Build jeliya-ffi for the FFI conformance oracle
+        run: cargo build -p jeliya-ffi
 
-      - name: Daemon conformance (jeliya_protocol against the built daemon)
+      - name: Protocol conformance (jeliya_protocol against daemon + FFI engine)
         working-directory: dart/jeliya_protocol
         run: |
           set -eu
