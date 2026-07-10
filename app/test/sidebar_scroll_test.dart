@@ -13,56 +13,21 @@
 library;
 
 import 'package:flutter/material.dart' hide ConnectionState;
-import 'package:flutter/rendering.dart' show DiagnosticsDebugCreator;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jeliya_app/src/screens/sidebar.dart';
 import 'package:jeliya_app/src/session/daemon_session.dart';
 
 import 'helpers.dart';
 
-/// Like [useDesktopSurface] but at an explicit REALISTIC textScale 1.0 (the
-/// harness default of 0.5 masked this regression) and WITHOUT the harness's
-/// blanket overflow tolerance. The oversized test font (~1em-wide glyphs)
-/// does overflow unrelated pixel-tuned rows at full scale, so overflow
-/// reports are RECORDED here instead of swallowed, and the tests fail only
-/// on the ones attributed to the sidebar — this regression's signature.
-/// Attribution is rendered EAGERLY at report time: the reporting element is
-/// still mounted then, while lazily rendering the details at assertion time
-/// walks ancestors that boot-phase rebuilds have already deactivated.
-List<String> _useStrictSurface(WidgetTester tester, Size size) {
-  tester.view.physicalSize = size;
-  tester.view.devicePixelRatio = 1.0;
-  tester.platformDispatcher.textScaleFactorTestValue = 1.0;
-  addTearDown(tester.platformDispatcher.clearAllTestValues);
-  addTearDown(tester.view.reset);
-
-  final overflows = <String>[];
-  final prior = FlutterError.onError;
-  FlutterError.onError = (details) {
-    final summary = details.exceptionAsString().split('\n').first;
-    if (summary.contains('overflowed by')) {
-      final creator = details.informationCollector
-          ?.call()
-          .whereType<DiagnosticsDebugCreator>()
-          .firstOrNull
-          ?.value;
-      final chain = creator is DebugCreator
-          ? creator.element.debugGetCreatorChain(4)
-          : 'unknown creator';
-      overflows.add('$summary in $chain');
-      return;
-    }
-    prior?.call(details);
-  };
-  addTearDown(() => FlutterError.onError = prior);
-  return overflows;
-}
-
 Finder _inSidebar(Finder matching) =>
     find.descendant(of: find.byType(Sidebar), matching: matching);
 
+// The shared [useStrictSurface] records overflow reports instead of
+// swallowing them; these tests fail only on the ones attributed to the
+// sidebar — this regression's signature (the fat test font overflows
+// unrelated pixel-tuned rows at full scale).
 Future<void> _expectRoomsReachableAt(WidgetTester tester, Size size) async {
-  final overflows = _useStrictSurface(tester, size);
+  final overflows = useStrictSurface(tester, size);
   final session = newSession(newMockClient());
   await pumpApp(tester, session);
   await pumpSteps(tester);

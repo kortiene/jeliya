@@ -9,6 +9,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart' hide ConnectionState;
+import 'package:flutter/rendering.dart' show DiagnosticsDebugCreator;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jeliya_app/main.dart';
 import 'package:jeliya_app/src/l10n/strings_context.dart';
@@ -31,6 +32,50 @@ void useDesktopSurface(WidgetTester tester,
   addTearDown(tester.platformDispatcher.clearAllTestValues);
   addTearDown(tester.view.reset);
   _tolerateOverflows();
+}
+
+/// Like [useDesktopSurface] but at an explicit REALISTIC textScale 1.0 (the
+/// 0.5 default masked the sidebar collapse and the PR-#14 French-width
+/// regressions) and WITHOUT the blanket overflow tolerance. The oversized
+/// test font (~1em-wide glyphs) does overflow some pixel-tuned desktop rows
+/// at full scale, so overflow reports are RECORDED here instead of swallowed
+/// and each test decides what to fail on — desktop tests filter to the
+/// widget under test; NEW mobile layouts assert the list is EMPTY outright.
+/// Attribution is rendered EAGERLY at report time: the reporting element is
+/// still mounted then, while lazily rendering the details at assertion time
+/// walks ancestors that boot-phase rebuilds have already deactivated.
+///
+/// Teardown order: the registered [TestPlatformDispatcher.clearAllTestValues]
+/// wipes EVERY platform test value, so set locale test values
+/// (localesTestValue/localeTestValue) AFTER installing the surface (the
+/// locale_test.dart precedent).
+List<String> useStrictSurface(WidgetTester tester, Size size) {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1.0;
+  tester.platformDispatcher.textScaleFactorTestValue = 1.0;
+  addTearDown(tester.platformDispatcher.clearAllTestValues);
+  addTearDown(tester.view.reset);
+
+  final overflows = <String>[];
+  final prior = FlutterError.onError;
+  FlutterError.onError = (details) {
+    final summary = details.exceptionAsString().split('\n').first;
+    if (summary.contains('overflowed by')) {
+      final creator = details.informationCollector
+          ?.call()
+          .whereType<DiagnosticsDebugCreator>()
+          .firstOrNull
+          ?.value;
+      final chain = creator is DebugCreator
+          ? creator.element.debugGetCreatorChain(4)
+          : 'unknown creator';
+      overflows.add('$summary in $chain');
+      return;
+    }
+    prior?.call(details);
+  };
+  addTearDown(() => FlutterError.onError = prior);
+  return overflows;
 }
 
 /// Swallows RenderFlex *overflow* reports only — even at half scale the test
@@ -96,6 +141,23 @@ Future<DaemonSession> pumpReadyApp(WidgetTester tester, Client client,
   expect(session.phase, BootstrapPhase.ready,
       reason: 'bootstrap should reach the ready shell');
   return session;
+}
+
+/// Boots the app over [client] to the ready shell on a STRICT phone surface
+/// (default 360x800 portrait): textScale 1.0, DPR 1.0, overflow reports
+/// recorded, not swallowed. Returns the session AND the recorded overflow
+/// list — mobile layouts are new (never pixel-tuned to the fat test font),
+/// so mobile tests assert the list stays EMPTY outright.
+Future<({DaemonSession session, List<String> overflows})> pumpReadyMobileApp(
+    WidgetTester tester, Client client,
+    {Size size = const Size(360, 800), PrefsStore? prefs}) async {
+  final overflows = useStrictSurface(tester, size);
+  final session = newSession(client, prefs: prefs);
+  await pumpApp(tester, session);
+  await pumpSteps(tester);
+  expect(session.phase, BootstrapPhase.ready,
+      reason: 'bootstrap should reach the ready shell');
+  return (session: session, overflows: overflows);
 }
 
 /// Delegates every [Client] member to [inner]; subclasses bend one seam.
