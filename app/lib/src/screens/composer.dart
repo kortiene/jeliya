@@ -276,14 +276,20 @@ class _ComposerState extends State<Composer> {
               ],
             ),
           ),
-          const SizedBox(height: JeliyaSpacing.x6),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Text(
-              _sharing ? s.composerSharingFile : s.composerHint,
-              style: TextStyle(fontSize: 11.5, color: tokens.textDim),
+          // The hint line describes HARDWARE-keyboard behavior; below the
+          // breakpoint the soft keyboard's Enter inserts a newline (see
+          // textInputAction above), so the claim would be false there —
+          // phones keep only the truthful sharing-progress feedback.
+          if (_sharing || !mobile) ...[
+            const SizedBox(height: JeliyaSpacing.x6),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                _sharing ? s.composerSharingFile : s.composerHint,
+                style: TextStyle(fontSize: 11.5, color: tokens.textDim),
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );

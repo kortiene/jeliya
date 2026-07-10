@@ -17,6 +17,11 @@ import '../session/daemon_session.dart';
 import '../theme.dart';
 import 'right_panel.dart';
 
+/// Every room-detail route carries this name so the shell can dedupe:
+/// re-entering detail from a pinned surface REPLACES the previous detail
+/// route — stacking two would turn back presses into visual no-ops.
+const String mobileRoomDetailRouteName = '/mobile-room-detail';
+
 /// The room-detail screen (RightPanel tabs) pushed onto the Rooms tab's
 /// nested navigator — the mobile home of Members/Agents and the in-room
 /// deep-link target for Share file / Open pipe / timeline pipe tiles.
@@ -25,6 +30,7 @@ Route<void> mobileRoomDetailRoute({
   required VoidCallback onLeaveRoom,
 }) =>
     MaterialPageRoute<void>(
+      settings: const RouteSettings(name: mobileRoomDetailRouteName),
       builder: (_) => _MobileRoomDetailScreen(
           initialTab: initialTab, onLeaveRoom: onLeaveRoom),
     );

@@ -6,6 +6,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../layout.dart';
 import '../theme.dart';
 
 enum JeliyaButtonVariant { normal, primary, ghost, danger }
@@ -103,7 +104,12 @@ class JeliyaButton extends StatelessWidget {
         disabledBackgroundColor:
             bg == Colors.transparent ? bg : bg.withValues(alpha: 0.55),
         padding: padding,
-        minimumSize: Size.zero,
+        // Web mobile parity (styles.css @media (max-width: 900px) `.btn
+        // { min-height: 44px }`): every button below the shell breakpoint
+        // grows to the 44dp touch floor; desktop keeps its compact,
+        // pixel-tuned sizes (Size.zero).
+        minimumSize:
+            isMobileWidth(context) ? const Size(0, 44) : Size.zero,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         textStyle: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w500),
         shape: RoundedRectangleBorder(

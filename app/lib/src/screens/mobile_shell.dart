@@ -20,8 +20,8 @@
 ///
 /// All state and handlers live in the shell screen (shared with the desktop
 /// three-pane layout); this file is presentation only. Back policy
-/// (PopScope): pushed routes first, then a non-Rooms tab returns to Rooms,
-/// then the app exits.
+/// (PopScope): a non-Rooms tab returns to Rooms, a visible Rooms stack pops
+/// its pushed routes, then the app exits — back never mutates hidden state.
 library;
 
 import 'package:flutter/material.dart' hide ConnectionState;
@@ -43,7 +43,8 @@ import 'sidebar.dart' show NavKey;
 // The chat route is defined next to the rooms screen it is pushed over, and
 // the room-detail route next to the panel surfaces it hosts; both are
 // re-exported here so the shell keeps a single mobile-IA import seam.
-export 'mobile_panel.dart' show mobileRoomDetailRoute;
+export 'mobile_panel.dart'
+    show mobileRoomDetailRoute, mobileRoomDetailRouteName;
 export 'mobile_room.dart' show mobileRoomRoute;
 
 /// The five bottom tabs, in bar order (MobileTabBar.tsx `TABS`).
@@ -115,15 +116,17 @@ class MobileShell extends StatelessWidget {
         if (didPop) return;
         // Dialogs and full-screen modal routes live on the root navigator
         // ABOVE this route, so the system back reaches here only with the
-        // shell on top: close the Rooms tab's pushed routes first, then
-        // return to Rooms from any other tab, then exit.
+        // shell on top. A back press must always change what is VISIBLE:
+        // the Rooms stack pops only while its tab shows (popping it from
+        // another tab would silently destroy the chat route), any other tab
+        // returns to Rooms, and an unstacked Rooms tab exits.
+        if (tab != NavKey.rooms) {
+          onNav(NavKey.rooms);
+          return;
+        }
         final rooms = roomsNavigatorKey.currentState;
         if (rooms != null && rooms.canPop()) {
           rooms.pop();
-          return;
-        }
-        if (tab != NavKey.rooms) {
-          onNav(NavKey.rooms);
           return;
         }
         SystemNavigator.pop();

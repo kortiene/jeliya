@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
+import '../layout.dart';
 import '../theme.dart';
 
 /// Open a modal. The [builder] should return a [ModalScaffold] (a stub modal
@@ -93,7 +94,12 @@ class ModalScaffold extends StatelessWidget {
             tooltip: context.strings.commonClose,
             icon: Text(Tokens.closeGlyph,
                 style: TextStyle(fontSize: 14, color: tokens.textDim)),
-            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            // Web mobile parity (`.modal .icon-btn { width/height: 44px }`):
+            // the ✕ grows to the 44dp touch floor below the shell
+            // breakpoint; desktop keeps the compact 26px affordance.
+            constraints: isMobileWidth(context)
+                ? const BoxConstraints(minWidth: 44, minHeight: 44)
+                : const BoxConstraints(minWidth: 26, minHeight: 26),
             padding: EdgeInsets.zero,
           ),
         ],
