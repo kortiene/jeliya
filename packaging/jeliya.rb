@@ -1,6 +1,6 @@
 # Homebrew formula for the `jeliyad` daemon.
 #
-# Currently filled for v0.4.1. v0.4.0 was the first release under the Jeliya
+# Currently filled for v0.4.3. v0.4.0 was the first release under the Jeliya
 # name (the project renamed from Bantaba on 2026-07-05; docs/naming.md). Earlier
 # releases shipped `bantabad-*` archives and cannot be installed by this formula.
 #
@@ -16,28 +16,28 @@
 class Jeliya < Formula
   desc "Jeliya peer-to-peer daemon (jeliyad): serves the Jeliya UI over a local WebSocket"
   homepage "https://github.com/kortiene/jeliya"
-  version "0.4.1"
+  version "0.4.3"
   license "MIT OR Apache-2.0"
 
   on_macos do
     on_arm do
       url "https://github.com/kortiene/jeliya/releases/download/v#{version}/jeliyad-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "b997bdc735bc5437c7974f5841d14a56d72c2bd89e3845866137566d30b38698"
+      sha256 "84cad919bc8c93a81d30ff282e95c84058128ab395869b4fb5aa55b3d3986a75"
     end
     on_intel do
       url "https://github.com/kortiene/jeliya/releases/download/v#{version}/jeliyad-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "a91e2cb9e794027d62e0551e9cef0c1fa58f60494801a903084b738480c4bf97"
+      sha256 "510042d86aaa95070f3fc7c911d92b568fe95678e2525f3bb2a673f10c8bfabe"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/kortiene/jeliya/releases/download/v#{version}/jeliyad-v#{version}-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "0bebf060bb30e088c056d82a41b1f7bc4317e3ae6daa03c01f4235c79919f8aa"
+      sha256 "68d76cfb2701dd1f962fded82012390d0165fdebf4a77e3ab6d91ac7c6173df8"
     end
     on_intel do
       url "https://github.com/kortiene/jeliya/releases/download/v#{version}/jeliyad-v#{version}-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "46fbb43762d1077943e30977c02dcd2acd0831903a0d2128aaa6382fb95ca26a"
+      sha256 "998d57f363de8e71ee2781526f91ff50bead13baa9d8562542a9edc0467a5f34"
     end
   end
 

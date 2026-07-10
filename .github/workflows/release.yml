@@ -7,12 +7,14 @@ name: release
 # runs in. Pushing a `v*` tag triggers it and attaches artifacts to the
 # auto-created Release. See packaging/README.md for release follow-up.
 #
-# PHASE 2 (deferred): macOS notarization + Windows Authenticode signing. The
-# artifacts produced here are UNSIGNED. A *browser* download of an unsigned
-# binary trips Gatekeeper (macOS) / SmartScreen (Windows). The curl|sh and
-# Homebrew install paths in packaging/ do NOT set the quarantine bit, so they
-# install cleanly. Signing/notarization is tracked for Phase 2 and is
-# intentionally out of scope here.
+# PHASE 2 (in progress): the per-target daemon archives from the `build`
+# matrix are UNSIGNED until Phase 2 lands (issue #1). A *browser* download of
+# an unsigned binary trips Gatekeeper (macOS) / SmartScreen (Windows). The
+# curl|sh and Homebrew install paths in packaging/ do NOT set the quarantine
+# bit, so they install cleanly. The `macos-app` DMG job below is the
+# exception: it Developer-ID-signs and notarizes automatically when the six
+# MACOS_*/NOTARY_* repo secrets exist, and falls back to ad-hoc signing
+# otherwise. See docs/signing-notarization.md.
 
 on:
   push:

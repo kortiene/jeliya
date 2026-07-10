@@ -91,7 +91,11 @@ development and the packaging script for release builds.
 - `lib/src/screens/` — screens; `modals/` — dialogs.
 - `lib/src/widgets/` — shared primitives (modal scaffold, error note, copy
   button, avatar, tree mark, progress bar, fetch control).
-- `lib/src/l10n/` — per-area `const` string tables (ARB migration later).
+- `lib/src/l10n/` — `arb/` ICU catalog (`app_en.arb`, 442 keys, plus the
+  full-catalog `app_fr.arb`), committed `flutter gen-l10n` output in `gen/`
+  (`AppStrings`), `strings_context.dart` (the `context.strings` accessor),
+  `tokens.dart` (never-translated tokens), and the `error_display.dart` /
+  `wire_display.dart` display extensions over the generated catalog.
 
 macOS notes: minimum window size is 960x620 (`MainFlutterWindow.swift`);
 debug builds keep the sandbox OFF so they can spawn the repo-built daemon;
