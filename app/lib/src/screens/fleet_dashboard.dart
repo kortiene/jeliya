@@ -31,6 +31,7 @@ import 'package:jeliya_protocol/jeliya_protocol.dart'
 import '../format.dart';
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
+import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../session/fleet_store.dart';
 import '../theme.dart';
@@ -127,8 +128,13 @@ class _FleetDashboardState extends State<FleetDashboard> {
     super.dispose();
   }
 
-  Future<void> _openAddAgent() =>
-      showJeliyaModal<void>(context, builder: (_) => const AddAgentModal());
+  /// Full screen below the breakpoint (mono launch-command textarea + soft
+  /// keyboard); the dialog at desktop widths. Minting works on phones —
+  /// running the command is the deliberate human step either way.
+  Future<void> _openAddAgent() => isMobileWidth(context)
+      ? showJeliyaModalScreen<void>(context,
+          builder: (_) => const AddAgentModal())
+      : showJeliyaModal<void>(context, builder: (_) => const AddAgentModal());
 
   @override
   Widget build(BuildContext context) {
@@ -157,6 +163,18 @@ class _FleetDashboardState extends State<FleetDashboard> {
 
   Widget _buildHeader(AppStrings s, JeliyaTokens tokens, FleetStore store) {
     final agents = store.fleet?.agents ?? const <FleetAgent>[];
+    final mobile = isMobileWidth(context);
+    final search = Semantics(
+      label: s.fleetSearchAgents,
+      child: TextField(
+        controller: _search,
+        onChanged: (_) => setState(() {}),
+        style: const TextStyle(fontSize: 13.5),
+        decoration: InputDecoration(
+          hintText: s.fleetSearchPlaceholder,
+        ),
+      ),
+    );
     return Container(
       padding: const EdgeInsets.fromLTRB(
         JeliyaSpacing.page,
@@ -185,21 +203,15 @@ class _FleetDashboardState extends State<FleetDashboard> {
                   ),
                 ),
               ),
-              const Spacer(),
-              SizedBox(
-                width: 200,
-                child: Semantics(
-                  label: s.fleetSearchAgents,
-                  child: TextField(
-                    controller: _search,
-                    onChanged: (_) => setState(() {}),
-                    style: const TextStyle(fontSize: 13.5),
-                    decoration: InputDecoration(
-                      hintText: s.fleetSearchPlaceholder,
-                    ),
-                  ),
-                ),
-              ),
+              // Below the breakpoint the fixed 200px search yields to flex so
+              // the row holds at 360dp; desktop keeps the reference layout.
+              if (mobile) ...[
+                const SizedBox(width: JeliyaSpacing.x10),
+                Expanded(child: search),
+              ] else ...[
+                const Spacer(),
+                SizedBox(width: 200, child: search),
+              ],
               const SizedBox(width: JeliyaSpacing.x10),
               JeliyaButton(
                 label: s.fleetAddAgent,
@@ -265,7 +277,10 @@ class _FleetDashboardState extends State<FleetDashboard> {
       ),
       children: [
         if (store.error != null) ErrorNote(error: store.error),
-        if (fleet != null) _StatTiles(fleet: fleet),
+        // The KPI strip is deliberately hidden on phones — room coverage
+        // isn't check-in-relevant there; the filter pills carry live counts
+        // (web parity: styles.css hides .fleet-stats below the breakpoint).
+        if (fleet != null && !isMobileWidth(context)) _StatTiles(fleet: fleet),
         if (!store.loaded)
           _FleetSkeleton(tokens: tokens)
         else if (visible.isEmpty)

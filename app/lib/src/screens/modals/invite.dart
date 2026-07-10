@@ -14,6 +14,7 @@ import '../../l10n/error_display.dart';
 import '../../l10n/strings_context.dart';
 import '../../l10n/tokens.dart';
 import '../../l10n/wire_display.dart';
+import '../../layout.dart';
 import '../../session/daemon_session.dart';
 import '../../theme.dart';
 import '../../widgets/buttons.dart';
@@ -154,56 +155,7 @@ class _InviteModalState extends State<InviteModal> {
           onSubmitted: (_) => _generate(),
         ),
         const SizedBox(height: JeliyaSpacing.x10),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _FieldLabel(s.inviteRoleLabel),
-                  DropdownButtonFormField<String>(
-                    initialValue: _role,
-                    items: [
-                      DropdownMenuItem(
-                        value: Roles.member,
-                        child: Text(s.roleInline(Roles.member)),
-                      ),
-                      DropdownMenuItem(
-                        value: Roles.agent,
-                        child: Text(s.roleInline(Roles.agent)),
-                      ),
-                    ],
-                    onChanged: (value) =>
-                        setState(() => _role = value ?? Roles.member),
-                    style: TextStyle(fontSize: 14, color: tokens.text),
-                    dropdownColor: tokens.bgCard,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: JeliyaSpacing.x10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _FieldLabel(fillTemplate(
-                      s.commonOptionalFieldLabel('{label}', '{optional}'), {
-                    'label': s.inviteExpiryLabel,
-                    'optional': s.inviteExpiryOptional,
-                  })),
-                  TextField(
-                    controller: _expiry,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                        hintText: Tokens.expiryPlaceholderExample),
-                    onSubmitted: (_) => _generate(),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+        ..._buildRoleAndExpiry(context),
         const SizedBox(height: JeliyaSpacing.x12),
         JeliyaButton(
           label: _busy ? s.inviteGenerating : s.inviteGenerateTicket,
@@ -230,6 +182,66 @@ class _InviteModalState extends State<InviteModal> {
         ),
       ],
     );
+  }
+
+  /// Role + expiry: two columns sized for the 560 dialog; stacked below the
+  /// width breakpoint (the phone full-screen route) so each field keeps a
+  /// usable width.
+  List<Widget> _buildRoleAndExpiry(BuildContext context) {
+    final s = context.strings;
+    final tokens = JeliyaTokens.of(context);
+    final role = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _FieldLabel(s.inviteRoleLabel),
+        DropdownButtonFormField<String>(
+          initialValue: _role,
+          items: [
+            DropdownMenuItem(
+              value: Roles.member,
+              child: Text(s.roleInline(Roles.member)),
+            ),
+            DropdownMenuItem(
+              value: Roles.agent,
+              child: Text(s.roleInline(Roles.agent)),
+            ),
+          ],
+          onChanged: (value) => setState(() => _role = value ?? Roles.member),
+          style: TextStyle(fontSize: 14, color: tokens.text),
+          dropdownColor: tokens.bgCard,
+        ),
+      ],
+    );
+    final expiry = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _FieldLabel(
+            fillTemplate(s.commonOptionalFieldLabel('{label}', '{optional}'), {
+          'label': s.inviteExpiryLabel,
+          'optional': s.inviteExpiryOptional,
+        })),
+        TextField(
+          controller: _expiry,
+          keyboardType: TextInputType.number,
+          decoration:
+              const InputDecoration(hintText: Tokens.expiryPlaceholderExample),
+          onSubmitted: (_) => _generate(),
+        ),
+      ],
+    );
+    if (isMobileWidth(context)) {
+      return [role, const SizedBox(height: JeliyaSpacing.x10), expiry];
+    }
+    return [
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: role),
+          const SizedBox(width: JeliyaSpacing.x10),
+          Expanded(child: expiry),
+        ],
+      ),
+    ];
   }
 
   // -- result: combined ticket#address ------------------------------------------------

@@ -1088,7 +1088,7 @@ abstract class AppStrings {
   /// **'Room panel'**
   String get panelRoomPanel;
 
-  /// Tab label in the right room panel; opens the member roster.
+  /// Tab label in the right room panel; opens the member roster. Also the room-header button on the mobile chat screen that opens the same roster (room-detail view).
   ///
   /// In en, this message translates to:
   /// **'Members'**
@@ -2150,7 +2150,7 @@ abstract class AppStrings {
   /// **'Report issue'**
   String get settingsReportIssue;
 
-  /// Center empty-state headline in the main content area of the app shell when no room is currently selected. Imperative prompt inviting the user to pick a room from the sidebar.
+  /// Empty-state headline shown wherever room-scoped content has no room yet: the desktop shell's center column, and the mobile Pipes/Files tabs and room screens. Imperative prompt inviting the user to pick a room (from the sidebar or the Rooms tab).
   ///
   /// In en, this message translates to:
   /// **'Select a room'**
@@ -2210,7 +2210,7 @@ abstract class AppStrings {
   /// **'@{deEllipsizedShortId}'**
   String sidebarProfileHandle(String deEllipsizedShortId);
 
-  /// Section heading over the primary navigation group (Home, Rooms, Agents, …) in the left sidebar. Meaning: the main/top-level destinations.
+  /// Accessibility label of the primary navigation group: the section heading over the sidebar nav list on desktop, and the label of the bottom tab bar on phones. Meaning: the main/top-level destinations.
   ///
   /// In en, this message translates to:
   /// **'Primary'**
@@ -2222,25 +2222,25 @@ abstract class AppStrings {
   /// **'Home'**
   String get sidebarNavHome;
 
-  /// Primary navigation item in the left sidebar: the list of chat rooms. 'Room' is the product's term for a peer-to-peer group conversation — keep consistent with other 'room' strings.
+  /// Primary navigation label: the list of chat rooms. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab. 'Room' is the product's term for a peer-to-peer group conversation — keep consistent with other 'room' strings.
   ///
   /// In en, this message translates to:
   /// **'Rooms'**
   String get sidebarNavRooms;
 
-  /// Primary navigation item in the left sidebar: the AI agents (fleet) screen. Translate as the feature name for AI agents.
+  /// Primary navigation label: the AI agents (fleet) screen. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab. Translate as the feature name for AI agents.
   ///
   /// In en, this message translates to:
   /// **'Agents'**
   String get sidebarNavAgents;
 
-  /// Primary navigation item in the left sidebar: the peer-to-peer data pipes feature. Translate as a feature name. (Distinct from the lowercase wire token “pipe” quoted in protocol copy, which is never translated.)
+  /// Primary navigation label: the peer-to-peer data pipes feature. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab. Translate as a feature name. (Distinct from the lowercase wire token “pipe” quoted in protocol copy, which is never translated.)
   ///
   /// In en, this message translates to:
   /// **'Pipes'**
   String get sidebarNavPipes;
 
-  /// Primary navigation item in the left sidebar: file sharing.
+  /// Primary navigation label: file sharing. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab.
   ///
   /// In en, this message translates to:
   /// **'Files'**
@@ -2252,7 +2252,7 @@ abstract class AppStrings {
   /// **'Calls'**
   String get sidebarNavCalls;
 
-  /// Primary navigation item in the left sidebar: app settings.
+  /// Primary navigation label: app settings. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab.
   ///
   /// In en, this message translates to:
   /// **'Settings'**

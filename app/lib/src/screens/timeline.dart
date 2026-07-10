@@ -153,6 +153,7 @@ class _TimelineViewState extends State<TimelineView> {
   int _lastCount = 0;
   String? _lastTailId;
   int _newItemCount = 0;
+  double _viewportDim = 0;
 
   @override
   void initState() {
@@ -198,6 +199,20 @@ class _TimelineViewState extends State<TimelineView> {
       final p = _controller.position;
       if (p.maxScrollExtent - p.pixels > 1) _jumpToBottom(retries - 1);
     });
+  }
+
+  /// A shrinking viewport while stuck to the bottom — the soft keyboard's
+  /// inset resizing the chat surface (or a window resize) — must keep the
+  /// tail visible: the scroll offset is measured from the TOP, so shrinking
+  /// silently pulls the latest messages under the composer/keyboard.
+  void _onViewportChanged(ScrollMetrics metrics) {
+    if (!metrics.hasViewportDimension) return;
+    final dim = metrics.viewportDimension;
+    final shrank = dim < _viewportDim;
+    _viewportDim = dim;
+    if (shrank && _stick) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom(2));
+    }
   }
 
   void _scrollToBottom() {
@@ -275,19 +290,26 @@ class _TimelineViewState extends State<TimelineView> {
               math.max(0.0, constraints.maxWidth - 2 * JeliyaSpacing.x24 - 4);
           final rowCap = math.min(content * 0.78, 760.0);
           final extra = loading ? 1 : 0;
-          return ListView.builder(
-            controller: _controller,
-            padding: const EdgeInsets.symmetric(
-                horizontal: JeliyaSpacing.x24 + 2, vertical: JeliyaSpacing.x18),
-            itemCount: rows.length + extra,
-            itemBuilder: (context, index) {
-              if (loading && index == 0) return const _SkeletonRows();
-              final row = rows[index - extra];
-              return Padding(
-                padding: EdgeInsets.only(top: row.topSpacing),
-                child: _buildRow(context, row, store, selfId, rowCap),
-              );
+          return NotificationListener<ScrollMetricsNotification>(
+            onNotification: (notification) {
+              _onViewportChanged(notification.metrics);
+              return false;
             },
+            child: ListView.builder(
+              controller: _controller,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: JeliyaSpacing.x24 + 2,
+                  vertical: JeliyaSpacing.x18),
+              itemCount: rows.length + extra,
+              itemBuilder: (context, index) {
+                if (loading && index == 0) return const _SkeletonRows();
+                final row = rows[index - extra];
+                return Padding(
+                  padding: EdgeInsets.only(top: row.topSpacing),
+                  child: _buildRow(context, row, store, selfId, rowCap),
+                );
+              },
+            ),
           );
         },
       );

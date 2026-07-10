@@ -31,6 +31,8 @@ class RoomHeader extends StatelessWidget {
     required this.onInvite,
     required this.onShareFile,
     required this.onOpenPipe,
+    this.onMembers,
+    this.leading,
   });
 
   /// Room display name ('Untitled room' fallback supplied by the shell).
@@ -46,6 +48,15 @@ class RoomHeader extends StatelessWidget {
 
   /// Switches the right panel to the Pipes tab.
   final VoidCallback onOpenPipe;
+
+  /// Mobile-only members affordance: opens the room-detail Members tab
+  /// (desktop keeps Members in the always-visible right panel and passes
+  /// null, rendering exactly the reference header).
+  final VoidCallback? onMembers;
+
+  /// Mobile-only slot before the title (the chat route's back affordance);
+  /// null on desktop.
+  final Widget? leading;
 
   @override
   Widget build(BuildContext context) {
@@ -74,7 +85,7 @@ class RoomHeader extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           LayoutBuilder(builder: (context, constraints) {
-            final title = Column(
+            Widget title = Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
@@ -92,10 +103,27 @@ class RoomHeader extends StatelessWidget {
                 ),
               ],
             );
+            final leading = this.leading;
+            if (leading != null) {
+              title = Row(
+                children: [
+                  leading,
+                  const SizedBox(width: JeliyaSpacing.x4),
+                  Expanded(child: title),
+                ],
+              );
+            }
+            final onMembers = this.onMembers;
             final actions = Wrap(
               spacing: JeliyaSpacing.x8,
               runSpacing: JeliyaSpacing.x8,
               children: [
+                if (onMembers != null)
+                  JeliyaButton(
+                    label: s.panelTabMembers,
+                    semanticLabel: s.panelTabMembers,
+                    onPressed: onMembers,
+                  ),
                 JeliyaButton(
                   label:
                       '${Tokens.roomHeaderShareFileGlyph} ${s.roomHeaderShareFile}',

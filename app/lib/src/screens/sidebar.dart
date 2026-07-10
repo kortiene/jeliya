@@ -134,7 +134,7 @@ class Sidebar extends StatelessWidget {
               onTap: onJoinRoom,
             ),
           ),
-          _IdentityFooter(session: session),
+          IdentityFooter(session: session),
         ],
       ),
     );
@@ -725,8 +725,11 @@ class _DashedBorderPainter extends CustomPainter {
 
 // -- identity footer -----------------------------------------------------------------------------
 
-class _IdentityFooter extends StatelessWidget {
-  const _IdentityFooter({required this.session});
+/// Identity footer (shortId + endpoint suffix, copy button, connection
+/// badge). Public: the mobile rooms screen pins the same footer under its
+/// room list — one implementation, both shells.
+class IdentityFooter extends StatelessWidget {
+  const IdentityFooter({super.key, required this.session});
 
   final DaemonSession session;
 

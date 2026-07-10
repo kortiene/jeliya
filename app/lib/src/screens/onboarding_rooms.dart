@@ -9,6 +9,7 @@ import 'package:jeliya_protocol/jeliya_protocol.dart';
 
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
+import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../theme.dart';
 import '../widgets/buttons.dart';
@@ -123,14 +124,26 @@ class _OnboardingRoomsScreenState extends State<OnboardingRoomsScreen> {
                   _IdentityCard(identityId: identityId),
                   const SizedBox(height: JeliyaSpacing.x16),
                 ],
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: _buildCreateCard(context)),
-                    const SizedBox(width: JeliyaSpacing.x16),
-                    Expanded(child: _buildJoinCard(context)),
-                  ],
-                ),
+                // Side-by-side cards need ~880px; below the breakpoint they
+                // stack (same cards, same copy — only the axis forks).
+                if (isMobileWidth(context))
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildCreateCard(context),
+                      const SizedBox(height: JeliyaSpacing.x16),
+                      _buildJoinCard(context),
+                    ],
+                  )
+                else
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: _buildCreateCard(context)),
+                      const SizedBox(width: JeliyaSpacing.x16),
+                      Expanded(child: _buildJoinCard(context)),
+                    ],
+                  ),
               ],
             ),
           ),

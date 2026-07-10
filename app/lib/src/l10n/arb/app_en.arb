@@ -795,7 +795,7 @@
   },
   "panelTabMembers": "Members",
   "@panelTabMembers": {
-    "description": "Tab label in the right room panel; opens the member roster."
+    "description": "Tab label in the right room panel; opens the member roster. Also the room-header button on the mobile chat screen that opens the same roster (room-detail view)."
   },
   "panelTabAgents": "Agents",
   "@panelTabAgents": {
@@ -1647,7 +1647,7 @@
   },
   "shellSelectRoom": "Select a room",
   "@shellSelectRoom": {
-    "description": "Center empty-state headline in the main content area of the app shell when no room is currently selected. Imperative prompt inviting the user to pick a room from the sidebar."
+    "description": "Empty-state headline shown wherever room-scoped content has no room yet: the desktop shell's center column, and the mobile Pipes/Files tabs and room screens. Imperative prompt inviting the user to pick a room (from the sidebar or the Rooms tab)."
   },
   "shellUntitledRoom": "Untitled room",
   "@shellUntitledRoom": {
@@ -1699,7 +1699,7 @@
   },
   "sidebarNavPrimaryLabel": "Primary",
   "@sidebarNavPrimaryLabel": {
-    "description": "Section heading over the primary navigation group (Home, Rooms, Agents, …) in the left sidebar. Meaning: the main/top-level destinations."
+    "description": "Accessibility label of the primary navigation group: the section heading over the sidebar nav list on desktop, and the label of the bottom tab bar on phones. Meaning: the main/top-level destinations."
   },
   "sidebarNavHome": "Home",
   "@sidebarNavHome": {
@@ -1707,19 +1707,19 @@
   },
   "sidebarNavRooms": "Rooms",
   "@sidebarNavRooms": {
-    "description": "Primary navigation item in the left sidebar: the list of chat rooms. 'Room' is the product's term for a peer-to-peer group conversation — keep consistent with other 'room' strings."
+    "description": "Primary navigation label: the list of chat rooms. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab. 'Room' is the product's term for a peer-to-peer group conversation — keep consistent with other 'room' strings."
   },
   "sidebarNavAgents": "Agents",
   "@sidebarNavAgents": {
-    "description": "Primary navigation item in the left sidebar: the AI agents (fleet) screen. Translate as the feature name for AI agents."
+    "description": "Primary navigation label: the AI agents (fleet) screen. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab. Translate as the feature name for AI agents."
   },
   "sidebarNavPipes": "Pipes",
   "@sidebarNavPipes": {
-    "description": "Primary navigation item in the left sidebar: the peer-to-peer data pipes feature. Translate as a feature name. (Distinct from the lowercase wire token “pipe” quoted in protocol copy, which is never translated.)"
+    "description": "Primary navigation label: the peer-to-peer data pipes feature. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab. Translate as a feature name. (Distinct from the lowercase wire token “pipe” quoted in protocol copy, which is never translated.)"
   },
   "sidebarNavFiles": "Files",
   "@sidebarNavFiles": {
-    "description": "Primary navigation item in the left sidebar: file sharing."
+    "description": "Primary navigation label: file sharing. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab."
   },
   "sidebarNavCalls": "Calls",
   "@sidebarNavCalls": {
@@ -1727,7 +1727,7 @@
   },
   "sidebarNavSettings": "Settings",
   "@sidebarNavSettings": {
-    "description": "Primary navigation item in the left sidebar: app settings."
+    "description": "Primary navigation label: app settings. Shown in the left sidebar (desktop) and as a bottom tab (phone) — keep it short enough for a tab."
   },
   "sidebarNavSoon": "Soon",
   "@sidebarNavSoon": {

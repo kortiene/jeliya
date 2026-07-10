@@ -1,5 +1,6 @@
-/// App shell (phase 'ready') — the 3-column desktop layout per
-/// phase3-features.json "App shell" and phase3-shell.json:
+/// App shell (phase 'ready'). At or above [kShellBreakpoint] it is the
+/// 3-column desktop layout per phase3-features.json "App shell" and
+/// phase3-shell.json:
 ///
 ///   Sidebar 280px | center (RoomHeader + Timeline + Composer) | RightPanel 320px
 ///
@@ -7,9 +8,12 @@
 /// with the obscured panes kept alive but invisible — visibility, not
 /// unmount — so the timeline scroll position survives (the web contract's
 /// `visibility:hidden` behavior). The connection banner renders above
-/// everything whenever conn != connected. Desktop only this phase: the
-/// 960x620 minimum window replaces the web's mobile breakpoint (no
-/// MobileTabBar, no mv-* behaviors).
+/// everything whenever conn != connected.
+///
+/// Below the breakpoint the SAME state and handlers drive [MobileShell]
+/// (bottom tab bar, one pane at a time — issue #17); only build forks. The
+/// `_navView` intent machine already mirrors the web's `mobileView`, so it
+/// maps 1:1 onto the bottom tabs.
 library;
 
 import 'package:flutter/material.dart' hide ConnectionState;
@@ -17,12 +21,15 @@ import 'package:jeliya_protocol/jeliya_protocol.dart'
     show ConnectionState, RoomSummary;
 
 import '../l10n/strings_context.dart';
+import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../theme.dart';
+import '../widgets/connection_banner.dart';
 import '../widgets/error_note.dart';
 import '../widgets/modal_scaffold.dart';
 import 'composer.dart';
 import 'fleet_dashboard.dart';
+import 'mobile_shell.dart';
 import 'modals/create_room.dart';
 import 'modals/invite.dart';
 import 'modals/join_room.dart';
@@ -56,6 +63,14 @@ class _ShellScreenState extends State<ShellScreen> {
   /// agents→agents, pipes→pipes, files→files, chat→home, rooms→rooms).
   /// `NavKey.home` stands in for the web's 'chat' view.
   NavKey _navView = NavKey.rooms;
+
+  /// The mobile Rooms tab's nested navigator (rooms list → chat → detail);
+  /// unmounted at desktop widths.
+  final GlobalKey<NavigatorState> _mobileRoomsNav =
+      GlobalKey<NavigatorState>();
+
+  /// The build-time form-factor fork; handlers re-read it after awaits.
+  bool get _isMobile => isMobileWidth(context);
 
   // -- navigation (App.tsx `navigate` mapped to desktop) -------------------------
 
@@ -140,10 +155,77 @@ class _ShellScreenState extends State<ShellScreen> {
     return null;
   }
 
+  // -- mobile (below the width breakpoint) ---------------------------------------
+  //
+  // Thin wrappers around the shared handlers: same intents, plus the route
+  // pushes the phone IA needs (chat and room-detail live on the Rooms tab's
+  // nested navigator).
+
+  bool _isDeparted(String roomId) {
+    final summary = _summaryOf(SessionScope.of(context), roomId);
+    return summary == null ||
+        summary.status == 'left' ||
+        summary.status == 'removed';
+  }
+
+  void _popMobileRoomsToList() =>
+      _mobileRoomsNav.currentState?.popUntil((route) => route.isFirst);
+
+  /// Opens the chat route fresh over the rooms list (never stacks two).
+  void _pushMobileChat() {
+    final nav = _mobileRoomsNav.currentState;
+    if (nav == null) return;
+    nav.popUntil((route) => route.isFirst);
+    nav.push(
+        mobileRoomRoute(onInvite: _openInvite, onLeaveRoom: _openLeaveRoom));
+  }
+
+  /// Bottom-tab taps. Re-tapping Rooms while its stack is open pops back to
+  /// the list (web `navigate('rooms')` always shows the list); merely
+  /// RETURNING to Rooms from another tab leaves the stack alone so the chat
+  /// route — and its timeline scroll — survives the round trip.
+  void _onMobileNav(NavKey key) {
+    if (key == NavKey.rooms &&
+        (_navView == NavKey.rooms || _navView == NavKey.home)) {
+      _popMobileRoomsToList();
+    }
+    _navigate(key);
+  }
+
+  void _selectRoomMobile(String roomId) {
+    final departed = _isDeparted(roomId);
+    _selectRoom(roomId);
+    if (!departed) _pushMobileChat();
+  }
+
+  void _openRoomFromFleetMobile(String roomId) {
+    if (_isDeparted(roomId)) return; // fleet clicks ignore departed rooms
+    _openRoomFromFleet(roomId);
+    _pushMobileChat();
+  }
+
+  /// RightPanel tab-strip taps on the pinned Pipes/Files surfaces:
+  /// pipes/files map to their bottom tabs; the room-scoped Members/Agents
+  /// land on the room-detail route under the Rooms tab.
+  void _onMobilePanelTab(PanelTab tab) {
+    switch (tab) {
+      case PanelTab.pipes:
+        _navigate(NavKey.pipes);
+      case PanelTab.files:
+        _navigate(NavKey.files);
+      case PanelTab.members:
+      case PanelTab.agents:
+        _navigate(NavKey.home);
+        _mobileRoomsNav.currentState?.push(mobileRoomDetailRoute(
+            initialTab: tab, onLeaveRoom: _openLeaveRoom));
+    }
+  }
+
   // -- modals ------------------------------------------------------------------------
 
   Future<void> _openCreateRoom() async {
     final session = SessionScope.of(context);
+    // Create room STAYS a dialog on phones (one small field).
     final roomId = await showJeliyaModal<String>(
       context,
       builder: (_) => const CreateRoomModal(),
@@ -156,15 +238,27 @@ class _ShellScreenState extends State<ShellScreen> {
         _overlay = _Overlay.none;
         _navView = NavKey.home;
       });
+      // Web parity: mobileView 'chat' after create.
+      if (_isMobile) _pushMobileChat();
     }
   }
 
   Future<void> _openJoinRoom() async {
     final session = SessionScope.of(context);
-    final roomId = await showJeliyaModal<String>(
-      context,
-      builder: (_) => const JoinRoomModal(),
-    );
+    // Long mono paste + soft keyboard + live progress: full screen on phones.
+    // Same awaited pop-a-roomId contract either way.
+    String? roomId;
+    if (_isMobile) {
+      roomId = await showJeliyaModalScreen<String>(
+        context,
+        builder: (_) => const JoinRoomModal(),
+      );
+    } else {
+      roomId = await showJeliyaModal<String>(
+        context,
+        builder: (_) => const JoinRoomModal(),
+      );
+    }
     if (roomId == null) return;
     await session.refreshRooms();
     await session.openRoom(roomId);
@@ -173,6 +267,7 @@ class _ShellScreenState extends State<ShellScreen> {
         _overlay = _Overlay.none;
         _navView = NavKey.home;
       });
+      if (_isMobile) _pushMobileChat();
     }
   }
 
@@ -180,11 +275,16 @@ class _ShellScreenState extends State<ShellScreen> {
     final session = SessionScope.of(context);
     final room = session.room;
     if (room == null) return;
-    await showJeliyaModal<void>(
-      context,
-      builder: (_) =>
-          InviteModal(roomId: room.roomId, endpointAddr: room.endpointAddr),
-    );
+    // Full screen on phones (4-row mono ticket boxes); the modal keeps
+    // observing the LIVE RoomStore either way, so a reconnect's new
+    // endpointAddr still updates the combined invite while it is open.
+    Widget builder(BuildContext _) =>
+        InviteModal(roomId: room.roomId, endpointAddr: room.endpointAddr);
+    if (_isMobile) {
+      await showJeliyaModalScreen<void>(context, builder: builder);
+    } else {
+      await showJeliyaModal<void>(context, builder: builder);
+    }
   }
 
   Future<void> _openLeaveRoom() async {
@@ -192,6 +292,7 @@ class _ShellScreenState extends State<ShellScreen> {
     final room = session.room;
     final summary = _currentSummary(session);
     if (room == null) return;
+    // A destructive confirm stays a centered dialog on every form factor.
     final left = await showJeliyaModal<bool>(
       context,
       builder: (_) => LeaveRoomModal(
@@ -202,7 +303,11 @@ class _ShellScreenState extends State<ShellScreen> {
     if (left == true) {
       session.leaveCurrentRoom();
       // Web leaveCurrentRoom sets mobileView 'rooms'.
-      if (mounted) setState(() => _navView = NavKey.rooms);
+      if (mounted) {
+        setState(() => _navView = NavKey.rooms);
+        // The chat/detail routes point at the departed room — back to the list.
+        if (_isMobile) _popMobileRoomsToList();
+      }
     }
   }
 
@@ -217,6 +322,24 @@ class _ShellScreenState extends State<ShellScreen> {
     final session = SessionScope.of(context);
     final tokens = JeliyaTokens.of(context);
     final overlayActive = _overlay != _Overlay.none;
+
+    // The ONLY form-factor fork: state, handlers, and _navView above are
+    // shared; below the breakpoint the same machine drives the bottom-tab
+    // shell (issue #17). At or above it, the three-pane layout renders
+    // exactly as before.
+    if (_isMobile) {
+      return MobileShell(
+        activeNav: _activeNav,
+        onNav: _onMobileNav,
+        roomsNavigatorKey: _mobileRoomsNav,
+        onSelectRoom: _selectRoomMobile,
+        onCreateRoom: _openCreateRoom,
+        onJoinRoom: _openJoinRoom,
+        onOpenRoomFromFleet: _openRoomFromFleetMobile,
+        onPanelTab: _onMobilePanelTab,
+        onLeaveRoom: _openLeaveRoom,
+      );
+    }
 
     return Scaffold(
       body: Stack(
@@ -286,7 +409,7 @@ class _ShellScreenState extends State<ShellScreen> {
               left: 0,
               right: 0,
               child: Center(
-                child: _ConnectionBanner(
+                child: ConnectionBanner(
                   conn: session.conn,
                   wsUrl: session.transportDescription,
                 ),
@@ -347,43 +470,5 @@ class _ShellScreenState extends State<ShellScreen> {
   }
 }
 
-/// Cross-cutting CONNECTION BANNER: role='status', hangs from the top edge
-/// (radius 0 0 10 10), amber while connecting/reconnecting, red when
-/// disconnected.
-class _ConnectionBanner extends StatelessWidget {
-  const _ConnectionBanner({required this.conn, required this.wsUrl});
-
-  final ConnectionState conn;
-  final String wsUrl;
-
-  @override
-  Widget build(BuildContext context) {
-    final s = context.strings;
-    final tokens = JeliyaTokens.of(context);
-    final disconnected = conn == ConnectionState.disconnected;
-    final text = disconnected
-        ? s.shellBannerDisconnected
-        : s.shellBannerReconnecting(wsUrl);
-    final fg = disconnected ? tokens.red : tokens.amber;
-    final bg = disconnected ? tokens.bannerDisconnectBg : tokens.bannerReconnectBg;
-    final borderColor =
-        disconnected ? tokens.redLine : tokens.bannerReconnectBorder;
-    return Semantics(
-      liveRegion: true, // role="status"
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        decoration: BoxDecoration(
-          color: bg,
-          // Uniform border (a rounded box requires one); the top edge sits on
-          // the window edge, matching the reference's "no top border" look.
-          border: Border.all(color: borderColor),
-          borderRadius: const BorderRadius.only(
-            bottomLeft: Radius.circular(10),
-            bottomRight: Radius.circular(10),
-          ),
-        ),
-        child: Text(text, style: TextStyle(fontSize: 12.5, color: fg)),
-      ),
-    );
-  }
-}
+// The cross-cutting connection banner lives in ../widgets/connection_banner.dart
+// (shared verbatim with the mobile shell).

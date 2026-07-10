@@ -25,6 +25,37 @@ Future<T?> showJeliyaModal<T>(
   );
 }
 
+/// Open the SAME modal content as a full-screen route — the phone
+/// presentation for long forms (join ticket, invite, add agent) that don't
+/// fit a dialog under a soft keyboard. The [ModalScaffold] inside renders as
+/// a page instead of a [Dialog]; the awaited `Navigator.pop` result contract
+/// is identical to [showJeliyaModal], and the system back gesture dismisses
+/// like Escape does for the dialog route.
+Future<T?> showJeliyaModalScreen<T>(
+  BuildContext context, {
+  required WidgetBuilder builder,
+}) {
+  return Navigator.of(context, rootNavigator: true).push<T>(
+    MaterialPageRoute<T>(
+      fullscreenDialog: true,
+      builder: (context) =>
+          _ModalScreenScope(child: Builder(builder: builder)),
+    ),
+  );
+}
+
+/// Marks a subtree as full-screen-presented so [ModalScaffold] can pick the
+/// page rendering without any modal changing its own API.
+class _ModalScreenScope extends InheritedWidget {
+  const _ModalScreenScope({required super.child});
+
+  static bool of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_ModalScreenScope>() != null;
+
+  @override
+  bool updateShouldNotify(_ModalScreenScope oldWidget) => false;
+}
+
 class ModalScaffold extends StatelessWidget {
   const ModalScaffold({
     super.key,
@@ -47,6 +78,50 @@ class ModalScaffold extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = JeliyaTokens.of(context);
     final close = onClose ?? () => Navigator.of(context).maybePop();
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(18, 16, 12, 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Semantics(
+              header: true,
+              child: Text(title, style: JeliyaText.modalTitle),
+            ),
+          ),
+          IconButton(
+            onPressed: close,
+            tooltip: context.strings.commonClose,
+            icon: Text(Tokens.closeGlyph,
+                style: TextStyle(fontSize: 14, color: tokens.textDim)),
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            padding: EdgeInsets.zero,
+          ),
+        ],
+      ),
+    );
+    if (_ModalScreenScope.of(context)) {
+      // Full-screen presentation (showJeliyaModalScreen): same header/body
+      // anatomy as the dialog, page-sized, with safe-area insets. The
+      // Scaffold keeps the form above the soft keyboard.
+      return Scaffold(
+        backgroundColor: tokens.bgRaise,
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              header,
+              Divider(height: 1, color: tokens.border),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
+                  child: child,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Dialog(
       backgroundColor: tokens.bgRaise,
       shape: RoundedRectangleBorder(
@@ -59,28 +134,7 @@ class ModalScaffold extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 16, 12, 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Semantics(
-                      header: true,
-                      child: Text(title, style: JeliyaText.modalTitle),
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: close,
-                    tooltip: context.strings.commonClose,
-                    icon: Text(Tokens.closeGlyph,
-                        style: TextStyle(fontSize: 14, color: tokens.textDim)),
-                    constraints:
-                        const BoxConstraints(minWidth: 26, minHeight: 26),
-                    padding: EdgeInsets.zero,
-                  ),
-                ],
-              ),
-            ),
+            header,
             Divider(height: 1, color: tokens.border),
             Flexible(
               child: SingleChildScrollView(

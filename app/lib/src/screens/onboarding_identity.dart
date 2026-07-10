@@ -42,13 +42,18 @@ class OnboardingCard extends StatelessWidget {
   const OnboardingCard({super.key, required this.child, this.width = 420});
 
   final Widget child;
+
+  /// A MAXIMUM, not a fixed width: desktop still gets the reference 420px
+  /// card; a phone viewport narrower than that gets what fits (onboarding
+  /// renders before the shell, so it is the first thing a phone user hits).
   final double width;
 
   @override
   Widget build(BuildContext context) {
     final tokens = JeliyaTokens.of(context);
     return Container(
-      width: width,
+      width: double.infinity,
+      constraints: BoxConstraints(maxWidth: width),
       padding: const EdgeInsets.all(JeliyaSpacing.x18),
       decoration: BoxDecoration(
         color: tokens.bgRaise,

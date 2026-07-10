@@ -227,6 +227,10 @@ class _ComposerState extends State<Composer> {
                         minLines: 1,
                         maxLines: null,
                         keyboardType: TextInputType.multiline,
+                        // Soft keyboards keep a newline key, explicitly —
+                        // sending stays on the ➤ button (hardware Enter
+                        // sends via the Focus handler above).
+                        textInputAction: TextInputAction.newline,
                         cursorColor: tokens.accent,
                         style: JeliyaText.body,
                         decoration: InputDecoration(

@@ -22,6 +22,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
 import '../l10n/wire_display.dart';
+import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../theme.dart';
 import '../widgets/buttons.dart';
@@ -102,10 +103,12 @@ class _SettingsPanelState extends State<SettingsPanel> {
           alignment: Alignment.topLeft,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: _maxWidth),
-            // Desktop rhythm: pad 24/28 (phase3-design.json layout).
+            // Desktop rhythm: pad 24/28 (phase3-design.json layout); the
+            // phone shell trades the wide gutters for content width.
             child: ListView(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 28, vertical: JeliyaSpacing.page),
+              padding: EdgeInsets.symmetric(
+                  horizontal: isMobileWidth(context) ? JeliyaSpacing.x16 : 28,
+                  vertical: JeliyaSpacing.page),
               children: [
                 Semantics(
                   header: true,
@@ -343,7 +346,11 @@ class _DiagnosticsCard extends StatelessWidget {
             style: TextStyle(fontSize: 13, color: tokens.textMute),
           ),
         const SizedBox(height: JeliyaSpacing.x12),
-        Row(
+        // Wrap, not Row: one line at desktop widths, and the pair reflows
+        // instead of clipping at phone widths under wider (fr) labels.
+        Wrap(
+          spacing: JeliyaSpacing.x8,
+          runSpacing: JeliyaSpacing.x8,
           children: [
             JeliyaButton(
               label: copied
@@ -352,7 +359,6 @@ class _DiagnosticsCard extends StatelessWidget {
               variant: JeliyaButtonVariant.primary,
               onPressed: onCopy,
             ),
-            const SizedBox(width: JeliyaSpacing.x8),
             JeliyaButton(
               label: s.settingsReportIssue,
               variant: JeliyaButtonVariant.ghost,
