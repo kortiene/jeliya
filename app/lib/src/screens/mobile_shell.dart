@@ -13,7 +13,8 @@
 /// - Agents mounts FleetDashboard ONLY while active (its FleetStore polls
 ///   every 4s and must never run in the background — web parity).
 /// - Pipes/Files pin the room-scoped RightPanel full width to that panel
-///   tab, with an honest select-a-room empty state when no room is open.
+///   tab (mobile_panel.dart), with an honest select-a-room empty state when
+///   no room is open.
 /// - Settings reuses SettingsPanel (already a max-640 single column).
 ///
 /// All state and handlers live in the shell screen (shared with the desktop
@@ -36,11 +37,16 @@ import '../widgets/error_note.dart';
 import '../widgets/tree_mark.dart';
 import 'composer.dart';
 import 'fleet_dashboard.dart';
+import 'mobile_panel.dart';
 import 'right_panel.dart';
 import 'room_header.dart';
 import 'settings_panel.dart';
 import 'sidebar.dart' show IdentityFooter, NavKey;
 import 'timeline.dart';
+
+// The room-detail route is defined next to the panel surfaces it hosts;
+// re-exported here so the shell keeps a single mobile-IA import seam.
+export 'mobile_panel.dart' show mobileRoomDetailRoute;
 
 /// The five bottom tabs, in bar order (MobileTabBar.tsx `TABS`).
 const List<NavKey> _tabs = [
@@ -68,18 +74,6 @@ Route<void> mobileRoomRoute({
     MaterialPageRoute<void>(
       builder: (_) =>
           _MobileRoomScreen(onInvite: onInvite, onLeaveRoom: onLeaveRoom),
-    );
-
-/// The room-detail screen (RightPanel tabs) pushed onto the Rooms tab's
-/// nested navigator — the mobile home of Members/Agents and the in-room
-/// deep-link target for Share file / Open pipe / timeline pipe tiles.
-Route<void> mobileRoomDetailRoute({
-  required PanelTab initialTab,
-  required VoidCallback onLeaveRoom,
-}) =>
-    MaterialPageRoute<void>(
-      builder: (_) => _MobileRoomDetailScreen(
-          initialTab: initialTab, onLeaveRoom: onLeaveRoom),
     );
 
 class MobileShell extends StatelessWidget {
@@ -179,12 +173,12 @@ class MobileShell extends StatelessWidget {
                       FleetDashboard(onOpenRoom: onOpenRoomFromFleet)
                     else
                       const SizedBox.shrink(),
-                    _PanelSurface(
+                    MobilePanelSurface(
                       tab: PanelTab.pipes,
                       onTab: onPanelTab,
                       onLeaveRoom: onLeaveRoom,
                     ),
-                    _PanelSurface(
+                    MobilePanelSurface(
                       tab: PanelTab.files,
                       onTab: onPanelTab,
                       onLeaveRoom: onLeaveRoom,
@@ -687,116 +681,3 @@ class _MobileRoomScreen extends StatelessWidget {
   }
 }
 
-// -- rooms tab: the room-detail route ---------------------------------------------------
-
-/// Room detail: back affordance + room name over the full-width RightPanel
-/// (Members / Agents / Files / Pipes) with locally-owned tab state.
-class _MobileRoomDetailScreen extends StatefulWidget {
-  const _MobileRoomDetailScreen({
-    required this.initialTab,
-    required this.onLeaveRoom,
-  });
-
-  final PanelTab initialTab;
-  final VoidCallback onLeaveRoom;
-
-  @override
-  State<_MobileRoomDetailScreen> createState() =>
-      _MobileRoomDetailScreenState();
-}
-
-class _MobileRoomDetailScreenState extends State<_MobileRoomDetailScreen> {
-  late PanelTab _tab = widget.initialTab;
-
-  @override
-  Widget build(BuildContext context) {
-    final s = context.strings;
-    final session = SessionScope.of(context);
-    final tokens = JeliyaTokens.of(context);
-    final room = session.room;
-    String? name;
-    if (room != null) {
-      for (final r in session.rooms) {
-        if (r.roomId == room.roomId) name = r.name;
-      }
-    }
-    return ColoredBox(
-      color: tokens.bg,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            padding: const EdgeInsets.fromLTRB(
-                JeliyaSpacing.x4, JeliyaSpacing.x4, JeliyaSpacing.x14,
-                JeliyaSpacing.x4),
-            decoration: BoxDecoration(
-              color: tokens.bgRaise,
-              border: Border(bottom: BorderSide(color: tokens.border)),
-            ),
-            child: Row(
-              children: [
-                BackButton(color: tokens.text),
-                Expanded(
-                  child: Text(
-                    room == null
-                        ? s.shellSelectRoom
-                        : (name ?? s.shellUntitledRoom),
-                    style: JeliyaText.cardTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: room == null
-                ? Center(
-                    child: Text(s.shellSelectRoom,
-                        style:
-                            TextStyle(fontSize: 13.5, color: tokens.textDim)),
-                  )
-                : RightPanel(
-                    tab: _tab,
-                    onTab: (tab) => setState(() => _tab = tab),
-                    onLeaveRoom: widget.onLeaveRoom,
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// -- pipes / files tab surfaces ----------------------------------------------------------
-
-/// The room-scoped RightPanel pinned full width to one panel tab, with the
-/// honest select-a-room empty state when no room is open.
-class _PanelSurface extends StatelessWidget {
-  const _PanelSurface({
-    required this.tab,
-    required this.onTab,
-    required this.onLeaveRoom,
-  });
-
-  final PanelTab tab;
-  final ValueChanged<PanelTab> onTab;
-  final VoidCallback onLeaveRoom;
-
-  @override
-  Widget build(BuildContext context) {
-    final session = SessionScope.of(context);
-    final s = context.strings;
-    final tokens = JeliyaTokens.of(context);
-    if (session.room == null) {
-      return ColoredBox(
-        color: tokens.bg,
-        child: Center(
-          child: Text(s.shellSelectRoom,
-              style: TextStyle(fontSize: 13.5, color: tokens.textDim)),
-        ),
-      );
-    }
-    return RightPanel(tab: tab, onTab: onTab, onLeaveRoom: onLeaveRoom);
-  }
-}

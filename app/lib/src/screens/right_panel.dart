@@ -79,6 +79,8 @@ class RightPanel extends StatelessWidget {
     required this.tab,
     required this.onTab,
     required this.onLeaveRoom,
+    this.chrome = true,
+    this.touchTargets = false,
   });
 
   /// The active tab — owned by the shell (RoomHeader's Share File / Open Pipe
@@ -90,6 +92,17 @@ class RightPanel extends StatelessWidget {
   /// Opens the Leave Room modal.
   final VoidCallback onLeaveRoom;
 
+  /// Desktop pane chrome: the hairline left border separating the panel from
+  /// the center column. The full-width mobile surfaces pass false — the web
+  /// drops `border-left` below the breakpoint (styles.css `.app .right-panel`
+  /// in the mobile media query); the raised ground stays either way.
+  final bool chrome;
+
+  /// Grow the compact interactive controls to the ~44dp platform touch floor
+  /// (web parity: the mobile media query sets `.btn` and `.panel-tabs button`
+  /// to min-height 44px). Desktop keeps its compact controls.
+  final bool touchTargets;
+
   @override
   Widget build(BuildContext context) {
     final session = SessionScope.of(context);
@@ -98,7 +111,8 @@ class RightPanel extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: tokens.bgRaise,
-        border: Border(left: BorderSide(color: tokens.border)),
+        border:
+            chrome ? Border(left: BorderSide(color: tokens.border)) : null,
       ),
       child: room == null
           ? _buildPanel(context, session, null)
@@ -130,6 +144,7 @@ class RightPanel extends StatelessWidget {
           members: members,
           session: session,
           onLeaveRoom: onLeaveRoom,
+          touchTargets: touchTargets,
         ),
       PanelTab.agents => _AgentsTab(
           members: members,
@@ -139,18 +154,24 @@ class RightPanel extends StatelessWidget {
           key: ValueKey('files-${room?.roomId}'),
           room: room,
           session: session,
+          touchTargets: touchTargets,
         ),
       PanelTab.pipes => _PipesTab(
           key: ValueKey('pipes-${room?.roomId}'),
           room: room,
           session: session,
+          touchTargets: touchTargets,
         ),
     };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _PanelTabs(tab: tab, onTab: onTab, counts: counts),
+        _PanelTabs(
+            tab: tab,
+            onTab: onTab,
+            counts: counts,
+            touchTargets: touchTargets),
         Expanded(
           // role='tabpanel' labelled by the active tab.
           child: Semantics(
@@ -170,11 +191,17 @@ class RightPanel extends StatelessWidget {
 // -- tab strip ----------------------------------------------------------------------
 
 class _PanelTabs extends StatefulWidget {
-  const _PanelTabs({required this.tab, required this.onTab, required this.counts});
+  const _PanelTabs({
+    required this.tab,
+    required this.onTab,
+    required this.counts,
+    this.touchTargets = false,
+  });
 
   final PanelTab tab;
   final ValueChanged<PanelTab> onTab;
   final Map<PanelTab, int> counts;
+  final bool touchTargets;
 
   @override
   State<_PanelTabs> createState() => _PanelTabsState();
@@ -260,6 +287,7 @@ class _PanelTabsState extends State<_PanelTabs> {
                       count: widget.counts[tab] ?? 0,
                       active: tab == widget.tab,
                       focusNode: _nodes[tab]!,
+                      touchTarget: widget.touchTargets,
                       onTap: () => widget.onTab(tab),
                     ),
                 ],
@@ -279,6 +307,7 @@ class _PanelTabButton extends StatefulWidget {
     required this.active,
     required this.focusNode,
     required this.onTap,
+    this.touchTarget = false,
   });
 
   final String label;
@@ -286,6 +315,9 @@ class _PanelTabButton extends StatefulWidget {
   final bool active;
   final FocusNode focusNode;
   final VoidCallback onTap;
+
+  /// 44dp-floor variant (web `.app .panel-tabs button` min-height 44px).
+  final bool touchTarget;
 
   @override
   State<_PanelTabButton> createState() => _PanelTabButtonState();
@@ -313,6 +345,12 @@ class _PanelTabButtonState extends State<_PanelTabButton> {
           // fit the 303px strip without engaging the overflow scroll.
           padding: const EdgeInsets.fromLTRB(
               JeliyaSpacing.x4, JeliyaSpacing.x8, JeliyaSpacing.x4, JeliyaSpacing.x10),
+          // Touch surfaces grow each tab to the 44dp floor; the min-height
+          // flows through to the label Row, whose default cross-axis
+          // centering keeps the label vertically centered in the taller box.
+          constraints: widget.touchTarget
+              ? const BoxConstraints(minHeight: 44)
+              : null,
           decoration: BoxDecoration(
             // 2px active-tab underline; a focus ring for keyboard users.
             border: Border(
@@ -363,6 +401,23 @@ class _PanelTabButtonState extends State<_PanelTabButton> {
       ),
     );
   }
+}
+
+/// The ~44dp platform touch floor around one compact control (web parity:
+/// the mobile media query grows `.btn` to min-height 44px). The min-height
+/// constraint reaches the control itself, so the whole floor is tappable;
+/// a no-op on desktop ([on] false), which keeps its compact controls.
+class _TouchFloor extends StatelessWidget {
+  const _TouchFloor({required this.on, required this.child});
+
+  final bool on;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => on
+      ? ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 44), child: child)
+      : child;
 }
 
 // -- shared bits ----------------------------------------------------------------------
@@ -424,17 +479,31 @@ class _SectionHead extends StatelessWidget {
     final tokens = JeliyaTokens.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(2, 2, 2, 0),
+      // Both sides flex loosely (the #14 lesson: fr copy runs ~2x English
+      // and overflowed this row at 360dp when the summary was unbounded):
+      // whenever the pair fits, spaceBetween renders it exactly as before —
+      // label flush left, summary flush right; under pressure each side
+      // ellipsizes at its share instead of overflowing.
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Expanded(
+          Flexible(
             child: Text(
               title.toUpperCase(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                   fontSize: 12, letterSpacing: 0.72, color: tokens.textMute),
             ),
           ),
-          Text(summary,
-              style: TextStyle(fontSize: 11.5, color: tokens.textDim)),
+          const SizedBox(width: JeliyaSpacing.x8),
+          Flexible(
+            child: Text(summary,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.end,
+                style: TextStyle(fontSize: 11.5, color: tokens.textDim)),
+          ),
         ],
       ),
     );
@@ -565,11 +634,13 @@ class _MembersTab extends StatelessWidget {
     required this.members,
     required this.session,
     required this.onLeaveRoom,
+    this.touchTargets = false,
   });
 
   final List<Member> members;
   final DaemonSession session;
   final VoidCallback onLeaveRoom;
+  final bool touchTargets;
 
   @override
   Widget build(BuildContext context) {
@@ -604,7 +675,10 @@ class _MembersTab extends StatelessWidget {
         for (final member in sorted) ...[
           const SizedBox(height: JeliyaSpacing.x10),
           _MemberRow(
-              member: member, session: session, onLeaveRoom: onLeaveRoom),
+              member: member,
+              session: session,
+              onLeaveRoom: onLeaveRoom,
+              touchTargets: touchTargets),
         ],
       ],
     );
@@ -681,11 +755,13 @@ class _MemberRow extends StatelessWidget {
     required this.member,
     required this.session,
     required this.onLeaveRoom,
+    this.touchTargets = false,
   });
 
   final Member member;
   final DaemonSession session;
   final VoidCallback onLeaveRoom;
+  final bool touchTargets;
 
   @override
   Widget build(BuildContext context) {
@@ -818,11 +894,14 @@ class _MemberRow extends StatelessWidget {
             ),
             if (canLeave) ...[
               const SizedBox(width: JeliyaSpacing.x10),
-              JeliyaButton(
-                label: s.panelLeave,
-                size: JeliyaButtonSize.sm,
-                variant: JeliyaButtonVariant.danger,
-                onPressed: onLeaveRoom,
+              _TouchFloor(
+                on: touchTargets,
+                child: JeliyaButton(
+                  label: s.panelLeave,
+                  size: JeliyaButtonSize.sm,
+                  variant: JeliyaButtonVariant.danger,
+                  onPressed: onLeaveRoom,
+                ),
               ),
             ],
           ],
@@ -1019,10 +1098,16 @@ class _PickedFile {
 }
 
 class _FilesTab extends StatefulWidget {
-  const _FilesTab({super.key, required this.room, required this.session});
+  const _FilesTab({
+    super.key,
+    required this.room,
+    required this.session,
+    this.touchTargets = false,
+  });
 
   final RoomStore? room;
   final DaemonSession session;
+  final bool touchTargets;
 
   @override
   State<_FilesTab> createState() => _FilesTabState();
@@ -1336,12 +1421,15 @@ class _FilesTabState extends State<_FilesTab> {
               ),
               child: Row(
                 children: [
-                  JeliyaButton(
-                    label: s.panelChooseFile,
-                    size: JeliyaButtonSize.sm,
-                    variant: JeliyaButtonVariant.primary,
-                    semanticLabel: s.panelChooseFileToShare,
-                    onPressed: _sharing ? null : () => unawaited(_pick()),
+                  _TouchFloor(
+                    on: widget.touchTargets,
+                    child: JeliyaButton(
+                      label: s.panelChooseFile,
+                      size: JeliyaButtonSize.sm,
+                      variant: JeliyaButtonVariant.primary,
+                      semanticLabel: s.panelChooseFileToShare,
+                      onPressed: _sharing ? null : () => unawaited(_pick()),
+                    ),
                   ),
                 ],
               ),
@@ -1353,6 +1441,7 @@ class _FilesTabState extends State<_FilesTab> {
               liveRegion: true,
               child: _SelectedFileCard(
                 file: selected,
+                touchTargets: widget.touchTargets,
                 onClear: () => setState(() => _selected = null),
               ),
             )
@@ -1360,14 +1449,18 @@ class _FilesTabState extends State<_FilesTab> {
             Text(s.panelNoFileSelectedYet,
                 style: TextStyle(fontSize: 12, color: tokens.textDim)),
           const SizedBox(height: JeliyaSpacing.x10),
-          JeliyaButton(
-            label: _sharing ? s.panelSharing : s.panelShare,
-            variant: JeliyaButtonVariant.primary,
-            busy: _sharing,
-            onPressed: canSubmit ? () => unawaited(_share()) : null,
+          _TouchFloor(
+            on: widget.touchTargets,
+            child: JeliyaButton(
+              label: _sharing ? s.panelSharing : s.panelShare,
+              variant: JeliyaButtonVariant.primary,
+              busy: _sharing,
+              onPressed: canSubmit ? () => unawaited(_share()) : null,
+            ),
           ),
           const SizedBox(height: JeliyaSpacing.x10),
-          _AdvancedPath(controller: _path),
+          _AdvancedPath(
+              controller: _path, touchTargets: widget.touchTargets),
           ErrorNote(error: _shareError),
         ],
       ),
@@ -1530,14 +1623,20 @@ class _FilesTabState extends State<_FilesTab> {
                   else ...[
                     Align(
                       alignment: Alignment.centerLeft,
-                      child: FetchControl(
-                        state: state,
-                        availability: FetchAvailability(
-                            available: file.available,
-                            providers: file.providers),
-                        onFetch: () =>
-                            unawaited(room?.fetchFile(file.fileId)),
-                        onRecheck: () => unawaited(room?.refreshFiles()),
+                      // The floor reaches the single-button states (Fetch /
+                      // Fetching / Retry); the Wrap states keep their own
+                      // compact children (FetchControl internals).
+                      child: _TouchFloor(
+                        on: widget.touchTargets,
+                        child: FetchControl(
+                          state: state,
+                          availability: FetchAvailability(
+                              available: file.available,
+                              providers: file.providers),
+                          onFetch: () =>
+                              unawaited(room?.fetchFile(file.fileId)),
+                          onRecheck: () => unawaited(room?.refreshFiles()),
+                        ),
                       ),
                     ),
                     FetchDetail(state: state),
@@ -1553,10 +1652,15 @@ class _FilesTabState extends State<_FilesTab> {
 }
 
 class _SelectedFileCard extends StatelessWidget {
-  const _SelectedFileCard({required this.file, required this.onClear});
+  const _SelectedFileCard({
+    required this.file,
+    required this.onClear,
+    this.touchTargets = false,
+  });
 
   final _PickedFile file;
   final VoidCallback onClear;
+  final bool touchTargets;
 
   @override
   Widget build(BuildContext context) {
@@ -1616,10 +1720,13 @@ class _SelectedFileCard extends StatelessWidget {
             ),
           ),
           const SizedBox(width: JeliyaSpacing.x10),
-          JeliyaButton(
-            label: s.panelClearSelectedFile,
-            size: JeliyaButtonSize.sm,
-            onPressed: onClear,
+          _TouchFloor(
+            on: touchTargets,
+            child: JeliyaButton(
+              label: s.panelClearSelectedFile,
+              size: JeliyaButtonSize.sm,
+              onPressed: onClear,
+            ),
           ),
         ],
       ),
@@ -1629,9 +1736,10 @@ class _SelectedFileCard extends StatelessWidget {
 
 /// `<details>` 'Advanced: paste a daemon-readable path'.
 class _AdvancedPath extends StatefulWidget {
-  const _AdvancedPath({required this.controller});
+  const _AdvancedPath({required this.controller, this.touchTargets = false});
 
   final TextEditingController controller;
+  final bool touchTargets;
 
   @override
   State<_AdvancedPath> createState() => _AdvancedPathState();
@@ -1654,9 +1762,18 @@ class _AdvancedPathState extends State<_AdvancedPath> {
         children: [
           InkWell(
             onTap: () => setState(() => _open = !_open),
-            child: Text(
-              '${_open ? '▾' : '▸'} ${s.panelAdvancedPathSummary}',
-              style: TextStyle(fontSize: 12, color: tokens.textDim),
+            child: Container(
+              // Touch surfaces grow the text-only disclosure to the 44dp
+              // floor, full row width; desktop keeps the compact inline text.
+              constraints: widget.touchTargets
+                  ? const BoxConstraints(minHeight: 44)
+                  : null,
+              alignment:
+                  widget.touchTargets ? Alignment.centerLeft : null,
+              child: Text(
+                '${_open ? '▾' : '▸'} ${s.panelAdvancedPathSummary}',
+                style: TextStyle(fontSize: 12, color: tokens.textDim),
+              ),
             ),
           ),
           if (_open) ...[
@@ -1683,10 +1800,16 @@ class _AdvancedPathState extends State<_AdvancedPath> {
 // -- Pipes tab -------------------------------------------------------------------------
 
 class _PipesTab extends StatefulWidget {
-  const _PipesTab({super.key, required this.room, required this.session});
+  const _PipesTab({
+    super.key,
+    required this.room,
+    required this.session,
+    this.touchTargets = false,
+  });
 
   final RoomStore? room;
   final DaemonSession session;
+  final bool touchTargets;
 
   @override
   State<_PipesTab> createState() => _PipesTabState();
@@ -1743,7 +1866,11 @@ class _PipesTabState extends State<_PipesTab> {
       children: [
         if (pipes.isEmpty) _PanelEmpty(s.panelPipesEmpty),
         for (final pipe in pipes) ...[
-          _PipeRow(pipe: pipe, room: widget.room, session: widget.session),
+          _PipeRow(
+              pipe: pipe,
+              room: widget.room,
+              session: widget.session,
+              touchTargets: widget.touchTargets),
           const SizedBox(height: JeliyaSpacing.x10),
         ],
         const SizedBox(height: JeliyaSpacing.x6),
@@ -1798,6 +1925,12 @@ class _PipesTabState extends State<_PipesTab> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: JeliyaSpacing.x10),
+                      // Touch surfaces grow the bordered box to the 44dp
+                      // floor; the min-height flows through to the dropdown
+                      // itself, so the whole box stays tappable.
+                      constraints: widget.touchTargets
+                          ? const BoxConstraints(minHeight: 44)
+                          : null,
                       decoration: BoxDecoration(
                         color: tokens.bgInput,
                         borderRadius: BorderRadius.circular(JeliyaRadii.btn),
@@ -1842,11 +1975,14 @@ class _PipesTabState extends State<_PipesTab> {
                   ),
                 ),
                 const SizedBox(width: JeliyaSpacing.x8),
-                JeliyaButton(
-                  label:
-                      _exposing ? s.panelExposing : s.panelExpose,
-                  busy: _exposing,
-                  onPressed: canSubmit ? () => unawaited(_expose()) : null,
+                _TouchFloor(
+                  on: widget.touchTargets,
+                  child: JeliyaButton(
+                    label:
+                        _exposing ? s.panelExposing : s.panelExpose,
+                    busy: _exposing,
+                    onPressed: canSubmit ? () => unawaited(_expose()) : null,
+                  ),
                 ),
               ],
             ),
@@ -1877,11 +2013,17 @@ class _PipesTabState extends State<_PipesTab> {
 }
 
 class _PipeRow extends StatelessWidget {
-  const _PipeRow({required this.pipe, required this.room, required this.session});
+  const _PipeRow({
+    required this.pipe,
+    required this.room,
+    required this.session,
+    this.touchTargets = false,
+  });
 
   final PipeEntry pipe;
   final RoomStore? room;
   final DaemonSession session;
+  final bool touchTargets;
 
   @override
   Widget build(BuildContext context) {
@@ -1992,18 +2134,24 @@ class _PipeRow extends StatelessWidget {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 if (conn == null || conn.phase == PipeConnPhases.error)
-                  JeliyaButton(
-                    label: s.panelConnect,
-                    size: JeliyaButtonSize.sm,
-                    onPressed: () =>
-                        unawaited(room?.connectPipe(pipe.pipeId)),
+                  _TouchFloor(
+                    on: touchTargets,
+                    child: JeliyaButton(
+                      label: s.panelConnect,
+                      size: JeliyaButtonSize.sm,
+                      onPressed: () =>
+                          unawaited(room?.connectPipe(pipe.pipeId)),
+                    ),
                   )
                 else if (conn.phase == PipeConnPhases.connecting)
-                  JeliyaButton(
-                    label: s.panelConnecting,
-                    size: JeliyaButtonSize.sm,
-                    busy: true,
-                    onPressed: null,
+                  _TouchFloor(
+                    on: touchTargets,
+                    child: JeliyaButton(
+                      label: s.panelConnecting,
+                      size: JeliyaButtonSize.sm,
+                      busy: true,
+                      onPressed: null,
+                    ),
                   )
                 else ...[
                   Container(
@@ -2021,27 +2169,37 @@ class _PipeRow extends StatelessWidget {
                           JeliyaText.mono(fontSize: 12, color: tokens.accent),
                     ),
                   ),
-                  JeliyaButton(
-                    label: s.panelOpenPreview,
-                    size: JeliyaButtonSize.sm,
-                    variant: JeliyaButtonVariant.primary,
-                    onPressed: () => _launch('http://${conn.localAddr}'),
+                  _TouchFloor(
+                    on: touchTargets,
+                    child: JeliyaButton(
+                      label: s.panelOpenPreview,
+                      size: JeliyaButtonSize.sm,
+                      variant: JeliyaButtonVariant.primary,
+                      onPressed: () => _launch('http://${conn.localAddr}'),
+                    ),
                   ),
                 ],
                 if (closing)
-                  JeliyaButton(
-                    label: s.panelClosingPipe,
-                    size: JeliyaButtonSize.sm,
-                    variant: JeliyaButtonVariant.ghost,
-                    busy: true,
-                    onPressed: null,
+                  _TouchFloor(
+                    on: touchTargets,
+                    child: JeliyaButton(
+                      label: s.panelClosingPipe,
+                      size: JeliyaButtonSize.sm,
+                      variant: JeliyaButtonVariant.ghost,
+                      busy: true,
+                      onPressed: null,
+                    ),
                   )
                 else
-                  JeliyaButton(
-                    label: s.panelClosePipe,
-                    size: JeliyaButtonSize.sm,
-                    variant: JeliyaButtonVariant.ghost,
-                    onPressed: () => unawaited(room?.closePipe(pipe.pipeId)),
+                  _TouchFloor(
+                    on: touchTargets,
+                    child: JeliyaButton(
+                      label: s.panelClosePipe,
+                      size: JeliyaButtonSize.sm,
+                      variant: JeliyaButtonVariant.ghost,
+                      onPressed: () =>
+                          unawaited(room?.closePipe(pipe.pipeId)),
+                    ),
                   ),
               ],
             ),
