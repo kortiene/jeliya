@@ -19,11 +19,17 @@ fn main() {
         std::process::exit(1);
     }
     match identity::create(path) {
-        Ok(p) => println!("SMOKE OK created identity={} device={}", p.identity_id, p.device_id),
+        Ok(p) => println!(
+            "SMOKE OK created identity={} device={}",
+            p.identity_id, p.device_id
+        ),
         // A re-run: the identity already exists — load it, still exercising the
         // core's on-disk read path in-process.
         Err(_) => match identity::load_profile(path) {
-            Ok(Some(p)) => println!("SMOKE OK loaded identity={} device={}", p.identity_id, p.device_id),
+            Ok(Some(p)) => println!(
+                "SMOKE OK loaded identity={} device={}",
+                p.identity_id, p.device_id
+            ),
             Ok(None) => {
                 println!("SMOKE ERR create failed and no identity on disk");
                 std::process::exit(1);

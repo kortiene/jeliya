@@ -270,7 +270,10 @@ pub fn init_tracing(data_dir: &Path) -> Option<tracing_appender::non_blocking::W
                 .with(filter)
                 .with(stderr_layer)
                 .init();
-            warn!("could not create {}: {err}; file logging disabled", logs_dir.display());
+            warn!(
+                "could not create {}: {err}; file logging disabled",
+                logs_dir.display()
+            );
             None
         }
     }

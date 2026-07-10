@@ -1,10 +1,10 @@
 name: ci
 
-# The i18n / app / package verification, on every PR and every push to main —
-# a literal leak or generated-code drift must fail here, not lie in wait on
-# main until a release tag is cut. release.yml calls this same workflow
-# (workflow_call) so a release runs the identical gates and its publish jobs
-# can `needs:` it.
+# The i18n / app / package / Rust verification, on every PR and every push to
+# main — a literal leak, generated-code drift, or Rust regression must fail
+# here, not lie in wait on main until a release tag is cut. release.yml calls
+# this same workflow (workflow_call) so a release runs the identical gates and
+# its publish jobs can `needs:` it.
 
 on:
   push:
@@ -63,4 +63,45 @@ jobs:
           set -eu
           dart pub get
           dart analyze
+          dart test
+
+  rust:
+    name: rust (fmt + clippy + tests + daemon conformance)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # The daemon-bound jeliya_protocol suites (conformance, daemon HTTP,
+      # supervisor) skip themselves when target/debug/jeliyad is missing —
+      # which is every run of the verify job above. Build the daemon here so
+      # the golden corpus actually replays against it on every PR.
+      - name: Build jeliyad for daemon-bound suites
+        run: cargo build -p jeliyad
+
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+
+      - name: Daemon conformance (jeliya_protocol against the built daemon)
+        working-directory: dart/jeliya_protocol
+        run: |
+          set -eu
+          dart pub get
           dart test

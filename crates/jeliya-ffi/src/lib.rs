@@ -36,7 +36,9 @@ fn run_smoke(data_dir: *const c_char) -> String {
         return "err: null data_dir".to_owned();
     }
     // SAFETY: contract documented on the public fn; contained by catch_unwind.
-    let dir = unsafe { CStr::from_ptr(data_dir) }.to_string_lossy().into_owned();
+    let dir = unsafe { CStr::from_ptr(data_dir) }
+        .to_string_lossy()
+        .into_owned();
     let path = Path::new(&dir);
     match identity::create(path) {
         Ok(p) => format!("created identity={} device={}", p.identity_id, p.device_id),
@@ -55,7 +57,7 @@ fn run_smoke(data_dir: *const c_char) -> String {
 /// # Safety
 /// `s` must be a pointer returned by this library and not already freed.
 #[no_mangle]
-pub extern "C" fn jeliya_ffi_string_free(s: *mut c_char) {
+pub unsafe extern "C" fn jeliya_ffi_string_free(s: *mut c_char) {
     if !s.is_null() {
         // SAFETY: reclaims a CString this library leaked via into_raw.
         unsafe { drop(CString::from_raw(s)) };

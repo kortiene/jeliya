@@ -227,7 +227,10 @@ fn session(req: &Request<Incoming>, state: &AppState) -> Response<Full<Bytes>> {
              native clients read the portfile (daemon.json in the data dir)",
         );
     }
-    let mut response = json_response(StatusCode::OK, json!({ "token": state.auth_token.as_str() }));
+    let mut response = json_response(
+        StatusCode::OK,
+        json!({ "token": state.auth_token.as_str() }),
+    );
     let out = response.headers_mut();
     // CORS mirror only for the cross-origin dev case; a same-origin page needs
     // none and gets none.
@@ -251,7 +254,10 @@ fn preflight(req: &Request<Incoming>) -> Response<Full<Bytes>> {
         builder = builder
             .header("access-control-allow-origin", origin)
             .header("access-control-allow-methods", "GET, POST, OPTIONS")
-            .header("access-control-allow-headers", "Content-Type, Authorization")
+            .header(
+                "access-control-allow-headers",
+                "Content-Type, Authorization",
+            )
             .header("access-control-max-age", "600")
             .header(VARY, "Origin");
     }
@@ -327,7 +333,10 @@ fn local_origin(req: &Request<Incoming>) -> Option<String> {
 /// Mirror a loopback `Origin` back as CORS headers so the dev-mode UI
 /// (`localhost:5173` against a daemon port) can read responses. Remote
 /// origins get nothing (their requests stay opaque).
-fn apply_cors(origin: Option<String>, mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+fn apply_cors(
+    origin: Option<String>,
+    mut response: Response<Full<Bytes>>,
+) -> Response<Full<Bytes>> {
     if let Some(origin) = origin {
         if let Ok(value) = HeaderValue::from_str(&origin) {
             let headers = response.headers_mut();
@@ -453,7 +462,12 @@ fn local_file(req: Request<Incoming>, state: AppState) -> Response<Full<Bytes>> 
 /// the right app; anything that a browser could run as script/markup collapses
 /// to `application/octet-stream`.
 fn safe_download_mime(mime: &str) -> String {
-    let base = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let base = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     let inert = matches!(
         base.as_str(),
         "application/pdf"
@@ -867,6 +881,9 @@ mod tests {
         assert_eq!(safe_download_mime("IMAGE/PNG"), "image/png");
         assert_eq!(safe_download_mime("application/pdf"), "application/pdf");
         assert_eq!(safe_download_mime("video/mp4"), "video/mp4");
-        assert_eq!(safe_download_mime("text/plain; charset=utf-8"), "text/plain");
+        assert_eq!(
+            safe_download_mime("text/plain; charset=utf-8"),
+            "text/plain"
+        );
     }
 }

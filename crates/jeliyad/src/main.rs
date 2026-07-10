@@ -166,7 +166,11 @@ async fn main() {
         }
     };
     if args.port != 0 && addr.port() != args.port {
-        info!("port {} was in use; bound {} instead", args.port, addr.port());
+        info!(
+            "port {} was in use; bound {} instead",
+            args.port,
+            addr.port()
+        );
     }
 
     let (push_tx, _) = broadcast::channel(1024);
@@ -336,7 +340,11 @@ fn default_data_dir() -> PathBuf {
 /// returned address is the listener's own `local_addr()` — the only truthful
 /// answer once the OS has chosen a port.
 async fn bind_loopback(port: u16, tries: u16) -> Option<(TcpListener, SocketAddr)> {
-    let last = if port == 0 { port } else { port.saturating_add(tries) };
+    let last = if port == 0 {
+        port
+    } else {
+        port.saturating_add(tries)
+    };
     for candidate in port..=last {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, candidate));
         match TcpListener::bind(addr).await {
