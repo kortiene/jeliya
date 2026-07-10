@@ -13,6 +13,7 @@ import 'package:jeliya_protocol/jeliya_protocol.dart'
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
 import '../l10n/wire_display.dart';
+import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../theme.dart';
 import '../widgets/buttons.dart';
@@ -114,35 +115,43 @@ class RoomHeader extends StatelessWidget {
               );
             }
             final onMembers = this.onMembers;
+            // Below the shell breakpoint every header action grows to the
+            // 44dp touch floor; desktop widths render exactly as before.
+            final mobile = isMobileWidth(context);
+            Widget action(Widget button) => mobile
+                ? ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 44),
+                    child: button)
+                : button;
             final actions = Wrap(
               spacing: JeliyaSpacing.x8,
               runSpacing: JeliyaSpacing.x8,
               children: [
                 if (onMembers != null)
-                  JeliyaButton(
+                  action(JeliyaButton(
                     label: s.panelTabMembers,
                     semanticLabel: s.panelTabMembers,
                     onPressed: onMembers,
-                  ),
-                JeliyaButton(
+                  )),
+                action(JeliyaButton(
                   label:
                       '${Tokens.roomHeaderShareFileGlyph} ${s.roomHeaderShareFile}',
                   semanticLabel: s.roomHeaderShareFile,
                   onPressed: onShareFile,
-                ),
-                JeliyaButton(
+                )),
+                action(JeliyaButton(
                   label:
                       '${Tokens.roomHeaderOpenPipeGlyph} ${s.roomHeaderOpenPipe}',
                   semanticLabel: s.roomHeaderOpenPipe,
                   onPressed: onOpenPipe,
-                ),
-                JeliyaButton(
+                )),
+                action(JeliyaButton(
                   label:
                       '${Tokens.roomHeaderInviteGlyph} ${s.roomHeaderInvite}',
                   semanticLabel: s.roomHeaderInvite,
                   variant: JeliyaButtonVariant.primary,
                   onPressed: onInvite,
-                ),
+                )),
               ],
             );
             // A Wrap inside a Row can never actually wrap; at the 960px

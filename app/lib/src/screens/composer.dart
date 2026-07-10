@@ -20,6 +20,7 @@ import 'package:jeliya_protocol/jeliya_protocol.dart'
 
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
+import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../theme.dart';
 import '../widgets/buttons.dart';
@@ -172,6 +173,9 @@ class _ComposerState extends State<Composer> {
     final tokens = JeliyaTokens.of(context);
     final disabled = session.conn != ConnectionState.connected;
     final draftBlank = _controller.text.trim().isEmpty;
+    // Below the shell breakpoint the share and send affordances grow to the
+    // 44dp touch floor; at desktop widths they render exactly as before.
+    final mobile = isMobileWidth(context);
 
     String roomName = s.shellUntitledRoom;
     final roomId = session.currentRoomId;
@@ -212,6 +216,7 @@ class _ComposerState extends State<Composer> {
               children: [
                 _ShareFileButton(
                   busy: _sharing,
+                  dimension: mobile ? 44 : 26,
                   onPressed: (disabled || _sharing) ? null : _shareFile,
                 ),
                 const SizedBox(width: JeliyaSpacing.x8),
@@ -252,14 +257,21 @@ class _ComposerState extends State<Composer> {
                   ),
                 ),
                 const SizedBox(width: JeliyaSpacing.x10),
-                JeliyaButton(
-                  label: _sending
-                      ? Tokens.composerSendingGlyph
-                      : Tokens.composerSendGlyph,
-                  semanticLabel: s.composerSendMessage,
-                  variant: JeliyaButtonVariant.primary,
-                  onPressed:
-                      (disabled || _sending || draftBlank) ? null : _send,
+                ConstrainedBox(
+                  // 44dp send target on touch layouts (Size.zero-based
+                  // desktop sizing otherwise unchanged).
+                  constraints: mobile
+                      ? const BoxConstraints(minWidth: 44, minHeight: 44)
+                      : const BoxConstraints(),
+                  child: JeliyaButton(
+                    label: _sending
+                        ? Tokens.composerSendingGlyph
+                        : Tokens.composerSendGlyph,
+                    semanticLabel: s.composerSendMessage,
+                    variant: JeliyaButtonVariant.primary,
+                    onPressed:
+                        (disabled || _sending || draftBlank) ? null : _send,
+                  ),
                 ),
               ],
             ),
@@ -278,12 +290,18 @@ class _ComposerState extends State<Composer> {
   }
 }
 
-/// The quiet 26px icon-btn file-share affordance ('⎘') — dim ink, accent on
-/// hover, spinner while the staging upload is in flight.
+/// The quiet icon-btn file-share affordance ('⎘') — dim ink, accent on
+/// hover, spinner while the staging upload is in flight. 26px on desktop;
+/// the mobile composer passes the 44dp touch floor as [dimension].
 class _ShareFileButton extends StatelessWidget {
-  const _ShareFileButton({required this.busy, required this.onPressed});
+  const _ShareFileButton({
+    required this.busy,
+    required this.dimension,
+    required this.onPressed,
+  });
 
   final bool busy;
+  final double dimension;
   final VoidCallback? onPressed;
 
   @override
@@ -301,8 +319,8 @@ class _ShareFileButton extends StatelessWidget {
             foregroundColor: tokens.textDim,
             disabledForegroundColor: tokens.textDim.withValues(alpha: 0.55),
             padding: EdgeInsets.zero,
-            minimumSize: const Size(26, 26),
-            fixedSize: const Size(26, 26),
+            minimumSize: Size.square(dimension),
+            fixedSize: Size.square(dimension),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(JeliyaRadii.iconBtn),

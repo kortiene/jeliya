@@ -19,6 +19,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:jeliya_protocol/jeliya_protocol.dart'
     show
+        FetchState,
         FileEntry,
         FileRef,
         LabelTone,
@@ -35,6 +36,7 @@ import '../format.dart';
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
 import '../l10n/wire_display.dart';
+import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../session/room_store.dart';
 import '../theme.dart';
@@ -546,16 +548,20 @@ class _TimelineViewState extends State<TimelineView> {
     );
   }
 
-  /// Sender name + optional AGENT chip + time (msg-meta, 12px).
+  /// Sender name + optional AGENT chip + time (msg-meta, 12px). The name is
+  /// the flexible segment: at phone widths (long aliases, wide French copy)
+  /// it truncates before the chip/time ever overflow.
   Widget _metaRow(BuildContext context, TimelineEvent event, {required bool own}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       mainAxisAlignment:
           own ? MainAxisAlignment.end : MainAxisAlignment.start,
       children: [
-        SenderName(
-          id: event.sender.identityId,
-          style: JeliyaText.name.copyWith(fontSize: 12),
+        Flexible(
+          child: SenderName(
+            id: event.sender.identityId,
+            style: JeliyaText.name.copyWith(fontSize: 12),
+          ),
         ),
         if (event.sender.role == Roles.agent) ...[
           const SizedBox(width: JeliyaSpacing.x8),
@@ -727,18 +733,31 @@ class _TimelineViewState extends State<TimelineView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          // Identity left, status chip right — spaceBetween renders the
+          // desktop Row+Spacer layout when one run fits, and at phone widths
+          // the chip wraps to its own run instead of overflowing (the name
+          // truncates first).
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: JeliyaSpacing.x8,
+            runSpacing: JeliyaSpacing.x4,
             children: [
-              SenderName(
-                id: event.sender.identityId,
-                style: JeliyaText.name.copyWith(fontSize: 13),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: SenderName(
+                      id: event.sender.identityId,
+                      style: JeliyaText.name.copyWith(fontSize: 13),
+                    ),
+                  ),
+                  const SizedBox(width: JeliyaSpacing.x8),
+                  const _AgentChip(),
+                  const SizedBox(width: JeliyaSpacing.x8),
+                  _time(context, event.ts),
+                ],
               ),
-              const SizedBox(width: JeliyaSpacing.x8),
-              const _AgentChip(),
-              const SizedBox(width: JeliyaSpacing.x8),
-              _time(context, event.ts),
-              const Spacer(),
-              const SizedBox(width: JeliyaSpacing.x8),
               _LabelChip(tone: tone, text: pretty),
             ],
           ),
@@ -918,23 +937,15 @@ class _TimelineViewState extends State<TimelineView> {
             ),
           ),
           const SizedBox(width: JeliyaSpacing.x12),
-          if (own)
-            const _ServingNote()
+          // A Row hands its trailing (non-flex) child unbounded width, so a
+          // wide control state ('No provider online' + Recheck) overflows a
+          // phone-width tile; below the breakpoint the control shares the
+          // row flexibly (its Wrap re-runs). Desktop keeps the intrinsic,
+          // right-flushed control exactly as before.
+          if (isMobileWidth(context))
+            Flexible(child: _fileTileControl(store, file, entry, state, own))
           else
-            FetchControl(
-              state: state,
-              availability: entry == null
-                  ? null
-                  : FetchAvailability(
-                      available: entry.available, providers: entry.providers),
-              availabilityPending: entry == null,
-              onFetch: () {
-                store.fetchFile(file.fileId);
-              },
-              onRecheck: () {
-                store.refreshFiles();
-              },
-            ),
+            _fileTileControl(store, file, entry, state, own),
         ],
       ),
     );
@@ -943,6 +954,26 @@ class _TimelineViewState extends State<TimelineView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [tile, FetchDetail(state: state)],
+    );
+  }
+
+  /// The tile's trailing affordance: own files serve, remote files fetch.
+  Widget _fileTileControl(RoomStore store, FileRef file, FileEntry? entry,
+      FetchState? state, bool own) {
+    if (own) return const _ServingNote();
+    return FetchControl(
+      state: state,
+      availability: entry == null
+          ? null
+          : FetchAvailability(
+              available: entry.available, providers: entry.providers),
+      availabilityPending: entry == null,
+      onFetch: () {
+        store.fetchFile(file.fileId);
+      },
+      onRecheck: () {
+        store.refreshFiles();
+      },
     );
   }
 

@@ -70,20 +70,28 @@ class JeliyaButton extends StatelessWidget {
         ),
     };
 
-    final child = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (busy) ...[
-          SizedBox(
-            width: fontSize - 2,
-            height: fontSize - 2,
-            child: CircularProgressIndicator(strokeWidth: 1.6, color: fg),
-          ),
-          const SizedBox(width: JeliyaSpacing.x6),
-        ],
-        Text(label),
-      ],
-    );
+    // Truncation on every user-text surface (web: `.btn { white-space:
+    // nowrap }`): a width-squeezed button (phone-width Wraps, wide French
+    // labels) ellipsizes its label instead of overflowing; with room to
+    // spare it renders at intrinsic width exactly as before. Deliberately
+    // NOT a Flexible — buttons also sit in unbounded-width Rows, where a
+    // flex child is a layout error.
+    final text = Text(label,
+        maxLines: 1, overflow: TextOverflow.ellipsis, softWrap: false);
+    final child = busy
+        ? Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: fontSize - 2,
+                height: fontSize - 2,
+                child: CircularProgressIndicator(strokeWidth: 1.6, color: fg),
+              ),
+              const SizedBox(width: JeliyaSpacing.x6),
+              text,
+            ],
+          )
+        : text;
 
     final button = TextButton(
       onPressed: onPressed,

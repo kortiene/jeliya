@@ -4,12 +4,13 @@
 /// executable spec: ui/src/components/MobileTabBar.tsx + the styles.css
 /// mv-* pane mapping):
 ///
-/// - Rooms hosts a NESTED navigator: rooms list → pushed chat route
-///   (RoomHeader + Timeline + Composer) → pushed room-detail route (the
-///   RightPanel tabs, Members first). Chat is a sub-view of Rooms — the tab
-///   stays highlighted while it is open (web `active === 'home'` rule) and
-///   the routes stay mounted across tab switches (IndexedStack) so timeline
-///   scroll survives, mirroring the desktop shell's Visibility contract.
+/// - Rooms hosts a NESTED navigator: rooms list (mobile_rooms.dart) →
+///   pushed chat route (mobile_room.dart: RoomHeader + Timeline + Composer)
+///   → pushed room-detail route (mobile_panel.dart: the RightPanel tabs,
+///   Members first). Chat is a sub-view of Rooms — the tab stays highlighted
+///   while it is open (web `active === 'home'` rule) and the routes stay
+///   mounted across tab switches (IndexedStack) so timeline scroll survives,
+///   mirroring the desktop shell's Visibility contract.
 /// - Agents mounts FleetDashboard ONLY while active (its FleetStore polls
 ///   every 4s and must never run in the background — web parity).
 /// - Pipes/Files pin the room-scoped RightPanel full width to that panel
@@ -25,28 +26,25 @@ library;
 
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter/services.dart' show SystemNavigator;
-import 'package:jeliya_protocol/jeliya_protocol.dart'
-    show ConnectionState, RoomSummary;
+import 'package:jeliya_protocol/jeliya_protocol.dart' show ConnectionState;
 
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
 import '../session/daemon_session.dart';
 import '../theme.dart';
 import '../widgets/connection_banner.dart';
-import '../widgets/error_note.dart';
-import '../widgets/tree_mark.dart';
-import 'composer.dart';
 import 'fleet_dashboard.dart';
 import 'mobile_panel.dart';
+import 'mobile_rooms.dart';
 import 'right_panel.dart';
-import 'room_header.dart';
 import 'settings_panel.dart';
-import 'sidebar.dart' show IdentityFooter, NavKey;
-import 'timeline.dart';
+import 'sidebar.dart' show NavKey;
 
-// The room-detail route is defined next to the panel surfaces it hosts;
+// The chat route is defined next to the rooms screen it is pushed over, and
+// the room-detail route next to the panel surfaces it hosts; both are
 // re-exported here so the shell keeps a single mobile-IA import seam.
 export 'mobile_panel.dart' show mobileRoomDetailRoute;
+export 'mobile_room.dart' show mobileRoomRoute;
 
 /// The five bottom tabs, in bar order (MobileTabBar.tsx `TABS`).
 const List<NavKey> _tabs = [
@@ -63,18 +61,6 @@ NavKey _foldNav(NavKey nav) => switch (nav) {
       NavKey.home || NavKey.calls => NavKey.rooms,
       _ => nav,
     };
-
-/// The chat screen pushed onto the Rooms tab's nested navigator. Pushed by
-/// the shell (room selection, create/join/fleet deep links) so every entry
-/// point shares one route construction.
-Route<void> mobileRoomRoute({
-  required VoidCallback onInvite,
-  required VoidCallback onLeaveRoom,
-}) =>
-    MaterialPageRoute<void>(
-      builder: (_) =>
-          _MobileRoomScreen(onInvite: onInvite, onLeaveRoom: onLeaveRoom),
-    );
 
 class MobileShell extends StatelessWidget {
   const MobileShell({
@@ -160,7 +146,7 @@ class MobileShell extends StatelessWidget {
                       key: roomsNavigatorKey,
                       onGenerateRoute: (settings) => MaterialPageRoute<void>(
                         settings: settings,
-                        builder: (_) => _MobileRoomsScreen(
+                        builder: (_) => MobileRoomsScreen(
                           onSelectRoom: onSelectRoom,
                           onCreateRoom: onCreateRoom,
                           onJoinRoom: onJoinRoom,
@@ -312,368 +298,6 @@ class _TabItem extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 10.5, color: color),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// -- rooms tab: the list screen -------------------------------------------------------
-
-/// The phone Rooms home: brand row, 'Your Rooms' list from session.rooms,
-/// create/join affordances, and the identity footer with the connection
-/// badge. Built fresh against the session (the sidebar's row widgets are
-/// private and its nav rail is redundant with the tab bar — web parity:
-/// styles.css hides .nav-list on phones).
-class _MobileRoomsScreen extends StatelessWidget {
-  const _MobileRoomsScreen({
-    required this.onSelectRoom,
-    required this.onCreateRoom,
-    required this.onJoinRoom,
-  });
-
-  final ValueChanged<String> onSelectRoom;
-  final VoidCallback onCreateRoom;
-  final VoidCallback onJoinRoom;
-
-  @override
-  Widget build(BuildContext context) {
-    final session = SessionScope.of(context);
-    final s = context.strings;
-    final tokens = JeliyaTokens.of(context);
-    return ColoredBox(
-      color: tokens.bg,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(JeliyaSpacing.x18, JeliyaSpacing.x18,
-                JeliyaSpacing.x18, JeliyaSpacing.x14),
-            child: Row(
-              children: [
-                TreeMark(size: 30),
-                SizedBox(width: JeliyaSpacing.x10),
-                Wordmark(fontSize: 19),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(JeliyaSpacing.x18,
-                JeliyaSpacing.x4, JeliyaSpacing.x18, JeliyaSpacing.x8),
-            child: Text(
-              s.sidebarYourRooms.toUpperCase(),
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.32,
-                  color: tokens.textMute),
-            ),
-          ),
-          Expanded(
-            child: session.rooms.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.all(JeliyaSpacing.x14),
-                    child: Align(
-                      alignment: Alignment.topLeft,
-                      child: Text(s.sidebarNoRoomsYet,
-                          style:
-                              TextStyle(fontSize: 13, color: tokens.textDim)),
-                    ),
-                  )
-                : Semantics(
-                    container: true,
-                    label: s.sidebarRoomsListLabel,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: JeliyaSpacing.x10),
-                      itemCount: session.rooms.length,
-                      separatorBuilder: (_, _) =>
-                          const SizedBox(height: JeliyaSpacing.x4),
-                      itemBuilder: (context, index) => _MobileRoomRow(
-                        room: session.rooms[index],
-                        selected: session.rooms[index].roomId ==
-                            session.currentRoomId,
-                        onSelectRoom: onSelectRoom,
-                      ),
-                    ),
-                  ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-                JeliyaSpacing.x10, JeliyaSpacing.x8, JeliyaSpacing.x10, 0),
-            child: _MobileAffordanceRow(
-              glyph: Tokens.sidebarCreateRoomGlyph,
-              label: s.modalCreateRoom,
-              emphasized: true,
-              onTap: onCreateRoom,
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(JeliyaSpacing.x10,
-                JeliyaSpacing.x8, JeliyaSpacing.x10, JeliyaSpacing.x8),
-            child: _MobileAffordanceRow(
-              glyph: Tokens.sidebarJoinRoomGlyph,
-              label: s.modalJoinRoomTitle,
-              emphasized: false,
-              onTap: onJoinRoom,
-            ),
-          ),
-          IdentityFooter(session: session),
-        ],
-      ),
-    );
-  }
-}
-
-/// One room row — the sidebar room-row anatomy (hex tile tinted by
-/// colorForId, name, member/state meta, session-open dot, departed rows
-/// disabled and receded) at phone width. 52dp tall: over the 44dp floor.
-class _MobileRoomRow extends StatelessWidget {
-  const _MobileRoomRow({
-    required this.room,
-    required this.selected,
-    required this.onSelectRoom,
-  });
-
-  final RoomSummary room;
-  final bool selected;
-  final ValueChanged<String> onSelectRoom;
-
-  @override
-  Widget build(BuildContext context) {
-    final s = context.strings;
-    final tokens = JeliyaTokens.of(context);
-    final tint = tokens.colorForId(room.roomId);
-    final departed = room.status == 'left' || room.status == 'removed';
-    final stateLabel = departed
-        ? (room.status == 'left' ? s.sidebarStateLeft : s.sidebarStateRemoved)
-        : room.open
-            ? s.sidebarStateActive
-            : s.sidebarStateIdle;
-
-    Widget row = TextButton(
-      onPressed: departed ? null : () => onSelectRoom(room.roomId),
-      style: ButtonStyle(
-        padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(
-            horizontal: JeliyaSpacing.x10, vertical: 9)),
-        backgroundColor: WidgetStatePropertyAll(
-            selected ? tokens.accentDim : Colors.transparent),
-        overlayColor: const WidgetStatePropertyAll(Colors.transparent),
-        minimumSize: const WidgetStatePropertyAll(Size.zero),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        shape: WidgetStatePropertyAll(RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(JeliyaRadii.row),
-          side: BorderSide(
-              color: selected ? tokens.accentLine : Colors.transparent),
-        )),
-      ),
-      child: Row(
-        children: [
-          ExcludeSemantics(
-            child: Container(
-              width: 34,
-              height: 34,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: tokens.tileBg(room.roomId),
-                borderRadius: BorderRadius.circular(JeliyaRadii.btn),
-              ),
-              child: Text(Tokens.sidebarRoomHexGlyph,
-                  style: TextStyle(fontSize: 18, color: tint)),
-            ),
-          ),
-          const SizedBox(width: JeliyaSpacing.x10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(room.name ?? s.shellUntitledRoom,
-                    style: JeliyaText.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-                Text(s.sidebarRoomMeta(room.memberCount, stateLabel),
-                    style: JeliyaText.meta,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-              ],
-            ),
-          ),
-          if (room.open) ...[
-            const SizedBox(width: JeliyaSpacing.x6),
-            Tooltip(
-              message: s.sidebarSessionOpen,
-              child: Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(
-                  color: tokens.accent,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                        color: tokens.accent.withValues(alpha: 0.7),
-                        blurRadius: 6),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-
-    if (departed) {
-      row = Tooltip(
-        message: room.status == 'left'
-            ? s.sidebarLeftRoomTitle
-            : s.sidebarRemovedRoomTitle,
-        child: Opacity(opacity: 0.62, child: row),
-      );
-    }
-    return Semantics(selected: selected, child: row);
-  }
-}
-
-/// Create/join entry rows (the sidebar affordance rows at phone width);
-/// 45dp tall. Solid hairline borders — Border-Not-Shadow.
-class _MobileAffordanceRow extends StatelessWidget {
-  const _MobileAffordanceRow({
-    required this.glyph,
-    required this.label,
-    required this.emphasized,
-    required this.onTap,
-  });
-
-  final String glyph;
-  final String label;
-
-  /// The create row reads a step brighter than the join row (web parity).
-  final bool emphasized;
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = JeliyaTokens.of(context);
-    final fg = emphasized ? tokens.textDim : tokens.textMute;
-    final borderColor = emphasized ? tokens.borderStrong : tokens.border;
-    final radius = BorderRadius.circular(JeliyaRadii.row);
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: radius,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: radius,
-            border: Border.all(color: borderColor),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-                horizontal: JeliyaSpacing.x12, vertical: JeliyaSpacing.x12),
-            child: Row(
-              children: [
-                ExcludeSemantics(
-                  child:
-                      Text(glyph, style: TextStyle(fontSize: 14, color: fg)),
-                ),
-                const SizedBox(width: JeliyaSpacing.x8),
-                Expanded(
-                  child: Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 14, color: fg)),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// -- rooms tab: the chat route ----------------------------------------------------------
-
-/// The chat screen: back affordance + RoomHeader (its own <560 stack), the
-/// room-keyed timeline, and the composer. The room-detail route (RightPanel
-/// tabs) is pushed from here for Members / Share file / Open pipe / timeline
-/// pipe tiles — every desktop deep-link callback keeps its intent.
-class _MobileRoomScreen extends StatelessWidget {
-  const _MobileRoomScreen({required this.onInvite, required this.onLeaveRoom});
-
-  final VoidCallback onInvite;
-  final VoidCallback onLeaveRoom;
-
-  void _pushDetail(BuildContext context, PanelTab tab) {
-    Navigator.of(context).push(
-        mobileRoomDetailRoute(initialTab: tab, onLeaveRoom: onLeaveRoom));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final s = context.strings;
-    final session = SessionScope.of(context);
-    final tokens = JeliyaTokens.of(context);
-    final room = session.room;
-    if (room == null) {
-      // The room closed under this route (left/removed elsewhere): an honest
-      // empty state with the back affordance still in reach.
-      return ColoredBox(
-        color: tokens.bg,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: BackButton(color: tokens.text),
-            ),
-            Expanded(
-              child: Center(
-                child: Text(s.shellSelectRoom,
-                    style: TextStyle(fontSize: 13.5, color: tokens.textDim)),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-    RoomSummary? summary;
-    for (final r in session.rooms) {
-      if (r.roomId == room.roomId) summary = r;
-    }
-    return ColoredBox(
-      color: tokens.bg,
-      child: ListenableBuilder(
-        listenable: room,
-        builder: (context, _) => Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            RoomHeader(
-              leading: BackButton(color: tokens.text),
-              name: summary?.name ?? s.shellUntitledRoom,
-              memberCount: room.members.isNotEmpty
-                  ? room.members.length
-                  : summary?.memberCount ?? 0,
-              onInvite: onInvite,
-              onMembers: () => _pushDetail(context, PanelTab.members),
-              onShareFile: () => _pushDetail(context, PanelTab.files),
-              onOpenPipe: () => _pushDetail(context, PanelTab.pipes),
-            ),
-            if (room.openError != null)
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: JeliyaSpacing.page),
-                child: ErrorNote(error: room.openError),
-              ),
-            // Keyed by room so the live-region/scroll state resets on switch.
-            Expanded(
-              child: TimelineView(
-                key: ValueKey(room.roomId),
-                onShowPipes: () => _pushDetail(context, PanelTab.pipes),
-              ),
-            ),
-            const Composer(),
           ],
         ),
       ),
