@@ -90,13 +90,27 @@ class Sidebar extends StatelessWidget {
             session: session,
             onTap: () => onNav(NavKey.settings),
           ),
-          _NavList(activeNav: activeNav, onNav: onNav),
-          _RoomsHead(onCreateRoom: onCreateRoom),
+          // Nav + rooms share ONE scrollable: the fixed rows above/below
+          // total ~646dp at textScale 1.0, so a rooms-only Expanded lays the
+          // list out at height 0 on short viewports (960x620 desktop minimum,
+          // phone landscape) — zero rooms rendered while session.rooms is
+          // non-empty. Brand/profile stay pinned above; the create/join rows
+          // and identity footer stay pinned below.
           Expanded(
-            child: _RoomsList(
-              rooms: session.rooms,
-              currentRoomId: session.currentRoomId,
-              onSelectRoom: onSelectRoom,
+            child: CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(
+                  child: _NavList(activeNav: activeNav, onNav: onNav),
+                ),
+                SliverToBoxAdapter(
+                  child: _RoomsHead(onCreateRoom: onCreateRoom),
+                ),
+                _RoomsList(
+                  rooms: session.rooms,
+                  currentRoomId: session.currentRoomId,
+                  onSelectRoom: onSelectRoom,
+                ),
+              ],
             ),
           ),
           Padding(
@@ -448,6 +462,8 @@ class _RoomsHead extends StatelessWidget {
   }
 }
 
+/// Builds a SLIVER — it lives inside the sidebar's shared CustomScrollView so
+/// the nav above it and the rooms scroll as one region on short viewports.
 class _RoomsList extends StatelessWidget {
   const _RoomsList({
     required this.rooms,
@@ -464,26 +480,30 @@ class _RoomsList extends StatelessWidget {
     final s = context.strings;
     final tokens = JeliyaTokens.of(context);
     if (rooms.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(JeliyaSpacing.x14),
-        child: Align(
-          alignment: Alignment.topLeft,
-          child: Text(s.sidebarNoRoomsYet,
-              style: TextStyle(fontSize: 13, color: tokens.textDim)),
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.all(JeliyaSpacing.x14),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: Text(s.sidebarNoRoomsYet,
+                style: TextStyle(fontSize: 13, color: tokens.textDim)),
+          ),
         ),
       );
     }
-    return Semantics(
+    return SliverSemantics(
       container: true,
       label: s.sidebarRoomsListLabel,
-      child: ListView.separated(
+      sliver: SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: JeliyaSpacing.x10),
-        itemCount: rooms.length,
-        separatorBuilder: (_, _) => const SizedBox(height: JeliyaSpacing.x4),
-        itemBuilder: (context, index) => _RoomItem(
-          room: rooms[index],
-          selected: rooms[index].roomId == currentRoomId,
-          onSelectRoom: onSelectRoom,
+        sliver: SliverList.separated(
+          itemCount: rooms.length,
+          separatorBuilder: (_, _) => const SizedBox(height: JeliyaSpacing.x4),
+          itemBuilder: (context, index) => _RoomItem(
+            room: rooms[index],
+            selected: rooms[index].roomId == currentRoomId,
+            onSelectRoom: onSelectRoom,
+          ),
         ),
       ),
     );
