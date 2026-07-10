@@ -161,6 +161,48 @@ void main() {
       expect(client.state, ConnectionState.disconnected);
     });
 
+    test('start() interleaved with a still-awaiting stop() leaves a usable client', () async {
+      await client.start();
+      // stop() runs synchronously up to its done-port await (the host slot
+      // is emptied by then), so the restart below overlaps the teardown
+      // wait — the reviewed wedge: stop's tail must not close the restarted
+      // client's fresh frames port or stamp disconnected over its state.
+      final stopping = client.stop();
+      await client.start().timeout(const Duration(seconds: 10));
+      expect(client.state, ConnectionState.connected);
+      await stopping.timeout(const Duration(seconds: 15));
+      expect(client.state, ConnectionState.connected);
+      final status = await client.call('daemon.status').timeout(const Duration(seconds: 10));
+      expect((status as Map)['protocol'], 1);
+    });
+
+    test('engine death via daemon.shutdown is observed: calls fail, state drops', () async {
+      await client.start();
+      expect(await client.call('daemon.shutdown'), {'shutting_down': true});
+      // The reply lands first; real teardown follows a beat later. Poll until
+      // the host reports the engine gone — the client must surface that as
+      // connection_lost AND stop rendering `connected` against a dead engine.
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (true) {
+        try {
+          await client.call('daemon.status').timeout(const Duration(seconds: 10));
+        } on RequestError catch (e) {
+          expect(e.code, 'connection_lost');
+          break;
+        }
+        if (!DateTime.now().isBefore(deadline)) {
+          fail('engine never tore down after daemon.shutdown');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(client.state, ConnectionState.disconnected);
+      // Observed death folds into the stopped state: restartable like stop().
+      await client.start().timeout(const Duration(seconds: 10));
+      expect(client.state, ConnectionState.connected);
+      final status = await client.call('daemon.status').timeout(const Duration(seconds: 10));
+      expect((status as Map)['protocol'], 1);
+    });
+
     test('a call issued after stop() fails fast with connection_lost', () async {
       await client.start();
       await client.stop();

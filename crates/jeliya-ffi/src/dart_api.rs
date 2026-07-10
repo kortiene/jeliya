@@ -14,6 +14,7 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
 use std::ffi::{c_char, c_void};
+use std::sync::{Mutex, PoisonError};
 
 /// `typedef int64_t Dart_Port_DL;` (dart_api_dl.h).
 pub(crate) type Dart_Port_DL = i64;
@@ -117,21 +118,36 @@ extern "C" {
     static mut Dart_PostCObject_DL: Dart_PostCObject_Type;
 }
 
-/// Resolve the DL stubs; true when `Dart_InitializeApiDL` returned 0.
+/// Whether `Dart_InitializeApiDL` already succeeded in this process. The
+/// guard exists because the resolver REWRITES every `*_DL` slot with plain
+/// (non-atomic) stores on each call, while engine-runtime threads read
+/// `Dart_PostCObject_DL` unsynchronized inside every post — and the Dart
+/// side re-runs init on every `start()` (hot restart, restart-after-stop).
+/// First success wins; later calls become validated no-ops.
+static INITIALIZED: Mutex<bool> = Mutex::new(false);
+
+/// Resolve the DL stubs; true when `Dart_InitializeApiDL` returned 0 (now or
+/// on an earlier call — the slots are only ever written once per process).
 ///
 /// # Safety
 /// `data` must be the value of `NativeApi.initializeApiDLData` from the Dart
 /// VM hosting this library, passed through unmodified.
 pub(crate) unsafe fn initialize(data: *mut c_void) -> bool {
+    let mut done = INITIALIZED.lock().unwrap_or_else(PoisonError::into_inner);
+    if *done {
+        return true;
+    }
     // SAFETY: contract forwarded from the caller.
-    (unsafe { Dart_InitializeApiDL(data) }) == 0
+    *done = (unsafe { Dart_InitializeApiDL(data) }) == 0;
+    *done
 }
 
 fn post_cobject() -> Dart_PostCObject_Type {
-    // SAFETY: a by-value read of the slot `dart_api_dl.c` defines. It is
-    // written exactly once, by Dart_InitializeApiDL — which the Dart side
-    // must complete before any engine export can trigger a post — and only
-    // read from then on.
+    // SAFETY: a by-value read of the slot `dart_api_dl.c` defines. The
+    // INITIALIZED guard above ensures it is written at most once per process
+    // (a successful Dart_InitializeApiDL never re-runs), the Dart side must
+    // complete that init before any engine export can trigger a post, and
+    // the slot is only read from then on.
     unsafe { Dart_PostCObject_DL }
 }
 

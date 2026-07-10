@@ -285,7 +285,9 @@ pub fn init_tracing(data_dir: &Path) -> Option<tracing_appender::non_blocking::W
 /// (`Engine::close_all_rooms`), shared with the in-process hosts.
 pub async fn graceful_shutdown(state: &crate::AppState, reason: &str) {
     info!("shutting down ({reason})");
-    state.engine.close_all_rooms().await;
+    // The unclean-close flag is deliberately dropped: this process exits
+    // right after, so the OS releases anything a hung room still held.
+    let _ = state.engine.close_all_rooms().await;
     remove_portfile(&state.data_dir);
     info!("shutdown complete");
 }

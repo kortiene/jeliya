@@ -329,20 +329,33 @@ impl Engine {
     /// Close every open room (releasing its blob locks and network session).
     /// Bounded: a room whose teardown hangs must not turn shutdown into a
     /// zombie, so after 10s the caller proceeds anyway and it is noted.
-    pub async fn close_all_rooms(&self) {
+    ///
+    /// Returns whether EVERY room closed cleanly. On `false`, the unclosed
+    /// rooms never ran `Node::shutdown` — the only thing that releases a
+    /// room's exclusive on-disk blob lock — so their stores may stay locked
+    /// until the OS process exits. `jeliyad` exits right after, so the OS
+    /// reaps them; an in-process host outlives this call and must report the
+    /// unclean close instead of claiming success.
+    pub async fn close_all_rooms(&self) -> bool {
         let close_all = async {
+            let mut clean = true;
             for room_id in self.supervisor.open_rooms() {
                 match self.supervisor.close_room(&room_id).await {
                     Ok(()) => info!("closed room {room_id}"),
-                    Err(err) => warn!("could not close room {room_id} cleanly: {err}"),
+                    Err(err) => {
+                        warn!("could not close room {room_id} cleanly: {err}");
+                        clean = false;
+                    }
                 }
             }
+            clean
         };
-        if tokio::time::timeout(Duration::from_secs(10), close_all)
-            .await
-            .is_err()
-        {
-            warn!("room teardown did not finish within 10s; exiting anyway");
+        match tokio::time::timeout(Duration::from_secs(10), close_all).await {
+            Ok(clean) => clean,
+            Err(_) => {
+                warn!("room teardown did not finish within 10s; exiting anyway");
+                false
+            }
         }
     }
 }
@@ -408,9 +421,21 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
                 let engine = engine.clone();
                 let pumped = pumped.clone();
                 let key = room_str.clone();
+                // The pump watches the same cancel signal as the ticker: it
+                // normally dies on `RoomNotOpen` as its room closes, but a
+                // room whose close hangs or fails would otherwise park the
+                // pump forever, pinning the whole Engine through this task's
+                // `Arc` — fatal for an in-process host, which has no process
+                // exit to reap it. (A DROPPED handle still detaches: the
+                // closed watch channel parks `cancelled` forever.)
+                let mut cancel_rx = cancel_rx.clone();
                 tokio::spawn(async move {
                     loop {
-                        match engine.supervisor.recv_room_events(&room_id).await {
+                        let received = tokio::select! {
+                            events = engine.supervisor.recv_room_events(&room_id) => events,
+                            () = cancelled(&mut cancel_rx) => break,
+                        };
+                        match received {
                             Ok(events) => {
                                 for event in events {
                                     let frame = json!({

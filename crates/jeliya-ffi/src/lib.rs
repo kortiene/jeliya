@@ -72,6 +72,9 @@ pub const JELIYA_FFI_ERR_DATA_DIR_MISMATCH: i32 = -3;
 pub const JELIYA_FFI_ERR_ENGINE: i32 = -4;
 /// A panic was caught at the ABI boundary.
 pub const JELIYA_FFI_ERR_PANIC: i32 = -5;
+/// An engine is live over the SAME data dir but with a different
+/// configuration (`loopback`); adopting it would serve the wrong mode.
+pub const JELIYA_FFI_ERR_CONFIG_MISMATCH: i32 = -6;
 
 /// One-time per process: hand `NativeApi.initializeApiDLData` over so this
 /// library can post to Dart `ReceivePort`s from any thread. Must return 0
@@ -99,16 +102,25 @@ pub unsafe extern "C" fn jeliya_ffi_init_dart_api(init_data: *mut c_void) -> i32
 
 /// Construct-or-rebind the process-singleton engine over `data_dir_utf8`,
 /// with every reply envelope and push frame posted to `frames_port` (a Dart
-/// `SendPort.nativePort`) as UTF-8 JSON bytes.
+/// `SendPort.nativePort`) as UTF-8 JSON bytes. Requests are dispatched
+/// strictly one at a time, like one WebSocket connection's frames.
 ///
-/// Returns [`JELIYA_FFI_OK`] for a fresh engine (push loop, frames drain and
-/// `daemon.shutdown` teardown watcher spawned); [`JELIYA_FFI_ADOPTED`] when a
-/// live engine on the same canonical data dir was adopted (hot restart — the
-/// frames port is rebound, nothing is rebuilt);
-/// [`JELIYA_FFI_ERR_DATA_DIR_MISMATCH`] when an engine is live over a
-/// different data dir (a completed [`jeliya_engine_stop`] makes a new dir
-/// legal); [`JELIYA_FFI_ERR_INVALID_ARG`] / [`JELIYA_FFI_ERR_ENGINE`] /
+/// Returns [`JELIYA_FFI_OK`] for a fresh engine (push loop, dispatch task,
+/// frames drain and `daemon.shutdown` teardown watcher spawned);
+/// [`JELIYA_FFI_ADOPTED`] when a live engine on the same canonical data dir
+/// with the same `loopback` flag was adopted (hot restart — the frames port
+/// is rebound, nothing is rebuilt); [`JELIYA_FFI_ERR_DATA_DIR_MISMATCH`]
+/// when an engine is live over a different data dir (a completed
+/// [`jeliya_engine_stop`] makes a new dir legal);
+/// [`JELIYA_FFI_ERR_CONFIG_MISMATCH`] when the live engine's `loopback`
+/// differs (adopting it would serve a mode `daemon.status` contradicts);
+/// [`JELIYA_FFI_ERR_INVALID_ARG`] / [`JELIYA_FFI_ERR_ENGINE`] /
 /// [`JELIYA_FFI_ERR_PANIC`] on failure.
+///
+/// Adoption exists for hot restarts and cannot distinguish one from a second
+/// coexisting caller: a process must hold AT MOST ONE live client of this
+/// API at a time, or the older client's replies silently reroute to the
+/// newest frames port.
 ///
 /// # Safety
 /// `data_dir_utf8` must be a valid NUL-terminated UTF-8 C string (or null,
@@ -161,9 +173,13 @@ pub unsafe extern "C" fn jeliya_engine_request(frame_utf8: *const c_char) -> i32
     .unwrap_or(JELIYA_FFI_ERR_PANIC)
 }
 
-/// Tear the engine down: stop the push loop, close every room (bounded
-/// internally at 10s), drop the engine (releasing rooms.db and blob locks),
-/// then post one completion int (0) to `done_port`. Returns immediately with
+/// Tear the engine down: stop the push loop and the dispatch task, close
+/// every room (bounded internally at 10s; each clean close releases that
+/// room's rooms.db handles and blob locks via `Node::shutdown`), drop the
+/// engine, then post one completion int to `done_port` — `0` for a clean
+/// teardown, `1` when rooms remained open past the close budget (their
+/// on-disk stores may stay locked until the process exits; the caller must
+/// not report that stop as clean). Returns immediately with
 /// [`JELIYA_FFI_OK`]; the Dart side awaits `done_port` with its own timeout
 /// before it may start an engine over a different data dir. Returns
 /// [`JELIYA_FFI_ERR_NOT_STARTED`] when no engine is running (nothing is
@@ -260,10 +276,14 @@ mod tests {
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
-    fn start(dir: &Path, frames_port: i64) -> i32 {
+    fn start_with(dir: &Path, loopback: bool, frames_port: i64) -> i32 {
         let c = CString::new(dir.to_str().expect("utf-8 temp path")).expect("no NUL");
         // SAFETY: `c` is a valid NUL-terminated UTF-8 string, live across the call.
-        unsafe { jeliya_engine_start(c.as_ptr(), true, frames_port) }
+        unsafe { jeliya_engine_start(c.as_ptr(), loopback, frames_port) }
+    }
+
+    fn start(dir: &Path, frames_port: i64) -> i32 {
+        start_with(dir, true, frames_port)
     }
 
     fn request(frame: &str) -> i32 {
@@ -318,6 +338,12 @@ mod tests {
         // Hot restart: the same dir — even spelled non-canonically — adopts
         // the live engine instead of rebuilding it.
         assert_eq!(start(&dir_a.path().join("."), 101), JELIYA_FFI_ADOPTED);
+        // The same dir with a DIFFERENT loopback flag must not be adopted:
+        // the live engine's mode would contradict the caller's request.
+        assert_eq!(
+            start_with(dir_a.path(), false, 101),
+            JELIYA_FFI_ERR_CONFIG_MISMATCH
+        );
         // A different data dir while an engine is live is refused.
         assert_eq!(start(dir_b.path(), 102), JELIYA_FFI_ERR_DATA_DIR_MISMATCH);
 

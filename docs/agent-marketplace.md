@@ -30,10 +30,12 @@ Two prerequisites block a truthful hosted release:
    and its materializer currently drops the event.
 2. The launch surface must be explicit: web/default `jeliyad` has real
    networking, Flutter macOS currently starts the sidecar in loopback mode, and
-   Android/iOS run the in-process Rust engine via `FfiClient` with real
+   Android runs the in-process Rust engine via `FfiClient` with real
    networking enabled (`loopback: false`) — host-conformance-verified against
-   the golden corpus, but not yet proven on devices. The MVP is web first
-   unless native real networking is completed and proven.
+   the golden corpus, but not yet proven on devices. iOS does not run at all
+   yet: no platform scaffold or engine build exists (the `FfiClient` code path
+   is shared, but the staticlib wiring is a tracked follow-up). The MVP is web
+   first unless native real networking is completed and proven.
 
 Keep the current manual **Bring your own agent** (BYOA) flow. Marketplace
 agents add a managed installation record; BYOA agents remain normal, unmanaged
@@ -135,11 +137,12 @@ SDK contains `member.removed`, but Jeliya does not author it and
 must be fixed before the UI promises Remove or Revoke.
 
 The web client uses real local daemon networking by default. Flutter macOS
-currently passes `loopback: true` to its sidecar; Android/iOS run the same
+currently passes `loopback: true` to its sidecar; Android runs the same
 protocol over the in-process engine (`FfiClient`, `loopback: false`) —
-host-conformance-verified, not yet proven on devices. A catalog can be
-rendered everywhere, but a cross-device hosted join cannot be called
-supported on those clients yet.
+host-conformance-verified, not yet proven on devices — and iOS has no
+platform scaffold or engine build yet (nothing runs there today). A catalog
+can be rendered everywhere the app runs, but a cross-device hosted join
+cannot be called supported on those clients yet.
 
 ### Reuse and required change
 

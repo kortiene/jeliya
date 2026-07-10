@@ -26,6 +26,7 @@ const int _rcAdopted = 1; // JELIYA_FFI_ADOPTED (hot restart, same data dir)
 const int _rcNotStarted = -2; // JELIYA_FFI_ERR_NOT_STARTED
 const int _rcDataDirMismatch = -3; // JELIYA_FFI_ERR_DATA_DIR_MISMATCH
 const int _rcEngine = -4; // JELIYA_FFI_ERR_ENGINE
+const int _rcConfigMismatch = -6; // JELIYA_FFI_ERR_CONFIG_MISMATCH
 
 // The exported C ABI (crates/jeliya-ffi/src/lib.rs). Request buffers use the
 // library's own allocator so this file needs no pub allocator package.
@@ -67,9 +68,16 @@ class _Bindings {
 ///
 /// Connection semantics are the engine's lifecycle, reported truthfully:
 /// `connecting` while the engine constructs, `connected` while it can serve
-/// dispatch, `disconnected` only after [stop] (or a failed [start]). NEVER
-/// `reconnecting` — no transport exists that can drop independently of the
-/// process, and the state renders in Settings.
+/// dispatch, `disconnected` after [stop], a failed [start], or once a [call]
+/// observes the engine itself is gone (a `daemon.shutdown` honored for real
+/// — rendering `connected` against a dead engine would be a fabricated
+/// state). NEVER `reconnecting` — no transport exists that can drop
+/// independently of the process, and the state renders in Settings.
+///
+/// AT MOST ONE live FfiClient per process: the engine is a process
+/// singleton, and its hot-restart adoption cannot distinguish a restarted
+/// isolate from a second coexisting client — a second start() over the same
+/// data dir silently reroutes the first client's replies to its own port.
 class FfiClient implements Client {
   /// [open] loads the engine library; injectable because every platform
   /// resolves it differently (Android soname, iOS staticlib in-process, host
@@ -192,13 +200,32 @@ class FfiClient implements Client {
       // call now. NOT_STARTED means the engine tore down under us (a
       // daemon.shutdown honored for real) — the in-process connection_lost.
       _pending.remove(id);
-      completer.completeError(rc == _rcNotStarted
-          ? RequestError('connection_lost', 'engine is not running')
-          : RequestError('internal', 'jeliya_engine_request failed (rc $rc)'));
+      if (rc == _rcNotStarted) {
+        // Engine death is observed here, not via any port signal (the engine
+        // tore itself down honoring daemon.shutdown): pending replies will
+        // never arrive and dispatch is no longer servable. Fold into the
+        // stopped state truthfully — fail everything in flight, release the
+        // dead engine's frames port, report disconnected — instead of
+        // rendering `connected` against a dead engine; start() can still
+        // bring a fresh engine up, exactly as after stop().
+        _stopped = true;
+        _failInFlight('engine is not running');
+        _frames?.close();
+        _frames = null;
+        _setState(ConnectionState.disconnected);
+        completer.completeError(RequestError('connection_lost', 'engine is not running'));
+      } else {
+        completer.completeError(RequestError('internal', 'jeliya_engine_request failed (rc $rc)'));
+      }
     }
     return completer.future;
   }
 
+  /// Stops the client and tears the engine down. Throws a [StateError] when
+  /// the engine reports an UNCLEAN teardown (rooms remained open past its
+  /// close budget, so their on-disk stores may stay locked until the process
+  /// exits) — a clean-looking stop would misreport that. The client itself
+  /// is stopped either way.
   @override
   Future<void> stop() async {
     _stopped = true;
@@ -208,25 +235,38 @@ class FfiClient implements Client {
     final starting = _starting;
     if (starting != null && !starting.isCompleted) starting.complete();
     _failInFlight('client stopped');
+    // Detach and close the frames port BEFORE the first await, mirroring how
+    // WsClient captures its socket: a start() interleaved during the
+    // done-port wait below binds a FRESH port (the host slot is emptied by
+    // engineStop synchronously), and this stop() must never touch it — nor
+    // stamp `disconnected` over the restarted client's state.
     final b = _bindings;
-    if (b != null && _frames != null) {
-      final done = ReceivePort('jeliya_ffi stop');
-      try {
-        // OK means the engine was live and one completion int will be posted
-        // once teardown (bounded internally) finishes; NOT_STARTED means it
-        // already tore itself down (daemon.shutdown) — nothing to await.
-        if (b.engineStop(done.sendPort.nativePort) == _rcOk) {
-          // Past the window, fire-and-forget: the singleton is already
-          // emptied, teardown keeps running on the engine runtime.
-          await done.first.timeout(const Duration(seconds: 12), onTimeout: () => null);
-        }
-      } finally {
-        done.close();
-      }
-    }
-    _frames?.close();
+    final frames = _frames;
     _frames = null;
+    frames?.close();
     _setState(ConnectionState.disconnected);
+    if (b == null || frames == null) return;
+    final done = ReceivePort('jeliya_ffi stop');
+    try {
+      // OK means the engine was live and one completion int will be posted
+      // once teardown (bounded internally) finishes; NOT_STARTED means it
+      // already tore itself down (daemon.shutdown) — nothing to await.
+      if (b.engineStop(done.sendPort.nativePort) == _rcOk) {
+        // Past the window, fire-and-forget: the singleton is already
+        // emptied, teardown keeps running on the engine runtime.
+        final result =
+            await done.first.timeout(const Duration(seconds: 12), onTimeout: () => null);
+        // Done code 1 = rooms remained open; only Node::shutdown releases a
+        // room's exclusive on-disk blob lock, so those stores may stay
+        // locked for the rest of the process.
+        if (result is int && result != 0) {
+          throw StateError('engine teardown left rooms open (code $result); '
+              'their stores may stay locked until the app exits');
+        }
+      }
+    } finally {
+      done.close();
+    }
   }
 
   void _setState(ConnectionState next) {
@@ -279,6 +319,9 @@ class FfiClient implements Client {
   static String _describeStartRc(int rc) => switch (rc) {
         _rcDataDirMismatch =>
           'an engine is already running over a different data dir (rc $rc); stop it first',
+        _rcConfigMismatch =>
+          'an engine is already running over this data dir with a different loopback flag '
+              '(rc $rc); stop it first',
         _rcEngine => 'engine construction failed over this data dir (rc $rc)',
         _ => 'rc $rc',
       };

@@ -509,11 +509,13 @@ What changes is everything that presumed a socket and a second process — each
 piece reinterpreted truthfully, never simulated:
 
 - **Connection = engine lifecycle.** `connecting` while the engine
-  initializes, `connected` once dispatch is servable, `disconnected` only
-  after `stop()` (or a failed start). There is **no `reconnecting` state**: no
-  transport exists that can drop independently of the app process, and
-  fabricating one would break the honesty rules (the state renders in
-  Settings).
+  initializes, `connected` once dispatch is servable, `disconnected` after
+  `stop()`, a failed start, or once a call observes the engine itself is gone
+  (`daemon.shutdown` performs real teardown — the client must report the
+  death rather than keep rendering `connected` against a dead engine). There
+  is **no `reconnecting` state**: no transport exists that can drop
+  independently of the app process, and fabricating one would break the
+  honesty rules (the state renders in Settings).
 - **`daemon.status` stays truthful.** `port` is `0`, meaning *no listener* —
   unambiguous, because a bound daemon can never truthfully report 0; `pid` is
   the app's **own** process id (the engine's process *is* the app); `version`
