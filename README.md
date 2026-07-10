@@ -10,9 +10,9 @@ community's true record, so that nothing is quietly rewritten. It's built on
 the [Iroh Rooms](https://github.com/kortiene/iroh-room) peer-to-peer runtime.
 
 <p align="center">
-  <img src="assets/desktop-room-preview.jpg" alt="The Jeliya desktop shell: a dark three-pane room with a chat timeline in the middle, rooms and navigation on the left, and members, files, and agent status on the right" width="820">
+  <img src="assets/desktop-room-preview.jpg" alt="The Jeliya web UI: a dark three-pane room with a chat timeline in the middle, rooms and navigation on the left, and members, files, and agent status on the right" width="820">
 </p>
-<p align="center"><sub><em>The shipped shell in demo mode — deterministic sample data, no daemon (<code>VITE_MOCK=1</code>).</em></sub></p>
+<p align="center"><sub><em>The web UI in demo mode — deterministic sample data, no daemon (<code>VITE_MOCK=1</code>).</em></sub></p>
 
 **Want to see that yourself, right now, with nothing installed?** Zero-install
 preview — no daemon, no build, just the UI with sample data.
@@ -147,6 +147,17 @@ jeliyad --version       # print the version
 > Your rooms and identity are stored per-user (on macOS:
 > `~/Library/Application Support/Jeliya`, on Linux: `$XDG_DATA_HOME/Jeliya`,
 > on Windows: `%APPDATA%\Jeliya`), so they persist between runs.
+
+### What about a native desktop app?
+
+There's one in the repo: `app/` is a native Flutter macOS app at feature
+parity with the web UI, fully localized in English and French, with a signed,
+sandboxed packaging pipeline (`scripts/package-macos.mjs`, which emits a DMG —
+ad-hoc signed until Apple Developer enrollment completes). **No app release
+has been published yet** — every release so far ships only the `jeliyad`
+daemon — so installing today means the daemon above plus the browser UI.
+`app/` also carries an Android scaffold, currently running on a mock client
+(no real networking on mobile yet).
 
 ---
 
@@ -341,11 +352,18 @@ the app is a *fold* (a replay) over Iroh Rooms' signed event log.
 |---|---|
 | `crates/jeliya-core` | The only consumer of the `iroh-rooms` SDK: room supervisor (one node per open room), event materializer (log → view-models), local state (room names). |
 | `crates/jeliyad` | The resident daemon: local-only WebSocket API over `jeliya-core` (see `docs/PROTOCOL.md`). |
-| `ui/` | The Jeliya shell: Vite + React, implements `mockups/`. |
+| `crates/jeliya-ffi` | C-ABI shim over `jeliya-core` for the mobile in-process (FFI) transport. |
+| `dart/jeliya_protocol` | Pure-Dart typed client for the daemon protocol: typed models + wrappers for all 26 RPCs, WebSocket transport, sidecar supervisor, mock client for tests. |
+| `app/` | The native Flutter app: the macOS desktop client at parity with the web UI (English + French), plus the Android scaffold (mock client for now). |
+| `ui/` | The web UI the daemon serves (`embed-ui`): Vite + React, implements `mockups/`. Still the only GUI on Windows/Linux, and the reference client the native app tracks. |
 | `docs/PROTOCOL.md` | The daemon ⇄ shell contract (the spine). |
 | `docs/agent-guide.md` | How the AI agent works, plus its trust model. |
+| `docs/agent-orchestration.md` | The pinned v1 fleet contract: truthful agent liveness, status vocabulary, task claims, and the fleet read RPCs, across daemon, runner, and UI. |
+| `docs/agent-marketplace.md` | Proposed hosted-agent marketplace architecture, trust model, and delivery plan (not yet implemented). |
 | `mockups/` | The original product mockups the UI is built to. |
+| `packaging/` | Daemon distribution: `install.sh` / `install.ps1`, plus the Homebrew formula (`jeliya.rb`) and app cask (`jeliya-app.rb`) templates for the tap. |
 | `scripts/` | Test and demo harnesses: the two-daemon loopback demo + e2e, the real-agent runner (real network stack by default) with its three-daemon agent e2e, and the two-machine real-network NAT scripts. |
+| `memory/` | Dated session records — debugging and analysis notes kept for the record. |
 
 ---
 

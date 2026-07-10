@@ -1,11 +1,24 @@
-# Signing and notarization plan (Phase 2)
+# Signing and notarization (Phase 2)
 
-Release binaries to date are intentionally unsigned (`v0.1.0`/`v0.2.0` were
+Release binaries to date are unsigned (`v0.1.0`/`v0.2.0` were
 released under the project's former name Bantaba — see `docs/naming.md`).
 The `curl | sh` and
 Homebrew paths install cleanly because they do not set the macOS quarantine bit,
 but browser downloads can still trip Gatekeeper on macOS and SmartScreen on
 Windows. This document tracks the work needed to ship signed desktop binaries.
+
+Status:
+
+- **Implemented** — the `macos-app` job in `.github/workflows/release.yml`
+  builds the `Jeliya.app` DMG and Developer-ID-signs + notarizes it
+  automatically when the six secrets below exist; without them it falls back
+  to an ad-hoc signature. The secrets are not set yet (Apple Developer
+  enrollment is pending), so no Developer-ID-signed artifact has shipped —
+  every release to date carries only the unsigned daemon archives.
+- **Not implemented** — the five per-target `jeliyad` daemon archives are
+  uploaded unsigned even when the secrets exist (the macOS archives are
+  issue #1's remaining scope), and Windows Authenticode signing has not
+  started (issue #2).
 
 ## Goals
 
@@ -21,25 +34,55 @@ Required Apple assets:
 
 - Apple Developer Program membership.
 - Developer ID Application certificate exported as a password-protected `.p12`.
-- App Store Connect API key or Apple ID app-specific password for notarization.
-- Team ID, key ID, issuer ID, and certificate password as GitHub secrets.
+- Apple ID app-specific password for notarization (`xcrun notarytool` — the
+  workflow uses this route, not an App Store Connect API key).
+- Team ID and certificate password as GitHub secrets.
 
-Suggested GitHub secrets:
+### Implemented: the `Jeliya.app` DMG (`macos-app` job)
+
+The `macos-app` job in `.github/workflows/release.yml` plus
+`scripts/package-macos.mjs` already carry the full signing + notarization
+path. It activates automatically from GitHub repository secrets — no workflow
+change is needed once Apple Developer enrollment completes and the secrets
+are set:
 
 | Secret | Purpose |
 | --- | --- |
-| `APPLE_CERTIFICATE_P12_BASE64` | Base64-encoded Developer ID `.p12`. |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12`. |
-| `APPLE_TEAM_ID` | Developer Team ID. |
-| `APPLE_NOTARY_KEY_ID` | App Store Connect API key ID. |
-| `APPLE_NOTARY_ISSUER_ID` | App Store Connect issuer ID. |
-| `APPLE_NOTARY_KEY_BASE64` | Base64-encoded `.p8` API key. |
+| `MACOS_CERT_P12` | Base64-encoded Developer ID Application `.p12`. |
+| `MACOS_CERT_PASSWORD` | Password for the `.p12`. |
+| `MACOS_SIGN_IDENTITY` | Full codesign identity string (`Developer ID Application: …`). |
+| `NOTARY_APPLE_ID` | Apple ID that owns the app-specific password. |
+| `NOTARY_TEAM_ID` | Developer Team ID. |
+| `NOTARY_PASSWORD` | App-specific password for that Apple ID. |
 
-Workflow outline:
+Activation logic (see the job's `env` block):
 
-1. Import the Developer ID certificate into a temporary keychain on macOS jobs.
+1. Signing turns on when `MACOS_CERT_P12` and `MACOS_SIGN_IDENTITY` are both
+   non-empty: the job imports the certificate (unlocked with
+   `MACOS_CERT_PASSWORD`) into a throwaway keychain and passes the identity
+   to `scripts/package-macos.mjs` as `JELIYA_SIGN_IDENTITY`.
+2. Notarization additionally requires all three `NOTARY_*` secrets: the job
+   stores them as a `notarytool` keychain profile
+   (`xcrun notarytool store-credentials jeliya-notary`), and the packaging
+   script submits the DMG with `xcrun notarytool submit --wait`, then staples
+   the ticket.
+3. When any of these are missing the job still runs and uploads a DMG signed
+   with the ad-hoc identity (`-`) — same Gatekeeper caveat as the bare daemon
+   archives.
+
+The `.sha256` sidecar is generated after signing/notarization, over the final
+DMG bytes.
+
+### Not implemented: signing the bare `jeliyad` archives
+
+The five per-target daemon archives from the `build` matrix are uploaded
+unsigned even when the secrets above exist — this is the remaining scope of
+issue #1. Outline:
+
+1. Import the Developer ID certificate into a temporary keychain on the macOS
+   build jobs (reuse the `macos-app` import step).
 2. Build `jeliyad` with `embed-ui` as today.
-3. `codesign --timestamp --options runtime --sign "Developer ID Application: ..." jeliyad`.
+3. `codesign --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" jeliyad`.
 4. Package the signed binary into the `.tar.gz` asset.
 5. Submit the archive or a zipped staging bundle with `xcrun notarytool submit --wait`.
 6. Keep `.sha256` sidecars over the final signed/notarized asset bytes.
@@ -48,10 +91,14 @@ Notes:
 
 - Notarization is most valuable for browser-downloaded macOS artifacts. Homebrew
   and `curl | sh` are less affected, but signed artifacts still improve trust.
-- If the product later ships a `.app` wrapper, staple the notarization ticket to
-  the app bundle/DMG. A bare CLI daemon archive has no app bundle to staple.
+- The DMG path staples its notarization ticket to the disk image. A bare CLI
+  daemon archive has no app bundle to staple; Gatekeeper checks the ticket
+  online.
 
 ## Windows Authenticode signing
+
+Not implemented — nothing in `release.yml` signs `jeliyad.exe` today, and none
+of the secrets below exist. This section is the plan.
 
 Required Windows assets:
 

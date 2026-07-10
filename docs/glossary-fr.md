@@ -1,18 +1,20 @@
 # French localization — glossary & scoping decisions
 
-**Status: agreed before any translation lands.** This file gates the first
+**Status: agreed before any translation landed.** This file gated the first
 French release: translators and reviewers enforce it so terms don't drift
 across surfaces. Jeliya targets francophone West Africa first (Mali,
-Senegal, Guinea, Côte d'Ivoire); Bambara (bm) is a community aspiration
-unlocked after French ships.
+Senegal, Guinea, Côte d'Ivoire); Bambara (bm) is the community aspiration
+unlocked now that the French catalog has landed.
 
-This is a contract for translators and reviewers preparing a planned French
-release — it is not a live, end-user-facing glossary. The i18n framework is
-wired (gen-l10n over `app/lib/src/l10n/arb/app_en.arb`; mechanics in
-`docs/i18n.md`), but no French strings exist yet. Until French strings
-ship, francophone users have no way to find or use this page. Once they
-ship, add a linked, user-facing pointer (a `README.fr.md`, or a "Voir aussi"
-link from the main README) so this glossary is actually discoverable.
+This is a contract for translators and reviewers — it is not a live,
+end-user-facing glossary. It did its gating work: PR #12 (commit `fdb4c97`,
+merged 2026-07-09) shipped the full French catalog —
+`app/lib/src/l10n/arb/app_fr.arb` translates all 442/442 keys of
+`app_en.arb` (gen-l10n's untranslated-messages report is empty) — plus the
+French macOS menu (`app/macos/Runner/fr.lproj`); mechanics in
+`docs/i18n.md`. Still open: the user-facing discoverability pointer (a
+`README.fr.md`, or a "Voir aussi" link from the main README) does not exist
+yet — until one lands, francophone users have no way to find this page.
 
 ## Tier 1 — communal vocabulary: translate
 

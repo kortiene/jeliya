@@ -76,8 +76,11 @@ String? resolveJeliyadBinary() {
   }
   if (kDebugMode) {
     // Repo debug build, relative to a typical checkout — debug builds only.
+    // First existing candidate wins; TAC/bantaba is the pre-rename checkout
+    // directory name, kept for machines that never re-cloned.
     final home = Platform.environment['HOME'] ?? '.';
     for (final candidate in [
+      '$home/TAC/jeliya/target/debug/jeliyad',
       '$home/TAC/bantaba/target/debug/jeliyad',
       '${Directory.current.path}/../target/debug/jeliyad',
     ]) {
