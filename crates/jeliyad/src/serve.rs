@@ -747,21 +747,22 @@ fn serve_static(path: &str, ui: &UiSource) -> Response<Full<Bytes>> {
     text(StatusCode::NOT_FOUND, "not found")
 }
 
-/// One WebSocket client: JSON text frames dispatched to `rpc::handle_frame`,
-/// interleaved with broadcast pushes. Generic over the upgraded stream type so
-/// the exact same loop drives the hyper-upgraded socket.
+/// One WebSocket client: JSON text frames dispatched to the engine's
+/// `handle_frame`, interleaved with broadcast pushes. Generic over the
+/// upgraded stream type so the exact same loop drives the hyper-upgraded
+/// socket.
 pub async fn serve_ws<S>(ws: WebSocketStream<S>, state: AppState)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (mut sink, mut messages) = ws.split();
-    let mut push_rx = state.push_tx.subscribe();
+    let mut push_rx = state.engine.subscribe_pushes();
 
     loop {
         tokio::select! {
             msg = messages.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    let reply = crate::rpc::handle_frame(text.as_str(), &state).await;
+                    let reply = state.engine.handle_frame(text.as_str()).await;
                     if sink.send(Message::text(reply)).await.is_err() {
                         break;
                     }

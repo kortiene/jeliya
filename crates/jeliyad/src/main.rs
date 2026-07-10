@@ -14,35 +14,29 @@
 //! `--supervised` mode that exits when the parent closes stdin.
 
 mod lifecycle;
-mod rpc;
 mod serve;
 
-use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
 use serde_json::json;
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use jeliya_core::error::ErrorKind;
+use jeliya_core::engine::{Engine, EngineConfig};
 use jeliya_core::supervisor::RoomSupervisor;
 
-/// Major version of the protocol spoken on `/ws` (docs/PROTOCOL.md). Part of
-/// the supervision contract: an app adopts a running daemon only when this
+/// Major version of the protocol spoken on `/ws` (docs/PROTOCOL.md), defined
+/// once in the engine and re-exported so the portfile, `ready` line,
+/// `/api/health`, and `daemon.status` can never drift apart. Part of the
+/// supervision contract: an app adopts a running daemon only when this
 /// matches what it was built against; on mismatch it must not spawn a second
 /// daemon on the same data dir, but stop the old one and respawn.
-pub(crate) const PROTOCOL_VERSION: u32 = 1;
-
-/// The daemon tick for the reconcile safety net + peer-change drain (~300ms per
-/// the protocol build notes). Since issue #83 live `room.event` pushes arrive
-/// immediately via each room's `room_events` pump, so this tick is no longer the
-/// latency path — only the reconcile that a lossy broadcast cannot let drift.
-const PUSH_TICK: Duration = Duration::from_millis(300);
+pub(crate) use jeliya_core::engine::PROTOCOL_VERSION;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -78,21 +72,23 @@ struct Args {
     supervised: bool,
 }
 
-/// Shared server state: the supervisor and the push fan-out channel.
+/// Shared server state: the engine (dispatch + push fan-out) plus the
+/// daemon-only surfaces.
 ///
 /// The supervisor is shared as a plain `Arc` (no daemon-wide async mutex): its
 /// own internal locks are held only for brief map operations, never across a
 /// network `.await`, so one client's slow request can no longer freeze every
-/// other client or the push loop.
+/// other client or the push loop. The daemon keeps its own handle besides the
+/// engine's because the HTTP staging endpoints (`/api/files/*`) call the
+/// supervisor directly, bypassing dispatch.
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) supervisor: Arc<RoomSupervisor>,
     pub(crate) data_dir: PathBuf,
-    pub(crate) push_tx: broadcast::Sender<String>,
+    /// Protocol dispatch and the push broadcast (`jeliya_core::engine`).
+    pub(crate) engine: Arc<Engine>,
     /// Per-start WS/API auth token (see `lifecycle::generate_token`).
     pub(crate) auth_token: Arc<String>,
-    /// Graceful-shutdown trigger; the string is the human-readable reason.
-    pub(crate) shutdown_tx: mpsc::Sender<String>,
     /// The actually bound port (`--port 0` resolves here).
     pub(crate) port: u16,
 }
@@ -173,14 +169,21 @@ async fn main() {
         );
     }
 
-    let (push_tx, _) = broadcast::channel(1024);
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<String>(4);
+    let supervisor = Arc::new(supervisor);
+    let engine = Engine::with_supervisor(
+        supervisor.clone(),
+        EngineConfig {
+            port: addr.port(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            shutdown_tx: shutdown_tx.clone(),
+        },
+    );
     let state = AppState {
-        supervisor: Arc::new(supervisor),
+        supervisor,
         data_dir: data_dir.clone(),
-        push_tx,
+        engine,
         auth_token: Arc::new(auth_token.clone()),
-        shutdown_tx: shutdown_tx.clone(),
         port: addr.port(),
     };
 
@@ -236,7 +239,9 @@ async fn main() {
         );
     }
 
-    tokio::spawn(push_loop(state.clone()));
+    // Detached: dropping the handle lets the push fan-out run for the daemon's
+    // whole life; process exit reaps it (same as the old spawned push_loop).
+    drop(state.engine.start_push_loop());
 
     // Shutdown triggers. Ctrl-C covers all three OSes; SIGTERM is the Unix
     // service-manager/supervisor signal; stdin EOF is the portable
@@ -363,93 +368,6 @@ async fn bind_loopback(port: u16, tries: u16) -> Option<(TcpListener, SocketAddr
         }
     }
     None
-}
-
-/// Drive the room-event push fan-out (issue #83).
-///
-/// Each open room gets a dedicated pump task that awaits its node's
-/// `room_events` broadcast and pushes each new validated event as `room.event`
-/// the moment it commits (sub-second latency, no hot tail poll). This ticker
-/// (~300ms) supervises those pumps, runs the reconcile safety net
-/// (`poll_new_events`, which a lossy broadcast cannot let drift and which keeps
-/// the join-bootstrap window tied to live state), and drains each session's
-/// `conn_events` broadcast to push `peers.changed` with truthful direct/relay
-/// path info on any transition. The pump and the reconcile share the
-/// supervisor's per-room `seen` set, so every event is pushed exactly once.
-async fn push_loop(state: AppState) {
-    let mut ticker = tokio::time::interval(PUSH_TICK);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Rooms with a live per-room `room_events` pump task. Shared with the pumps
-    // so a pump deregisters itself on exit (room.close), letting a later re-open
-    // re-spawn a fresh pump.
-    let pumped: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-    loop {
-        ticker.tick().await;
-        let sup = &state.supervisor;
-        for room_id in sup.open_room_ids() {
-            let room_str = room_id.to_string();
-
-            // Ensure a live push pump for this room.
-            let fresh = pumped
-                .lock()
-                .expect("pumped mutex poisoned")
-                .insert(room_str.clone());
-            if fresh {
-                let state = state.clone();
-                let pumped = pumped.clone();
-                let key = room_str.clone();
-                tokio::spawn(async move {
-                    loop {
-                        match state.supervisor.recv_room_events(&room_id).await {
-                            Ok(events) => {
-                                for event in events {
-                                    let frame = json!({
-                                        "push": "room.event",
-                                        "data": { "room_id": key, "event": event },
-                                    });
-                                    let _ = state.push_tx.send(frame.to_string());
-                                }
-                            }
-                            // The room closed: stop pumping and deregister so a
-                            // later re-open re-spawns a fresh pump.
-                            Err(err) if err.kind == ErrorKind::RoomNotOpen => break,
-                            // A transient read error: the reconcile poll still
-                            // covers pushes; back off briefly, then keep pumping.
-                            Err(err) => {
-                                warn!("room-event pump error for {key}: {err}");
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                            }
-                        }
-                    }
-                    pumped.lock().expect("pumped mutex poisoned").remove(&key);
-                });
-            }
-
-            // Reconcile safety net: re-scan the tail so a lagged/dropped
-            // broadcast event is still pushed exactly once (shared `seen`).
-            match sup.poll_new_events(&room_id).await {
-                Ok(events) => {
-                    for event in events {
-                        let frame = json!({
-                            "push": "room.event",
-                            "data": { "room_id": room_str, "event": event },
-                        });
-                        let _ = state.push_tx.send(frame.to_string());
-                    }
-                }
-                Err(err) => warn!("push reconcile failed for {room_str}: {err}"),
-            }
-            if sup.drain_conn_changes(&room_id) {
-                if let Ok(peers) = sup.peers_status(&room_str).await {
-                    let frame = json!({
-                        "push": "peers.changed",
-                        "data": { "room_id": room_str, "peers": peers },
-                    });
-                    let _ = state.push_tx.send(frame.to_string());
-                }
-            }
-        }
-    }
 }
 
 /// Whether a bare `host[:port]` (the `Host` header shape) denotes loopback.

@@ -280,24 +280,12 @@ pub fn init_tracing(data_dir: &Path) -> Option<tracing_appender::non_blocking::W
 }
 
 /// Close every open room (releasing its blob locks and network session) and
-/// remove the portfile. Bounded: a room whose teardown hangs must not turn
-/// SIGTERM into a zombie, so after 10s we exit anyway and note it.
+/// remove the portfile. The room-closing half — bounded at 10s so a hanging
+/// teardown cannot turn SIGTERM into a zombie — lives in the engine
+/// (`Engine::close_all_rooms`), shared with the in-process hosts.
 pub async fn graceful_shutdown(state: &crate::AppState, reason: &str) {
     info!("shutting down ({reason})");
-    let close_all = async {
-        for room_id in state.supervisor.open_rooms() {
-            match state.supervisor.close_room(&room_id).await {
-                Ok(()) => info!("closed room {room_id}"),
-                Err(err) => warn!("could not close room {room_id} cleanly: {err}"),
-            }
-        }
-    };
-    if tokio::time::timeout(Duration::from_secs(10), close_all)
-        .await
-        .is_err()
-    {
-        warn!("room teardown did not finish within 10s; exiting anyway");
-    }
+    state.engine.close_all_rooms().await;
     remove_portfile(&state.data_dir);
     info!("shutdown complete");
 }
