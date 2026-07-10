@@ -53,7 +53,12 @@ void main() {
         '${size.width}x${size.height} in en and fr with zero overflows',
         (tester) async {
       final ready = await _pumpIdentityStep(tester, size);
-      await tester.tap(find.text(en.onboardingCreateIdentity).hitTestable());
+      // The identity step scrolls on short viewports (the 44dp CTA sits
+      // below the fold at 640 under the fat test font) — bring it in reach.
+      final create = find.text(en.onboardingCreateIdentity);
+      await tester.scrollUntilVisible(create, 60,
+          scrollable: find.byType(Scrollable).first);
+      await tester.tap(create.hitTestable());
       await pumpSteps(tester, steps: 6);
       expect(find.byType(OnboardingRoomsScreen), findsOneWidget);
 

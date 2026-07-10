@@ -93,7 +93,10 @@ Future<void> _expectRoomsScreenAt(WidgetTester tester, Size size,
   // Identity footer: P2P identity label (uppercased at render), truncated
   // mono id line, copy affordance, and the connection badge (dot + label).
   expect(find.text(s.sidebarP2pIdentity.toUpperCase()), findsOneWidget);
-  expect(find.bySemanticsLabel(s.commonCopyIdentityId), findsOneWidget);
+  final footerCopy = find.bySemanticsLabel(s.commonCopyIdentityId);
+  expect(footerCopy, findsOneWidget);
+  expect(tester.getSize(footerCopy).height, greaterThanOrEqualTo(44),
+      reason: 'the identity copy affordance is under the 44dp touch floor');
   expect(find.text(s.shellConnConnected), findsOneWidget);
 
   expect(ready.overflows, isEmpty,

@@ -63,7 +63,21 @@ void main() {
       await pumpSteps(tester, steps: 3);
       expect(find.byType(JoinRoomModal), findsOneWidget);
       expect(ready.overflows, isEmpty);
-      await tester.tap(find.byTooltip(en.commonClose).hitTestable());
+
+      // Touch floors on the flow route (web mobile `.btn` / `.icon-btn`
+      // parity): the ✕ close and the submit both clear 44dp.
+      final close = find.byTooltip(en.commonClose).hitTestable();
+      final closeSize = tester.getSize(close);
+      expect(closeSize.width, greaterThanOrEqualTo(44),
+          reason: 'close is narrower than the 44dp touch floor');
+      expect(closeSize.height, greaterThanOrEqualTo(44),
+          reason: 'close is shorter than the 44dp touch floor');
+      final submit =
+          find.widgetWithText(JeliyaButton, en.modalJoinRoom).hitTestable();
+      expect(tester.getSize(submit).height, greaterThanOrEqualTo(44),
+          reason: 'the join submit is under the 44dp touch floor');
+
+      await tester.tap(close);
       await pumpSteps(tester, steps: 3);
 
       ready.session.prefs.textLocale = 'fr';

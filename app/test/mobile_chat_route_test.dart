@@ -78,10 +78,28 @@ void main() {
         expect(attachSize.height, greaterThanOrEqualTo(44),
             reason: 'attach button is shorter than the 44dp touch floor');
 
+        // The keyboard hint describes HARDWARE-Enter behavior; on phones the
+        // soft keyboard's Enter inserts a newline, so the claim would be
+        // false — the composer must not render it below the breakpoint.
+        expect(find.text(s.composerHint), findsNothing,
+            reason: 'the hardware-keyboard hint is desktop-only copy');
+
         expect(ready.overflows, isEmpty,
             reason:
                 'zero overflows expected at ${size.width}x${size.height} '
                 '($locale):\n${ready.overflows.join('\n')}');
+
+        // The soft keyboard's inset shrinks the route: the header must
+        // yield (never hard-overflow the column) and send stays reachable.
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        await pumpSteps(tester, steps: 3);
+        expect(send.hitTestable(), findsOneWidget,
+            reason: 'send must stay reachable above the keyboard');
+        expect(ready.overflows, isEmpty,
+            reason:
+                'zero overflows expected under the keyboard inset at '
+                '${size.width}x${size.height} ($locale):\n'
+                '${ready.overflows.join('\n')}');
       });
     }
   }

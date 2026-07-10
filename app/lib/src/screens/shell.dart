@@ -216,7 +216,13 @@ class _ShellScreenState extends State<ShellScreen> {
       case PanelTab.members:
       case PanelTab.agents:
         _navigate(NavKey.home);
-        _mobileRoomsNav.currentState?.push(mobileRoomDetailRoute(
+        final nav = _mobileRoomsNav.currentState;
+        if (nav == null) return;
+        // Replace any detail route already on the stack — stacking a second
+        // one would make the next back press a visual no-op.
+        nav.popUntil(
+            (route) => route.settings.name != mobileRoomDetailRouteName);
+        nav.push(mobileRoomDetailRoute(
             initialTab: tab, onLeaveRoom: _openLeaveRoom));
     }
   }

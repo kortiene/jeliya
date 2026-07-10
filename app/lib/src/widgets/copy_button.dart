@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../l10n/strings_context.dart';
+import '../layout.dart';
 import '../theme.dart';
 
 class CopyButton extends StatefulWidget {
@@ -62,7 +63,10 @@ class _CopyButtonState extends State<CopyButton> {
       style: TextButton.styleFrom(
         foregroundColor: _done ? tokens.accent : tokens.textDim,
         padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
-        minimumSize: Size.zero,
+        // Web mobile parity: the copy affordance is a `.btn btn-sm`, so it
+        // grows to the 44dp touch floor below the shell breakpoint.
+        minimumSize:
+            isMobileWidth(context) ? const Size(0, 44) : Size.zero,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         textStyle: const TextStyle(fontSize: 12.5),
         shape: RoundedRectangleBorder(

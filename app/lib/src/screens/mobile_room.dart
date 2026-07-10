@@ -93,40 +93,61 @@ class MobileRoomScreen extends StatelessWidget {
           builder: (context, _) => Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // The header's wrapping actions + peer chips can outgrow a
-              // short viewport (landscape phones, wide French copy, the soft
-              // keyboard's inset) — the chrome must never squeeze the
-              // timeline out or hard-overflow the column, so past ~45% of
-              // the route the header scrolls internally instead.
-              ConstrainedBox(
-                constraints: BoxConstraints(
-                    maxHeight: math.max(viewport.maxHeight * 0.45, 160)),
-                child: SingleChildScrollView(
-                  child: RoomHeader(
-                    leading: BackButton(color: tokens.text),
-                    name: summary?.name ?? s.shellUntitledRoom,
-                    memberCount: room.members.isNotEmpty
-                        ? room.members.length
-                        : summary?.memberCount ?? 0,
-                    onInvite: onInvite,
-                    onMembers: () => _pushDetail(context, PanelTab.members),
-                    onShareFile: () => _pushDetail(context, PanelTab.files),
-                    onOpenPipe: () => _pushDetail(context, PanelTab.pipes),
-                  ),
-                ),
-              ),
-              if (room.openError != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: JeliyaSpacing.page),
-                  child: ErrorNote(error: room.openError),
-                ),
-              // Keyed by room so the live-region/scroll state resets on
-              // switch.
               Expanded(
-                child: TimelineView(
-                  key: ValueKey(room.roomId),
-                  onShowPipes: () => _pushDetail(context, PanelTab.pipes),
+                // The inner LayoutBuilder measures the space REMAINING ABOVE
+                // the composer — the header budget below must never exceed
+                // it, or header + composer outgrow a keyboard-shrunk
+                // viewport (fr at 360x640 hard-overflowed by 14px).
+                child: LayoutBuilder(
+                  builder: (context, aboveComposer) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // The header's wrapping actions + peer chips can
+                      // outgrow a short viewport (landscape phones, wide
+                      // French copy, the soft keyboard's inset) — the chrome
+                      // must never squeeze the timeline out or hard-overflow
+                      // the column, so past ~45% of the route the header
+                      // scrolls internally, and it always fits the space the
+                      // composer leaves it outright.
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                            maxHeight: math.min(
+                                math.max(viewport.maxHeight * 0.45, 160),
+                                aboveComposer.maxHeight)),
+                        child: SingleChildScrollView(
+                          child: RoomHeader(
+                            leading: BackButton(color: tokens.text),
+                            name: summary?.name ?? s.shellUntitledRoom,
+                            memberCount: room.members.isNotEmpty
+                                ? room.members.length
+                                : summary?.memberCount ?? 0,
+                            onInvite: onInvite,
+                            onMembers: () =>
+                                _pushDetail(context, PanelTab.members),
+                            onShareFile: () =>
+                                _pushDetail(context, PanelTab.files),
+                            onOpenPipe: () =>
+                                _pushDetail(context, PanelTab.pipes),
+                          ),
+                        ),
+                      ),
+                      if (room.openError != null)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: JeliyaSpacing.page),
+                          child: ErrorNote(error: room.openError),
+                        ),
+                      // Keyed by room so the live-region/scroll state resets
+                      // on switch.
+                      Expanded(
+                        child: TimelineView(
+                          key: ValueKey(room.roomId),
+                          onShowPipes: () =>
+                              _pushDetail(context, PanelTab.pipes),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               const Composer(),
