@@ -271,10 +271,17 @@ class _InviteModalState extends State<InviteModal> {
         const SizedBox(height: JeliyaSpacing.x10),
         _SeparatePartsDisclosure(ticket: ticket, endpointAddr: endpointAddr),
         const SizedBox(height: JeliyaSpacing.x14),
-        JeliyaButton(
-          label: s.inviteNewInvite,
-          variant: JeliyaButtonVariant.ghost,
-          onPressed: () => setState(() => _ticket = null),
+        // Scale-down guard: the French label brushes the 360dp full-screen
+        // width, so it shrinks rather than overflowing under wide locales or
+        // oversized text scales.
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: JeliyaButton(
+            label: s.inviteNewInvite,
+            variant: JeliyaButtonVariant.ghost,
+            onPressed: () => setState(() => _ticket = null),
+          ),
         ),
       ],
     );
@@ -306,10 +313,15 @@ class _InviteModalState extends State<InviteModal> {
         Text(s.inviteNoDialableAddressNote,
             style: TextStyle(fontSize: 13, color: tokens.textDim)),
         const SizedBox(height: JeliyaSpacing.x14),
-        JeliyaButton(
-          label: s.inviteNewInvite,
-          variant: JeliyaButtonVariant.ghost,
-          onPressed: () => setState(() => _ticket = null),
+        // Same scale-down guard as the combined-result view above.
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: JeliyaButton(
+            label: s.inviteNewInvite,
+            variant: JeliyaButtonVariant.ghost,
+            onPressed: () => setState(() => _ticket = null),
+          ),
         ),
       ],
     );

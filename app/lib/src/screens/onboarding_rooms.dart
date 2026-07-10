@@ -176,13 +176,20 @@ class _OnboardingRoomsScreenState extends State<OnboardingRoomsScreen> {
             onSubmitted: (_) => _create(),
           ),
           const SizedBox(height: JeliyaSpacing.x12),
-          JeliyaButton(
-            label: _creating
-                ? s.modalCreatingRoom
-                : s.modalCreateRoom,
-            variant: JeliyaButtonVariant.primary,
-            busy: _creating,
-            onPressed: canSubmit ? _create : null,
+          // Scale-down guard: French submit labels brush the 360dp card
+          // width — shrink instead of overflowing (onboarding_identity.dart
+          // has the same treatment).
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: JeliyaButton(
+              label: _creating
+                  ? s.modalCreatingRoom
+                  : s.modalCreateRoom,
+              variant: JeliyaButtonVariant.primary,
+              busy: _creating,
+              onPressed: canSubmit ? _create : null,
+            ),
           ),
           ErrorNote(error: _createError),
         ],
@@ -237,13 +244,18 @@ class _OnboardingRoomsScreenState extends State<OnboardingRoomsScreen> {
             onSubmitted: (_) => _join(),
           ),
           const SizedBox(height: JeliyaSpacing.x12),
-          JeliyaButton(
-            label: _joining
-                ? s.modalJoiningRoom
-                : s.modalJoinRoom,
-            variant: JeliyaButtonVariant.primary,
-            busy: _joining,
-            onPressed: canSubmit ? _join : null,
+          // Same scale-down guard as the create card's submit.
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: JeliyaButton(
+              label: _joining
+                  ? s.modalJoiningRoom
+                  : s.modalJoinRoom,
+              variant: JeliyaButtonVariant.primary,
+              busy: _joining,
+              onPressed: canSubmit ? _join : null,
+            ),
           ),
           if (progress != null) ...[
             const SizedBox(height: JeliyaSpacing.x10),

@@ -89,23 +89,34 @@ class _LeaveRoomModalState extends State<LeaveRoomModal> {
             },
           ),
           const SizedBox(height: JeliyaSpacing.x12),
-          Row(
+          // Wrap + scale-down, not Row: inside a 360dp phone dialog the wider
+          // French labels push Cancel to a second run, and a label that still
+          // cannot fit its run (oversized text scales) shrinks instead of
+          // overflowing the card.
+          Wrap(
+            spacing: JeliyaSpacing.x8,
+            runSpacing: JeliyaSpacing.x8,
             children: [
-              JeliyaButton(
-                label: _busy ? s.modalLeavingRoom : s.modalLeaveRoom,
-                variant: JeliyaButtonVariant.danger,
-                busy: _busy,
-                // The reference autofocuses the danger submit so Enter
-                // confirms.
-                autofocus: true,
-                onPressed: _busy ? null : _leave,
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: JeliyaButton(
+                  label: _busy ? s.modalLeavingRoom : s.modalLeaveRoom,
+                  variant: JeliyaButtonVariant.danger,
+                  busy: _busy,
+                  // The reference autofocuses the danger submit so Enter
+                  // confirms.
+                  autofocus: true,
+                  onPressed: _busy ? null : _leave,
+                ),
               ),
-              const SizedBox(width: JeliyaSpacing.x8),
-              JeliyaButton(
-                label: s.modalCancel,
-                variant: JeliyaButtonVariant.ghost,
-                onPressed:
-                    _busy ? null : () => Navigator.of(context).maybePop(),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: JeliyaButton(
+                  label: s.modalCancel,
+                  variant: JeliyaButtonVariant.ghost,
+                  onPressed:
+                      _busy ? null : () => Navigator.of(context).maybePop(),
+                ),
               ),
             ],
           ),

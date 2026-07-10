@@ -129,14 +129,22 @@ class _OnboardingIdentityScreenState extends State<OnboardingIdentityScreen> {
                         style:
                             TextStyle(fontSize: 13, color: tokens.textDim)),
                     const SizedBox(height: JeliyaSpacing.x16),
-                    JeliyaButton(
-                      label: _busy
-                          ? s.onboardingCreatingIdentity
-                          : s.onboardingCreateIdentity,
-                      variant: JeliyaButtonVariant.primary,
-                      size: JeliyaButtonSize.lg,
-                      busy: _busy,
-                      onPressed: _busy ? null : _create,
+                    // Scale-down guard: the lg label ('Créer une identité')
+                    // outgrows the 360dp card under wide locales or oversized
+                    // text scales — shrink it rather than overflow the first
+                    // screen a phone user ever sees.
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: JeliyaButton(
+                        label: _busy
+                            ? s.onboardingCreatingIdentity
+                            : s.onboardingCreateIdentity,
+                        variant: JeliyaButtonVariant.primary,
+                        size: JeliyaButtonSize.lg,
+                        busy: _busy,
+                        onPressed: _busy ? null : _create,
+                      ),
                     ),
                     ErrorNote(error: _error),
                   ],

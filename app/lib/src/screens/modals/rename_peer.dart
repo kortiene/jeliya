@@ -92,18 +92,28 @@ class _RenamePeerModalState extends State<RenamePeerModal> {
             onSubmitted: (_) => _save(),
           ),
           const SizedBox(height: JeliyaSpacing.x12),
-          Row(
+          // Wrap + scale-down, not Row: at the 360dp dialog width the French
+          // 'Supprimer l'alias' no longer fits beside Save (leave_room.dart
+          // has the same treatment).
+          Wrap(
+            spacing: JeliyaSpacing.x8,
+            runSpacing: JeliyaSpacing.x8,
             children: [
-              JeliyaButton(
-                label: s.renamePeerSave,
-                variant: JeliyaButtonVariant.primary,
-                onPressed: _save,
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: JeliyaButton(
+                  label: s.renamePeerSave,
+                  variant: JeliyaButtonVariant.primary,
+                  onPressed: _save,
+                ),
               ),
-              const SizedBox(width: JeliyaSpacing.x8),
-              JeliyaButton(
-                label: s.renamePeerClearAlias,
-                variant: JeliyaButtonVariant.ghost,
-                onPressed: _clear,
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: JeliyaButton(
+                  label: s.renamePeerClearAlias,
+                  variant: JeliyaButtonVariant.ghost,
+                  onPressed: _clear,
+                ),
               ),
             ],
           ),
