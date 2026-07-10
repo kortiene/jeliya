@@ -7,6 +7,31 @@
 //! WebSocket daemon speaks, so the golden conformance corpus holds for this
 //! transport by construction.
 //!
+//! Hand-rolled rather than flutter_rust_bridge — a decision, not a stopgap.
+//! The repo-verified reasons, and when to revisit:
+//! - The surface is one string-typed seam (`Engine::handle_frame(&str) ->
+//!   String` plus pre-serialized push frames), so FRB's typed codegen buys
+//!   nothing here, while a typed fn-per-method bridge would freeze the
+//!   24-method list and foreclose the protocol's reserved headroom
+//!   (`client_msg_id`, `after_event_id`, `delivery`, `min_protocol`) that
+//!   JSON pass-through carries with no bridge change.
+//! - Both of FRB's blessed Android build integrations were already rejected
+//!   here: cargokit is archived and cargo-ndk 4.1.2 panics under this repo's
+//!   asdf-managed Rust, so scripts/build-android-libs.mjs drives the NDK
+//!   clang directly — a pipeline a hand-rolled bridge leaves untouched.
+//! - Zero new dependencies under the pinned-toolchain posture: `cc` and
+//!   `tokio` were already in Cargo.lock and `dart_api_dl.c` ships with the
+//!   pinned Flutter SDK, where FRB adds a crates.io dep tree, a pub.dev
+//!   package, and a separately installed codegen binary version-locked to
+//!   both.
+//! - The acceptance gate is the golden corpus replaying under plain
+//!   `dart test` on the host, which requires `FfiClient` to live inside
+//!   pub-dependency-free `jeliya_protocol`; an FRB-generated client depends
+//!   on package:flutter_rust_bridge and cannot.
+//!
+//! Revisit FRB only if this surface grows typed or streaming APIs beyond
+//! JSON frames.
+//!
 //! Contracts every export upholds:
 //! - a panic never crosses the ABI (UB): `catch_unwind` at each entry point;
 //! - no export blocks: engine work runs on this crate's own multi-thread

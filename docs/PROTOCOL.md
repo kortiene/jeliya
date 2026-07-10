@@ -7,6 +7,8 @@ The contract between `jeliyad` (the resident Rust core, sole consumer of the
   (default port **7420**, `--port` to override; `--port 0` lets the OS pick —
   read the truth back from the ready line or portfile). Local-only: the daemon
   binds `127.0.0.1` and MUST refuse to bind non-loopback interfaces in v1.
+  On mobile the same frames travel over an in-process FFI bridge instead of a
+  socket — see *In-process transport (FFI)* below.
 - Authenticated: every `/ws` connect (and `/api/files/*` request) must present
   the daemon's per-start token — `?token=<hex>` or `Authorization: Bearer`.
   See **Process supervision** below for how each client kind obtains it.
@@ -487,6 +489,61 @@ conformant client therefore:
 - **Re-syncs every open room after any reconnect**, because pushes are lossy and
   never replayed (see *Pushes*). Until the cursor reservation lands, that means
   re-reading `room.open` / `room.timeline` in full.
+
+## In-process transport (FFI)
+
+On mobile there is no sidecar process (iOS forbids spawning one), so the same
+core runs **in-process**: the app drives `crates/jeliya-ffi` over `dart:ffi`
+(the `FfiClient` in `dart/jeliya_protocol`), and every request, response, and
+push travels as the **same JSON envelope frames** defined above. The bridge is
+a pure pass-through, and both transports share one dispatch implementation
+(`jeliya_core::engine::Engine`), so the golden conformance corpus replays
+against this transport unchanged — it is the third oracle next to the daemon
+and the mock, and that host replay is what "conformant" means for it today
+(host-conformance-verified). Because the bridge never interprets frame
+contents, every reserved minor above (`client_msg_id`, the
+`after_event_id`/`since_ts` cursor, the `delivery` marker, `min_protocol`)
+rides through it with no bridge change.
+
+What changes is everything that presumed a socket and a second process — each
+piece reinterpreted truthfully, never simulated:
+
+- **Connection = engine lifecycle.** `connecting` while the engine
+  initializes, `connected` once dispatch is servable, `disconnected` only
+  after `stop()` (or a failed start). There is **no `reconnecting` state**: no
+  transport exists that can drop independently of the app process, and
+  fabricating one would break the honesty rules (the state renders in
+  Settings).
+- **`daemon.status` stays truthful.** `port` is `0`, meaning *no listener* —
+  unambiguous, because a bound daemon can never truthfully report 0; `pid` is
+  the app's **own** process id (the engine's process *is* the app); `version`
+  is the compiled core crate's version; `data_dir` is the app's engine
+  directory.
+- **No token, portfile, or HTTP surface.** The *Process supervision* contract
+  (ready line, portfile, auth token, adopt-vs-respawn) and the `/api/*`
+  endpoints do not exist in-process; the trust boundary they defended
+  collapses into OS app-process isolation. Native file sharing keeps the same
+  staging convention (copy into `<data_dir>/uploads`, `file.share`, delete) —
+  pure file I/O, no HTTP. The version-skew rule still binds: read
+  `daemon.status` once after start and treat an unsupported `protocol` as a
+  hard incompatibility (in-process it guards Dart-package vs compiled-core
+  build skew).
+- **Re-sync on app resume.** Pushes remain lossy (same bounded broadcast
+  buffer) and the mobile OS suspends the process, but the reconnect that
+  triggers re-sync on socket transports can never happen here. The client
+  therefore re-runs the full re-sync (`room.open` / `room.timeline` re-read,
+  as under *Connection lifecycle*) on app-lifecycle **resume** — the honest
+  in-process equivalent of a transport gap.
+- **`daemon.shutdown` performs real teardown.** It replies
+  `{ shutting_down: true }`, then actually stops the push loop, closes every
+  open room (releasing blob locks), and drops the engine — never a
+  reply-without-teardown.
+- **"Long-running by design" does not hold on mobile.** While the OS has the
+  app suspended, the node serves no blob fetches or pipe forwards — file
+  `available` counts and pipe listeners degrade in background (foreground
+  service work is deferred and tracked). The local-open URL
+  (`GET /api/files/local`) has no in-process equivalent yet; a native engine
+  accessor is the tracked follow-up.
 
 ## Honesty rules (bind the UI too)
 
