@@ -1,7 +1,8 @@
 # Jeliya daemon protocol (v1)
 
-The contract between `jeliyad` (the resident Rust core, sole consumer of the
-`iroh-rooms` SDK) and any Jeliya shell (desktop web UI, scripts, e2e tests).
+The contract between the Rust core (`jeliya-core`, sole consumer of the
+`iroh-rooms` SDK — resident as the `jeliyad` daemon, or in-process on mobile)
+and any Jeliya shell (desktop web UI, the Flutter app, scripts, e2e tests).
 
 - Transport: **WebSocket**, JSON text frames, `ws://127.0.0.1:<port>/ws`
   (default port **7420**, `--port` to override; `--port 0` lets the OS pick —
@@ -499,8 +500,10 @@ push travels as the **same JSON envelope frames** defined above. The bridge is
 a pure pass-through, and both transports share one dispatch implementation
 (`jeliya_core::engine::Engine`), so the golden conformance corpus replays
 against this transport unchanged — it is the third oracle next to the daemon
-and the mock, and that host replay is what "conformant" means for it today
-(host-conformance-verified). Because the bridge never interprets frame
+and the mock. Corpus conformance is proven by host replay (CI builds the
+host dylib; there is no Android build job), and the transport itself has
+since been proven on a physical device — the Phase 4 on-device smoke over
+real networking (Android 13). Because the bridge never interprets frame
 contents, every reserved minor above (`client_msg_id`, the
 `after_event_id`/`since_ts` cursor, the `delivery` marker, `min_protocol`)
 rides through it with no bridge change.
@@ -512,7 +515,10 @@ piece reinterpreted truthfully, never simulated:
   initializes, `connected` once dispatch is servable, `disconnected` after
   `stop()`, a failed start, or once a call observes the engine itself is gone
   (`daemon.shutdown` performs real teardown — the client must report the
-  death rather than keep rendering `connected` against a dead engine). There
+  death rather than keep rendering `connected` against a dead engine). A
+  `stop()` that cannot tear the engine down cleanly (rooms left open) throws
+  instead of reporting a clean stop — the client is stopped either way, but
+  the failure surfaces rather than being masked. There
   is **no `reconnecting` state**: no transport exists that can drop
   independently of the app process, and fabricating one would break the
   honesty rules (the state renders in Settings).

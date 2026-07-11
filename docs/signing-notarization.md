@@ -19,6 +19,12 @@ Status:
   uploaded unsigned even when the secrets exist (the macOS archives are
   issue #1's remaining scope), and Windows Authenticode signing has not
   started (issue #2).
+- **Out of scope: Android** — the Flutter app's Android release signing is
+  separate machinery (an optional, gitignored `app/android/key.properties`
+  with a debug-keystore fallback), documented in
+  [`packaging/README.md`](../packaging/README.md#android-release-builds).
+  The wiring exists; no production keystore does, and no Android artifact
+  has ever been released. This document stays about macOS and Windows.
 
 ## Goals
 

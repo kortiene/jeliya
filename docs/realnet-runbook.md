@@ -92,9 +92,15 @@ network; the p2p traffic uses its own UDP sockets). Override with `--port`.
 
 ## Step 0 — get the code onto machine B
 
-This repo has no remote; distribution is a git bundle.
+The repo is public — if B can reach GitHub, clone it directly:
 
-On **A**:
+```sh
+git clone https://github.com/kortiene/jeliya jeliya
+cd jeliya
+cargo build --workspace           # first build fetches the pinned SDK; takes a while
+```
+
+When B has no GitHub access, distribute a git bundle instead. On **A**:
 
 ```sh
 scripts/make-bundle.sh            # writes ./jeliya.bundle from branch main

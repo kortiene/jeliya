@@ -31,11 +31,14 @@ Two prerequisites block a truthful hosted release:
 2. The launch surface must be explicit: web/default `jeliyad` has real
    networking, Flutter macOS currently starts the sidecar in loopback mode, and
    Android runs the in-process Rust engine via `FfiClient` with real
-   networking enabled (`loopback: false`) — host-conformance-verified against
-   the golden corpus, but not yet proven on devices. iOS does not run at all
+   networking enabled (`loopback: false`) — conformance-verified against the
+   golden corpus and since proven on a physical device (the PR #16 on-device
+   transport smoke, Android 13). iOS does not run at all
    yet: no platform scaffold or engine build exists (the `FfiClient` code path
-   is shared, but the staticlib wiring is a tracked follow-up). The MVP is web
-   first unless native real networking is completed and proven.
+   is shared, but the staticlib wiring is a tracked follow-up). The MVP was
+   scoped web-first while native real networking was unproven; Android has
+   since cleared that bar — today the phone, not the macOS desktop app, is
+   the native surface with real networking.
 
 Keep the current manual **Bring your own agent** (BYOA) flow. Marketplace
 agents add a managed installation record; BYOA agents remain normal, unmanaged
@@ -50,7 +53,7 @@ provider trustworthy, restrict the agent to selected message/file categories,
 or run a package on the user's machine.
 
 The MVP does not include local package installation, arbitrary browser process
-spawning, mobile production transport, marketplace metadata in room events,
+spawning, marketplace metadata in room events,
 automatic upgrades, marketplace-triggered removal, or claims that a provider's
 runtime is the source/version it advertises.
 
@@ -61,9 +64,11 @@ runtime is the source/version it advertises.
 Jeliya reconstructs room state from signed Iroh Rooms events. The SDK is
 intentionally isolated to [`jeliya-core`](../crates/jeliya-core); the
 [`RoomSupervisor`](../crates/jeliya-core/src/supervisor.rs) validates, folds,
-persists, and publishes events. [`jeliyad`](../crates/jeliyad/src/rpc.rs)
-exposes a local WebSocket API to the clients. The protocol contract is
-[`docs/PROTOCOL.md`](PROTOCOL.md).
+persists, and publishes events. [`jeliyad`](../crates/jeliyad/src/serve.rs)
+exposes a local WebSocket API to the clients — a thin socket shell over the
+shared dispatch in
+[`jeliya-core`'s engine](../crates/jeliya-core/src/engine.rs). The protocol
+contract is [`docs/PROTOCOL.md`](PROTOCOL.md).
 
 The top-level Agents navigation opens a cross-room fleet dashboard, while a
 room's right panel has a separate Agents tab. React implements both in
@@ -139,10 +144,13 @@ must be fixed before the UI promises Remove or Revoke.
 The web client uses real local daemon networking by default. Flutter macOS
 currently passes `loopback: true` to its sidecar; Android runs the same
 protocol over the in-process engine (`FfiClient`, `loopback: false`) —
-host-conformance-verified, not yet proven on devices — and iOS has no
+conformance-verified against the golden corpus and device-proven (the PR #16
+on-device transport smoke: identity, room, message echo, and
+process-recovery legs over real networking) — and iOS has no
 platform scaffold or engine build yet (nothing runs there today). A catalog
-can be rendered everywhere the app runs, but a cross-device hosted join
-cannot be called supported on those clients yet.
+can be rendered everywhere the app runs; a cross-device hosted join has not
+been exercised on Android's proven transport, and cannot be called supported
+on macOS or iOS yet.
 
 ### Reuse and required change
 
@@ -672,8 +680,9 @@ The hosted MVP is accepted only when all of these are true:
    process room data, and who enforces provider compliance?
 4. Should a hosted provider get one identity per room (recommended) or a
    multi-room identity only after runner/protocol support exists?
-5. Is the first release web-only, or will macOS real networking and a mobile
-   production transport be delivered first?
+5. Is the first release web-only, or does it include Android, whose
+   production transport is now device-proven? (macOS real networking remains
+   undelivered.)
 6. Which durable local store and encryption/keychain policy should contain
    installation metadata and provider opaque identifiers?
 7. What is the owner UX for a revoked agent whose provider is unavailable, and
