@@ -158,8 +158,13 @@ has been published yet** — every release so far ships only the `jeliyad`
 daemon — so installing today means the daemon above plus the browser UI.
 `app/` also runs on phones: below 900dp it lays out as a bottom-tab mobile
 app, and the Android build speaks the real protocol through an in-process
-(FFI) engine — host-test-verified, with the on-device pass of the mobile UI
-still pending.
+(FFI) engine — proven on a real Android phone, from the transport up through
+the full mobile UI (including live English↔French switching). One honest
+asymmetry: the macOS app still runs its bundled sidecar loopback-only, so the
+phone is currently the build with real peer networking. Android release
+builds (store bundle and per-ABI sideload APKs) are wired and documented in
+[`packaging/README.md`](packaging/README.md), but no APK or app bundle has
+been published either.
 
 ---
 
@@ -339,9 +344,11 @@ the app is a *fold* (a replay) over Iroh Rooms' signed event log.
   runs one room session per open room (wrapping the SDK's
   `Node`/`SyncEngine`/`EventStore`) and turns the raw event log into the
   view-models the UI shows.
-- **`jeliyad`** is the daemon. It exposes a **local-only** WebSocket API
-  (bound to `127.0.0.1`) and bridges the daemon's reads into live pushes for the
-  UI. The contract between daemon and UI is **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)**.
+- **`jeliyad`** is the daemon: a thin **local-only** WebSocket shell (bound
+  to `127.0.0.1`) over the protocol engine in `jeliya-core`, which dispatches
+  every request and fans out live pushes. The Android app drives the same
+  engine in-process (via `crates/jeliya-ffi`) with no daemon and no socket.
+  The contract over either transport is **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)**.
 - The `iroh-rooms` SDK is pinned to a specific revision and uses its
   *experimental* tier, which can change on any release — so **nothing outside
   `jeliya-core` is allowed to import it.**
@@ -352,10 +359,10 @@ the app is a *fold* (a replay) over Iroh Rooms' signed event log.
 
 | Path | What it is |
 |---|---|
-| `crates/jeliya-core` | The only consumer of the `iroh-rooms` SDK: room supervisor (one node per open room), event materializer (log → view-models), local state (room names). |
-| `crates/jeliyad` | The resident daemon: local-only WebSocket API over `jeliya-core` (see `docs/PROTOCOL.md`). |
+| `crates/jeliya-core` | The only consumer of the `iroh-rooms` SDK: room supervisor (one node per open room), event materializer (log → view-models), local state (room names), and the transport-free protocol engine (dispatch + pushes) every transport drives. |
+| `crates/jeliyad` | The resident daemon: a thin local-only WebSocket shell over the `jeliya-core` engine (see `docs/PROTOCOL.md`). |
 | `crates/jeliya-ffi` | C-ABI shim over `jeliya-core` for the mobile in-process (FFI) transport. |
-| `dart/jeliya_protocol` | Pure-Dart typed client for the daemon protocol: typed models + wrappers for all 26 RPCs, WebSocket transport, sidecar supervisor, mock client for tests. |
+| `dart/jeliya_protocol` | Pure-Dart typed client for the protocol: typed models + wrappers for all 24 RPCs, WebSocket and in-process FFI transports (`package:jeliya_protocol/ffi.dart`), sidecar supervisor, mock client for tests. |
 | `app/` | The native Flutter app: the macOS desktop client at parity with the web UI (English + French), plus a phone bottom-tab layout below 900dp and the Android build running the protocol in-process (FFI). |
 | `ui/` | The web UI the daemon serves (`embed-ui`): Vite + React, implements `mockups/`. Still the only GUI on Windows/Linux, and the reference client the native app tracks. |
 | `docs/PROTOCOL.md` | The daemon ⇄ shell contract (the spine). |

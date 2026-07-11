@@ -285,8 +285,10 @@ spinners with text.
   emerald glyph
 - **Panel tabs:** bare buttons with a 2px transparent underline; the emerald
   underline is the single active-tab affordance; count badges as nested pills
-- **Mobile tab bar:** fixed 58px bottom bar, five glyph+label tabs, active =
-  emerald text, `aria-current="page"`
+- **Mobile tab bar:** 58px-minimum bottom bar — 58px is the base height, not
+  a cap: the bar grows with the OS accessibility font scale rather than clamp
+  or clip its labels — five glyph+label tabs, active = emerald text,
+  `aria-current="page"`
 
 ### Identity Marks (signature)
 The brand mark is the flat single-accent meeting tree (`TreeMark` — see

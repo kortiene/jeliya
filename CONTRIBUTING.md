@@ -33,8 +33,28 @@ declined kindly.
   the contract.
 - **Prove it runs.** `node scripts/agent-e2e.mjs` proves the agent flow
   end-to-end with no network and no AI; `scripts/demo.sh` runs the full
-  two-daemon demo. Say in the PR what you ran.
-- **Strings & i18n:** French ships at desktop launch — `docs/i18n.md` records
+  two-daemon demo. Say in the PR what you ran. CI then runs two required
+  checks on every PR and push to main: `verify` (the i18n / app / package
+  gates) and `rust` (fmt, clippy `-D warnings`, workspace tests, then the
+  golden protocol corpus replayed against the built daemon, the mock, and
+  the in-process FFI engine).
+- **App widget tests** pump through the helpers in `app/test/helpers.dart`.
+  New layouts should use the strict surface (`useStrictSurface` /
+  `pumpReadyMobileApp`): a realistic textScale 1.0 — the older half-scale
+  default masked real overflow regressions — with RenderFlex overflows
+  recorded instead of swallowed; mobile suites assert that list is empty.
+- **Android:** below 900dp the app is the phone layout, and Android links
+  the Rust engine in-process. `node scripts/build-android-libs.mjs`
+  cross-compiles `libjeliya_ffi.so` for the shipped ABIs (prereqs in the
+  script header); `jeliya-ffi`'s `build.rs` needs the Dart SDK headers —
+  set `DART_SDK_INCLUDE` or `FLUTTER_ROOT`. Release-build commands live in
+  `packaging/README.md`.
+- **Flutter plugins are a policy, not a dependency bump.** The allowlist is
+  deliberate — `file_selector`, `url_launcher`, and (the one mobile
+  addition) `share_plus` — each with rationale and provenance recorded in
+  `app/pubspec.yaml`; make the case there before adding one.
+- **Strings & i18n:** French ships wherever the app does (desktop and
+  phone) — `docs/i18n.md` records
   the decisions and engineering rules; `docs/glossary-fr.md` the glossary
   tiers. App copy lives in the ARB catalog (`app/lib/src/l10n/arb/app_en.arb`
   with an `@description` per key); run `flutter gen-l10n` and
