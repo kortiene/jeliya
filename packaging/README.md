@@ -1,16 +1,17 @@
-# Jeliya packaging & distribution (Phase 1)
+# Jeliya packaging & distribution
 
 These files distribute the `jeliyad` daemon as prebuilt, per-platform binaries.
-The installer scripts and archive URLs are wired to `kortiene/jeliya`; they
-become usable after the first `v*` GitHub Release has published assets.
-`jeliya.rb` remains a per-release Homebrew formula template until the release
-sha256 values are copied in.
+The installer scripts and archive URLs are wired to `kortiene/jeliya` and have
+been live since `v0.3.0` (see the release-status section below). `jeliya.rb`
+is a per-release Homebrew formula: its `version` and sha256 values are
+refreshed from each release's sidecars. The last section covers the Android
+app's release builds.
 
 ## Files
 
 | File | What it is |
 | --- | --- |
-| `../.github/workflows/release.yml` | GitHub Actions release build. Triggers on a `v*` tag push; builds `jeliyad` for five targets and attaches the archives (+ `.sha256` sidecars) to the GitHub Release. |
+| `../.github/workflows/release.yml` | GitHub Actions release build. Triggers on a `v*` tag push; re-runs the ci.yml gates, builds `jeliyad` for five targets and attaches the archives (+ `.sha256` sidecars) to the GitHub Release; a separate `macos-app` job builds and uploads the `Jeliya.app` DMG. |
 | `install.sh` | POSIX-sh one-liner installer for macOS + Linux (`curl \| sh`). Detects OS/arch, downloads the matching `.tar.gz`, installs `jeliyad` to `/usr/local/bin` (or `~/.local/bin`). |
 | `install.ps1` | Windows PowerShell equivalent. Downloads the `.zip`, expands to `%LOCALAPPDATA%\Programs\Jeliya`, adds it to the user PATH. |
 | `jeliya.rb` | Homebrew formula template. Belongs in a tap (`kortiene/homebrew-jeliya`), not homebrew-core. |
@@ -82,13 +83,19 @@ then replace the formula sha256 values from the new release sidecars.
 
 `release.yml` needs no slug edit — it always builds the repo it runs in.
 
-## Signing / notarization = Phase 2 (deferred)
+## Signing / notarization = Phase 2 (in progress)
 
-Artifacts are **unsigned**. A *browser* download of an unsigned binary trips
-Gatekeeper (macOS) and SmartScreen (Windows). The `curl | sh` and Homebrew
-install paths do **not** set the quarantine bit, so they install cleanly.
-macOS notarization and Windows Authenticode signing are deferred to Phase 2 and
-are intentionally out of scope for these files.
+The daemon archives are **unsigned**. A *browser* download of an unsigned
+binary trips Gatekeeper (macOS) and SmartScreen (Windows). The `curl | sh` and
+Homebrew install paths do **not** set the quarantine bit, so they install
+cleanly. The `macos-app` DMG job already carries the full Developer ID +
+notarization path and activates automatically once the six
+`MACOS_*`/`NOTARY_*` repo secrets exist — Apple Developer enrollment is
+pending, no secrets are set, and no DMG has shipped in a release yet (the job
+landed after `v0.4.3`; every release to date carries only the unsigned daemon
+archives). Signing the bare daemon archives (issue #1) and Windows
+Authenticode (issue #2) are tracked in
+[`../docs/signing-notarization.md`](../docs/signing-notarization.md).
 
 ## Android release builds
 
@@ -130,6 +137,11 @@ cd app
 flutter build appbundle                    # release path: .aab for Play
 flutter build apk --split-per-abi --release  # sideload path: one APK per ABI
 ```
+
+Both artifacts package `libjeliya_ffi.so` per ABI from the gitignored
+`app/android/app/src/main/jniLibs/` — build those first with
+`node scripts/build-android-libs.mjs` (prerequisites in `../app/README.md`);
+this is the Android analogue of the UI-before-cargo ordering above.
 
 - **Play (release path):** Play requires app bundles and enrolls the app in
   Play App Signing — Google holds the distribution key and our keystore
