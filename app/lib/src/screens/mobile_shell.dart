@@ -145,14 +145,32 @@ class MobileShell extends StatelessWidget {
                 child: IndexedStack(
                   index: index,
                   children: [
-                    Navigator(
-                      key: roomsNavigatorKey,
-                      onGenerateRoute: (settings) => MaterialPageRoute<void>(
-                        settings: settings,
-                        builder: (_) => MobileRoomsScreen(
-                          onSelectRoom: onSelectRoom,
-                          onCreateRoom: onCreateRoom,
-                          onJoinRoom: onJoinRoom,
+                    // Predictive back (AndroidManifest
+                    // enableOnBackInvokedCallback): WidgetsApp mirrors every
+                    // ascending NavigationNotification.canHandlePop to the
+                    // engine as setFrameworkHandlesBack, and after a `false`
+                    // the OS takes the NEXT system back entirely (predictive
+                    // back-to-home) — the PopScope policy above never runs.
+                    // This nested navigator reports canHandlePop:false
+                    // whenever its stack is back at the rooms list, and the
+                    // root navigator forwards that verbatim (it only
+                    // rewrites when it can pop itself; it ignores the shell
+                    // route's PopScope block). The shell claims EVERY back,
+                    // so absorb the nested notifications: the route-level
+                    // dispatch driven by canPop:false — emitted from above
+                    // this subtree — stays the only authority the engine
+                    // hears. Pinned by predictive_back_test.dart.
+                    NotificationListener<NavigationNotification>(
+                      onNotification: (_) => true,
+                      child: Navigator(
+                        key: roomsNavigatorKey,
+                        onGenerateRoute: (settings) => MaterialPageRoute<void>(
+                          settings: settings,
+                          builder: (_) => MobileRoomsScreen(
+                            onSelectRoom: onSelectRoom,
+                            onCreateRoom: onCreateRoom,
+                            onJoinRoom: onJoinRoom,
+                          ),
                         ),
                       ),
                     ),

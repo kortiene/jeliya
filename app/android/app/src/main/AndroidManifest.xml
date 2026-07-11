@@ -11,10 +11,18 @@
          and a <service android:foregroundServiceType="dataSync"> to keep the
          in-process node alive in short background windows (Android 15 caps
          dataSync FGS at 6h/24h; the push wake-relay covers the rest). -->
+    <!-- Predictive back (API 33+): opt in to the OnBackInvokedCallback API —
+         the legacy onBackPressed path stops being delivered as targetSdk
+         rises. The engine then registers/unregisters the system callback
+         from SystemNavigator.setFrameworkHandlesBack; the mobile shell's
+         PopScope claims every back and absorbs the nested Rooms navigator's
+         canHandlePop:false notifications so the OS is never told to take a
+         back the shell policy needs (app/test/predictive_back_test.dart). -->
     <application
         android:label="Jeliya"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
