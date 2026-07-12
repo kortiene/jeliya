@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Capability status"
 description: "Evidence-aware capability matrix for the v0.5.0 technical-preview candidate and the latest public release."
 tags: ["capabilities", "release", "status", "verification"]
-timestamp: "2026-07-12T20:13:49Z"
+timestamp: "2026-07-12T22:00:46Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -23,12 +23,12 @@ unpublished revision releasable.
 |---|---|
 | Candidate milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardened implementation snapshot | `b6c0fc8362ec255882e1bf3a4999f35f004db57c` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation |
+| Hardened implementation snapshot | `689f1fdd47ef2e32986a4fbd10e35196f8c6ab8b` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation |
 | Public Jeliya `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` (room-isolation defect remains) |
 | Local upstream remediation | `3702e8cbcd5ac1808791124dd6bc44068be5f822` (clean and tested, but unpublished) |
 | Network verification snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` with local upstream `3702e8c…` (clean, but unpublished) |
 | Latest public release | `v0.4.3` at `9d62c3cd98c7f21d9683815c28278b6ac8c0b97f` |
-| Status captured | 2026-07-12 20:13 UTC |
+| Status captured | 2026-07-12 22:00 UTC |
 
 See [Release versus main](release-vs-main.md) for the revision boundaries and
 [Verification evidence](verification-evidence.md) for the complete ledger.
@@ -55,7 +55,7 @@ to the hardened implementation snapshot without a fresh qualifying run.
 | CI matrix | implemented | local component gates pass; hosted proof absent | unreleased | Rust, MSRV, TypeScript, Dart, Flutter, docs, smoke, sidecar, agent, fleet, protocol, and security jobs are defined. A manual non-publishing dispatch exists, and Gradle is checksum-verified; two clean hosted CI runs have not occurred because nothing was pushed. |
 | Unix installer integrity | implemented | behavioral checks pass | unreleased | Unix installers fetch and verify the matching sidecar before extraction. |
 | Windows installer integrity | behavioral gate configured | hosted execution absent | unreleased | The Windows job parses and executes checksum/tamper behavior, simulates reparse-point rejection, and the release matrix runs native `jeliyad.exe --version`; those jobs have not run on `windows-latest` for this candidate. |
-| Atomic, version-consistent publication | implemented locally | contract and receipt tests pass; workflow never executed | unreleased | A read-only job validates and seals the untouched complete set, a separate read-only job executes the smoke binary, and the sole writer verifies the receipt without executing candidate bytes. Its GitHub token is exposed only to the final publishing step. No `v0.5.0` release has been built or published, and the absent evidence key keeps publication fail-closed. |
+| Complete asset-set visibility and version consistency | implemented locally | contract and receipt tests pass; workflow never executed | unreleased | A read-only job validates and seals the untouched complete set, a separate read-only job executes the smoke binary, and the sole writer verifies the receipt without executing candidate bytes. Its GitHub token is exposed only to the final publishing step. GitHub cannot transact the tag and release assets atomically; the finalizer instead keeps the release draft until every uploaded byte matches and requires operator inspection after an interrupted cleanup. No `v0.5.0` release has been built or published, and the absent evidence key keeps publication fail-closed. |
 | WCAG 2.1 AA | partial | targeted checks only | partial | WCAG is a design target, not an enforced or certified conformance claim across React and Flutter. |
 | OKF-compatible documentation | implemented | locally checked; final release reconciliation pending | unreleased | The profile separates lifecycle, implementation, verification, and release status. |
 

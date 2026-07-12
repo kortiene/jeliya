@@ -3,7 +3,7 @@ type: "Runbook"
 title: "Real-network NAT runbook"
 description: "Operator procedure for collecting revision-bound direct and forced-relay evidence across three distinct public egress paths."
 tags: ["nat", "networking", "operations", "p2p"]
-timestamp: "2026-07-12T18:47:00Z"
+timestamp: "2026-07-12T22:00:46Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -32,7 +32,10 @@ Both runs used unpublished Jeliya
 `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` and a local `file://` checkout of
 unpublished Iroh Rooms
 `3702e8cbcd5ac1808791124dd6bc44068be5f822`. They therefore cannot certify the
-public candidate. The durable sanitized records are
+public candidate. They also use historical evidence schema 1, which predates
+the isolated source-build and complete Zig-installation controls in schema 2.
+Schema 1 records remain non-certifying and cannot be promoted by adding a
+signature. The durable sanitized records are
 [`direct.json`](evidence/v0.5.0/direct.json) and
 [`relay.json`](evidence/v0.5.0/relay.json); their exact limits are documented in
 [`verification-evidence.md`](verification-evidence.md#retained-three-peer-network-evidence).
@@ -87,8 +90,8 @@ rejected for this three-role topology. Do not override that result with
 
 ## Pinned toolchain and source prerequisites
 
-A release-qualifying run requires all of the following before any remote
-mutation:
+A release-qualifying schema 2 run is supported only from an x86_64 macOS
+operator. It requires all of the following before any remote mutation:
 
 - clean Jeliya commit reachable from its public repository origin;
 - exact public HTTPS Iroh Rooms Git source and immutable 40-hex revision in
@@ -96,17 +99,35 @@ mutation:
 - Node `22.22.3` and npm `10.9.8`;
 - Rust and Cargo `1.91.0` through rustup;
 - installed `x86_64-unknown-linux-musl` target for toolchain `1.91.0`;
-- Zig `0.15.2`, whose executable SHA-256 was verified independently before the
-  run and is supplied through `--zig-sha256`;
+- the official Zig `0.15.2` x86_64-macos archive, independently obtained with
+  SHA-256
+  `375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f`;
 - `cargo-zigbuild 0.23.0`;
 - clean, locked UI dependency install from the committed package lock; and
 - approved Ed25519 evidence-key custody, with only the canonical public SPKI
   committed before the network-qualified source commit.
 
-The harness fixes Cargo build parallelism at two jobs, creates a Git archive of
-the recorded source, runs `npm ci` and `npm run build`, and builds the embedded
-web UI into both the native macOS x86_64 daemon and the Linux x86_64 musl
-daemon. It fails rather than silently using a missing target or tool.
+The harness rejects ambient build-control variables, creates run-owned
+`HOME`, Cargo, npm, Git, and temporary state, and passes only its documented
+ambient allowlist to build subprocesses. It obtains the candidate through an
+isolated `git clone --bare --no-local` and archives the recorded commit, so
+checkout-local Git configuration and attributes cannot rewrite the source
+snapshot. It verifies the complete Zig archive before extraction into the
+run-owned build directory and binds both the Zig executable and library
+directory to that verified installation root.
+
+The harness executes each selected tool through its resolved absolute path. The
+schema 2 manifest records the filename, version, and observed SHA-256 for Rust,
+Cargo, rustup, Node, npm, Zig, `cargo-zigbuild`, Git, and tar; it does not retain
+operator-local filesystem paths.
+Only the complete Zig installation archive is independently verified; the
+other tool digests identify what executed but are not independent supply-chain
+attestations. npm is invoked by the exact recorded Node binary. The harness
+invokes the exact recorded `cargo-zigbuild` with the recorded Cargo and Zig
+paths and disables Python `ziglang` discovery. Cargo build parallelism remains
+fixed at two jobs, and the embedded web UI is built into both the native macOS
+x86_64 daemon and the Linux x86_64 musl daemon. Missing or mismatched tools fail
+the run rather than being skipped.
 
 Run the local preflight from the candidate checkout:
 
@@ -118,15 +139,16 @@ npm --version
 rustc +1.91.0 --version
 cargo +1.91.0 --version
 rustup target list --installed --toolchain 1.91.0
-zig version
-cargo zigbuild --version
+cargo-zigbuild -V
+shasum -a 256 "$ZIG_ARCHIVE"
 node --test scripts/realnet-evidence.test.mjs
 ```
 
 Expected critical values are `v22.22.3`, `10.9.8`, `1.91.0`,
-`x86_64-unknown-linux-musl`, `0.15.2`, and `cargo-zigbuild 0.23.0`. An empty
-`git status --short` is mandatory. Verify publication of both exact Git
-revisions at their origins; a clean local commit is insufficient.
+`x86_64-unknown-linux-musl`, `cargo-zigbuild 0.23.0`, and the exact Zig archive
+SHA-256 above. An empty `git status --short` is mandatory. Verify publication
+of both exact Git revisions at their origins; a clean local commit is
+insufficient.
 
 Perform read-only remote inventory next:
 
@@ -144,16 +166,20 @@ identity is unexpected.
 
 ## Execute the direct-path run
 
-`ZIG_EXECUTABLE_SHA256` below is the independently established digest of the
-exact Zig executable selected on the operator host. It is not secret, but it
-must not be derived and trusted for the first time inside this invocation.
+`ZIG_ARCHIVE` below is the operator-local path to the independently obtained
+official Zig archive. The harness copies it into the isolated run directory,
+verifies the exact expected digest before extraction, validates its member
+layout, and rejects an executable or library directory that escapes the
+verified installation root.
 
 ```sh
 node scripts/realnet-evidence.mjs \
   --remote root@demo1 \
   --third-remote root@demo2 \
   --build-from-source \
-  --zig-sha256 "$ZIG_EXECUTABLE_SHA256" \
+  --zig-archive "$ZIG_ARCHIVE" \
+  --zig-archive-sha256 \
+    375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f \
   --expect-path direct
 ```
 
@@ -172,7 +198,9 @@ node scripts/realnet-evidence.mjs \
   --remote root@demo1 \
   --third-remote root@demo2 \
   --build-from-source \
-  --zig-sha256 "$ZIG_EXECUTABLE_SHA256" \
+  --zig-archive "$ZIG_ARCHIVE" \
+  --zig-archive-sha256 \
+    375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f \
   --relay-only-build \
   --expect-path relay
 ```
@@ -224,9 +252,11 @@ working tree is dirty, or the build is not source-bound.
 
 For a release candidate:
 
-1. confirm `result: "pass"`, `certifiable: true`, 36 ordered passing
+1. confirm `schema: 2`, `result: "pass"`, `certifiable: true`, 36 ordered passing
    assertions, complete path observations, exact public source/dependency
-   provenance, binary hashes/version/attestation, and successful cleanup;
+   provenance, isolated build-environment record, exact tool bindings, verified
+   complete Zig archive, binary hashes/version/attestation, and successful
+   cleanup;
 2. review the structured record for secrets and remove all log excerpts while
    retaining per-role line count, byte count, and stream SHA-256 records;
 3. copy the final exact JSON bytes to

@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Known gaps and roadmap"
 description: "Release blockers, deferred risks, owners, and next actions for the v0.5.0 evidence-backed technical preview."
 tags: ["gaps", "release", "risks", "roadmap"]
-timestamp: "2026-07-12T20:13:49Z"
+timestamp: "2026-07-12T22:00:46Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -32,7 +32,7 @@ alpha and remains **blocked for release** despite substantial local progress.
 | Evidence authenticity | release gate validates detached Ed25519 evidence signatures | authorize key custody and commit only the canonical public key before the qualifying run; never commit the private key | release authority | **blocked, fails closed** |
 | Unix installer integrity | behavioral checksum-before-extraction tests pass | rerun against final artifacts | release maintainer | locally closed |
 | Windows installer integrity | behavioral checksum/tamper, simulated reparse rejection, and native daemon smoke jobs are configured | obtain a passing hosted Windows result on the final candidate | release maintainer | **blocked; configured, unexecuted** |
-| Atomic publication | immutable actions, verified Zig, execution-free validation and receipt sealing, isolated read-only smoke, receipt-only writer verification, and final-step token isolation are implemented | execute only after all gates pass and explicit release authority is granted | release authority | implemented, never executed |
+| Complete asset-set visibility | immutable actions, verified build tools, execution-free validation and receipt sealing, isolated read-only smoke, receipt-only writer verification, draft-until-complete publication, and final-step token isolation are implemented | execute only after all gates pass and explicit release authority is granted; inspect and recover manually if cleanup is interrupted because GitHub cannot transact the tag and release assets atomically | release authority | implemented, never executed |
 | Complete artifact set | `v0.4.3` has five published archives | build and verify all five `v0.5.0` daemon-plus-embedded-UI archives and sidecars together | release maintainer | **blocked; complete set absent** |
 | Documentation alignment | status pages and retained manifests reflect current evidence | final reconciliation after public pins, hosted runs, signatures, and artifact verification | documentation owner | current for this snapshot |
 

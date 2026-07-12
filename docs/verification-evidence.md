@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Verification evidence"
 description: "Revision-bound verification ledger and evidence-recording contract for the v0.5.0 technical preview."
 tags: ["evidence", "networking", "release", "testing", "verification"]
-timestamp: "2026-07-12T20:13:49Z"
+timestamp: "2026-07-12T22:00:46Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -26,7 +26,7 @@ evidence, but they do **not** authorize publication.
 |---|---|
 | Milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Baseline commit | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardening implementation commit before final documentation reconciliation | `b6c0fc8362ec255882e1bf3a4999f35f004db57c` |
+| Hardening implementation commit before final documentation reconciliation | `689f1fdd47ef2e32986a4fbd10e35196f8c6ab8b` |
 | Current public `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` — synchronization isolation is not remediated |
 | Network-test Jeliya commit | `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` — clean, local, and unpublished |
 | Candidate upstream remediation revision | `3702e8cbcd5ac1808791124dd6bc44068be5f822` — clean and tested locally, but unpublished |
@@ -46,7 +46,7 @@ the retained manifests correctly set `certifiable: false` and
 |---|---|---|
 | Public read-RPC authorization | centralized guard and local negative suite cover foreign timelines, members, agents, files, pipes, local-file HTTP, and aggregate projections; both remote runs denied all 17 room-scoped RPCs and filtered local-file and aggregate reads | functional PASS on recorded local revisions; release qualification blocked by source provenance |
 | Accepted-room provenance | create/join failure injection proves provenance is accepted before irreversible event publication; 24 concurrent mutations retain every room; direct reads reuse the authorized snapshot cache; Unix mode is pinned to `0600`; exact `atomicwrites 0.4.4` uses synchronized Unix directory replacement and Windows write-through replacement | local PASS; Windows semantics source-reviewed but not behaviorally executed on `windows-latest` |
-| Pre-identity protocol contract | `room.list` returns `identity_missing` consistently across the core engine and the TypeScript mock, Dart daemon, Dart FFI, and Dart mock golden-corpus oracles | local PASS |
+| Pre-identity protocol contract | `room.list` returns the successful empty onboarding result `{ rooms: [] }` consistently across the core engine, TypeScript mock, Dart daemon, Dart FFI, Dart mock, and golden-corpus oracles | local PASS |
 | Upstream synchronization isolation | malicious `WantEvents`, foreign-parent, and administrative-tip tests passed against local upstream `3702e8cbcd5ac1808791124dd6bc44068be5f822` | local PASS; BLOCKED until upstream publication and Jeliya repin |
 | Android backup exclusion | `allowBackup=false`, explicit cloud/device-transfer exclusion rules, and engine state under `noBackupFilesDir`; repository gate and six secret-storage tests pass | local PASS; this is app-private no-backup storage, not Android Keystore wrapping |
 | Agent secret location | platform data directory outside the checkout, deny-all state-directory Git guard, repository ignore rules, and commit-prevention validation | local PASS |
@@ -59,7 +59,7 @@ the retained manifests correctly set `certifiable: false` and
 | Join, reconnect, and resynchronization | targeted joins, three-peer convergence, closed-session message, reopen, resynchronization, and settled reconnect path | functional PASS in direct and relay runs |
 | Messages, files, and pipes | bidirectional and three-peer messages, byte-identical engine-verified BLAKE3 file fetch, authorized pipe, and zero-target-connection unauthorized pipe | functional PASS in direct and relay runs |
 | Installer integrity | Unix behavioral tests verify checksum-before-extraction; Windows jobs execute checksum/tamper behavior, simulate reparse rejection, and smoke the native daemon | Unix PASS; Windows gates configured but no hosted `windows-latest` result exists |
-| Atomic publication | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step | contract and negative receipt tests PASS; no five-archive set built and no publication executed |
+| Complete asset-set visibility | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step; the release stays draft until all uploaded bytes match | contract and negative receipt tests PASS; no five-archive set built and no publication executed; GitHub tag and release operations are not one transaction |
 | Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.5.0` | local PASS; public tag and artifacts do not exist |
 | Documentation | required OKF pages and retained sanitized evidence are present and bind the hardened checkpoint separately from the older network checkout | local docs gate PASS during reconciliation; rerun on the final commit |
 
@@ -82,6 +82,39 @@ At expiry, each entry must be removed, renewed with fresh evidence, or made
 release-blocking. A new reachable high or critical vulnerability is a release
 blocker unless maintainers explicitly approve a separate, scoped, owned, and
 time-bounded exception.
+
+## Evidence schema 2 source-build contract
+
+A qualifying direct or relay run must emit evidence schema 2. The source build
+starts from an isolated `git clone --bare --no-local`, archives the exact
+recorded commit, and does not consume checkout-local Git configuration or
+attributes. Build subprocesses receive run-owned `HOME`, Cargo, npm, Git, and
+temporary state plus a controlled path and a documented ambient allowlist;
+ambient build controls are rejected and unlisted ambient variables are not
+forwarded.
+
+The x86_64 macOS operator must supply the official Zig `0.15.2` x86_64-macos
+archive and the independently established SHA-256
+`375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f`.
+The harness verifies the copied archive before extraction, validates its member
+layout, and binds both the executed Zig binary and its library directory to the
+verified run-owned installation root.
+
+The harness executes selected tools through resolved absolute paths. Schema 2
+records their filenames, versions, and observed SHA-256 digests for Rust,
+Cargo, rustup, Node, npm, Zig, `cargo-zigbuild`, Git, and tar without retaining
+operator-local filesystem paths.
+Only the complete Zig installation archive is independently verified. The
+other observed tool digests establish execution identity within the run; they
+are not independent supply-chain attestations. npm executes under the exact
+recorded Node binary. `cargo-zigbuild` executes directly with the recorded
+Cargo and Zig paths, while Python `ziglang` discovery is disabled. Direct and
+relay manifests must record an identical toolchain.
+
+This contract does not repair stale provenance. A schema 2 record is still
+non-certifying unless it binds public immutable Jeliya and Iroh Rooms
+revisions, a clean source tree, qualifying topology, successful cleanup, and a
+valid detached signature from the pre-authorized evidence key.
 
 ## Local upstream remediation qualification
 
@@ -129,6 +162,13 @@ freshly built embedded web UI. The native macOS x86_64 and Linux x86_64 musl
 binaries were built from a Git archive of the recorded source with two Cargo
 jobs. Each transferred Linux binary was hash- and version-checked on both
 remote hosts before execution.
+
+These retained manifests use evidence schema 1. Schema 1 predates the isolated
+source-build environment and complete Zig-installation binding defined by
+schema 2. The historical records therefore remain non-certifying and cannot be
+promoted by adding a signature or by revalidating them with the newer checker;
+new direct and relay runs must emit schema 2 after the upstream fix is public
+and immutably pinned.
 
 Each run covered targeted room join; three-peer membership and message
 convergence; messages in both directions; file listing, fetch, engine BLAKE3
@@ -208,8 +248,10 @@ The evidence gate remains **BLOCKED** until all of the following are complete:
 6. behaviorally execute the Windows installer integrity gate, build and verify
    the complete five-archive daemon artifact set, and recheck version/tag/name
    consistency; and
-7. invoke the atomic publishing workflow only after explicit release authority
-   is granted.
+7. invoke the publication workflow only after explicit release authority is
+   granted, keep the release draft until the complete asset set verifies, and
+   use the documented recovery procedure if the non-transactional Git tag and
+   release operations are interrupted.
 
 Until then, `v0.5.0` is an unreleased technical-preview candidate, regardless
 of the local functional successes recorded above.

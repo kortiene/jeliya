@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Platform matrix"
 description: "Implementation, verification, packaging, and release status for every Jeliya runtime and target platform."
 tags: ["packaging", "platforms", "release", "verification"]
-timestamp: "2026-07-12T20:13:49Z"
+timestamp: "2026-07-12T22:00:46Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -26,10 +26,12 @@ and has no public artifacts. A source build or passing test is not a release.
 | Linux x86_64 musl (`x86_64-unknown-linux-musl`) | implemented | embedded-UI source build; direct and relay runs pass on Ubuntu 22.04 x86_64 under UID `65534`; installer behavior passes | `v0.4.3` archive and sidecar | functional evidence only |
 | Windows x86_64 MSVC (`x86_64-pc-windows-msvc`) | implemented | behavioral installer/checksum/tamper and simulated reparse gates plus native daemon smoke are configured; no hosted candidate result | `v0.4.3` archive and sidecar | required, pending execution |
 
-The two retained network manifests bind builds to Jeliya `fe870c7…`, local
-upstream `3702e8c…`, Rust `1.91.0`, Node `22.22.3`, verified Zig `0.15.2`, and
-the embedded UI. They cover only macOS x86_64 and Linux x86_64 musl, are
-unsigned, and set `certifiable: false`. See
+The two retained schema 1 network manifests bind builds to Jeliya `fe870c7…`,
+local upstream `3702e8c…`, Rust `1.91.0`, Node `22.22.3`, an independently
+digest-checked Zig `0.15.2` executable, and the embedded UI. They predate the
+schema 2 isolated build environment and complete Zig archive verification,
+cover only macOS x86_64 and Linux x86_64 musl, are unsigned, and set
+`certifiable: false`. See
 [Verification evidence](verification-evidence.md).
 
 ## Native applications and source-only tools
