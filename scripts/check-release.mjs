@@ -139,6 +139,7 @@ export function validateEvidenceReadiness({
       expectedPath: path,
       candidateCommit,
       upstreamRevision,
+      expectedVersion: version,
       relativePath,
     });
     return [path, manifest];
@@ -170,7 +171,16 @@ export function validateEvidenceSignature(root, relativePath, contents) {
   let publicKey;
   let signatureText;
   try {
-    publicKey = createPublicKey(readFileSync(join(root, "release", "evidence-ed25519-public.pem")));
+    const publicKeyPem = readText("release/evidence-ed25519-public.pem", root);
+    if (!/^-----BEGIN PUBLIC KEY-----\n(?:[A-Za-z0-9+/]{64}\n)*[A-Za-z0-9+/=]+\n-----END PUBLIC KEY-----\n?$/.test(publicKeyPem)
+        || /PRIVATE KEY/.test(publicKeyPem)) {
+      fail("release evidence key must be one canonical public SPKI PEM");
+    }
+    publicKey = createPublicKey(publicKeyPem);
+    const canonical = publicKey.export({ type: "spki", format: "pem" }).toString();
+    if (`${publicKeyPem.trim()}\n` !== canonical) {
+      fail("release evidence public key is not canonical SPKI PEM");
+    }
     signatureText = readText(`${relativePath}.sig`, root).trim();
   } catch {
     fail("retained network evidence requires the pinned Ed25519 release-evidence public key and detached signature");
@@ -308,6 +318,7 @@ export function validateNetworkEvidenceManifest(manifest, {
   expectedPath,
   candidateCommit,
   upstreamRevision,
+  expectedVersion = "0.5.0",
   relativePath = "evidence manifest",
 }) {
   const startedAt = Date.parse(manifest?.started_at_utc ?? "");
@@ -354,10 +365,22 @@ export function validateNetworkEvidenceManifest(manifest, {
     fail(`${relativePath} was not built source-bound with the lockfile`);
   }
   const topology = manifest.distinct_public_egress;
+  const pairwise = topology?.pairwise;
+  const asns = topology?.autonomous_systems;
   if (topology?.all_observed_addresses_different !== true
       || topology?.independent_network_topology_proven !== true
       || !Number.isInteger(topology?.distinct_autonomous_system_count)
-      || topology.distinct_autonomous_system_count < 2) {
+      || topology.distinct_autonomous_system_count < 2
+      || !pairwise
+      || Object.values(pairwise).length !== 3
+      || ["operator_to_b", "operator_to_c", "b_to_c"].some((name) => (
+        pairwise[name]?.status !== "different"
+        || !["ipv4", "ipv6", "mixed"].includes(pairwise[name]?.family)
+      ))
+      || !asns
+      || ["operator", "role_b", "role_c"].some((role) => !/^AS[1-9]\d*$/.test(asns[role] ?? ""))
+      || new Set([asns?.operator, asns?.role_b, asns?.role_c]).size
+        !== topology.distinct_autonomous_system_count) {
     fail(`${relativePath} does not prove the required sanitized topology`);
   }
   const assertions = manifest.assertions;
@@ -417,13 +440,23 @@ export function validateNetworkEvidenceManifest(manifest, {
     ? manifest.hosts.filter((host) => host.role === "b" || host.role === "c")
     : [];
   const remoteDigest = manifest.binaries?.remote?.sha256;
+  const expectedFeatures = expectedPath === "relay"
+    ? ["embed-ui", "relay-only-test"]
+    : ["embed-ui"];
+  if (JSON.stringify(manifest.build.features) !== JSON.stringify(expectedFeatures)) {
+    fail(`${relativePath} has an unexpected source-build feature set`);
+  }
   if (remoteHosts.length !== 2
       || new Set(remoteHosts.map((host) => host.role)).size !== 2
       || new Set(remoteHosts.map((host) => host.host)).size !== 2
       || !/^[0-9a-f]{64}$/.test(remoteDigest ?? "")
       || remoteHosts.some((host) => host.architecture !== "x86_64"
+        || typeof host.os !== "string"
+        || host.os.length < 3
+        || !["dropped-to-unprivileged-system-uid", "ssh-account-uid"].includes(host.process_privilege)
         || host.binary_validation?.sha256 !== remoteDigest
-        || host.binary_validation?.execution_uid === "0")) {
+        || host.binary_validation?.version !== expectedVersion
+        || !/^[1-9]\d*$/.test(host.binary_validation?.execution_uid ?? ""))) {
     fail(`${relativePath} lacks two independently verified remote binaries`);
   }
   const logRoles = manifest.sanitized_logs?.roles;
@@ -443,6 +476,14 @@ export function validateNetworkEvidenceManifest(manifest, {
     && remoteHosts.every((host) => host.binary_validation?.relay_only_attested === true);
   if (expectedPath === "relay" && !relayAttested) {
     fail(`${relativePath} lacks compile-time relay-only attestation on every execution host`);
+  }
+  if (manifest.binaries?.local?.version !== expectedVersion
+      || manifest.binaries?.remote?.expected_version !== expectedVersion
+      || (expectedPath === "direct" && (
+        manifest.binaries.local.relay_only_attested !== false
+        || remoteHosts.some((host) => host.binary_validation?.relay_only_attested !== false)
+      ))) {
+    fail(`${relativePath} binary versions or direct-build attestations are inconsistent`);
   }
   return { valid: true };
 }

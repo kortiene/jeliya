@@ -65,13 +65,23 @@ function networkManifest(path, commit, upstream) {
       source_bound: true,
       source_snapshot_commit: commit,
       locked: true,
-      features: ["embed-ui"],
+      features: relay ? ["embed-ui", "relay-only-test"] : ["embed-ui"],
       targets: ["x86_64-apple-darwin", "x86_64-unknown-linux-musl"],
     },
     distinct_public_egress: {
       all_observed_addresses_different: true,
       distinct_autonomous_system_count: 2,
       independent_network_topology_proven: true,
+      pairwise: {
+        operator_to_b: { status: "different", family: "ipv4" },
+        operator_to_c: { status: "different", family: "ipv4" },
+        b_to_c: { status: "different", family: "ipv4" },
+      },
+      autonomous_systems: {
+        operator: "AS11426",
+        role_b: "AS24940",
+        role_c: "AS24940",
+      },
     },
     assertions: expectedNetworkAssertionNames(path)
       .map((name) => ({ name, result: "pass", duration_ms: 1 })),
@@ -109,15 +119,18 @@ function networkManifest(path, commit, upstream) {
       failure_codes: [],
     },
     binaries: {
-      local: { relay_only_attested: relay },
-      remote: { sha256: digest },
+      local: { relay_only_attested: relay, version: "0.5.0" },
+      remote: { sha256: digest, expected_version: "0.5.0" },
     },
     hosts: ["b", "c"].map((role) => ({
       role,
       host: role === "b" ? "root@demo1" : "root@demo2",
+      os: "Ubuntu 22.04.5 LTS",
       architecture: "x86_64",
+      process_privilege: "dropped-to-unprivileged-system-uid",
       binary_validation: {
         sha256: digest,
+        version: "0.5.0",
         execution_uid: "65534",
         relay_only_attested: relay,
       },
@@ -187,6 +200,10 @@ verification_status: "verified"
       candidateCommit: commit,
       upstreamRevision: upstream,
     });
+    assert.throws(
+      () => validateEvidenceReadiness({ root, context, version: "0.6.0" }),
+      /docs\/evidence\/v0\.6\.0\/direct\.json/,
+    );
 
     writeFileSync(
       join(root, "docs", "evidence", "v0.5.0", "direct.json"),
@@ -224,6 +241,20 @@ verification_status: "verified"
       candidateCommit: commit,
       upstreamRevision: upstream,
     }), /two independently verified remote binaries/);
+    const rootExecution = networkManifest("direct", commit, upstream);
+    delete rootExecution.hosts[0].binary_validation.execution_uid;
+    assert.throws(() => validateNetworkEvidenceManifest(rootExecution, {
+      expectedPath: "direct",
+      candidateCommit: commit,
+      upstreamRevision: upstream,
+    }), /two independently verified remote binaries/);
+    const incompleteTopology = networkManifest("direct", commit, upstream);
+    delete incompleteTopology.distinct_public_egress.pairwise;
+    assert.throws(() => validateNetworkEvidenceManifest(incompleteTopology, {
+      expectedPath: "direct",
+      candidateCommit: commit,
+      upstreamRevision: upstream,
+    }), /required sanitized topology/);
 
     assert.throws(() => validateEvidenceReadiness({
       root,
