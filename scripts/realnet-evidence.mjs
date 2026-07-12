@@ -319,6 +319,16 @@ export function classifyNetworks(localAddress, remoteAddress) {
   return { status: localAddress === remoteAddress ? "same" : "different", family };
 }
 
+export function topologyClaim({ topologyProven, allDifferent }) {
+  if (topologyProven) {
+    return "distinct public egress plus at least two independently resolved BGP origin ASNs; no IP address is persisted";
+  }
+  if (allDifferent) {
+    return "topology rejected: fewer than two independently resolved BGP origin ASNs; no IP address is persisted";
+  }
+  return "topology rejected: shared public egress detected; no IP address is persisted";
+}
+
 export function pathSummary(peers) {
   const connected = peers.filter((peer) => peer.state === "connected" && peer.path);
   const counts = { direct: 0, relay: 0, other: 0 };
@@ -1355,6 +1365,64 @@ async function foreignLocalFileIsDenied(peer, roomId, fileId) {
   return !response.ok && body?.error?.code === "room_unknown";
 }
 
+export async function seedForeignIsolationFixture({
+  owner,
+  agent = null,
+  agentIdentityId,
+  runId,
+  resources,
+}) {
+  const foreign = await owner.client.call("room.create", { name: `foreign-${runId}` });
+  const opened = await owner.client.call("room.open", { room_id: foreign.room_id });
+  const agentLabel = `foreign-agent-${runId}`;
+  const agentMessage = `foreign-agent-message-${runId}`;
+
+  // room.join bootstrap currently requires a membership-only event log. Join
+  // the foreign agent before seeding messages, statuses, files, or pipes, or
+  // the security fixture fails before it can exercise cross-room isolation.
+  if (agent) {
+    const invite = await owner.client.call("invite.create", {
+      room_id: foreign.room_id,
+      identity_id: agentIdentityId,
+      role: "agent",
+    });
+    resources.secrets.add(invite.ticket);
+    const hints = typeof opened.endpoint?.addr === "string" ? [opened.endpoint.addr] : [];
+    await agent.client.call("room.join", { ticket: invite.ticket, peers: hints }, WAIT_MS);
+    await agent.client.call("room.open", { room_id: foreign.room_id, peers: hints });
+  }
+
+  await owner.client.call("message.send", {
+    room_id: foreign.room_id,
+    body: `foreign-secret-${runId}`,
+  });
+  const payloadPath = join(owner.dataDir, `foreign-${runId}.bin`);
+  writeFileSync(payloadPath, randomBytes(512), { mode: 0o600 });
+  const file = await owner.client.call("file.share", {
+    room_id: foreign.room_id,
+    path: payloadPath,
+    name: `foreign-${runId}.bin`,
+  });
+
+  let pipeId = "00".repeat(16);
+  if (agent) {
+    await agent.client.call("status.post", {
+      room_id: foreign.room_id,
+      label: agentLabel,
+      message: agentMessage,
+      progress: 37,
+    });
+    const pipe = await owner.client.call("pipe.expose", {
+      room_id: foreign.room_id,
+      target: "127.0.0.1:9",
+      peer_identity: agentIdentityId,
+    });
+    pipeId = pipe.pipe_id;
+  }
+
+  return { foreign, file, pipeId, agentLabel, agentMessage };
+}
+
 async function pipeHttpThroughPeer(peer, localAddr, resources) {
   if (peer.kind === "local") return `http://${localAddr}/`;
   const match = /^127\.0\.0\.1:(\d+)$/.exec(localAddr);
@@ -1616,47 +1684,21 @@ async function runFlow({ peers, expectedPath, runId, resources, record }) {
     [identities[0].identity_id],
   ));
 
-  const foreign = await record("A creates isolated foreign room", () => a.client.call("room.create", {
-    name: `foreign-${runId}`,
-  }));
-  const foreignOpened = await a.client.call("room.open", { room_id: foreign.room_id });
-  await a.client.call("message.send", { room_id: foreign.room_id, body: `foreign-secret-${runId}` });
-  const foreignPayloadPath = join(a.dataDir, `foreign-${runId}.bin`);
-  writeFileSync(foreignPayloadPath, randomBytes(512), { mode: 0o600 });
-  const foreignFile = await a.client.call("file.share", {
-    room_id: foreign.room_id,
-    path: foreignPayloadPath,
-    name: `foreign-${runId}.bin`,
-  });
-  let foreignPipeId = "00".repeat(16);
   const foreignAgentIdentity = c ? identities[2].identity_id : identities[0].identity_id;
-  const foreignAgentLabel = `foreign-agent-${runId}`;
-  const foreignAgentMessage = `foreign-agent-message-${runId}`;
-  if (c) {
-    const foreignInvite = await a.client.call("invite.create", {
-      room_id: foreign.room_id,
-      identity_id: foreignAgentIdentity,
-      role: "agent",
-    });
-    resources.secrets.add(foreignInvite.ticket);
-    const foreignHints = typeof foreignOpened.endpoint?.addr === "string"
-      ? [foreignOpened.endpoint.addr]
-      : [];
-    await c.client.call("room.join", { ticket: foreignInvite.ticket, peers: foreignHints }, WAIT_MS);
-    await c.client.call("room.open", { room_id: foreign.room_id, peers: foreignHints });
-    await c.client.call("status.post", {
-      room_id: foreign.room_id,
-      label: foreignAgentLabel,
-      message: foreignAgentMessage,
-      progress: 37,
-    });
-    const foreignPipe = await a.client.call("pipe.expose", {
-      room_id: foreign.room_id,
-      target: "127.0.0.1:9",
-      peer_identity: foreignAgentIdentity,
-    });
-    foreignPipeId = foreignPipe.pipe_id;
-  }
+  const foreignFixture = await record("A seeds isolated foreign-room fixtures", () => (
+    seedForeignIsolationFixture({
+      owner: a,
+      agent: c,
+      agentIdentityId: foreignAgentIdentity,
+      runId,
+      resources,
+    })
+  ));
+  const foreign = foreignFixture.foreign;
+  const foreignFile = foreignFixture.file;
+  const foreignPipeId = foreignFixture.pipeId;
+  const foreignAgentLabel = foreignFixture.agentLabel;
+  const foreignAgentMessage = foreignFixture.agentMessage;
   const foreignScopedMethods = [
     ["room.open", { room_id: foreign.room_id }],
     ["room.close", { room_id: foreign.room_id }],
@@ -2138,7 +2180,7 @@ async function main(argv = process.argv.slice(2)) {
         },
         distinct_autonomous_system_count: new Set(asns.filter(Boolean)).size,
         independent_network_topology_proven: topologyProven,
-        claim: "distinct public egress plus at least two independently resolved BGP origin ASNs; no IP address is persisted",
+        claim: topologyClaim({ topologyProven, allDifferent }),
       };
       if (!allDifferent && !config.allowSharedEgress) {
         throw new Error("the three test roles do not have distinct observed public egress addresses");
