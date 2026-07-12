@@ -568,9 +568,12 @@ verification_status: "verified"
 
 ## Evidence ledger
 `);
-    const writeSignedManifest = (path) => {
+    const writeSignedManifest = (
+      path,
+      manifest = networkManifest(path, commit, upstream),
+    ) => {
       const relativePath = join("docs", "evidence", "v0.5.0", `${path}.json`);
-      const contents = Buffer.from(`${JSON.stringify(networkManifest(path, commit, upstream), null, 2)}\n`);
+      const contents = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
       writeFileSync(join(root, relativePath), contents);
       writeFileSync(
         join(root, `${relativePath}.sig`),
@@ -582,6 +585,7 @@ verification_status: "verified"
     writeSignedManifest("relay");
     const context = {
       headCommit: "12".repeat(20),
+      candidatePackageLockSha256: "ab".repeat(32),
       upstreamRequestedRevision: upstream,
       upstreamResolvedRevision: upstream,
       upstreamPublic: true,
@@ -597,6 +601,15 @@ verification_status: "verified"
       () => validateEvidenceReadiness({ root, context, version: "0.6.0" }),
       /docs\/evidence\/v0\.6\.0\/direct\.json/,
     );
+
+    const wrongUiLock = networkManifest("direct", commit, upstream);
+    wrongUiLock.build.embedded_ui.package_lock_sha256 = "cd".repeat(32);
+    writeSignedManifest("direct", wrongUiLock);
+    assert.throws(
+      () => validateEvidenceReadiness({ root, context }),
+      /UI lockfile digest does not match the network-qualified commit/,
+    );
+    writeSignedManifest("direct");
 
     writeFileSync(
       join(root, "docs", "evidence", "v0.5.0", "direct.json"),
@@ -697,6 +710,9 @@ test("external Actions are immutable and only publish receives write authority",
   const smokeJob = releaseWorkflow.slice(smokeStart, publishStart);
   const publishJob = releaseWorkflow.slice(publishStart);
   assert.ok(validateStart > 0 && smokeStart > validateStart && publishStart > smokeStart);
+  assert.match(publishJob, /name: Publish the sealed asset set at one visibility boundary/);
+  assert.doesNotMatch(publishJob, /atomically/i);
+  assert.match(publishJob, /not\n\s+# transactional tag-plus-release atomicity/);
   assert.match(validateJob, /permissions:\n      contents: read/);
   assert.doesNotMatch(validateJob, /"\$stage\/jeliyad" --version/);
   assert.match(validateJob, /release-receipt\.mjs create/);

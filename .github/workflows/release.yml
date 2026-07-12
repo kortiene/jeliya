@@ -352,7 +352,7 @@ jobs:
           }
 
   publish:
-    name: Publish the sealed complete set atomically
+    name: Publish the sealed asset set at one visibility boundary
     needs:
       - validate-release
       - smoke-release
@@ -434,6 +434,8 @@ jobs:
           }
 
       # GitHub has no transaction spanning a Git tag and all release assets.
+      # The guarantee below is therefore complete asset-set visibility, not
+      # transactional tag-plus-release atomicity.
       # The complete artifact set is therefore built and verified privately
       # first. This final job creates the tag plus a private draft, verifies the
       # uploaded bytes, and exposes the release only with the final PATCH. Its

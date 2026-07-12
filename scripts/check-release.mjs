@@ -148,6 +148,11 @@ export function validateEvidenceReadiness({
     fail("candidate upstream remediation revision must be exact 40-hex");
   }
 
+  const releaseContext = context ?? releaseEvidenceContext(root, candidateCommit);
+  if (!/^[0-9a-f]{64}$/.test(releaseContext.candidatePackageLockSha256 ?? "")) {
+    fail("network-qualified UI lockfile digest is unavailable");
+  }
+
   const manifests = Object.fromEntries(["direct", "relay"].map((path) => {
     const relativePath = `docs/evidence/v${version}/${path}.json`;
     let manifest;
@@ -171,8 +176,13 @@ export function validateEvidenceReadiness({
   if (manifests.direct.source.commit !== manifests.relay.source.commit) {
     fail("direct and relay evidence refer to different Jeliya commits");
   }
+  for (const [path, manifest] of Object.entries(manifests)) {
+    if (manifest.build.embedded_ui.package_lock_sha256
+        !== releaseContext.candidatePackageLockSha256) {
+      fail(`${path} evidence UI lockfile digest does not match the network-qualified commit`);
+    }
+  }
 
-  const releaseContext = context ?? releaseEvidenceContext(root, candidateCommit);
   if (releaseContext.upstreamRequestedRevision !== upstreamRevision
       || releaseContext.upstreamResolvedRevision !== upstreamRevision) {
     fail("documented upstream revision does not match Cargo.toml and Cargo.lock");
@@ -580,8 +590,16 @@ export function releaseEvidenceContext(root, candidateCommit) {
     ["diff", "--name-only", `${candidateCommit}..${head}`],
     { cwd: root, encoding: "utf8" },
   ).trim();
+  const candidatePackageLock = execFileSync(
+    "git",
+    ["show", `${candidateCommit}:ui/package-lock.json`],
+    { cwd: root },
+  );
   return {
     headCommit: head,
+    candidatePackageLockSha256: createHash("sha256")
+      .update(candidatePackageLock)
+      .digest("hex"),
     upstreamRequestedRevision: identity.requestedRevision,
     upstreamResolvedRevision: identity.resolvedRevision,
     upstreamPublic: identity.publicSource,
