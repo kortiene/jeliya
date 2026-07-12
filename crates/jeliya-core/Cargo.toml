@@ -35,9 +35,12 @@ getrandom = "0.4"
 zeroize = "1"
 tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
 tracing = "0.1"
-tempfile = "3"
+# The exact version is security-sensitive: on Windows it commits with
+# MOVEFILE_WRITE_THROUGH; on Unix it fsyncs the containing directories.
+atomicwrites = "=0.4.4"
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]

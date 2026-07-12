@@ -99,31 +99,24 @@ fn save(data_dir: &Path, state: &LocalState) -> CoreResult<()> {
     let path = data_dir.join(STATE_FILE);
     let bytes = serde_json::to_vec_pretty(state)
         .map_err(|e| CoreError::internal(format!("could not encode state.json: {e}")))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(data_dir)
-        .map_err(|e| CoreError::internal(format!("could not stage {}: {e}", path.display())))?;
-    tmp.write_all(&bytes)
-        .and_then(|()| tmp.as_file().sync_all())
-        .map_err(|e| CoreError::internal(format!("could not sync {}: {e}", path.display())))?;
-    let persisted = tmp.persist(&path).map_err(|e| {
-        CoreError::internal(format!("could not replace {}: {}", path.display(), e.error))
-    })?;
-    drop(persisted);
-
-    // A synced file plus an unsynced rename can still disappear after sudden
-    // power loss. Unix permits fsync on the containing directory. tempfile's
-    // persist already uses the platform replacement primitive on Windows; std
-    // does not expose a portable directory-sync operation there.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
-    std::fs::File::open(data_dir)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|e| {
-            CoreError::internal(format!(
-                "could not sync the state directory {}: {e}",
-                data_dir.display()
-            ))
-        })?;
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
 
-    Ok(())
+    // atomicwrites synchronizes the staged file and its Unix directory entries.
+    // Its Windows implementation uses MOVEFILE_REPLACE_EXISTING together with
+    // MOVEFILE_WRITE_THROUGH, so success is not reported before the replacement
+    // reaches disk. Keep the dependency exact: these semantics guard accepted-
+    // room provenance from becoming less durable than the event it authorizes.
+    atomicwrites::AtomicFile::new(&path, atomicwrites::AllowOverwrite)
+        .write_with_options(|file| file.write_all(&bytes), options)
+        .map_err(|e| {
+            CoreError::internal(format!("could not durably replace {}: {e}", path.display()))
+        })
 }
 
 fn update(data_dir: &Path, mutation: impl FnOnce(&mut LocalState)) -> CoreResult<()> {
