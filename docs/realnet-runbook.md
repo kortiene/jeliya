@@ -1,13 +1,105 @@
+---
+type: "Runbook"
+title: "Real-network NAT runbook"
+description: "Operator procedure for collecting revision-bound direct and relay evidence across three distinct networks."
+tags: ["nat", "networking", "operations", "p2p"]
+timestamp: "2026-07-11T02:40:00Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "partial"
+release_status: "not-applicable"
+audience: ["contributors", "maintainers", "operators"]
+---
+
 # Real-network NAT runbook
 
 > Internal operator notes — the manual procedure behind the Gate A result
 > (`docs/gate-a-result.md`). Not needed to use or contribute to Jeliya.
 
-How to prove Jeliya works across **two different networks** — machine A (this
-Mac) and machine B (any second Mac or Linux box on another network: a phone
-hotspot, an office LAN, a cloud VM). Everything runs `jeliyad` in **real
-network mode** (no `--loopback`): the iroh N0 stack with public n0 relays and
-DNS discovery, exactly what the SDK's CLI uses for real networking.
+The v0.5.0 evidence run uses an operator host plus two isolated Linux x86_64
+SSH hosts. All three roles must have distinct observed public egress
+addresses and resolve across at least two BGP origin ASNs. This proves distinct
+public routing domains without persisting the observed IPs; it does not claim
+independent VPC ownership. Everything runs `jeliyad` in **real network mode**
+(no `--loopback`): the Iroh N0 stack with public relays and DNS discovery.
+
+## v0.5.0 evidence harness
+
+`scripts/realnet-evidence.mjs` is the only certifying path for the v0.5.0
+network gate. It builds both the local release binary and the static Linux
+musl binary itself, from the current clean commit and locked dependency graph.
+It records source and dependency revisions, binary hashes, build-tool versions,
+host OS/architecture, path observations, functional assertions, timestamps,
+and cleanup results in a sanitized JSON file under
+`.jeliya-gatea/v0.5.0/`.
+
+Prerequisites for a certifying run:
+
+- the Jeliya checkout is clean and committed, with that exact commit reachable
+  from a public repository ref;
+- Iroh Rooms is pinned to an immutable 40-hex revision reachable from its
+  public Git origin;
+- Node `22.22.3` and npm are available; the harness runs `npm ci` and
+  `npm run build` from the committed `ui/package-lock.json`, then embeds that
+  freshly built UI;
+- the exact Rust/Cargo `1.91.0` toolchain is installed through rustup, Zig is
+  exactly `0.15.2`, and
+  `cargo-zigbuild` is exactly `0.23.0`;
+- `--zig-sha256` is supplied from the independently verified Zig installation,
+  not calculated and trusted from the executable during the same run;
+- both SSH targets are Linux x86_64, distinct from each other, all three roles
+  use different public egress addresses, and the sanitized ASN lookup proves at
+  least two public routing domains.
+
+Direct-path candidate:
+
+```sh
+node scripts/realnet-evidence.mjs \
+  --remote user@kilo \
+  --third-remote user@stargate-03 \
+  --build-from-source \
+  --zig-sha256 <verified-zig-0.15.2-executable-sha256> \
+  --expect-path direct
+```
+
+Forced relay candidate, after the reviewed relay-only Iroh Rooms feature has
+been published and revision-pinned:
+
+```sh
+node scripts/realnet-evidence.mjs \
+  --remote user@kilo \
+  --third-remote user@stargate-03 \
+  --build-from-source \
+  --zig-sha256 <verified-zig-0.15.2-executable-sha256> \
+  --relay-only-build \
+  --expect-path relay
+```
+
+The relay verifier is a separate compile-time build. It must print the exact
+hidden build attestation before the harness will use it. There is no runtime
+flag that can convert an ordinary release binary into a relay-only binary.
+
+Prebuilt `--local-bin` / `--linux-bin` inputs are retained for diagnostics,
+with an independent `--linux-sha256`, but evidence from that mode is always
+`certifiable: false`: the harness cannot prove those bytes came from the
+recorded commit. A local dependency path or `file://` Git source is recorded
+honestly and is likewise never releaseable or certifiable. A clean but
+unpublished Jeliya commit, an unpublished dependency revision, or unproven ASN
+topology also forces `certifiable: false`.
+
+Remote daemons use unique `/tmp/jeliya-v050-<run>-<role>` directories and
+loopback-only control tunnels. Creation writes a nonce-bound owner marker; a
+colliding pre-existing path is never changed or deleted. Cleanup verifies the
+marker, the recorded remote PID and
+its exact `/proc/<pid>/exe` before signalling it, waits for process and tunnel
+termination, and only then deletes that run-owned directory. Any unconfirmed
+process or remaining artifact makes the evidence fail. `SIGINT` and `SIGTERM`
+enter the same idempotent cleanup path and write failed interruption evidence.
+
+Daemon logs are never persisted raw. For each role and stdout/stderr stream,
+the JSON stores only line and byte counts, a SHA-256 digest of the captured
+stream, and a 1,024-character maximum excerpt after exact in-memory secrets,
+credential-shaped fields, and long hex/base64-like values are redacted.
 
 The verdict that matters is each side's `peers.status` **path** field:
 
@@ -27,13 +119,15 @@ and invites all still work, at relay latency. A `direct` path on either side
 is the strong result. Same-network runs (both machines on one LAN) will
 trivially report `direct` and prove nothing about NAT traversal.
 
-## Fast path — one command (`gate-a.mjs`)
+## Legacy two-host diagnostic (`gate-a.mjs`)
 
-`scripts/gate-a.mjs` runs the whole test from machine A: it fingerprints both
+`scripts/gate-a.mjs` runs the older two-host diagnostic from machine A: it fingerprints both
 sides' public IPs, **refuses to certify a pass when they share one** (a
 same-NAT run cannot test hole punching), starts the host here, drives machine
 B, and prints a single Gate A verdict. It ships a static Linux `jeliyad` +
 the two scripts B needs, so a Linux B only needs **Node 22** — no Rust build.
+Its result is historical/diagnostic and does not satisfy the v0.5.0 evidence
+gate because it does not bind supplied binaries to the recorded source commit.
 
 **Recommended: a cloud VM as machine B.** A VM has a public IP that A can SSH
 to from any network, and it is genuinely on a different network — so you do
@@ -78,7 +172,7 @@ automates); use it when B is a Mac, or when you want to drive each side by hand.
 | | machine A (host) | machine B (joiner) |
 |---|---|---|
 | OS | this Mac | macOS or Linux |
-| Rust | >= 1.80 (workspace `rust-version`) | >= 1.80 |
+| Rust | >= 1.91 (workspace `rust-version`) | >= 1.91 |
 | Node | >= 22 (global `WebSocket`, no npm deps) | >= 22 |
 | Network | internet (relays, DNS discovery) | internet, on a **different network** than A |
 

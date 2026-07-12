@@ -43,6 +43,12 @@ This is a small open-source project, not a company:
   peer-to-peer networking (today the phone is the build doing it — the
   macOS app runs its sidecar loopback-only), so the P2P surface applies;
   anything that exposes the control protocol on a socket from the
-  in-process build is a vulnerability.
+  in-process build is a vulnerability. The Android device smoke proved local
+  engine lifecycle and room operations with real mode configured; it did not
+  prove Android direct connectivity, relay fallback, or NAT traversal against
+  another network.
 - Release binaries are currently unsigned (`docs/signing-notarization.md`
-  tracks the plan). Verify downloads with the `.sha256` sidecars.
+  tracks the plan). Release `v0.4.3` publishes `.sha256` sidecars, but its
+  installer implementation does not verify them automatically before
+  extraction. That verification is a mandatory `v0.5.0` gate; verify older
+  downloads manually.

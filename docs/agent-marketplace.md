@@ -1,3 +1,16 @@
+---
+type: "Architecture"
+title: "Agent marketplace architecture"
+description: "Proposed hosted-agent marketplace architecture, trust model, product flow, and delivery plan."
+tags: ["agents", "architecture", "marketplace", "security"]
+timestamp: "2026-07-11T02:40:00Z"
+status: "proposal"
+implementation_status: "planned"
+verification_status: "unverified"
+release_status: "unreleased"
+audience: ["contributors", "maintainers", "product"]
+---
+
 # Agent marketplace architecture
 
 > **Status:** proposed design. Nothing in this document is implemented unless

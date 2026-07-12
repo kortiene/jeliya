@@ -71,13 +71,21 @@ and talks to it over `FfiClient`.
   reached from inside the sandbox via the exception in `Release.entitlements`.
 - macOS debug: `~/Library/Application Support/JeliyaAppDev` (dev runs never
   touch real user data)
-- Android: the platform app-support directory (via `path_provider`); the
-  in-process engine owns its `engine/` subdirectory.
+- Android: app preferences use the platform app-support directory; the
+  in-process engine (including `identity.secret`) lives under the native
+  `noBackupFilesDir/engine`. The manifest disables backup and explicit API
+  23-30/API 31+ rules exclude app-private data from both cloud backup and
+  device-to-device transfer. On first launch after this change, the native
+  bootstrap moves a legacy `files/engine` directory and fails closed rather
+  than creating a second identity if migration is ambiguous.
 
 On desktop the daemon's portfile (`daemon.json`), blob store, and the app's
 local prefs (`app_prefs.json`: last room, per-room drafts, local peer aliases)
-all live here; on Android the engine keeps its stores under `engine/` and
-`app_prefs.json` sits beside it.
+all live here; on Android the engine keeps its stores in the separate
+no-backup directory and `app_prefs.json` remains in app support. Android's
+application sandbox and no-backup storage protect the file-backed key today;
+hardware-backed Keystore wrapping requires a future Rust key-provider
+contract and is not claimed by this preview.
 
 ### Loopback dev mode (macOS)
 

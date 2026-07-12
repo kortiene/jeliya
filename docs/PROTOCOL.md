@@ -1,3 +1,16 @@
+---
+type: "Reference"
+title: "Jeliya daemon protocol (v1)"
+description: "Normative transport-neutral contract between jeliya-core and every web, Flutter, FFI, script, and test client."
+tags: ["architecture", "daemon", "ffi", "protocol", "websocket"]
+timestamp: "2026-07-11T02:40:00Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "partial"
+release_status: "partial"
+audience: ["client-authors", "contributors", "maintainers"]
+---
+
 # Jeliya daemon protocol (v1)
 
 The contract between the Rust core (`jeliya-core`, sole consumer of the
@@ -500,11 +513,14 @@ push travels as the **same JSON envelope frames** defined above. The bridge is
 a pure pass-through, and both transports share one dispatch implementation
 (`jeliya_core::engine::Engine`), so the golden conformance corpus replays
 against this transport unchanged — it is the third oracle next to the daemon
-and the mock. Corpus conformance is proven by host replay (CI builds the
-host dylib; there is no Android build job), and the transport itself has
-since been proven on a physical device — the Phase 4 on-device smoke over
-real networking (Android 13). Because the bridge never interprets frame
-contents, every reserved minor above (`client_msg_id`, the
+and the mock. Corpus conformance is exercised by host replay (CI builds the
+host dylib; the current workflow does not cross-build the Android libraries).
+A physical Android 13 smoke exercised engine startup, local room operations,
+pushes, and persistence with the engine configured for real networking
+(`loopback: false`). It did **not** establish a peer connection to another
+network, observe a direct or relay path, or exercise NAT traversal. Android
+cross-network behavior therefore remains unverified for `v0.5.0`. Because the
+bridge never interprets frame contents, every reserved minor above (`client_msg_id`, the
 `after_event_id`/`since_ts` cursor, the `delivery` marker, `min_protocol`)
 rides through it with no bridge change.
 
@@ -561,8 +577,10 @@ piece reinterpreted truthfully, never simulated:
    under TimelineEvent — but a green "delivered" checkmark that outruns the
    truth is.)
 2. Peer path (`direct`/`relay`) is shown truthfully from the runtime's
-   diagnostics. Gate A has confirmed direct P2P across one different-network
-   pair (see `docs/gate-a-result.md`), but relay fallback remains expected on
+   diagnostics. A historical Gate A run observed direct P2P on one
+   different-network pair, but it used older Jeliya and `iroh-rooms` revisions
+   and does not certify the current candidate (see
+   [`gate-a-result.md`](gate-a-result.md)). Relay fallback remains expected on
    NAT pairs that cannot hole-punch — do not hide relay fallback.
 3. Fetch failures surface the taxonomy (`unavailable` / `unauthorized` /
    `hash_mismatch`) — a verification failure is a hard stop, not a retry.
