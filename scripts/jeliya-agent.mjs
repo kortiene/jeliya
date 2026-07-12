@@ -3,12 +3,12 @@
 // by chat messages. Node 22+ (global WebSocket), no npm deps.
 //
 // Usage:
-//   node scripts/jeliya-agent.mjs --identity-only [--port 7461] [--data-dir .jeliya-agent] [--loopback]
+//   node scripts/jeliya-agent.mjs --identity-only [--port 7461] [--data-dir <dir>] [--loopback]
 //       Spawn the daemon, ensure an identity, print the identity_id (hand it
 //       to the room owner so they can mint an agent-role invite), exit.
 //
 //   node scripts/jeliya-agent.mjs --ticket <T> --peer <ADDRS> [--room <room_id>]
-//       [--port 7461] [--data-dir .jeliya-agent] [--worker claude|echo]
+//       [--port 7461] [--data-dir <dir>] [--worker claude|echo]
 //       [--workspace <dir>] [--trigger @agent] [--allow-sender <64hex>]...
 //       [--max-turns 40] [--loopback]
 //       Join the room with the ticket (retrying — realnet-check pattern),
@@ -56,8 +56,9 @@
 // with status_message "task:<first 16 hex of the trigger's event_id>", wait
 // CLAIM_SETTLE_MS collecting other agents' same-token claims (pushes + one
 // timeline re-poll), then proceed only if our claim's event_id is the
-// lexicographically lowest — otherwise stand down silently (local log only;
-// no execution, no reply, no further status). With ≤1 agent-role member the
+// lexicographically lowest — otherwise stand down with no execution or chat
+// reply, then post one best-effort "idle" status so operators can distinguish
+// a resolved arbitration from a stuck claim. With ≤1 agent-role member the
 // claim step is skipped entirely: no claim event, no delay.
 //
 // HONEST LIMITS — this is best-effort eventual coordination, NOT a lock:
@@ -82,6 +83,7 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { Client, pollUntil, sleep, startRealDaemon } from "./realnet-lib.mjs";
+import { defaultAgentDataDir, installAgentDataGitGuard } from "./agent-paths.mjs";
 
 // Wire-protocol byte limits — enforced here by truncation, never by crashing.
 const STATUS_LABEL_LIMIT = 64;
@@ -109,9 +111,9 @@ const CLAIM_TOKEN_RE = /^task:([0-9a-f]{16})(\s|$)/; // claim status_message par
 function usage(code) {
   console.error(
     "usage:\n" +
-      "  node scripts/jeliya-agent.mjs --identity-only [--port 7461] [--data-dir .jeliya-agent] [--loopback]\n" +
+      "  node scripts/jeliya-agent.mjs --identity-only [--port 7461] [--data-dir <dir>] [--loopback]\n" +
       "  node scripts/jeliya-agent.mjs --ticket <T> --peer <ADDRS> [--room <room_id>]\n" +
-      "      [--port 7461] [--data-dir .jeliya-agent] [--worker claude|echo]\n" +
+      "      [--port 7461] [--data-dir <dir>] [--worker claude|echo]\n" +
       "      [--workspace <dir>] [--trigger @agent] [--allow-sender <64hex>]...\n" +
       "      [--max-turns 40] [--loopback]\n" +
       "  node scripts/jeliya-agent.mjs --room <room_id> [...]   (rejoin: already a member)",
@@ -124,7 +126,7 @@ function parseCli(argv) {
     ticket: null,
     room: null,
     port: 7461,
-    dataDir: ".jeliya-agent",
+    dataDir: defaultAgentDataDir(),
     // Default to the inert echo worker. Real host execution (`--worker claude`)
     // is arbitrary code/file execution for any allowlisted sender, so it must be
     // an explicit, informed opt-in — never the default a packaged shortcut or a
@@ -199,6 +201,10 @@ for (const s of cfg.allowSenders) {
 }
 
 const DATA_DIR = resolve(cfg.dataDir);
+// Defense in depth for explicit paths under a Git checkout: even an
+// unfamiliar directory name gets its own deny-all marker before jeliyad can
+// create identity.secret or daemon.json inside it.
+installAgentDataGitGuard(DATA_DIR);
 // SECURITY: the default workspace lives OUTSIDE the daemon data dir. DATA_DIR
 // holds identity.secret (the daemon's Ed25519 private key) and the room
 // stores; a task cwd under it would put that key at a fixed ../../ offset
@@ -973,7 +979,8 @@ try {
    * allowlist/staleness/busy checks. ≤1 active agent-role member: execute
    * immediately (no claim event, no delay). Otherwise post a claim, settle,
    * and proceed only when holding the lexicographically lowest claim
-   * event_id; losers stand down silently (local log only).
+   * event_id; losers stand down without execution or chat reply, then post
+   * one best-effort idle status for truthful liveness.
    */
   async function claimAndMaybeStart(task, triggerEv) {
     let eligible = null;

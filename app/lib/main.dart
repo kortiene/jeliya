@@ -7,6 +7,7 @@ library;
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart' hide ConnectionState;
+import 'package:flutter/services.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:jeliya_protocol/ffi.dart' show FfiClient;
 import 'package:jeliya_protocol/jeliya_protocol.dart' show stageAndShareFile;
@@ -41,15 +42,23 @@ Future<void> main() async {
 /// The mobile session: [FfiClient] over the in-process Rust engine
 /// (jeliya-ffi), injected through the same seam widget tests use. The
 /// platform-default opener resolves the library (Android soname, iOS
-/// staticlib in-process). The engine owns `<appSupport>/engine` — a dedicated
-/// subdirectory, deliberately distinct from the retired FFI smoke's
+/// staticlib in-process). On Android the engine owns
+/// `<noBackupFilesDir>/engine`; iOS uses `<appSupport>/engine`. This is a
+/// dedicated subdirectory, deliberately distinct from the retired FFI smoke's
 /// 'ffi-smoke' dir so the transport never adopts that phantom identity.
 /// User-file shares go through [stageAndShareFile] against the engine data
 /// dir (pure dart:io — the staging convention needs no daemon HTTP origin),
 /// satisfying the engine's shareable-path invariant.
 Future<DaemonSession> _buildMobileSession() async {
   final dataDir = (await getApplicationSupportDirectory()).path;
-  final engineDataDir = '$dataDir/engine';
+  final engineDataDir = Platform.isAndroid
+      ? await const MethodChannel(
+          'com.incubtek.jeliya/storage',
+        ).invokeMethod<String>('protectedEngineDataDir')
+      : '$dataDir/engine';
+  if (engineDataDir == null || engineDataDir.isEmpty) {
+    throw StateError('platform did not provide a protected engine data dir');
+  }
   // loopback: false — production mobile uses the real network path.
   final client = FfiClient(dataDir: engineDataDir, loopback: false);
   return DaemonSession(
@@ -57,12 +66,14 @@ Future<DaemonSession> _buildMobileSession() async {
     dataDir: dataDir,
     prefs: PrefsStore('$dataDir/app_prefs.json'),
     stageAndShare: ({required roomId, required sourcePath, name, mime}) =>
-        stageAndShareFile(client,
-            dataDir: engineDataDir,
-            roomId: roomId,
-            sourcePath: sourcePath,
-            name: name,
-            mime: mime),
+        stageAndShareFile(
+          client,
+          dataDir: engineDataDir,
+          roomId: roomId,
+          sourcePath: sourcePath,
+          name: name,
+          mime: mime,
+        ),
   );
 }
 

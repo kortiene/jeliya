@@ -18,7 +18,8 @@
 //         "worker": "claude" | "echo",         // required
 //         "trigger": "@agent",                 // optional (--trigger)
 //         "allow_sender": ["…64-hex…"],        // optional (--allow-sender)
-//         "data_dir": ".jeliya-agent-b1",     // required, unique per agent
+//         "data_dir": "/home/jeliya/.local/share/jeliya/agents/b1",
+//                                               // required, unique per agent
 //         "port": 7481,                        // required, unique per agent
 //         "loopback": false                    // optional (--loopback)
 //       }

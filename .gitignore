@@ -9,6 +9,12 @@ ui/dist/
 .jeliya-realnet*/
 .jeliya-gatea/
 
+# Secret-bearing daemon and agent state. The runner also writes a deny-all
+# .gitignore inside every explicit --data-dir as defense in depth.
+.jeliya-agent*/
+identity.secret
+daemon.json
+
 # Legacy pre-rename local state (identity secrets, room dbs) — never commit.
 .bantaba-data*/
 .bantaba-demo*/
@@ -23,3 +29,4 @@ ui/dist/
 
 # Android native libs are built by scripts/build-android-libs.mjs, not committed.
 app/android/app/src/main/jniLibs/
+.gstack/

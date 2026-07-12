@@ -183,7 +183,10 @@ class Client {
         ws.onclose = () => {
           if (!tearingDown) fail(`${this.label}: websocket closed unexpectedly`);
         };
-        console.log(`e2e: ${this.label} connected to ${url}`);
+        // The query parameter carries the per-start bearer token. Never echo
+        // it into terminal or CI logs; the loopback endpoint is sufficient
+        // operational evidence that the authenticated connection succeeded.
+        console.log(`e2e: ${this.label} connected to ws://127.0.0.1:${port}/ws (authenticated)`);
         return;
       } catch {
         if (Date.now() - start > deadlineMs) fail(`could not connect to ${url}`);
