@@ -56,7 +56,7 @@
 - Closed cross-room read exposure with a centralized accepted-room guard covering every public room-scoped read, accepted-room filtering for aggregates such as `room.list` and `agents.fleet`, and negative authorization coverage for timelines, members, agents, files, local files, and pipes.
 - Made local room provenance recoverable and durable: create and join now persist accepted-room state before irreversible event publication, retries remain safe after persistence failures, concurrent state mutations are serialized, and `state.json` is atomically replaced with file/directory synchronization, Windows write-through replacement, and owner-only Unix permissions.
 - Reused the authorized room snapshot cache for direct file, pipe, and agent-history reads, avoiding repeated full-history folds without weakening the authorization preflight.
-- Aligned the `room.list` pre-identity error contract across the daemon, TypeScript mock, Dart daemon/FFI/mock clients, the golden corpus, and protocol documentation.
+- Aligned the `room.list` pre-identity contract across the daemon, TypeScript mock, Dart daemon/FFI/mock clients, the golden corpus, and protocol documentation while preserving protocol v1's privacy-safe `{ rooms: [] }` onboarding result.
 
 ## [0.4.3] - 2026-07-07
 

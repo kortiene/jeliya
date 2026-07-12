@@ -751,14 +751,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn room_list_requires_the_local_identity() {
+    async fn room_list_before_identity_is_empty_for_protocol_v1() {
         let dir = TempDir::new().expect("tempdir");
         let engine = test_engine(&dir);
 
-        let err = engine
+        let result = engine
             .dispatch("room.list", json!({}))
             .await
-            .expect_err("room.list must not disagree with the protocol mocks");
-        assert_eq!(err.kind, ErrorKind::IdentityMissing);
+            .expect("protocol v1 preserves an empty pre-identity room list");
+        assert_eq!(result, json!({ "rooms": [] }));
+
+        // Even a pre-existing/corrupt store must not become an existence
+        // oracle before identity creation; the empty onboarding result is
+        // decided before any room rows are opened.
+        std::fs::write(dir.path().join(crate::supervisor::DB_FILE), b"not sqlite")
+            .expect("seed a store-shaped pre-identity fixture");
+        let result = engine
+            .dispatch("room.list", json!({}))
+            .await
+            .expect("pre-identity room.list must not inspect the store");
+        assert_eq!(result, json!({ "rooms": [] }));
     }
 }

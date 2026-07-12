@@ -730,7 +730,7 @@ class MockClient implements Client {
       }
 
       case 'room.list': {
-        this.needIdentity();
+        if (!this.identity) return { rooms: [] };
         return { rooms: [...this.rooms.values()].map((r) => this.summary(r)) };
       }
 

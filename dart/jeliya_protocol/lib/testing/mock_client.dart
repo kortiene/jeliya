@@ -1036,7 +1036,7 @@ class MockClient implements Client {
         }
 
       case 'room.list':
-        _needIdentity();
+        if (_identity == null) return {'rooms': <Object?>[]};
         return {
           'rooms': [for (final r in _rooms.values) _summary(r)],
         };

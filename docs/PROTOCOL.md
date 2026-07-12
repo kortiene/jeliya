@@ -198,7 +198,8 @@ corresponding precondition, whether or not the method lists them:
 
 - `invalid_params` and `internal` — any method (bad params; unexpected failure).
 - `identity_missing` — any method that needs the local identity (everything
-  except `daemon.status`, `daemon.shutdown`, `identity.create`).
+  except `daemon.status`, `daemon.shutdown`, `identity.create`, and the
+  pre-identity `room.list` onboarding result, which is `{ rooms: [] }`).
 - `room_unknown` — any method taking a `room_id` when the local identity has
   never completed membership in that room, including a foreign room whose
   events happen to exist in the shared store. The same error is used for a
@@ -330,7 +331,7 @@ major bump:
 | Method | Params | Result |
 |---|---|---|
 | `room.create` | `{ name }` | `{ room_id }` — name is daemon-local metadata if the protocol has no name field |
-| `room.list` | `{}` | `{ rooms: [{ room_id, name, role, status, member_count, open }] }` — requires the local identity; `status` is this identity's roster status (`active|left|removed`) and `role` is `owner|member|agent`. **`name` is `null`** until the genesis event syncs. Client models retain nullable `role`/`status` only for compatibility with older protocol-v1 implementations; the v0.5 daemon does not emit such a row. |
+| `room.list` | `{}` | `{ rooms: [{ room_id, name, role, status, member_count, open }] }` — before identity creation, protocol v1 returns `{ rooms: [] }`. Afterward, `status` is this identity's roster status (`active|left|removed`) and `role` is `owner|member|agent`; unauthorized rooms are omitted. **`name` is `null`** until the genesis event syncs. Client models retain nullable `role`/`status` only for compatibility with older protocol-v1 implementations; the v0.5 daemon does not emit such a row. |
 | `room.open` | `{ room_id, peers?: ["<endpoint_id>@<ip:port>"] }` | `{ endpoint: { endpoint_id, addr }, members, timeline }` — spawns the room's node session, starts pushes; `peers` are optional dial hints merged into the persisted hint set (same shape as `room.join`); `addr` is the dialable string an inviter shares with joiners. **`room.open` succeeds locally regardless of peer reachability** — unreachable hints surface as an empty/stale timeline that later syncs, *not* as an error (distinctive error: `not_a_member`; plus cross-cutting `room_unknown`) |
 | `room.close` | `{ room_id }` | `{}` — closes only this daemon's live session; membership remains active |
 | `room.leave` | `{ room_id }` | `{ event_id }` — authors `member.left` for this identity and closes the local session; owners are rejected until ownership transfer exists |

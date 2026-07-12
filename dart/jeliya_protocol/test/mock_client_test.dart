@@ -272,10 +272,10 @@ void main() {
       await client.stop();
     });
 
-    test('fresh mode gates on identity like a fresh daemon', () async {
+    test('fresh mode preserves the protocol-v1 empty room list before identity', () async {
       final client = _newClient(fresh: true);
       await client.start();
-      await expectLater(client.roomList(), _throwsCode(ErrorCodes.identityMissing));
+      expect(await client.roomList(), isEmpty);
       final identity = await client.identityCreate();
       expect(identity.identityId, MockPeople.alex.identityId);
       expect(await client.roomList(), isEmpty);

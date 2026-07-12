@@ -105,8 +105,8 @@ export interface RoomSummary {
   room_id: string;
   /** null for a joined room whose genesis (name-bearing) event has not synced. */
   name: string | null;
-  /** Compatibility-nullable for older protocol-v1 daemons; v0.5 requires an
-   *  identity and emits a role for every authorized room.list row. */
+  /** Compatibility-nullable for older protocol-v1 daemons; v0.5 emits a role
+   *  for every authorized row (and no rows before identity creation). */
   role: Role | null;
   /** Compatibility-nullable for older protocol-v1 daemons; v0.5 emits the
    *  local member's active/left/removed status for every listed room. */

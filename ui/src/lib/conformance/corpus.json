@@ -2,10 +2,10 @@
   "note": "Envelope-level conformance vectors for docs/PROTOCOL.md. Replayed against the real daemon, FFI engine, and mock via the TypeScript/Dart conformance suites. Dynamic scalars are compared as type tags (see harness.ts normalize): <hex64>, <hex32>, <room_id>, <ticket>, <file_id>, <addr>, <ts>, <path>, <version>, <number>. Oracles run a 'preIdentity' scenario against a separate fresh instance; all other scenarios share an instance whose identity exists. Scenarios never call identity.create. Tags: 'mockOnly' / 'daemonOnly' skip an oracle; 'preIdentity' selects the fresh identity-free instance.",
   "scenarios": [
     {
-      "name": "room.list before identity creation fails identity_missing",
+      "name": "room.list before identity creation preserves the empty protocol-v1 result",
       "tags": ["preIdentity"],
       "steps": [
-        { "call": "room.list", "expectError": "identity_missing" }
+        { "call": "room.list", "expect": { "rooms": [] } }
       ]
     },
     {

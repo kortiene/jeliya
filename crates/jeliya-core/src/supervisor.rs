@@ -874,10 +874,17 @@ impl RoomSupervisor {
 
     /// `room.list`: every locally known room with name/role/member count/open.
     pub async fn list_rooms(&self) -> CoreResult<Vec<Value>> {
-        let self_key = self.local_identity_key()?;
         if !self.db_path().exists() {
             return Ok(Vec::new());
         }
+        let self_key = match self.local_identity_key() {
+            Ok(key) => key,
+            // Protocol v1 historically exposes an empty onboarding state, not
+            // an error. Returning no rows is also the strictest privacy result:
+            // without an identity there is no authorized room projection.
+            Err(error) if error.kind == ErrorKind::IdentityMissing => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
         // Enumerate only the daemon-local accepted-room index. Sync can place
         // foreign rows in the shared store, but it cannot add an index entry;
         // therefore even a membership fold is delayed until local provenance
