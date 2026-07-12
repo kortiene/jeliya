@@ -114,6 +114,22 @@ if (trackedResult.status !== 0) {
   }
 }
 
+const privateKeyPemPrefix = "-----BEGIN ";
+const privateKeyPemSuffix = "PRIVATE KEY-----";
+const privateKeyPemPattern = `${privateKeyPemPrefix}.*${privateKeyPemSuffix}`;
+const privateKeySearch = spawnSync(
+  "git",
+  ["grep", "-Il", "-e", privateKeyPemPattern, "--"],
+  { cwd: repoRoot, encoding: "utf8" },
+);
+if (privateKeySearch.status === 0) {
+  for (const path of privateKeySearch.stdout.split(/\r?\n/).filter(Boolean)) {
+    failures.push(`${path}: tracked private-key PEM material is forbidden`);
+  }
+} else if (privateKeySearch.status !== 1) {
+  failures.push(`git grep for private-key PEM material failed: ${privateKeySearch.stderr.trim()}`);
+}
+
 for (const candidate of [
   ".jeliya-agent/identity.secret",
   ".jeliya-agent-builder-1/identity.secret",
@@ -121,6 +137,9 @@ for (const candidate of [
   ".jeliya-realnet-host/identity.secret",
   "identity.secret",
   "daemon.json",
+  "release/evidence-ed25519-private.pem",
+  "release/evidence-operator.key",
+  "docs/evidence/v0.5.0/direct.private.pem",
 ]) {
   const ignored = spawnSync("git", ["check-ignore", "--no-index", "--quiet", candidate], {
     cwd: repoRoot,

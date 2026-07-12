@@ -15,6 +15,13 @@ ui/dist/
 identity.secret
 daemon.json
 
+# Release-evidence signing private material is provisioned out of band. Only
+# the Ed25519 public SPKI PEM may ever be tracked.
+release/evidence-ed25519-private.pem
+release/evidence-*.private.pem
+release/evidence-*.key
+docs/evidence/**/*.private.*
+
 # Legacy pre-rename local state (identity secrets, room dbs) — never commit.
 .bantaba-data*/
 .bantaba-demo*/
