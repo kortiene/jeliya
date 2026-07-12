@@ -40,6 +40,7 @@ import {
   remoteCleanupCommand,
   remoteCreateCommand,
   remoteDaemonCommand,
+  remoteCopyTimeoutMs,
   remoteOwnedDirectoryCleanupCommand,
   remoteRunDir,
   resolveExecutableFromPath,
@@ -252,6 +253,15 @@ test("certifying remote mode requires two distinct SSH targets", () => {
   assert.equal(config.withThird, true);
   assert.equal(config.remote, "user@kilo");
   assert.equal(config.thirdRemote, "user@stargate-03");
+});
+
+test("remote binary copies have size-aware but bounded deadlines", () => {
+  assert.equal(remoteCopyTimeoutMs(1), 120_000);
+  assert.equal(remoteCopyTimeoutMs(53 * 1024 * 1024), 484_000);
+  assert.equal(remoteCopyTimeoutMs(Number.MAX_SAFE_INTEGER), 30 * 60_000);
+  for (const value of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => remoteCopyTimeoutMs(value), /positive safe byte count/);
+  }
 });
 
 test("source-build mode rejects ambiguous binaries and requires a verified Zig archive", () => {
