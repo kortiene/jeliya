@@ -67,6 +67,10 @@ test("remote wrapper records the exec-stable PID before starting jeliyad", () =>
   assert.ok(pidWrite >= 0);
   assert.ok(daemonExec > pidWrite);
   assert.match(command, /printf '%s\\n' "\$\$"/);
+  const dropped = remoteDaemonCommand(runId, runDir, { uid: 65534, gid: 65534 });
+  assert.match(dropped, /setpriv --reuid=65534 --regid=65534 --clear-groups/);
+  assert.ok(dropped.indexOf("jeliyad.pid") < dropped.indexOf("setpriv"));
+  assert.throws(() => remoteDaemonCommand(runId, runDir, { uid: 0, gid: 0 }));
   assert.throws(() => remoteDaemonCommand(runId, `${runDir}; touch /tmp/unsafe`));
 });
 
@@ -127,8 +131,12 @@ test("remote binary verification runs only inside the generated directory", () =
   const digest = "ab".repeat(32);
   const command = remoteBinaryVerificationCommand(runId, runDir, digest);
   assert.match(command, new RegExp(`${runDir}/jeliyad`));
-  assert.ok(command.indexOf("sha256sum") < command.indexOf('version=$("$binary" --version)'));
-  assert.ok(command.indexOf('version=$("$binary" --version)') < command.indexOf("--verification-relay-only-build"));
+  assert.ok(command.indexOf("sha256sum") < command.indexOf('version=$(run_as_peer "$binary" --version)'));
+  assert.ok(command.indexOf('version=$(run_as_peer "$binary" --version)') < command.indexOf("--verification-relay-only-build"));
+  assert.match(
+    remoteBinaryVerificationCommand(runId, runDir, digest, { uid: 65534, gid: 65534 }),
+    /run_as_peer\(\) \{ setpriv --reuid=65534 --regid=65534 --clear-groups/,
+  );
   assert.throws(() => remoteBinaryVerificationCommand(runId, `${runDir}; touch /tmp/unsafe`, digest));
   assert.throws(() => remoteBinaryVerificationCommand(runId, runDir, "not-a-digest"));
 });
@@ -152,27 +160,32 @@ test("remote binary record proves digest, version, and direct-build attestation 
   const record = [
     `SHA256=${digest}`,
     "VERSION=jeliyad 0.5.0",
+    "EXECUTION_UID=1000",
     "RELAY_STATUS=2",
     "RELAY_STDOUT_HEX=",
   ].join("\n");
   assert.deepEqual(parseRemoteBinaryVerification(record, {
     expectedSha: digest,
     expectedVersion: "0.5.0",
+    expectedExecutionUid: "1000",
     expectedRelayOnly: false,
   }), {
     sha256: digest,
     version: "0.5.0",
+    execution_uid: "1000",
     relay_only_attested: false,
     relay_attestation_exit_status: 2,
   });
   assert.throws(() => parseRemoteBinaryVerification(record, {
     expectedSha: "cd".repeat(32),
     expectedVersion: "0.5.0",
+    expectedExecutionUid: "1000",
     expectedRelayOnly: false,
   }), /digest mismatch/);
   assert.throws(() => parseRemoteBinaryVerification(record, {
     expectedSha: digest,
     expectedVersion: "0.5.1",
+    expectedExecutionUid: "1000",
     expectedRelayOnly: false,
   }), /version mismatch/);
 });
@@ -183,22 +196,26 @@ test("remote relay-only record requires the exact compile-time marker", () => {
   const valid = [
     `SHA256=${digest}`,
     "VERSION=jeliyad 0.5.0",
+    "EXECUTION_UID=65534",
     "RELAY_STATUS=0",
     `RELAY_STDOUT_HEX=${markerHex}`,
   ].join("\n");
   assert.equal(parseRemoteBinaryVerification(valid, {
     expectedSha: digest,
     expectedVersion: "0.5.0",
+    expectedExecutionUid: "65534",
     expectedRelayOnly: true,
   }).relay_only_attested, true);
   assert.throws(() => parseRemoteBinaryVerification(valid.replace(markerHex, "00"), {
     expectedSha: digest,
     expectedVersion: "0.5.0",
+    expectedExecutionUid: "65534",
     expectedRelayOnly: true,
   }), /lacks the compile-time relay-only attestation/);
   assert.throws(() => parseRemoteBinaryVerification(valid, {
     expectedSha: digest,
     expectedVersion: "0.5.0",
+    expectedExecutionUid: "65534",
     expectedRelayOnly: false,
   }), /ordinary remote binary/);
 });

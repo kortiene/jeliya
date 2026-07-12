@@ -99,12 +99,26 @@ function validateRemoteRunDir(runId, runDir) {
   return runDir;
 }
 
-export function remoteDaemonCommand(runId, runDir) {
+function validatePrivilegeDrop(privilegeDrop) {
+  if (privilegeDrop == null) return null;
+  const uid = String(privilegeDrop.uid);
+  const gid = String(privilegeDrop.gid);
+  if (!/^\d+$/.test(uid) || !/^\d+$/.test(gid) || uid === "0" || gid === "0") {
+    throw new Error("privilege-drop uid/gid must be non-root decimal identifiers");
+  }
+  return { uid, gid };
+}
+
+export function remoteDaemonCommand(runId, runDir, privilegeDrop = null) {
   const validated = validateRemoteRunDir(runId, runDir);
+  const drop = validatePrivilegeDrop(privilegeDrop);
+  const executable = drop
+    ? `setpriv --reuid=${drop.uid} --regid=${drop.gid} --clear-groups '${validated}/jeliyad'`
+    : `'${validated}/jeliyad'`;
   return [
     "umask 077",
     `printf '%s\\n' "$$" > '${validated}/jeliyad.pid'`,
-    `exec '${validated}/jeliyad' --supervised --no-open --port 0 --data-dir '${validated}/state'`,
+    `exec ${executable} --supervised --no-open --port 0 --data-dir '${validated}/state'`,
   ].join(" && ");
 }
 
@@ -169,47 +183,62 @@ export function remoteCreateCommand(runId, runDir) {
   ].join("\n");
 }
 
-export function remoteBinaryVerificationCommand(runId, runDir, expectedSha) {
+export function remoteBinaryVerificationCommand(
+  runId,
+  runDir,
+  expectedSha,
+  privilegeDrop = null,
+) {
   const validated = validateRemoteRunDir(runId, runDir);
+  const drop = validatePrivilegeDrop(privilegeDrop);
   if (!/^[0-9a-f]{64}$/.test(expectedSha)) {
     throw new Error("expected remote binary digest must be 64 lowercase hex characters");
   }
   const binary = `${validated}/jeliyad`;
+  const runner = drop
+    ? `run_as_peer() { setpriv --reuid=${drop.uid} --regid=${drop.gid} --clear-groups "$@"; }`
+    : 'run_as_peer() { "$@"; }';
   return [
     "set -eu",
     `binary='${binary}'`,
+    runner,
     'chmod 700 "$binary"',
     'digest=$(sha256sum "$binary" | awk \'{print $1}\')',
     `if [ "$digest" != '${expectedSha}' ]; then printf 'SHA256=%s\\n' "$digest"; exit 98; fi`,
-    'version=$("$binary" --version)',
+    'execution_uid=$(run_as_peer id -u)',
+    'version=$(run_as_peer "$binary" --version)',
     "set +e",
-    'relay_output=$("$binary" --verification-relay-only-build 2>/dev/null)',
+    'relay_output=$(run_as_peer "$binary" --verification-relay-only-build 2>/dev/null)',
     "relay_status=$?",
     "set -e",
     'relay_hex=$(printf \'%s\' "$relay_output" | od -An -tx1 | tr -d \' \\n\')',
-    'printf \'SHA256=%s\\nVERSION=%s\\nRELAY_STATUS=%s\\nRELAY_STDOUT_HEX=%s\\n\' "$digest" "$version" "$relay_status" "$relay_hex"',
+    'printf \'SHA256=%s\\nVERSION=%s\\nEXECUTION_UID=%s\\nRELAY_STATUS=%s\\nRELAY_STDOUT_HEX=%s\\n\' "$digest" "$version" "$execution_uid" "$relay_status" "$relay_hex"',
   ].join("\n");
 }
 
 export function parseRemoteBinaryVerification(
   stdout,
-  { expectedSha, expectedVersion, expectedRelayOnly },
+  { expectedSha, expectedVersion, expectedExecutionUid, expectedRelayOnly },
 ) {
   const lines = String(stdout).trimEnd().split(/\r?\n/);
-  if (lines.length !== 4) throw new Error("remote binary verification returned an invalid record");
+  if (lines.length !== 5) throw new Error("remote binary verification returned an invalid record");
   const value = (prefix, line) => {
     if (!line.startsWith(prefix)) throw new Error("remote binary verification returned an invalid record");
     return line.slice(prefix.length);
   };
   const sha256 = value("SHA256=", lines[0]);
   const versionWire = value("VERSION=", lines[1]);
-  const relayStatusWire = value("RELAY_STATUS=", lines[2]);
-  const relayStdoutHex = value("RELAY_STDOUT_HEX=", lines[3]);
+  const executionUid = value("EXECUTION_UID=", lines[2]);
+  const relayStatusWire = value("RELAY_STATUS=", lines[3]);
+  const relayStdoutHex = value("RELAY_STDOUT_HEX=", lines[4]);
   if (!/^[0-9a-f]{64}$/.test(sha256) || sha256 !== expectedSha) {
     throw new Error("remote binary digest mismatch");
   }
   if (versionWire !== `jeliyad ${expectedVersion}`) {
     throw new Error("remote binary version mismatch");
+  }
+  if (!/^\d+$/.test(executionUid) || executionUid !== String(expectedExecutionUid)) {
+    throw new Error("remote binary execution uid mismatch");
   }
   if (!/^\d+$/.test(relayStatusWire)) {
     throw new Error("remote relay attestation returned an invalid status");
@@ -226,6 +255,7 @@ export function parseRemoteBinaryVerification(
   return {
     sha256,
     version: expectedVersion,
+    execution_uid: executionUid,
     relay_only_attested: relayOnlyAttested,
     relay_attestation_exit_status: relayStatus,
   };
@@ -1087,13 +1117,22 @@ async function provisionRemoteBinary({
   }
   const inventory = await sshRun(
     target,
-    "uname -s; uname -m; for tool in sha256sum awk od tr; do command -v \"$tool\" >/dev/null || exit 97; done; printf 'tools-ok\\n'; ( . /etc/os-release 2>/dev/null && printf '%s\\n' \"$PRETTY_NAME\" ) || printf 'Linux\\n'",
+    "set -eu; uname -s; uname -m; remote_uid=$(id -u); printf 'uid=%s\\n' \"$remote_uid\"; for tool in sha256sum awk od tr id; do command -v \"$tool\" >/dev/null || exit 97; done; printf 'tools-ok\\n'; if [ \"$remote_uid\" -eq 0 ]; then command -v setpriv >/dev/null; command -v chown >/dev/null; drop_uid=$(id -u nobody); drop_gid=$(id -g nobody); [ \"$drop_uid\" -ne 0 ]; [ \"$drop_gid\" -ne 0 ]; printf 'drop=%s:%s\\n' \"$drop_uid\" \"$drop_gid\"; else printf 'drop=none\\n'; fi; ( . /etc/os-release 2>/dev/null && printf '%s\\n' \"$PRETTY_NAME\" ) || printf 'Linux\\n'",
     { signal },
   );
   if (inventory.code !== 0) throw new Error(`read-only inventory failed for ${target}`);
   const lines = inventory.stdout.trim().split(/\r?\n/);
-  if (lines[0] !== "Linux" || lines[1] !== "x86_64" || lines[2] !== "tools-ok") {
+  const uidMatch = /^uid=(\d+)$/.exec(lines[2] ?? "");
+  const dropMatch = /^drop=(\d+):(\d+)$/.exec(lines[4] ?? "");
+  if (lines[0] !== "Linux" || lines[1] !== "x86_64" || !uidMatch || lines[3] !== "tools-ok") {
     throw new Error(`${target} is not a supported Linux x86_64 host with the required verification tools`);
+  }
+  const remoteUid = uidMatch[1];
+  const privilegeDrop = remoteUid === "0"
+    ? validatePrivilegeDrop(dropMatch ? { uid: dropMatch[1], gid: dropMatch[2] } : null)
+    : null;
+  if (remoteUid === "0" && !privilegeDrop) {
+    throw new Error(`${target} is root-capable but cannot drop the daemon to an unprivileged account`);
   }
 
   const cleanup = async () => {
@@ -1116,21 +1155,36 @@ async function provisionRemoteBinary({
     );
     if (copy.code !== 0) throw new Error(`could not copy the verified binary to ${target}`);
 
-    const verify = await sshRun(target, remoteBinaryVerificationCommand(runId, runDir, expectedSha), {
-      timeoutMs: 30_000,
-      signal,
-    });
+    if (privilegeDrop) {
+      const ownership = await sshRun(
+        target,
+        `chown -R '${privilegeDrop.uid}:${privilegeDrop.gid}' -- '${runDir}'`,
+        { signal },
+      );
+      if (ownership.code !== 0) {
+        throw new Error(`could not confine the root-capable host run to an unprivileged uid on ${target}`);
+      }
+    }
+
+    const verify = await sshRun(
+      target,
+      remoteBinaryVerificationCommand(runId, runDir, expectedSha, privilegeDrop),
+      { timeoutMs: 30_000, signal },
+    );
     if (verify.code !== 0) throw new Error(`remote binary verification failed on ${target}`);
     const binaryValidation = parseRemoteBinaryVerification(verify.stdout, {
       expectedSha,
       expectedVersion,
+      expectedExecutionUid: privilegeDrop?.uid ?? remoteUid,
       expectedRelayOnly,
     });
     return {
       runDir,
-      os: lines[3] || "Linux",
+      os: lines[5] || "Linux",
       architecture: "x86_64",
       binaryValidation,
+      privilegeDrop,
+      processPrivilege: privilegeDrop ? "dropped-to-unprivileged-system-uid" : "ssh-account-uid",
     };
   } catch (error) {
     // Never delete a colliding/pre-existing path. Cleanup is permitted only
@@ -1174,7 +1228,7 @@ async function startRemotePeer({
     expectedRelayOnly,
     signal: resources.abortSignal,
   });
-  const command = remoteDaemonCommand(runId, provisioned.runDir);
+  const command = remoteDaemonCommand(runId, provisioned.runDir, provisioned.privilegeDrop);
   const proc = spawn("ssh", [...SSH_BASE, "-T", target, command], {
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -1192,6 +1246,7 @@ async function startRemotePeer({
     os: provisioned.os,
     architecture: provisioned.architecture,
     binaryValidation: provisioned.binaryValidation,
+    processPrivilege: provisioned.processPrivilege,
   };
   // Register before waiting for readiness, the tunnel, the session token, or
   // the WebSocket. Any failure after spawn must still be visible to cleanup.
@@ -2076,6 +2131,7 @@ async function main(argv = process.argv.slice(2)) {
         host: config.remote,
         os: b.os,
         architecture: b.architecture,
+        process_privilege: b.processPrivilege,
         binary_validation: b.binaryValidation,
       });
     }
@@ -2105,6 +2161,7 @@ async function main(argv = process.argv.slice(2)) {
           host: config.thirdRemote,
           os: c.os,
           architecture: c.architecture,
+          process_privilege: c.processPrivilege,
           binary_validation: c.binaryValidation,
         });
       }
