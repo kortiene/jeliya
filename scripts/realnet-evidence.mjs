@@ -659,6 +659,21 @@ function rustToolIdentity(name, versionArgs) {
   return { filename: basename(path), version, sha256: sha256File(path) };
 }
 
+function requireInstalledRustTarget(target) {
+  const rustup = execFileSync("which", ["rustup"], { encoding: "utf8" }).trim();
+  const installed = execFileSync(
+    rustup,
+    ["target", "list", "--installed", "--toolchain", REQUIRED_RUST_TOOLCHAIN],
+    { encoding: "utf8" },
+  ).trim().split(/\r?\n/);
+  if (!installed.includes(target)) {
+    throw new Error(
+      `Rust target ${target} is not installed for ${REQUIRED_RUST_TOOLCHAIN}; run rustup target add --toolchain ${REQUIRED_RUST_TOOLCHAIN} ${target}`,
+    );
+  }
+  return target;
+}
+
 function embeddedUiReady(sourceRoot) {
   const root = join(sourceRoot, "ui", "dist");
   const index = join(root, "index.html");
@@ -713,6 +728,7 @@ function buildCandidateFromSource({ runId, relayOnlyBuild, zigSha256, sourceComm
   const npm = commandIdentity("npm", ["--version"]);
   const zig = commandIdentity("zig", ["version"]);
   const cargoZigbuild = commandIdentity("cargo-zigbuild", ["-V"]);
+  const installedLinuxTarget = requireInstalledRustTarget(LINUX_TARGET);
   if (!rustc.version.startsWith(`rustc ${REQUIRED_RUST_TOOLCHAIN} `)) {
     throw new Error(`rustc ${REQUIRED_RUST_TOOLCHAIN} is required, found ${rustc.version.split("\n")[0]}`);
   }
@@ -805,6 +821,7 @@ function buildCandidateFromSource({ runId, relayOnlyBuild, zigSha256, sourceComm
           zig: { ...zig, expected_sha256: expectedZigSha, integrity_verified: true },
           cargo_zigbuild: cargoZigbuild,
           cargo_build_jobs: Number(REQUIRED_CARGO_BUILD_JOBS),
+          installed_cross_target: installedLinuxTarget,
         },
       },
     };
