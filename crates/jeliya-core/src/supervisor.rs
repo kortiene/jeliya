@@ -2573,8 +2573,8 @@ impl RoomSupervisor {
 
         // Phase 2 (async): fold-free membership via `snapshot_for` (O(1) for
         // open rooms, cached for closed rooms), aggregated over each room's
-        // timeline rows. A room whose log will not fold (no readable membership)
-        // contributes nothing beyond its rooms_total slot — never a guess.
+        // timeline rows. A room whose log will not fold or whose membership is
+        // unauthorized is excluded from every fleet count — never a guess.
         //
         // READ ORDER: the snapshot is taken first, then the rows are read from a
         // fresh short-lived store *after* it. Because a room's log is
