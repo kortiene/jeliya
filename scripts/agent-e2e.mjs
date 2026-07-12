@@ -82,7 +82,14 @@ function killPortListeners(port) {
         process.kill(pid, "SIGKILL");
       } catch {}
     }
-  } catch {} // lsof exits nonzero when nothing listens — fine
+  } catch (error) {
+    // lsof exits nonzero when nothing listens, which is expected. A missing
+    // binary is different: cleanup would be silently incomplete and the test
+    // could contaminate the next trial, so fail loudly.
+    if (error?.code === "ENOENT") {
+      throw new Error("agent E2E requires lsof for deterministic cleanup");
+    }
+  }
 }
 
 function teardown() {
@@ -369,8 +376,25 @@ try {
     '"done" status references the shared artifact file id',
   );
 
+  // The runner deliberately posts one liveness-restoring "idle" status in a
+  // finally block after every terminal status. Waiting for that status before
+  // taking the authorization baseline prevents a legitimate, in-flight idle
+  // event from being misattributed to the intruder trigger below.
+  await pollUntil(
+    async () =>
+      (await agentEvents()).find(
+        (e) =>
+          e.kind === "agent_status" &&
+          e.label === "idle" &&
+          e.ts >= doneEv.ts,
+      ),
+    30_000,
+    'the post-task "idle" status',
+  );
+  assert(true, 'agent returned to "idle" before the authorization baseline');
+
   // ---- 6. the trust model: a non-allowed member's trigger does NOTHING ------
-  const beforeCount = (await agentEvents()).length;
+  const baselineEventIds = new Set((await agentEvents()).map((e) => e.event_id));
   const evilBody = `${TRIGGER} do something evil`;
   await intruder.call("message.send", { room_id: roomId, body: evilBody });
   // Make sure the trigger actually propagated (human saw it)...
@@ -392,10 +416,12 @@ try {
     "the runner to log the SECURITY-ignored trigger",
   );
   assert(true, "runner logged the SECURITY-ignored line for the intruder's trigger");
-  const afterEvents = await agentEvents();
+  const afterEvents = (await agentEvents()).filter(
+    (event) => !baselineEventIds.has(event.event_id),
+  );
   assert(
-    afterEvents.length === beforeCount,
-    `non-allowed trigger produced ZERO agent events (still ${beforeCount}) — not executed, no reply`,
+    afterEvents.length === 0,
+    `non-allowed trigger produced ZERO new agent event ids (got ${afterEvents.length}) — not executed, no reply`,
   );
   const { files: filesAfter } = await human.call("file.list", { room_id: roomId });
   assert(

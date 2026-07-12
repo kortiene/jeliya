@@ -1,54 +1,102 @@
 name: release
 
-# Build and publish per-target `jeliyad` release binaries when a version tag
-# (e.g. `v0.1.0`) is pushed.
-#
-# This workflow hardcodes no org or repo slug — it always builds the repo it
-# runs in. Pushing a `v*` tag triggers it and attaches artifacts to the
-# auto-created Release. See packaging/README.md for release follow-up.
-#
-# PHASE 2 (in progress): the per-target daemon archives from the `build`
-# matrix are UNSIGNED until Phase 2 lands (issue #1). A *browser* download of
-# an unsigned binary trips Gatekeeper (macOS) / SmartScreen (Windows). The
-# curl|sh and Homebrew install paths in packaging/ do NOT set the quarantine
-# bit, so they install cleanly. The `macos-app` DMG job below is the
-# exception: it Developer-ID-signs and notarizes automatically when the six
-# MACOS_*/NOTARY_* repo secrets exist, and falls back to ad-hoc signing
-# otherwise. See docs/signing-notarization.md.
+# v0.5.x publishes only the daemon with its embedded web UI. All binaries and
+# checksum sidecars are built as private workflow artifacts first. The sole
+# write-capable job validates the complete set, uploads it to a draft release,
+# verifies the remote assets, and only then makes the release visible.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact release tag to promote (vX.Y.Z)
+        required: true
+        type: string
 
 permissions:
-  contents: write # required to create the Release and attach assets
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  # The same gates ci.yml runs on every push/PR. Both publish jobs `needs:`
-  # this so a failed gate blocks the WHOLE release — no binary asset ever
-  # publishes off a tree that fails verification.
-  verify:
-    name: verify
+  verify-first:
+    name: Required CI gates (clean run 1 of 2)
     uses: ./.github/workflows/ci.yml
 
+  verify-second:
+    name: Required CI gates (clean run 2 of 2)
+    uses: ./.github/workflows/ci.yml
+
+  embedded-ui:
+    name: Build the embedded web UI once
+    needs:
+      - verify-first
+      - verify-second
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.version }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.22.3'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Validate tag, source versions, lockfiles, and changelog
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$DEFAULT_BRANCH" --depth=1
+          test "$GITHUB_SHA" = "$(git rev-parse FETCH_HEAD)" || {
+            echo "release must promote the current tip of $DEFAULT_BRANCH" >&2
+            exit 1
+          }
+          node scripts/check-release.mjs --source --publish --tag "$RELEASE_TAG"
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -s dist/index.html
+
+      - name: Upload immutable UI input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: embedded-ui
+          path: ui/dist/
+          if-no-files-found: error
+          retention-days: 3
+
   build:
-    name: ${{ matrix.target }}
-    needs: verify
+    name: Build ${{ matrix.target }}
+    needs:
+      - verify-first
+      - verify-second
+      - embedded-ui
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ inputs.version }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14 # Apple-silicon runner (native arm64)
+            os: macos-14
             archive: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-14 # cross-targeted from the available Apple-silicon runner
+            os: macos-14
             archive: tar.gz
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
@@ -59,228 +107,358 @@ jobs:
             archive: tar.gz
             zigbuild: true
           - target: x86_64-pc-windows-msvc
-            os: windows-latest # native x86_64
+            os: windows-latest
             archive: zip
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-
-      # `@stable` is always >= the repo MSRV (workspace rust-version = 1.80).
-      # `targets` installs the cross target's std via rustup so cargo/zigbuild
-      # can link against it.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain and target
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.91.0
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      # --- UI FIRST -----------------------------------------------------------
-      # The `embed-ui` feature bakes ui/dist into the binary via rust-embed, so
-      # ui/dist MUST exist before the cargo build. Built once per job.
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-
-      - name: Build UI (produces ui/dist)
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
-
-      # --- musl cross-compile via cargo-zigbuild ------------------------------
-      # zig cc is the C linker; produces static musl binaries and dodges
-      # glibc-version breakage (the approach the iroh project uses). The tree
-      # has C deps (ring, libsqlite3-sys) + a QUIC/UDP stack (iroh), hence the
-      # C toolchain requirement.
-      - name: Setup Zig
-        if: ${{ matrix.zigbuild }}
+      - name: Record and verify the pinned Rust toolchain
         shell: bash
         run: |
-          set -eu
+          set -euo pipefail
+          rustc --version | grep '^rustc 1\.91\.0 '
+          rustc -Vv
+          cargo -V
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Download the verified UI build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: embedded-ui
+          path: ui/dist
+
+      - name: Assert embedded UI input
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s ui/dist/index.html
+          test "$(find ui/dist -type f | wc -l | tr -d ' ')" -gt 1
+
+      # Zig is downloaded only on Linux cross-builds. Its published archive is
+      # authenticated against a hard-coded SHA-256 before extraction/execution.
+      - name: Download and verify Zig 0.15.2
+        if: ${{ matrix.zigbuild == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
           zig_version="0.15.2"
           case "$(uname -m)" in
-            x86_64) zig_arch="x86_64" ;;
-            aarch64 | arm64) zig_arch="aarch64" ;;
-            *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+            x86_64)
+              zig_arch="x86_64"
+              zig_sha256="02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
+              ;;
+            aarch64 | arm64)
+              zig_arch="aarch64"
+              zig_sha256="958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f"
+              ;;
+            *)
+              echo "unsupported runner architecture: $(uname -m)" >&2
+              exit 1
+              ;;
           esac
-          url="https://ziglang.org/download/${zig_version}/zig-${zig_arch}-linux-${zig_version}.tar.xz"
-          curl -fsSL "$url" -o /tmp/zig.tar.xz
-          tar -xJf /tmp/zig.tar.xz -C /tmp
-          zig_dir="/tmp/zig-${zig_arch}-linux-${zig_version}"
-          "$zig_dir/zig" version
+          archive="zig-${zig_arch}-linux-${zig_version}.tar.xz"
+          url="https://ziglang.org/download/${zig_version}/${archive}"
+          curl --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors -fsSL \
+            "$url" -o "$RUNNER_TEMP/$archive"
+          printf '%s  %s\n' "$zig_sha256" "$RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          zig_dir="$RUNNER_TEMP/zig-${zig_arch}-linux-${zig_version}"
+          test "$("$zig_dir/zig" version)" = "$zig_version"
           echo "$zig_dir" >> "$GITHUB_PATH"
 
-      - name: Install cargo-zigbuild
-        if: ${{ matrix.zigbuild }}
-        uses: taiki-e/install-action@v2
+      - name: Install pinned cargo-zigbuild
+        if: ${{ matrix.zigbuild == true }}
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild@0.23.0
 
-      - name: Build jeliyad (zigbuild / musl)
-        if: ${{ matrix.zigbuild }}
-        run: cargo zigbuild --release -p jeliyad --features embed-ui --target ${{ matrix.target }}
+      - name: Build jeliyad (static musl)
+        if: ${{ matrix.zigbuild == true }}
+        run: cargo zigbuild --locked --release -p jeliyad --features embed-ui --target ${{ matrix.target }}
 
       - name: Build jeliyad (native)
-        if: ${{ !matrix.zigbuild }}
-        run: cargo build --release -p jeliyad --features embed-ui --target ${{ matrix.target }}
+        if: ${{ matrix.zigbuild != true }}
+        run: cargo build --locked --release -p jeliyad --features embed-ui --target ${{ matrix.target }}
 
-      # --- package: tar.gz for unix, zip for windows --------------------------
-      # Asset name: jeliyad-<tag>-<target>.<ext> (e.g.
-      # jeliyad-v0.1.0-x86_64-apple-darwin.tar.gz). A .sha256 sidecar is
-      # emitted alongside each archive to fill the Homebrew formula placeholders.
-      - name: Package (tar.gz)
+      - name: Package and verify tar.gz
         if: ${{ matrix.archive == 'tar.gz' }}
         shell: bash
         run: |
-          set -eu
-          version="${GITHUB_REF_NAME}"
-          asset="jeliyad-${version}-${{ matrix.target }}.tar.gz"
-          stage="$(mktemp -d)"
-          cp "target/${{ matrix.target }}/release/jeliyad" "$stage/"
+          set -euo pipefail
+          asset="jeliyad-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
+          stage="$RUNNER_TEMP/jeliya-package-${{ matrix.target }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/jeliyad" "$stage/jeliyad"
           tar -czf "$asset" -C "$stage" jeliyad
+          test "$(tar -tzf "$asset")" = "jeliyad"
           shasum -a 256 "$asset" > "$asset.sha256"
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 
-      - name: Package (zip)
+      - name: Package and verify zip
         if: ${{ matrix.archive == 'zip' }}
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME
-          $asset = "jeliyad-$version-${{ matrix.target }}.zip"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/jeliyad.exe" -DestinationPath $asset -Force
-          ((Get-FileHash -Algorithm SHA256 $asset).Hash.ToLower() + "  $asset") | Out-File -Encoding ascii "$asset.sha256"
-          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          $ErrorActionPreference = 'Stop'
+          $asset = "jeliyad-$env:RELEASE_TAG-${{ matrix.target }}.zip"
+          Compress-Archive -LiteralPath "target/${{ matrix.target }}/release/jeliyad.exe" -DestinationPath $asset -Force
+          $stage = Join-Path $env:RUNNER_TEMP 'jeliya-zip-check'
+          Expand-Archive -LiteralPath $asset -DestinationPath $stage -Force
+          $members = @(Get-ChildItem -LiteralPath $stage -Recurse -File)
+          if ($members.Count -ne 1 -or $members[0].Name -cne 'jeliyad.exe') {
+            throw 'release zip must contain exactly jeliyad.exe'
+          }
+          ((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant() + "  $asset") |
+            Out-File -Encoding ascii "$asset.sha256"
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v3
+      - name: Upload private build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          # The tag being built (github.ref) is the Release; created if absent.
-          # The fixed body codifies the release voice (calm, truthful): what
-          # this is, how to install, the unsigned-binary caveat, and how to
-          # verify — generate_release_notes appends the changelog below it.
-          generate_release_notes: true
-          body: |
-            `jeliyad` — the Jeliya peer-to-peer daemon. One binary: serves the app at `http://127.0.0.1:7420/`, holds your data locally, syncs rooms device-to-device.
-
-            **Install**
-
-            ```sh
-            # macOS (Homebrew)
-            brew install kortiene/jeliya/jeliya
-            # macOS / Linux
-            curl -fsSL https://raw.githubusercontent.com/kortiene/jeliya/main/packaging/install.sh | sh
-            ```
-            ```powershell
-            # Windows
-            irm https://raw.githubusercontent.com/kortiene/jeliya/main/packaging/install.ps1 | iex
-            ```
-
-            **These binaries are not yet signed.** A browser-downloaded archive will be blocked by macOS Gatekeeper / Windows SmartScreen. Homebrew and the install scripts install the same bytes without the quarantine bit — prefer them.
-
-            Every archive has a `.sha256` sidecar — verify with `shasum -a 256 -c <asset>.sha256`.
-          files: |
+          name: release-${{ matrix.target }}
+          path: |
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
+          if-no-files-found: error
+          retention-days: 3
 
-  # --- Jeliya.app (Flutter desktop, Phase 5) ----------------------------------
-  # Universal (arm64 + x86_64) sandboxed bundle with the co-signed jeliyad
-  # sidecar, packaged as a DMG by scripts/package-macos.mjs. Signing and
-  # notarization activate automatically once the repo secrets exist
-  # (MACOS_CERT_P12 / MACOS_CERT_PASSWORD / MACOS_SIGN_IDENTITY /
-  # NOTARY_APPLE_ID / NOTARY_TEAM_ID / NOTARY_PASSWORD); without them the DMG
-  # is ad-hoc signed and carries the same Gatekeeper caveat as the bare
-  # binaries above.
-  macos-app:
-    name: macos-app (Jeliya.app DMG)
-    needs: verify
-    runs-on: macos-14
+  publish:
+    name: Validate complete set and publish atomically
+    needs:
+      - verify-first
+      - verify-second
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     env:
-      HAS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' && secrets.MACOS_SIGN_IDENTITY != '' }}
-      HAS_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' && secrets.NOTARY_TEAM_ID != '' && secrets.NOTARY_PASSWORD != '' }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.version }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      RELEASE_BODY: |
+        `jeliyad` is the Jeliya peer-to-peer daemon with the verified web UI embedded.
+
+        This technical preview intentionally publishes the daemon archives only. Native mobile and desktop packages remain unpublished until their platform gates are fully satisfied.
+
+        Each archive has a `.sha256` sidecar. The official Unix and Windows installers download and verify that checksum before extracting anything.
+
+        This release is intentionally marked as a prerelease, so the installers' unpinned `latest` path continues to select the latest stable release. Install this preview explicitly:
+
+        ```sh
+        curl -fsSL https://raw.githubusercontent.com/kortiene/jeliya/${{ inputs.version }}/packaging/install.sh | JELIYA_VERSION=${{ inputs.version }} sh
+        ```
+
+        ```powershell
+        $env:JELIYA_VERSION = '${{ inputs.version }}'
+        irm https://raw.githubusercontent.com/kortiene/jeliya/${{ inputs.version }}/packaging/install.ps1 | iex
+        ```
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain (both mac targets for the universal sidecar)
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: macos-app
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '22'
+          node-version: '22.22.3'
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - name: Download all daemon artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          # Same pin as ci.yml: the DMG must ship the toolchain the verify
-          # job gated on.
-          flutter-version: 3.41.5
-          cache: true
+          pattern: release-*
+          path: dist
+          merge-multiple: true
 
-      - name: Import Developer ID certificate
-        if: ${{ env.HAS_SIGNING == 'true' }}
-        env:
-          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      - name: Validate source, names, archive members, and checksums
         run: |
-          set -eu
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          keychain_pass="$(uuidgen)"
-          security create-keychain -p "$keychain_pass" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_pass" "$keychain"
-          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" \
-            -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_pass" "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain
-          rm -f "$RUNNER_TEMP/cert.p12"
+          set -euo pipefail
+          git fetch --no-tags origin "$DEFAULT_BRANCH" --depth=1
+          test "$GITHUB_SHA" = "$(git rev-parse FETCH_HEAD)" || {
+            echo "default branch moved after build; rerun release from its new tip" >&2
+            exit 1
+          }
+          node scripts/check-release.mjs --source --publish --tag "$RELEASE_TAG"
+          node scripts/check-release.mjs --artifacts dist --tag "$RELEASE_TAG"
 
-      - name: Store notarization credentials
-        if: ${{ env.HAS_SIGNING == 'true' && env.HAS_NOTARY == 'true' }}
-        env:
-          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+      - name: Verify the built daemon reports the tag version
         run: |
-          xcrun notarytool store-credentials jeliya-notary \
-            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" \
-            --password "$NOTARY_PASSWORD"
+          set -euo pipefail
+          stage="$RUNNER_TEMP/jeliya-version-check"
+          mkdir -p "$stage"
+          archive="dist/jeliyad-${RELEASE_TAG}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf "$archive" -C "$stage"
+          actual="$("$stage/jeliyad" --version)"
+          expected="jeliyad ${RELEASE_TAG#v}"
+          test "$actual" = "$expected" || {
+            echo "daemon version mismatch: got '$actual', expected '$expected'" >&2
+            exit 1
+          }
 
-      # The runtime gate is skipped on CI: it launches the sandboxed GUI app
-      # and SIGTERMs it, which is validated locally per release; runner window
-      # servers make it flaky. Everything static (signatures, entitlements,
-      # universal archs) still gates the build.
-      - name: Package Jeliya.app + DMG
-        env:
-          JELIYA_SIGN_IDENTITY: ${{ env.HAS_SIGNING == 'true' && secrets.MACOS_SIGN_IDENTITY || '-' }}
-          JELIYA_NOTARY_PROFILE: ${{ env.HAS_SIGNING == 'true' && env.HAS_NOTARY == 'true' && 'jeliya-notary' || '' }}
-        run: node scripts/package-macos.mjs --skip-gate
-
-      - name: Checksum
+      # GitHub has no transaction spanning a Git tag and all release assets.
+      # The complete artifact set is therefore built and verified privately
+      # first. This final job creates the tag plus a private draft, verifies the
+      # uploaded bytes, and exposes the release only with the final PATCH. Its
+      # EXIT trap removes only the draft/tag this run created on failure.
+      - name: Create, verify, and publish the complete release
         run: |
-          set -eu
-          dmg="$(ls dist/Jeliya-v*-macos.dmg)"
-          shasum -a 256 "$dmg" > "$dmg.sha256"
-          echo "DMG=$dmg" >> "$GITHUB_ENV"
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          created_tag=0
+          release_id=""
+          published=0
+          run_marker="jeliya-release-run:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+          notes_file="$RUNNER_TEMP/jeliya-release-notes.md"
+          printf '%s\n\n<!-- %s -->\n' "$RELEASE_BODY" "$run_marker" > "$notes_file"
 
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          generate_release_notes: false
-          files: |
-            ${{ env.DMG }}
-            ${{ env.DMG }}.sha256
+          cleanup_failed_publication() {
+            status=$?
+            trap - EXIT INT TERM
+            if [ "$published" -ne 1 ]; then
+              candidate_id="$release_id"
+              release_lookup_ok=1
+              safe_to_delete_tag=1
+              if [ -z "$candidate_id" ]; then
+                if ! candidate_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                  --jq ".[] | select(.tag_name == \"${tag}\") | .id" 2>/dev/null)"; then
+                  release_lookup_ok=0
+                  safe_to_delete_tag=0
+                fi
+              fi
+              if [ -n "$candidate_id" ]; then
+                draft_state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${candidate_id}" \
+                  --jq '.draft' 2>/dev/null || true)"
+                candidate_body="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${candidate_id}" \
+                  --jq '.body // ""' 2>/dev/null || true)"
+                if [ "$draft_state" = "false" ]; then
+                  # The final PATCH may have succeeded immediately before this
+                  # shell was interrupted. Never remove the tag of a public
+                  # release merely because `published=1` was not assigned yet.
+                  published=1
+                  safe_to_delete_tag=0
+                elif [ "$draft_state" = "true" ]; then
+                  if [ "$created_tag" -ne 1 ] || \
+                     ! printf '%s' "$candidate_body" | grep -Fq "<!-- $run_marker -->"; then
+                    safe_to_delete_tag=0
+                    echo "warning: draft $candidate_id is not owned by this run; preserving it" >&2
+                  elif ! gh api "repos/${GITHUB_REPOSITORY}/releases/${candidate_id}" \
+                    --method DELETE >/dev/null 2>&1; then
+                    safe_to_delete_tag=0
+                    echo "warning: could not remove failed draft release $candidate_id" >&2
+                  fi
+                else
+                  safe_to_delete_tag=0
+                  echo "warning: could not confirm release state for $candidate_id" >&2
+                fi
+              fi
+              if [ "$published" -ne 1 ] && [ "$release_lookup_ok" -eq 1 ] && \
+                 [ "$safe_to_delete_tag" -eq 1 ] && [ "$created_tag" -eq 1 ]; then
+                current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" \
+                  --jq '.object.sha' 2>/dev/null || true)"
+                if [ "$current_sha" = "$GITHUB_SHA" ]; then
+                  gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" \
+                    --method DELETE >/dev/null 2>&1 || \
+                    echo "warning: could not remove failed run-owned tag $tag" >&2
+                fi
+              fi
+            fi
+            exit "$status"
+          }
+          existing="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${tag}\") | .id")"
+          test -z "$existing" || {
+            echo "release $tag already exists (id $existing); refusing to mutate it" >&2
+            exit 1
+          }
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "tag $tag already exists; refusing to mutate it" >&2
+            exit 1
+          fi
+
+          assets=(dist/*)
+          test "${#assets[@]}" -eq 10
+          # No cleanup trap is active during the refusal checks above: this run
+          # does not own an existing draft or tag and must never delete either.
+          trap cleanup_failed_publication EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            --method POST \
+            -f ref="refs/tags/${tag}" \
+            -f sha="$GITHUB_SHA" \
+            >/dev/null
+          created_tag=1
+          gh release create "$tag" "${assets[@]}" \
+            --verify-tag \
+            --target "$GITHUB_SHA" \
+            --title "Jeliya $tag — Evidence-Backed Technical Preview" \
+            --notes-file "$notes_file" \
+            --generate-notes \
+            --draft \
+            --prerelease \
+            --latest=false
+
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${tag}\" and .draft == true) | .id")"
+          test -n "$release_id" || {
+            echo "draft release $tag was not found after upload" >&2
+            exit 1
+          }
+
+          remote_count="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --jq 'length')"
+          test "$remote_count" -eq 10 || {
+            echo "draft has $remote_count assets; expected 10" >&2
+            exit 1
+          }
+          for file in "${assets[@]}"; do
+            name="$(basename "$file")"
+            local_size="$(stat -c '%s' "$file")"
+            remote_size="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+              --jq ".[] | select(.name == \"${name}\") | .size")"
+            test "$remote_size" = "$local_size" || {
+              echo "remote asset mismatch for $name: size '$remote_size', expected '$local_size'" >&2
+              exit 1
+            }
+            asset_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+              --jq ".[] | select(.name == \"${name}\") | .id")"
+            test -n "$asset_id" || {
+              echo "remote asset id missing for $name" >&2
+              exit 1
+            }
+            remote_copy="$RUNNER_TEMP/remote-${asset_id}"
+            gh api \
+              -H 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              > "$remote_copy"
+            cmp -s "$file" "$remote_copy" || {
+              echo "remote bytes differ for $name" >&2
+              exit 1
+            }
+          done
+
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+          test "$tag_sha" = "$GITHUB_SHA" || {
+            echo "tag $tag moved during publication" >&2
+            exit 1
+          }
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            --method PATCH \
+            -F draft=false \
+            -F prerelease=true \
+            >/dev/null
+          published=1

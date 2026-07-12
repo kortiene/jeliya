@@ -87,7 +87,13 @@ function killPortListeners(port) {
         process.kill(pid, "SIGKILL");
       } catch {}
     }
-  } catch {} // lsof exits nonzero when nothing listens — fine
+  } catch (error) {
+    // lsof exits nonzero when nothing listens, which is expected. A missing
+    // binary would make cleanup best-effort and can create false/flaky passes.
+    if (error?.code === "ENOENT") {
+      throw new Error("fleet E2E requires lsof for deterministic cleanup");
+    }
+  }
 }
 
 function teardown() {

@@ -40,6 +40,18 @@ download() { # download <url> <dest-file>
   fi
 }
 
+sha256_file() { # sha256_file <path> -> lowercase hex digest
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else
+    err "need sha256sum, shasum, or openssl to verify the downloaded archive"
+  fi
+}
+
 fetch_stdout() { # fetch_stdout <url>  -> prints body to stdout
   if [ "$DL" = "curl" ]; then
     curl -fsSL "$1"
@@ -79,6 +91,7 @@ fi
 
 ASSET="${BIN}-${VERSION}-${TARGET}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+CHECKSUM="${ASSET}.sha256"
 
 # --- download + extract -----------------------------------------------------
 tmp="$(mktemp -d 2>/dev/null || mktemp -d -t jeliya)"
@@ -88,9 +101,35 @@ info "downloading ${ASSET} ..."
 download "$URL" "$tmp/$ASSET" || err "download failed: $URL"
 [ -s "$tmp/$ASSET" ] || err "downloaded archive is empty or missing: $URL"
 
+info "downloading and verifying ${CHECKSUM} ..."
+download "${URL}.sha256" "$tmp/$CHECKSUM" \
+  || err "checksum download failed: ${URL}.sha256"
+[ -s "$tmp/$CHECKSUM" ] || err "downloaded checksum is empty or missing: ${URL}.sha256"
+
+# A sidecar is trusted only when it has one non-empty two-field line, a
+# 64-hex digest, and names this exact archive. This prevents a valid digest
+# for a different release/target from being applied accidentally.
+awk 'NF { if (seen || NF != 2) exit 1; seen = 1 } END { if (!seen) exit 1 }' \
+  "$tmp/$CHECKSUM" || err "invalid checksum sidecar format: $CHECKSUM"
+expected="$(awk 'NF { print $1 }' "$tmp/$CHECKSUM")"
+listed="$(awk 'NF { print $2 }' "$tmp/$CHECKSUM")"
+[ "$listed" = "$ASSET" ] || err "checksum sidecar names '$listed', expected '$ASSET'"
+[ "${#expected}" -eq 64 ] || err "checksum is not 64 hexadecimal characters"
+case "$expected" in
+  *[!0-9A-Fa-f]*) err "checksum is not 64 hexadecimal characters" ;;
+esac
+actual="$(sha256_file "$tmp/$ASSET" | tr 'A-F' 'a-f')"
+expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+[ "$actual" = "$expected" ] || err "checksum mismatch for $ASSET"
+info "checksum verified"
+
+members="$(tar -tzf "$tmp/$ASSET")" || err "could not inspect $ASSET"
+[ "$members" = "$BIN" ] || err "archive must contain exactly '$BIN'"
+
 info "extracting ..."
 tar -xzf "$tmp/$ASSET" -C "$tmp" || err "failed to extract $ASSET"
-[ -f "$tmp/$BIN" ] || err "archive did not contain '$BIN'"
+[ -f "$tmp/$BIN" ] && [ ! -L "$tmp/$BIN" ] \
+  || err "archive did not contain a regular '$BIN' file"
 chmod +x "$tmp/$BIN"
 
 # --- choose install dir -----------------------------------------------------

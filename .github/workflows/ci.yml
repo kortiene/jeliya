@@ -1,10 +1,8 @@
 name: ci
 
-# The i18n / app / package / Rust verification, on every PR and every push to
-# main — a literal leak, generated-code drift, or Rust regression must fail
-# here, not lie in wait on main until a release tag is cut. release.yml calls
-# this same workflow (workflow_call) so a release runs the identical gates and
-# its publish jobs can `needs:` it.
+# Every required technical-preview gate runs on pull requests, pushes to main,
+# and release tags (through workflow_call). No gate is allowed to turn green by
+# silently skipping a missing daemon or FFI library.
 
 on:
   push:
@@ -13,111 +11,342 @@ on:
   pull_request:
   workflow_call:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  verify:
-    name: verify (i18n + app + package gates)
+  docs-ui:
+    name: docs + TypeScript + release contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '22'
+          node-version: '22.22.3'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Verify documentation profile and navigation
+        run: |
+          set -euo pipefail
+          node --test scripts/check-docs.test.mjs
+          node scripts/check-docs.mjs
+
+      - name: Verify secret-storage boundaries
+        run: |
+          set -euo pipefail
+          node --test scripts/check-secret-storage.test.mjs
+          node scripts/check-secret-storage.mjs
+
+      - name: Verify release and installer contracts
+        run: |
+          set -euo pipefail
+          node --test scripts/check-release.test.mjs scripts/check-installers.test.mjs
+          node scripts/check-release.mjs --source
+          shellcheck packaging/install.sh
+
+      - name: Install TypeScript dependencies
+        working-directory: ui
+        run: npm ci
+
+      # The live-daemon corpus runs below after the binary is built. Running
+      # only the mock oracle here keeps this job honest rather than skipping.
+      - name: TypeScript mock conformance
+        working-directory: ui
+        run: npm exec -- vitest run src/lib/conformance/conformance.mock.test.ts
+
+      - name: TypeScript build
+        working-directory: ui
+        run: npm run build
+
+  flutter:
+    name: Flutter app + i18n
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.22.3'
 
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          # Pinned: the gen-drift gate below is byte-exact, so the generator
-          # version must match the one that produced the committed gen/ files.
-          # Bump the pin and regenerate/commit together.
+          # The generated-source drift gate is byte-exact. Bump this pin and
+          # regenerate the committed files in the same change.
           flutter-version: 3.41.5
           cache: true
 
-      - name: Verify i18n + app gates (gen drift, analyze, tests, gate)
+      - name: Verify generated sources, analysis, tests, and i18n
         working-directory: app
         run: |
-          set -eu
+          set -euo pipefail
           flutter pub get
-          # Committed generated l10n must match the ARB catalog exactly.
-          # `git status --porcelain` (not `git diff`) so newly created or
-          # deleted generated files count as drift too — an ARB for a new
-          # locale whose gen/ output was never committed must fail here.
           flutter gen-l10n
           test -z "$(git status --porcelain -- lib/src/l10n/gen)"
-          # The generated parity test must match the ARB too.
           node ../scripts/gen-l10n-parity.mjs
           test -z "$(git status --porcelain -- test/l10n_parity_test.dart)"
           flutter analyze
           flutter test
           node ../scripts/i18n-gate.mjs
 
-      - name: Verify jeliya_protocol
+      - name: Compile Android protected-storage bridge
+        working-directory: app
+        run: |
+          set -euo pipefail
+          ./android/gradlew -p android \
+            :app:compileDebugKotlin \
+            :app:processDebugMainManifest \
+            --no-daemon
+
+  rust-runtime:
+    name: Rust + Dart + smoke + E2E + protocol conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust 1.96.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.96.0
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.2
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.22.3'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: '3.11.3'
+
+      # jeliya-ffi's build.rs compiles dart_api_dl.c. Every workspace build
+      # therefore receives the standalone SDK include directory explicitly.
+      - name: Export Dart SDK headers
+        run: echo "DART_SDK_INCLUDE=$(dirname "$(command -v dart)")/../include" >> "$GITHUB_ENV"
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Rust clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --locked --workspace
+
+      - name: Build required live-test binaries
+        run: |
+          set -euo pipefail
+          cargo build --locked -p jeliyad
+          cargo build --locked -p jeliya-ffi
+          test -x target/debug/jeliyad
+          test -s target/debug/libjeliya_ffi.so
+          command -v lsof >/dev/null
+
+      - name: Network evidence harness safety and loopback qualification
+        run: |
+          set -euo pipefail
+          test -x target/debug/jeliyad
+          node --test scripts/realnet-evidence.test.mjs
+          node scripts/realnet-evidence.mjs --local-dryrun --with-third
+
+      - name: Dart protocol (analysis + daemon and FFI conformance)
         working-directory: dart/jeliya_protocol
         run: |
-          set -eu
+          set -euo pipefail
+          test -x ../../target/debug/jeliyad
+          test -s ../../target/debug/libjeliya_ffi.so
           dart pub get
           dart analyze
           dart test
 
-  rust:
-    name: rust (fmt + clippy + tests + daemon conformance)
+      - name: TypeScript conformance against the real daemon
+        working-directory: ui
+        env:
+          JELIYA_REQUIRE_DAEMON: '1'
+        run: |
+          set -euo pipefail
+          test -x ../target/debug/jeliyad
+          npm ci
+          npm run test:conformance
+
+      - name: Daemon smoke test
+        run: node scripts/smoke.mjs target/debug/jeliyad
+
+      - name: Sidecar contract
+        run: node scripts/sidecar-check.mjs target/debug/jeliyad
+
+      - name: Two-peer loopback E2E
+        run: node scripts/e2e.mjs --mode loopback
+
+      - name: Agent authorization E2E
+        run: node scripts/agent-e2e.mjs
+
+      - name: Fleet orchestration E2E
+        run: node scripts/fleet-e2e.mjs --trials 5
+
+  msrv:
+    name: MSRV 1.91.0
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          components: rustfmt, clippy
+          persist-credentials: false
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust 1.91.0
+        uses: dtolnay/rust-toolchain@ad7910d95e317a4b12a9a3dfad520f4b409b3ec0 # 1.91.0
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.2
+        with:
+          key: msrv-1.91.0
 
       - name: Setup Dart
-        uses: dart-lang/setup-dart@v1
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
+        with:
+          sdk: '3.11.3'
 
-      # jeliya-ffi's build.rs compiles the Dart SDK's dart_api_dl.c, so every
-      # cargo invocation that builds the workspace (clippy --all-targets,
-      # cargo test --workspace, the jeliya-ffi build below) needs the SDK
-      # include dir. setup-dart installs the standalone SDK layout — headers
-      # at <sdk>/include next to <sdk>/bin/dart — which build.rs's
-      # DART_SDK_INCLUDE override asserts against (it fails loudly on a dir
-      # without dart_api_dl.c).
-      - name: Export the Dart SDK include dir for jeliya-ffi's build.rs
-        run: echo "DART_SDK_INCLUDE=$(dirname "$(which dart)")/../include" >> "$GITHUB_ENV"
+      - name: Export Dart SDK headers
+        run: echo "DART_SDK_INCLUDE=$(dirname "$(command -v dart)")/../include" >> "$GITHUB_ENV"
 
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Tests
-        run: cargo test --workspace
-
-      # The daemon-bound jeliya_protocol suites (conformance, daemon HTTP,
-      # supervisor) skip themselves when target/debug/jeliyad is missing —
-      # which is every run of the verify job above. Build the daemon here so
-      # the golden corpus actually replays against it on every PR.
-      - name: Build jeliyad for daemon-bound suites
-        run: cargo build -p jeliyad
-
-      # Likewise the FFI oracle (test/ffi_conformance_test.dart) skips itself
-      # when target/debug/libjeliya_ffi.so is missing. Build the engine
-      # library so the same corpus replays against the in-process transport.
-      - name: Build jeliya-ffi for the FFI conformance oracle
-        run: cargo build -p jeliya-ffi
-
-      - name: Protocol conformance (jeliya_protocol against daemon + FFI engine)
-        working-directory: dart/jeliya_protocol
+      - name: Verify exact compiler and workspace
         run: |
-          set -eu
-          dart pub get
-          dart test
+          set -euo pipefail
+          rustc --version | grep '^rustc 1\.91\.0 '
+          cargo check --locked --workspace --all-targets
+
+  windows-installer:
+    name: Windows installer integrity
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Parse and exercise checksum enforcement
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = (Resolve-Path 'packaging/install.ps1').Path
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $installer,
+            [ref]$tokens,
+            [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
+
+          $root = Join-Path $env:RUNNER_TEMP "jeliya-installer-$PID"
+          $fixtures = Join-Path $root 'fixtures'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Force -Path $fixtures, $payload | Out-Null
+          $asset = 'jeliyad-v9.8.7-x86_64-pc-windows-msvc.zip'
+          $payloadExe = Join-Path $payload 'jeliyad.exe'
+          Set-Content -LiteralPath $payloadExe -Value 'verified daemon fixture' -NoNewline
+          $global:JeliyaFixtureArchive = Join-Path $fixtures $asset
+          Compress-Archive -LiteralPath $payloadExe -DestinationPath $global:JeliyaFixtureArchive
+          $digest = (Get-FileHash -LiteralPath $global:JeliyaFixtureArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $global:JeliyaFixtureChecksum = Join-Path $fixtures "$asset.sha256"
+          Set-Content -LiteralPath $global:JeliyaFixtureChecksum -Value "$digest  $asset" -Encoding ascii
+
+          function global:Invoke-WebRequest {
+            param(
+              [string]$Uri,
+              [string]$OutFile,
+              [switch]$UseBasicParsing
+            )
+            $source = if ($Uri.EndsWith('.sha256')) {
+              $global:JeliyaFixtureChecksum
+            } else {
+              $global:JeliyaFixtureArchive
+            }
+            Copy-Item -LiteralPath $source -Destination $OutFile
+          }
+
+          $env:JELIYA_VERSION = 'v9.8.7'
+          $env:LOCALAPPDATA = Join-Path $root 'local-app-data'
+          & $installer
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs\Jeliya\jeliyad.exe'
+          if (-not (Test-Path $installed -PathType Leaf)) { throw 'verified installer did not install jeliyad.exe' }
+          if ((Get-Content -LiteralPath $installed -Raw) -ne 'verified daemon fixture') {
+            throw 'installed bytes differ from the verified fixture'
+          }
+
+          Remove-Item -LiteralPath $installed -Force
+          Set-Content -LiteralPath $global:JeliyaFixtureArchive -Value 'tampered archive' -NoNewline
+          $rejected = $false
+          try {
+            & $installer
+          } catch {
+            if ($_.Exception.Message -notmatch 'checksum mismatch') { throw }
+            $rejected = $true
+          }
+          if (-not $rejected) { throw 'tampered archive was not rejected' }
+          if (Test-Path $installed) { throw 'tampered archive produced an installed executable' }
+
+  dependency-security:
+    name: dependency security (Cargo + npm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust 1.96.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.96.0
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: cargo-audit@0.22.1
+
+      - name: Cargo advisory audit
+        run: cargo audit
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.22.3'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: npm high/critical advisory audit
+        working-directory: ui
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit --audit-level=high

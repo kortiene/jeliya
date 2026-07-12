@@ -32,6 +32,21 @@ pub mod supervisor;
 pub use engine::{Engine, EngineConfig, PROTOCOL_VERSION};
 pub use error::{CoreError, CoreResult, ErrorKind};
 
+/// Compile-time attestation used only by the controlled relay verifier build.
+///
+/// This item does not exist in ordinary builds. Enabling Jeliya's diagnostic
+/// feature against an upstream SDK without its matching transport feature
+/// fails at compile time below; it can never produce a falsely attested
+/// direct-capable binary.
+#[cfg(feature = "relay-only-test")]
+pub const RELAY_ONLY_TEST_BUILD: bool = iroh_rooms::experimental::session::RELAY_ONLY_TEST_BUILD;
+
+#[cfg(feature = "relay-only-test")]
+const _: () = assert!(
+    RELAY_ONLY_TEST_BUILD,
+    "relay-only-test requires the reviewed upstream clear_ip_transports feature"
+);
+
 /// Wall-clock milliseconds since the Unix epoch (advisory/display only — the
 /// protocol never orders by it).
 #[must_use]

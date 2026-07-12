@@ -30,6 +30,9 @@ use tracing::{error, info, warn};
 use jeliya_core::engine::{Engine, EngineConfig};
 use jeliya_core::supervisor::RoomSupervisor;
 
+#[cfg(feature = "relay-only-test")]
+const RELAY_ONLY_VERIFICATION_MARKER: &str = "jeliya-relay-only-test-build-v1";
+
 /// Major version of the protocol spoken on `/ws` (docs/PROTOCOL.md), defined
 /// once in the engine and re-exported so the portfile, `ready` line,
 /// `/api/health`, and `daemon.status` can never drift apart. Part of the
@@ -70,6 +73,11 @@ struct Args {
     /// OSes) and never auto-open a browser.
     #[arg(long, default_value_t = false)]
     supervised: bool,
+    /// Print a fixed attestation marker and exit before touching a data dir.
+    /// This argument exists only in the separately compiled relay verifier.
+    #[cfg(feature = "relay-only-test")]
+    #[arg(long, hide = true, default_value_t = false)]
+    verification_relay_only_build: bool,
 }
 
 /// Shared server state: the engine (dispatch + push fan-out) plus the
@@ -96,6 +104,15 @@ pub(crate) struct AppState {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    #[cfg(feature = "relay-only-test")]
+    if args.verification_relay_only_build {
+        // The jeliya-core compile-time assertion guarantees this feature could
+        // build only when the upstream RealNetwork builder has
+        // clear_ip_transports() compiled in. This branch intentionally runs
+        // before data-dir creation, logging, token generation, or networking.
+        println!("{RELAY_ONLY_VERIFICATION_MARKER}");
+        return;
+    }
     let data_dir = args.data_dir.clone().unwrap_or_else(default_data_dir);
     if let Err(err) = std::fs::create_dir_all(&data_dir) {
         eprintln!(
@@ -406,7 +423,24 @@ pub(crate) fn is_local_origin(origin: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_loopback, host_header_is_loopback, is_local_origin};
+    use super::{bind_loopback, host_header_is_loopback, is_local_origin, Args};
+    use clap::Parser;
+
+    #[test]
+    fn ordinary_build_does_not_accept_the_relay_attestation_flag() {
+        let parsed = Args::try_parse_from(["jeliyad", "--verification-relay-only-build"]);
+        #[cfg(not(feature = "relay-only-test"))]
+        assert!(
+            parsed.is_err(),
+            "release/default binary must reject the hidden verifier flag"
+        );
+        #[cfg(feature = "relay-only-test")]
+        assert!(
+            parsed
+                .expect("relay verifier accepts its hidden attestation flag")
+                .verification_relay_only_build
+        );
+    }
 
     #[test]
     fn loopback_origins_are_allowed() {
