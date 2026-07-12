@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Capability status"
 description: "Evidence-aware capability matrix for the v0.5.0 technical-preview candidate and the latest public release."
 tags: ["capabilities", "release", "status", "verification"]
-timestamp: "2026-07-12T22:00:46Z"
+timestamp: "2026-07-12T23:09:19Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -23,12 +23,12 @@ unpublished revision releasable.
 |---|---|
 | Candidate milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardened implementation snapshot | `689f1fdd47ef2e32986a4fbd10e35196f8c6ab8b` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation |
+| Hardened implementation snapshot | `c604991a9aeaf9ba1372fc141b090989e336a8e9` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation |
 | Public Jeliya `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` (room-isolation defect remains) |
 | Local upstream remediation | `3702e8cbcd5ac1808791124dd6bc44068be5f822` (clean and tested, but unpublished) |
 | Network verification snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` with local upstream `3702e8c…` (clean, but unpublished) |
 | Latest public release | `v0.4.3` at `9d62c3cd98c7f21d9683815c28278b6ac8c0b97f` |
-| Status captured | 2026-07-12 22:00 UTC |
+| Status captured | 2026-07-12 23:09 UTC |
 
 See [Release versus main](release-vs-main.md) for the revision boundaries and
 [Verification evidence](verification-evidence.md) for the complete ledger.

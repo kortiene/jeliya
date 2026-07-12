@@ -3,7 +3,7 @@ type: "Runbook"
 title: "Real-network NAT runbook"
 description: "Operator procedure for collecting revision-bound direct and forced-relay evidence across three distinct public egress paths."
 tags: ["nat", "networking", "operations", "p2p"]
-timestamp: "2026-07-12T22:00:46Z"
+timestamp: "2026-07-12T23:09:19Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -171,6 +171,11 @@ official Zig archive. The harness copies it into the isolated run directory,
 verifies the exact expected digest before extraction, validates its member
 layout, and rejects an executable or library directory that escapes the
 verified installation root.
+
+Remote binary transfer remains bounded but derives its deadline from the
+verified artifact size at a conservative 128 KiB/s floor, with a 30-minute
+absolute cap. Digest and version verification still occur on each host before
+execution.
 
 ```sh
 node scripts/realnet-evidence.mjs \

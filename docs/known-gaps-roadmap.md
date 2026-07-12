@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Known gaps and roadmap"
 description: "Release blockers, deferred risks, owners, and next actions for the v0.5.0 evidence-backed technical preview."
 tags: ["gaps", "release", "risks", "roadmap"]
-timestamp: "2026-07-12T22:00:46Z"
+timestamp: "2026-07-12T23:09:19Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
