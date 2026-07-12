@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,13 @@ function probe(port) {
     socket.on("end", () => resolveProbe(output));
     socket.on("error", reject);
   });
+}
+
+function processGroupHasMembers(pgid) {
+  const groups = execFileSync("ps", ["-ax", "-o", "pgid="], { encoding: "utf8" });
+  return groups
+    .split(/\r?\n/)
+    .some((value) => Number.parseInt(value.trim(), 10) === pgid);
 }
 
 function runScript(script) {
@@ -148,16 +155,10 @@ test("an owned process group is reaped after its leader exits", {
       leader.once("error", reject);
       leader.once("exit", resolveExit);
     });
-    assert.doesNotThrow(() => process.kill(-record.pid, 0));
+    assert.equal(processGroupHasMembers(record.pid), true);
     assert.equal(signalOwnedProcessGroup(record, "SIGKILL"), "signalled");
     const deadline = Date.now() + 5_000;
-    for (;;) {
-      try {
-        process.kill(-record.pid, 0);
-      } catch (error) {
-        if (error?.code === "ESRCH") break;
-        throw error;
-      }
+    while (processGroupHasMembers(record.pid)) {
       if (Date.now() > deadline) assert.fail("orphaned process group remained alive");
       await new Promise((resolveWait) => setTimeout(resolveWait, 50));
     }
@@ -181,20 +182,14 @@ test("a zombie group leader is treated as absent while its orphan is reaped", {
     // while the ownership helper inspects it.
     Atomics.wait(sleeper, 0, 0, 300);
     assert.equal(readProcessIdentity(record.pid), null);
-    assert.doesNotThrow(() => process.kill(-record.pid, 0));
+    assert.equal(processGroupHasMembers(record.pid), true);
     assert.equal(signalOwnedProcessGroup(record, "SIGKILL"), "signalled");
     await new Promise((resolveExit, reject) => {
       leader.once("error", reject);
       leader.once("exit", resolveExit);
     });
     const deadline = Date.now() + 5_000;
-    for (;;) {
-      try {
-        process.kill(-record.pid, 0);
-      } catch (error) {
-        if (error?.code === "ESRCH") break;
-        throw error;
-      }
+    while (processGroupHasMembers(record.pid)) {
       if (Date.now() > deadline) assert.fail("zombie-led process group remained alive");
       await new Promise((resolveWait) => setTimeout(resolveWait, 50));
     }
