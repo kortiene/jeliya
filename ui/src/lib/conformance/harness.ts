@@ -111,7 +111,7 @@ export interface Step {
 
 export interface Scenario {
   name: string;
-  /** 'daemonOnly' / 'mockOnly' skip the scenario on the other oracle. */
+  /** Oracle routing tags; `preIdentity` selects a separate fresh instance. */
   tags?: string[];
   steps: Step[];
 }

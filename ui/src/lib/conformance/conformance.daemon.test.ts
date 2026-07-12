@@ -84,6 +84,56 @@ class WsClientNode implements Client {
   }
 }
 
+interface DaemonOracle {
+  daemon: ChildProcess;
+  dataDir: string;
+  client: WsClientNode;
+}
+
+async function startDaemonOracle(withIdentity: boolean): Promise<DaemonOracle> {
+  const dataDir = mkdtempSync(join(tmpdir(), 'jeliya-conf-'));
+  const daemon = spawn(BINARY, ['--supervised', '--loopback', '--port', '0', '--data-dir', dataDir], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const ready = await new Promise<{ port: number }>((res, rej) => {
+    let buf = '';
+    const timer = setTimeout(() => rej(new Error('no ready line in 15s')), 15000);
+    daemon.stdout!.on('data', (d: Buffer) => {
+      buf += String(d);
+      for (const line of buf.split('\n')) {
+        const t = line.trim();
+        if (!t.startsWith('{')) continue;
+        try {
+          const j = JSON.parse(t) as { event?: string; port?: number };
+          if (j.event === 'ready' && typeof j.port === 'number') {
+            clearTimeout(timer);
+            res({ port: j.port });
+            return;
+          }
+        } catch {
+          /* keep reading */
+        }
+      }
+    });
+  });
+  const portfile = JSON.parse(readFileSync(join(dataDir, 'daemon.json'), 'utf8')) as { auth_token: string };
+  const client = new WsClientNode(`ws://127.0.0.1:${ready.port}/ws?token=${portfile.auth_token}`);
+  await client.connect();
+  if (withIdentity) await client.call('identity.create', {});
+  return { daemon, dataDir, client };
+}
+
+function stopDaemonOracle(oracle: DaemonOracle | undefined): void {
+  if (!oracle) return;
+  oracle.client.stop();
+  try {
+    oracle.daemon.kill('SIGKILL');
+  } catch {
+    /* already gone */
+  }
+  rmSync(oracle.dataDir, { recursive: true, force: true });
+}
+
 const haveBinary = existsSync(BINARY);
 // A silently-skipped conformance suite is worse than none — it reads as green
 // while covering nothing. In CI (or when JELIYA_REQUIRE_DAEMON is set) a missing
@@ -99,59 +149,28 @@ if (!haveBinary && requireDaemon) {
 const suite = haveBinary ? describe : describe.skip;
 
 suite('conformance: real daemon', () => {
-  let daemon: ChildProcess;
-  let dataDir: string;
-  let client: WsClientNode;
+  let oracle: DaemonOracle;
 
   beforeAll(async () => {
-    dataDir = mkdtempSync(join(tmpdir(), 'jeliya-conf-'));
-    daemon = spawn(BINARY, ['--supervised', '--loopback', '--port', '0', '--data-dir', dataDir], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const ready = await new Promise<{ port: number }>((res, rej) => {
-      let buf = '';
-      const timer = setTimeout(() => rej(new Error('no ready line in 15s')), 15000);
-      daemon.stdout!.on('data', (d: Buffer) => {
-        buf += String(d);
-        for (const line of buf.split('\n')) {
-          const t = line.trim();
-          if (!t.startsWith('{')) continue;
-          try {
-            const j = JSON.parse(t);
-            if (j.event === 'ready') {
-              clearTimeout(timer);
-              res({ port: j.port });
-              return;
-            }
-          } catch {
-            /* keep reading */
-          }
-        }
-      });
-    });
-    const portfile = JSON.parse(readFileSync(join(dataDir, 'daemon.json'), 'utf8')) as { auth_token: string };
-    client = new WsClientNode(`ws://127.0.0.1:${ready.port}/ws?token=${portfile.auth_token}`);
-    await client.connect();
-    // Shared precondition: an identity exists (a fresh daemon has none).
-    await client.call('identity.create', {});
+    oracle = await startDaemonOracle(true);
   }, 30000);
 
   afterAll(() => {
-    client?.stop();
-    try {
-      daemon?.kill('SIGKILL');
-    } catch {
-      /* already gone */
-    }
-    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    stopDaemonOracle(oracle);
   });
 
   for (const scenario of scenarios) {
     it(scenario.name, async () => {
-      const results = await replayScenario(client, scenario, 3000);
-      const failures = results.filter((r) => !r.ok);
-      expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
-    });
+      const preIdentity = scenario.tags?.includes('preIdentity') ?? false;
+      const fresh = preIdentity ? await startDaemonOracle(false) : undefined;
+      try {
+        const results = await replayScenario(fresh?.client ?? oracle.client, scenario, 3000);
+        const failures = results.filter((r) => !r.ok);
+        expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+      } finally {
+        stopDaemonOracle(fresh);
+      }
+    }, 30000);
   }
 });
 

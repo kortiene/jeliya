@@ -6,7 +6,8 @@
 /// 2. [TimelineEvent] parses unknown `kind` values without throwing and keeps
 ///    the raw frame accessible ([TimelineEvent.raw]) so unknown events
 ///    round-trip untouched.
-/// 3. Normative nullabilities are honored exactly: `RoomSummary.name`/`role`,
+/// 3. Normative and compatibility nullabilities are honored exactly:
+///    `RoomSummary.name`/`role`/`status`,
 ///    `PipeRef.target`/`authorizedPeer` (both null on `pipe_closed`),
 ///    `MemberRef.role` (omitted on `member_left`), `PeerStatus.identityId`
 ///    (null pre-admit), `EndpointInfo.addr`/`relayUrl`, absent
@@ -312,11 +313,12 @@ class RoomSummary {
   /// Null for a joined room whose genesis (name-bearing) event has not synced.
   final String? name;
 
-  /// Null when this daemon has no local identity (`room.list` has no
-  /// identity guard).
+  /// Compatibility-nullable for older protocol-v1 daemons. The v0.5 daemon
+  /// requires an identity and emits a role for every authorized room row.
   final String? role;
 
-  /// This identity's roster status (`active|invited|left|removed`) or null.
+  /// This identity's `active|left|removed` status. Nullable only for
+  /// compatibility with older protocol-v1 implementations.
   final String? status;
   final int memberCount;
   final bool open;

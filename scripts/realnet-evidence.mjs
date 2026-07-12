@@ -1454,9 +1454,9 @@ export async function seedForeignIsolationFixture({
   const agentMessage = `foreign-agent-message-${runId}`;
   let joinAttempts = 0;
 
-  // room.join bootstrap currently requires a membership-only event log. Join
-  // the foreign agent before seeding messages, statuses, files, or pipes, or
-  // the security fixture fails before it can exercise cross-room isolation.
+  // Stage membership before content to reduce bootstrap timing variance. Late
+  // joins are supported by the core regression, while the bounded retry above
+  // handles only transient peer_unreachable during real-network convergence.
   if (agent) {
     const invite = await owner.client.call("invite.create", {
       room_id: foreign.room_id,

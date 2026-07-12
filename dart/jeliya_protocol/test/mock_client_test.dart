@@ -72,9 +72,20 @@ void main() {
 
     for (final scenario in scenarios) {
       test(scenario['name'] as String, () async {
-        final results = await replayScenario(client, scenario, pushWaitMs: 1500);
-        final failures = results.where((r) => !r.ok).toList();
-        expect(failures.map((f) => 'step ${f.step} (${f.method}): ${f.detail}').toList(), isEmpty);
+        final preIdentity = (scenario['tags'] as List?)?.contains('preIdentity') ?? false;
+        final oracle = preIdentity ? _newClient(fresh: true) : client;
+        if (preIdentity) await oracle.start();
+        try {
+          final results = await replayScenario(oracle, scenario, pushWaitMs: 1500);
+          final failures = results.where((r) => !r.ok).toList();
+          expect(
+              failures
+                  .map((f) => 'step ${f.step} (${f.method}): ${f.detail}')
+                  .toList(),
+              isEmpty);
+        } finally {
+          if (preIdentity) await oracle.stop();
+        }
       });
     }
   });

@@ -74,9 +74,34 @@ void main() {
 
     for (final scenario in scenarios) {
       test(scenario['name'] as String, () async {
-        final results = await replayScenario(client, scenario, pushWaitMs: 3000);
-        final failures = results.where((r) => !r.ok).toList();
-        expect(failures.map((f) => 'step ${f.step} (${f.method}): ${f.detail}').toList(), isEmpty);
+        final preIdentity = (scenario['tags'] as List?)?.contains('preIdentity') ?? false;
+        SidecarSupervisor? freshSupervisor;
+        WsClient? freshClient;
+        Directory? freshDataDir;
+        try {
+          if (preIdentity) {
+            freshDataDir = Directory.systemTemp.createTempSync('jeliya-dart-conf-fresh-');
+            freshSupervisor = SidecarSupervisor(
+                binaryPath: binary, dataDir: freshDataDir.path, loopback: true);
+            await freshSupervisor.start(port: 0);
+            freshClient = WsClient(freshSupervisor.wsUrl);
+            await freshClient.start().timeout(const Duration(seconds: 10));
+          }
+          final results = await replayScenario(freshClient ?? client, scenario,
+              pushWaitMs: 3000);
+          final failures = results.where((r) => !r.ok).toList();
+          expect(
+              failures
+                  .map((f) => 'step ${f.step} (${f.method}): ${f.detail}')
+                  .toList(),
+              isEmpty);
+        } finally {
+          await freshClient?.stop();
+          await freshSupervisor?.shutdown();
+          try {
+            freshDataDir?.deleteSync(recursive: true);
+          } catch (_) {}
+        }
       });
     }
   });

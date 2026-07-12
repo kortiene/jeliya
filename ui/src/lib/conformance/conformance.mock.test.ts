@@ -28,9 +28,23 @@ describe('conformance: mock reference client', () => {
 
   for (const scenario of scenarios) {
     it(scenario.name, async () => {
-      const results = await replayScenario(client, scenario, 1500);
-      const failures = results.filter((r) => !r.ok);
-      expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+      const preIdentity = scenario.tags?.includes('preIdentity') ?? false;
+      let oracle = client;
+      if (preIdentity) {
+        const original = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        window.history.replaceState({}, '', `${window.location.pathname}?mock=fresh`);
+        oracle = createMockClient();
+        window.history.replaceState({}, '', original);
+        oracle.start();
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      try {
+        const results = await replayScenario(oracle, scenario, 1500);
+        const failures = results.filter((r) => !r.ok);
+        expect(failures, JSON.stringify(failures, null, 2)).toEqual([]);
+      } finally {
+        if (preIdentity) oracle.stop();
+      }
     });
   }
 });

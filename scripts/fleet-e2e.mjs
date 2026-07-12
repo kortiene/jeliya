@@ -8,13 +8,12 @@
 //   - agent 1      : 7483, its own daemon+data-dir, echo worker runner
 //   - agent 2      : 7484, its own daemon+data-dir, echo worker runner
 //
-// Both agents are pre-joined as role=agent members WHILE THE ROOM LOG IS STILL
-// MEMBERSHIP-ONLY (a temporary daemon per agent does identity.create + room.join,
-// then dies), and are then run in rejoin mode (--room). This is deliberate: the
-// daemon's join bootstrap only works on a membership-only log (documented in
-// scripts/agent-e2e.mjs), and each runner announces (posts agent_status) right
-// after it opens — so two runners cannot both ticket-join a live room. Pre-join
-// while quiet, rejoin to serve.
+// Both agents are pre-joined as role=agent members before workload content (a
+// temporary daemon per agent does identity.create + room.join, then dies), and
+// are then run in rejoin mode (--room). Late joins after content are supported,
+// but staging membership first removes transient bootstrap timing variance while
+// each runner immediately announces with agent_status. Pre-join while quiet,
+// rejoin to serve.
 //
 // HARD assertions (any failure → teardown + exit 1):
 //   1. two echo-worker runners BOTH join the one room and both show as active
@@ -291,10 +290,10 @@ try {
     `human: room 'Agent Fleet' open with a dialable addr (${humanAddr})`,
   );
 
-  // ---- pre-join both agents while the log is membership-only ----------------
+  // ---- pre-join both agents before workload content -------------------------
   // Each agent: temp daemon → identity.create → owner mints an agent invite →
   // room.join (persists membership) → kill temp daemon. No status/message is
-  // ever posted here, so the log stays membership-only and both joins succeed.
+  // posted here, which keeps this collision fixture deterministic.
   async function prejoinAgent(label, port, dataDir) {
     const d = startTempDaemon(`${label}-tmp`, port, dataDir);
     const c = new Client(`${label}-tmp`);

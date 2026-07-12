@@ -79,12 +79,17 @@ void main() {
   group('conformance: FfiClient vs in-process engine', () {
     late FfiClient client;
     late Directory dataDir;
+    late List<StepResult> preIdentityResults;
 
     setUpAll(() async {
       dataDir = Directory.systemTemp.createTempSync('jeliya-ffi-conf-');
       client = newClient(dataDir.path);
       await client.start().timeout(const Duration(seconds: 10));
-      // Shared precondition: an identity exists (a fresh engine has none).
+      final preIdentity = scenarios.singleWhere(
+          (s) => (s['tags'] as List?)?.contains('preIdentity') ?? false);
+      preIdentityResults = await replayScenario(client, preIdentity, pushWaitMs: 3000);
+      // Establish the shared precondition only after the identity-free corpus
+      // vector has crossed the singleton in-process engine.
       await client.call('identity.create');
     });
 
@@ -97,7 +102,10 @@ void main() {
 
     for (final scenario in scenarios) {
       test(scenario['name'] as String, () async {
-        final results = await replayScenario(client, scenario, pushWaitMs: 3000);
+        final preIdentity = (scenario['tags'] as List?)?.contains('preIdentity') ?? false;
+        final results = preIdentity
+            ? preIdentityResults
+            : await replayScenario(client, scenario, pushWaitMs: 3000);
         final failures = results.where((r) => !r.ok).toList();
         expect(failures.map((f) => 'step ${f.step} (${f.method}): ${f.detail}').toList(), isEmpty);
       });

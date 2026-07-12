@@ -330,7 +330,7 @@ major bump:
 | Method | Params | Result |
 |---|---|---|
 | `room.create` | `{ name }` | `{ room_id }` — name is daemon-local metadata if the protocol has no name field |
-| `room.list` | `{}` | `{ rooms: [{ room_id, name, role, status, member_count, open }] }` — `status` is this identity's roster status (`active|invited|left|removed|null`); **`name` is `null`** until the genesis event syncs and **`role` is `null`** when this daemon has no local identity |
+| `room.list` | `{}` | `{ rooms: [{ room_id, name, role, status, member_count, open }] }` — requires the local identity; `status` is this identity's roster status (`active|left|removed`) and `role` is `owner|member|agent`. **`name` is `null`** until the genesis event syncs. Client models retain nullable `role`/`status` only for compatibility with older protocol-v1 implementations; the v0.5 daemon does not emit such a row. |
 | `room.open` | `{ room_id, peers?: ["<endpoint_id>@<ip:port>"] }` | `{ endpoint: { endpoint_id, addr }, members, timeline }` — spawns the room's node session, starts pushes; `peers` are optional dial hints merged into the persisted hint set (same shape as `room.join`); `addr` is the dialable string an inviter shares with joiners. **`room.open` succeeds locally regardless of peer reachability** — unreachable hints surface as an empty/stale timeline that later syncs, *not* as an error (distinctive error: `not_a_member`; plus cross-cutting `room_unknown`) |
 | `room.close` | `{ room_id }` | `{}` — closes only this daemon's live session; membership remains active |
 | `room.leave` | `{ room_id }` | `{ event_id }` — authors `member.left` for this identity and closes the local session; owners are rejected until ownership transfer exists |
@@ -429,7 +429,7 @@ protocol, aggregation rules) live in `docs/agent-orchestration.md`.
 
 | Method | Params | Result |
 |---|---|---|
-| `agents.fleet` | `{}` | `{ active, working, total, rooms_total, rooms_covered, agents: [FleetAgent] }` — aggregated across all locally known rooms; every count derives from folded events + live `PeerConnState`, never estimated |
+| `agents.fleet` | `{}` | `{ active, working, total, rooms_total, rooms_covered, agents: [FleetAgent] }` — aggregated across the authorized `room.list` set (locally created or successfully joined rooms, including joined-then-left archives; excluding foreign, invite-only, corrupt, and unsynced entries); every count derives from folded events + live `PeerConnState`, never estimated |
 | `agent.history` | `{ room_id, identity_id, limit? }` | `{ points: [{ ts, label, progress }] }` — one point per real `agent_status` event by that identity, chronological (`limit` newest, default 100); no interpolation |
 
 `FleetAgent`:

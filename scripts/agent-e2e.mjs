@@ -12,8 +12,8 @@
 //   1. human: identity + room + open (capture dial addr)
 //   2. runner --identity-only prints the agent identity; human mints an
 //      agent-role invite for it
-//   3. intruder joins (member role) while the room log is still
-//      membership-only — see the known-limitation note below
+//   3. intruder joins (member role) before workload content is authored,
+//      reducing bootstrap timing variance
 //   4. runner starts with --worker echo; human sees member_joined, the
 //      "online" status, and the announce message
 //   5. human sends "@agent build the thing": "working" status (no fabricated
@@ -28,14 +28,11 @@
 //   7. a second legit task still executes (the loop survived the intruder)
 //   8. SIGTERM: the runner posts "offline" best-effort and exits 0
 //
-// KNOWN DAEMON LIMITATION (pre-existing, found while building this test, and
-// reproduced with plain three-daemon probes in BOTH loopback and real mode):
-// room.join only bootstraps into a room whose event log is membership-only.
-// Once any message / agent_status / file_shared event exists, every later
-// join times out with peer_unreachable ("could not reach the room admin...").
-// That is a jeliya-core/SDK join-bootstrap bug, out of scope here (crates/
-// untouched) — this flow therefore performs ALL joins before the first chat
-// message, which is also the operational guidance in docs/agent-guide.md.
+// BOOTSTRAP ORDERING: late joins after agent content are covered by the core
+// loopback regression. Real runs can still see a transient peer_unreachable
+// while the membership sub-DAG settles, so this deterministic fixture performs
+// all joins before workload content and the network harness retries only that
+// bounded transient error.
 //
 // Usage: node scripts/agent-e2e.mjs [--scratch <dir>]   (dir is wiped/reused)
 
@@ -300,9 +297,9 @@ try {
   });
   assert(typeof ticket === "string" && ticket.length > 0, "human: agent-role invite minted");
 
-  // ---- 3. intruder joins while the room log is membership-only --------------
-  // (see the known-limitation note in the header: joins fail once any chat /
-  // status / file event exists, so all joins happen before the first message)
+  // ---- 3. intruder joins before workload content ----------------------------
+  // Keeping fixture membership setup ahead of chat/status/file events removes
+  // avoidable bootstrap timing variance; it is not a protocol requirement.
   startLoopbackDaemon("intruderd", PORT_INTRUDER, intruderData);
   const intruder = new Client("intruder");
   clients.push(intruder);

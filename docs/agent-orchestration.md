@@ -244,14 +244,17 @@ Result:
 }
 ```
 
-- Scope: **all rooms in the daemon's local store** (the `room.list` set),
-  open or not. Liveness for non-open rooms follows §1.2 (never online).
+- Scope: the authorized **`room.list` set**, open or not: locally created or
+  successfully joined rooms whose local membership remains readable, including
+  joined-then-left archives. Foreign synchronized rows, invite-only rooms,
+  corrupt rooms, and unsynced provenance entries are excluded. Liveness for
+  non-open rooms follows §1.2 (never online).
 - An **agent** is an identity whose folded role is `agent` in at least one
   room's membership snapshot.
 - `total` = count of distinct agent identities across all rooms.
 - `active` = agents whose aggregated liveness is `online-idle` or `working`.
 - `working` = agents whose aggregated liveness is `working`.
-- `rooms_total` = locally known rooms; `rooms_covered` = rooms with ≥ 1
+- `rooms_total` = authorized listed rooms; `rooms_covered` = rooms with ≥ 1
   member of role `agent`. Invariants: `working ≤ active ≤ total`,
   `rooms_covered ≤ rooms_total`.
 
