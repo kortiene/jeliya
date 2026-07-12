@@ -11,6 +11,7 @@
 //! protocol has no rename event.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -92,17 +93,37 @@ pub fn load(data_dir: &Path) -> CoreResult<LocalState> {
         .map_err(|e| CoreError::internal(format!("corrupt {}: {e}", path.display())))
 }
 
-/// Persist the local state (write temp + rename, so a crash never leaves a
-/// half-written file).
+/// Persist local state as a durable atomic replacement.
 fn save(data_dir: &Path, state: &LocalState) -> CoreResult<()> {
     ensure_dir(data_dir)?;
     let path = data_dir.join(STATE_FILE);
-    let tmp = data_dir.join(format!("{STATE_FILE}.tmp"));
     let bytes = serde_json::to_vec_pretty(state)
         .map_err(|e| CoreError::internal(format!("could not encode state.json: {e}")))?;
-    std::fs::write(&tmp, &bytes)
-        .and_then(|()| std::fs::rename(&tmp, &path))
-        .map_err(|e| CoreError::internal(format!("could not write {}: {e}", path.display())))
+    let mut tmp = tempfile::NamedTempFile::new_in(data_dir)
+        .map_err(|e| CoreError::internal(format!("could not stage {}: {e}", path.display())))?;
+    tmp.write_all(&bytes)
+        .and_then(|()| tmp.as_file().sync_all())
+        .map_err(|e| CoreError::internal(format!("could not sync {}: {e}", path.display())))?;
+    let persisted = tmp.persist(&path).map_err(|e| {
+        CoreError::internal(format!("could not replace {}: {}", path.display(), e.error))
+    })?;
+    drop(persisted);
+
+    // A synced file plus an unsynced rename can still disappear after sudden
+    // power loss. Unix permits fsync on the containing directory. tempfile's
+    // persist already uses the platform replacement primitive on Windows; std
+    // does not expose a portable directory-sync operation there.
+    #[cfg(unix)]
+    std::fs::File::open(data_dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| {
+            CoreError::internal(format!(
+                "could not sync the state directory {}: {e}",
+                data_dir.display()
+            ))
+        })?;
+
+    Ok(())
 }
 
 fn update(data_dir: &Path, mutation: impl FnOnce(&mut LocalState)) -> CoreResult<()> {
@@ -253,6 +274,17 @@ mod tests {
         );
         assert_eq!(local_name(dir.path(), "blake3:cd"), None);
         assert_eq!(load(dir.path()).unwrap().rooms.len(), 2);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join(super::STATE_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "state.json must remain owner-only");
+        }
     }
 
     #[test]
