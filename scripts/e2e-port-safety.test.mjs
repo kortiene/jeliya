@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  readProcessIdentity,
   recordOwnedProcess,
   signalOwnedProcessGroup,
 } from "./e2e-process-ownership.mjs";
@@ -158,6 +159,43 @@ test("an owned process group is reaped after its leader exits", {
         throw error;
       }
       if (Date.now() > deadline) assert.fail("orphaned process group remained alive");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+  } finally {
+    try { process.kill(-record.pid, "SIGKILL"); } catch {}
+  }
+});
+
+test("a zombie group leader is treated as absent while its orphan is reaped", {
+  skip: process.platform !== "linux",
+  timeout: 10_000,
+}, async () => {
+  const leader = spawn("sh", ["-c", "sleep 0.1; sleep 30 & exit 0"], {
+    detached: true,
+    stdio: "ignore",
+  });
+  const record = recordOwnedProcess(leader.pid);
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    // Keep libuv from handling SIGCHLD so the exited leader remains a zombie
+    // while the ownership helper inspects it.
+    Atomics.wait(sleeper, 0, 0, 300);
+    assert.equal(readProcessIdentity(record.pid), null);
+    assert.doesNotThrow(() => process.kill(-record.pid, 0));
+    assert.equal(signalOwnedProcessGroup(record, "SIGKILL"), "signalled");
+    await new Promise((resolveExit, reject) => {
+      leader.once("error", reject);
+      leader.once("exit", resolveExit);
+    });
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        process.kill(-record.pid, 0);
+      } catch (error) {
+        if (error?.code === "ESRCH") break;
+        throw error;
+      }
+      if (Date.now() > deadline) assert.fail("zombie-led process group remained alive");
       await new Promise((resolveWait) => setTimeout(resolveWait, 50));
     }
   } finally {

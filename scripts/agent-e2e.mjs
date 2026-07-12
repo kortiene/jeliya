@@ -352,6 +352,7 @@ try {
     { detached: true, stdio: ["ignore", "pipe", "pipe"] },
   );
   runnerGroup = recordOwnedProcess(runner.pid);
+  ownedPorts.add(PORT_AGENT);
   let runnerLog = "";
   runner.stdout.on("data", (d) => {
     runnerLog += d;
@@ -376,7 +377,6 @@ try {
     "the run-owned agent daemon listener",
     100,
   );
-  ownedPorts.add(PORT_AGENT);
   assert(Number.isInteger(agentDaemonPid), "runner daemon exposes one owned listener PID");
   assert(true, "runner daemon listener is identified as run-owned before cleanup");
 

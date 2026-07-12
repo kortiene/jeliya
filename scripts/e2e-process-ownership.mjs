@@ -7,6 +7,10 @@ function linuxProcessIdentity(pid) {
     const commandEnd = stat.lastIndexOf(") ");
     if (commandEnd < 0) throw new Error("malformed proc stat");
     const fieldsFromState = stat.slice(commandEnd + 2).trim().split(/\s+/);
+    // A zombie has already exited, so its PID can no longer be recycled until
+    // the parent reaps it. Treat the leader as absent and let the caller probe
+    // the still-existing process group for any surviving children.
+    if (fieldsFromState[0] === "Z") return null;
     const startTime = fieldsFromState[19]; // proc(5) field 22, with state at index 0.
     const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
     const command = readFileSync(`/proc/${pid}/cmdline`)

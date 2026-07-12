@@ -371,6 +371,7 @@ try {
     const rec = { proc, group: null, exited: false, log: "" };
     runners.push(rec);
     rec.group = recordOwnedProcess(proc.pid);
+    ownedPorts.add(port);
     proc.stdout.on("data", (d) => {
       rec.log += d;
       process.stdout.write(`[${label}] ${d}`);
@@ -401,7 +402,6 @@ try {
       `${label}'s run-owned daemon listener`,
       100,
     );
-    ownedPorts.add(port);
     assert(Number.isInteger(pid), `${label}'s daemon exposes one owned listener PID`);
   }
   assert(true, "both runner daemon listeners are identified as run-owned before cleanup");
