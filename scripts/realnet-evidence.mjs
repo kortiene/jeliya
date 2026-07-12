@@ -60,6 +60,7 @@ const REQUIRED_RUST_TOOLCHAIN = "1.91.0";
 const REQUIRED_NODE_VERSION = "v22.22.3";
 const REQUIRED_ZIG_VERSION = "0.15.2";
 const REQUIRED_CARGO_ZIGBUILD_VERSION = "cargo-zigbuild 0.23.0";
+const REQUIRED_CARGO_BUILD_JOBS = "2";
 export const RELAY_ONLY_VERIFICATION_MARKER = "jeliya-relay-only-test-build-v1";
 const SSH_BASE = [
   "-o", "BatchMode=yes",
@@ -742,7 +743,11 @@ function buildCandidateFromSource({ runId, relayOnlyBuild, zigSha256, sourceComm
     "zigbuild", "--locked", "--release", "-p", "jeliyad", "--features", features,
     "--target", LINUX_TARGET,
   ];
-  const env = { ...process.env, CARGO_TARGET_DIR: cargoTargetDir };
+  const env = {
+    ...process.env,
+    CARGO_BUILD_JOBS: REQUIRED_CARGO_BUILD_JOBS,
+    CARGO_TARGET_DIR: cargoTargetDir,
+  };
   try {
     mkdirSync(sourceRoot, { mode: 0o700 });
     execFileSync(
@@ -799,6 +804,7 @@ function buildCandidateFromSource({ runId, relayOnlyBuild, zigSha256, sourceComm
           npm,
           zig: { ...zig, expected_sha256: expectedZigSha, integrity_verified: true },
           cargo_zigbuild: cargoZigbuild,
+          cargo_build_jobs: Number(REQUIRED_CARGO_BUILD_JOBS),
         },
       },
     };
