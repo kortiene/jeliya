@@ -2,7 +2,8 @@
 
 Thanks for wanting to help build the gathering place. Setup lives in the
 README ("Build from source"); the daemon ⇄ UI contract is
-`docs/PROTOCOL.md`; design tokens and rules are `DESIGN.md`.
+`docs/PROTOCOL.md`; design tokens and rules are `DESIGN.md`; the canonical
+documentation wiki starts at `docs/index.md`.
 
 ## The honesty rules are contribution requirements
 
@@ -38,6 +39,10 @@ declined kindly.
   gates) and `rust` (fmt, clippy `-D warnings`, workspace tests, then the
   golden protocol corpus replayed against the built daemon, the mock, and
   the in-process FFI engine).
+- **Documentation is a contract.** `docs/PROFILE.md` defines metadata,
+  lifecycle, navigation, and linking rules. Every page must remain reachable
+  from `docs/index.md`; run `node scripts/check-docs.mjs` after editing the
+  wiki. CI runs the same gate.
 - **App widget tests** pump through the helpers in `app/test/helpers.dart`.
   New layouts should use the strict surface (`useStrictSurface` /
   `pumpReadyMobileApp`): a realistic textScale 1.0 — the older half-scale

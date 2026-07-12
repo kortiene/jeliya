@@ -1,3 +1,16 @@
+---
+type: "Glossary"
+title: "French localization — glossary & scoping decisions"
+description: "Canonical French terminology and localization decisions for Jeliya product surfaces."
+tags: ["french", "i18n", "localization", "terminology"]
+timestamp: "2026-07-11T21:27:07Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "verified"
+release_status: "unreleased"
+audience: ["contributors", "reviewers", "translators"]
+---
+
 # French localization — glossary & scoping decisions
 
 **Status: agreed before any translation landed.** This file gated the first
@@ -9,7 +22,7 @@ unlocked now that the French catalog has landed.
 This is a contract for translators and reviewers — it is not a live,
 end-user-facing glossary. It did its gating work: PR #12 (commit `fdb4c97`,
 merged 2026-07-09) shipped the full French catalog —
-`app/lib/src/l10n/arb/app_fr.arb` translates all 442/442 keys of
+`app/lib/src/l10n/arb/app_fr.arb` translates all 444/444 keys of
 `app_en.arb` (gen-l10n's untranslated-messages report is empty) — plus the
 French macOS menu (`app/macos/Runner/fr.lproj`); mechanics in
 `docs/i18n.md`. Still open: the user-facing discoverability pointer (a

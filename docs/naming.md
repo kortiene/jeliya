@@ -1,3 +1,16 @@
+---
+type: "Decision"
+title: "Naming — decision record"
+description: "Decision record and trademark research supporting the rename from Bantaba to Jeliya."
+tags: ["brand", "governance", "legal-research", "naming"]
+timestamp: "2026-07-05T19:39:44Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "verified"
+release_status: "released"
+audience: ["contributors", "maintainers", "product"]
+---
+
 # Naming — decision record
 
 **Status: DECIDED 2026-07-05 — the project is renamed from "Bantaba" to

@@ -1,15 +1,31 @@
+---
+type: "Reference"
+title: "Agent orchestration contract (v1)"
+description: "Normative contract for agent liveness, task claims, fleet reads, and UI projections."
+tags: ["agents", "fleet", "orchestration", "protocol"]
+timestamp: "2026-07-11T21:27:07Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "partial"
+release_status: "unreleased"
+audience: ["agent-authors", "client-authors", "contributors"]
+---
+
 # Agent orchestration contract (v1)
 
-The pinned contract between the three builders:
+The pinned contract across four implementation surfaces:
 
 - **Rust daemon** (`crates/jeliyad` + `crates/jeliya-core`) — implements the
   fleet read RPCs and the liveness derivation. `jeliya-core` remains the sole
   consumer of `iroh_rooms` (SDK pinned at rev `3cb9bfd`).
-- **JS runner** (`scripts/jeliya-agent.mjs`, new `scripts/jeliya-fleet.mjs`)
+- **JS runner** (`scripts/jeliya-agent.mjs`, `scripts/jeliya-fleet.mjs`)
   — implements the status-vocabulary additions and the task-claim protocol.
   Node 22 (global `WebSocket`), zero npm deps.
 - **React UI** (`ui/`) — implements the fleet dashboard behind the existing
   `agents` NavKey, sourced only from `agents.fleet` + `agent.history`.
+- **Dart client and Flutter app** (`dart/jeliya_protocol`, `app/`) — expose the
+  same fleet reads over WebSocket or FFI and implement the equivalent desktop
+  and mobile dashboard without deriving liveness client-side.
 
 Ground rules that bind every section below:
 
@@ -41,21 +57,21 @@ the rest already exist in `jeliya-agent.mjs`:
 | `working` | throttled progress during a task (exists today) | working-class |
 | `done` | task success, `progress: 100` (exists today) | idle-class |
 | `failed` | task failure with the real reason (exists today) | idle-class |
-| `idle` | **NEW** — posted once immediately after a task finishes (after the `done`/`failed` terminal status), meaning "ready for the next task" | idle-class |
+| `idle` | posted after a task finishes and best-effort after losing claim arbitration, meaning the runner is not executing a task | idle-class |
 | `offline` | shutdown (exists today, best-effort) | offline-class |
-| `claiming` | **RESERVED** — task-claim handshake, see §2 | idle-class |
+| `claiming` | task-claim handshake, see §2 | idle-class |
 
-Runner change required: in `finishTask`'s caller (`startTask`'s `finally`
-path), after `finishTask` returns, post `idle` with a short message (e.g.
-`"ready for the next task"`). This is one extra event per task — not a
-heartbeat. **No periodic heartbeat events are ever posted.** Any other label
-an agent posts (the label field is free-form up to 64 bytes) classifies as
-working-class if and only if it is exactly `working`; unknown labels are
-idle-class.
+In `finishTask`'s caller (`startTask`'s `finally` path), the runner posts
+`idle` with `"ready for the next task"` after the terminal `done` or `failed`
+status. A runner that loses claim arbitration also posts one best-effort
+`idle`; neither path is a heartbeat. **No periodic heartbeat events are ever
+posted.** Any other label an agent posts (the label field is free-form up to
+64 bytes) classifies as working-class if and only if it is exactly `working`;
+unknown labels are idle-class.
 
-`claiming` is deliberately idle-class: a claim is not execution, and a runner
-that loses a claim stands down silently (§2), leaving `claiming` as its latest
-label — that must not read as "working".
+`claiming` is deliberately idle-class: a claim is not execution. A runner that
+loses a claim posts `idle` best-effort (§2); if that status post fails, its
+latest label remains `claiming`, which still must not read as "working".
 
 ### 1.2 Derived liveness (daemon side, computed at read time)
 
@@ -170,9 +186,12 @@ and unchanged):
    window (pushes are lossy; the poll is the safety net).
 6. **Decide:** if this runner's claim `event_id` is the lexicographic minimum
    of all observed claims for the token (including its own), it **proceeds**
-   (`startTask`, which posts `working` as today). Otherwise it **stands down
-   silently**: local log line only — no execution, no chat reply, no further
-   status (its latest label stays `claiming`, which is idle-class, §1.1).
+   (`startTask`, which posts `working` as today). Otherwise it **stands down**:
+   no execution and no chat reply. It posts `idle` with the message
+   `"stood down - lost claim arbitration"` best-effort so operators can
+   distinguish a completed arbitration from a stuck claim. If that status post
+   fails, the failure stays in the local log and the latest wire label remains
+   `claiming`, which is idle-class (§1.1).
 7. A runner that becomes busy (`current` set) during the settle window stands
    down as a loser (never queue).
 
@@ -202,10 +221,11 @@ word-boundary rule (`matchesTrigger`): the addressed form is
 
 ## 3. Fleet read RPCs (daemon; pure reads, no SDK change)
 
-Two new WS methods in `jeliyad`'s dispatch. Both are **pure reads** over the
-existing folds (`room_event_ids` → `validate_wire_bytes` → materialize) and
-live session state (`peer_state` / `peer_entries`) — they author nothing,
-open no room, and invent no counts. Full rows in `docs/PROTOCOL.md`.
+The shared protocol engine exposes two fleet methods over both WebSocket and
+the in-process FFI transport. Both are **pure reads** over the existing folds
+(`room_event_ids` → `validate_wire_bytes` → materialize) and live session state
+(`peer_state` / `peer_entries`) — they author nothing, open no room, and invent
+no counts. Full rows live in `docs/PROTOCOL.md`.
 
 ### 3.1 `agents.fleet`
 
@@ -303,7 +323,7 @@ in the runner.
       "worker": "claude",
       "trigger": "@agent",
       "allow_sender": ["…64-hex…"],
-      "data_dir": ".jeliya-agent-builder-1",
+      "data_dir": "/home/jeliya/.local/share/jeliya/agents/builder-1",
       "port": 7481,
       "loopback": false
     }
@@ -322,13 +342,13 @@ Per-entry fields (mapping 1:1 onto runner flags):
 | `worker` | yes | `"claude"` or `"echo"` |
 | `trigger` | no | default `"@agent"` (`--trigger`) |
 | `allow_sender` | no | array of 64-hex identity ids (repeatable `--allow-sender`); absent → runner's owner-default |
-| `data_dir` | yes | unique per agent — two runners must never share a daemon data dir (identity + stores) |
+| `data_dir` | yes | unique absolute path outside source checkouts per agent — two runners must never share a daemon data dir (identity + stores) |
 | `port` | yes | unique per agent, positive integer (each runner spawns its own daemon); tests use 7481–7489 |
 | `loopback` | no | default `false` (`--loopback`) |
 
-Validation is fail-fast before any spawn: unique `name`/`port`/`data_dir`,
-exactly one join mode per entry, known `worker`. Crash policy: a runner that
-exits is logged and restarted with backoff at most N times (default 3);
+Validation is fail-fast before any spawn: unique `name`/`port`/`data_dir`, at
+least one of `ticket` or `room_id`, and a known `worker`. Crash policy: a runner
+that exits is logged and restarted with backoff at most N times (default 3);
 restarts reuse `data_dir` (persisted identity) and switch `ticket` → rejoin
 (`room_id`) after the first successful join. The fleet script posts no
 statuses of its own and fabricates no fleet counts — the dashboard's numbers
@@ -338,12 +358,14 @@ come only from `agents.fleet`.
 
 ## 5. UI fleet dashboard data contract
 
-The existing top-level `agents` NavKey (`ui/src/components/Sidebar.tsx`)
-opens a **fleet dashboard** page — distinct from a room's right-panel
-`AgentsTab`, which stays as-is (room-scoped, timeline-fold based). Data
-sources: `agents.fleet` (poll ~5 s) and `agent.history` (on card render /
-expand). The dashboard renders nothing that cannot be traced to a field of
-those two results.
+The top-level Agents surface exists in both React
+(`ui/src/components/FleetDashboard.tsx`) and Flutter
+(`app/lib/src/screens/fleet_dashboard.dart`). It is distinct from a room's
+right-panel Agents tab, which remains room-scoped and timeline-fold based.
+Both clients load `agents.fleet` immediately, poll it every 4 seconds, and
+debounce a refresh after `room.event` pushes. They fetch `agent.history` when
+an agent's latest status or history room changes. The dashboards render
+nothing that cannot be traced to those two results.
 
 **Stat tiles** (top row, straight from `agents.fleet`):
 
@@ -375,20 +397,25 @@ those two results.
 3. UI shows the ticket plus a **copyable runner command**, e.g.
    `node scripts/jeliya-agent.mjs --ticket <T> --peer <ADDR> --worker claude`.
 
-The browser **never spawns processes**; the daemon gets no "spawn agent" RPC.
-Executing the command on the target machine is deliberately a human step.
+The clients **never spawn runner processes**; the daemon gets no "spawn agent"
+RPC. Executing the command on the target machine is deliberately a human step.
 
 ---
 
-## 6. Builder checklist
+## 6. Implementation and conformance checklist
 
-- **Daemon**: `agents.fleet` + `agent.history` dispatch arms; identity→device
-  mapping + §1.2 decision table; no writes, no new event types.
-- **Runner**: post `idle` after each task; `claiming` handshake (§2.3) gated
-  on >1 agent-role member; addressed-trigger filter (§2.4); constants
-  `CLAIM_SETTLE_MS = 1500`.
-- **Fleet script**: schema §4, spawn/restart only.
-- **UI**: fleet dashboard behind NavKey `agents` (§5); room `AgentsTab`
-  unchanged.
-- **Tests**: ports 7481–7489, Chrome CDP 9225; the live demo on
-  7420/7421/5173 is untouched.
+These implemented boundaries remain the regression contract:
+
+- **Core and daemon:** `agents.fleet` + `agent.history` dispatch arms;
+  identity-to-device mapping and the §1.2 decision table; no writes and no new
+  event types.
+- **Runner:** `idle` after each task and lost arbitration; the §2.3 `claiming`
+  handshake only when more than one active agent-role member is eligible; the
+  §2.4 addressed-trigger filter; `CLAIM_SETTLE_MS = 1500`.
+- **Fleet script:** the §4 schema, validation, process spawn, and bounded
+  restart behavior only. Room-level truth still comes from `agents.fleet`.
+- **React and Flutter:** equivalent fleet dashboards backed only by the two
+  read RPCs; the room-scoped Agents tabs remain separate.
+- **Tests:** `scripts/fleet-e2e.mjs` proves multi-agent claims, fleet reads,
+  histories, and crash liveness; Rust, Dart, React, and Flutter suites pin the
+  corresponding projections and client behavior.

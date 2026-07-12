@@ -1,3 +1,16 @@
+---
+type: "Guide"
+title: "The Jeliya real agent"
+description: "Operational and security guide for running the room-driven Jeliya agent."
+tags: ["agents", "operations", "runner", "security"]
+timestamp: "2026-07-09T18:40:06Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "partial"
+release_status: "partial"
+audience: ["contributors", "maintainers", "operators"]
+---
+
 # The Jeliya real agent
 
 `scripts/jeliya-agent.mjs` turns a room into a place where an AI agent does
@@ -108,7 +121,7 @@ node scripts/jeliya-agent.mjs --room <room_id> --worker claude
 | `--peer <ADDRS>` | — | Dial addr hint `<endpoint_id>@<ip:port,...>` from the inviter's `room.open`; repeatable |
 | `--room <room_id>` | — | With `--ticket`: assert the joined room. Alone: rejoin mode (already a member — skip join, just open) |
 | `--port <n>` | `7461` | WS port for the spawned `jeliyad` |
-| `--data-dir <dir>` | `.jeliya-agent` | Daemon data dir; the identity persists here across runs |
+| `--data-dir <dir>` | OS data directory¹ | Daemon data dir; the identity persists here across runs. Keep explicit paths outside source checkouts |
 | `--worker claude\|echo` | `echo` | `claude`: real work via the claude CLI. `echo`: deterministic test worker |
 | `--workspace <dir>` | fresh OS temp dir | Parent dir; each task gets a fresh numbered subdir. The default is deliberately OUTSIDE `--data-dir` (which holds `identity.secret`) — keep any override outside it too |
 | `--trigger <phrase>` | `@agent` | Task trigger; matched case-insensitively at the start of a message |
@@ -116,6 +129,15 @@ node scripts/jeliya-agent.mjs --room <room_id> --worker claude
 | `--max-turns <n>` | `40` | Passed to `claude --max-turns` |
 | `--loopback` | off | Spawn the daemon in loopback mode (must match the room's other daemons; used by the e2e) |
 | `--identity-only` | off | Print the identity id for invite minting, then exit |
+
+¹ Defaults: macOS `~/Library/Application Support/Jeliya/agents/default`,
+Windows `%APPDATA%\\Jeliya\\agents\\default`, and Linux/other Unix
+`$XDG_DATA_HOME/jeliya/agents/default` when set or
+`~/.local/share/jeliya/agents/default` otherwise. The runner also writes a
+deny-all `.gitignore` inside every data directory before the daemon starts,
+so a custom path placed under a Git worktree cannot expose `identity.secret`
+through an accidental `git add`. An existing marker without those deny-all
+rules makes the runner fail closed.
 
 ## Workers
 

@@ -32,6 +32,7 @@ npm install && VITE_MOCK=1 npm run dev
 
 ## Table of contents
 
+- [Documentation wiki](#documentation-wiki)
 - [What can I do with Jeliya?](#what-can-i-do-with-jeliya)
 - [Words you'll see](#words-youll-see) — a quick glossary
 - [Option A: Just try it (recommended)](#option-a-just-try-it-recommended)
@@ -43,6 +44,15 @@ npm install && VITE_MOCK=1 npm run dev
 - [Project layout](#project-layout)
 - [The honesty rules](#the-honesty-rules)
 - [License](#license)
+
+---
+
+## Documentation wiki
+
+Architecture, protocols, agent operations, runbooks, decisions, and project
+governance start at **[`docs/index.md`](docs/index.md)**. The wiki is maintained
+as documentation-as-code: pages carry consistent metadata, stay reviewable with
+the implementation they describe, and pass the repository documentation gate.
 
 ---
 
@@ -115,6 +125,12 @@ Note: these builds are unsigned, so macOS/Windows will show a security warning
 on first run (see [Troubleshooting](#troubleshooting)) — the `brew`/`curl`/
 PowerShell installs above don't trigger this.
 
+Release `v0.4.3` publishes SHA-256 sidecars, but its installer implementation
+does not automatically verify them before extraction. Automatic installer
+verification is a `v0.5.0` release gate; until that release is published,
+verify a manually downloaded archive against its matching `.sha256` file. See
+the exact [release-versus-main matrix](docs/release-vs-main.md).
+
 ### 2. Run it
 
 ```bash
@@ -158,11 +174,13 @@ has been published yet** — every release so far ships only the `jeliyad`
 daemon — so installing today means the daemon above plus the browser UI.
 `app/` also runs on phones: below 900dp it lays out as a bottom-tab mobile
 app, and the Android build speaks the real protocol through an in-process
-(FFI) engine — proven on a real Android phone, from the transport up through
-the full mobile UI (including live English↔French switching). One honest
-asymmetry: the macOS app still runs its bundled sidecar loopback-only, so the
-phone is currently the build with real peer networking. Android release
-builds (store bundle and per-ABI sideload APKs) are wired and documented in
+(FFI) engine. A physical Android 13 smoke covered engine startup, local room
+operations, pushes, persistence, and the mobile UI with the engine configured
+for real networking. It did not connect that phone to a peer on another
+network or observe a direct or relay path, so Android cross-network behavior
+is not yet verified. The macOS app still runs its bundled sidecar
+loopback-only. Android release builds (store bundle and per-ABI sideload APKs)
+are wired and documented in
 [`packaging/README.md`](packaging/README.md), but no APK or app bundle has
 been published either.
 
@@ -365,6 +383,8 @@ the app is a *fold* (a replay) over Iroh Rooms' signed event log.
 | `dart/jeliya_protocol` | Pure-Dart typed client for the protocol: typed models + wrappers for all 24 RPCs, WebSocket and in-process FFI transports (`package:jeliya_protocol/ffi.dart`), sidecar supervisor, mock client for tests. |
 | `app/` | The native Flutter app: the macOS desktop client at parity with the web UI (English + French), plus a phone bottom-tab layout below 900dp and the Android build running the protocol in-process (FFI). |
 | `ui/` | The web UI the daemon serves (`embed-ui`): Vite + React, implements `mockups/`. Still the only GUI on Windows/Linux, and the reference client the native app tracks. |
+| `docs/index.md` | The canonical documentation wiki: architecture, guides, operations, decisions, and proposals. |
+| `docs/PROFILE.md` | The metadata, lifecycle, navigation, linking, and CI contract for every wiki page. |
 | `docs/PROTOCOL.md` | The daemon ⇄ shell contract (the spine). |
 | `docs/agent-guide.md` | How the AI agent works, plus its trust model. |
 | `docs/agent-orchestration.md` | The pinned v1 fleet contract: truthful agent liveness, status vocabulary, task claims, and the fleet read RPCs, across daemon, runner, and UI. |

@@ -65,9 +65,10 @@ human avatars, warm status language.
 
 ## Accessibility & Inclusion
 
-WCAG 2.1 AA floor, already enforced in code: `--text-mute` is documented in
-`ui/src/styles.css` as ≥4.5:1 on every surface because it colors small
-information-bearing text. Keep that bar for any new text/surface pairing.
-Status is never conveyed by color alone (dot + label). `prefers-reduced-motion`
-must be honored. Full keyboard operability across composer, tabs, room list,
-and modals.
+WCAG 2.1 AA is the design target, not a current certification. The codebase
+defines contrast intent for `--text-mute`, combines status color with labels,
+and requires reduced-motion and keyboard behavior, but CI does not yet provide
+a complete automated WCAG audit across every React and Flutter state. Treat
+accessibility verification as partial until automated checks and documented
+manual keyboard, screen-reader, contrast, zoom, and text-scaling evidence all
+pass. See [`docs/capability-status.md`](docs/capability-status.md).

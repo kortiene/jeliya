@@ -1,48 +1,68 @@
-# Gate A result — NAT hole-punching CONFIRMED
+---
+type: "Status Report"
+title: "Historical Gate A result — 2026-07-04"
+description: "Historical evidence of one direct cross-network P2P run that does not certify the v0.5.0 candidate."
+tags: ["nat", "networking", "p2p", "verification"]
+timestamp: "2026-07-12T12:21:59Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "historical"
+release_status: "not-applicable"
+audience: ["contributors", "maintainers", "operators"]
+---
 
-**Status: PASS (direct P2P across different networks).** 2026-07-04.
+# Historical Gate A result — 2026-07-04
+
+**Historical result: PASS for the tested 2026-07-04 build and network pair.**
+This record is not current verification for `v0.5.0`.
 
 > Historical note: this run predates the 2026-07-05 rename to Jeliya (see
-> `docs/naming.md`). It was executed with the pre-rename `bantabad` binary;
-> the equivalent binary today is `jeliyad`. The evidence paths below are the
-> original, pre-rename paths — kept verbatim because this is a record.
+> [`naming.md`](naming.md)). It was executed with the pre-rename `bantabad`
+> binary; the equivalent binary today is `jeliyad`.
 
-Gate A is the one open risk the iroh-rooms runtime's own go/no-go memo left
-`CONDITIONAL`: real-network NAT hole-punching, "the manual two-host run has not
-[been done]." This is that run, for Jeliya's daemon on the pinned SDK.
+The run demonstrated that direct connectivity was possible on one residential
+network to cloud-network pair. It did not test relay fallback, reconnect,
+resynchronization, pipes, or unauthorized-room isolation. Those assertions are
+part of the new candidate evidence ledger in
+[`verification-evidence.md`](verification-evidence.md).
 
-## What was measured
+## Recorded revision and environment
 
 Two `bantabad` daemons (pre-rename) in real network mode (iroh N0 stack:
-public n0 relays + DNS discovery), on **genuinely different networks**,
-driven by `scripts/gate-a.mjs`:
+public n0 relays and DNS discovery), on different networks, were driven by
+`scripts/gate-a.mjs`.
 
-| | machine A (host) | machine B (joiner) |
-|---|---|---|
-| host | this Mac | `demo1` (Hetzner cloud VM) |
-| public IPv4 | `75.190.11.42` | `46.4.115.57` |
-| binary | `target/debug/bantabad` (pre-rename) | shipped static `x86_64-unknown-linux-musl` |
+| Field | Recorded value |
+|---|---|
+| Evidence-record commit | `f2aea0959ee5bf0f91fee030bdd2e2466163671c` |
+| `iroh-rooms` revision at that commit | `1d2f014e783893ffeaea055c436370179a31110a` |
+| Date | 2026-07-04 |
+| Host role A | macOS residential-network host; debug `bantabad` |
+| Host role B | Linux x86_64 cloud-network joiner; static musl `bantabad` |
+| Observed public egress | Public-address fingerprints differed; this did not independently prove separate VPC or routing domains |
+| Observed settled path | `direct` on both peers |
 
-The orchestrator fingerprinted both public IPs and confirmed they differ
-(`status: different`) **before** certifying — a same-network run is rejected as
-"NOT A GATE A", so this result cannot be a same-LAN artifact.
+Public addresses, invite tickets, identity material, and raw frames are omitted
+from this repository record. The raw JSON was written to the local pre-rename
+`.bantaba-gatea/` directory and was not committed. Consequently, the record
+pins the repository state that documented the result and its dependency, but it
+does not provide independently reproducible artifact provenance for the two
+executables. That limitation is why the page is marked `historical`, not
+`verified` for the current candidate.
 
-## Result
+## Assertions recorded as passing
 
-Both sides settled on **`path=direct`** — a direct peer-to-peer UDP path, no
-relay fallback. All 8 assertions passed on each side:
+Both peers settled on `path=direct`, indicating a direct UDP path rather than
+relay fallback. The historical harness recorded these assertions as passing:
 
-- invite (agent/member ticket) → join by ticket across the internet
-- signed messages both directions
-- 256 KiB file shared A→B, fetched by B, BLAKE3 content-verified, byte-exact
+- targeted invite and room join across the two networks;
+- signed messages in both directions;
+- a 256 KiB file shared from A to B, fetched by B, and verified byte-for-byte
+  against its BLAKE3 hash.
 
 ```
 GATE A: PASS — direct P2P across different networks. NAT hole-punch CONFIRMED (A=direct B=direct).
 ```
-
-Raw evidence (fingerprints, per-side paths, verdict) is emitted per run under
-`.jeliya-gatea/gate-a-<ts>.json` (this 2026-07-04 run's evidence lives at the
-pre-rename path `.bantaba-gatea/gate-a-1783173361798.json`).
 
 ## Reproduce
 
@@ -55,9 +75,12 @@ phone-hotspot variant, and `--manual` mode. A `relay` path on either side would
 be an honest **PARTIAL** (connectivity via relay fallback, hole-punch not
 achieved on that network pair); this run achieved neither caveat.
 
-## Caveat
+## Applicability to v0.5.0
 
-One network pair (residential NAT ↔ Hetzner public IP) is proof that hole
-punching *works*, not that it works on *every* NAT. Symmetric-NAT and
-CGNAT-to-CGNAT pairs can still fall back to relay; re-run `gate-a.mjs` on any
-pair that matters and record its verdict.
+The `v0.5.0` candidate baseline is
+`1285b42037a3713840955fa518f2b81b19f2929f` and pins `iroh-rooms` at
+`3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020`. Neither matches this historical
+run. Gate A remains **pending** for the candidate until direct and deliberately
+constrained relay runs pass with the exact candidate commit and dependency
+revision, together with the broader assertion set in
+[`verification-evidence.md`](verification-evidence.md).
