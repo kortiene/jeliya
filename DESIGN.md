@@ -142,7 +142,8 @@ Slack/Discord chat-app skin (see PRODUCT.md anti-references).
 - System sans at a fixed px scale; mono strictly for machine truth (ids, addresses, error codes)
 - The meeting-tree mark as the brand motif; hexagonal clip avatars as the
   identity signature for people and agents
-- Motion is minimal and state-bound; WCAG 2.1 AA is the enforced floor
+- Motion is minimal and state-bound; WCAG 2.1 AA is the design target, with
+  targeted checks rather than complete automated enforcement or certification
 
 ## 2. Colors
 

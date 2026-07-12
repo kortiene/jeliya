@@ -3,7 +3,7 @@ type: "Reference"
 title: "Jeliya daemon protocol (v1)"
 description: "Normative transport-neutral contract between jeliya-core and every web, Flutter, FFI, script, and test client."
 tags: ["architecture", "daemon", "ffi", "protocol", "websocket"]
-timestamp: "2026-07-11T02:40:00Z"
+timestamp: "2026-07-12T19:25:00Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -199,8 +199,12 @@ corresponding precondition, whether or not the method lists them:
 - `invalid_params` and `internal` — any method (bad params; unexpected failure).
 - `identity_missing` — any method that needs the local identity (everything
   except `daemon.status`, `daemon.shutdown`, `identity.create`).
-- `room_unknown` — any method taking a `room_id` for a room this daemon has no
-  history of (`room.timeline`, `room.members`, `pipe.list`, … included).
+- `room_unknown` — any method taking a `room_id` when the local identity has
+  never completed membership in that room, including a foreign room whose
+  events happen to exist in the shared store. The same error is used for a
+  genuinely absent room so the API does not disclose foreign-room existence
+  (`room.timeline`, `room.members`, `pipe.list`, … included). A local archive
+  remains readable after this identity joined and later left or was removed.
 - `room_not_open` — any method that needs a live room session
   (`message.send`, `status.post`, `file.share`, `file.fetch`, `pipe.*`).
 - `not_a_member` — any authoring method when this identity is not an active

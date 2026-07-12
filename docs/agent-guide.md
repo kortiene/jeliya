@@ -3,7 +3,7 @@ type: "Guide"
 title: "The Jeliya real agent"
 description: "Operational and security guide for running the room-driven Jeliya agent."
 tags: ["agents", "operations", "runner", "security"]
-timestamp: "2026-07-09T18:40:06Z"
+timestamp: "2026-07-12T19:25:00Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -194,7 +194,7 @@ These bind the agent the same way the daemon's honesty rules bind the UI:
 ## Proof
 
 ```bash
-node scripts/agent-e2e.mjs   # 25 hard assertions, loopback only, no LLM
+node scripts/agent-e2e.mjs   # 28 hard assertions, loopback only, no LLM
 ```
 
 Covers: identity/invite/join, online + announce, a real task round-trip

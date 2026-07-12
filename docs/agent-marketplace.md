@@ -3,7 +3,7 @@ type: "Architecture"
 title: "Agent marketplace architecture"
 description: "Proposed hosted-agent marketplace architecture, trust model, product flow, and delivery plan."
 tags: ["agents", "architecture", "marketplace", "security"]
-timestamp: "2026-07-11T02:40:00Z"
+timestamp: "2026-07-12T19:25:00Z"
 status: "proposal"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -49,9 +49,10 @@ Two prerequisites block a truthful hosted release:
    transport smoke, Android 13). iOS does not run at all
    yet: no platform scaffold or engine build exists (the `FfiClient` code path
    is shared, but the staticlib wiring is a tracked follow-up). The MVP was
-   scoped web-first while native real networking was unproven; Android has
-   since cleared that bar — today the phone, not the macOS desktop app, is
-   the native surface with real networking.
+   scoped web-first while native real networking was unproven. Android now
+   runs the real-mode engine on-device, but only local lifecycle and room
+   operations have been exercised; no Android peer path, NAT traversal,
+   direct connection, or relay fallback has been verified.
 
 Keep the current manual **Bring your own agent** (BYOA) flow. Marketplace
 agents add a managed installation record; BYOA agents remain normal, unmanaged
@@ -157,9 +158,9 @@ must be fixed before the UI promises Remove or Revoke.
 The web client uses real local daemon networking by default. Flutter macOS
 currently passes `loopback: true` to its sidecar; Android runs the same
 protocol over the in-process engine (`FfiClient`, `loopback: false`) —
-conformance-verified against the golden corpus and device-proven (the PR #16
-on-device transport smoke: identity, room, message echo, and
-process-recovery legs over real networking) — and iOS has no
+host-conformance-verified against the golden corpus and exercised on-device
+for identity, local room operations, message echo, and process recovery, but
+not against a remote peer — and iOS has no
 platform scaffold or engine build yet (nothing runs there today). A catalog
 can be rendered everywhere the app runs; a cross-device hosted join has not
 been exercised on Android's proven transport, and cannot be called supported
@@ -693,8 +694,9 @@ The hosted MVP is accepted only when all of these are true:
    process room data, and who enforces provider compliance?
 4. Should a hosted provider get one identity per room (recommended) or a
    multi-room identity only after runner/protocol support exists?
-5. Is the first release web-only, or does it include Android, whose
-   production transport is now device-proven? (macOS real networking remains
+5. Is the first release web-only, or can Android be considered only after a
+   representative cross-network direct/relay qualification? (The current
+   Android evidence is local-only, and macOS real networking remains
    undelivered.)
 6. Which durable local store and encryption/keychain policy should contain
    installation metadata and provider opaque identifiers?

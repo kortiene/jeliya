@@ -95,9 +95,11 @@ when the app dies (stdin watch) even if graceful teardown never runs; Cmd-Q
 additionally runs the graceful order `client.stop()` →
 `supervisor.shutdown()`.
 
-This is a real asymmetry today: the Android build constructs its in-process
-engine with `loopback: false`, so the phone is currently the surface with
-real networking while the desktop sidecar stays loopback-only.
+This is a configuration asymmetry today: the Android build constructs its
+in-process engine with `loopback: false`, while the desktop sidecar stays
+loopback-only. The Android setting enables the real network path; it is not
+evidence of direct, relay, NAT, or cross-network behavior, which remains
+unverified on Android.
 
 ## Tests
 
@@ -129,9 +131,10 @@ contract at runtime, then emits `dist/Jeliya-v<version>-macos.dmg`.
 
 Default is ad-hoc signing (runs on this machine only). With Apple Developer
 enrollment, set `JELIYA_SIGN_IDENTITY="Developer ID Application: …"` and
-`JELIYA_NOTARY_PROFILE=<notarytool profile>` to produce a notarized DMG — the
-release workflow's `macos-app` job does the same automatically once the repo
-secrets exist. Release builds are sandboxed, so `flutter run -d macos
+`JELIYA_NOTARY_PROFILE=<notarytool profile>` to produce a notarized DMG.
+The `v0.5.0` release workflow intentionally has no `macos-app` job and never
+publishes that DMG; a future native-app workflow requires its own review and
+platform gates. Release builds are sandboxed, so `flutter run -d macos
 --release` without the bundled sidecar will not find a daemon — use debug for
 development and the packaging script for release builds.
 
