@@ -36,6 +36,8 @@ import {
   remoteDaemonCommand,
   remoteOwnedDirectoryCleanupCommand,
   remoteRunDir,
+  seedForeignIsolationFixture,
+  topologyClaim,
   parseRemoteBinaryVerification,
   validBuildDirectory,
   validRunId,
@@ -366,6 +368,9 @@ test("network classification records only distinction and family", () => {
   });
   assert.equal(parseRipeAsn({ data: { asns: [24940] } }), "AS24940");
   assert.equal(parseRipeAsn({ data: { asns: [1, 2] } }), null);
+  assert.match(topologyClaim({ topologyProven: true, allDifferent: true }), /^distinct public egress/);
+  assert.match(topologyClaim({ topologyProven: false, allDifferent: true }), /fewer than two/);
+  assert.match(topologyClaim({ topologyProven: false, allDifferent: false }), /shared public egress/);
 });
 
 test("path gate requires every expected connected peer", () => {
@@ -386,6 +391,59 @@ test("path gate requires every expected connected peer", () => {
   assert.equal(pathMatchesExpectedIdentities(identified, "direct", ["alice", "bob"]), true);
   assert.equal(pathMatchesExpectedIdentities(identified, "relay", ["alice", "bob"]), false);
   assert.equal(pathMatchesExpectedIdentities(identified, "direct", ["alice", "missing"]), false);
+});
+
+test("foreign-room security fixtures join the agent before non-membership events", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "jeliya-foreign-fixture-"));
+  temporary.push(dataDir);
+  const calls = [];
+  const owner = {
+    dataDir,
+    client: {
+      async call(method) {
+        calls.push(`owner:${method}`);
+        if (method === "room.create") return { room_id: "foreign-room" };
+        if (method === "room.open") return { endpoint: { addr: "identity@127.0.0.1:1" } };
+        if (method === "invite.create") return { ticket: "fixture-ticket" };
+        if (method === "file.share") return { file_id: "foreign-file" };
+        if (method === "pipe.expose") return { pipe_id: "foreign-pipe" };
+        return {};
+      },
+    },
+  };
+  const agent = {
+    client: {
+      async call(method) {
+        calls.push(`agent:${method}`);
+        return {};
+      },
+    },
+  };
+  const resources = { secrets: new Set() };
+  const result = await seedForeignIsolationFixture({
+    owner,
+    agent,
+    agentIdentityId: "agent-id",
+    runId: "20260712T120000Z-0123abcd",
+    resources,
+  });
+  const joinCall = calls.indexOf("agent:room.join");
+  assert.ok(joinCall >= 0);
+  for (const nonMembershipCall of [
+    "owner:message.send",
+    "owner:file.share",
+    "agent:status.post",
+    "owner:pipe.expose",
+  ]) {
+    assert.ok(
+      calls.indexOf(nonMembershipCall) > joinCall,
+      `${nonMembershipCall} must occur after room.join: ${calls.join(", ")}`,
+    );
+  }
+  assert.equal(result.foreign.room_id, "foreign-room");
+  assert.equal(result.file.file_id, "foreign-file");
+  assert.equal(result.pipeId, "foreign-pipe");
+  assert.deepEqual([...resources.secrets], ["fixture-ticket"]);
 });
 
 test("evidence writer rejects secret values and forbidden secret-shaped keys", () => {
