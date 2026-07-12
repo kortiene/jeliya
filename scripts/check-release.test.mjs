@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
+  expectedNetworkAssertionNames,
   expectedArtifactNames,
   irohRoomsReleaseIdentity,
   validateArtifactSet,
@@ -28,69 +29,124 @@ test("checked-in release surfaces share one dated version", () => {
 });
 
 function networkManifest(path, commit, upstream) {
-  const required = [
-    `A: ${path} path settled`,
-    `B: ${path} path settled`,
-    `C: ${path} path settled`,
-    "B receives A message",
-    "A receives B message",
-    "C receives both messages",
-    "C message converges to A and B",
-    "B fetches and BLAKE3-verifies payload",
-    "B fetched bytes are byte-identical",
-    "C pipe gate forwards zero bytes to the target",
-    "B observes and connects authorized pipe",
-    "B reopens and receives the offline message",
-    `B reconnects over ${path}`,
-    "A seeds isolated foreign-room fixtures",
-    "B public room-scoped RPCs do not disclose a foreign room ID",
-    "B local-file HTTP endpoint does not disclose a foreign room ID",
-    "B aggregate reads omit the foreign room and agent projection",
-  ];
-  while (required.length < 36) required.push(`fixture assertion ${required.length + 1}`);
   const relay = path === "relay";
+  const digest = "ef".repeat(32);
+  const deniedMethods = [
+    "room.open", "room.close", "room.leave", "room.timeline", "room.members",
+    "invite.create", "message.send", "status.post", "file.share", "file.list",
+    "file.fetch", "pipe.expose", "pipe.list", "pipe.connect", "pipe.close",
+    "peers.status", "agent.history",
+  ];
   return {
     schema: 1,
+    run_id: `20260712T12000${relay ? "1" : "0"}Z-0123abcd`,
+    started_at_utc: "2026-07-12T12:00:00.000Z",
+    ended_at_utc: "2026-07-12T12:10:00.000Z",
     result: "pass",
     certifiable: true,
     expected_path: path,
+    mode: relay ? "remote-relay-only-build" : "remote-real-network",
     source: {
       commit,
+      dirty: false,
+      published_at_origin: true,
       releaseable: true,
       iroh_rooms_revision: upstream,
-      iroh_rooms: { releaseable: true },
+      iroh_rooms: {
+        requested_revision: upstream,
+        resolved_revision: upstream,
+        public_source: true,
+        published_at_origin: true,
+        releaseable: true,
+      },
     },
-    build: { source_bound: true, locked: true },
+    build: {
+      mode: "from-source",
+      source_bound: true,
+      source_snapshot_commit: commit,
+      locked: true,
+      features: ["embed-ui"],
+      targets: ["x86_64-apple-darwin", "x86_64-unknown-linux-musl"],
+    },
     distinct_public_egress: {
       all_observed_addresses_different: true,
       distinct_autonomous_system_count: 2,
       independent_network_topology_proven: true,
     },
-    assertions: required.map((name) => ({ name, result: "pass" })),
+    assertions: expectedNetworkAssertionNames(path)
+      .map((name) => ({ name, result: "pass", duration_ms: 1 })),
+    path_observations: Object.fromEntries(["a", "b", "c"].map((role) => [role, {
+      expected_path: path,
+      expected_identities: role === "a" ? 2 : 1,
+      consecutive_observations: 3,
+    }])),
+    functional_evidence: {
+      file: {
+        engine_verified: true,
+        sha256_equal: true,
+        expected_sha256: digest,
+        actual_sha256: digest,
+      },
+      pipe: { unauthorized_third_peer: { target_connections: 0, target_requests: 0 } },
+      reconnect: {
+        offline_message_resynchronized: true,
+        settled_path: { expected_path: path },
+      },
+      multi_peer: { peers: 3, convergence_verified: true },
+      foreign_room_non_disclosure: {
+        rpc_methods_denied: deniedMethods,
+        local_file_http_denied: true,
+        aggregate_reads_filtered: true,
+        foreign_agent_projection_exercised: true,
+        foreign_agent_join_attempts: 2,
+        synchronization_isolation_claimed: false,
+      },
+    },
     cleanup: {
       completed: true,
       processes_stopped: true,
       temporary_artifacts_removed: true,
       failure_codes: [],
     },
-    binaries: { local: { relay_only_attested: relay } },
+    binaries: {
+      local: { relay_only_attested: relay },
+      remote: { sha256: digest },
+    },
     hosts: ["b", "c"].map((role) => ({
       role,
+      host: role === "b" ? "root@demo1" : "root@demo2",
+      architecture: "x86_64",
       binary_validation: {
-        sha256: "ef".repeat(32),
+        sha256: digest,
+        execution_uid: "65534",
         relay_only_attested: relay,
       },
     })),
+    sanitized_logs: {
+      roles: ["a", "b", "c"].map((role) => ({
+        role,
+        streams: Object.fromEntries(["stdout", "stderr"].map((stream) => [stream, {
+          lines: 1,
+          bytes: 1,
+          sha256: digest,
+        }])),
+      })),
+    },
   };
 }
 
 test("publication is blocked until retained direct and relay evidence is exact", () => {
-  assert.throws(() => validateEvidenceReadiness(), /not implemented|not verified|not READY/);
   const root = mkdtempSync(join(tmpdir(), "jeliya-evidence-gate-"));
   try {
     const commit = "ab".repeat(20);
     const upstream = "cd".repeat(20);
     mkdirSync(join(root, "docs", "evidence", "v0.5.0"), { recursive: true });
+    mkdirSync(join(root, "release"));
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    writeFileSync(
+      join(root, "release", "evidence-ed25519-public.pem"),
+      publicKey.export({ type: "spki", format: "pem" }),
+    );
     writeFileSync(join(root, "docs", "verification-evidence.md"), `---
 implementation_status: "implemented"
 verification_status: "verified"
@@ -106,14 +162,18 @@ verification_status: "verified"
 
 ## Evidence ledger
 `);
-    writeFileSync(
-      join(root, "docs", "evidence", "v0.5.0", "direct.json"),
-      `${JSON.stringify(networkManifest("direct", commit, upstream), null, 2)}\n`,
-    );
-    writeFileSync(
-      join(root, "docs", "evidence", "v0.5.0", "relay.json"),
-      `${JSON.stringify(networkManifest("relay", commit, upstream), null, 2)}\n`,
-    );
+    const writeSignedManifest = (path) => {
+      const relativePath = join("docs", "evidence", "v0.5.0", `${path}.json`);
+      const contents = Buffer.from(`${JSON.stringify(networkManifest(path, commit, upstream), null, 2)}\n`);
+      writeFileSync(join(root, relativePath), contents);
+      writeFileSync(
+        join(root, `${relativePath}.sig`),
+        `${sign(null, contents, privateKey).toString("base64")}\n`,
+      );
+      return contents;
+    };
+    const directContents = writeSignedManifest("direct");
+    writeSignedManifest("relay");
     const context = {
       headCommit: "12".repeat(20),
       upstreamRequestedRevision: upstream,
@@ -128,6 +188,13 @@ verification_status: "verified"
       upstreamRevision: upstream,
     });
 
+    writeFileSync(
+      join(root, "docs", "evidence", "v0.5.0", "direct.json"),
+      Buffer.concat([directContents, Buffer.from(" ")]),
+    );
+    assert.throws(() => validateEvidenceReadiness({ root, context }), /invalidly signed/);
+    writeFileSync(join(root, "docs", "evidence", "v0.5.0", "direct.json"), directContents);
+
     const relay = networkManifest("relay", commit, upstream);
     relay.hosts[0].binary_validation.relay_only_attested = false;
     assert.throws(() => validateNetworkEvidenceManifest(relay, {
@@ -135,6 +202,28 @@ verification_status: "verified"
       candidateCommit: commit,
       upstreamRevision: upstream,
     }), /relay-only attestation/);
+
+    const forged = networkManifest("direct", commit, upstream);
+    forged.assertions[35] = { ...forged.assertions[0] };
+    assert.throws(() => validateNetworkEvidenceManifest(forged, {
+      expectedPath: "direct",
+      candidateCommit: commit,
+      upstreamRevision: upstream,
+    }), /complete all-pass assertion set/);
+    forged.assertions = networkManifest("direct", commit, upstream).assertions;
+    forged.build.source_snapshot_commit = "00".repeat(20);
+    assert.throws(() => validateNetworkEvidenceManifest(forged, {
+      expectedPath: "direct",
+      candidateCommit: commit,
+      upstreamRevision: upstream,
+    }), /not built source-bound/);
+    const duplicatedHost = networkManifest("direct", commit, upstream);
+    duplicatedHost.hosts[1] = { ...duplicatedHost.hosts[0] };
+    assert.throws(() => validateNetworkEvidenceManifest(duplicatedHost, {
+      expectedPath: "direct",
+      candidateCommit: commit,
+      upstreamRevision: upstream,
+    }), /two independently verified remote binaries/);
 
     assert.throws(() => validateEvidenceReadiness({
       root,
@@ -185,6 +274,11 @@ test("release promotion requires two clean CI runs before the sole write boundar
     (releaseWorkflow.match(/uses: \.\/\.github\/workflows\/ci\.yml/g) ?? []).length,
     2,
     "the exact release revision must pass two independent reusable CI runs",
+  );
+  assert.equal(
+    (releaseWorkflow.match(/fetch-depth: 0/g) ?? []).length,
+    2,
+    "the evidence-gate checkouts need full history; matrix builds stay shallow",
   );
   assert.match(
     releaseWorkflow,

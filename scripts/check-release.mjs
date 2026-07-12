@@ -6,7 +6,7 @@
 //   node scripts/check-release.mjs --artifacts dist --tag v0.5.0
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import {
   lstatSync,
   readFileSync,
@@ -86,7 +86,14 @@ export function validateSourceVersions({ root = repoRoot, tag = "" } = {}) {
   return { tag: releaseTag, version: releaseVersion, versions };
 }
 
-export function validateEvidenceReadiness({ root = repoRoot, context = null } = {}) {
+export function validateEvidenceReadiness({
+  root = repoRoot,
+  context = null,
+  version = "0.5.0",
+} = {}) {
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+    fail(`invalid evidence version ${JSON.stringify(version)}`);
+  }
   const evidence = readText("docs/verification-evidence.md", root);
   if (!/^implementation_status: "implemented"$/m.test(evidence)) {
     fail("verification evidence implementation_status is not implemented");
@@ -119,12 +126,14 @@ export function validateEvidenceReadiness({ root = repoRoot, context = null } = 
   }
 
   const manifests = Object.fromEntries(["direct", "relay"].map((path) => {
-    const relativePath = `docs/evidence/v0.5.0/${path}.json`;
+    const relativePath = `docs/evidence/v${version}/${path}.json`;
     let manifest;
     try {
-      manifest = JSON.parse(readText(relativePath, root));
+      const bytes = readFileSync(join(root, relativePath));
+      validateEvidenceSignature(root, relativePath, bytes);
+      manifest = JSON.parse(bytes.toString("utf8"));
     } catch {
-      fail(`${relativePath} is missing or is not valid JSON`);
+      fail(`${relativePath} is missing, unsigned, invalidly signed, or not valid JSON`);
     }
     validateNetworkEvidenceManifest(manifest, {
       expectedPath: path,
@@ -155,6 +164,28 @@ export function validateEvidenceReadiness({ root = repoRoot, context = null } = 
     fail(`runtime or release inputs changed after network qualification: ${disallowed.join(", ")}`);
   }
   return { ready: true, candidateCommit, upstreamRevision };
+}
+
+export function validateEvidenceSignature(root, relativePath, contents) {
+  let publicKey;
+  let signatureText;
+  try {
+    publicKey = createPublicKey(readFileSync(join(root, "release", "evidence-ed25519-public.pem")));
+    signatureText = readText(`${relativePath}.sig`, root).trim();
+  } catch {
+    fail("retained network evidence requires the pinned Ed25519 release-evidence public key and detached signature");
+  }
+  if (publicKey.asymmetricKeyType !== "ed25519"
+      || !/^[A-Za-z0-9+/]{86}==$/.test(signatureText)) {
+    fail(`${relativePath}.sig is not one canonical Ed25519 base64 signature`);
+  }
+  const signature = Buffer.from(signatureText, "base64");
+  if (signature.length !== 64
+      || signature.toString("base64") !== signatureText
+      || !verifySignature(null, contents, publicKey, signature)) {
+    fail(`${relativePath}.sig does not verify against the pinned evidence key`);
+  }
+  return { valid: true };
 }
 
 function strictPublicGitHubUrl(value) {
@@ -232,19 +263,38 @@ export function releaseEvidenceContext(root, candidateCommit) {
   };
 }
 
-function requiredNetworkAssertions(path) {
+export function expectedNetworkAssertionNames(path) {
   return [
+    "a: identity ready",
+    "b: identity ready",
+    "c: identity ready",
+    "A: room created",
+    "A: room opened",
+    "b: targeted room join",
+    "b: joined room opened",
+    "A: observes b membership",
+    "c: targeted room join",
+    "c: joined room opened",
+    "A: observes c membership",
     `A: ${path} path settled`,
     `B: ${path} path settled`,
     `C: ${path} path settled`,
+    "A to B message authored",
     "B receives A message",
+    "B to A message authored",
     "A receives B message",
     "C receives both messages",
     "C message converges to A and B",
+    "A shares candidate payload",
+    "B lists candidate payload as available",
     "B fetches and BLAKE3-verifies payload",
     "B fetched bytes are byte-identical",
+    "A exposes one-peer pipe",
     "C pipe gate forwards zero bytes to the target",
     "B observes and connects authorized pipe",
+    "A closes pipe and B observes closure",
+    "B closes live room session",
+    "A authors message while B session is closed",
     "B reopens and receives the offline message",
     `B reconnects over ${path}`,
     "A seeds isolated foreign-room fixtures",
@@ -260,36 +310,102 @@ export function validateNetworkEvidenceManifest(manifest, {
   upstreamRevision,
   relativePath = "evidence manifest",
 }) {
+  const startedAt = Date.parse(manifest?.started_at_utc ?? "");
+  const endedAt = Date.parse(manifest?.ended_at_utc ?? "");
+  if (!/^\d{8}T\d{6}Z-[0-9a-f]{8}$/.test(manifest?.run_id ?? "")
+      || !Number.isFinite(startedAt)
+      || !Number.isFinite(endedAt)
+      || endedAt <= startedAt) {
+    fail(`${relativePath} lacks a valid run ID and bounded UTC evidence window`);
+  }
   if (manifest?.schema !== 1 || manifest.result !== "pass" || manifest.certifiable !== true) {
     fail(`${relativePath} is not a passing certifiable schema-1 run`);
   }
   if (manifest.expected_path !== expectedPath) {
     fail(`${relativePath} expected_path is not ${expectedPath}`);
   }
-  if (manifest.source?.commit !== candidateCommit || manifest.source?.releaseable !== true) {
+  const expectedMode = expectedPath === "relay" ? "remote-relay-only-build" : "remote-real-network";
+  if (manifest.mode !== expectedMode) {
+    fail(`${relativePath} mode is not ${expectedMode}`);
+  }
+  if (manifest.source?.commit !== candidateCommit
+      || manifest.source?.dirty !== false
+      || manifest.source?.published_at_origin !== true
+      || manifest.source?.releaseable !== true) {
     fail(`${relativePath} does not bind to the releaseable network-qualified commit`);
   }
   if (manifest.source?.iroh_rooms_revision !== upstreamRevision
+      || manifest.source?.iroh_rooms?.requested_revision !== upstreamRevision
+      || manifest.source?.iroh_rooms?.resolved_revision !== upstreamRevision
+      || manifest.source?.iroh_rooms?.public_source !== true
+      || manifest.source?.iroh_rooms?.published_at_origin !== true
       || manifest.source?.iroh_rooms?.releaseable !== true) {
     fail(`${relativePath} does not bind to the releaseable upstream revision`);
   }
-  if (manifest.build?.source_bound !== true || manifest.build?.locked !== true) {
+  if (manifest.build?.mode !== "from-source"
+      || manifest.build?.source_bound !== true
+      || manifest.build?.source_snapshot_commit !== candidateCommit
+      || manifest.build?.locked !== true
+      || !Array.isArray(manifest.build?.features)
+      || !manifest.build.features.includes("embed-ui")
+      || !Array.isArray(manifest.build?.targets)
+      || !manifest.build.targets.includes("x86_64-apple-darwin")
+      || !manifest.build.targets.includes("x86_64-unknown-linux-musl")) {
     fail(`${relativePath} was not built source-bound with the lockfile`);
   }
   const topology = manifest.distinct_public_egress;
   if (topology?.all_observed_addresses_different !== true
       || topology?.independent_network_topology_proven !== true
-      || topology?.distinct_autonomous_system_count < 2) {
+      || !Number.isInteger(topology?.distinct_autonomous_system_count)
+      || topology.distinct_autonomous_system_count < 2) {
     fail(`${relativePath} does not prove the required sanitized topology`);
   }
   const assertions = manifest.assertions;
-  if (!Array.isArray(assertions) || assertions.length < 36
-      || assertions.some((assertion) => assertion.result !== "pass")) {
+  const expectedAssertions = expectedNetworkAssertionNames(expectedPath);
+  if (!Array.isArray(assertions)
+      || assertions.some((assertion) => assertion.result !== "pass"
+        || !Number.isFinite(assertion.duration_ms)
+        || assertion.duration_ms < 0)
+      || JSON.stringify(assertions.map((assertion) => assertion.name))
+        !== JSON.stringify(expectedAssertions)) {
     fail(`${relativePath} does not contain a complete all-pass assertion set`);
   }
-  const names = new Set(assertions.map((assertion) => assertion.name));
-  for (const name of requiredNetworkAssertions(expectedPath)) {
-    if (!names.has(name)) fail(`${relativePath} is missing assertion ${name}`);
+  const paths = manifest.path_observations;
+  for (const role of ["a", "b", "c"]) {
+    const observation = paths?.[role];
+    if (observation?.expected_path !== expectedPath
+        || observation?.consecutive_observations < 3
+        || !Number.isInteger(observation?.expected_identities)
+        || observation.expected_identities < 1) {
+      fail(`${relativePath} lacks stable ${expectedPath} observations for role ${role}`);
+    }
+  }
+  const functional = manifest.functional_evidence;
+  const deniedMethods = [
+    "room.open", "room.close", "room.leave", "room.timeline", "room.members",
+    "invite.create", "message.send", "status.post", "file.share", "file.list",
+    "file.fetch", "pipe.expose", "pipe.list", "pipe.connect", "pipe.close",
+    "peers.status", "agent.history",
+  ];
+  if (functional?.file?.engine_verified !== true
+      || functional?.file?.sha256_equal !== true
+      || functional?.file?.expected_sha256 !== functional?.file?.actual_sha256
+      || functional?.pipe?.unauthorized_third_peer?.target_connections !== 0
+      || functional?.pipe?.unauthorized_third_peer?.target_requests !== 0
+      || functional?.reconnect?.offline_message_resynchronized !== true
+      || functional?.reconnect?.settled_path?.expected_path !== expectedPath
+      || functional?.multi_peer?.peers !== 3
+      || functional?.multi_peer?.convergence_verified !== true
+      || JSON.stringify(functional?.foreign_room_non_disclosure?.rpc_methods_denied)
+        !== JSON.stringify(deniedMethods)
+      || functional?.foreign_room_non_disclosure?.local_file_http_denied !== true
+      || functional?.foreign_room_non_disclosure?.aggregate_reads_filtered !== true
+      || functional?.foreign_room_non_disclosure?.foreign_agent_projection_exercised !== true
+      || !Number.isInteger(functional?.foreign_room_non_disclosure?.foreign_agent_join_attempts)
+      || functional.foreign_room_non_disclosure.foreign_agent_join_attempts < 1
+      || functional.foreign_room_non_disclosure.foreign_agent_join_attempts > 5
+      || functional?.foreign_room_non_disclosure?.synchronization_isolation_claimed !== false) {
+    fail(`${relativePath} lacks complete functional and authorization evidence`);
   }
   if (manifest.cleanup?.completed !== true
       || manifest.cleanup?.processes_stopped !== true
@@ -300,9 +416,28 @@ export function validateNetworkEvidenceManifest(manifest, {
   const remoteHosts = Array.isArray(manifest.hosts)
     ? manifest.hosts.filter((host) => host.role === "b" || host.role === "c")
     : [];
+  const remoteDigest = manifest.binaries?.remote?.sha256;
   if (remoteHosts.length !== 2
-      || remoteHosts.some((host) => !/^[0-9a-f]{64}$/.test(host.binary_validation?.sha256 ?? ""))) {
+      || new Set(remoteHosts.map((host) => host.role)).size !== 2
+      || new Set(remoteHosts.map((host) => host.host)).size !== 2
+      || !/^[0-9a-f]{64}$/.test(remoteDigest ?? "")
+      || remoteHosts.some((host) => host.architecture !== "x86_64"
+        || host.binary_validation?.sha256 !== remoteDigest
+        || host.binary_validation?.execution_uid === "0")) {
     fail(`${relativePath} lacks two independently verified remote binaries`);
+  }
+  const logRoles = manifest.sanitized_logs?.roles;
+  if (!Array.isArray(logRoles)
+      || JSON.stringify(logRoles.map((role) => role.role)) !== JSON.stringify(["a", "b", "c"])
+      || logRoles.some((role) => ["stdout", "stderr"].some((stream) => {
+        const record = role.streams?.[stream];
+        return !Number.isInteger(record?.lines)
+          || record.lines < 0
+          || !Number.isInteger(record?.bytes)
+          || record.bytes < 0
+          || !/^[0-9a-f]{64}$/.test(record?.sha256 ?? "");
+      }))) {
+    fail(`${relativePath} lacks sanitized per-role log integrity records`);
   }
   const relayAttested = manifest.binaries?.local?.relay_only_attested === true
     && remoteHosts.every((host) => host.binary_validation?.relay_only_attested === true);
@@ -390,12 +525,15 @@ function main() {
   const checkSource = argv.includes("--source") || !artifacts;
   const checkPublish = argv.includes("--publish");
 
+  let sourceResult = null;
   if (checkSource) {
-    const result = validateSourceVersions({ tag });
-    console.log(`release-integrity: source versions match ${result.tag}`);
+    sourceResult = validateSourceVersions({ tag });
+    console.log(`release-integrity: source versions match ${sourceResult.tag}`);
   }
   if (checkPublish) {
-    validateEvidenceReadiness();
+    validateEvidenceReadiness({
+      version: sourceResult?.version ?? tomlPackageVersion("crates/jeliyad/Cargo.toml"),
+    });
     console.log("release-integrity: evidence gate is READY");
   }
   if (artifacts) {
