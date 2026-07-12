@@ -80,6 +80,10 @@ const REQUIRED_ZIG_ARCHIVE_ROOT = "zig-x86_64-macos-0.15.2";
 const DISABLED_CARGO_ZIGBUILD_PYTHON_PATH = "/dev/null/jeliya-python-zig-discovery-disabled";
 const REQUIRED_CARGO_ZIGBUILD_VERSION = "cargo-zigbuild 0.23.0";
 const REQUIRED_CARGO_BUILD_JOBS = "2";
+const MIN_REMOTE_COPY_BYTES_PER_SECOND = 128 * 1024;
+const MIN_REMOTE_COPY_TIMEOUT_MS = 120_000;
+const MAX_REMOTE_COPY_TIMEOUT_MS = 30 * 60_000;
+const REMOTE_COPY_SETUP_ALLOWANCE_MS = 60_000;
 export const SOURCE_BUILD_ENVIRONMENT_POLICY = "isolated-allowlist-v1";
 export const SOURCE_BUILD_ALLOWED_AMBIENT_NAMES = Object.freeze([
   "ALL_PROXY",
@@ -156,6 +160,17 @@ export function validSshTarget(value) {
 
 export function validRunId(value) {
   return typeof value === "string" && /^\d{8}T\d{6}Z-[0-9a-f]{8}$/.test(value);
+}
+
+export function remoteCopyTimeoutMs(bytes) {
+  if (!Number.isSafeInteger(bytes) || bytes < 1) {
+    throw new Error("remote copy timeout requires a positive safe byte count");
+  }
+  const transferMs = Math.ceil(bytes / MIN_REMOTE_COPY_BYTES_PER_SECOND) * 1_000;
+  return Math.min(
+    MAX_REMOTE_COPY_TIMEOUT_MS,
+    Math.max(MIN_REMOTE_COPY_TIMEOUT_MS, transferMs + REMOTE_COPY_SETUP_ALLOWANCE_MS),
+  );
 }
 
 export function remoteRunDir(runId, role) {
@@ -1912,7 +1927,7 @@ async function provisionRemoteBinary({
     const copy = await runCaptured(
       "scp",
       ["-q", ...SSH_BASE, binary, `${target}:${runDir}/jeliyad`],
-      { timeoutMs: 120_000, signal },
+      { timeoutMs: remoteCopyTimeoutMs(statSync(binary).size), signal },
     );
     if (copy.code !== 0) throw new Error(`could not copy the verified binary to ${target}`);
 

@@ -57,7 +57,7 @@
 - Made local room provenance recoverable and durable: create and join now persist accepted-room state before irreversible event publication, retries remain safe after persistence failures, concurrent state mutations are serialized, and `state.json` is atomically replaced with file/directory synchronization, Windows write-through replacement, and owner-only Unix permissions.
 - Reused the authorized room snapshot cache for direct file, pipe, and agent-history reads, avoiding repeated full-history folds without weakening the authorization preflight.
 - Aligned the `room.list` pre-identity contract across the daemon, TypeScript mock, Dart daemon/FFI/mock clients, the golden corpus, and protocol documentation while preserving protocol v1's privacy-safe `{ rooms: [] }` onboarding result.
-- Isolated certifying source builds from ambient operator state: schema-2 evidence now requires a bare commit archive unaffected by checkout-local Git attributes, run-owned home/Cargo/npm/Git/temp state, a minimal proxy/CA allowlist, removal of unlisted variables, exact Node/npm/Cargo/cargo-zigbuild bindings, and the pinned official Zig 0.15.2 installation archive verified before extraction or execution.
+- Isolated certifying source builds from ambient operator state: schema-2 evidence now requires a bare commit archive unaffected by checkout-local Git attributes, run-owned home/Cargo/npm/Git/temp state, a minimal proxy/CA allowlist, removal of unlisted variables, exact Node/npm/Cargo/cargo-zigbuild bindings, and the pinned official Zig 0.15.2 installation archive verified before extraction or execution; remote binary copies use a size-aware bounded deadline so slow qualifying links fail only at an explicit conservative floor.
 
 ## [0.4.3] - 2026-07-07
 
