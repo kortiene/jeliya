@@ -678,7 +678,12 @@ function runBuildCommand(command, args, { cwd, env = process.env, timeoutMs = 30
     timeout: timeoutMs,
   });
   if (result.status !== 0) {
-    throw new Error(`source build failed: ${command} ${args[0]} (${result.signal ?? `exit ${result.status}`})`);
+    const raw = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
+    const tail = raw.slice(-4_096);
+    const diagnostic = redactLogExcerpt(tail).replace(/\s+/g, " ").trim();
+    throw new Error(
+      `source build failed: ${command} ${args[0]} (${result.signal ?? `exit ${result.status}`})${diagnostic ? ` — ${diagnostic}` : ""}`,
+    );
   }
 }
 
