@@ -86,7 +86,7 @@ export function validateSourceVersions({ root = repoRoot, tag = "" } = {}) {
   return { tag: releaseTag, version: releaseVersion, versions };
 }
 
-export function validateEvidenceReadiness({ root = repoRoot } = {}) {
+export function validateEvidenceReadiness({ root = repoRoot, context = null } = {}) {
   const evidence = readText("docs/verification-evidence.md", root);
   if (!/^implementation_status: "implemented"$/m.test(evidence)) {
     fail("verification evidence implementation_status is not implemented");
@@ -101,19 +101,215 @@ export function validateEvidenceReadiness({ root = repoRoot } = {}) {
   if (/\bpending\b/i.test(candidateSection)) {
     fail("candidate identity still contains pending provenance");
   }
-  if (!/^\| Candidate commit \| `[0-9a-f]{40}` \|$/m.test(candidateSection)) {
-    fail("candidate evidence must name one exact 40-hex commit");
+  const tableValue = (label) => {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matches = [...candidateSection.matchAll(
+      new RegExp(`^\\| ${escaped} \\| ` + "`([^`]+)`" + ` \\|$`, "gm"),
+    )];
+    if (matches.length !== 1) fail(`candidate evidence must contain exactly one ${label} row`);
+    return matches[0][1];
+  };
+  const candidateCommit = tableValue("Network-qualified commit");
+  const upstreamRevision = tableValue("Candidate upstream remediation revision");
+  if (!/^[0-9a-f]{40}$/.test(candidateCommit)) {
+    fail("network-qualified commit must be exact 40-hex");
   }
-  if (!/^\| Candidate upstream remediation revision \| `[0-9a-f]{40}` \|$/m.test(candidateSection)) {
-    fail("candidate evidence must name one exact 40-hex upstream revision");
+  if (!/^[0-9a-f]{40}$/.test(upstreamRevision)) {
+    fail("candidate upstream remediation revision must be exact 40-hex");
   }
-  for (const gate of ["Direct different-network P2P", "Deliberately constrained relay"]) {
-    const row = evidence.split(/\r?\n/).find((line) => line.startsWith(`| ${gate} |`));
-    if (!row || !/\| passed(?:\s|`|;|\|)/i.test(row)) {
-      fail(`${gate} evidence is not passed`);
+
+  const manifests = Object.fromEntries(["direct", "relay"].map((path) => {
+    const relativePath = `docs/evidence/v0.5.0/${path}.json`;
+    let manifest;
+    try {
+      manifest = JSON.parse(readText(relativePath, root));
+    } catch {
+      fail(`${relativePath} is missing or is not valid JSON`);
     }
+    validateNetworkEvidenceManifest(manifest, {
+      expectedPath: path,
+      candidateCommit,
+      upstreamRevision,
+      relativePath,
+    });
+    return [path, manifest];
+  }));
+
+  if (manifests.direct.source.commit !== manifests.relay.source.commit) {
+    fail("direct and relay evidence refer to different Jeliya commits");
   }
-  return { ready: true };
+
+  const releaseContext = context ?? releaseEvidenceContext(root, candidateCommit);
+  if (releaseContext.upstreamRequestedRevision !== upstreamRevision
+      || releaseContext.upstreamResolvedRevision !== upstreamRevision) {
+    fail("documented upstream revision does not match Cargo.toml and Cargo.lock");
+  }
+  if (!releaseContext.upstreamPublic) {
+    fail("iroh-rooms release dependency is not an immutable public HTTPS Git source");
+  }
+  if (!releaseContext.candidateIsAncestor) {
+    fail("network-qualified commit is not an ancestor of the release checkout");
+  }
+  const disallowed = releaseContext.changedPaths.filter((path) => !path.startsWith("docs/"));
+  if (disallowed.length > 0) {
+    fail(`runtime or release inputs changed after network qualification: ${disallowed.join(", ")}`);
+  }
+  return { ready: true, candidateCommit, upstreamRevision };
+}
+
+function strictPublicGitHubUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:"
+      && url.hostname === "github.com"
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && /^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+export function irohRoomsReleaseIdentity(root = repoRoot) {
+  const dependencyLine = readText("Cargo.toml", root)
+    .split(/\r?\n/)
+    .find((line) => /^iroh-rooms\s*=/.test(line));
+  const gitUrl = dependencyLine?.match(/\bgit\s*=\s*"([^"]+)"/)?.[1] ?? "";
+  const requestedRevision = dependencyLine?.match(/\brev\s*=\s*"([0-9a-f]{40})"/)?.[1] ?? "";
+  if (!strictPublicGitHubUrl(gitUrl) || !requestedRevision) {
+    fail("Cargo.toml iroh-rooms must use a public GitHub HTTPS URL and exact revision");
+  }
+
+  const packageBlock = readText("Cargo.lock", root)
+    .split(/\n(?=\[\[package\]\])/)
+    .find((block) => /^\[\[package\]\]\nname = "iroh-rooms"$/m.test(block));
+  const source = packageBlock?.match(/^source = "([^"]+)"$/m)?.[1] ?? "";
+  const sourceMatch = source.match(/^git\+(https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?)\?rev=([0-9a-f]{40})#([0-9a-f]{40})$/);
+  if (!sourceMatch || !strictPublicGitHubUrl(sourceMatch[1])) {
+    fail("Cargo.lock iroh-rooms source is not an exact public GitHub revision");
+  }
+  const [, resolvedUrl, lockedRequest, resolvedRevision] = sourceMatch;
+  if (resolvedUrl.replace(/\.git$/, "") !== gitUrl.replace(/\.git$/, "")) {
+    fail("Cargo.toml and Cargo.lock iroh-rooms repositories differ");
+  }
+  if (lockedRequest !== requestedRevision || resolvedRevision !== requestedRevision) {
+    fail("Cargo.toml requested and Cargo.lock resolved iroh-rooms revisions differ");
+  }
+  return {
+    gitUrl,
+    requestedRevision,
+    resolvedRevision,
+    publicSource: true,
+  };
+}
+
+export function releaseEvidenceContext(root, candidateCommit) {
+  const identity = irohRoomsReleaseIdentity(root);
+  const head = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
+  const ancestor = execFileSync(
+    "git",
+    ["merge-base", "--is-ancestor", candidateCommit, head],
+    { cwd: root, stdio: "ignore" },
+  );
+  void ancestor;
+  const changed = execFileSync(
+    "git",
+    ["diff", "--name-only", `${candidateCommit}..${head}`],
+    { cwd: root, encoding: "utf8" },
+  ).trim();
+  return {
+    headCommit: head,
+    upstreamRequestedRevision: identity.requestedRevision,
+    upstreamResolvedRevision: identity.resolvedRevision,
+    upstreamPublic: identity.publicSource,
+    candidateIsAncestor: true,
+    changedPaths: changed ? changed.split(/\r?\n/) : [],
+  };
+}
+
+function requiredNetworkAssertions(path) {
+  return [
+    `A: ${path} path settled`,
+    `B: ${path} path settled`,
+    `C: ${path} path settled`,
+    "B receives A message",
+    "A receives B message",
+    "C receives both messages",
+    "C message converges to A and B",
+    "B fetches and BLAKE3-verifies payload",
+    "B fetched bytes are byte-identical",
+    "C pipe gate forwards zero bytes to the target",
+    "B observes and connects authorized pipe",
+    "B reopens and receives the offline message",
+    `B reconnects over ${path}`,
+    "A seeds isolated foreign-room fixtures",
+    "B public room-scoped RPCs do not disclose a foreign room ID",
+    "B local-file HTTP endpoint does not disclose a foreign room ID",
+    "B aggregate reads omit the foreign room and agent projection",
+  ];
+}
+
+export function validateNetworkEvidenceManifest(manifest, {
+  expectedPath,
+  candidateCommit,
+  upstreamRevision,
+  relativePath = "evidence manifest",
+}) {
+  if (manifest?.schema !== 1 || manifest.result !== "pass" || manifest.certifiable !== true) {
+    fail(`${relativePath} is not a passing certifiable schema-1 run`);
+  }
+  if (manifest.expected_path !== expectedPath) {
+    fail(`${relativePath} expected_path is not ${expectedPath}`);
+  }
+  if (manifest.source?.commit !== candidateCommit || manifest.source?.releaseable !== true) {
+    fail(`${relativePath} does not bind to the releaseable network-qualified commit`);
+  }
+  if (manifest.source?.iroh_rooms_revision !== upstreamRevision
+      || manifest.source?.iroh_rooms?.releaseable !== true) {
+    fail(`${relativePath} does not bind to the releaseable upstream revision`);
+  }
+  if (manifest.build?.source_bound !== true || manifest.build?.locked !== true) {
+    fail(`${relativePath} was not built source-bound with the lockfile`);
+  }
+  const topology = manifest.distinct_public_egress;
+  if (topology?.all_observed_addresses_different !== true
+      || topology?.independent_network_topology_proven !== true
+      || topology?.distinct_autonomous_system_count < 2) {
+    fail(`${relativePath} does not prove the required sanitized topology`);
+  }
+  const assertions = manifest.assertions;
+  if (!Array.isArray(assertions) || assertions.length < 36
+      || assertions.some((assertion) => assertion.result !== "pass")) {
+    fail(`${relativePath} does not contain a complete all-pass assertion set`);
+  }
+  const names = new Set(assertions.map((assertion) => assertion.name));
+  for (const name of requiredNetworkAssertions(expectedPath)) {
+    if (!names.has(name)) fail(`${relativePath} is missing assertion ${name}`);
+  }
+  if (manifest.cleanup?.completed !== true
+      || manifest.cleanup?.processes_stopped !== true
+      || manifest.cleanup?.temporary_artifacts_removed !== true
+      || manifest.cleanup?.failure_codes?.length !== 0) {
+    fail(`${relativePath} cleanup is incomplete`);
+  }
+  const remoteHosts = Array.isArray(manifest.hosts)
+    ? manifest.hosts.filter((host) => host.role === "b" || host.role === "c")
+    : [];
+  if (remoteHosts.length !== 2
+      || remoteHosts.some((host) => !/^[0-9a-f]{64}$/.test(host.binary_validation?.sha256 ?? ""))) {
+    fail(`${relativePath} lacks two independently verified remote binaries`);
+  }
+  const relayAttested = manifest.binaries?.local?.relay_only_attested === true
+    && remoteHosts.every((host) => host.binary_validation?.relay_only_attested === true);
+  if (expectedPath === "relay" && !relayAttested) {
+    fail(`${relativePath} lacks compile-time relay-only attestation on every execution host`);
+  }
+  return { valid: true };
 }
 
 export function expectedArtifactNames(tag) {

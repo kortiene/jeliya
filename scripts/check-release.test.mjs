@@ -8,8 +8,10 @@ import test from "node:test";
 
 import {
   expectedArtifactNames,
+  irohRoomsReleaseIdentity,
   validateArtifactSet,
   validateEvidenceReadiness,
+  validateNetworkEvidenceManifest,
   validateSourceVersions,
 } from "./check-release.mjs";
 
@@ -25,11 +27,70 @@ test("checked-in release surfaces share one dated version", () => {
   assert.equal(new Set(Object.values(result.versions)).size, 1);
 });
 
-test("publication is blocked until exact direct and relay evidence is marked ready", () => {
+function networkManifest(path, commit, upstream) {
+  const required = [
+    `A: ${path} path settled`,
+    `B: ${path} path settled`,
+    `C: ${path} path settled`,
+    "B receives A message",
+    "A receives B message",
+    "C receives both messages",
+    "C message converges to A and B",
+    "B fetches and BLAKE3-verifies payload",
+    "B fetched bytes are byte-identical",
+    "C pipe gate forwards zero bytes to the target",
+    "B observes and connects authorized pipe",
+    "B reopens and receives the offline message",
+    `B reconnects over ${path}`,
+    "A seeds isolated foreign-room fixtures",
+    "B public room-scoped RPCs do not disclose a foreign room ID",
+    "B local-file HTTP endpoint does not disclose a foreign room ID",
+    "B aggregate reads omit the foreign room and agent projection",
+  ];
+  while (required.length < 36) required.push(`fixture assertion ${required.length + 1}`);
+  const relay = path === "relay";
+  return {
+    schema: 1,
+    result: "pass",
+    certifiable: true,
+    expected_path: path,
+    source: {
+      commit,
+      releaseable: true,
+      iroh_rooms_revision: upstream,
+      iroh_rooms: { releaseable: true },
+    },
+    build: { source_bound: true, locked: true },
+    distinct_public_egress: {
+      all_observed_addresses_different: true,
+      distinct_autonomous_system_count: 2,
+      independent_network_topology_proven: true,
+    },
+    assertions: required.map((name) => ({ name, result: "pass" })),
+    cleanup: {
+      completed: true,
+      processes_stopped: true,
+      temporary_artifacts_removed: true,
+      failure_codes: [],
+    },
+    binaries: { local: { relay_only_attested: relay } },
+    hosts: ["b", "c"].map((role) => ({
+      role,
+      binary_validation: {
+        sha256: "ef".repeat(32),
+        relay_only_attested: relay,
+      },
+    })),
+  };
+}
+
+test("publication is blocked until retained direct and relay evidence is exact", () => {
   assert.throws(() => validateEvidenceReadiness(), /not implemented|not verified|not READY/);
   const root = mkdtempSync(join(tmpdir(), "jeliya-evidence-gate-"));
   try {
-    mkdirSync(join(root, "docs"));
+    const commit = "ab".repeat(20);
+    const upstream = "cd".repeat(20);
+    mkdirSync(join(root, "docs", "evidence", "v0.5.0"), { recursive: true });
     writeFileSync(join(root, "docs", "verification-evidence.md"), `---
 implementation_status: "implemented"
 verification_status: "verified"
@@ -39,21 +100,60 @@ verification_status: "verified"
 
 | Field | Value |
 |---|---|
-| Candidate commit | \`${"ab".repeat(20)}\` |
-| Candidate upstream remediation revision | \`${"cd".repeat(20)}\` |
+| Network-qualified commit | \`${commit}\` |
+| Candidate upstream remediation revision | \`${upstream}\` |
 | Release evidence gate | READY |
 
-## Milestone evidence ledger
-
-| Gate | Required evidence | Current status |
-|---|---|---|
-| Direct different-network P2P | exact evidence | passed; run direct-1 |
-| Deliberately constrained relay | exact evidence | passed; run relay-1 |
+## Evidence ledger
 `);
-    assert.deepEqual(validateEvidenceReadiness({ root }), { ready: true });
+    writeFileSync(
+      join(root, "docs", "evidence", "v0.5.0", "direct.json"),
+      `${JSON.stringify(networkManifest("direct", commit, upstream), null, 2)}\n`,
+    );
+    writeFileSync(
+      join(root, "docs", "evidence", "v0.5.0", "relay.json"),
+      `${JSON.stringify(networkManifest("relay", commit, upstream), null, 2)}\n`,
+    );
+    const context = {
+      headCommit: "12".repeat(20),
+      upstreamRequestedRevision: upstream,
+      upstreamResolvedRevision: upstream,
+      upstreamPublic: true,
+      candidateIsAncestor: true,
+      changedPaths: ["docs/verification-evidence.md", "docs/evidence/v0.5.0/direct.json"],
+    };
+    assert.deepEqual(validateEvidenceReadiness({ root, context }), {
+      ready: true,
+      candidateCommit: commit,
+      upstreamRevision: upstream,
+    });
+
+    const relay = networkManifest("relay", commit, upstream);
+    relay.hosts[0].binary_validation.relay_only_attested = false;
+    assert.throws(() => validateNetworkEvidenceManifest(relay, {
+      expectedPath: "relay",
+      candidateCommit: commit,
+      upstreamRevision: upstream,
+    }), /relay-only attestation/);
+
+    assert.throws(() => validateEvidenceReadiness({
+      root,
+      context: { ...context, changedPaths: ["crates/jeliyad/src/main.rs"] },
+    }), /changed after network qualification/);
+    assert.throws(() => validateEvidenceReadiness({
+      root,
+      context: { ...context, upstreamResolvedRevision: "00".repeat(20) },
+    }), /does not match Cargo.toml and Cargo.lock/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the checked-in iroh-rooms release identity is public and resolution-exact", () => {
+  const identity = irohRoomsReleaseIdentity();
+  assert.equal(identity.publicSource, true);
+  assert.equal(identity.requestedRevision, identity.resolvedRevision);
+  assert.match(identity.requestedRevision, /^[0-9a-f]{40}$/);
 });
 
 test("external Actions are immutable and only publish receives write authority", () => {
