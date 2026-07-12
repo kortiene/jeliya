@@ -26,7 +26,7 @@ evidence, but they do **not** authorize publication.
 |---|---|
 | Milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Baseline commit | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardening implementation commit before documentation reconciliation | `9d554b93c3e17a6f8485f4937c652e0020ae096e` |
+| Hardening implementation commit before documentation reconciliation | `8caeaf5f2d067230f66be757c415569e8e5e325f` |
 | Current public `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` — synchronization isolation is not remediated |
 | Network-test Jeliya commit | `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` — clean, local, and unpublished |
 | Candidate upstream remediation revision | `3702e8cbcd5ac1808791124dd6bc44068be5f822` — clean and tested locally, but unpublished |

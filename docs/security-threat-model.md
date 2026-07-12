@@ -28,7 +28,7 @@ Security conclusions must name the source being evaluated:
 | Surface | Revision | Security meaning |
 |---|---|---|
 | Public Jeliya dependency | Iroh Rooms `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` | still permits the synchronization behavior under remediation; unsafe for `v0.5.0` publication |
-| Hardening implementation | Jeliya `9d554b93c3e17a6f8485f4937c652e0020ae096e` before documentation reconciliation | implements local RPC, secret, CI, evidence, and release controls |
+| Hardening implementation | Jeliya `8caeaf5f2d067230f66be757c415569e8e5e325f` before documentation reconciliation | implements local RPC, secret, CI, evidence, and release controls |
 | Functional network verification | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` plus local Iroh Rooms `3702e8cbcd5ac1808791124dd6bc44068be5f822` | direct and forced-relay functional checks pass, but both revisions are local/unpublished and cannot certify a release |
 
 No result from the local verification checkout should be projected onto the

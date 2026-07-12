@@ -23,7 +23,7 @@ shipped.
 |---|---|---|---|---|
 | Latest public release | tag `v0.4.3` at `9d62c3cd98c7f21d9683815c28278b6ac8c0b97f` | release lockfile | five published daemon archives and five checksum sidecars | only behavior in those archives is released |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` | pins vulnerable `iroh-rooms` `3cb9bfd…` | no artifact for this commit | baseline source behavior only |
-| Hardened candidate implementation | `9d554b93c3e17a6f8485f4937c652e0020ae096e` on `hardening/v0.5.0-evidence-preview` before documentation reconciliation | public repository pin remains `3cb9bfd…` | local security, CI, release, and evidence hardening; no public artifacts | implemented and locally tested, not release-ready |
+| Hardened candidate implementation | `8caeaf5f2d067230f66be757c415569e8e5e325f` on `hardening/v0.5.0-evidence-preview` before documentation reconciliation | public repository pin remains `3cb9bfd…` | local security, CI, release, and evidence hardening; no public artifacts | implemented and locally tested, not release-ready |
 | Network verification branch | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` | local Git dependency `3702e8c…` | direct and relay functional pass; manifests retained, unsigned, `certifiable: false` | functional evidence only; cannot certify a release |
 | Upstream synchronization remediation | local `iroh-room` `3702e8cbcd5ac1808791124dd6bc44068be5f822` | clean and tested, but unpublished | no immutable public dependency revision | cannot support a Jeliya release claim |
 
@@ -77,7 +77,7 @@ workflow is implemented locally but has never been used to publish `v0.5.0`.
 ## Evidence provenance
 
 This snapshot records repository and release inventory established on
-2026-07-12, the hardened implementation at `9d554b9…`, and the retained direct
+2026-07-12, the hardened implementation at `8caeaf5…`, and the retained direct
 and relay manifests produced between 15:55 and 16:39 UTC. Neither tickets,
 tokens, identity material, nor public IP addresses are retained. See
 [Platform matrix](platform-matrix.md) and

@@ -23,7 +23,7 @@ unpublished revision releasable.
 |---|---|
 | Candidate milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardened implementation snapshot | `9d554b93c3e17a6f8485f4937c652e0020ae096e` on `hardening/v0.5.0-evidence-preview` |
+| Hardened implementation snapshot | `8caeaf5f2d067230f66be757c415569e8e5e325f` on `hardening/v0.5.0-evidence-preview` |
 | Public Jeliya `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` (room-isolation defect remains) |
 | Local upstream remediation | `3702e8cbcd5ac1808791124dd6bc44068be5f822` (clean and tested, but unpublished) |
 | Network verification snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` with local upstream `3702e8c…` (clean, but unpublished) |
