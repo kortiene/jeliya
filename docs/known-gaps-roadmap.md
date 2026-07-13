@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Known gaps and roadmap"
 description: "Release blockers, deferred risks, owners, and next actions for the v0.5.0 evidence-backed technical preview."
 tags: ["gaps", "release", "risks", "roadmap"]
-timestamp: "2026-07-12T23:09:19Z"
+timestamp: "2026-07-12T23:55:23Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -27,14 +27,14 @@ alpha and remains **blocked for release** despite substantial local progress.
 | Dependency security | Cargo and npm report zero vulnerabilities; four unmaintained/yanked warnings have owner, mitigation, and expiry records | rerun against final lockfiles; no high/critical exception may be implicit | dependency owner | locally closed |
 | CI completeness | all required matrix jobs and fail-closed prerequisites are defined; manual dispatch does not publish; Gradle is checksum-verified before execution | push authority and two clean hosted runs on the final public commit | CI maintainer | **blocked** |
 | Agent/fleet reliability | agent E2E passes; fleet stability passed 5/5; Linux orphan/zombie cleanup verified on `demo1` under UID `65534` | repeat in final hosted gates | agent maintainer | locally closed |
-| Direct network behavior | run `d3d9ff69`, three peers, distinct egress, two ASNs, 36/36 and cleanup pass | rerun on published Jeliya/upstream revisions with valid retained-evidence signature | verification owner | functional pass; **not certifiable** |
-| Forced relay behavior | run `f1d9c149`, relay-only attestation, 36/36 and cleanup pass | same public-revision and signature qualification as direct | verification owner | functional pass; **not certifiable** |
+| Direct network behavior | schema 2 run `3c938c66` at `0f6769a…`: three peers, distinct egress, two ASNs, 36/36 and cleanup pass; no synchronization-isolation claim | publish and pin the safe upstream revision, then rerun from the public Jeliya commit with a valid retained-evidence signature | verification owner | current functional pass; **not certifiable** |
+| Forced relay behavior | exact public-pin relay-only build failed closed before remote execution because `3cb9bfd…` lacks the reviewed seam; older schema 1 `f1d9c149` is historical local-remediation evidence only | publish and pin the reviewed seam, then obtain a current schema 2 36/36 signed relay run paired with direct evidence from the same commit and toolchain | verification owner | **blocked; no current relay pass** |
 | Evidence authenticity | release gate validates detached Ed25519 evidence signatures | authorize key custody and commit only the canonical public key before the qualifying run; never commit the private key | release authority | **blocked, fails closed** |
 | Unix installer integrity | behavioral checksum-before-extraction tests pass | rerun against final artifacts | release maintainer | locally closed |
 | Windows installer integrity | behavioral checksum/tamper, simulated reparse rejection, and native daemon smoke jobs are configured | obtain a passing hosted Windows result on the final candidate | release maintainer | **blocked; configured, unexecuted** |
 | Complete asset-set visibility | immutable actions, verified build tools, execution-free validation and receipt sealing, isolated read-only smoke, receipt-only writer verification, draft-until-complete publication, and final-step token isolation are implemented | execute only after all gates pass and explicit release authority is granted; inspect and recover manually if cleanup is interrupted because GitHub cannot transact the tag and release assets atomically | release authority | implemented, never executed |
 | Complete artifact set | `v0.4.3` has five published archives | build and verify all five `v0.5.0` daemon-plus-embedded-UI archives and sidecars together | release maintainer | **blocked; complete set absent** |
-| Documentation alignment | status pages and retained manifests reflect current evidence | final reconciliation after public pins, hosted runs, signatures, and artifact verification | documentation owner | current for this snapshot |
+| Documentation alignment | status pages distinguish current schema 2 direct evidence, the failed-closed current relay build, and historical schema 1 local-remediation evidence | final reconciliation after public pins, hosted runs, signatures, and artifact verification | documentation owner | current for this snapshot; release remains blocked |
 
 No reachable high or critical advisory is currently unresolved. The four
 maintenance/yank warnings are tracked with mitigation and an expiry of

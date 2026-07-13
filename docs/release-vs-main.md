@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Release versus main"
 description: "Exact boundary between the latest published Jeliya artifacts, the audited baseline, and the v0.5.0 candidate."
 tags: ["artifacts", "main", "release", "versions"]
-timestamp: "2026-07-12T23:09:19Z"
+timestamp: "2026-07-12T23:55:23Z"
 status: "canonical"
 implementation_status: "not-applicable"
 verification_status: "verified"
@@ -24,17 +24,23 @@ shipped.
 | Latest public release | tag `v0.4.3` at `9d62c3cd98c7f21d9683815c28278b6ac8c0b97f` | release lockfile | five published daemon archives and five checksum sidecars | only behavior in those archives is released |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` | pins vulnerable `iroh-rooms` `3cb9bfd…` | no artifact for this commit | baseline source behavior only |
 | Initial hardening checkpoint | `4d0807a42ad79f7eb1b44edab48a62bf8813dd9c` | public repository pin remains `3cb9bfd…` | historical checkpoint before provenance, cache, and protocol-contract follow-ups | historical only; not the current candidate boundary |
-| Hardened candidate implementation | `c604991a9aeaf9ba1372fc141b090989e336a8e9` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation | public repository pin remains `3cb9bfd…`; exact `atomicwrites 0.4.4` supplies durable state replacement semantics | local security, correctness, CI, release, evidence, and cross-runtime contract hardening; no public artifacts | implemented and locally tested, not release-ready |
-| Network verification branch | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` | local Git dependency `3702e8c…` | direct and relay functional pass; manifests retained, unsigned, `certifiable: false` | functional evidence only; cannot certify a release |
+| Hardened candidate and current network snapshot | `0f6769a68d783cf6a5feba0e2db6111a212affa1` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation | public repository pin remains unsafe `3cb9bfd…`; exact `atomicwrites 0.4.4` supplies durable state replacement semantics | schema 2 direct 36/36 functional pass; exact relay-only build failed closed because the public pin lacks the test seam; no public artifacts | current direct functional evidence only; relay and release readiness blocked |
+| Historical local-remediation network snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` | local Git dependency `3702e8c…` | schema 1 direct and relay functional pass; manifests retained, unsigned, `certifiable: false` | historical functional evidence only; cannot qualify current candidate or release |
 | Upstream synchronization remediation | local `iroh-room` `3702e8cbcd5ac1808791124dd6bc44068be5f822` | clean and tested, but unpublished | no immutable public dependency revision | cannot support a Jeliya release claim |
 
-The hardened implementation and network branch intentionally differ. The
-network branch exists to test the local upstream remediation; it is not a
-publicly reproducible candidate. The retained manifests are
-[direct](evidence/v0.5.0/direct.json) and
-[relay](evidence/v0.5.0/relay.json).
-They also predate the runtime fixes between `fe870c7…` and `c604991…`; a fresh
-network run is required even after the upstream revision becomes public.
+The current hardened implementation and schema 2 direct run share exact source
+commit `0f6769a…`. The retained
+[preview direct manifest](evidence/v0.5.0/preview-direct-schema2.json) uses the
+public dependency pin and explicitly makes no synchronization-isolation claim.
+The corresponding relay-only build did not execute remotely: the public pin
+does not contain the reviewed compile-time seam, so the build failed closed.
+
+The older [direct](evidence/v0.5.0/direct.json) and
+[relay](evidence/v0.5.0/relay.json) schema 1 manifests exercise the unpublished
+local upstream remediation. They predate later runtime and evidence hardening
+and remain historical only. No retained pair currently combines the hardened
+Jeliya commit, a published safe upstream pin, schema 2, signatures, and both
+direct and forced-relay passes.
 
 ## Published `v0.4.3` artifact set
 
@@ -85,8 +91,9 @@ the ref and release operations requires operator inspection before retry.
 ## Evidence provenance
 
 This snapshot records repository and release inventory established on
-2026-07-12, the hardened implementation at `c604991…`, and the retained direct
-and relay manifests produced between 15:55 and 16:39 UTC. Neither tickets,
-tokens, identity material, nor public IP addresses are retained. See
+2026-07-12, the hardened/network-tested implementation at `0f6769a…`, the
+schema 2 direct manifest produced between 23:10 and 23:34 UTC, the failed-closed
+current relay build, and the older schema 1 direct/relay manifests. Neither
+tickets, tokens, identity material, nor public IP addresses are retained. See
 [Platform matrix](platform-matrix.md) and
 [Known gaps and roadmap](known-gaps-roadmap.md).

@@ -3,7 +3,7 @@ type: "Runbook"
 title: "Real-network NAT runbook"
 description: "Operator procedure for collecting revision-bound direct and forced-relay evidence across three distinct public egress paths."
 tags: ["nat", "networking", "operations", "p2p"]
-timestamp: "2026-07-12T23:09:19Z"
+timestamp: "2026-07-12T23:55:23Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -20,25 +20,35 @@ a diagnostic and historical reference; it cannot qualify a `v0.5.0` release.
 
 ## Current evidence status
 
-The 2026-07-12 direct and forced-relay executions both passed 36/36 functional
-assertions with three peers and complete cleanup:
+The current hardened source snapshot is Jeliya
+`0f6769a68d783cf6a5feba0e2db6111a212affa1` with public Iroh Rooms pin
+`3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020`. Its schema 2 direct run passed;
+the matching relay-only build failed closed before remote execution because
+that public pin lacks the reviewed compile-time test seam:
 
 | Path | Run | UTC window | Evidence status |
 |---|---|---|---|
-| direct | `20260712T155534Z-d3d9ff69` | 15:55:34–16:15:24 | functionally passed; retained but unsigned and non-certifying |
-| forced relay | `20260712T161837Z-f1d9c149` | 16:18:37–16:38:54 | functionally passed; retained but unsigned and non-certifying |
+| direct | `20260712T231015Z-3c938c66` | 23:10:15–23:34:46 | 36/36 functional PASS; [schema 2 manifest](evidence/v0.5.0/preview-direct-schema2.json) retained, unsigned, `certifiable: false` |
+| forced relay | no run manifest | not applicable | BLOCKED; source build failed closed; no remote execution or relay assertion occurred |
 
-Both runs used unpublished Jeliya
+The direct run validates direct network behavior and public-RPC
+non-disclosure. It explicitly does not claim upstream synchronization
+isolation: the public dependency pin remains unsafe, the Jeliya commit is
+unpublished, and the evidence public key is absent. It cannot qualify a
+release.
+
+Historical schema 1 direct and relay runs used unpublished Jeliya
 `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` and a local `file://` checkout of
 unpublished Iroh Rooms
-`3702e8cbcd5ac1808791124dd6bc44068be5f822`. They therefore cannot certify the
-public candidate. They also use historical evidence schema 1, which predates
+`3702e8cbcd5ac1808791124dd6bc44068be5f822`. They passed 36/36 at runs
+`d3d9ff69` and `f1d9c149`, but cannot qualify the current implementation or
+public candidate. They also predate
 the isolated source-build and complete Zig-installation controls in schema 2.
 Schema 1 records remain non-certifying and cannot be promoted by adding a
 signature. The durable sanitized records are
 [`direct.json`](evidence/v0.5.0/direct.json) and
 [`relay.json`](evidence/v0.5.0/relay.json); their exact limits are documented in
-[`verification-evidence.md`](verification-evidence.md#retained-three-peer-network-evidence).
+[`verification-evidence.md`](verification-evidence.md#historical-schema-1-local-remediation-evidence).
 
 ## Safety envelope
 
@@ -239,8 +249,9 @@ Each path run must pass the same ordered 36 assertions:
 
 Room joins retry only the transient `peer_unreachable` bootstrap result, at
 most five attempts. Authorization, ticket, and other errors fail immediately.
-The successful 2026-07-12 direct and relay runs each used two attempts for the
-isolated foreign-room fixture after the first 15-second bootstrap window.
+The historical schema 1 direct and relay runs each used two attempts for the
+isolated foreign-room fixture after the first 15-second bootstrap window. The
+current schema 2 direct manifest records the assertions for its own execution.
 
 Public-RPC non-disclosure is not upstream synchronization proof. Before release,
 also run the malicious Iroh Rooms `WantEvents`, foreign-parent, and
@@ -254,6 +265,12 @@ The harness writes its initial sanitized record to
 successful functional result still fails release qualification when any source
 or dependency revision is local/unpublished, topology is insufficient, the
 working tree is dirty, or the build is not source-bound.
+
+A reviewed non-certifying schema 2 diagnostic may be retained under an
+explicit `preview-<path>-schema2.json` name with its exact digest recorded in
+the verification ledger. Such a file documents progress only. It must not
+replace `direct.json` or `relay.json`, must not satisfy the release evidence
+gate, and must preserve `certifiable: false` and every recorded limitation.
 
 For a release candidate:
 
@@ -280,10 +297,11 @@ upstream revision. That commit must be an ancestor of the release checkout,
 and only documentation paths may change after network qualification.
 
 The currently retained manifests intentionally have no `.sig` files, and
-`release/evidence-ed25519-public.pem` is absent. They remain non-certifying
-until a maintainer establishes key authority and a future public-source run is
-performed; signing the existing local-source records would not make them
-releaseable.
+`release/evidence-ed25519-public.pem` is absent. The current direct record
+remains non-certifying because its Jeliya commit is unpublished and its public
+dependency pin is unsafe. The historical records remain non-certifying because
+they use older schema 1 and unpublished local source. Signing any of these
+existing records would not make them releaseable.
 
 ## Evidence and log hygiene
 
@@ -312,8 +330,9 @@ The run is incomplete until its manifest reports all of the following:
 The harness validates exact run ownership before signaling a process or
 removing a directory. If it cannot prove ownership, preserve the object and
 report the blocker; do not broaden a command or remove unrelated data. After
-the recorded runs, independent read-only checks found no run directories or
-processes remaining on `demo1` or `demo2`.
+the current direct run and the historical runs, independent read-only checks
+found no run directories or processes remaining on `demo1` or `demo2`. The
+current relay build failed before remote mutation.
 
 ## Legacy Gate A diagnostic
 

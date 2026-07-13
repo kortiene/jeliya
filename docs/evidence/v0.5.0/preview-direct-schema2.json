@@ -1,0 +1,535 @@
+{
+  "schema": 2,
+  "run_id": "20260712T231015Z-3c938c66",
+  "started_at_utc": "2026-07-12T23:10:15.883Z",
+  "ended_at_utc": "2026-07-12T23:34:46.321Z",
+  "result": "pass",
+  "certifiable": false,
+  "mode": "remote-real-network",
+  "expected_path": "direct",
+  "source": {
+    "commit": "0f6769a68d783cf6a5feba0e2db6111a212affa1",
+    "dirty": false,
+    "origin": "git@github.com:kortiene/jeliya.git",
+    "public_source": true,
+    "published_at_origin": false,
+    "iroh_rooms_revision": "3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020",
+    "iroh_rooms": {
+      "kind": "git",
+      "source": "https://github.com/kortiene/iroh-room",
+      "requested_revision": "3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020",
+      "resolved_revision": "3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020",
+      "public_source": true,
+      "local_checkout": null,
+      "releaseable": true,
+      "published_at_origin": false
+    },
+    "releaseable": false
+  },
+  "build": {
+    "mode": "from-source",
+    "source_bound": true,
+    "source_snapshot_commit": "0f6769a68d783cf6a5feba0e2db6111a212affa1",
+    "locked": true,
+    "environment": {
+      "policy": "isolated-allowlist-v1",
+      "allowed_names": [
+        "ALL_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+        "NO_PROXY",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SystemRoot",
+        "WINDIR",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy"
+      ],
+      "inherited_names": [],
+      "isolated_home": true,
+      "isolated_cargo_home": true,
+      "isolated_temp": true,
+      "controlled_path": true,
+      "ambient_build_controls_rejected": true,
+      "unlisted_ambient_removed": true
+    },
+    "embedded_ui": {
+      "built_from_source": true,
+      "package_lock_sha256": "e73a1a1eec083a05566a1a1b23f2bc06d4b13c6ed03fc0eb4ce42a6be42c2b92"
+    },
+    "features": [
+      "embed-ui"
+    ],
+    "targets": [
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-musl"
+    ],
+    "commands": [
+      "git clone --bare --no-local <candidate repository>",
+      "git archive 0f6769a68d783cf6a5feba0e2db6111a212affa1",
+      "node <recorded npm-cli> ci",
+      "node <recorded npm-cli> run build",
+      "cargo build --locked --release -p jeliyad --features embed-ui",
+      "cargo-zigbuild zigbuild --locked --release -p jeliyad --features embed-ui --target x86_64-unknown-linux-musl"
+    ],
+    "toolchain": {
+      "identity_policy": "tools execute by resolved absolute path; evidence records filename, version, and observed SHA-256; the complete Zig installation archive is independently digest-verified",
+      "independently_verified": [
+        "zig-installation-archive"
+      ],
+      "execution_binding": "npm is executed by the recorded Node binary; cargo-zigbuild is invoked directly with recorded Cargo and Zig paths; Python ziglang discovery is disabled",
+      "rustc": {
+        "filename": "rustc",
+        "version": "rustc 1.91.0 (f8297e351 2025-10-28)\nbinary: rustc\ncommit-hash: f8297e351a40c1439a467bbbb6879088047f50b3\ncommit-date: 2025-10-28\nhost: x86_64-apple-darwin\nrelease: 1.91.0\nLLVM version: 21.1.2",
+        "sha256": "6af10058cf359759e66dd4401ba9f9898595c63607d41ad0374c113d65ef7eb5"
+      },
+      "cargo": {
+        "filename": "cargo",
+        "version": "cargo 1.91.0 (ea2d97820 2025-10-10)",
+        "sha256": "71f5cf378168db1306f89511ef91862216c5f831135b44ef31b1ec0ae144f9ac"
+      },
+      "rustup": {
+        "filename": "rustup",
+        "version": "rustup 1.29.0 (28d1352db 2026-03-05)",
+        "sha256": "6bcc28d4616963bc3e610a24fc52ce0ec4b7762a06b901259b8e4e34501c0061"
+      },
+      "node": {
+        "filename": "node",
+        "version": "v22.22.3",
+        "sha256": "edc0e47adde954e891939bb509a62accdad5f6b15f32ec56ed78f9d6b7dd7308"
+      },
+      "npm": {
+        "filename": "npm",
+        "version": "10.9.8",
+        "sha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7"
+      },
+      "zig": {
+        "filename": "zig",
+        "version": "0.15.2",
+        "sha256": "f76ad95c3f2ba6c8fd2ae0337bfb0fedd27e1223183597cfa0ddc517db1d5b20",
+        "archive_sha256": "375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f",
+        "expected_archive_sha256": "375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f",
+        "archive_integrity_verified": true,
+        "installation_root_bound": true,
+        "lib_dir_bound": true
+      },
+      "cargo_zigbuild": {
+        "filename": "cargo-zigbuild",
+        "version": "cargo-zigbuild 0.23.0",
+        "sha256": "c6548e4b05f4c6730795178b7101834626c7d72a9a490ac62b41127f6395676f"
+      },
+      "git": {
+        "filename": "git",
+        "version": "git version 2.40.0",
+        "sha256": "54e0d778705e19a2f7ca0ae2361d70e973d0d8b8fe3ad8f843ed73df291f8699"
+      },
+      "tar": {
+        "filename": "tar",
+        "version": "bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8",
+        "sha256": "9ab7f0793033dc9dc4809d83d695118801bd687cbacda59a0cbbf151ba25dc2b"
+      },
+      "cargo_build_jobs": 2,
+      "installed_cross_target": "x86_64-unknown-linux-musl"
+    }
+  },
+  "binaries": {
+    "local": {
+      "filename": "jeliyad",
+      "sha256": "117179a04e94535582096ed7b55482d0ea7cdab2cdb7588200201f2bf7233f50",
+      "version": "0.5.0",
+      "relay_only_attested": false
+    },
+    "remote": {
+      "filename": "jeliyad",
+      "sha256": "bc56fb0884a0e38c9aadae3c29daa5fff239cc35d78685f9a1df043d4b1d1569",
+      "expected_version": "0.5.0",
+      "expected_relay_only": false,
+      "execution_validation": "verified independently on every Linux execution host after transfer"
+    }
+  },
+  "hosts": [
+    {
+      "role": "a",
+      "host": "operator-local",
+      "os": "darwin",
+      "architecture": "x64"
+    },
+    {
+      "role": "b",
+      "host": "root@demo1",
+      "os": "Ubuntu 22.04.5 LTS",
+      "architecture": "x86_64",
+      "process_privilege": "dropped-to-unprivileged-system-uid",
+      "binary_validation": {
+        "sha256": "bc56fb0884a0e38c9aadae3c29daa5fff239cc35d78685f9a1df043d4b1d1569",
+        "version": "0.5.0",
+        "execution_uid": "65534",
+        "relay_only_attested": false,
+        "relay_attestation_exit_status": 2
+      }
+    },
+    {
+      "role": "c",
+      "host": "root@demo2",
+      "os": "Ubuntu 22.04.5 LTS",
+      "architecture": "x86_64",
+      "process_privilege": "dropped-to-unprivileged-system-uid",
+      "binary_validation": {
+        "sha256": "bc56fb0884a0e38c9aadae3c29daa5fff239cc35d78685f9a1df043d4b1d1569",
+        "version": "0.5.0",
+        "execution_uid": "65534",
+        "relay_only_attested": false,
+        "relay_attestation_exit_status": 2
+      }
+    }
+  ],
+  "distinct_public_egress": {
+    "evaluated": true,
+    "pairwise": {
+      "operator_to_b": {
+        "status": "different",
+        "family": "ipv4"
+      },
+      "operator_to_c": {
+        "status": "different",
+        "family": "ipv4"
+      },
+      "b_to_c": {
+        "status": "different",
+        "family": "ipv4"
+      }
+    },
+    "all_observed_addresses_different": true,
+    "autonomous_systems": {
+      "operator": "AS11426",
+      "role_b": "AS24940",
+      "role_c": "AS24940"
+    },
+    "distinct_autonomous_system_count": 2,
+    "independent_network_topology_proven": true,
+    "claim": "distinct public egress plus at least two independently resolved BGP origin ASNs; no IP address is persisted"
+  },
+  "assertions": [
+    {
+      "name": "a: identity ready",
+      "result": "pass",
+      "duration_ms": 82
+    },
+    {
+      "name": "b: identity ready",
+      "result": "pass",
+      "duration_ms": 289
+    },
+    {
+      "name": "c: identity ready",
+      "result": "pass",
+      "duration_ms": 262
+    },
+    {
+      "name": "A: room created",
+      "result": "pass",
+      "duration_ms": 67
+    },
+    {
+      "name": "A: room opened",
+      "result": "pass",
+      "duration_ms": 179
+    },
+    {
+      "name": "b: targeted room join",
+      "result": "pass",
+      "duration_ms": 4733
+    },
+    {
+      "name": "b: joined room opened",
+      "result": "pass",
+      "duration_ms": 226
+    },
+    {
+      "name": "A: observes b membership",
+      "result": "pass",
+      "duration_ms": 4
+    },
+    {
+      "name": "c: targeted room join",
+      "result": "pass",
+      "duration_ms": 2638
+    },
+    {
+      "name": "c: joined room opened",
+      "result": "pass",
+      "duration_ms": 175
+    },
+    {
+      "name": "A: observes c membership",
+      "result": "pass",
+      "duration_ms": 2
+    },
+    {
+      "name": "A: direct path settled",
+      "result": "pass",
+      "duration_ms": 4009
+    },
+    {
+      "name": "B: direct path settled",
+      "result": "pass",
+      "duration_ms": 2513
+    },
+    {
+      "name": "C: direct path settled",
+      "result": "pass",
+      "duration_ms": 2376
+    },
+    {
+      "name": "A to B message authored",
+      "result": "pass",
+      "duration_ms": 3
+    },
+    {
+      "name": "B receives A message",
+      "result": "pass",
+      "duration_ms": 242
+    },
+    {
+      "name": "B to A message authored",
+      "result": "pass",
+      "duration_ms": 128
+    },
+    {
+      "name": "A receives B message",
+      "result": "pass",
+      "duration_ms": 5
+    },
+    {
+      "name": "C receives both messages",
+      "result": "pass",
+      "duration_ms": 390
+    },
+    {
+      "name": "C message converges to A and B",
+      "result": "pass",
+      "duration_ms": 294
+    },
+    {
+      "name": "A shares candidate payload",
+      "result": "pass",
+      "duration_ms": 8
+    },
+    {
+      "name": "B lists candidate payload as available",
+      "result": "pass",
+      "duration_ms": 241
+    },
+    {
+      "name": "B fetches and BLAKE3-verifies payload",
+      "result": "pass",
+      "duration_ms": 1195
+    },
+    {
+      "name": "B fetched bytes are byte-identical",
+      "result": "pass",
+      "duration_ms": 761
+    },
+    {
+      "name": "A exposes one-peer pipe",
+      "result": "pass",
+      "duration_ms": 2
+    },
+    {
+      "name": "C pipe gate forwards zero bytes to the target",
+      "result": "pass",
+      "duration_ms": 3276
+    },
+    {
+      "name": "B observes and connects authorized pipe",
+      "result": "pass",
+      "duration_ms": 2992
+    },
+    {
+      "name": "A closes pipe and B observes closure",
+      "result": "pass",
+      "duration_ms": 278
+    },
+    {
+      "name": "B closes live room session",
+      "result": "pass",
+      "duration_ms": 1178
+    },
+    {
+      "name": "A authors message while B session is closed",
+      "result": "pass",
+      "duration_ms": 5
+    },
+    {
+      "name": "B reopens and receives the offline message",
+      "result": "pass",
+      "duration_ms": 542
+    },
+    {
+      "name": "B reconnects over direct",
+      "result": "pass",
+      "duration_ms": 3588
+    },
+    {
+      "name": "A seeds isolated foreign-room fixtures",
+      "result": "pass",
+      "duration_ms": 3198
+    },
+    {
+      "name": "B public room-scoped RPCs do not disclose a foreign room ID",
+      "result": "pass",
+      "duration_ms": 2231
+    },
+    {
+      "name": "B local-file HTTP endpoint does not disclose a foreign room ID",
+      "result": "pass",
+      "duration_ms": 253
+    },
+    {
+      "name": "B aggregate reads omit the foreign room and agent projection",
+      "result": "pass",
+      "duration_ms": 252
+    }
+  ],
+  "cleanup": {
+    "completed": true,
+    "processes_stopped": true,
+    "temporary_artifacts_removed": true,
+    "failure_codes": []
+  },
+  "path_observations": {
+    "a": {
+      "expected_identities": 2,
+      "consecutive_observations": 3,
+      "expected_path": "direct"
+    },
+    "b": {
+      "expected_identities": 1,
+      "consecutive_observations": 3,
+      "expected_path": "direct"
+    },
+    "c": {
+      "expected_identities": 1,
+      "consecutive_observations": 3,
+      "expected_path": "direct"
+    }
+  },
+  "functional_evidence": {
+    "file": {
+      "bytes_expected": 262184,
+      "bytes_actual": 262184,
+      "engine_verified": true,
+      "expected_sha256": "cf2e095e2d712db4699a327d3842d968d55e24a487ffd1cd98e88d5ec95dbf39",
+      "actual_sha256": "cf2e095e2d712db4699a327d3842d968d55e24a487ffd1cd98e88d5ec95dbf39",
+      "sha256_equal": true
+    },
+    "pipe": {
+      "http_status": 200,
+      "bytes": 30,
+      "target_connections": 2,
+      "target_requests": 1,
+      "unauthorized_third_peer": {
+        "local_forwarder_created": true,
+        "response_received": false,
+        "target_connections": 0,
+        "target_requests": 0
+      }
+    },
+    "reconnect": {
+      "session_closed": true,
+      "message_authored_while_closed": true,
+      "offline_message_resynchronized": true,
+      "settled_path": {
+        "expected_identities": 1,
+        "consecutive_observations": 3,
+        "expected_path": "direct"
+      }
+    },
+    "foreign_room_non_disclosure": {
+      "rpc_methods_denied": [
+        "room.open",
+        "room.close",
+        "room.leave",
+        "room.timeline",
+        "room.members",
+        "invite.create",
+        "message.send",
+        "status.post",
+        "file.share",
+        "file.list",
+        "file.fetch",
+        "pipe.expose",
+        "pipe.list",
+        "pipe.connect",
+        "pipe.close",
+        "peers.status",
+        "agent.history"
+      ],
+      "local_file_http_denied": true,
+      "aggregate_reads_filtered": true,
+      "foreign_agent_projection_exercised": true,
+      "foreign_agent_join_attempts": 1,
+      "synchronization_isolation_claimed": false
+    },
+    "multi_peer": {
+      "peers": 3,
+      "convergence_verified": true
+    }
+  },
+  "sanitized_logs": {
+    "policy": "raw daemon logs are transient in run-owned data directories and removed after successful cleanup; retained log summaries store only per-stream line/byte counts and SHA-256 digests",
+    "roles": [
+      {
+        "role": "a",
+        "transport": "local-child",
+        "streams": {
+          "stdout": {
+            "lines": 2,
+            "bytes": 561,
+            "sha256": "ad43f432b782582dbdc32a68c71aaeae7e8605dad2317963d913a93f29714944"
+          },
+          "stderr": {
+            "lines": 73,
+            "bytes": 15475,
+            "sha256": "34a5e25370ff164aca2d6f1ec647cbdd45f81e262b95118b0ee65ae3f081eff7"
+          }
+        }
+      },
+      {
+        "role": "b",
+        "transport": "supervised-ssh",
+        "streams": {
+          "stdout": {
+            "lines": 2,
+            "bytes": 404,
+            "sha256": "fbdf43b7b3ef1278ad6ba9b9225f69f0ec5cc4cc50c0fd077476cce1b3fab011"
+          },
+          "stderr": {
+            "lines": 29,
+            "bytes": 8893,
+            "sha256": "7604175ec5972928452a36aaf86b04ba7cb27e81d3170fe05c0650425635d592"
+          }
+        }
+      },
+      {
+        "role": "c",
+        "transport": "supervised-ssh",
+        "streams": {
+          "stdout": {
+            "lines": 2,
+            "bytes": 404,
+            "sha256": "11247a8ec05c6f489e2ff3153f2184e64a17b84d672f1216c3b3c6e4c3a17774"
+          },
+          "stderr": {
+            "lines": 47,
+            "bytes": 15260,
+            "sha256": "ded7460f36f67013a9d96b00354ca8ea357374178252486b0d8e5d94772aacf4"
+          }
+        }
+      }
+    ]
+  }
+}

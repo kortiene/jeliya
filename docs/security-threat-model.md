@@ -3,7 +3,7 @@ type: "Architecture"
 title: "Security and threat model"
 description: "Trust boundaries, assets, threats, controls, and residual risks for the v0.5.0 Jeliya technical preview."
 tags: ["authorization", "privacy", "security", "threat-model"]
-timestamp: "2026-07-12T23:09:19Z"
+timestamp: "2026-07-12T23:55:23Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -18,8 +18,10 @@ room state, files, and agent events while communicating with untrusted network
 peers. The `v0.5.0` target is a trustworthy technical preview, not a claim of
 complete security. The hardening implementation and functional verification
 are substantially complete, but the release remains blocked because the
-room-scoped upstream remediation and network-test source are unpublished and
-the retained network evidence is unsigned.
+public dependency pin lacks the room-scoped synchronization remediation and
+relay-only verification seam, the network-tested source is unpublished, the
+retained direct evidence is unsigned, and current relay verification is
+blocked.
 
 ## Candidate boundary
 
@@ -28,15 +30,16 @@ Security conclusions must name the source being evaluated:
 | Surface | Revision | Security meaning |
 |---|---|---|
 | Public Jeliya dependency | Iroh Rooms `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` | still permits the synchronization behavior under remediation; unsafe for `v0.5.0` publication |
-| Hardening implementation | Jeliya `c604991a9aeaf9ba1372fc141b090989e336a8e9` before final documentation reconciliation | implements local RPC, durable provenance, secret, CI, evidence, and release controls |
-| Functional network verification | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` plus local Iroh Rooms `3702e8cbcd5ac1808791124dd6bc44068be5f822` | direct and forced-relay functional checks pass, but both revisions are local/unpublished and cannot certify a release |
+| Hardening implementation and current network source | Jeliya `0f6769a68d783cf6a5feba0e2db6111a212affa1` before final documentation reconciliation | implements local RPC, durable provenance, secret, CI, evidence, and release controls; schema 2 direct checks pass against public pin `3cb9bfd…` |
+| Current forced-relay verification | Jeliya `0f6769a…` plus public Iroh Rooms `3cb9bfd…` | BLOCKED; exact relay-only build failed closed before remote execution because the pin lacks the reviewed test seam |
+| Historical local-remediation verification | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` plus local Iroh Rooms `3702e8cbcd5ac1808791124dd6bc44068be5f822` | schema 1 direct and forced-relay checks passed, but this older unpublished pair cannot qualify the current implementation or a release |
 
-No result from the local verification checkout should be projected onto the
-current public dependency pin. Publication, immutable repinning, and a fresh
-signed evidence run are security requirements, not release administration.
-The retained network checkout also predates the provenance, read-cache, and
-cross-runtime contract changes in the hardened implementation, so it cannot
-qualify those changes independently of the unpublished dependency blocker.
+The current direct run may support only the behavior it exercised: direct
+network operation and public-RPC non-disclosure at `0f6769a…`. It explicitly
+does not claim synchronization isolation, and its result must not be used to
+project the local upstream remediation onto public pin `3cb9bfd…`.
+Publication, immutable safe repinning, current direct and relay reruns, and
+fresh signed evidence are security requirements, not release administration.
 
 ## Assets
 
@@ -70,7 +73,7 @@ implemented control.
 
 | Threat | Impact | Control | Evidence and remaining risk |
 |---|---|---|---|
-| Foreign-room data returned through a public RPC | cross-room confidentiality breach | one accepted-room preflight guard before any room-derived read or fold; `agents.fleet` and other aggregates enumerate/filter accepted rooms | local regressions pass; direct and relay runs deny 17 room-scoped RPCs, local-file access, and aggregate foreign-room/agent projections on the unpublished verification revisions |
+| Foreign-room data returned through a public RPC | cross-room confidentiality breach | one accepted-room preflight guard before any room-derived read or fold; `agents.fleet` and other aggregates enumerate/filter accepted rooms | local regressions pass; current schema 2 direct run denies 17 room-scoped RPCs, local-file access, and aggregate foreign-room/agent projections at `0f6769a…`; current relay verification is blocked |
 | Foreign-room events served or admitted during synchronization | remote extraction or local-store contamination | room-scope `get`, `contains`, `WantEvents`, missing-parent traversal, and administrative tips; reject foreign envelopes and parents | malicious local upstream tests pass at `3702e8cb...`; public `3cb9bfd...` remains unsafe and is a release blocker |
 | Invite possession treated as accepted membership | pre-join data exposure | accepted-room index is authoritative; invite-only/never-joined rooms fail closed; joined-then-left archive behavior is explicit | negative never-joined cases and positive archive behavior pass locally |
 | Android identity copied through backup or device transfer | long-lived identity disclosure outside the device | `allowBackup=false`, explicit backup/data-extraction exclusions, `noBackupFilesDir`, fail-closed migration | repository validation passes; no Keystore protection and no claim against a rooted or compromised device |
@@ -79,8 +82,8 @@ implemented control.
 | Compromised action or downloaded build tool | release supply-chain compromise | third-party Actions pinned to immutable revisions; Zig and Gradle distributions verified before execution; certifying network builds use the official complete Zig archive and exact tool bindings; least-privilege jobs | workflow and local contract tests pass; only the complete Zig archive is independently verified by schema 2, while other recorded tool digests are execution identities; no hosted double run has occurred |
 | Partial, mismatched, or post-validation-modified release | incomplete, stale, mislabeled, or candidate-mutated binaries | validate and seal all five private archives in a no-execution job; smoke the immutable artifact separately; verify the receipt without execution before tag/release creation; expose the write token only to the final step | workflow and receipt negative tests pass locally, but no complete five-archive `v0.5.0` set or publication rehearsal exists |
 | Installer extracts modified bytes | local code execution | fetch the matching published checksum, validate filename/format, verify SHA-256, then extract | Unix behavior passes; Windows behavioral and simulated-reparse gates are configured but have not executed on a hosted Windows runner |
-| Forged or edited verification record | false release confidence | retained exact manifest, canonical public key, detached Ed25519 signature, source/publication/ancestry checks | manifests are retained but unsigned; the approved public SPKI is absent, so the release gate fails closed |
-| Secrets copied into logs or evidence | credential or identity disclosure | transient logs confined to run-owned data directories, no address retention, and digest-only retained summaries | successful cleanup removed transient logs in both retained runs; any cleanup failure makes a run fail qualification. Manifests keep only line/byte counts and stream SHA-256 digests and contain no tickets, tokens, seeds, private keys, excerpts, or IP addresses |
+| Forged or edited verification record | false release confidence | retained exact manifest, canonical public key, detached Ed25519 signature, source/publication/ancestry checks | the current direct and historical manifests are retained but unsigned; no current relay manifest exists; the approved public SPKI is absent, so the release gate fails closed |
+| Secrets copied into logs or evidence | credential or identity disclosure | transient logs confined to run-owned data directories, no address retention, and digest-only retained summaries | successful direct cleanup removed transient logs; the failed relay build made no remote mutation. Retained manifests keep only line/byte counts and stream SHA-256 digests and contain no tickets, tokens, seeds, private keys, excerpts, or IP addresses |
 
 ## Authorization invariant
 
@@ -143,20 +146,25 @@ task explicitly requires them.
 
 ## Network evidence boundary
 
-The recorded three-peer direct run demonstrates direct connectivity across the
-observed operator/demo topology. The compile-time relay-only run demonstrates
-that messages, files, pipes, reconnect, and isolation remain functional when
-all tested paths are forced through the relay. It proves relay fallback behavior
-under a deliberate application-level constraint; it does not prove a natural
-hole-punch failure by ordinary direct-capable binaries.
+The current schema 2 three-peer direct run demonstrates direct connectivity
+across the observed operator/demo topology at Jeliya `0f6769a…`. It also
+exercised messages, files, pipes, reconnect, and the public-RPC isolation
+boundary. It does not prove synchronization isolation because it used unsafe
+public pin `3cb9bfd…`, and the manifest explicitly records that no such claim
+is made.
 
-Both runs used unpublished Jeliya and Iroh Rooms revisions and are unsigned.
-They also use historical schema 1, before the isolated source-build and
-complete Zig-installation controls in schema 2. They are functional
-investigation evidence only and cannot become certifying records retroactively.
-See
-[`verification-evidence.md`](verification-evidence.md#retained-three-peer-network-evidence)
-for the exact revisions, environments, assertions, hashes, and cleanup record.
+Current forced-relay verification is BLOCKED. The exact public-pin relay-only
+build failed closed before remote execution because the dependency lacks the
+reviewed compile-time seam. It therefore proves neither relay fallback nor a
+natural hole-punch failure for the current candidate.
+
+Older schema 1 direct and relay runs passed with the unpublished local
+remediation and seam. They are historical functional evidence only and cannot
+be projected onto the current implementation or made certifying
+retroactively. See
+[`verification-evidence.md`](verification-evidence.md#current-schema-2-network-evidence)
+for the exact revisions, environments, assertions, hashes, cleanup, and
+limitations.
 
 ## Release boundary
 

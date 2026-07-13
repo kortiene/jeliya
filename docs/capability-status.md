@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Capability status"
 description: "Evidence-aware capability matrix for the v0.5.0 technical-preview candidate and the latest public release."
 tags: ["capabilities", "release", "status", "verification"]
-timestamp: "2026-07-12T23:09:19Z"
+timestamp: "2026-07-12T23:55:23Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -23,30 +23,32 @@ unpublished revision releasable.
 |---|---|
 | Candidate milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardened implementation snapshot | `c604991a9aeaf9ba1372fc141b090989e336a8e9` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation |
+| Hardened implementation and network-test snapshot | `0f6769a68d783cf6a5feba0e2db6111a212affa1` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation |
 | Public Jeliya `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` (room-isolation defect remains) |
 | Local upstream remediation | `3702e8cbcd5ac1808791124dd6bc44068be5f822` (clean and tested, but unpublished) |
-| Network verification snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` with local upstream `3702e8c…` (clean, but unpublished) |
+| Current network verification | Schema 2 direct run at Jeliya `0f6769a…` with public pin `3cb9bfd…`; forced-relay build blocked because that pin lacks the test seam |
+| Historical network verification | Schema 1 direct and relay runs at Jeliya `fe870c7…` with local upstream `3702e8c…`; functional evidence only |
 | Latest public release | `v0.4.3` at `9d62c3cd98c7f21d9683815c28278b6ac8c0b97f` |
-| Status captured | 2026-07-12 23:09 UTC |
+| Status captured | 2026-07-12 23:55 UTC |
 
 See [Release versus main](release-vs-main.md) for the revision boundaries and
 [Verification evidence](verification-evidence.md) for the complete ledger.
-The retained network runs predate runtime changes after `fe870c7…`, including
-the provenance, snapshot-cache, and protocol-contract fixes. Those runs remain
-useful historical functional evidence, but none of their assertions transfer
-to the hardened implementation snapshot without a fresh qualifying run.
+The current schema 2 direct run covers the hardened implementation snapshot,
+but it uses the unsafe public upstream pin and explicitly makes no
+synchronization-isolation claim. The older schema 1 direct and relay runs use
+the unpublished local remediation and remain historical functional evidence;
+they do not qualify the current implementation or a release.
 
 ## Capability matrix
 
 | Capability | Implementation | Verification | Public release | Honest current claim |
 |---|---|---|---|---|
-| `jeliyad` with embedded React UI | implemented | partial | released in `v0.4.3` | Source-bound `v0.5.0` macOS x86_64 and Linux x86_64 musl builds passed the retained network runs; a complete five-target `v0.5.0` artifact set does not exist. |
-| Identity, room create/join/open, membership, and messages | implemented | functional pass on unpublished revisions | released in `v0.4.3` | Three-peer join, message convergence, reconnect, and resynchronization passed in both retained runs. The evidence is unsigned and non-certifiable. |
-| Files and BLAKE3 fetch verification | implemented | functional pass on unpublished revisions | released in `v0.4.3` | Cross-network transfer, byte equality, and hash verification passed in both retained runs. |
-| Pipes | implemented | functional pass on unpublished revisions | released in `v0.4.3` | Authorized transfer, closure, and zero target bytes from the unauthorized third peer passed in both retained runs. |
-| Direct cross-network P2P | implemented | functional pass, not release-qualifying | released in `v0.4.3` | [Direct run `d3d9ff69`](evidence/v0.5.0/direct.json) passed 36/36 assertions across three distinct public egresses and two ASNs. It used unpublished Jeliya and upstream revisions and is unsigned. |
-| Deliberately forced relay | implemented behind a test-only verification seam | functional pass, not release-qualifying | runtime relay support released in `v0.4.3` | [Relay run `f1d9c149`](evidence/v0.5.0/relay.json) attested relay-only binaries and passed 36/36 assertions. It has the same publication and signature limitations. |
+| `jeliyad` with embedded React UI | implemented | partial | released in `v0.4.3` | Schema 2 source-bound macOS x86_64 and Linux x86_64 musl builds passed the current direct run. The matching relay-only build failed closed, and a complete five-target `v0.5.0` artifact set does not exist. |
+| Identity, room create/join/open, membership, and messages | implemented | current direct functional pass | released in `v0.4.3` | Three-peer join, message convergence, reconnect, and resynchronization passed in the current direct run. Current relay verification is blocked; the evidence is unsigned and non-certifiable. |
+| Files and BLAKE3 fetch verification | implemented | current direct functional pass | released in `v0.4.3` | Cross-network transfer, byte equality, and hash verification passed in the current direct run. |
+| Pipes | implemented | current direct functional pass | released in `v0.4.3` | Authorized transfer, closure, and zero target bytes from the unauthorized third peer passed in the current direct run. |
+| Direct cross-network P2P | implemented | current functional pass, not release-qualifying | released in `v0.4.3` | [Schema 2 direct run `3c938c66`](evidence/v0.5.0/preview-direct-schema2.json) passed 36/36 assertions across three distinct public egresses and two ASNs at `0f6769a…`. It is unsigned, unpublished, and does not claim synchronization isolation. |
+| Deliberately forced relay | test seam absent from the current public dependency pin | current verification blocked | runtime relay support released in `v0.4.3` | The exact public-pin relay-only build failed closed before remote execution. [Historical schema 1 run `f1d9c149`](evidence/v0.5.0/relay.json) passed only with the unpublished local upstream seam and does not qualify the current candidate. |
 | Public room-scoped RPC isolation | implemented in hardened candidate | verified locally and exercised remotely | unreleased | A centralized guard covers the public room-scoped surface. Seventeen negative RPC checks, local-file denial, and aggregate filtering passed; foreign agent projections were exercised. |
 | Room isolation in upstream synchronization | remediated only in local upstream checkout | local malicious-sync tests pass; retained runs do not claim synchronization isolation | unreleased | Jeliya still publicly pins vulnerable `3cb9bfd…`. `3702e8c…` must be reviewed, published, and pinned before qualification. |
 | Agent runner and fleet | implemented | local pass | released as source in `v0.4.3` | Agent E2E passes; the earlier fleet stability run passed 5/5. Linux orphan/zombie process-group cleanup was verified on `demo1` under UID `65534`. |

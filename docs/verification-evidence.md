@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Verification evidence"
 description: "Revision-bound verification ledger and evidence-recording contract for the v0.5.0 technical preview."
 tags: ["evidence", "networking", "release", "testing", "verification"]
-timestamp: "2026-07-12T23:09:19Z"
+timestamp: "2026-07-12T23:55:23Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -17,8 +17,10 @@ This ledger separates a functional test result from release-qualifying
 evidence. A result is transferable to a release candidate only when it binds
 the exact public Jeliya commit, public immutable dependency revisions,
 environment, timestamps, assertions, retained sanitized manifest, and detached
-signature. The current direct and forced-relay runs are valuable functional
-evidence, but they do **not** authorize publication.
+signature. The current schema 2 direct run is valuable functional evidence.
+The matching forced-relay build failed closed before remote execution because
+the public dependency pin does not contain the reviewed relay-only test seam.
+Neither outcome authorizes publication.
 
 ## Candidate identity
 
@@ -26,25 +28,29 @@ evidence, but they do **not** authorize publication.
 |---|---|
 | Milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Baseline commit | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardening implementation commit before final documentation reconciliation | `c604991a9aeaf9ba1372fc141b090989e336a8e9` |
+| Hardened and network-tested commit before final documentation reconciliation | `0f6769a68d783cf6a5feba0e2db6111a212affa1` — clean, local, and unpublished |
 | Current public `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` — synchronization isolation is not remediated |
-| Network-test Jeliya commit | `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` — clean, local, and unpublished |
 | Candidate upstream remediation revision | `3702e8cbcd5ac1808791124dd6bc44068be5f822` — clean and tested locally, but unpublished |
 | Retained evidence signatures | absent; the release-evidence public SPKI is not provisioned |
 | Release evidence gate | BLOCKED |
 | Evidence window | 2026-07-12 UTC |
 
-The network-test checkout uses a local `file://` Git source for the remediation
-revision. Main still resolves the public unsafe revision. Neither the test
-checkout nor the upstream remediation is published at its recorded origin, so
-the retained manifests correctly set `certifiable: false` and
-`source.releaseable: false`.
+The current schema 2 direct run resolves the repository's public, unsafe Iroh
+Rooms pin. It verifies the hardened public-RPC boundary and direct network
+behavior, but explicitly makes no upstream synchronization-isolation claim.
+The exact Jeliya commit is unpublished, the evidence is unsigned, and the pin
+still permits the synchronization behavior under remediation, so the retained
+manifest correctly sets `certifiable: false` and `source.releaseable: false`.
+
+Older schema 1 runs use a local `file://` checkout of the unpublished upstream
+remediation. They remain useful historical functional evidence only; they do
+not qualify the current implementation or a release.
 
 ## Milestone evidence ledger
 
 | Gate | Current evidence | Status |
 |---|---|---|
-| Public read-RPC authorization | centralized guard and local negative suite cover foreign timelines, members, agents, files, pipes, local-file HTTP, and aggregate projections; both remote runs denied all 17 room-scoped RPCs and filtered local-file and aggregate reads | functional PASS on recorded local revisions; release qualification blocked by source provenance |
+| Public read-RPC authorization | centralized guard and local negative suite cover foreign timelines, members, agents, files, pipes, local-file HTTP, and aggregate projections; the current schema 2 direct run denied all 17 room-scoped RPCs and filtered local-file and aggregate reads | functional PASS at `0f6769a…`; no upstream synchronization-isolation claim; release qualification blocked |
 | Accepted-room provenance | create/join failure injection proves provenance is accepted before irreversible event publication; 24 concurrent mutations retain every room; direct reads reuse the authorized snapshot cache; Unix mode is pinned to `0600`; exact `atomicwrites 0.4.4` uses synchronized Unix directory replacement and Windows write-through replacement | local PASS; Windows semantics source-reviewed but not behaviorally executed on `windows-latest` |
 | Pre-identity protocol contract | `room.list` returns the successful empty onboarding result `{ rooms: [] }` consistently across the core engine, TypeScript mock, Dart daemon, Dart FFI, Dart mock, and golden-corpus oracles | local PASS |
 | Upstream synchronization isolation | malicious `WantEvents`, foreign-parent, and administrative-tip tests passed against local upstream `3702e8cbcd5ac1808791124dd6bc44068be5f822` | local PASS; BLOCKED until upstream publication and Jeliya repin |
@@ -54,14 +60,14 @@ the retained manifests correctly set `certifiable: false` and
 | npm dependency audit | zero vulnerabilities | PASS |
 | Complete CI definition | Rust, MSRV, TypeScript, Dart, Flutter, docs, smoke, sidecar, agent, fleet, protocol, and dependency gates are configured with required-tool failures; manual dispatch is non-publishing and Gradle is checksum-verified | configured; no two hosted clean runs exist |
 | Repeatability | two complete hosted CI executions from clean environments | BLOCKED; repository was not pushed and hosted execution was not authorized |
-| Direct different-network P2P | three peers, three distinct observed egress values, two ASNs, stable direct paths on roles A/B/C, 36/36 assertions | functional PASS; non-certifying retained manifest |
-| Deliberately forced relay | compile-time relay-only diagnostic build, attestation on all execution hosts, stable relay paths on roles A/B/C, 36/36 assertions | functional PASS; proves relay fallback, not a naturally failed hole punch; non-certifying retained manifest |
-| Join, reconnect, and resynchronization | targeted joins, three-peer convergence, closed-session message, reopen, resynchronization, and settled reconnect path | functional PASS in direct and relay runs |
-| Messages, files, and pipes | bidirectional and three-peer messages, byte-identical engine-verified BLAKE3 file fetch, authorized pipe, and zero-target-connection unauthorized pipe | functional PASS in direct and relay runs |
+| Direct different-network P2P | schema 2 run `3c938c66`: three peers, three distinct observed egress values, two ASNs, stable direct paths on roles A/B/C, and 36/36 assertions | current functional PASS; retained, unsigned, and non-certifying |
+| Deliberately forced relay | the exact public-pin relay-only source build requested the diagnostic seam, but the pinned dependency does not provide it | BLOCKED; build failed closed before remote execution; no current relay PASS exists |
+| Join, reconnect, and resynchronization | current direct run covered targeted joins, three-peer convergence, closed-session message, reopen, resynchronization, and settled direct reconnect | current functional PASS for direct only; relay remains blocked |
+| Messages, files, and pipes | current direct run covered bidirectional and three-peer messages, byte-identical engine-verified BLAKE3 file fetch, authorized pipe, and zero-target-connection unauthorized pipe | current functional PASS for direct only; relay remains blocked |
 | Installer integrity | Unix behavioral tests verify checksum-before-extraction; Windows jobs execute checksum/tamper behavior, simulate reparse rejection, and smoke the native daemon | Unix PASS; Windows gates configured but no hosted `windows-latest` result exists |
 | Complete asset-set visibility | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step; the release stays draft until all uploaded bytes match | contract and negative receipt tests PASS; no five-archive set built and no publication executed; GitHub tag and release operations are not one transaction |
 | Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.5.0` | local PASS; public tag and artifacts do not exist |
-| Documentation | required OKF pages and retained sanitized evidence are present and bind the hardened checkpoint separately from the older network checkout | local docs gate PASS during reconciliation; rerun on the final commit |
+| Documentation | required OKF pages distinguish current schema 2 direct evidence, the failed-closed current relay attempt, and historical schema 1 local-remediation evidence | rerun the local docs gate on the final documentation-only commit |
 
 ## Dependency-risk exception register
 
@@ -134,13 +140,51 @@ This qualification is not release evidence. The revision must first be
 reviewed and published, then pinned through Jeliya's public `Cargo.toml` and
 `Cargo.lock` before the network suite is repeated.
 
-## Retained three-peer network evidence
+## Current schema 2 network evidence
 
-The operator role ran on macOS x86_64. Roles B and C ran on `root@demo1` and
-`root@demo2`, both Ubuntu 22.04.5 x86_64. SSH connected as root, but the
-remote daemons executed through `setpriv` as UID/GID `65534`. No host firewall,
-route, account, package repository, SSH configuration, or persistent service
-was changed.
+The current direct run used the clean hardened Jeliya source snapshot
+`0f6769a68d783cf6a5feba0e2db6111a212affa1` and the exact public Iroh Rooms pin
+`3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020`. The operator role ran on macOS
+x86_64. Roles B and C ran on `root@demo1` and `root@demo2`, both Ubuntu 22.04.5
+x86_64. SSH connected as root, but both remote daemons executed through
+`setpriv` as UID/GID `65534`.
+
+| Path | Run and UTC window | Current result | Retained evidence | Manifest SHA-256 |
+|---|---|---|---|---|
+| direct | `20260712T231015Z-3c938c66`, 23:10:15–23:34:46 | 36/36; A/B/C each remained direct for three consecutive observations | [`preview-direct-schema2.json`](evidence/v0.5.0/preview-direct-schema2.json) | `2ef571f34b2140f033487e019a2746c20ce3265362881fb843eee708e057a6a5` |
+| forced relay | no run manifest | BLOCKED; exact public-pin relay-only build failed closed because the dependency does not provide the reviewed compile-time seam; no remote execution occurred | none | not applicable |
+
+The direct run observed three pairwise-distinct public egress values across two
+ASNs without retaining any address. It exercised targeted room join,
+three-peer convergence, messages, file fetch and hash verification, pipes,
+reconnect and resynchronization, all 17 room-scoped read denials, local-file
+denial, and aggregate room/agent filtering. Cleanup passed, and independent
+read-only checks found no run directory or process remaining on either remote
+host.
+
+The manifest is evidence schema 2 and records the isolated source build,
+complete Zig archive verification, exact tool identities, binary hashes,
+assertions, digest-only log summaries, and cleanup. It is intentionally
+unsigned and `certifiable: false`: the Jeliya commit is unpublished, the
+evidence public key is absent, and the public dependency pin still lacks the
+synchronization-isolation remediation. Its
+`synchronization_isolation_claimed: false` field is normative for interpreting
+the result. Public-RPC non-disclosure does not prove that foreign-room events
+cannot enter the local store through upstream synchronization.
+
+The failed relay build is also evidence of a working safety boundary: the
+harness did not silently omit the required seam, substitute a different
+dependency, weaken the path assertion, or mutate a remote host. It is not a
+relay fallback result and must remain BLOCKED until the reviewed upstream seam
+is published and pinned.
+
+## Historical schema 1 local-remediation evidence
+
+For the historical runs, the operator role ran on macOS x86_64. Roles B and C
+ran on `root@demo1` and `root@demo2`, both Ubuntu 22.04.5 x86_64. SSH connected
+as root, but the remote daemons executed through `setpriv` as UID/GID `65534`.
+No host firewall, route, account, package repository, SSH configuration, or
+persistent service was changed.
 
 The three observed public egress values were pairwise different and were not
 persisted. The sanitized ASN result was `AS11426` for the operator and
@@ -149,7 +193,7 @@ topology condition. `user@kilo` was rejected during inventory because it shared
 the operator's observed egress and therefore could not satisfy the three-role
 topology gate.
 
-| Path | Run and UTC window | Result | Retained evidence | Manifest SHA-256 |
+| Path | Run and UTC window | Historical result | Retained evidence | Manifest SHA-256 |
 |---|---|---|---|---|
 | direct | `20260712T155534Z-d3d9ff69`, 15:55:34–16:15:24 | 36/36; A/B/C each remained direct for three consecutive observations | [`direct.json`](evidence/v0.5.0/direct.json) | `5b4659cc709148e149ce339c8b70515ddd838b4cc7cf07a96a5982b08a1b2af0` |
 | forced relay | `20260712T161837Z-f1d9c149`, 16:18:37–16:38:54 | 36/36; A/B/C each remained relay for three consecutive observations | [`relay.json`](evidence/v0.5.0/relay.json) | `472f71394485e72e1e3c9f791d1d80e1489bdcbd19ec22d15326044efb5049e9` |
@@ -163,12 +207,13 @@ binaries were built from a Git archive of the recorded source with two Cargo
 jobs. Each transferred Linux binary was hash- and version-checked on both
 remote hosts before execution.
 
-These retained manifests use evidence schema 1. Schema 1 predates the isolated
-source-build environment and complete Zig-installation binding defined by
-schema 2. The historical records therefore remain non-certifying and cannot be
-promoted by adding a signature or by revalidating them with the newer checker;
-new direct and relay runs must emit schema 2 after the upstream fix is public
-and immutably pinned.
+These retained manifests use evidence schema 1 and the unpublished local
+upstream remediation rather than the current public dependency pin. Schema 1
+predates the isolated source-build environment and complete Zig-installation
+binding defined by schema 2. The historical records therefore remain
+non-certifying and cannot be promoted by adding a signature or by revalidating
+them with the newer checker; new direct and relay runs must emit schema 2 after
+the upstream fix is public and immutably pinned.
 
 Each run covered targeted room join; three-peer membership and message
 convergence; messages in both directions; file listing, fetch, engine BLAKE3
@@ -193,15 +238,17 @@ release claim. The hardened harness now waits for both streams with a bounded,
 fail-closed timeout before digest finalization; a fresh certifying run must use
 that implementation.
 
-### Qualification limits
+### Historical qualification limits
 
-The direct result demonstrates cross-network direct connectivity for this
-topology. The forced-relay result demonstrates that the same workflows operate
-when a compile-time diagnostic build disables direct transport. It does not
-show that ordinary direct-capable binaries naturally failed hole punching.
+The historical direct result demonstrates cross-network direct connectivity
+for that older source/dependency pair. The historical forced-relay result
+demonstrates that the same workflows operate when a compile-time diagnostic
+build disables direct transport. It does not show that ordinary direct-capable
+binaries naturally failed hole punching.
 
-Both manifests remain unsigned because the approved release-evidence Ed25519
-public SPKI and its out-of-band private-key custody have not been established.
+Both historical manifests remain unsigned because the approved
+release-evidence Ed25519 public SPKI and its out-of-band private-key custody
+have not been established.
 The release gate intentionally rejects unsigned evidence. Adding a signature
 now would still not qualify these runs because their Jeliya and Iroh Rooms
 commits are unpublished.

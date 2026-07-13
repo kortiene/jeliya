@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Platform matrix"
 description: "Implementation, verification, packaging, and release status for every Jeliya runtime and target platform."
 tags: ["packaging", "platforms", "release", "verification"]
-timestamp: "2026-07-12T23:09:19Z"
+timestamp: "2026-07-12T23:55:23Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -21,17 +21,23 @@ and has no public artifacts. A source build or passing test is not a release.
 | Target | Implementation | `v0.5.0` evidence | Latest public artifact | Preview status |
 |---|---|---|---|---|
 | macOS arm64 (`aarch64-apple-darwin`) | implemented | no candidate archive or platform run | `v0.4.3` archive and sidecar | required, pending |
-| macOS x86_64 (`x86_64-apple-darwin`) | implemented | embedded-UI source build and direct/relay operator run pass; installer behavior passes | `v0.4.3` archive and sidecar | functional evidence only |
+| macOS x86_64 (`x86_64-apple-darwin`) | implemented | schema 2 embedded-UI source build and direct operator run pass; current relay-only build blocked; installer behavior passes | `v0.4.3` archive and sidecar | direct functional evidence only |
 | Linux arm64 musl (`aarch64-unknown-linux-musl`) | implemented | no candidate archive or platform run | `v0.4.3` archive and sidecar | required, pending |
-| Linux x86_64 musl (`x86_64-unknown-linux-musl`) | implemented | embedded-UI source build; direct and relay runs pass on Ubuntu 22.04 x86_64 under UID `65534`; installer behavior passes | `v0.4.3` archive and sidecar | functional evidence only |
+| Linux x86_64 musl (`x86_64-unknown-linux-musl`) | implemented | schema 2 embedded-UI source build and direct run pass on Ubuntu 22.04 x86_64 under UID `65534`; current relay-only build blocked; installer behavior passes | `v0.4.3` archive and sidecar | direct functional evidence only |
 | Windows x86_64 MSVC (`x86_64-pc-windows-msvc`) | implemented | behavioral installer/checksum/tamper and simulated reparse gates plus native daemon smoke are configured; no hosted candidate result | `v0.4.3` archive and sidecar | required, pending execution |
 
-The two retained schema 1 network manifests bind builds to Jeliya `fe870c7…`,
-local upstream `3702e8c…`, Rust `1.91.0`, Node `22.22.3`, an independently
-digest-checked Zig `0.15.2` executable, and the embedded UI. They predate the
-schema 2 isolated build environment and complete Zig archive verification,
-cover only macOS x86_64 and Linux x86_64 musl, are unsigned, and set
-`certifiable: false`. See
+The current [schema 2 direct manifest](evidence/v0.5.0/preview-direct-schema2.json)
+binds macOS x86_64 and Linux x86_64 musl builds to Jeliya `0f6769a…`, the
+public Iroh Rooms pin `3cb9bfd…`, Rust `1.91.0`, Node `22.22.3`, the verified
+complete Zig `0.15.2` archive, and the embedded UI. It passed 36/36 assertions,
+is unsigned, sets `certifiable: false`, and makes no synchronization-isolation
+claim. The matching relay-only source build failed closed because the public
+pin lacks the reviewed compile-time test seam.
+
+The older schema 1 [direct](evidence/v0.5.0/direct.json) and
+[relay](evidence/v0.5.0/relay.json) manifests use Jeliya `fe870c7…` and local
+upstream `3702e8c…`. They remain historical local-remediation evidence only
+and cannot qualify the current candidate. See
 [Verification evidence](verification-evidence.md).
 
 ## Native applications and source-only tools
@@ -49,15 +55,15 @@ cover only macOS x86_64 and Linux x86_64 musl, are unsigned, and set
 
 | Runtime | Local protocol | Cross-network direct | Forced relay | Reconnect/resync |
 |---|---|---|---|---|
-| `jeliyad` on macOS x86_64 and Linux x86_64 | implemented | 36/36 functional pass across three distinct egresses and two ASNs | 36/36 functional pass with relay-only attestation | pass in both retained runs |
+| `jeliyad` on macOS x86_64 and Linux x86_64 | implemented | current schema 2 36/36 functional pass across three distinct egresses and two ASNs | BLOCKED; exact public pin lacks the relay-only test seam; historical schema 1 pass does not transfer | current direct reconnect/resync pass; current relay unverified |
 | Other daemon targets | implemented | no candidate evidence | no candidate evidence | no candidate evidence |
 | Android in-process engine | local device-smoke evidence | unverified | unverified | local lifecycle only; cross-peer unverified |
 | macOS Flutter sidecar | loopback-only configuration | unsupported by current app configuration | unsupported by current app configuration | local sidecar lifecycle only |
 
-The daemon runs are not release-qualifying because their Jeliya and upstream
-revisions are unpublished and their manifests are unsigned. “Real networking
-enabled” on Android means only `loopback: false`; it is not evidence of a peer
-path.
+The current direct run is not release-qualifying because its Jeliya commit is
+unpublished, its upstream pin remains unsafe, and its manifest is unsigned.
+The historical runs are also non-qualifying. “Real networking enabled” on
+Android means only `loopback: false`; it is not evidence of a peer path.
 
 ## Packaging trust status
 
