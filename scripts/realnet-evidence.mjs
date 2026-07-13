@@ -858,7 +858,11 @@ function verifyLocalBinary(path, expectedVersion, expectedRelayOnly) {
 function unsafeSourceBuildAmbientName(name) {
   const upper = name.toUpperCase();
   return /^RUST(?:_|FLAGS$|DOCFLAGS$)/.test(upper)
-    || /^CARGO_(?!HOME$|TARGET_DIR$|BUILD_JOBS$|TERM_)/.test(upper)
+    // CARGO_TERM_* (cosmetic) and CARGO_INCREMENTAL (a compile-cache toggle that
+    // Swatinem/rust-cache pins to 0 on every hosted runner) do not inject build
+    // inputs and are never inherited by the isolated child env; every other
+    // CARGO_* — RUSTFLAGS, target linkers, registries, net, profiles — stays refused.
+    || /^CARGO_(?!HOME$|TARGET_DIR$|BUILD_JOBS$|TERM_|INCREMENTAL$)/.test(upper)
     || /^(?:CC|CXX|AR|LD)(?:_|$)/.test(upper)
     || /^(?:CFLAGS|CPPFLAGS|CXXFLAGS|LDFLAGS)(?:_|$)/.test(upper)
     || /^(?:PKG_CONFIG|BINDGEN|ZIG_|LD_|DYLD_|CMAKE|MESON|OPENSSL)/.test(upper)
@@ -873,10 +877,15 @@ function unsafeSourceBuildAmbientName(name) {
 }
 
 export function validateSourceBuildAmbient(sourceEnv) {
-  for (const name of Object.keys(sourceEnv ?? {})) {
-    if (unsafeSourceBuildAmbientName(name)) {
-      throw new Error(`source build environment refuses ambient variable ${name}`);
-    }
+  // Report every offending name at once: throwing on the first match only
+  // reveals ambient contamination one variable per run, which turns a
+  // misconfigured environment into a slow game of whack-a-mole.
+  const offenders = Object.keys(sourceEnv ?? {}).filter(unsafeSourceBuildAmbientName);
+  if (offenders.length > 0) {
+    const plural = offenders.length > 1 ? "s" : "";
+    throw new Error(
+      `source build environment refuses ambient variable${plural} ${offenders.join(", ")}`,
+    );
   }
 }
 
