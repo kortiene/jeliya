@@ -128,8 +128,9 @@ members="$(tar -tzf "$tmp/$ASSET")" || err "could not inspect $ASSET"
 
 info "extracting ..."
 tar -xzf "$tmp/$ASSET" -C "$tmp" || err "failed to extract $ASSET"
-[ -f "$tmp/$BIN" ] && [ ! -L "$tmp/$BIN" ] \
-  || err "archive did not contain a regular '$BIN' file"
+if [ ! -f "$tmp/$BIN" ] || [ -L "$tmp/$BIN" ]; then
+  err "archive did not contain a regular '$BIN' file"
+fi
 chmod +x "$tmp/$BIN"
 
 # --- choose install dir -----------------------------------------------------
