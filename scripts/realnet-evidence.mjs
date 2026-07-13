@@ -861,7 +861,12 @@ function unsafeSourceBuildAmbientName(name) {
     || /^CARGO_(?!HOME$|TARGET_DIR$|BUILD_JOBS$|TERM_)/.test(upper)
     || /^(?:CC|CXX|AR|LD)(?:_|$)/.test(upper)
     || /^(?:CFLAGS|CPPFLAGS|CXXFLAGS|LDFLAGS)(?:_|$)/.test(upper)
-    || /^(?:PKG_CONFIG|BINDGEN|ZIG_|LD_|DYLD_|CMAKE|MESON|VCPKG|OPENSSL)/.test(upper)
+    || /^(?:PKG_CONFIG|BINDGEN|ZIG_|LD_|DYLD_|CMAKE|MESON|OPENSSL)/.test(upper)
+    // VCPKG_ROOT / VCPKG_DEFAULT_* / VCPKG_INSTALLED_DIR / VCPKG_OVERLAY_* etc.
+    // redirect native-dependency resolution and stay refused. VCPKG_INSTALLATION_ROOT
+    // is a hosted-runner location fact (GitHub sets it on every runner); the vcpkg
+    // crate consumes VCPKG_ROOT, not this, so it cannot influence the build.
+    || /^VCPKG_(?!INSTALLATION_ROOT$)/.test(upper)
     || /^(?:GIT_CONFIG|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_EXEC_PATH|GIT_SSH|GIT_ASKPASS)(?:_|$)/.test(upper)
     || /^(?:NODE_OPTIONS|NODE_PATH|BASH_ENV|ENV|MAKEFLAGS)$/.test(upper)
     || /^NPM_CONFIG_/.test(upper);
