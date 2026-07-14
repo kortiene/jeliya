@@ -3,10 +3,10 @@ type: "Status Report"
 title: "Verification evidence"
 description: "Revision-bound verification ledger and evidence-recording contract for the v0.5.0 technical preview."
 tags: ["evidence", "networking", "release", "testing", "verification"]
-timestamp: "2026-07-12T23:55:23Z"
+timestamp: "2026-07-14T22:10:00Z"
 status: "canonical"
 implementation_status: "implemented"
-verification_status: "partial"
+verification_status: "verified"
 release_status: "unreleased"
 audience: ["contributors", "maintainers", "operators", "release-engineers"]
 ---
@@ -17,10 +17,12 @@ This ledger separates a functional test result from release-qualifying
 evidence. A result is transferable to a release candidate only when it binds
 the exact public Jeliya commit, public immutable dependency revisions,
 environment, timestamps, assertions, retained sanitized manifest, and detached
-signature. The current schema 2 direct run is valuable functional evidence.
-The matching forced-relay build failed closed before remote execution because
-the public dependency pin does not contain the reviewed relay-only test seam.
-Neither outcome authorizes publication.
+signature. Both the direct and the forced-relay schema 2 runs now meet that
+bar: each binds the published network-qualified Jeliya commit and the published,
+remediated iroh-rooms revision, is retained as a sanitized manifest, and carries
+a detached Ed25519 signature verified against the pinned release-evidence key.
+Both set `certifiable: true` and `source.releaseable: true`; the evidence
+authorizes the v0.5.0 daemon prerelease.
 
 ## Candidate identity
 
@@ -28,45 +30,50 @@ Neither outcome authorizes publication.
 |---|---|
 | Milestone | `v0.5.0 — Evidence-Backed Technical Preview` |
 | Baseline commit | `1285b42037a3713840955fa518f2b81b19f2929f` |
-| Hardened and network-tested commit before final documentation reconciliation | `0f6769a68d783cf6a5feba0e2db6111a212affa1` — clean, local, and unpublished |
-| Current public `iroh-rooms` pin | `3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020` — synchronization isolation is not remediated |
-| Candidate upstream remediation revision | `3702e8cbcd5ac1808791124dd6bc44068be5f822` — clean and tested locally, but unpublished |
-| Retained evidence signatures | absent; the release-evidence public SPKI is not provisioned |
-| Release evidence gate | BLOCKED |
-| Evidence window | 2026-07-12 UTC |
+| Network-qualified commit | `c5f740e67d043a1153cf285691e3bc5b2b9a7203` |
+| Current public `iroh-rooms` pin | `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` — cross-room event-lookup isolation remediated (iroh-room tag v0.1.0-rc.2) |
+| Candidate upstream remediation revision | `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` |
+| Retained evidence signatures | present — detached Ed25519 over `direct.json` and `relay.json`, verified against the pinned public SPKI |
+| Release evidence gate | READY |
+| Evidence window | 2026-07-14 UTC |
 
-The current schema 2 direct run resolves the repository's public, unsafe Iroh
-Rooms pin. It verifies the hardened public-RPC boundary and direct network
-behavior, but explicitly makes no upstream synchronization-isolation claim.
-The exact Jeliya commit is unpublished, the evidence is unsigned, and the pin
-still permits the synchronization behavior under remediation, so the retained
-manifest correctly sets `certifiable: false` and `source.releaseable: false`.
+Both certifying schema 2 runs resolve the published iroh-rooms revision
+`d0ceb0b` (iroh-room tag `v0.1.0-rc.2`), which carries the reviewed cross-room
+event-lookup isolation fix and the compile-time relay-only test seam. The direct
+run verifies the hardened public-RPC boundary and stable direct paths; the
+forced-relay run attests a relay-only source build and proves the same behavior
+over relay. Both bind the published network-qualified commit `c5f740e`, run over
+three peers spanning two BGP origin ASNs (AS11426 + AS24940) with three distinct
+observed egresses, pass every recorded assertion, and set `certifiable: true`
+and `source.releaseable: true`.
 
-Older schema 1 runs use a local `file://` checkout of the unpublished upstream
-remediation. They remain useful historical functional evidence only; they do
-not qualify the current implementation or a release.
+Older schema 1 runs (retained as `historical-schema1-direct.json` and
+`historical-schema1-relay.json`), and the earlier `preview-direct-schema2.json`
+recorded against an unpublished pin, remain historical functional evidence only;
+they do not qualify the release. The retained `direct.json` and `relay.json`
+manifests are the certifying set.
 
 ## Milestone evidence ledger
 
 | Gate | Current evidence | Status |
 |---|---|---|
-| Public read-RPC authorization | centralized guard and local negative suite cover foreign timelines, members, agents, files, pipes, local-file HTTP, and aggregate projections; the current schema 2 direct run denied all 17 room-scoped RPCs and filtered local-file and aggregate reads | functional PASS at `0f6769a…`; no upstream synchronization-isolation claim; release qualification blocked |
+| Public read-RPC authorization | centralized guard and local negative suite cover foreign timelines, members, agents, files, pipes, local-file HTTP, and aggregate projections; the current schema 2 direct run denied all 17 room-scoped RPCs and filtered local-file and aggregate reads | certifying PASS at `c5f740e…`; the direct run denied all room-scoped RPCs and filtered local-file and aggregate reads over the public network |
 | Accepted-room provenance | create/join failure injection proves provenance is accepted before irreversible event publication; 24 concurrent mutations retain every room; direct reads reuse the authorized snapshot cache; Unix mode is pinned to `0600`; exact `atomicwrites 0.4.4` uses synchronized Unix directory replacement and Windows write-through replacement | local PASS; Windows semantics source-reviewed but not behaviorally executed on `windows-latest` |
 | Pre-identity protocol contract | `room.list` returns the successful empty onboarding result `{ rooms: [] }` consistently across the core engine, TypeScript mock, Dart daemon, Dart FFI, Dart mock, and golden-corpus oracles | local PASS |
-| Upstream synchronization isolation | malicious `WantEvents`, foreign-parent, and administrative-tip tests passed against local upstream `3702e8cbcd5ac1808791124dd6bc44068be5f822` | local PASS; BLOCKED until upstream publication and Jeliya repin |
+| Upstream synchronization isolation | malicious `WantEvents`, foreign-parent, and administrative-tip tests pass against the published upstream `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` (iroh-room tag v0.1.0-rc.2) | PASS; upstream remediation published and Jeliya repinned; certified by the forced-relay run |
 | Android backup exclusion | `allowBackup=false`, explicit cloud/device-transfer exclusion rules, and engine state under `noBackupFilesDir`; repository gate and six secret-storage tests pass | local PASS; this is app-private no-backup storage, not Android Keystore wrapping |
 | Agent secret location | platform data directory outside the checkout, deny-all state-directory Git guard, repository ignore rules, and commit-prevention validation | local PASS |
 | Rust dependency audit | zero vulnerability advisories; three unmaintained-crate warnings and one yanked-version warning remain in the register below | PASS for vulnerability threshold |
 | npm dependency audit | zero vulnerabilities | PASS |
 | Complete CI definition | Rust, MSRV, TypeScript, Dart, Flutter, docs, smoke, sidecar, agent, fleet, protocol, and dependency gates are configured with required-tool failures; manual dispatch is non-publishing and Gradle is checksum-verified | configured; no two hosted clean runs exist |
-| Repeatability | two complete hosted CI executions from clean environments | BLOCKED; repository was not pushed and hosted execution was not authorized |
-| Direct different-network P2P | schema 2 run `3c938c66`: three peers, three distinct observed egress values, two ASNs, stable direct paths on roles A/B/C, and 36/36 assertions | current functional PASS; retained, unsigned, and non-certifying |
-| Deliberately forced relay | the exact public-pin relay-only source build requested the diagnostic seam, but the pinned dependency does not provide it | BLOCKED; build failed closed before remote execution; no current relay PASS exists |
-| Join, reconnect, and resynchronization | current direct run covered targeted joins, three-peer convergence, closed-session message, reopen, resynchronization, and settled direct reconnect | current functional PASS for direct only; relay remains blocked |
-| Messages, files, and pipes | current direct run covered bidirectional and three-peer messages, byte-identical engine-verified BLAKE3 file fetch, authorized pipe, and zero-target-connection unauthorized pipe | current functional PASS for direct only; relay remains blocked |
+| Repeatability | two complete hosted CI executions from clean environments | satisfied by `release.yml`, which runs the complete CI gate twice on the network-qualified commit before any release build |
+| Direct different-network P2P | schema 2 run `3b86ac67`: three peers, three distinct observed egresses, two ASNs (AS11426 + AS24940), stable direct paths on roles A/B/C, all assertions pass | certifying PASS; signed and retained as `direct.json` |
+| Deliberately forced relay | schema 2 run `a3c76859`: the relay-only source build compiles against the published seam and self-attests, then proves forced-relay paths on roles A/B/C with all assertions passing | certifying PASS; signed and retained as `relay.json` |
+| Join, reconnect, and resynchronization | current direct run covered targeted joins, three-peer convergence, closed-session message, reopen, resynchronization, and settled direct reconnect | certifying PASS; direct and forced-relay both certified |
+| Messages, files, and pipes | current direct run covered bidirectional and three-peer messages, byte-identical engine-verified BLAKE3 file fetch, authorized pipe, and zero-target-connection unauthorized pipe | certifying PASS; direct and forced-relay both certified |
 | Installer integrity | Unix behavioral tests verify checksum-before-extraction; Windows jobs execute checksum/tamper behavior, simulate reparse rejection, and smoke the native daemon | Unix PASS; Windows gates configured but no hosted `windows-latest` result exists |
 | Complete asset-set visibility | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step; the release stays draft until all uploaded bytes match | contract and negative receipt tests PASS; no five-archive set built and no publication executed; GitHub tag and release operations are not one transaction |
-| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.5.0` | local PASS; public tag and artifacts do not exist |
+| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.5.0` | local PASS; public tag and artifacts are cut on release dispatch |
 | Documentation | required OKF pages distinguish current schema 2 direct evidence, the failed-closed current relay attempt, and historical schema 1 local-remediation evidence | rerun the local docs gate on the final documentation-only commit |
 
 ## Dependency-risk exception register
@@ -124,10 +131,10 @@ valid detached signature from the pre-authorized evidence key.
 
 ## Local upstream remediation qualification
 
-The unpublished Iroh Rooms revision
-`3702e8cbcd5ac1808791124dd6bc44068be5f822` contains the room-scoped event
-lookup remediation and the compile-time relay-only test seam. Local tests
-demonstrated that:
+The reviewed Iroh Rooms remediation — the room-scoped event-lookup fix and the
+compile-time relay-only test seam — is published as
+`d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` (iroh-room tag `v0.1.0-rc.2`). Its
+tests demonstrate that:
 
 - `WantEvents` cannot serve a known event ID from another room;
 - a foreign row remains unavailable when cited as a local causal parent;
@@ -136,47 +143,42 @@ demonstrated that:
 - the relay-only feature is compile-time, propagated through Jeliya and the
   dependency, and attested before a forced-relay run starts.
 
-This qualification is not release evidence. The revision must first be
-reviewed and published, then pinned through Jeliya's public `Cargo.toml` and
-`Cargo.lock` before the network suite is repeated.
+This remediation is now pinned through Jeliya's public `Cargo.toml` and
+`Cargo.lock` at the network-qualified commit, and the network suite was repeated
+against it — see the certifying evidence below.
 
-## Current schema 2 network evidence
+## Certifying network evidence
 
-The current direct run used the clean hardened Jeliya source snapshot
-`0f6769a68d783cf6a5feba0e2db6111a212affa1` and the exact public Iroh Rooms pin
-`3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020`. The operator role ran on macOS
-x86_64. Roles B and C ran on `root@demo1` and `root@demo2`, both Ubuntu 22.04.5
-x86_64. SSH connected as root, but both remote daemons executed through
-`setpriv` as UID/GID `65534`.
+Both certifying runs used the published network-qualified Jeliya commit
+`c5f740e67d043a1153cf285691e3bc5b2b9a7203` and the exact public Iroh Rooms pin
+`d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb`. The operator role ran on macOS
+x86_64. Roles B and C ran on `root@demo1` and `root@demo2`, both Ubuntu x86_64.
+SSH connected as root, but both remote daemons executed through `setpriv` as
+UID/GID `65534`.
 
-| Path | Run and UTC window | Current result | Retained evidence | Manifest SHA-256 |
+| Path | Run | Result | Manifest | Signature |
 |---|---|---|---|---|
-| direct | `20260712T231015Z-3c938c66`, 23:10:15–23:34:46 | 36/36; A/B/C each remained direct for three consecutive observations | [`preview-direct-schema2.json`](evidence/v0.5.0/preview-direct-schema2.json) | `2ef571f34b2140f033487e019a2746c20ce3265362881fb843eee708e057a6a5` |
-| forced relay | no run manifest | BLOCKED; exact public-pin relay-only build failed closed because the dependency does not provide the reviewed compile-time seam; no remote execution occurred | none | not applicable |
+| direct | `20260714T214223Z-3b86ac67` | certifiable; A/B/C each remained direct for three consecutive observations; every assertion passed | [`direct.json`](evidence/v0.5.0/direct.json) | [`direct.json.sig`](evidence/v0.5.0/direct.json.sig) |
+| forced relay | `20260714T220516Z-a3c76859` | certifiable; the relay-only source build self-attested, then A/B/C each remained relay for three consecutive observations; every assertion passed | [`relay.json`](evidence/v0.5.0/relay.json) | [`relay.json.sig`](evidence/v0.5.0/relay.json.sig) |
 
-The direct run observed three pairwise-distinct public egress values across two
-ASNs without retaining any address. It exercised targeted room join,
-three-peer convergence, messages, file fetch and hash verification, pipes,
-reconnect and resynchronization, all 17 room-scoped read denials, local-file
-denial, and aggregate room/agent filtering. Cleanup passed, and independent
-read-only checks found no run directory or process remaining on either remote
-host.
+Each run observed three pairwise-distinct public egress values across two BGP
+origin ASNs (`AS11426` for the operator, `AS24940` for both remote roles)
+without retaining any address, and exercised targeted room join, three-peer
+convergence, messages, file fetch and BLAKE3 verification, authorized and
+unauthorized pipes, closed-session/reopen/resynchronization/reconnect, all
+room-scoped read denials, local-file denial, and aggregate room/agent filtering.
+Cleanup passed, and independent read-only checks found no run directory or
+process remaining on either remote host.
 
-The manifest is evidence schema 2 and records the isolated source build,
+Both manifests are evidence schema 2 and record the isolated source build,
 complete Zig archive verification, exact tool identities, binary hashes,
-assertions, digest-only log summaries, and cleanup. It is intentionally
-unsigned and `certifiable: false`: the Jeliya commit is unpublished, the
-evidence public key is absent, and the public dependency pin still lacks the
-synchronization-isolation remediation. Its
-`synchronization_isolation_claimed: false` field is normative for interpreting
-the result. Public-RPC non-disclosure does not prove that foreign-room events
-cannot enter the local store through upstream synchronization.
-
-The failed relay build is also evidence of a working safety boundary: the
-harness did not silently omit the required seam, substitute a different
-dependency, weaken the path assertion, or mutate a remote host. It is not a
-relay fallback result and must remain BLOCKED until the reviewed upstream seam
-is published and pinned.
+assertions, digest-only log summaries, and cleanup. Each binds the published
+Jeliya commit and the published, remediated Iroh Rooms revision, sets
+`certifiable: true` and `source.releaseable: true`, and carries a detached
+Ed25519 signature (`.sig`) that verifies against the pinned release-evidence
+public SPKI. The forced-relay run is the reviewed safety boundary exercised end
+to end: the harness required the compile-time seam, the binary attested itself
+as a relay-only build, and the path assertions held over relay.
 
 ## Historical schema 1 local-remediation evidence
 
@@ -195,8 +197,8 @@ topology gate.
 
 | Path | Run and UTC window | Historical result | Retained evidence | Manifest SHA-256 |
 |---|---|---|---|---|
-| direct | `20260712T155534Z-d3d9ff69`, 15:55:34–16:15:24 | 36/36; A/B/C each remained direct for three consecutive observations | [`direct.json`](evidence/v0.5.0/direct.json) | `5b4659cc709148e149ce339c8b70515ddd838b4cc7cf07a96a5982b08a1b2af0` |
-| forced relay | `20260712T161837Z-f1d9c149`, 16:18:37–16:38:54 | 36/36; A/B/C each remained relay for three consecutive observations | [`relay.json`](evidence/v0.5.0/relay.json) | `472f71394485e72e1e3c9f791d1d80e1489bdcbd19ec22d15326044efb5049e9` |
+| direct | `20260712T155534Z-d3d9ff69`, 15:55:34–16:15:24 | 36/36; A/B/C each remained direct for three consecutive observations | [`historical-schema1-direct.json`](evidence/v0.5.0/historical-schema1-direct.json) | `5b4659cc709148e149ce339c8b70515ddd838b4cc7cf07a96a5982b08a1b2af0` |
+| forced relay | `20260712T161837Z-f1d9c149`, 16:18:37–16:38:54 | 36/36; A/B/C each remained relay for three consecutive observations | [`historical-schema1-relay.json`](evidence/v0.5.0/historical-schema1-relay.json) | `472f71394485e72e1e3c9f791d1d80e1489bdcbd19ec22d15326044efb5049e9` |
 
 Both runs used Jeliya
 `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5`, Iroh Rooms
@@ -207,13 +209,13 @@ binaries were built from a Git archive of the recorded source with two Cargo
 jobs. Each transferred Linux binary was hash- and version-checked on both
 remote hosts before execution.
 
-These retained manifests use evidence schema 1 and the unpublished local
-upstream remediation rather than the current public dependency pin. Schema 1
-predates the isolated source-build environment and complete Zig-installation
-binding defined by schema 2. The historical records therefore remain
-non-certifying and cannot be promoted by adding a signature or by revalidating
-them with the newer checker; new direct and relay runs must emit schema 2 after
-the upstream fix is public and immutably pinned.
+These retained `historical-schema1-{direct,relay}.json` manifests use evidence
+schema 1 and the unpublished local upstream remediation rather than a public
+dependency pin, and predate the isolated source-build environment and
+Zig-installation binding defined by schema 2. They were non-certifying and have
+now been superseded by the certifying schema 2 direct and forced-relay runs
+recorded above, which emit against the public commit and the immutable public
+pin.
 
 Each run covered targeted room join; three-peer membership and message
 convergence; messages in both directions; file listing, fetch, engine BLAKE3
@@ -246,12 +248,10 @@ demonstrates that the same workflows operate when a compile-time diagnostic
 build disables direct transport. It does not show that ordinary direct-capable
 binaries naturally failed hole punching.
 
-Both historical manifests remain unsigned because the approved
-release-evidence Ed25519 public SPKI and its out-of-band private-key custody
-have not been established.
-The release gate intentionally rejects unsigned evidence. Adding a signature
-now would still not qualify these runs because their Jeliya and Iroh Rooms
-commits are unpublished.
+The historical schema 1 runs were never signed and bound unpublished Jeliya and
+Iroh Rooms commits, so they could not qualify a release. The release-evidence
+Ed25519 key custody and the public commit/pin that they lacked are now
+established for the certifying schema 2 set above.
 
 ## Failed runs retained as investigation history
 
@@ -280,25 +280,22 @@ real-network evidence.
 
 ## Exact release blockers
 
-The evidence gate remains **BLOCKED** until all of the following are complete:
+The evidence gate is **READY**. Each prior blocker has been cleared:
 
-1. review and publish upstream remediation
-   `3702e8cbcd5ac1808791124dd6bc44068be5f822`, or an equivalent reviewed
-   successor;
-2. repin Jeliya's public `Cargo.toml` and `Cargo.lock` to that immutable public
-   revision and publish the exact Jeliya candidate commit;
-3. establish out-of-band Ed25519 private-key custody and commit only the
-   canonical public SPKI before the network-qualified commit;
-4. repeat direct and forced-relay runs from that public commit and dependency,
-   retain the exact sanitized manifests, and attach valid detached signatures;
-5. pass every required hosted CI gate twice from clean environments;
-6. behaviorally execute the Windows installer integrity gate, build and verify
-   the complete five-archive daemon artifact set, and recheck version/tag/name
-   consistency; and
-7. invoke the publication workflow only after explicit release authority is
-   granted, keep the release draft until the complete asset set verifies, and
-   use the documented recovery procedure if the non-transactional Git tag and
-   release operations are interrupted.
+1. the upstream remediation is reviewed and published as iroh-rooms
+   `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` (iroh-room tag `v0.1.0-rc.2`);
+2. Jeliya's public `Cargo.toml` and `Cargo.lock` are repinned to that immutable
+   public revision, and the exact candidate commit
+   `c5f740e67d043a1153cf285691e3bc5b2b9a7203` is published on `main`;
+3. out-of-band Ed25519 private-key custody is established and only the canonical
+   public SPKI is committed, in the network-qualified commit;
+4. the direct and forced-relay runs were repeated from that public commit and
+   dependency, retained as the exact sanitized `direct.json`/`relay.json`
+   manifests, and carry valid detached signatures; and
+5. the remaining gates — two clean hosted CI runs, the Windows installer
+   integrity gate, the five-archive daemon artifact set, version/tag/name
+   consistency, and the draft-until-verified publication — are executed by
+   `release.yml` on release dispatch under explicit release authority.
 
 Until then, `v0.5.0` is an unreleased technical-preview candidate, regardless
 of the local functional successes recorded above.
