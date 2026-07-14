@@ -2010,8 +2010,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms"
-version = "0.1.0"
-source = "git+https://github.com/kortiene/iroh-room?rev=3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020#3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/kortiene/iroh-room?rev=d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb#d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb"
 dependencies = [
  "iroh",
  "iroh-rooms-core",
@@ -2020,8 +2020,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms-core"
-version = "0.1.0"
-source = "git+https://github.com/kortiene/iroh-room?rev=3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020#3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/kortiene/iroh-room?rev=d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb#d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb"
 dependencies = [
  "blake3",
  "data-encoding",
@@ -2034,16 +2034,18 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms-net"
-version = "0.1.0"
-source = "git+https://github.com/kortiene/iroh-room?rev=3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020#3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/kortiene/iroh-room?rev=d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb#d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb"
 dependencies = [
  "anyhow",
+ "bao-tree",
  "blake3",
  "bytes",
  "hex",
  "iroh",
  "iroh-blobs",
  "iroh-rooms-core",
+ "n0-future",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4072,7 +4074,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

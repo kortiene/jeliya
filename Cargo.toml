@@ -8,9 +8,10 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.91"
 
 [workspace.dependencies]
-# Pinned to the analyzed developer-preview rev; the local ~/TAC/iroh-room
+# Pinned to the reviewed cross-room event-lookup isolation remediation,
+# published on iroh-room main (tag v0.1.0-rc.2). The local ~/TAC/iroh-room
 # working tree is intentionally NOT used (it drifts).
-iroh-rooms = { git = "https://github.com/kortiene/iroh-room", rev = "3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020", features = ["experimental"] }
+iroh-rooms = { git = "https://github.com/kortiene/iroh-room", rev = "d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb", features = ["experimental"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

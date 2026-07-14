@@ -35,7 +35,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import {
   copyFileSync,
-  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -235,7 +234,11 @@ if (flags.has("--skip-dmg")) {
   const staging = join(dist, ".dmg-staging");
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
-  cpSync(appBundle, join(staging, "Jeliya.app"), { recursive: true });
+  // ditto (not fs.cpSync) preserves framework structure verbatim. cpSync
+  // resolves relative symlinks to absolute build-tree paths, which both
+  // un-relocates the bundle (flutter_assets not found on other machines /
+  // once the build tree moves) and unseals the signed frameworks.
+  run("ditto", [appBundle, join(staging, "Jeliya.app")]);
   symlinkSync("/Applications", join(staging, "Applications"));
   dmgPath = join(dist, `Jeliya-v${appVersion}-macos.dmg`);
   rmSync(dmgPath, { force: true });
