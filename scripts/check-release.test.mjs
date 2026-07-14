@@ -554,13 +554,16 @@ test("certifying network evidence has a closed, secret-free schema", () => {
   }
 });
 
-test("retained local network evidence remains explicitly non-certifying", () => {
+test("retained historical schema 1 network evidence remains explicitly non-certifying", () => {
   const verificationDoc = readFileSync(
     new URL("../docs/verification-evidence.md", import.meta.url),
     "utf8",
   );
+  // The certifying direct.json/relay.json are validated by the release gate
+  // (check-release --publish). The retained historical schema 1 manifests keep
+  // their own filenames so this guard proves they stay honestly non-certifying.
   for (const path of ["direct", "relay"]) {
-    const manifestUrl = new URL(`../docs/evidence/v0.5.0/${path}.json`, import.meta.url);
+    const manifestUrl = new URL(`../docs/evidence/v0.5.0/historical-schema1-${path}.json`, import.meta.url);
     const contents = readFileSync(manifestUrl);
     const manifest = JSON.parse(contents);
     assert.equal(manifest.certifiable, false);
