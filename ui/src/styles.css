@@ -1239,8 +1239,31 @@ button.sender-name:not(:disabled):hover {
   opacity: 0.5;
 }
 
-.room-error {
-  padding: 8px 24px 0;
+/* A failed room.open owns the whole pane (no empty timeline, no live
+   composer): the honest error with its collapsible technical details, and
+   the recovery actions right under it. */
+.room-error-surface {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  padding: 24px;
+}
+
+.room-error-surface .error-note {
+  max-width: 520px;
+  width: 100%;
+}
+
+.room-error-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 /* ---------- timeline ---------- */

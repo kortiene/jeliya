@@ -1,0 +1,102 @@
+import { expect, test, MOCK_ROOMS } from './fixtures';
+
+// Issue #53: a failed room.open must offer explicit Retry and Back to Rooms
+// paths, retry the same room without selecting another first, and never
+// render another room's data (or a comforting empty timeline) underneath.
+
+test('a failed room open offers Retry, and Retry restores the room', async ({
+  app,
+  page,
+  compact,
+}) => {
+  // Desktop auto-opens the room (one visible failure); on compact the reveal
+  // tap itself is the instinctive first retry, so spend two failures there.
+  await app.gotoPopulated({ mock_fail: compact ? 'room.open:2' : 'room.open:1' });
+  const surface = page.locator('.room-error-surface');
+  if (compact) {
+    // Wait for the hidden auto-open to fail before tapping, so the tap is
+    // deterministically the second (and last) injected failure.
+    await expect(surface).toHaveCount(1);
+    await app.roomItem(MOCK_ROOMS.main).click();
+  }
+
+  // The error owns the pane: real failure, recovery actions, no fake timeline.
+  await expect(surface).toBeVisible();
+  await expect(surface.getByText('Something went wrong')).toBeVisible();
+  await expect(surface.getByText('Technical details')).toBeVisible();
+  await expect(app.timeline).toHaveCount(0);
+  await expect(app.composerTextarea).toHaveCount(0);
+  await expect(page.getByText('No events yet')).toHaveCount(0);
+
+  // Retry is a real, keyboard-operable control that re-opens THIS room.
+  const retry = surface.getByRole('button', { name: 'Retry' });
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(page.getByRole('heading', { level: 1, name: MOCK_ROOMS.main })).toBeVisible();
+  await expect(app.timeline).toBeVisible();
+  await expect(app.timeline.getByText('Kicked off the rooms protocol spec')).toBeVisible();
+  await expect(surface).toHaveCount(0);
+  await expect(app.composerTextarea).toBeVisible();
+});
+
+test('re-selecting the errored room retries instead of doing nothing', async ({
+  app,
+  page,
+  compact,
+}) => {
+  test.skip(compact, 'covered by the reveal-tap in the Retry test; the sidebar is a desktop rail here');
+  await app.gotoPopulated({ mock_fail: 'room.open:2' });
+
+  const surface = page.locator('.room-error-surface');
+  await expect(surface).toBeVisible();
+
+  // Clicking the already-selected room must issue a real second attempt —
+  // it consumes the second injected failure…
+  await app.roomItem(MOCK_ROOMS.main).click();
+  await expect(surface).toBeVisible();
+
+  // …so the next retry succeeds. Without the retry-on-reselect fix, this
+  // click would hit the second failure and the test would fail.
+  await surface.getByRole('button', { name: 'Retry' }).click();
+  await expect(app.timeline).toBeVisible();
+});
+
+test('Back to Rooms escapes a room that cannot open', async ({ app, page, compact }) => {
+  await app.gotoPopulated({ mock_fail: 'room.open:9' });
+  if (compact) {
+    await app.roomItem(MOCK_ROOMS.main).click();
+  }
+
+  const surface = page.locator('.room-error-surface');
+  await expect(surface).toBeVisible();
+  await surface.getByRole('button', { name: 'Back to Rooms' }).click();
+
+  // The failed room is fully deselected — nothing renders under it.
+  await expect(surface).toHaveCount(0);
+  await expect(app.roomItem(MOCK_ROOMS.main)).toBeVisible();
+  if (!compact) {
+    await expect(page.getByText('Select a room')).toBeVisible();
+  } else {
+    await expect(app.center).toBeHidden();
+    await expect(app.sidebar).toBeVisible();
+  }
+});
+
+test('another room\'s data never renders under a failed open', async ({ app, page }) => {
+  // First open succeeds and fills members/files/pipes; the next one fails.
+  await app.gotoPopulated({ mock_fail: 'room.open:1:1' });
+  await app.openRoom(MOCK_ROOMS.main);
+  await expect(app.timeline.getByText('Kicked off the rooms protocol spec')).toBeVisible();
+
+  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.roomItem(MOCK_ROOMS.design).click();
+  await expect(page.locator('.room-error-surface')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: MOCK_ROOMS.design })).toBeVisible();
+
+  // The main room's roster/files/pipes must not bleed into the failed room:
+  // the right panel shows empty-room truth, not another room's data.
+  await expect(app.rightPanel.getByText('PRD_v0.2.pdf')).toHaveCount(0);
+  await expect(app.rightPanel.getByText('127.0.0.1:3000')).toHaveCount(0);
+  await expect(app.rightPanel.getByText('Maya R.')).toHaveCount(0);
+});

@@ -367,6 +367,32 @@ function deriveLiveness(connected: boolean, latest: TimelineEvent | null, now: n
 
 // -- the client --------------------------------------------------------------
 
+/** Deterministic failure injection for the browser regression suite:
+ *  `?mock_fail=room.open:2` fails the first two `room.open` calls with a real
+ *  `unavailable` error; `room.open:1:1` first allows one successful call.
+ *  Comma-separated entries inject for several methods. Mock-only — the
+ *  WebSocket client never reads this. */
+interface FailureSpec {
+  allowRemaining: number;
+  failRemaining: number;
+}
+
+function parseFailSpecs(raw: string | null): Map<string, FailureSpec> {
+  const specs = new Map<string, FailureSpec>();
+  if (!raw) return specs;
+  for (const entry of raw.split(',')) {
+    const [method, count, after] = entry.split(':');
+    const failRemaining = Number(count);
+    if (!method || !Number.isInteger(failRemaining) || failRemaining <= 0) continue;
+    const allowRemaining = Number(after ?? '0');
+    specs.set(method, {
+      allowRemaining: Number.isInteger(allowRemaining) && allowRemaining > 0 ? allowRemaining : 0,
+      failRemaining,
+    });
+  }
+  return specs;
+}
+
 class MockClient implements Client {
   private state: ConnectionState = 'disconnected';
   private stateHandlers = new Set<(s: ConnectionState) => void>();
@@ -379,8 +405,10 @@ class MockClient implements Client {
   private tickets = new Map<string, TicketEntry>();
   private portSeq = 41732;
   private startTimer: number | null = null;
+  private failSpecs: Map<string, FailureSpec>;
 
-  constructor(fresh: boolean) {
+  constructor(fresh: boolean, failSpecs: Map<string, FailureSpec> = new Map()) {
+    this.failSpecs = failSpecs;
     for (const p of EVERYONE) suggestedNames[p.id] = p.name;
     if (fresh) {
       this.identity = null;
@@ -674,7 +702,25 @@ class MockClient implements Client {
     };
   }
 
+  /** See parseFailSpecs: consumes one allowed call, then one injected
+   *  failure, per configured method — after that the method recovers. */
+  private maybeInjectFailure(method: MethodName): void {
+    const spec = this.failSpecs.get(method);
+    if (!spec || spec.failRemaining <= 0) return;
+    if (spec.allowRemaining > 0) {
+      spec.allowRemaining -= 1;
+      return;
+    }
+    spec.failRemaining -= 1;
+    this.err(
+      'unavailable',
+      `simulated ${method} failure (mock_fail)`,
+      'retry — the mock recovers once the requested failures are spent',
+    );
+  }
+
   private dispatch(method: MethodName, params: unknown): unknown {
+    this.maybeInjectFailure(method);
     switch (method) {
       case 'daemon.status': {
         const status: DaemonStatus = {
@@ -1032,6 +1078,7 @@ class MockClient implements Client {
 }
 
 export function createMockClient(): Client {
-  const fresh = new URLSearchParams(window.location.search).get('mock') === 'fresh';
-  return new MockClient(fresh);
+  const params = new URLSearchParams(window.location.search);
+  const fresh = params.get('mock') === 'fresh';
+  return new MockClient(fresh, parseFailSpecs(params.get('mock_fail')));
 }

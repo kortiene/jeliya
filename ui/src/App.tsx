@@ -582,6 +582,16 @@ export default function App({ client }: { client: Client }) {
     }
   };
 
+  // The escape hatch from a room whose open failed: deselect it entirely so
+  // nothing renders under a room the daemon could not actually open.
+  const backToRooms = () => {
+    roomIdRef.current = null;
+    setRoomId(null);
+    setRoomError(null);
+    setRoomLoading(false);
+    setMobileView('rooms');
+  };
+
   const leaveCurrentRoom = () => {
     roomIdRef.current = null;
     setRoomId(null);
@@ -746,7 +756,10 @@ export default function App({ client }: { client: Client }) {
               return;
             }
             setMobileView('chat');
-            if (rid !== roomId) void openRoom(rid);
+            // Re-selecting the room whose open failed is the user's most
+            // instinctive retry — honor it instead of ignoring the click
+            // because the id is already selected.
+            if (rid !== roomId || roomError) void openRoom(rid);
           }}
           onCreateRoom={() => setCreateOpen(true)}
           onJoinRoom={() => setJoinOpen(true)}
@@ -765,38 +778,58 @@ export default function App({ client }: { client: Client }) {
                 onOpenPipe={() => openPanelTab('pipes')}
               />
               {roomError ? (
-                <div className="room-error">
+                // The open failed: the error owns the pane. Rendering the
+                // empty timeline ("No events yet") and a live composer under
+                // it would be a comforting lie about a room that isn't open.
+                <div className="room-error-surface">
                   <ErrorNote error={roomError} />
+                  <div className="room-error-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => {
+                        if (roomIdRef.current) void openRoom(roomIdRef.current);
+                      }}
+                    >
+                      Retry
+                    </button>
+                    <button type="button" className="btn btn-ghost" onClick={backToRooms}>
+                      Back to Rooms
+                    </button>
+                  </div>
                 </div>
-              ) : null}
-              {/* Keyed by room so the role="log" live region resets on room switch
-                  instead of announcing the whole backlog as new content. */}
-              <Timeline
-                key={roomId}
-                events={timeline}
-                pendingMessages={roomId ? (pendingMessages[roomId] ?? []) : []}
-                files={files}
-                fetches={fetches}
-                loading={roomLoading}
-                selfId={selfId}
-                savedView={roomId ? (timelineViews.current.get(roomId) ?? null) : null}
-                onSaveView={(view) => {
-                  if (!roomId) return;
-                  if (view) timelineViews.current.set(roomId, view);
-                  else timelineViews.current.delete(roomId);
-                }}
-                onFetch={fetchFile}
-                onRecheckFiles={recheckFiles}
-                onRetryPendingMessage={retryPendingMessage}
-                onShowPipes={(pipeId) => openPanelTab('pipes', pipeId)}
-              />
-              <Composer
-                roomId={currentRoom.room_id}
-                roomName={currentRoom.name ?? 'Untitled room'}
-                disabled={conn !== 'connected'}
-                onSend={sendMessage}
-                onShareFile={shareBrowserFile}
-              />
+              ) : (
+                <>
+                  {/* Keyed by room so the role="log" live region resets on room switch
+                      instead of announcing the whole backlog as new content. */}
+                  <Timeline
+                    key={roomId}
+                    events={timeline}
+                    pendingMessages={roomId ? (pendingMessages[roomId] ?? []) : []}
+                    files={files}
+                    fetches={fetches}
+                    loading={roomLoading}
+                    selfId={selfId}
+                    savedView={roomId ? (timelineViews.current.get(roomId) ?? null) : null}
+                    onSaveView={(view) => {
+                      if (!roomId) return;
+                      if (view) timelineViews.current.set(roomId, view);
+                      else timelineViews.current.delete(roomId);
+                    }}
+                    onFetch={fetchFile}
+                    onRecheckFiles={recheckFiles}
+                    onRetryPendingMessage={retryPendingMessage}
+                    onShowPipes={(pipeId) => openPanelTab('pipes', pipeId)}
+                  />
+                  <Composer
+                    roomId={currentRoom.room_id}
+                    roomName={currentRoom.name ?? 'Untitled room'}
+                    disabled={conn !== 'connected'}
+                    onSend={sendMessage}
+                    onShareFile={shareBrowserFile}
+                  />
+                </>
+              )}
             </>
           ) : (
             <div className="center-empty muted">Select a room</div>
@@ -842,7 +875,7 @@ export default function App({ client }: { client: Client }) {
               const room = rooms.find((r) => r.room_id === rid);
               if (room?.status === 'left' || room?.status === 'removed') return;
               setMobileView('chat');
-              if (rid !== roomId) void openRoom(rid);
+              if (rid !== roomId || roomError) void openRoom(rid);
             }}
           />
         ) : null}
