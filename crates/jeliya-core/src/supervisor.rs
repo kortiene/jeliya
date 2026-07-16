@@ -39,9 +39,9 @@ use iroh_rooms::events::{
 };
 use iroh_rooms::experimental::pipe_runtime::{is_loopback_target, PipeError, PipeForwarder};
 use iroh_rooms::experimental::session::{
-    Admission, AdmissionView, AllowlistAdmission, BlobServeConfig, ConnEvent, EndpointAddr,
-    EndpointId, JoinBootstrapAdmission, NetConfig, NetMode, Node, PeerConnState, SecretKey,
-    SnapshotAdmission, TracingAudit, DEFAULT_TICK,
+    Admission, AdmissionView, AllowlistAdmission, BlobServeConfig, BootstrapProof, ConnEvent,
+    EndpointAddr, EndpointId, JoinBootstrapAdmission, NetConfig, NetMode, Node, PeerConnState,
+    SecretKey, SnapshotAdmission, TracingAudit, DEFAULT_TICK,
 };
 use iroh_rooms::experimental::store::{EventStore, StoreOptions, StoredEvent};
 use iroh_rooms::experimental::sync::{SyncConfig, SyncEngine};
@@ -1404,13 +1404,21 @@ impl RoomSupervisor {
         let engine = SyncEngine::open(store, room_id, SyncConfig::default())
             .map_err(|e| internal("could not open the sync engine", e))?;
         let secret_key = SecretKey::from_bytes(&secret.device.to_seed());
-        let node = Node::spawn(
+        // The admin serves the membership closure only after this node proves it
+        // holds the invite (upstream issue #112); a plain `Node::spawn` joiner is
+        // never bootstrapped and times out.
+        let node = Node::spawn_join_bootstrap(
             secret_key,
             Arc::new(admission),
             Arc::new(TracingAudit),
             engine,
             self.net_config(),
             DEFAULT_TICK,
+            BootstrapProof {
+                room_id,
+                invite_id: ticket.invite_id,
+                capability_secret: ticket.capability_secret,
+            },
         )
         .await
         .map_err(|e| internal("could not bring up the join node", e))?;

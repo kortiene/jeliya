@@ -17,8 +17,8 @@ path = "src/main.rs"
 # `cargo build` stays a lean WS-only daemon with no UI-build dependency.
 embed-ui = ["dep:rust-embed"]
 # Diagnostic-only verifier binary. Off by default and never enabled for the
-# five release artifacts. jeliya-core fails this build closed until the
-# reviewed upstream relay-only feature is published and forwarded.
+# five release artifacts. jeliya-core forwards to the published upstream seam
+# and still fails this build closed if the pin ever loses it.
 relay-only-test = ["jeliya-core/relay-only-test"]
 
 [dependencies]

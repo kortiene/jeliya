@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Historical Gate A result — 2026-07-04"
 description: "Historical evidence of one direct cross-network P2P run that does not certify the v0.5.0 candidate."
 tags: ["nat", "networking", "p2p", "verification"]
-timestamp: "2026-07-12T12:21:59Z"
+timestamp: "2026-07-16T15:30:00Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "historical"
@@ -77,10 +77,11 @@ achieved on that network pair); this run achieved neither caveat.
 
 ## Applicability to v0.5.0
 
-The `v0.5.0` candidate baseline is
-`1285b42037a3713840955fa518f2b81b19f2929f` and pins `iroh-rooms` at
-`3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020`. Neither matches this historical
-run. Gate A remains **pending** for the candidate until direct and deliberately
-constrained relay runs pass with the exact candidate commit and dependency
-revision, together with the broader assertion set in
-[`verification-evidence.md`](verification-evidence.md).
+This historical run matches neither the released `v0.5.0` nor the current
+candidate. `v0.5.0` satisfied Gate A's intent through its own certifying
+signed direct and forced-relay schema 2 runs at `c5f740e…` + `d0ceb0b…` (see
+[`verification-evidence.md`](verification-evidence.md)). The post-release
+candidate on `main` repins `iroh-rooms` to published `v0.1.0-rc.3`
+(`71fbb5007bef4ce83631c94762ec68c2beef3d79`) and needs its own direct and
+deliberately constrained relay runs at that exact commit and dependency
+revision before the next release.

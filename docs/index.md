@@ -16,9 +16,9 @@ CI rules for every page in this wiki.
 
 ## Current status and evidence
 
-- [Capability status](capability-status.md) - What is implemented, verified, and publicly released for the v0.5.0 candidate.
+- [Capability status](capability-status.md) - What is implemented, verified, and publicly released as of v0.5.0 and the post-release candidate.
 - [Platform matrix](platform-matrix.md) - Runtime, packaging, verification, and release status by operating system and artifact.
-- [Release versus main](release-vs-main.md) - Exact boundary between v0.4.3, the audited main baseline, and the hardening candidate.
+- [Release versus main](release-vs-main.md) - Exact boundary between released v0.5.0, its certified evidence, and the post-release candidate on main.
 - [Verification evidence](verification-evidence.md) - Revision-bound milestone ledger, remote-test record, and evidence-sanitization contract.
 - [Known gaps and roadmap](known-gaps-roadmap.md) - Release blockers, deferred risks, owners, and the NOW/NEXT/LATER boundary.
 

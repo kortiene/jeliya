@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Repinned `iroh-rooms` from the `v0.5.0`-certified `d0ceb0b…` (rc.2-era) to
+  the published `v0.1.0-rc.3` tag
+  (`71fbb5007bef4ce83631c94762ec68c2beef3d79`). On top of the isolation
+  remediation and relay seam the certified pin already carried, rc.3 brings
+  the join-after-conversation deadlock fix (upstream PR #111 — at `d0ceb0b`,
+  and therefore in released `v0.5.0`, an invite minted after any non-admin
+  chat can never complete `room.join`), the join-bootstrap capability gate
+  (PRs #117/#120), size-independent membership reconciliation (PR #118, no
+  more ~30k-event ceiling), and deep pure-chat gap healing (PR #116).
+  `room.join` now presents the invite's capability proof
+  (`Node::spawn_join_bootstrap` with `BootstrapProof`); without it an rc.3
+  admin never serves the join bootstrap. Mixed-fleet caution: an rc.3 joiner
+  bootstrapping from a `v0.5.0`-era responder hard-stalls once it holds more
+  than ~1k events, and a `v0.5.0`-era joiner cannot bootstrap from an rc.3
+  admin (it sends no proof) — members of a room, especially its admin, must
+  upgrade together. The certified `v0.5.0` network evidence binds `d0ceb0b`
+  and does not transfer to this candidate; fresh certifying runs are required
+  before the next release.
+
 ## [0.5.0] - 2026-07-12
 
 ### Added
