@@ -13,10 +13,10 @@ audience: ["contributors", "maintainers", "operators"]
 
 # Real-network NAT runbook
 
-This is the canonical `v0.5.0` network-evidence procedure. It drives one local
+This is the canonical `v0.6.0` network-evidence procedure. It drives one local
 operator process and two supervised remote daemons through
 `scripts/realnet-evidence.mjs`. The older `gate-a.mjs` flow is retained only as
-a diagnostic and historical reference; it cannot qualify a `v0.5.0` release.
+a diagnostic and historical reference; it cannot qualify a release.
 
 ## Current evidence status
 
@@ -58,7 +58,7 @@ their exact limits are documented in
 Apply these rules before running the harness:
 
 - begin with read-only SSH inventory and connectivity checks;
-- use only the generated `/tmp/jeliya-v050-<run-id>-<role>` directories and
+- use only the generated `/tmp/jeliya-v060-<run-id>-<role>` directories and
   dynamically allocated, loopback-only control ports;
 - do not change firewalls, routes, package repositories, SSH settings, user
   accounts, persistent services, or other system configuration;
@@ -264,7 +264,7 @@ lockfile.
 ## Interpret and retain the result
 
 The harness writes its initial sanitized record to
-`.jeliya-gatea/v0.5.0/<run-id>.json`. This local directory is gitignored. A
+`.jeliya-gatea/v0.6.0/<run-id>.json`. This local directory is gitignored. A
 successful functional result still fails release qualification when any source
 or dependency revision is local/unpublished, topology is insufficient, the
 working tree is dirty, or the build is not source-bound.
@@ -285,8 +285,9 @@ For a release candidate:
 2. review the structured record for secrets and remove all log excerpts while
    retaining per-role line count, byte count, and stream SHA-256 records;
 3. copy the final exact JSON bytes to
-   `docs/evidence/v0.5.0/direct.json` or
-   `docs/evidence/v0.5.0/relay.json`;
+   `docs/evidence/v0.6.0/direct.json` or
+   `docs/evidence/v0.6.0/relay.json` (the release gate derives this
+   directory from the daemon crate version);
 4. sign those final bytes with the approved out-of-band Ed25519 private key and
    retain the canonical base64 detached signature as the adjacent `.sig` file;
 5. never place the private key, its backup, or a private-key PEM in the
@@ -342,7 +343,7 @@ current relay build failed before remote mutation.
 `scripts/gate-a.mjs`, `scripts/realnet-host.mjs`, and
 `scripts/realnet-check.mjs` remain useful for two-host diagnosis and manual
 connectivity exploration. Their records are not source-bound to the complete
-`v0.5.0` candidate and cannot satisfy the three-peer topology, forced-relay,
+release candidate and cannot satisfy the three-peer topology, forced-relay,
 authorization, retained-signature, or release-ancestry gates.
 
 The 2026-07-04 result is historical only. See

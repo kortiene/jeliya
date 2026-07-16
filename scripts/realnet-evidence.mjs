@@ -68,7 +68,7 @@ const DEFAULT_LOCAL_BIN = join(REPO_ROOT, "target", "release", "jeliyad");
 const DEFAULT_DEBUG_BIN = join(REPO_ROOT, "target", "debug", "jeliyad");
 const EVIDENCE_ROOT = process.env.JELIYA_EVIDENCE_ROOT
   ? resolve(process.env.JELIYA_EVIDENCE_ROOT)
-  : join(REPO_ROOT, ".jeliya-gatea", "v0.5.0");
+  : join(REPO_ROOT, ".jeliya-gatea", "v0.6.0");
 const WAIT_MS = 120_000;
 const LINUX_TARGET = "x86_64-unknown-linux-musl";
 const REQUIRED_RUST_TOOLCHAIN = "1.91.0";
@@ -177,7 +177,7 @@ export function remoteRunDir(runId, role) {
   if (!validRunId(runId) || !/^[abc]$/.test(role)) {
     throw new Error("invalid generated run id or role");
   }
-  return `/tmp/jeliya-v050-${runId}-${role}`;
+  return `/tmp/jeliya-v060-${runId}-${role}`;
 }
 
 function validateRemoteRunDir(runId, runDir) {
@@ -219,7 +219,7 @@ export function remoteCleanupCommand(runId, runDir) {
     `run_dir='${validated}'`,
     `pid_file='${pidFile}'`,
     `expected_exe='${expectedExe}'`,
-    `case "$run_dir" in '/tmp/jeliya-v050-${runId}-'[abc]) ;; *) exit 90 ;; esac`,
+    `case "$run_dir" in '/tmp/jeliya-v060-${runId}-'[abc]) ;; *) exit 90 ;; esac`,
     '[ ! -e "$run_dir" ] && exit 0',
     `owner=$(cat -- '${validated}/.jeliya-run-owner' 2>/dev/null) || exit 97`,
     `[ "$owner" = '${runId}' ] || exit 97`,
@@ -250,7 +250,7 @@ export function remoteOwnedDirectoryCleanupCommand(runId, runDir) {
   const validated = validateRemoteRunDir(runId, runDir);
   return [
     `run_dir='${validated}'`,
-    `case "$run_dir" in '/tmp/jeliya-v050-${runId}-'[abc]) ;; *) exit 90 ;; esac`,
+    `case "$run_dir" in '/tmp/jeliya-v060-${runId}-'[abc]) ;; *) exit 90 ;; esac`,
     '[ ! -e "$run_dir" ] && exit 0',
     '[ -d "$run_dir" ] || exit 97',
     `owner=$(cat -- '${validated}/.jeliya-run-owner' 2>/dev/null) || exit 97`,
@@ -1377,7 +1377,7 @@ export function createIsolatedSourceArchive({
 
 export function validBuildDirectory(path, runId) {
   if (!validRunId(runId) || typeof path !== "string") return false;
-  const prefix = join(tmpdir(), `jeliya-v050-${runId}-build-`);
+  const prefix = join(tmpdir(), `jeliya-v060-${runId}-build-`);
   return path.startsWith(prefix)
     && /^[A-Za-z0-9]{6}$/.test(path.slice(prefix.length));
 }
@@ -1416,7 +1416,7 @@ function buildCandidateFromSource({
   // receives a minimal environment, while unlisted credentials remain
   // available to the later SSH phase but never reach build subprocesses.
   validateSourceBuildAmbient(process.env);
-  const targetDir = mkdtempSync(join(tmpdir(), `jeliya-v050-${runId}-build-`));
+  const targetDir = mkdtempSync(join(tmpdir(), `jeliya-v060-${runId}-build-`));
   const sourceRoot = join(targetDir, "source");
   const cargoTargetDir = join(targetDir, "target");
   const discoveryHome = join(targetDir, "tool-discovery-home");
@@ -1814,7 +1814,7 @@ async function sessionToken(baseHttp) {
 }
 
 async function startLocalPeer({ role, binary, loopback, runId, resources, secrets }) {
-  const dataDir = mkdtempSync(join(tmpdir(), `jeliya-v050-${runId}-${role}-`));
+  const dataDir = mkdtempSync(join(tmpdir(), `jeliya-v060-${runId}-${role}-`));
   const args = ["--no-open", "--port", "0", "--data-dir", dataDir];
   if (loopback) args.unshift("--loopback");
   const proc = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"] });
@@ -2242,7 +2242,7 @@ async function runFlow({ peers, expectedPath, runId, resources, record }) {
   }
 
   const room = await record("A: room created", () => a.client.call("room.create", {
-    name: `v0.5.0 network evidence ${runId}`,
+    name: `v0.6.0 network evidence ${runId}`,
   }));
   const roomId = room.room_id;
   const openedA = await record("A: room opened", async () => {
@@ -2325,7 +2325,7 @@ async function runFlow({ peers, expectedPath, runId, resources, record }) {
   }
 
   const payload = Buffer.concat([
-    Buffer.from(`jeliya-v0.5.0-${runId}\n`),
+    Buffer.from(`jeliya-v0.6.0-${runId}\n`),
     randomBytes(256 * 1024),
   ]);
   const payloadPath = join(a.dataDir, `payload-${runId}.bin`);
@@ -2638,7 +2638,7 @@ async function stopResources(resources) {
   }
   for (const peer of resources.peers) {
     if (peer.kind === "local") {
-      if (peer.dataDir.includes(`jeliya-v050-${resources.runId}-`)) {
+      if (peer.dataDir.includes(`jeliya-v060-${resources.runId}-`)) {
         if (!stoppedPeers.get(peer)) {
           failures.push(`${peer.role}:local-artifact-preserved`);
           continue;
@@ -2781,7 +2781,7 @@ export function parseCli(argv) {
     withThird: localDryrun ? Boolean(args["with-third"]) : true,
     allowDirty: Boolean(args["allow-dirty"] || localDryrun),
     allowSharedEgress: Boolean(args["allow-shared-egress"] || args["allow-same-network"] || localDryrun),
-    expectedVersion: String(args["expected-version"] ?? "0.5.0"),
+    expectedVersion: String(args["expected-version"] ?? "0.6.0"),
     localBin: String(args["local-bin"] ?? (localDryrun ? DEFAULT_DEBUG_BIN : DEFAULT_LOCAL_BIN)),
     linuxBin: args["linux-bin"] ? String(args["linux-bin"]) : null,
     linuxSha256: args["linux-sha256"] ? String(args["linux-sha256"]) : null,

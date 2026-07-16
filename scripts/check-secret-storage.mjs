@@ -140,6 +140,7 @@ for (const candidate of [
   "release/evidence-ed25519-private.pem",
   "release/evidence-operator.key",
   "docs/evidence/v0.5.0/direct.private.pem",
+  "docs/evidence/v0.6.0/direct.private.pem",
 ]) {
   const ignored = spawnSync("git", ["check-ignore", "--no-index", "--quiet", candidate], {
     cwd: repoRoot,
