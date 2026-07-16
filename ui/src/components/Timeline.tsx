@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DaemonErrorShape, FileEntry, FileRef, TimelineEvent } from '../lib/protocol';
 import { dayLabel, extOf, fileTint, formatBytes, formatTime, labelTone, prettyLabel, shortId } from '../lib/format';
@@ -12,6 +12,15 @@ export interface PendingMessage {
   phase: 'sending' | 'syncing' | 'failed';
   eventId?: string;
   error?: DaemonErrorShape;
+}
+
+/** A deliberate reading position, persisted across the keyed remount when the
+ *  user comes back to a room they had scrolled up in. `itemCount` is how many
+ *  items they had actually seen — the difference against the reloaded backlog
+ *  feeds the "N new messages" control instead of a silent jump. */
+export interface TimelineView {
+  scrollTop: number;
+  itemCount: number;
 }
 
 type TimelineItem = { type: 'event'; event: TimelineEvent } | { type: 'pending'; pending: PendingMessage };
@@ -84,7 +93,7 @@ function EventCard({
   compact: boolean;
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
-  onShowPipes(): void;
+  onShowPipes(pipeId?: string): void;
 }) {
   const senderId = event.sender.identity_id;
   const time = formatTime(event.ts);
@@ -237,7 +246,7 @@ function EventCard({
                   {event.pipe.authorized_peer ? <SenderName id={event.pipe.authorized_peer} /> : '—'}
                 </span>
               </span>
-              <button type="button" className="btn btn-sm" onClick={onShowPipes}>
+              <button type="button" className="btn btn-sm" onClick={() => onShowPipes(event.pipe?.pipe_id)}>
                 Open in Pipes
               </button>
             </div>
@@ -330,6 +339,8 @@ export function Timeline({
   fetches,
   loading,
   selfId,
+  savedView = null,
+  onSaveView,
   onFetch,
   onRecheckFiles,
   onRetryPendingMessage,
@@ -341,39 +352,109 @@ export function Timeline({
   fetches: Record<string, FetchState>;
   loading: boolean;
   selfId: string | null;
+  savedView?: TimelineView | null;
+  onSaveView?(view: TimelineView | null): void;
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
   onRetryPendingMessage(clientId: string): void;
-  onShowPipes(): void;
+  onShowPipes(pipeId?: string): void;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
-  const stickToBottom = useRef(true);
+  const stickToBottom = useRef(savedView === null);
   const previousItemCount = useRef(0);
+  const restorePending = useRef<TimelineView | null>(savedView);
+  const lastScrollTop = useRef(savedView?.scrollTop ?? 0);
   const [newItemCount, setNewItemCount] = useState(0);
+
+  // Render-time mirrors so the stable callbacks below never go stale.
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
+  const newItemCountRef = useRef(newItemCount);
+  newItemCountRef.current = newItemCount;
+  const onSaveViewRef = useRef(onSaveView);
+  onSaveViewRef.current = onSaveView;
 
   const items: TimelineItem[] = [
     ...events.map((event) => ({ type: 'event' as const, event })),
     ...pendingMessages.map((pending) => ({ type: 'pending' as const, pending })),
   ].sort((a, b) => itemTs(a) - itemTs(b));
 
+  // The one place scroll position is written. Compact keeps inactive panes
+  // display:none, which zeroes every measurement and (on reveal) wipes
+  // scrollTop — so this must run not only when items change but whenever the
+  // scroller is laid out again (the ResizeObserver below): first reveal of an
+  // auto-opened room, hide/show cycles, rotation, and composer growth.
+  const syncScroll = useCallback(() => {
+    const el = scroller.current;
+    if (!el || el.clientHeight === 0) return; // hidden — nothing measurable
+    if (restorePending.current !== null) {
+      if (loadingRef.current) return; // wait for the reloaded backlog
+      const max = el.scrollHeight - el.clientHeight;
+      el.scrollTop = Math.min(restorePending.current.scrollTop, Math.max(0, max));
+      lastScrollTop.current = el.scrollTop;
+      // Everything beyond what the reader had seen when they left is "new" —
+      // counted here, once the backlog is really in, because the brief empty
+      // render while room.open reloads must not be mistaken for churn.
+      setNewItemCount(Math.max(0, previousItemCount.current - restorePending.current.itemCount));
+      restorePending.current = null;
+      return;
+    }
+    if (stickToBottom.current) {
+      el.scrollTop = el.scrollHeight;
+      lastScrollTop.current = el.scrollTop;
+      setNewItemCount(0);
+    } else if (el.scrollTop === 0 && lastScrollTop.current > 0) {
+      // display:none reset the position under us — reinstate the reading spot.
+      el.scrollTop = Math.min(lastScrollTop.current, el.scrollHeight - el.clientHeight);
+    }
+  }, []);
+
+  useEffect(() => {
+    const previous = previousItemCount.current;
+    previousItemCount.current = items.length;
+    if (!scroller.current) return;
+    // Live deltas only — while a restore is pending the backlog is being
+    // reloaded wholesale and syncScroll derives the count from the saved view.
+    if (!stickToBottom.current && restorePending.current === null) {
+      const delta = Math.max(0, items.length - previous);
+      if (delta > 0) setNewItemCount((count) => count + delta);
+    }
+    syncScroll();
+  }, [items.length, syncScroll]);
+
   useEffect(() => {
     const el = scroller.current;
-    const previous = previousItemCount.current;
-    const delta = Math.max(0, items.length - previous);
-    if (el) {
+    if (!el) return;
+    const observer = new ResizeObserver(() => syncScroll());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncScroll]);
+
+  // Persist a deliberate reading position across the keyed remount; a room
+  // left at the bottom re-opens at its newest event instead.
+  useEffect(() => {
+    return () => {
+      const save = onSaveViewRef.current;
+      if (!save) return;
       if (stickToBottom.current) {
-        el.scrollTop = el.scrollHeight;
-        setNewItemCount(0);
-      } else if (delta > 0) {
-        setNewItemCount((count) => count + delta);
+        save(null);
+      } else if (restorePending.current !== null) {
+        // Never revealed on this visit — carry the original view forward
+        // untouched so the seen-count stays honest.
+        save(restorePending.current);
+      } else {
+        save({
+          scrollTop: lastScrollTop.current,
+          itemCount: previousItemCount.current - newItemCountRef.current,
+        });
       }
-    }
-    previousItemCount.current = items.length;
-  }, [items.length]);
+    };
+  }, []);
 
   const onScroll = () => {
     const el = scroller.current;
-    if (!el) return;
+    if (!el || el.clientHeight === 0) return;
+    lastScrollTop.current = el.scrollTop;
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
     if (stickToBottom.current) setNewItemCount(0);
   };

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DaemonErrorShape } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { ErrorNote } from './ui';
@@ -32,12 +32,41 @@ export function Composer({
     }
   }, [draftKey]);
 
-  useEffect(() => {
+  const autosize = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = '0px';
+    if (el.scrollHeight === 0) {
+      // Inside a display:none pane (compact keeps inactive panes unlaid-out)
+      // every measurement reads 0 — writing that would clip the composer to a
+      // strip. Fall back to the stylesheet's one-line height; the observer
+      // below re-measures the moment the pane is actually laid out.
+      el.style.height = '';
+      return;
+    }
     el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
-  }, [draft]);
+  }, []);
+
+  useEffect(() => {
+    autosize();
+  }, [draft, autosize]);
+
+  // Re-measure when the textarea's laid-out width changes: the hidden→visible
+  // transition (0→w), viewport resize, and rotation. Keying on width ignores
+  // the height changes autosize itself causes, so the observer cannot loop.
+  const lastWidth = useRef(-1);
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[entries.length - 1].contentRect.width;
+      if (width === lastWidth.current) return;
+      lastWidth.current = width;
+      if (width > 0) autosize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [autosize]);
 
   const updateDraft = (value: string) => {
     setDraft(value);

@@ -31,7 +31,7 @@ import type { NavKey } from './components/Sidebar';
 import { MobileTabBar } from './components/MobileTabBar';
 import { RoomHeader } from './components/RoomHeader';
 import { Timeline } from './components/Timeline';
-import type { PendingMessage } from './components/Timeline';
+import type { PendingMessage, TimelineView } from './components/Timeline';
 import { Composer } from './components/Composer';
 import { RightPanel } from './components/RightPanel';
 import type { PanelTab, PipeConnState } from './components/RightPanel';
@@ -131,6 +131,10 @@ export default function App({ client }: { client: Client }) {
     return t === 'members' || t === 'files' || t === 'pipes' || t === 'agents' ? t : 'members';
   });
   const [mobileView, setMobileView] = useState<MobileView>('rooms');
+  const [pipeFocus, setPipeFocus] = useState<string | null>(null);
+  // Deliberate per-room reading positions (see TimelineView); a ref because
+  // saving one on room switch must not re-render the outgoing timeline.
+  const timelineViews = useRef(new Map<string, TimelineView>());
   const [inviteOpen, setInviteOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
@@ -655,6 +659,16 @@ export default function App({ client }: { client: Client }) {
               ? 'home'
               : 'rooms';
 
+  // The one route from in-room actions to the Files/Pipes surfaces. Setting
+  // only the right-panel tab is invisible on compact (the panel is a hidden
+  // pane there) — the active pane must move with it, exactly as the primary
+  // navigation does, so pane, panel tab, and bottom bar can never contradict.
+  const openPanelTab = useCallback((which: 'files' | 'pipes', pipeId?: string) => {
+    setTab(which);
+    setMobileView(which);
+    setPipeFocus(which === 'pipes' ? (pipeId ?? null) : null);
+  }, []);
+
   const navigate = useCallback((key: NavKey) => {
     if (key === 'agents') {
       // Top-level fleet dashboard — distinct from the in-room Agents tab, which
@@ -747,8 +761,8 @@ export default function App({ client }: { client: Client }) {
                 members={members}
                 peers={peers}
                 onInvite={() => setInviteOpen(true)}
-                onShareFile={() => setTab('files')}
-                onOpenPipe={() => setTab('pipes')}
+                onShareFile={() => openPanelTab('files')}
+                onOpenPipe={() => openPanelTab('pipes')}
               />
               {roomError ? (
                 <div className="room-error">
@@ -765,10 +779,16 @@ export default function App({ client }: { client: Client }) {
                 fetches={fetches}
                 loading={roomLoading}
                 selfId={selfId}
+                savedView={roomId ? (timelineViews.current.get(roomId) ?? null) : null}
+                onSaveView={(view) => {
+                  if (!roomId) return;
+                  if (view) timelineViews.current.set(roomId, view);
+                  else timelineViews.current.delete(roomId);
+                }}
                 onFetch={fetchFile}
                 onRecheckFiles={recheckFiles}
                 onRetryPendingMessage={retryPendingMessage}
-                onShowPipes={() => setTab('pipes')}
+                onShowPipes={(pipeId) => openPanelTab('pipes', pipeId)}
               />
               <Composer
                 roomId={currentRoom.room_id}
@@ -793,6 +813,8 @@ export default function App({ client }: { client: Client }) {
           pipes={pipes}
           selfId={selfId}
           fetches={fetches}
+          focusPipeId={pipeFocus}
+          onFocusPipeHandled={() => setPipeFocus(null)}
           onFetch={fetchFile}
           onRecheckFiles={recheckFiles}
           onSharePath={shareFilePath}

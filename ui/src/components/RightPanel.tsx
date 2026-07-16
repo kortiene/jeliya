@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { DaemonErrorShape, FileEntry, Member, PipeEntry, TimelineEvent } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
@@ -491,6 +491,8 @@ function PipesTab({
   selfId,
   conns,
   closing,
+  focusPipeId = null,
+  onFocusPipeHandled,
   onConnect,
   onClose,
   onExpose,
@@ -500,6 +502,8 @@ function PipesTab({
   selfId: string | null;
   conns: Record<string, PipeConnState>;
   closing: Set<string>;
+  focusPipeId?: string | null;
+  onFocusPipeHandled?(): void;
   onConnect(pipeId: string): void;
   onClose(pipeId: string): void;
   onExpose(target: string, peerIdentity: string): Promise<void>;
@@ -510,6 +514,28 @@ function PipesTab({
   const [peer, setPeer] = useState('');
   const [exposing, setExposing] = useState(false);
   const [exposeError, setExposeError] = useState<DaemonErrorShape | null>(null);
+
+  // "Open in Pipes" lands here with the pipe it came from: move focus to that
+  // row and mark it so the destination identifies the relevant item instead
+  // of appearing unchanged (the row may be far down a long list).
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const [flashPipeId, setFlashPipeId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusPipeId) return;
+    const row = rowRefs.current.get(focusPipeId);
+    if (row) {
+      row.scrollIntoView({ block: 'nearest' });
+      row.focus({ preventScroll: true });
+      setFlashPipeId(focusPipeId);
+    }
+    // Consume the request either way (an unknown id must not re-fire forever).
+    onFocusPipeHandled?.();
+  }, [focusPipeId, onFocusPipeHandled]);
+  useEffect(() => {
+    if (flashPipeId === null) return;
+    const timer = window.setTimeout(() => setFlashPipeId(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [flashPipeId]);
 
   const expose = async () => {
     const t = target.trim();
@@ -535,7 +561,17 @@ function PipesTab({
       {pipes.map((pipe) => {
         const conn = conns[pipe.pipe_id];
         return (
-          <div key={pipe.pipe_id} className={`pipe-row${pipe.state === 'closed' ? ' closed' : ''}`}>
+          <div
+            key={pipe.pipe_id}
+            ref={(el) => {
+              if (el) rowRefs.current.set(pipe.pipe_id, el);
+              else rowRefs.current.delete(pipe.pipe_id);
+            }}
+            tabIndex={-1}
+            className={`pipe-row${pipe.state === 'closed' ? ' closed' : ''}${
+              flashPipeId === pipe.pipe_id ? ' pipe-row-flash' : ''
+            }`}
+          >
             <div className="pipe-row-head">
               <span className="pipe-icon" aria-hidden="true">
                 ⤳
@@ -649,6 +685,8 @@ export function RightPanel({
   pipes,
   selfId,
   fetches,
+  focusPipeId = null,
+  onFocusPipeHandled,
   onFetch,
   onRecheckFiles,
   onSharePath,
@@ -669,6 +707,8 @@ export function RightPanel({
   pipes: PipeEntry[];
   selfId: string | null;
   fetches: Record<string, FetchState>;
+  focusPipeId?: string | null;
+  onFocusPipeHandled?(): void;
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
   onSharePath(path: string): Promise<void>;
@@ -753,6 +793,8 @@ export function RightPanel({
             selfId={selfId}
             conns={pipeConns}
             closing={closingPipes}
+            focusPipeId={focusPipeId}
+            onFocusPipeHandled={onFocusPipeHandled}
             onConnect={onPipeConnect}
             onClose={onPipeClose}
             onExpose={onPipeExpose}
