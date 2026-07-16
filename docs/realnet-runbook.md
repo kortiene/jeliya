@@ -3,7 +3,7 @@ type: "Runbook"
 title: "Real-network NAT runbook"
 description: "Operator procedure for collecting revision-bound direct and forced-relay evidence across three distinct public egress paths."
 tags: ["nat", "networking", "operations", "p2p"]
-timestamp: "2026-07-12T23:55:23Z"
+timestamp: "2026-07-16T15:30:00Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -20,22 +20,23 @@ a diagnostic and historical reference; it cannot qualify a `v0.5.0` release.
 
 ## Current evidence status
 
-The current hardened source snapshot is Jeliya
-`0f6769a68d783cf6a5feba0e2db6111a212affa1` with public Iroh Rooms pin
-`3cb9bfd1e43eb755c967315c37b6d4fd1c2bf020`. Its schema 2 direct run passed;
-the matching relay-only build failed closed before remote execution because
-that public pin lacks the reviewed compile-time test seam:
+The certifying `v0.5.0` runs bind the published network-qualified Jeliya
+commit `c5f740e67d043a1153cf285691e3bc5b2b9a7203` and published Iroh Rooms
+pin `d0ceb0b…`; both are signed and set `certifiable: true`:
 
-| Path | Run | UTC window | Evidence status |
-|---|---|---|---|
-| direct | `20260712T231015Z-3c938c66` | 23:10:15–23:34:46 | 36/36 functional PASS; [schema 2 manifest](evidence/v0.5.0/preview-direct-schema2.json) retained, unsigned, `certifiable: false` |
-| forced relay | no run manifest | not applicable | BLOCKED; source build failed closed; no remote execution or relay assertion occurred |
+| Path | Run | Evidence status |
+|---|---|---|
+| direct | `3b86ac67` | certifying PASS; [signed schema 2 manifest](evidence/v0.5.0/direct.json) |
+| forced relay | `a3c76859` | certifying PASS with a self-attested relay-only build; [signed schema 2 manifest](evidence/v0.5.0/relay.json) |
 
-The direct run validates direct network behavior and public-RPC
-non-disclosure. It explicitly does not claim upstream synchronization
-isolation: the public dependency pin remains unsafe, the Jeliya commit is
-unpublished, and the evidence public key is absent. It cannot qualify a
-release.
+The post-release candidate on `main` has since repinned to published Iroh
+Rooms `v0.1.0-rc.3` (`71fbb5007bef4ce83631c94762ec68c2beef3d79`). The
+certified evidence does not transfer to it: the next release's direct and
+forced-relay runs must start from the public Jeliya commit carrying the rc.3
+pin. The earlier unsigned preview run
+(`20260712T231015Z-3c938c66`,
+[manifest](evidence/v0.5.0/preview-direct-schema2.json)) at `0f6769a…` with
+pre-remediation pin `3cb9bfd…` remains historical functional evidence.
 
 Historical schema 1 direct and relay runs used unpublished Jeliya
 `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` and a local `file://` checkout of
@@ -45,9 +46,11 @@ unpublished Iroh Rooms
 public candidate. They also predate
 the isolated source-build and complete Zig-installation controls in schema 2.
 Schema 1 records remain non-certifying and cannot be promoted by adding a
-signature. The durable sanitized records are
-[`direct.json`](evidence/v0.5.0/direct.json) and
-[`relay.json`](evidence/v0.5.0/relay.json); their exact limits are documented in
+signature. Their durable sanitized records are
+[`historical-schema1-direct.json`](evidence/v0.5.0/historical-schema1-direct.json)
+and
+[`historical-schema1-relay.json`](evidence/v0.5.0/historical-schema1-relay.json);
+their exact limits are documented in
 [`verification-evidence.md`](verification-evidence.md#historical-schema-1-local-remediation-evidence).
 
 ## Safety envelope

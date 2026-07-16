@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Release versus main"
 description: "Exact boundary between the latest published Jeliya artifacts, the audited baseline, and the v0.5.0 candidate."
 tags: ["artifacts", "main", "release", "versions"]
-timestamp: "2026-07-12T23:55:23Z"
+timestamp: "2026-07-16T15:30:00Z"
 status: "canonical"
 implementation_status: "not-applicable"
 verification_status: "verified"
@@ -14,86 +14,86 @@ audience: ["contributors", "maintainers", "operators", "release-engineers"]
 # Release versus main
 
 Git branches, test revisions, tags, and release assets answer different
-questions. The `v0.5.0` candidate is **blocked** and must not be described as
-shipped.
+questions. `v0.5.0` shipped on 2026-07-14 as a daemon-only prerelease;
+current `main` is the post-release candidate and must not be described as
+released.
 
 ## Current boundary
 
 | Layer | Exact revision | Dependency state | Artifact/evidence state | Claim allowed |
 |---|---|---|---|---|
-| Latest public release | tag `v0.4.3` at `9d62c3cd98c7f21d9683815c28278b6ac8c0b97f` | release lockfile | five published daemon archives and five checksum sidecars | only behavior in those archives is released |
+| Latest public release | tag `v0.5.0` at `045d85cb1d066f16d564b6051363b9328063ee01` (prerelease) | pins published `iroh-rooms` `d0ceb0b…` (rc.2-era remediation) | five published daemon archives and five checksum sidecars; signed certifying direct (`3b86ac67`) and relay (`a3c76859`) manifests | behavior in those archives is released; known limitation: joins from invites minted after non-admin chat fail at this pin |
+| Network-qualified commit | `c5f740e67d043a1153cf285691e3bc5b2b9a7203` | pins `d0ceb0b…` | both certifying schema 2 runs bind this commit | the certified evidence speaks for this revision pair |
+| Post-release candidate | `main` | pins published `iroh-room` tag `v0.1.0-rc.3` at `71fbb5007bef4ce83631c94762ec68c2beef3d79` (adds the join-after-conversation fix, join-bootstrap capability gate, bounded membership sync, gap healing) | no network evidence at this pin; local suites and upstream regressions pass | source behavior only; needs its own signed runs before the next release |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` | pins vulnerable `iroh-rooms` `3cb9bfd…` | no artifact for this commit | baseline source behavior only |
-| Initial hardening checkpoint | `4d0807a42ad79f7eb1b44edab48a62bf8813dd9c` | public repository pin remains `3cb9bfd…` | historical checkpoint before provenance, cache, and protocol-contract follow-ups | historical only; not the current candidate boundary |
-| Hardened candidate and current network snapshot | `0f6769a68d783cf6a5feba0e2db6111a212affa1` on `hardening/v0.5.0-evidence-preview` before final documentation reconciliation | public repository pin remains unsafe `3cb9bfd…`; exact `atomicwrites 0.4.4` supplies durable state replacement semantics | schema 2 direct 36/36 functional pass; exact relay-only build failed closed because the public pin lacks the test seam; no public artifacts | current direct functional evidence only; relay and release readiness blocked |
-| Historical local-remediation network snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` | local Git dependency `3702e8c…` | schema 1 direct and relay functional pass; manifests retained, unsigned, `certifiable: false` | historical functional evidence only; cannot qualify current candidate or release |
-| Upstream synchronization remediation | local `iroh-room` `3702e8cbcd5ac1808791124dd6bc44068be5f822` | clean and tested, but unpublished | no immutable public dependency revision | cannot support a Jeliya release claim |
+| Initial hardening checkpoint | `4d0807a42ad79f7eb1b44edab48a62bf8813dd9c` | pinned `3cb9bfd…` at that checkpoint | historical checkpoint before provenance, cache, and protocol-contract follow-ups | historical only |
+| Pre-certification network snapshot | `0f6769a68d783cf6a5feba0e2db6111a212affa1` on `hardening/v0.5.0-evidence-preview` | pinned then-unsafe `3cb9bfd…` | schema 2 direct 36/36 functional pass ([preview manifest](evidence/v0.5.0/preview-direct-schema2.json), unsigned); its relay-only build failed closed for lack of the seam | historical functional evidence only |
+| Historical local-remediation network snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` | local Git dependency `3702e8c…` | schema 1 direct and relay functional pass; manifests retained unsigned as `historical-schema1-{direct,relay}.json` | historical functional evidence only |
 
-The current hardened implementation and schema 2 direct run share exact source
-commit `0f6769a…`. The retained
-[preview direct manifest](evidence/v0.5.0/preview-direct-schema2.json) uses the
-public dependency pin and explicitly makes no synchronization-isolation claim.
-The corresponding relay-only build did not execute remotely: the public pin
-does not contain the reviewed compile-time seam, so the build failed closed.
+The certifying [direct](evidence/v0.5.0/direct.json) and
+[relay](evidence/v0.5.0/relay.json) schema 2 manifests bind the
+network-qualified commit `c5f740e…` and published pin `d0ceb0b…`, carry
+detached Ed25519 signatures, and set `certifiable: true` — they authorized
+the `v0.5.0` prerelease. They do not transfer to the rc.3 candidate on
+`main`: its pin differs, so the next release needs fresh signed runs.
 
-The older [direct](evidence/v0.5.0/direct.json) and
-[relay](evidence/v0.5.0/relay.json) schema 1 manifests exercise the unpublished
-local upstream remediation. They predate later runtime and evidence hardening
-and remain historical only. No retained pair currently combines the hardened
-Jeliya commit, a published safe upstream pin, schema 2, signatures, and both
-direct and forced-relay passes.
+## Published `v0.5.0` artifact set
 
-## Published `v0.4.3` artifact set
-
-- `jeliyad-v0.4.3-aarch64-apple-darwin.tar.gz`
-- `jeliyad-v0.4.3-x86_64-apple-darwin.tar.gz`
-- `jeliyad-v0.4.3-aarch64-unknown-linux-musl.tar.gz`
-- `jeliyad-v0.4.3-x86_64-unknown-linux-musl.tar.gz`
-- `jeliyad-v0.4.3-x86_64-pc-windows-msvc.zip`
+- `jeliyad-v0.5.0-aarch64-apple-darwin.tar.gz`
+- `jeliyad-v0.5.0-x86_64-apple-darwin.tar.gz`
+- `jeliyad-v0.5.0-aarch64-unknown-linux-musl.tar.gz`
+- `jeliyad-v0.5.0-x86_64-unknown-linux-musl.tar.gz`
+- `jeliyad-v0.5.0-x86_64-pc-windows-msvc.zip`
 - one `.sha256` sidecar for each archive
 
-No DMG, APK/AAB, iOS application, or separately packaged agent runner is in
-`v0.4.3`. No complete `v0.5.0` five-archive set has been built or published.
+No DMG, Linux native-app tarball, APK/AAB, iOS application, or separately
+packaged agent runner is in `v0.5.0`; it is a daemon-plus-embedded-UI
+prerelease only.
 
 ## Candidate changes are not released capabilities
 
-The candidate adds room-access guards, secret and backup protections,
-dependency gates, complete CI job definitions, safer E2E process ownership,
-installer integrity checks, complete asset-set visibility controls, and
-evidence-aware documentation. It adds no product feature. Local tests and
-retained network runs demonstrate implementation progress; they do not alter
-the release boundary.
+The post-release candidate on `main` repins `iroh-rooms` to `v0.1.0-rc.3`
+(join-after-conversation fix, join-bootstrap capability proof in `room.join`,
+bounded membership sync, gap healing) and adds a source-supported Linux
+Flutter app with its packaging gate and `linux-flutter` CI job. The Linux app
+is an unsigned, unpublished developer package; it adds no released feature.
+Local tests and upstream regressions demonstrate implementation progress;
+they do not alter the release boundary — `v0.5.0` behavior is exactly what
+its archives contain, including its known join-after-chat limitation.
 
 ## Publication gate
 
-Before a `v0.5.0` tag can be published, the same public immutable commit must
-prove all of the following:
+`v0.5.0` met this gate and published. Before the next release tag can be
+published, the same public immutable commit must prove all of the following:
 
-1. a reviewed upstream room-isolation fix is public and exactly pinned;
-2. an approved evidence Ed25519 public key was committed before the qualifying
-   network run, and both retained manifests have valid detached signatures;
-3. direct and relay evidence is certifiable against published revisions;
-4. all required hosted CI gates pass twice from clean environments;
-5. all five daemon-plus-embedded-UI archives and sidecars exist and verify,
-   including Windows behavioral gates;
-6. tag, daemon version, changelog, and artifact names all say `v0.5.0`;
+1. the reviewed upstream pin (`v0.1.0-rc.3` or a reviewed successor) is
+   public and exactly pinned;
+2. the approved evidence Ed25519 public key predates the qualifying network
+   runs, and both retained manifests have valid detached signatures;
+3. direct and relay evidence is certifiable against the candidate's published
+   revisions (the `v0.5.0` evidence binds `c5f740e` + `d0ceb0b` and does not
+   transfer);
+4. all required hosted CI gates — now including `linux-flutter` — pass twice
+   from clean environments;
+5. the complete archive-and-sidecar set exists and verifies, including
+   Windows behavioral gates;
+6. tag, daemon version, changelog, and artifact names agree;
 7. only the final publishing job can write; it verifies the sealed receipt
    without executing candidate bytes, and only its final step receives the
    token after explicit release authority.
 
-The evidence key is intentionally absent today. The release check therefore
-fails closed; an unsigned local PASS cannot open publication. The publication
-workflow is implemented locally but has never been used to publish `v0.5.0`.
 GitHub does not provide one transaction spanning the Git tag and release
-assets. The workflow can guarantee complete asset-set visibility by retaining
+assets. The workflow guarantees complete asset-set visibility by retaining
 a draft until all uploaded bytes verify, but an interrupted cleanup between
 the ref and release operations requires operator inspection before retry.
 
 ## Evidence provenance
 
-This snapshot records repository and release inventory established on
-2026-07-12, the hardened/network-tested implementation at `0f6769a…`, the
-schema 2 direct manifest produced between 23:10 and 23:34 UTC, the failed-closed
-current relay build, and the older schema 1 direct/relay manifests. Neither
-tickets, tokens, identity material, nor public IP addresses are retained. See
+This snapshot records the released `v0.5.0` boundary (tag at `045d85c…`,
+certifying signed direct/relay manifests bound to `c5f740e…` + `d0ceb0b…`),
+the post-release rc.3 candidate on `main`, and the retained historical
+manifests (the unsigned schema 2 preview run at `0f6769a…` and the schema 1
+local-remediation runs). Neither tickets, tokens, identity material, nor
+public IP addresses are retained. See
 [Platform matrix](platform-matrix.md) and
 [Known gaps and roadmap](known-gaps-roadmap.md).

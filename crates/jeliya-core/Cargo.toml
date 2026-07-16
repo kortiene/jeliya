@@ -9,9 +9,10 @@ description = "Jeliya resident core: the only crate in the project that talks to
 [features]
 default = []
 # Publication gate for the diagnostic relay verifier. The reviewed upstream
-# feature is now published and pinned (iroh-room tag v0.1.0-rc.2), so this
-# forwards to it; the cfg-gated const assertion in lib.rs verifies the upstream
-# clear_ip_transports seam is actually active, failing closed otherwise.
+# feature is published and pinned (since iroh-room v0.1.0-rc.2; the pin is now
+# the v0.1.0-rc.3 tag), so this forwards to it; the cfg-gated const assertion
+# in lib.rs verifies the upstream clear_ip_transports seam is actually active,
+# failing closed otherwise.
 relay-only-test = ["iroh-rooms/relay-only-test"]
 
 [dependencies]

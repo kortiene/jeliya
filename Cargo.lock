@@ -2011,8 +2011,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms"
-version = "0.1.0-rc.1"
-source = "git+https://github.com/kortiene/iroh-room?rev=d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb#d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb"
+version = "0.1.0-rc.3"
+source = "git+https://github.com/kortiene/iroh-room?rev=71fbb5007bef4ce83631c94762ec68c2beef3d79#71fbb5007bef4ce83631c94762ec68c2beef3d79"
 dependencies = [
  "iroh",
  "iroh-rooms-core",
@@ -2021,8 +2021,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms-core"
-version = "0.1.0-rc.1"
-source = "git+https://github.com/kortiene/iroh-room?rev=d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb#d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb"
+version = "0.1.0-rc.3"
+source = "git+https://github.com/kortiene/iroh-room?rev=71fbb5007bef4ce83631c94762ec68c2beef3d79#71fbb5007bef4ce83631c94762ec68c2beef3d79"
 dependencies = [
  "blake3",
  "data-encoding",
@@ -2035,8 +2035,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms-net"
-version = "0.1.0-rc.1"
-source = "git+https://github.com/kortiene/iroh-room?rev=d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb#d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb"
+version = "0.1.0-rc.3"
+source = "git+https://github.com/kortiene/iroh-room?rev=71fbb5007bef4ce83631c94762ec68c2beef3d79#71fbb5007bef4ce83631c94762ec68c2beef3d79"
 dependencies = [
  "anyhow",
  "bao-tree",
