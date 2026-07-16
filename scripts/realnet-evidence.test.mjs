@@ -74,7 +74,7 @@ test("SSH targets and generated run directories reject shell syntax", () => {
   assert.equal(validSshTarget("user@host;touch /tmp/pwned"), false);
   const runId = "20260712T120000Z-0123abcd";
   assert.equal(validRunId(runId), true);
-  assert.equal(remoteRunDir(runId, "b"), `/tmp/jeliya-v050-${runId}-b`);
+  assert.equal(remoteRunDir(runId, "b"), `/tmp/jeliya-v060-${runId}-b`);
   assert.throws(() => remoteRunDir("../bad", "b"));
 });
 
@@ -109,7 +109,7 @@ test("remote cleanup verifies the exact PID executable before signals and deleti
   assert.ok(deletion > confirmedStop);
   assert.match(command, /readlink "\/proc\/\$pid\/exe"/);
   assert.match(command, /kill -KILL "\$pid"/);
-  assert.throws(() => remoteCleanupCommand(runId, "/tmp/jeliya-v050-other-b"));
+  assert.throws(() => remoteCleanupCommand(runId, "/tmp/jeliya-v060-other-b"));
 });
 
 function freshRemoteFixture(role = "b") {
@@ -324,7 +324,7 @@ test("local dependency sources and build directories are never release provenanc
   assert.equal(isPublicGitSource("https://github.com/example/repo#credential"), false);
   assert.equal(isPublicGitSource("git@github.com:example/repo.git?token=secret"), false);
   const runId = "20260712T120000Z-0123abcd";
-  assert.equal(validBuildDirectory(join(tmpdir(), `jeliya-v050-${runId}-build-abc123`), runId), true);
+  assert.equal(validBuildDirectory(join(tmpdir(), `jeliya-v060-${runId}-build-abc123`), runId), true);
   assert.equal(validBuildDirectory("/tmp/unrelated", runId), false);
 });
 

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-16
+
 ### Changed
 
 - Repinned `iroh-rooms` from the `v0.5.0`-certified `d0ceb0b…` (rc.2-era) to
