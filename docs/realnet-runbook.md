@@ -20,20 +20,25 @@ a diagnostic and historical reference; it cannot qualify a release.
 
 ## Current evidence status
 
-The certifying `v0.5.0` runs bind the published network-qualified Jeliya
-commit `c5f740e67d043a1153cf285691e3bc5b2b9a7203` and published Iroh Rooms
-pin `d0ceb0b…`; both are signed and set `certifiable: true`:
+The certifying `v0.6.0` runs bind the published network-qualified Jeliya
+commit `55024a46b3e112796ba2acf1dc408dab26dbba2e` and published Iroh Rooms
+pin `71fbb500…` (tag `v0.1.0-rc.3`); both are signed and set
+`certifiable: true`:
 
 | Path | Run | Evidence status |
 |---|---|---|
-| direct | `3b86ac67` | certifying PASS; [signed schema 2 manifest](evidence/v0.5.0/direct.json) |
-| forced relay | `a3c76859` | certifying PASS with a self-attested relay-only build; [signed schema 2 manifest](evidence/v0.5.0/relay.json) |
+| direct | `1ca39cfa` | certifying PASS; [signed schema 2 manifest](evidence/v0.6.0/direct.json) |
+| forced relay | `cf28bc63` | certifying PASS with a relay-only build self-attested on the operator host and both remote hosts; [signed schema 2 manifest](evidence/v0.6.0/relay.json) |
 
-The post-release candidate on `main` has since repinned to published Iroh
-Rooms `v0.1.0-rc.3` (`71fbb5007bef4ce83631c94762ec68c2beef3d79`). The
-certified evidence does not transfer to it: the next release's direct and
-forced-relay runs must start from the public Jeliya commit carrying the rc.3
-pin. The earlier unsigned preview run
+Neither run certifies room-scoped synchronization isolation: both manifests set
+`synchronization_isolation_claimed: false`, so `WantEvents`, foreign-parent, and
+administrative-tip traversal rest on the upstream suite at the pinned revision.
+
+The superseded `v0.5.0` runs (direct `3b86ac67`,
+[manifest](evidence/v0.5.0/direct.json); forced relay `a3c76859`,
+[manifest](evidence/v0.5.0/relay.json)) bind `c5f740e…` + `d0ceb0b…` and
+authorized that prerelease; they do not transfer to the rc.3 pin. The earlier
+unsigned preview run
 (`20260712T231015Z-3c938c66`,
 [manifest](evidence/v0.5.0/preview-direct-schema2.json)) at `0f6769a…` with
 pre-remediation pin `3cb9bfd…` remains historical functional evidence.

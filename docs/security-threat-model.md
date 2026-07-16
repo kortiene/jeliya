@@ -37,11 +37,12 @@ Security conclusions must name the source being evaluated:
 
 The certifying direct and forced-relay runs bind the published network-qualified
 commit `55024a4…` and the published, remediated public pin `71fbb500…`: they
-establish direct and relay network operation, public-RPC non-disclosure, and the
-room-scoped synchronization isolation carried by the pinned remediation.
-Publication, immutable safe repinning, the direct and relay reruns, and the fresh
-signed evidence — all now complete at this pin — were security requirements, not
-release administration.
+establish direct and relay network operation and public-RPC non-disclosure. They
+do not establish room-scoped synchronization isolation — both manifests set
+`synchronization_isolation_claimed: false`; that control rests on the upstream
+suite at the pinned revision. Publication, immutable safe repinning, the direct
+and relay reruns, and the fresh signed evidence — all now complete at this pin —
+were security requirements, not release administration.
 
 ## Assets
 
@@ -76,7 +77,7 @@ implemented control.
 | Threat | Impact | Control | Evidence and remaining risk |
 |---|---|---|---|
 | Foreign-room data returned through a public RPC | cross-room confidentiality breach | one accepted-room preflight guard before any room-derived read or fold; `agents.fleet` and other aggregates enumerate/filter accepted rooms | local regressions pass; the certifying schema 2 direct and forced-relay runs deny all room-scoped RPCs, local-file access, and aggregate foreign-room/agent projections at `55024a4…` |
-| Foreign-room events served or admitted during synchronization | remote extraction or local-store contamination | room-scope `get`, `contains`, `WantEvents`, missing-parent traversal, and administrative tips; reject foreign envelopes and parents | the room-scoped remediation is published and pinned at `71fbb500...` (iroh-room tag v0.1.0-rc.3), carried forward from `d0ceb0b...`; the certifying forced-relay run confirms foreign envelopes and parents are rejected over the network |
+| Foreign-room events served or admitted during synchronization | remote extraction or local-store contamination | room-scope `get`, `contains`, `WantEvents`, missing-parent traversal, and administrative tips; reject foreign envelopes and parents | the room-scoped remediation is published and pinned at `71fbb500...` (iroh-room tag v0.1.0-rc.3), carried forward from `d0ceb0b...`, and its rejection of foreign envelopes and parents passes the upstream suite at that revision. This control is **not** network-certified: both certifying manifests set `synchronization_isolation_claimed: false`, so the residual is that isolation is proven locally at the pin rather than over the public network |
 | Uninvited dialer pulls room history during an open join window | pre-join history disclosure | the rc.3 pin serves the join-bootstrap membership closure only after a verified invite capability proof (upstream issue #112); Jeliya's `room.join` presents the proof from the ticket | capability-gated join covered by the upstream join e2e suite and Jeliya's loopback join tests at the pin; residual: a still-connected unproven provisional dialer keeps receiving live event fan-out until it disconnects (upstream issue #121) — accept joins only while expecting them |
 | Store hole from a swallowed insert error | local store/fold divergence and unhealed history | the pinned upstream re-serves unplaced regions from peers; bounded backfill retries drive from recorded missing sets | upstream issue #119 remains open: a hole in a region no peer re-serves does not heal, and fold/store can disagree until restart; no Jeliya-side control beyond restart today |
 | Invite possession treated as accepted membership | pre-join data exposure | accepted-room index is authoritative; invite-only/never-joined rooms fail closed; joined-then-left archive behavior is explicit | negative never-joined cases and positive archive behavior pass locally |
@@ -151,10 +152,19 @@ task explicitly requires them.
 ## Network evidence boundary
 
 The current schema 2 three-peer direct run demonstrates direct connectivity
-across the observed operator/demo topology at Jeliya `c5f740e…`. It also
+across the observed operator/demo topology at Jeliya `55024a4…`. It also
 exercised messages, files, pipes, reconnect, and the public-RPC isolation
-boundary against the published, remediated public pin `d0ceb0b…`, which carries
+boundary against the published, remediated public pin `71fbb500…`, which carries
 the room-scoped event-lookup isolation.
+
+Both certifying manifests set
+`functional_evidence.foreign_room_non_disclosure.synchronization_isolation_claimed`
+to `false`. The network runs therefore certify the **public-RPC** boundary —
+room-scoped RPC denial, local-file HTTP denial, and aggregate foreign-room/agent
+filtering — and do **not** certify room-scoped synchronization isolation.
+`WantEvents`, foreign-parent, and administrative-tip traversal are covered by
+the upstream test suite at the pinned revision, which is local qualification,
+not network evidence.
 
 The certifying forced-relay run passed. The relay-only source build compiles
 against the published seam, self-attests, and forces every role onto relay; its

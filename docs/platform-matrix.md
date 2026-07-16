@@ -14,30 +14,31 @@ audience: ["contributors", "maintainers", "operators", "release-engineers"]
 # Platform matrix
 
 The latest public release is `v0.5.0` (2026-07-14, daemon-only prerelease
-with certified network evidence). The post-release candidate on `main` repins
-`iroh-rooms` to `v0.1.0-rc.3` and has no network evidence of its own yet. A
-source build or passing test is not a release.
+with certified network evidence). The `v0.6.0` candidate on `main` repins
+`iroh-rooms` to `v0.1.0-rc.3` and carries its own signed certifying direct and
+relay runs of 2026-07-16; it is qualified but not yet published. A source build
+or passing test is not a release.
 
 ## Daemon and embedded web UI
 
 | Target | Implementation | `v0.5.0` evidence | Latest public artifact | Preview status |
 |---|---|---|---|---|
 | macOS arm64 (`aarch64-apple-darwin`) | implemented | archive built and verified by the release workflow; no platform-specific network run | `v0.5.0` archive and sidecar | released; platform network run still absent |
-| macOS x86_64 (`x86_64-apple-darwin`) | implemented | certifying signed schema 2 direct and relay runs pass (operator role); installer behavior passes | `v0.5.0` archive and sidecar | certified for `v0.5.0` |
+| macOS x86_64 (`x86_64-apple-darwin`) | implemented | certifying signed schema 2 direct and relay runs pass (operator role); installer behavior passes | `v0.5.0` archive and sidecar | certified for `v0.5.0` and re-certified at the `v0.6.0` candidate |
 | Linux arm64 musl (`aarch64-unknown-linux-musl`) | implemented | archive built and verified by the release workflow; no platform-specific network run | `v0.5.0` archive and sidecar | released; platform network run still absent |
-| Linux x86_64 musl (`x86_64-unknown-linux-musl`) | implemented | certifying signed schema 2 direct and relay runs pass on Ubuntu 22.04 x86_64 under UID `65534`; installer behavior passes | `v0.5.0` archive and sidecar | certified for `v0.5.0` |
+| Linux x86_64 musl (`x86_64-unknown-linux-musl`) | implemented | certifying signed schema 2 direct and relay runs pass on Ubuntu x86_64 under UID `65534`; installer behavior passes | `v0.5.0` archive and sidecar | certified for `v0.5.0` and re-certified at the `v0.6.0` candidate |
 | Windows x86_64 MSVC (`x86_64-pc-windows-msvc`) | implemented | hosted behavioral installer/checksum/tamper, simulated reparse, and native daemon smoke jobs pass on `main` | `v0.5.0` archive and sidecar | released; no platform network run |
 
-The certifying [direct](evidence/v0.5.0/direct.json) and
-[relay](evidence/v0.5.0/relay.json) schema 2 manifests bind macOS x86_64 and
-Linux x86_64 musl builds to Jeliya `c5f740e…`, published Iroh Rooms pin
-`d0ceb0b…`, and the verified toolchain; both are signed and set
-`certifiable: true`. The earlier unsigned
+The certifying [direct](evidence/v0.6.0/direct.json) and
+[relay](evidence/v0.6.0/relay.json) schema 2 manifests bind macOS x86_64 and
+Linux x86_64 musl builds to Jeliya `55024a4…`, published Iroh Rooms pin
+`71fbb500…`, and the verified toolchain; both are signed and set
+`certifiable: true`. The `v0.5.0` manifests
+([direct](evidence/v0.5.0/direct.json), [relay](evidence/v0.5.0/relay.json))
+bind the released pair `c5f740e…` + `d0ceb0b…` and do not transfer to the rc.3
+pin. The earlier unsigned
 [preview manifest](evidence/v0.5.0/preview-direct-schema2.json) at `0f6769a…`
-with pre-remediation pin `3cb9bfd…` remains historical. The post-release
-candidate on `main` has since repinned
-to published Iroh Rooms `v0.1.0-rc.3`, which contains the seam, and fresh
-runs from the public candidate commit are still required.
+with pre-remediation pin `3cb9bfd…` remains historical.
 
 The older schema 1
 [direct](evidence/v0.5.0/historical-schema1-direct.json) and
@@ -62,7 +63,7 @@ local-remediation evidence only. See
 
 | Runtime | Local protocol | Cross-network direct | Forced relay | Reconnect/resync |
 |---|---|---|---|---|
-| `jeliyad` on macOS x86_64 and Linux x86_64 | implemented | certifying signed schema 2 direct pass across three distinct egresses and two ASNs at `c5f740e…` + `d0ceb0b…` | certifying signed schema 2 relay pass with a self-attested relay-only build at the same revision pair; no run at the rc.3 candidate pin | certified direct and relay reconnect/resync pass for `v0.5.0` |
+| `jeliyad` on macOS x86_64 and Linux x86_64 | implemented | certifying signed schema 2 direct pass across three distinct egresses and two ASNs at `55024a4…` + `71fbb500…` (and previously at `c5f740e…` + `d0ceb0b…` for `v0.5.0`) | certifying signed schema 2 relay pass with a self-attested relay-only build at the same revision pair | certified direct and relay reconnect/resync pass for `v0.5.0` and for the `v0.6.0` candidate |
 | Other daemon targets | implemented | no candidate evidence | no candidate evidence | no candidate evidence |
 | Android in-process engine | local device-smoke evidence | unverified | unverified | local lifecycle only; cross-peer unverified |
 | macOS Flutter sidecar | loopback-only configuration | unsupported by current app configuration | unsupported by current app configuration | local sidecar lifecycle only |

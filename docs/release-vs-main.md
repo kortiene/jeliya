@@ -23,19 +23,24 @@ released.
 | Layer | Exact revision | Dependency state | Artifact/evidence state | Claim allowed |
 |---|---|---|---|---|
 | Latest public release | tag `v0.5.0` at `045d85cb1d066f16d564b6051363b9328063ee01` (prerelease) | pins published `iroh-rooms` `d0ceb0b…` (rc.2-era remediation) | five published daemon archives and five checksum sidecars; signed certifying direct (`3b86ac67`) and relay (`a3c76859`) manifests | behavior in those archives is released; known limitation: joins from invites minted after non-admin chat fail at this pin |
-| Network-qualified commit | `c5f740e67d043a1153cf285691e3bc5b2b9a7203` | pins `d0ceb0b…` | both certifying schema 2 runs bind this commit | the certified evidence speaks for this revision pair |
-| Post-release candidate | `main` | pins published `iroh-room` tag `v0.1.0-rc.3` at `71fbb5007bef4ce83631c94762ec68c2beef3d79` (adds the join-after-conversation fix, join-bootstrap capability gate, bounded membership sync, gap healing) | no network evidence at this pin; local suites and upstream regressions pass | source behavior only; needs its own signed runs before the next release |
+| `v0.6.0` network-qualified candidate | `55024a46b3e112796ba2acf1dc408dab26dbba2e` on `main` | pins published `iroh-room` tag `v0.1.0-rc.3` at `71fbb5007bef4ce83631c94762ec68c2beef3d79` (adds the join-after-conversation fix, join-bootstrap capability gate, bounded membership sync, gap healing) | signed certifying direct (`1ca39cfa`) and relay (`cf28bc63`) manifests of 2026-07-16 bind this commit; `certifiable: true` | the certified evidence speaks for this revision pair; qualified but not yet published |
+| Superseded `v0.5.0` network-qualified commit | `c5f740e67d043a1153cf285691e3bc5b2b9a7203` | pins `d0ceb0b…` | both `v0.5.0` certifying schema 2 runs bind this commit | the certified evidence speaks for that revision pair only; it does not transfer to the rc.3 pin |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` | pins vulnerable `iroh-rooms` `3cb9bfd…` | no artifact for this commit | baseline source behavior only |
 | Initial hardening checkpoint | `4d0807a42ad79f7eb1b44edab48a62bf8813dd9c` | pinned `3cb9bfd…` at that checkpoint | historical checkpoint before provenance, cache, and protocol-contract follow-ups | historical only |
 | Pre-certification network snapshot | `0f6769a68d783cf6a5feba0e2db6111a212affa1` on `hardening/v0.5.0-evidence-preview` | pinned then-unsafe `3cb9bfd…` | schema 2 direct 36/36 functional pass ([preview manifest](evidence/v0.5.0/preview-direct-schema2.json), unsigned); its relay-only build failed closed for lack of the seam | historical functional evidence only |
 | Historical local-remediation network snapshot | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` | local Git dependency `3702e8c…` | schema 1 direct and relay functional pass; manifests retained unsigned as `historical-schema1-{direct,relay}.json` | historical functional evidence only |
 
-The certifying [direct](evidence/v0.5.0/direct.json) and
-[relay](evidence/v0.5.0/relay.json) schema 2 manifests bind the
-network-qualified commit `c5f740e…` and published pin `d0ceb0b…`, carry
-detached Ed25519 signatures, and set `certifiable: true` — they authorized
-the `v0.5.0` prerelease. They do not transfer to the rc.3 candidate on
-`main`: its pin differs, so the next release needs fresh signed runs.
+The certifying [direct](evidence/v0.6.0/direct.json) and
+[relay](evidence/v0.6.0/relay.json) schema 2 manifests bind the
+network-qualified commit `55024a4…` and published pin `71fbb500…`, carry
+detached Ed25519 signatures, and set `certifiable: true` — they qualify the
+`v0.6.0` candidate. The `v0.5.0` manifests
+([direct](evidence/v0.5.0/direct.json), [relay](evidence/v0.5.0/relay.json))
+bind `c5f740e…` + `d0ceb0b…` and authorized that prerelease; they do not
+transfer to the rc.3 pin. Neither generation certifies room-scoped
+synchronization isolation — every manifest sets
+`synchronization_isolation_claimed: false`, so that control rests on the
+upstream suite at the pinned revision, not on network evidence.
 
 ## Published `v0.5.0` artifact set
 
