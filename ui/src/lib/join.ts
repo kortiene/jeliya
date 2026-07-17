@@ -1,5 +1,5 @@
 import type { Client, DaemonErrorShape } from './protocol';
-import { errorShape } from './protocol';
+import { errorShape, RequestError } from './protocol';
 
 export type JoinPhase = 'connecting' | 'retrying';
 
@@ -53,6 +53,18 @@ export async function joinRoomWithRetry(
         lastError: err,
       });
       await sleep(delay);
+      // The daemon connection can drop during the backoff. Issuing the next
+      // attempt then would QUEUE it until reconnect (WsClient keeps unsent
+      // requests), pinning the caller's busy state — and the contained join
+      // dialog with it — for as long as the daemon stays down. Fail honestly
+      // instead: the dialog surfaces the real error and dismissal returns.
+      if (client.getState() !== 'connected') {
+        throw new RequestError({
+          code: 'connection_lost',
+          message: 'the daemon connection dropped while waiting to retry the join',
+          hint: 'reconnect, then paste the same invite again',
+        });
+      }
     }
   }
 
