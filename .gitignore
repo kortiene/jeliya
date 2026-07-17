@@ -1,6 +1,6 @@
 /target
 /dist/
-node_modules/
+node_modules
 ui/dist/
 ui/test-results/
 ui/playwright-report/
