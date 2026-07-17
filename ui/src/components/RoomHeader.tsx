@@ -31,7 +31,13 @@ function peerSummary(peers: PeerStatus[]): { dot: 'dot-green' | 'dot-neutral' | 
   const connected = peers.filter((p) => p.state === 'connected');
   if (connected.some((p) => p.path === 'direct')) return { dot: 'dot-green', label: 'Direct' };
   // Connected, just not on the path we would prefer. Amber, and never hidden.
-  if (connected.length > 0) return { dot: null, label: 'Relay' };
+  if (connected.some((p) => p.path === 'relay')) return { dot: null, label: 'Relay' };
+  // `path` is nullable while `state` is already `connected`: the SDK knows the
+  // peer is reachable before it knows how. Falling through to Relay here —
+  // which is what a bare `connected.length > 0` did — would invent the exact
+  // fact (direct vs relay) the honesty rules exist to protect. Green is
+  // earned, the link is real; the path is simply not claimed until it is known.
+  if (connected.length > 0) return { dot: 'dot-green', label: 'Connected' };
   if (peers.some((p) => p.state === 'connecting')) return { dot: 'dot-neutral', label: 'Connecting…' };
   return { dot: 'dot-neutral', label: 'No peers connected' };
 }
