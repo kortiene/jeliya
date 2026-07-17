@@ -1,0 +1,17 @@
+{
+  "note": "Shared fleet-attention classifier cases for docs/room-attention.md decision 4 (the CLOSED set of actionable agent states) and issue #69. Consumed by BOTH the TypeScript (ui/src/lib/fleet.test.ts) and Dart (dart/jeliya_protocol/test/conventions_test.dart) attention tests, so React and Flutter group and rank agents from one source. `liveness` is the derived FleetAgent.liveness ('working'|'online-idle'|'stale'|'offline'); `latest_label` is the newest agent_status label, or null when the agent has never posted one. `expect.reason` is the attentionReason / null; `expect.unverified` is whether the latest-status chip must be qualified (statusUnverified). The eight AC states map on: failed/errored/blocked -> reason 'failed'; awaiting-review/reviewing/pending -> 'review'; stale -> 'stale'; offline-after-work -> 'offline'.",
+  "cases": [
+    { "name": "failed",             "liveness": "working",     "latest_label": "build_failed",   "expect": { "reason": "failed",  "unverified": false } },
+    { "name": "errored",            "liveness": "online-idle",  "latest_label": "sync_error",     "expect": { "reason": "failed",  "unverified": false } },
+    { "name": "blocked",            "liveness": "online-idle",  "latest_label": "blocked",        "expect": { "reason": "failed",  "unverified": false } },
+    { "name": "awaiting-review",    "liveness": "online-idle",  "latest_label": "awaiting_review","expect": { "reason": "review",  "unverified": false } },
+    { "name": "reviewing",          "liveness": "working",      "latest_label": "reviewing",      "expect": { "reason": "review",  "unverified": false } },
+    { "name": "pending",            "liveness": "online-idle",  "latest_label": "pending",        "expect": { "reason": "review",  "unverified": false } },
+    { "name": "stale",              "liveness": "stale",        "latest_label": "working",        "expect": { "reason": "stale",   "unverified": true } },
+    { "name": "offline-after-work", "liveness": "offline",      "latest_label": "tests_passed",   "expect": { "reason": "offline", "unverified": true } },
+    { "name": "offline-red-outranks","liveness": "offline",     "latest_label": "deploy_failed",  "expect": { "reason": "failed",  "unverified": true } },
+    { "name": "working-healthy",    "liveness": "working",      "latest_label": "working",        "expect": { "reason": null,      "unverified": false } },
+    { "name": "online-idle-healthy","liveness": "online-idle",  "latest_label": "tests_passed",   "expect": { "reason": null,      "unverified": false } },
+    { "name": "offline-never-posted","liveness": "offline",     "latest_label": null,             "expect": { "reason": null,      "unverified": true } }
+  ]
+}

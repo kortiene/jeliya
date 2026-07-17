@@ -9,6 +9,7 @@
 /// - combined-invite splitting — `invite.dart`;
 /// - `room.join` retry ladder — `join.dart`;
 /// - agent-status label tone — `format.dart`;
+/// - fleet attention projection (Needs Attention closed set) — `fleet.dart`;
 /// - file-fetch state fold (never downgrade, `hash_mismatch` hard stop) —
 ///   `fetch_state.dart`;
 /// - device-local unread projection — `room_attention.dart`;
@@ -17,6 +18,7 @@ library;
 
 export 'conventions/diagnostics.dart';
 export 'conventions/fetch_state.dart';
+export 'conventions/fleet.dart';
 export 'conventions/format.dart';
 export 'conventions/invite.dart';
 export 'conventions/join.dart';
