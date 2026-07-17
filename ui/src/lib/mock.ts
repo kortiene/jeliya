@@ -119,6 +119,10 @@ const BACKEND = person('backend-agent', 'agent', 'Backend Agent');
 const FRONTEND = person('frontend-agent', 'agent', 'Frontend Agent');
 const QA = person('qa-agent', 'agent', 'QA Agent');
 const RESEARCH = person('research-agent', 'agent', 'Research Agent');
+// A failed-status agent for the fleet's Needs Attention section (#69). Kept out
+// of EVERYONE deliberately: it lives only in the Agent Workspace room, so the
+// MVP room's roster/agent counts are unchanged.
+const DEPLOY = person('deploy-agent', 'agent', 'Deploy Agent');
 
 const EVERYONE = [ALEX, MAYA, SAM, BACKEND, FRONTEND, QA, RESEARCH];
 
@@ -451,7 +455,7 @@ class MockClient implements Client {
   ) {
     this.failSpecs = failSpecs;
     this.delaySpecs = delaySpecs;
-    for (const p of EVERYONE) suggestedNames[p.id] = p.name;
+    for (const p of [...EVERYONE, DEPLOY]) suggestedNames[p.id] = p.name;
     if (fresh) {
       this.identity = null;
     } else {
@@ -461,9 +465,18 @@ class MockClient implements Client {
       const workspace = buildSideRoom(
         'agent-workspace',
         'Agent Workspace',
-        [ALEX, BACKEND, FRONTEND, QA],
+        [ALEX, BACKEND, FRONTEND, QA, DEPLOY],
         'owner',
         'Scratch room for agent runs. Post statuses here.',
+      );
+      // Failed-runner fixture (#69): a connected agent whose latest signed
+      // status is a failure. It must surface in Needs Attention — the exact
+      // red-tone case the old blue-only filter silently dropped.
+      workspace.timeline.push(
+        ev(workspace.room_id, at(10, 6), DEPLOY, 'agent_status', {
+          label: 'deploy_failed',
+          status_message: 'Deploy to staging failed: image build returned a non-zero exit.',
+        }),
       );
       const review = buildSideRoom(
         'product-review',

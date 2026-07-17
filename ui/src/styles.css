@@ -3532,6 +3532,120 @@ select {
   font-size: 11.5px;
 }
 
+/* needs attention — actionable agents, above the aggregate tiles (#69) */
+
+.fleet-attention {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+.fleet-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.fleet-section-head .count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  background: var(--bg-card-2);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.fleet-attention-empty {
+  margin: 2px 0 0;
+  font-size: 13px;
+}
+
+.fleet-attention-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attention-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  background: var(--bg-card-2);
+  border: 1px solid var(--border);
+}
+
+.attention-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.attention-name {
+  font-size: 13.5px;
+}
+
+.attention-reason {
+  font-weight: 600;
+}
+
+.reason-failed {
+  color: var(--red);
+  border-color: var(--red-line);
+  background: var(--red-dim);
+}
+
+.reason-review {
+  color: var(--blue);
+  border-color: var(--blue-line);
+  background: var(--blue-dim);
+}
+
+.reason-stale {
+  color: var(--amber);
+  border-color: var(--amber-line);
+  background: var(--amber-dim);
+}
+
+/* Offline-after-work recedes: a quiet mark, not a hue that claims urgency. */
+.reason-offline {
+  color: var(--text-mute);
+  border-color: var(--border-strong);
+}
+
+.attention-msg {
+  flex-basis: 100%;
+  order: 3;
+  margin: 0;
+  font-size: 12.5px;
+  overflow-wrap: break-word;
+}
+
+.attention-act {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.attention-seen {
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
 /* agent card grid */
 
 .fleet-grid {

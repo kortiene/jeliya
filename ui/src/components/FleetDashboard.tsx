@@ -10,6 +10,14 @@ import type {
 } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { colorForId, labelTone, prettyLabel, relTime, shortId } from '../lib/format';
+import {
+  type AttentionReason,
+  attentionRank,
+  attentionReason,
+  hasNumericProgress,
+  needsAttention,
+  statusUnverified,
+} from '../lib/fleet';
 import { homonymousRoomIds, roomDisplayName } from '../lib/rooms';
 import { useNames } from './names';
 import { Avatar, CopyButton, ErrorNote, Modal, ProgressBar, SenderName, TreeMark } from './ui';
@@ -36,25 +44,28 @@ const LIVENESS_TONE: Record<Liveness, 'live' | 'idle' | 'warn' | 'off'> = {
   offline: 'off',
 };
 
-// -- sparkline (inline SVG, points-only, no interpolation) --------------------
+// -- status strip (inline SVG, discrete timestamped events) -------------------
 //
-// One mark per real agent_status event from agent.history. y = progress when the
-// event carried one, else a band derived from the label class — never a fabricated
-// intermediate point. Single series per card, so no legend: the card title names it.
+// One mark per real agent_status event from agent.history, positioned by its
+// REAL timestamp on the x-axis. There is no connecting line and no area fill:
+// a curve between two events would fabricate intermediate state the log never
+// recorded (docs/room-attention.md, decision 6). An event that carried real
+// numeric `progress` rises to that height as a stem; a label-only (categorical)
+// event is a dot on the baseline, tinted by its label tone — never lifted to an
+// invented y-band. Single series per card, so no legend: the card title names it.
 
-function bandFor(p: HistoryPoint): number {
-  if (typeof p.progress === 'number') return Math.max(0, Math.min(100, p.progress)) / 100;
-  const tone = labelTone(p.label);
-  // neutral (unknown label) sits low-mid: not a failure, but not an earned
-  // healthy band either.
-  return tone === 'red' ? 0.18 : tone === 'neutral' ? 0.45 : tone === 'blue' ? 0.62 : 0.8;
-}
+const TONE_VAR: Record<'red' | 'blue' | 'green' | 'neutral', string> = {
+  red: 'var(--red)',
+  blue: 'var(--blue)',
+  green: 'var(--accent)',
+  neutral: 'var(--text-mute)',
+};
 
-function Sparkline({ points, color, muted }: { points: HistoryPoint[] | null; color: string; muted: boolean }) {
-  const gid = useId().replace(/[:]/g, '');
+function StatusStrip({ points, color, muted }: { points: HistoryPoint[] | null; color: string; muted: boolean }) {
   const W = 132;
   const H = 40;
   const pad = 4;
+  const base = H - pad;
   const stroke = muted ? 'var(--text-mute)' : color;
 
   // null = history not fetched yet — solid baseline placeholder, same size, so
@@ -63,24 +74,24 @@ function Sparkline({ points, color, muted }: { points: HistoryPoint[] | null; co
     return (
       <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Loading status history">
         <title>Loading status history</title>
-        <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="var(--border-strong)" strokeWidth="1.5" />
+        <line x1={pad} y1={base} x2={W - pad} y2={base} stroke="var(--border-strong)" strokeWidth="1.5" />
       </svg>
     );
   }
-
-  const label =
-    points.length === 0
-      ? 'No status history yet'
-      : `${points.length} status event${points.length === 1 ? '' : 's'}`;
 
   if (points.length === 0) {
     return (
-      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label}>
-        <title>{label}</title>
-        <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="var(--border-strong)" strokeWidth="1.5" strokeDasharray="2 3" />
+      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="No status history yet">
+        <title>No status history yet</title>
+        <line x1={pad} y1={base} x2={W - pad} y2={base} stroke="var(--border-strong)" strokeWidth="1.5" strokeDasharray="2 3" />
       </svg>
     );
   }
+
+  const numericCount = points.filter((p) => hasNumericProgress(p.progress)).length;
+  const label =
+    `${points.length} status event${points.length === 1 ? '' : 's'}` +
+    (numericCount > 0 ? `, ${numericCount} with numeric progress` : ', no numeric progress');
 
   const tsMin = points[0].ts;
   const tsMax = points[points.length - 1].ts;
@@ -90,36 +101,29 @@ function Sparkline({ points, color, muted }: { points: HistoryPoint[] | null; co
     const t = span > 0 ? (points[i].ts - tsMin) / span : i / (points.length - 1);
     return pad + t * (W - 2 * pad);
   };
-  const yAt = (i: number): number => H - pad - bandFor(points[i]) * (H - 2 * pad);
-
-  const xs = points.map((_, i) => xAt(i));
-  const ys = points.map((_, i) => yAt(i));
-  const last = points.length - 1;
-
-  if (points.length === 1) {
-    return (
-      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label}>
-        <title>{label}</title>
-        <circle cx={xs[0]} cy={ys[0]} r={3.2} fill={stroke} />
-      </svg>
-    );
-  }
-
-  const line = points.map((_, i) => `${i ? 'L' : 'M'}${xs[i].toFixed(1)} ${ys[i].toFixed(1)}`).join(' ');
-  const area = `${line} L${xs[last].toFixed(1)} ${H - pad} L${xs[0].toFixed(1)} ${H - pad} Z`;
 
   return (
     <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label}>
       <title>{label}</title>
-      <defs>
-        <linearGradient id={`sg-${gid}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor={stroke} stopOpacity={muted ? 0.16 : 0.28} />
-          <stop offset="1" stopColor={stroke} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill={`url(#sg-${gid})`} />
-      <path d={line} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity={muted ? 0.7 : 1} />
-      <circle cx={xs[last]} cy={ys[last]} r={3} fill={stroke} />
+      {/* The time axis: a static baseline, not a data line. */}
+      <line x1={pad} y1={base} x2={W - pad} y2={base} stroke="var(--border-strong)" strokeWidth="1" />
+      {points.map((p, i) => {
+        const x = xAt(i);
+        // A real numeric-progress event rises to its measured height as a stem;
+        // no interpolation joins it to its neighbours.
+        if (hasNumericProgress(p.progress)) {
+          const y = base - (Math.max(0, Math.min(100, p.progress)) / 100) * (H - 2 * pad);
+          return (
+            <g key={i}>
+              <line x1={x} y1={base} x2={x} y2={y} stroke={stroke} strokeWidth="2" opacity={muted ? 0.7 : 1} />
+              <circle cx={x} cy={y} r={2.6} fill={stroke} />
+            </g>
+          );
+        }
+        // A categorical event is a timestamped dot on the baseline, tinted by
+        // its label tone — never lifted to a fabricated quantitative y-value.
+        return <circle key={i} cx={x} cy={base} r={2.6} fill={muted ? 'var(--text-mute)' : TONE_VAR[labelTone(p.label)]} />;
+      })}
     </svg>
   );
 }
@@ -166,6 +170,9 @@ function AgentCard({
   const tone = LIVENESS_TONE[agent.liveness];
   const tint = colorForId(agent.identity_id);
   const latest = agent.latest;
+  // A stale/offline agent's last posted label is a claim its liveness no longer
+  // supports — it must be shown past-tense, never as a bare live status.
+  const unverified = statusUnverified(agent.liveness);
   const openRoom = latest?.room_id ?? agent.rooms[0]?.room_id ?? null;
 
   return (
@@ -192,14 +199,23 @@ function AgentCard({
         <div className="fleet-status">
           {latest ? (
             <>
-              <span className={`chip chip-label tone-${labelTone(latest.label)}`}>{prettyLabel(latest.label)}</span>
+              {/* Past-tense and never green when unverified: a Stale pill beside
+                  a live "Working" chip is the contradiction #69 removes. */}
+              <span
+                className={`chip chip-label tone-${
+                  unverified && labelTone(latest.label) === 'green' ? 'neutral' : labelTone(latest.label)
+                }`}
+                title={unverified ? 'Last posted status — its liveness no longer supports it' : undefined}
+              >
+                {unverified ? `Last: ${prettyLabel(latest.label)}` : prettyLabel(latest.label)}
+              </span>
               {latest.message ? <p className="fleet-msg">{latest.message}</p> : null}
             </>
           ) : (
             <p className="fleet-msg muted">No status posted yet.</p>
           )}
         </div>
-        <Sparkline points={points} color={tint} muted={tone === 'off' || tone === 'warn'} />
+        <StatusStrip points={points} color={tint} muted={tone === 'off' || tone === 'warn'} />
       </div>
 
       {latest && typeof latest.progress === 'number' ? (
@@ -263,9 +279,12 @@ function StatTiles({ fleet }: { fleet: FleetResult }) {
       <div className="fleet-stat">
         <span className="fleet-stat-icon icon-amber" aria-hidden="true">⚡</span>
         <div className="fleet-stat-body">
-          <span className="fleet-stat-label">Running tasks</span>
+          {/* The truthful metric: agents in the `working` liveness state (a live
+              peer + a fresh working status), not an inferred "running tasks"
+              count the daemon cannot prove — there is no task registry. */}
+          <span className="fleet-stat-label">Agents working now</span>
           <strong className="fleet-stat-value">{fleet.working}</strong>
-          <span className="fleet-stat-sub muted">one task per agent</span>
+          <span className="fleet-stat-sub muted">live peer + fresh status</span>
         </div>
       </div>
       <div className="fleet-stat">
@@ -282,6 +301,72 @@ function StatTiles({ fleet }: { fleet: FleetResult }) {
   );
 }
 
+// -- needs attention (actionable agents, before the aggregate tiles) ----------
+
+const REASON_LABEL: Record<AttentionReason, string> = {
+  failed: 'Failed',
+  review: 'Awaiting review',
+  stale: 'Stale',
+  offline: 'Offline after work',
+};
+
+/** The prioritized section the epic is named for: agents that need a human,
+ *  ranked most-actionable first, rendered ABOVE the aggregate tiles. Membership
+ *  and order come from the shared classifier (docs/room-attention.md,
+ *  decision 4), so it never silently drops a failed or stale agent again. */
+function NeedsAttention({ agents, onOpenRoom }: { agents: FleetAgent[]; onOpenRoom(roomId: string): void }) {
+  const headingId = useId();
+  const items = agents
+    .map((a) => ({ a, reason: attentionReason(a.liveness, a.latest?.label ?? null) }))
+    .filter((x): x is { a: FleetAgent; reason: AttentionReason } => x.reason !== null)
+    .sort(
+      (x, y) =>
+        attentionRank(x.a.liveness, x.a.latest?.label ?? null) -
+          attentionRank(y.a.liveness, y.a.latest?.label ?? null) ||
+        (y.a.last_seen_ts ?? 0) - (x.a.last_seen_ts ?? 0),
+    );
+
+  return (
+    <section className="fleet-attention" aria-labelledby={headingId}>
+      <h2 className="fleet-section-head" id={headingId}>
+        Needs attention <span className="count">{items.length}</span>
+      </h2>
+      {items.length === 0 ? (
+        <p className="fleet-attention-empty muted">Nothing needs attention right now.</p>
+      ) : (
+        <ul className="fleet-attention-list">
+          {items.map(({ a, reason }) => {
+            const room = a.latest?.room_id ?? a.rooms[0]?.room_id ?? null;
+            return (
+              <li key={a.identity_id} className="attention-row">
+                <Avatar id={a.identity_id} size={26} />
+                <div className="attention-id">
+                  <SenderName id={a.identity_id} className="attention-name" />
+                  {/* dot + label, never colour alone (WCAG AA). */}
+                  <span className={`chip attention-reason reason-${reason}`}>
+                    <span className="dot" /> {REASON_LABEL[reason]}
+                  </span>
+                </div>
+                {a.latest?.message ? <p className="attention-msg muted">{a.latest.message}</p> : null}
+                <div className="attention-act">
+                  <span className="muted attention-seen">
+                    {a.last_seen_ts !== null ? `Last update ${relTime(a.last_seen_ts)}` : 'Never seen'}
+                  </span>
+                  {room ? (
+                    <button type="button" className="btn btn-sm" onClick={() => onOpenRoom(room)}>
+                      <span aria-hidden="true">⇱</span> Open Room
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 // -- filters ------------------------------------------------------------------
 
 type FleetFilter = 'all' | 'active' | 'needs-attention' | 'working' | 'offline';
@@ -291,7 +376,10 @@ function matchesFilter(a: FleetAgent, f: FleetFilter): boolean {
     case 'active':
       return a.liveness === 'working' || a.liveness === 'online-idle';
     case 'needs-attention':
-      return a.latest != null && labelTone(a.latest.label) === 'blue';
+      // The full closed set (docs/room-attention.md, decision 4), not the old
+      // blue-only match that silently dropped failed/blocked, stale, and
+      // offline-after-work agents.
+      return needsAttention(a.liveness, a.latest?.label ?? null);
     case 'working':
       return a.liveness === 'working';
     case 'offline':
@@ -577,6 +665,8 @@ export function FleetDashboard({
 
       <div className="fleet-body" aria-busy={!loaded || undefined}>
         {error ? <ErrorNote error={error} /> : null}
+        {/* Actionable agents appear before aggregate totals (#69). */}
+        {loaded && fleet && fleet.total > 0 ? <NeedsAttention agents={fleet.agents} onOpenRoom={onOpenRoom} /> : null}
         {fleet ? <StatTiles fleet={fleet} /> : null}
 
         {!loaded ? (

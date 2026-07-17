@@ -52,3 +52,49 @@ test('searching filters the fleet list', async ({ app, page }) => {
   await expect(fleet.getByText('Research Agent').first()).toBeVisible();
   await expect(fleet.getByText('Backend Agent')).toHaveCount(0);
 });
+
+test('needs attention surfaces the widened closed set before the aggregate tiles', async ({ app, page }) => {
+  await app.gotoPopulated();
+  await app.navigate('Agent Fleet');
+
+  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
+  const attention = fleet.locator('.fleet-attention');
+  await expect(attention).toBeVisible();
+
+  // The exact gap #69 fixes: a FAILED agent (red tone) — silently dropped by
+  // the old blue-only filter — now surfaces, and so does a stale agent.
+  const row = (name: string) => attention.locator('.attention-row', { hasText: name });
+  await expect(row('Deploy Agent').locator('.attention-reason')).toHaveText(/Failed/);
+  await expect(row('Research Agent').locator('.attention-reason')).toHaveText(/Stale/);
+
+  // Actionable agents appear BEFORE the aggregate totals (layout-independent
+  // DOM-order check).
+  const attentionBeforeStats = await fleet.evaluate((root) => {
+    const a = root.querySelector('.fleet-attention');
+    const s = root.querySelector('.fleet-stats');
+    if (!a || !s) return false;
+    return (a.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  });
+  expect(attentionBeforeStats).toBe(true);
+});
+
+test('metric reads "Agents working now" and a stale status is qualified', async ({ app, page }) => {
+  await app.gotoPopulated();
+  await app.navigate('Agent Fleet');
+
+  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
+
+  // "Running tasks" was an inferred count the daemon cannot prove; it is gone on
+  // every shell. The KPI tiles are a desktop affordance (the phone layout drops
+  // the row deliberately), so the renamed metric is asserted where it renders.
+  await expect(fleet.getByText('Running tasks')).toHaveCount(0);
+  if (!app.compact) {
+    await expect(fleet.getByText('Agents working now')).toBeVisible();
+  }
+
+  // A stale agent's last label is shown past-tense on every shell, never as a
+  // bare live status (the Stale-pill-beside-"Working"-chip contradiction). The
+  // card polls in, so allow a full cycle.
+  const research = fleet.locator('.fleet-card', { hasText: 'Research Agent' });
+  await expect(research.locator('.chip-label')).toHaveText(/Last: Working/, { timeout: 10_000 });
+});
