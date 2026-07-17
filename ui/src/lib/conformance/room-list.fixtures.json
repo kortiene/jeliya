@@ -1,0 +1,235 @@
+{
+  "note": "Shared room-list projection fixtures for issue #64 — search (by name and short room id), lifecycle filtering (Left/Removed separated, never lost), device-local pin/archive, recency+name ordering, and the disambiguator recomputed over the VISIBLE subset (docs/room-workbench.md decision 6; docs/room-attention.md decision 2). Consumed by BOTH the TypeScript (ui/src/lib/roomList.test.ts) and Dart (app/test/room_list_test.dart) projection tests, so React and Flutter section, order, and disambiguate one room list identically. Each case supplies only the RoomSummary fields the projection reads (room_id, name, status, last_event_ts); the tests fill the rest with defaults. `expect.sections` lists room_ids in render order under each non-empty section; `expect.homonyms` is the set of room_ids that must show the short-id disambiguator, sorted.",
+  "cases": [
+    {
+      "name": "order-recency-then-name",
+      "rooms": [
+        { "room_id": "blake3:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "name": "Alpha", "status": "active", "last_event_ts": 100 },
+        { "room_id": "blake3:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "name": "Bravo", "status": "active", "last_event_ts": 300 },
+        { "room_id": "blake3:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", "name": "Charlie", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", "name": "Delta", "status": "active", "last_event_ts": null }
+      ],
+      "query": "",
+      "filter": "all",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "active", "rooms": [
+            "blake3:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            "blake3:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "blake3:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+            "blake3:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+          ] }
+        ],
+        "homonyms": [],
+        "visibleCount": 4,
+        "totalCount": 4,
+        "hasQuery": false
+      }
+    },
+    {
+      "name": "search-by-name",
+      "rooms": [
+        { "room_id": "blake3:dededededededededededededededededededededededededededededededede", "name": "Design", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7", "name": "Payments", "status": "active", "last_event_ts": null }
+      ],
+      "query": "  DESIGN ",
+      "filter": "all",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "active", "rooms": ["blake3:dededededededededededededededededededededededededededededededede"] }
+        ],
+        "homonyms": [],
+        "visibleCount": 1,
+        "totalCount": 3,
+        "hasQuery": true
+      }
+    },
+    {
+      "name": "search-by-short-id",
+      "rooms": [
+        { "room_id": "blake3:cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe", "name": "Sandbox", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:dededededededededededededededededededededededededededededededede", "name": "Design", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null }
+      ],
+      "query": "cafe",
+      "filter": "all",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "active", "rooms": ["blake3:cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe"] }
+        ],
+        "homonyms": [],
+        "visibleCount": 1,
+        "totalCount": 3,
+        "hasQuery": true
+      }
+    },
+    {
+      "name": "filter-active-hides-departed-without-losing-them",
+      "rooms": [
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e", "name": "Legacy", "status": "left", "last_event_ts": null },
+        { "room_id": "blake3:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "name": "Kicked", "status": "removed", "last_event_ts": null }
+      ],
+      "query": "",
+      "filter": "active",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "active", "rooms": ["blake3:babababababababababababababababababababababababababababababababa"] }
+        ],
+        "homonyms": [],
+        "visibleCount": 1,
+        "totalCount": 3,
+        "hasQuery": false
+      }
+    },
+    {
+      "name": "filter-departed-shows-only-left-and-removed",
+      "rooms": [
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e", "name": "Legacy", "status": "left", "last_event_ts": null },
+        { "room_id": "blake3:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "name": "Kicked", "status": "removed", "last_event_ts": null }
+      ],
+      "query": "",
+      "filter": "departed",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "departed", "rooms": [
+            "blake3:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+            "blake3:1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e"
+          ] }
+        ],
+        "homonyms": [],
+        "visibleCount": 2,
+        "totalCount": 3,
+        "hasQuery": false
+      }
+    },
+    {
+      "name": "pinned-floats-above-active",
+      "rooms": [
+        { "room_id": "blake3:dededededededededededededededededededededededededededededededede", "name": "Design", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:0505050505050505050505050505050505050505050505050505050505050505", "name": "Ops", "status": "active", "last_event_ts": null }
+      ],
+      "query": "",
+      "filter": "all",
+      "pinned": ["blake3:dededededededededededededededededededededededededededededededede"],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "pinned", "rooms": ["blake3:dededededededededededededededededededededededededededededededede"] },
+          { "key": "active", "rooms": [
+            "blake3:babababababababababababababababababababababababababababababababa",
+            "blake3:0505050505050505050505050505050505050505050505050505050505050505"
+          ] }
+        ],
+        "homonyms": [],
+        "visibleCount": 3,
+        "totalCount": 3,
+        "hasQuery": false
+      }
+    },
+    {
+      "name": "archived-is-a-separate-bucket-outside-the-lifecycle-filter",
+      "rooms": [
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa", "name": "Sandbox", "status": "active", "last_event_ts": null }
+      ],
+      "query": "",
+      "filter": "active",
+      "pinned": [],
+      "archived": ["blake3:fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa"],
+      "expect": {
+        "sections": [
+          { "key": "active", "rooms": ["blake3:babababababababababababababababababababababababababababababababa"] },
+          { "key": "archived", "rooms": ["blake3:fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa"] }
+        ],
+        "homonyms": [],
+        "visibleCount": 2,
+        "totalCount": 2,
+        "hasQuery": false
+      }
+    },
+    {
+      "name": "homonyms-recomputed-over-visible-subset-twin-filtered-out",
+      "rooms": [
+        { "room_id": "blake3:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7", "name": "Payments", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7", "name": "Payments", "status": "left", "last_event_ts": null },
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null }
+      ],
+      "query": "",
+      "filter": "active",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "active", "rooms": [
+            "blake3:babababababababababababababababababababababababababababababababa",
+            "blake3:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+          ] }
+        ],
+        "homonyms": [],
+        "visibleCount": 2,
+        "totalCount": 3,
+        "hasQuery": false
+      }
+    },
+    {
+      "name": "homonyms-flagged-when-both-twins-visible",
+      "rooms": [
+        { "room_id": "blake3:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7", "name": "Payments", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7", "name": "Payments", "status": "left", "last_event_ts": null },
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null }
+      ],
+      "query": "",
+      "filter": "all",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [
+          { "key": "active", "rooms": [
+            "blake3:babababababababababababababababababababababababababababababababa",
+            "blake3:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+          ] },
+          { "key": "departed", "rooms": ["blake3:e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"] }
+        ],
+        "homonyms": [
+          "blake3:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7",
+          "blake3:e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"
+        ],
+        "visibleCount": 3,
+        "totalCount": 3,
+        "hasQuery": false
+      }
+    },
+    {
+      "name": "empty-search-result-is-not-no-rooms",
+      "rooms": [
+        { "room_id": "blake3:babababababababababababababababababababababababababababababababa", "name": "Backend", "status": "active", "last_event_ts": null },
+        { "room_id": "blake3:dededededededededededededededededededededededededededededededede", "name": "Design", "status": "active", "last_event_ts": null }
+      ],
+      "query": "no-such-room",
+      "filter": "all",
+      "pinned": [],
+      "archived": [],
+      "expect": {
+        "sections": [],
+        "homonyms": [],
+        "visibleCount": 0,
+        "totalCount": 2,
+        "hasQuery": true
+      }
+    }
+  ]
+}

@@ -29,6 +29,8 @@ class PrefsStore extends ChangeNotifier {
   final Map<String, String> _drafts = {};
   final Map<String, String> _aliases = {};
   final Map<String, int> _lastSeen = {};
+  final Set<String> _pinnedRooms = {};
+  final Set<String> _archivedRooms = {};
 
   /// UI language as a BCP-47 tag ('textLocale'); null follows the system
   /// language (MaterialApp resolves against supportedLocales).
@@ -131,6 +133,40 @@ class PrefsStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Device-local pin / archive marks for the room list ('pinnedRooms' /
+  /// 'archivedRooms'), the desktop counterpart of the web client's
+  /// 'jeliya.rooms.v1' localStorage key (issue #64; docs/room-attention.md,
+  /// decision 1: device-local state). Where a room sits in *your* list — never
+  /// wire data, never a claim about the room. Pin and archive are mutually
+  /// exclusive, so the two sets stay disjoint.
+  Set<String> get pinnedRooms => Set.unmodifiable(_pinnedRooms);
+  Set<String> get archivedRooms => Set.unmodifiable(_archivedRooms);
+
+  bool isPinned(String roomId) => _pinnedRooms.contains(roomId);
+  bool isArchived(String roomId) => _archivedRooms.contains(roomId);
+
+  /// Toggle a room's pin. Pinning clears any archive mark (the two are
+  /// exclusive); unpinning leaves the room unarchived.
+  void togglePinned(String roomId) {
+    if (!_pinnedRooms.remove(roomId)) {
+      _pinnedRooms.add(roomId);
+      _archivedRooms.remove(roomId);
+    }
+    _save();
+    notifyListeners();
+  }
+
+  /// Toggle a room's archive. Archiving clears any pin mark (the two are
+  /// exclusive); unarchiving leaves the room unpinned.
+  void toggleArchived(String roomId) {
+    if (!_archivedRooms.remove(roomId)) {
+      _archivedRooms.add(roomId);
+      _pinnedRooms.remove(roomId);
+    }
+    _save();
+    notifyListeners();
+  }
+
   /// Read the JSON file; malformed content and non-string values are dropped
   /// (the reference drops non-string alias values on load). Never throws.
   Future<void> load() async {
@@ -154,6 +190,14 @@ class PrefsStore extends ChangeNotifier {
       _lastSeen
         ..clear()
         ..addAll(_intMap(map['lastSeen']));
+      final pinned = _stringSet(map['pinnedRooms']);
+      final archived = _stringSet(map['archivedRooms'])..removeAll(pinned);
+      _pinnedRooms
+        ..clear()
+        ..addAll(pinned);
+      _archivedRooms
+        ..clear()
+        ..addAll(archived);
       notifyListeners();
     } catch (_) {
       // Missing or corrupt prefs file — start fresh, like localStorage misses.
@@ -181,6 +225,14 @@ class PrefsStore extends ChangeNotifier {
     };
   }
 
+  static Set<String> _stringSet(dynamic v) {
+    if (v is! List) return <String>{};
+    return {
+      for (final item in v)
+        if (item is String && item.isNotEmpty) item,
+    };
+  }
+
   void _save() {
     final p = path;
     if (p == null) return;
@@ -197,6 +249,8 @@ class PrefsStore extends ChangeNotifier {
         'drafts': _drafts,
         'aliases': _aliases,
         'lastSeen': _lastSeen,
+        'pinnedRooms': _pinnedRooms.toList(),
+        'archivedRooms': _archivedRooms.toList(),
       }));
       tmp.renameSync(p);
     } catch (_) {
