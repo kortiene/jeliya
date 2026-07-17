@@ -1,8 +1,24 @@
 import { expect, test as base } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
-/** The compact breakpoint from styles.css (`@media (max-width: 900px)`). */
-export const COMPACT_MAX_WIDTH = 900;
+/** The shell boundaries (docs/room-workbench.md, decision 3; ui/src/lib/shell.ts).
+ *  Compact stops just below 900 — 900 itself is the first medium width, which
+ *  is why issue #62 names 899 and 900 as separate cases. */
+export const COMPACT_MAX_WIDTH = 899;
+export const WIDE_MIN_WIDTH = 1280;
+
+export type Shell = 'compact' | 'medium' | 'wide';
+
+export function shellForWidth(width: number): Shell {
+  if (width <= COMPACT_MAX_WIDTH) return 'compact';
+  return width >= WIDE_MIN_WIDTH ? 'wide' : 'medium';
+}
+
+/** The global destinations — the only three (docs/room-workbench.md). */
+export type GlobalDest = 'Rooms' | 'Agent Fleet' | 'Settings';
+
+/** The room destinations, as they are labelled. */
+export type RoomDestLabel = 'Activity' | 'People' | 'Agents & Runs' | 'Files' | 'Pipes';
 
 /** Room names from the populated mock fixture (ui/src/lib/mock.ts). */
 export const MOCK_ROOMS = {
@@ -16,6 +32,8 @@ export const MOCK_ROOMS = {
 interface AppFixtures {
   /** True when this project's viewport is in the compact (phone) layout. */
   compact: boolean;
+  /** Which of the three shells this project's viewport renders. */
+  shell: Shell;
   app: AppDriver;
 }
 
@@ -25,12 +43,44 @@ export class AppDriver {
   constructor(
     readonly page: Page,
     readonly compact: boolean,
+    readonly shell: Shell = compact ? 'compact' : 'wide',
   ) {}
 
-  /** Load the app and wait for the shell (populated fixture) to be ready. */
+  /** Load the app and wait for the shell (populated fixture) to be ready.
+   *
+   *  Boot restores the last room, so `/` settles on `/rooms/:id/activity` with
+   *  Rooms pushed behind it. On compact that means the room pane, not the
+   *  rooms list — so readiness is the room being open, which is the one signal
+   *  every shell shares. Use `gotoRoomsList()` when the list itself is the
+   *  subject. */
   async gotoPopulated(params: Record<string, string> = {}): Promise<void> {
     await this.goto(params);
-    // Ready = the room list has fixture rooms (boot + room.list resolved).
+    await expect(this.page).toHaveURL(/\/rooms\/[^/]+\/activity/);
+    await expect(this.timeline).toBeVisible();
+  }
+
+  /** Load the app and land on the rooms list on every shell. */
+  async gotoRoomsList(params: Record<string, string> = {}): Promise<void> {
+    await this.gotoPopulated(params);
+    await this.showRoomsList();
+  }
+
+  /** The shell the page is ACTUALLY in right now.
+   *
+   *  `compact`/`shell` come from the project's viewport, which is right for
+   *  every spec that keeps it — but responsive.spec.ts resizes the page, and a
+   *  driver that trusted the project would take the desktop branch at 320px
+   *  and click a rail that isn't there. */
+  currentShell(): Shell {
+    return shellForWidth(this.page.viewportSize()?.width ?? 0);
+  }
+
+  /** Show the rooms list. On compact it is a pane of its own; on medium and
+   *  wide the rail is always visible, so this is already true there. */
+  async showRoomsList(): Promise<void> {
+    if (this.currentShell() === 'compact' && !(await this.sidebar.isVisible())) {
+      await this.navigate('Rooms');
+    }
     await expect(this.roomItem(MOCK_ROOMS.main)).toBeVisible();
   }
 
@@ -80,32 +130,52 @@ export class AppDriver {
     return this.page.getByRole('navigation', { name: 'Primary (mobile)' });
   }
 
-  mobileTab(label: 'Rooms' | 'Agents' | 'Pipes' | 'Files' | 'Settings') {
-    return this.tabBar.getByRole('button', { name: label });
+  /** The room's nested navigation — visible under the room header, and inside
+   *  the inspector on compact. Exactly one of the two is on screen at a time,
+   *  so this stays unambiguous on every shell. */
+  roomTab(label: RoomDestLabel) {
+    // Not exact: a tab's accessible name absorbs its count badge ("Files5").
+    // The five labels share no prefix, so a substring match stays unambiguous.
+    return this.page.getByRole('tab', { name: label, exact: false });
   }
 
-  /** Open a room so its chat pane is visible, whatever the breakpoint.
-   *  On desktop all columns are visible; on compact this taps through the
-   *  Rooms pane. */
+  mobileTab(label: GlobalDest) {
+    return this.tabBar.getByRole('button', { name: label, exact: true });
+  }
+
+  /** Open a room so its Activity is visible, whatever the shell. */
   async openRoom(name: string): Promise<void> {
-    if (this.compact) {
-      // The Rooms pane is the compact landing view; get back to it first so
-      // the room item is tappable from any pane.
-      await this.mobileTab('Rooms').click();
-    }
+    await this.showRoomsList();
     await this.roomItem(name).click();
     await expect(this.page.getByRole('heading', { level: 1, name })).toBeVisible();
     await expect(this.timeline).toBeVisible();
   }
 
-  /** Navigate to a primary destination (desktop left rail / mobile tab bar). */
-  async navigate(label: 'Rooms' | 'Agents' | 'Pipes' | 'Files' | 'Settings'): Promise<void> {
-    if (this.compact) {
+  /** Go to a room destination. Activity closes the inspector; a tool opens it —
+   *  a column on wide, a drawer on medium, the whole pane on compact, and one
+   *  navigation on all three. */
+  async goToRoomDest(label: RoomDestLabel): Promise<void> {
+    await this.roomTab(label).click();
+    if (label === 'Activity') {
+      await expect(this.timeline).toBeVisible();
+    } else {
+      await expect(this.rightPanel).toBeVisible();
+    }
+  }
+
+  /** Navigate to a global destination (room rail / compact tab bar). */
+  async navigate(label: GlobalDest): Promise<void> {
+    if (this.currentShell() === 'compact') {
+      // Inside a room the bar gives way to the room's app bar; Back returns to
+      // it, exactly as a user would have to.
+      if (!(await this.tabBar.isVisible())) {
+        await this.page.getByRole('button', { name: 'Back to Rooms' }).click();
+      }
       await this.mobileTab(label).click();
     } else {
       await this.page
         .getByRole('navigation', { name: 'Primary', exact: true })
-        .getByRole('button', { name: label })
+        .getByRole('button', { name: label, exact: true })
         .click();
     }
   }
@@ -123,7 +193,13 @@ export const test = base.extend<AppFixtures>({
     },
     { auto: false },
   ],
-  app: async ({ page, compact }, use, testInfo) => {
+  shell: [
+    async ({ viewport }, use) => {
+      await use(shellForWidth(viewport?.width ?? 1280));
+    },
+    { auto: false },
+  ],
+  app: async ({ page, compact, shell }, use, testInfo) => {
     // Console-error trail: collected for the whole test, attached on failure
     // alongside Playwright's screenshot + trace so a broken viewport ships
     // with everything needed to diagnose it.
@@ -133,7 +209,7 @@ export const test = base.extend<AppFixtures>({
     });
     page.on('pageerror', (error) => consoleErrors.push(`pageerror: ${error.message}`));
 
-    await use(new AppDriver(page, compact));
+    await use(new AppDriver(page, compact, shell));
 
     if (testInfo.status !== testInfo.expectedStatus) {
       const viewport = page.viewportSize();

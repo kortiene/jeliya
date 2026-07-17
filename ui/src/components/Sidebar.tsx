@@ -10,17 +10,17 @@ const CONN_LABEL: Record<ConnectionState, string> = {
   disconnected: 'Disconnected',
 };
 
-/** Primary navigation section — mirrors the left rail in desktop-room.png and
- *  the bottom tab bar in the mobile mockups. */
-export type NavKey = 'home' | 'rooms' | 'agents' | 'pipes' | 'files' | 'calls' | 'settings';
+/** The global destinations — the only three (docs/room-workbench.md,
+ *  decision 1). Files and Pipes left this rail because neither can answer a
+ *  question without a room_id: they were always secretly about one room,
+ *  chosen elsewhere, and now live in the room's own workbench. Home went
+ *  because it duplicated Rooms, and Calls because a destination that only
+ *  says "Soon" is a promise the product has not earned. */
+export type NavKey = 'rooms' | 'fleet' | 'settings';
 
-const NAV: { key: NavKey; label: string; glyph: string; soon?: boolean }[] = [
-  { key: 'home', label: 'Home', glyph: '⌂' },
+const NAV: { key: NavKey; label: string; glyph: string }[] = [
   { key: 'rooms', label: 'Rooms', glyph: '▦' },
-  { key: 'agents', label: 'Agents', glyph: '✦' },
-  { key: 'pipes', label: 'Pipes', glyph: '⤳' },
-  { key: 'files', label: 'Files', glyph: '▤' },
-  { key: 'calls', label: 'Calls', glyph: '☎', soon: true },
+  { key: 'fleet', label: 'Agent Fleet', glyph: '✦' },
   { key: 'settings', label: 'Settings', glyph: '⚙' },
 ];
 
@@ -88,14 +88,12 @@ export function Sidebar({
             type="button"
             className={`nav-item${activeNav === item.key ? ' active' : ''}`}
             aria-current={activeNav === item.key ? 'page' : undefined}
-            disabled={item.soon}
             onClick={() => onNav(item.key)}
           >
             <span className="nav-glyph" aria-hidden="true">
               {item.glyph}
             </span>
             <span className="nav-label">{item.label}</span>
-            {item.soon ? <span className="nav-soon">Soon</span> : null}
           </button>
         ))}
       </nav>
@@ -112,7 +110,17 @@ export function Sidebar({
           const tint = colorForId(room.room_id);
           const active = room.room_id === currentRoomId;
           const departed = room.status === 'left' || room.status === 'removed';
-          const stateLabel = departed ? (room.status === 'left' ? 'Left' : 'Removed') : room.open ? 'Active' : 'Idle';
+          // One label, one fact (docs/room-workbench.md, decision 4). `status`
+          // is signed membership; `open` is whether this daemon holds a live
+          // session. "Active" used to mean the latter here while meaning the
+          // former on the wire — so it is gone.
+          const stateLabel = departed
+            ? room.status === 'left'
+              ? 'Left'
+              : 'Removed'
+            : room.open
+              ? 'Open'
+              : 'Closed';
           return (
             <button
               key={room.room_id}

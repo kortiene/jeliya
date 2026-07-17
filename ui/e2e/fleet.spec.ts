@@ -1,14 +1,25 @@
 import { expect, test } from './fixtures';
 
-// The top-level Agent Fleet dashboard.
+// The Agent Fleet dashboard — one of the three global destinations
+// (docs/room-workbench.md, decision 1). It answers "are my agents alive,
+// anywhere"; a room's "Agents & Runs" tab answers "what has run here". Two
+// destinations, two names, two scopes — this spec drives the global one, so it
+// always arrives through global navigation, never through a room's tab strip.
 
 test('shows the agent fleet with honest liveness', async ({ app, page }) => {
   await app.gotoPopulated();
-  await app.navigate('Agents');
+  await app.navigate('Agent Fleet');
 
-  const fleet = page.getByRole('region', { name: 'Agents fleet' });
+  // The route is the navigation state (decision 2), so arriving at a global
+  // destination means standing on its route. Worth pinning here because the
+  // compact path to it is indirect: boot lands inside the restored room, where
+  // the bottom bar gives way to the room's app bar, and the bar only comes back
+  // once Back to Rooms has left the room.
+  await expect(page).toHaveURL(/\/fleet$/);
+
+  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
   await expect(fleet).toBeVisible();
-  await expect(fleet.getByRole('heading', { level: 1, name: 'Agents' })).toBeVisible();
+  await expect(fleet.getByRole('heading', { level: 1, name: 'Agent Fleet' })).toBeVisible();
 
   // Each fixture agent gets exactly one aggregated card, not one per room.
   const card = (name: string) => fleet.locator('.fleet-card', { hasText: name });
@@ -21,8 +32,12 @@ test('shows the agent fleet with honest liveness', async ({ app, page }) => {
   // never Working — the mock builds exactly that fixture for Research Agent.
   // Backend has a connected peer and a fresh working status: really Working.
   await expect(card('Research Agent').locator('.live-pill')).toHaveText(/Stale/);
-  // Working needs the auto-opened main room's live peer; the dashboard polls
-  // agents.fleet every 4s, so allow one full cycle beyond the default.
+  // Working needs a live peer in an OPEN room, which the room restored at boot
+  // supplies: leaving that room for a global destination stops rendering it, it
+  // does not close its session — so the evidence behind Working outlives the
+  // navigation on every shell, including the compact Back to Rooms detour. The
+  // dashboard polls agents.fleet every 4s, so allow one full cycle beyond the
+  // default.
   await expect(card('Backend Agent').locator('.live-pill')).toHaveText(/Working/, {
     timeout: 10_000,
   });
@@ -30,9 +45,9 @@ test('shows the agent fleet with honest liveness', async ({ app, page }) => {
 
 test('searching filters the fleet list', async ({ app, page }) => {
   await app.gotoPopulated();
-  await app.navigate('Agents');
+  await app.navigate('Agent Fleet');
 
-  const fleet = page.getByRole('region', { name: 'Agents fleet' });
+  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
   await fleet.getByLabel('Search agents').fill('Research');
   await expect(fleet.getByText('Research Agent').first()).toBeVisible();
   await expect(fleet.getByText('Backend Agent')).toHaveCount(0);

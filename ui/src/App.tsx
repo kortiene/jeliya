@@ -20,6 +20,10 @@ import { shortId } from './lib/format';
 import { splitInvite } from './lib/invite';
 import { joinRoomWithRetry } from './lib/join';
 import type { JoinProgress } from './lib/join';
+import { useRoute } from './lib/history';
+import { inspectorDest, legacyTabDest, routeRoomId } from './lib/routes';
+import type { InspectorDest, RoomDest } from './lib/routes';
+import { useShell } from './lib/shell';
 import uiPackage from '../package.json';
 import { NamesContext } from './components/names';
 import type { NameApi } from './components/names';
@@ -30,20 +34,17 @@ import { Sidebar } from './components/Sidebar';
 import type { NavKey } from './components/Sidebar';
 import { MobileTabBar } from './components/MobileTabBar';
 import { RoomHeader } from './components/RoomHeader';
+import { RoomNav } from './components/RoomNav';
 import { Timeline } from './components/Timeline';
 import type { PendingMessage, TimelineView } from './components/Timeline';
 import { Composer } from './components/Composer';
 import { RightPanel } from './components/RightPanel';
-import type { PanelTab, PipeConnState } from './components/RightPanel';
+import type { PipeConnState } from './components/RightPanel';
 import { InviteModal } from './components/InviteModal';
 import { FleetDashboard } from './components/FleetDashboard';
 import { SettingsPanel } from './components/SettingsPanel';
 
 type Phase = 'boot' | 'no-identity' | 'no-rooms' | 'ready';
-
-/** Which single pane is shown on a narrow (mobile) viewport; ignored on desktop
- *  where all three columns are visible at once. */
-type MobileView = 'rooms' | 'chat' | 'agents' | 'pipes' | 'files' | 'settings';
 
 const LAST_ROOM_KEY = 'jeliya.lastRoom';
 const ISSUE_URL = 'https://github.com/kortiene/jeliya/issues/new';
@@ -108,6 +109,10 @@ export default function App({ client }: { client: Client }) {
 
   const [roomId, setRoomId] = useState<string | null>(null);
   const roomIdRef = useRef<string | null>(null);
+  // The room we have actually opened, distinct from the one the route selects:
+  // a route can name a room that has not synced into `rooms` yet. See the
+  // route → session effect.
+  const openedRef = useRef<string | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const timelineRef = useRef<TimelineEvent[]>([]);
@@ -126,11 +131,12 @@ export default function App({ client }: { client: Client }) {
   const [pipeConns, setPipeConns] = useState<Record<string, PipeConnState>>({});
   const [closingPipes, setClosingPipes] = useState<Set<string>>(new Set());
 
-  const [tab, setTab] = useState<PanelTab>(() => {
-    const t = new URLSearchParams(window.location.search).get('tab');
-    return t === 'members' || t === 'files' || t === 'pipes' || t === 'agents' ? t : 'members';
-  });
-  const [mobileView, setMobileView] = useState<MobileView>('rooms');
+  // The route is the navigation state (docs/room-workbench.md, decision 2).
+  // This replaced three fields — `tab`, `mobileView`, and a `roomId` the
+  // bootstrap picked independently — that could, and did, contradict each
+  // other. Everything below derives from `route`; nothing mirrors it.
+  const [route, navigate] = useRoute();
+  const shell = useShell();
   const [pipeFocus, setPipeFocus] = useState<string | null>(null);
   // Deliberate per-room reading positions (see TimelineView); a ref because
   // saving one on room switch must not re-render the outgoing timeline.
@@ -204,6 +210,23 @@ export default function App({ client }: { client: Client }) {
     }
   }, [client]);
 
+  /** Everything that belongs to one room's open session. Cleared whenever the
+   *  route moves off a room, and before opening the next one — a stale
+   *  endpoint address or member list under a different room is a lie. */
+  const resetRoomState = useCallback(() => {
+    setMembers([]);
+    setTimeline([]);
+    setFiles([]);
+    setPipes([]);
+    setPeers([]);
+    setEndpointAddr(null);
+    setRoomError(null);
+    setRoomLoading(false);
+    setFetches({});
+    setPipeConns({});
+    setClosingPipes(new Set());
+  }, []);
+
   const openRoom = useCallback(
     async (rid: string) => {
       roomIdRef.current = rid;
@@ -228,6 +251,12 @@ export default function App({ client }: { client: Client }) {
       setPipeConns({});
       try {
         const opened = await client.call('room.open', { room_id: rid });
+        // The daemon's open flag changed, and room.list is global state — not
+        // this room's session. Refresh it before the guard below drops
+        // everything that belongs to a room the user has already left, or the
+        // rail goes on calling a live session "Closed" until something else
+        // happens to refresh it.
+        void refreshRooms();
         if (roomIdRef.current !== rid) return;
         setMembers(opened.members);
         setTimeline(opened.timeline);
@@ -253,7 +282,6 @@ export default function App({ client }: { client: Client }) {
         setFetches((current) => mergeFetchedFiles(current, rid, f.files));
         setPipes(p.pipes);
         setPeers(ps.peers);
-        void refreshRooms(); // open flag changed
       } catch (e) {
         if (roomIdRef.current === rid) {
           setRoomError(rememberError('room.open', e));
@@ -317,6 +345,11 @@ export default function App({ client }: { client: Client }) {
   }, [client, refreshFiles, refreshPipes, refreshMembers, refreshRooms]);
 
   // -- bootstrap: runs on every (re)connect and after onboarding steps ---------
+  //
+  // It no longer picks a room. The route does (decision 2: an explicit route
+  // always wins over a restored room) — a bootstrap that re-picked
+  // `lastRoom` on every reconnect fought the URL, and dragged the user back
+  // into the very room they had just escaped (issue #88).
 
   useEffect(() => {
     if (conn !== 'connected') return;
@@ -333,28 +366,7 @@ export default function App({ client }: { client: Client }) {
         const { rooms } = await client.call('room.list', {});
         if (cancelled) return;
         setRooms(rooms);
-        if (rooms.length === 0) {
-          setPhase('no-rooms');
-          return;
-        }
-        setPhase('ready');
-        const activeRooms = rooms.filter((r) => r.status !== 'left' && r.status !== 'removed');
-        if (activeRooms.length === 0) {
-          roomIdRef.current = null;
-          setRoomId(null);
-          return;
-        }
-        let saved: string | null = null;
-        try {
-          saved = localStorage.getItem(LAST_ROOM_KEY);
-        } catch {
-          /* ignore */
-        }
-        const target =
-          (roomIdRef.current && activeRooms.some((r) => r.room_id === roomIdRef.current) && roomIdRef.current) ||
-          (saved && activeRooms.some((r) => r.room_id === saved) && saved) ||
-          activeRooms[0].room_id;
-        void openRoom(target);
+        setPhase(rooms.length === 0 ? 'no-rooms' : 'ready');
       } catch {
         // daemon.status failed (connection dropped mid-flight) — the
         // reconnect cycle will re-trigger this effect.
@@ -363,7 +375,71 @@ export default function App({ client }: { client: Client }) {
     return () => {
       cancelled = true;
     };
-  }, [conn, bootNonce, client, openRoom]);
+  }, [conn, bootNonce, client]);
+
+  // -- route -> session -------------------------------------------------------
+
+  // Restore the last room, at most once, and only when the URL expressed no
+  // opinion. `/` is no opinion; `/rooms` is the Rooms destination and is
+  // honored as one — which is what keeps an explicit "Back to Rooms" from
+  // being undone by the next reconnect.
+  const initialPath = useRef(window.location.pathname);
+  const restored = useRef(false);
+  useEffect(() => {
+    if (phase !== 'ready' || restored.current) return;
+    restored.current = true;
+    if (initialPath.current !== '/') return;
+    const activeRooms = rooms.filter((r) => r.status !== 'left' && r.status !== 'removed');
+    if (activeRooms.length === 0) return;
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(LAST_ROOM_KEY);
+    } catch {
+      /* ignore */
+    }
+    const target = (saved && activeRooms.some((r) => r.room_id === saved) && saved) || activeRooms[0].room_id;
+    // A legacy `?tab=` link names a destination but no room; honor it on the
+    // room we restored, and let the redirect strip the key.
+    const dest = legacyTabDest(window.location.search) ?? 'activity';
+    // Two steps on purpose. `/` is replaced (the user never stood on it), but
+    // the restored room is *pushed* on top of Rooms — so Back leaves the room
+    // for the rooms list instead of leaving Jeliya. Restoring straight into
+    // the room with a replace would make the first Back press exit the app.
+    navigate({ kind: 'rooms' }, { replace: true });
+    navigate({ kind: 'room', roomId: target, dest });
+  }, [phase, rooms, navigate]);
+
+  // The open room follows the route, and this is the only place that opens
+  // one: a rail click, a fleet card, and a pasted URL all just navigate.
+  //
+  // `openedRef` tracks the room we have actually called room.open for, which
+  // is NOT the same as the room the route selects. A deep link (or a
+  // create/join whose refreshRooms was swallowed by a reconnect) can name a
+  // room that room.list has not returned yet; we select it — the render shows
+  // the recoverable "not on this device" state — but do not open it. When the
+  // room later syncs into `rooms`, this effect reruns and must retry the open.
+  // Guarding on `roomIdRef` alone would skip that retry (the id already
+  // matches) and strand the user on an unopened room.
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    const rid = routeRoomId(route);
+    if (rid !== roomIdRef.current) {
+      roomIdRef.current = rid;
+      setRoomId(rid);
+      resetRoomState();
+      openedRef.current = null;
+    }
+    if (rid === null) return;
+    // `phase === 'ready'` means room.list has answered, so an id that is not
+    // in it is genuinely not on this device (yet) — a recoverable state the
+    // render resolves, not a reason to call room.open and surface a daemon
+    // error. If it appears later, the rerun opens it.
+    const room = rooms.find((r) => r.room_id === rid);
+    if (!room || room.status === 'left' || room.status === 'removed') return;
+    if (openedRef.current === rid) return;
+    openedRef.current = rid;
+    void openRoom(rid);
+  }, [phase, route, rooms, openRoom, resetRoomState]);
 
   // -- names api ----------------------------------------------------------------
 
@@ -582,16 +658,10 @@ export default function App({ client }: { client: Client }) {
     }
   };
 
-  // The escape hatch from a room whose open failed: deselect it entirely so
-  // nothing renders under a room the daemon could not actually open — and
-  // forget it as the last room, or the next reload/reconnect would auto-open
-  // straight back into the same failure the user just walked away from.
-  const backToRooms = () => {
-    roomIdRef.current = null;
-    setRoomId(null);
-    setRoomError(null);
-    setRoomLoading(false);
-    setMobileView('rooms');
+  /** Forget the restored room. Both escapes below use it so that the next
+   *  load of `/` does not drop the user back into the room they just left —
+   *  the route effect handles clearing the session state itself. */
+  const forgetLastRoom = () => {
     try {
       localStorage.removeItem(LAST_ROOM_KEY);
     } catch {
@@ -599,30 +669,38 @@ export default function App({ client }: { client: Client }) {
     }
   };
 
+  // The escape hatch from a room whose open failed: navigating away is all it
+  // takes now — nothing can render under a room the route no longer names.
+  const backToRooms = () => {
+    forgetLastRoom();
+    navigate({ kind: 'rooms' });
+  };
+
   const leaveCurrentRoom = () => {
-    roomIdRef.current = null;
-    setRoomId(null);
-    setMembers([]);
-    setTimeline([]);
-    setFiles([]);
-    setPipes([]);
-    setPeers([]);
-    setEndpointAddr(null);
-    setRoomError(null);
-    setRoomLoading(false);
-    setFetches({});
-    setPipeConns({});
-    setClosingPipes(new Set());
-    setMobileView('rooms');
-    try {
-      localStorage.removeItem(LAST_ROOM_KEY);
-    } catch {
-      /* ignore */
-    }
+    forgetLastRoom();
+    navigate({ kind: 'rooms' });
     void refreshRooms();
     void client.call('daemon.status', {}).then(setStatus).catch(() => {
       /* transient */
     });
+  };
+
+  /** Room-row and fleet-card taps. Selecting a room is a navigation, not a
+   *  state write. */
+  const selectRoom = (rid: string) => {
+    const room = rooms.find((r) => r.room_id === rid);
+    if (room?.status === 'left' || room?.status === 'removed') {
+      navigate({ kind: 'rooms' });
+      return;
+    }
+    // Re-selecting the room whose open failed is the user's most instinctive
+    // retry. The route is already this room, so navigating is a no-op —
+    // honor the intent instead of ignoring the click.
+    if (rid === roomIdRef.current && roomError) {
+      void openRoom(rid);
+      return;
+    }
+    navigate({ kind: 'room', roomId: rid, dest: 'activity' });
   };
 
   const currentRoom = rooms.find((r) => r.room_id === roomId) ?? null;
@@ -661,47 +739,83 @@ export default function App({ client }: { client: Client }) {
     window.open(`${ISSUE_URL}?${params.toString()}`, '_blank', 'noopener,noreferrer');
   }, [copyDiagnostics]);
 
-  // -- primary navigation (desktop left rail + mobile bottom bar) ----------------
+  // -- derived navigation (all of it, from the route) ---------------------------
 
-  const activeNav: NavKey =
-    mobileView === 'settings'
-      ? 'settings'
-      : mobileView === 'agents'
-        ? 'agents'
-        : mobileView === 'pipes'
-          ? 'pipes'
-          : mobileView === 'files'
-            ? 'files'
-            : mobileView === 'chat'
-              ? 'home'
-              : 'rooms';
+  // A room route highlights Rooms: the workbench is somewhere you stand
+  // *inside* Rooms, not a fourth global destination.
+  const activeNav: NavKey = route.kind === 'fleet' ? 'fleet' : route.kind === 'settings' ? 'settings' : 'rooms';
 
-  // The one route from in-room actions to the Files/Pipes surfaces. Setting
-  // only the right-panel tab is invisible on compact (the panel is a hidden
-  // pane there) — the active pane must move with it, exactly as the primary
-  // navigation does, so pane, panel tab, and bottom bar can never contradict.
-  const openPanelTab = useCallback((which: 'files' | 'pipes', pipeId?: string) => {
-    setTab(which);
-    setMobileView(which);
-    setPipeFocus(which === 'pipes' ? (pipeId ?? null) : null);
-  }, []);
+  /** Which single surface the compact shell shows. Derived — so the bar, the
+   *  pane, and the inspector's own tab strip cannot disagree, because there is
+   *  nothing left for them to disagree *with*. */
+  // A room route to a room room.list does not have — a deep link that hasn't
+  // synced, or a room this identity left. Its recovery surface (below) lives
+  // in `.center`, so the pane must stay `room` even when the route names a
+  // tool: an `inspector` pane would hide `.center` on compact and strand the
+  // user in an empty tool with no visible way out — and let file/pipe actions
+  // fire against a room that isn't open.
+  const roomUnavailable =
+    roomId !== null && (!currentRoom || currentRoom.status === 'left' || currentRoom.status === 'removed');
 
-  const navigate = useCallback((key: NavKey) => {
-    if (key === 'agents') {
-      // Top-level fleet dashboard — distinct from the in-room Agents tab, which
-      // stays reachable via the right-panel tab strip.
-      setMobileView('agents');
-    } else if (key === 'pipes' || key === 'files') {
-      setTab(key);
-      setMobileView(key);
-    } else if (key === 'settings') {
-      setMobileView('settings');
-    } else if (key === 'home') {
-      setMobileView(roomIdRef.current ? 'chat' : 'rooms');
-    } else if (key === 'rooms') {
-      setMobileView('rooms');
-    }
-  }, []);
+  const inspector: InspectorDest | null = roomUnavailable ? null : inspectorDest(route);
+
+  const pane: 'rooms' | 'room' | 'inspector' | 'fleet' | 'settings' =
+    route.kind === 'rooms'
+      ? 'rooms'
+      : route.kind === 'fleet'
+        ? 'fleet'
+        : route.kind === 'settings'
+          ? 'settings'
+          : inspector
+            ? 'inspector'
+            : 'room';
+  const roomDest: RoomDest = route.kind === 'room' ? route.dest : 'activity';
+
+  /** Tab counts — facts the daemon has answered with, so they are only shown
+   *  once it has. */
+  const roomNavCounts: Partial<Record<RoomDest, number>> = {
+    people: members.length,
+    agents: members.filter((m) => m.role === 'agent').length,
+    files: files.length,
+    pipes: pipes.filter((p) => p.state === 'open').length,
+  };
+
+  /** Navigate to a room tool. On compact this pushes a pane over the room; on
+   *  medium it opens the drawer; on wide it opens the column. One route, three
+   *  mechanics — and Back undoes it on all three. */
+  const openRoomDest = useCallback(
+    (dest: InspectorDest, pipeId?: string) => {
+      const rid = roomIdRef.current;
+      if (!rid) return;
+      setPipeFocus(dest === 'pipes' ? (pipeId ?? null) : null);
+      navigate({ kind: 'room', roomId: rid, dest });
+    },
+    [navigate],
+  );
+
+  /** Closing the inspector *is* navigating to Activity (decision 3). */
+  const closeInspector = useCallback(() => {
+    const rid = roomIdRef.current;
+    if (!rid) return;
+    navigate({ kind: 'room', roomId: rid, dest: 'activity' });
+  }, [navigate]);
+
+  /** The room nav's single handler: Activity closes the inspector, a tool
+   *  opens it, and both are the same navigation. */
+  const goToDest = useCallback(
+    (dest: RoomDest) => {
+      if (dest === 'activity') closeInspector();
+      else openRoomDest(dest);
+    },
+    [closeInspector, openRoomDest],
+  );
+
+  const navToGlobal = useCallback(
+    (key: NavKey) => {
+      navigate(key === 'fleet' ? { kind: 'fleet' } : key === 'settings' ? { kind: 'settings' } : { kind: 'rooms' });
+    },
+    [navigate],
+  );
 
   // -- render -----------------------------------------------------------------------
 
@@ -737,17 +851,24 @@ export default function App({ client }: { client: Client }) {
   return (
     <NamesContext.Provider value={names}>
       <div
-        className={`app mv-${mobileView}${activeNav === 'agents' ? ' app-fleet' : ''}${
-          activeNav === 'settings' ? ' app-settings' : ''
-        }`}
+        className={`app pane-${pane}${route.kind === 'fleet' ? ' app-fleet' : ''}${
+          route.kind === 'settings' ? ' app-settings' : ''
+        }${inspector ? ' inspector-open' : ''}`}
       >
-        {conn !== 'connected' ? (
-          <div className={`conn-banner conn-${conn}`} role="status">
-            {conn === 'reconnecting' || conn === 'connecting'
-              ? `Connection to daemon lost — reconnecting… (${client.describe()})`
-              : 'Disconnected from daemon.'}
-          </div>
-        ) : null}
+        {/* Reserved, not overlaid (decision 3): the banner is a grid row above
+            every pane, so it can never cover Back, a header, or list content.
+            One live region, announced once — `aria-live="polite"` on a node
+            that stays mounted, rather than a node that appears and re-announces
+            its whole content on every reconnect attempt. */}
+        <div className="conn-region" role="status" aria-live="polite">
+          {conn !== 'connected' ? (
+            <div className={`conn-banner conn-${conn}`}>
+              {conn === 'reconnecting' || conn === 'connecting'
+                ? `Connection to daemon lost — reconnecting… (${client.describe()})`
+                : 'Disconnected from daemon.'}
+            </div>
+          ) : null}
+        </div>
 
         <Sidebar
           rooms={rooms}
@@ -755,35 +876,74 @@ export default function App({ client }: { client: Client }) {
           status={status}
           conn={conn}
           activeNav={activeNav}
-          onNav={navigate}
-          onSelectRoom={(rid) => {
-            const room = rooms.find((r) => r.room_id === rid);
-            if (room?.status === 'left' || room?.status === 'removed') {
-              setMobileView('rooms');
-              return;
-            }
-            setMobileView('chat');
-            // Re-selecting the room whose open failed is the user's most
-            // instinctive retry — honor it instead of ignoring the click
-            // because the id is already selected.
-            if (rid !== roomId || roomError) void openRoom(rid);
-          }}
+          onNav={navToGlobal}
+          onSelectRoom={selectRoom}
           onCreateRoom={() => setCreateOpen(true)}
           onJoinRoom={() => setJoinOpen(true)}
         />
 
         <main className="center">
-          {currentRoom ? (
+          {roomId && !currentRoom ? (
+            // The route names a room room.list does not have. Not an error
+            // page and not a blank panel — say which fact is true, and offer
+            // the way out (decision 2).
+            <div className="room-error-surface">
+              <h2 className="room-gone-title">That room isn’t on this device</h2>
+              <p className="muted">
+                Nothing here matches <code className="mono">{shortId(roomId)}</code>. It may live on another device, or
+                you may not have joined it yet.
+              </p>
+              <div className="room-error-actions">
+                <button type="button" className="btn btn-primary" onClick={backToRooms}>
+                  Back to Rooms
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => setJoinOpen(true)}>
+                  Join with a ticket
+                </button>
+              </div>
+            </div>
+          ) : currentRoom && (currentRoom.status === 'left' || currentRoom.status === 'removed') ? (
+            // A signed fact, so state it as one and do not open the room.
+            <div className="room-error-surface">
+              <h2 className="room-gone-title">
+                {currentRoom.status === 'left' ? 'You left this room' : 'You were removed from this room'}
+              </h2>
+              <p className="muted">
+                {currentRoom.status === 'left'
+                  ? 'Your departure is published to the room’s signed log. You’ll need a new invite to rejoin.'
+                  : 'Your removal is published to the room’s signed log. You’ll need a new invite to rejoin.'}
+              </p>
+              <div className="room-error-actions">
+                <button type="button" className="btn btn-primary" onClick={backToRooms}>
+                  Back to Rooms
+                </button>
+              </div>
+            </div>
+          ) : currentRoom ? (
             <>
               <RoomHeader
+                room={currentRoom}
                 name={currentRoom.name ?? 'Untitled room'}
-                memberCount={members.length || currentRoom.member_count}
                 members={members}
+                membersLoaded={!roomLoading && !roomError}
                 peers={peers}
+                compact={shell === 'compact'}
+                onBack={() => navigate({ kind: 'rooms' })}
                 onInvite={() => setInviteOpen(true)}
-                onShareFile={() => openPanelTab('files')}
-                onOpenPipe={() => openPanelTab('pipes')}
+                onShareFile={() => openRoomDest('files')}
+                onOpenPipe={() => openRoomDest('pipes')}
               />
+              {/* The room's nested navigation, under its header. Exactly one
+                  strip is ever live: the workspace carries it on wide (where
+                  the inspector is a column beside it) and whenever the
+                  inspector is closed; when the inspector is open on compact or
+                  medium it carries its own, and this one stands down. Two live
+                  strips would duplicate the `room-tab-*` ids, and the roving-
+                  tabindex keyboard handler's getElementById would move focus
+                  into the hidden copy. */}
+              {shell === 'wide' || !inspector ? (
+                <RoomNav dest={roomDest} counts={roomNavCounts} onDest={goToDest} />
+              ) : null}
               {roomError ? (
                 // The open failed: the error owns the pane. Rendering the
                 // empty timeline ("No events yet") and a live composer under
@@ -826,7 +986,7 @@ export default function App({ client }: { client: Client }) {
                     onFetch={fetchFile}
                     onRecheckFiles={recheckFiles}
                     onRetryPendingMessage={retryPendingMessage}
-                    onShowPipes={(pipeId) => openPanelTab('pipes', pipeId)}
+                    onShowPipes={(pipeId) => openRoomDest('pipes', pipeId)}
                   />
                   <Composer
                     roomId={currentRoom.room_id}
@@ -843,16 +1003,16 @@ export default function App({ client }: { client: Client }) {
           )}
         </main>
 
+        {/* The inspector is mounted only when the route opens it, and on
+            `activity` it is closed. It is a view of the route, so its tab
+            strip navigates rather than setting any state of its own. */}
+        {inspector ? (
         <RightPanel
-          tab={tab}
-          onTab={(next) => {
-            // The panel's own tab strip must keep the bottom navigation
-            // truthful on compact: switching to Files/Pipes there moves the
-            // active pane too (Members/Agents are sub-views of whichever
-            // pane is showing and have no bottom-nav destination).
-            if (next === 'files' || next === 'pipes') openPanelTab(next);
-            else setTab(next);
-          }}
+          tab={inspector}
+          onDest={goToDest}
+          counts={roomNavCounts}
+          onClose={closeInspector}
+          shell={shell}
           roomName={currentRoom?.name ?? null}
           members={members}
           timeline={timeline}
@@ -873,18 +1033,10 @@ export default function App({ client }: { client: Client }) {
           onPipeExpose={pipeExpose}
           onLeaveRoom={() => setLeaveOpen(true)}
         />
+        ) : null}
 
-        {activeNav === 'agents' ? (
-          <FleetDashboard
-            client={client}
-            rooms={rooms}
-            onOpenRoom={(rid) => {
-              const room = rooms.find((r) => r.room_id === rid);
-              if (room?.status === 'left' || room?.status === 'removed') return;
-              setMobileView('chat');
-              if (rid !== roomId || roomError) void openRoom(rid);
-            }}
-          />
+        {route.kind === 'fleet' ? (
+          <FleetDashboard client={client} rooms={rooms} onOpenRoom={selectRoom} />
         ) : null}
 
         <SettingsPanel
@@ -897,7 +1049,10 @@ export default function App({ client }: { client: Client }) {
           onCreateRoom={() => setCreateOpen(true)}
         />
 
-        <MobileTabBar active={activeNav} onNav={navigate} />
+        {/* Inside a room the bar gives way to the room's own app bar — the
+            behavior mockups/mobile-triptych.png shows, and what buys the
+            timeline its height back on a 320x568 phone. Back returns to it. */}
+        {pane === 'room' || pane === 'inspector' ? null : <MobileTabBar active={activeNav} onNav={navToGlobal} />}
 
         {inviteOpen && roomId ? (
           <InviteModal
@@ -917,8 +1072,15 @@ export default function App({ client }: { client: Client }) {
             onClose={() => setCreateOpen(false)}
             onCreated={(rid) => {
               setCreateOpen(false);
-              void refreshRooms();
-              void openRoom(rid);
+              // Navigate; do not open. Opening here would write the room behind
+              // the route's back, and the route effect would then snap the
+              // session back to whichever room the URL still named.
+              //
+              // Refresh first, and await it: the route effect resolves a room
+              // against `rooms`, so naming one that room.list has not returned
+              // yet would flash "that room isn't on this device" at the user
+              // for the room they just made.
+              void refreshRooms().then(() => navigate({ kind: 'room', roomId: rid, dest: 'activity' }));
             }}
           />
         ) : null}
@@ -931,8 +1093,8 @@ export default function App({ client }: { client: Client }) {
             onClose={() => setJoinOpen(false)}
             onJoined={(rid) => {
               setJoinOpen(false);
-              void refreshRooms();
-              void openRoom(rid);
+              // See onCreated: refresh, then let the route open the room.
+              void refreshRooms().then(() => navigate({ kind: 'room', roomId: rid, dest: 'activity' }));
             }}
           />
         ) : null}

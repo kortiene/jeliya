@@ -1,33 +1,53 @@
 import { expect, test, MOCK_ROOMS } from './fixtures';
 
-// Issue #52: mobile rooms must open at the newest timeline event even though
-// the room is auto-opened while its pane is display:none, and a deliberate
-// reading position must survive pane hiding and room switches.
+// Issue #52: a room must open at its newest timeline event, and a deliberate
+// reading position must survive the pane being hidden and rooms being switched.
+//
+// Two mechanisms carry that, and both are load-bearing here. The compact shell
+// hides panes with display:none instead of unmounting them
+// (docs/room-workbench.md, decision 3): a hidden element measures zero and
+// loses scrollTop, so the timeline has to reinstate its position the moment it
+// is laid out again. Switching rooms genuinely unmounts it (the timeline is
+// keyed by room), so there the position rides across on a saved view.
 
 // The newest fixture event in the main room (mock.ts anchors it near "now").
 const NEWEST_MAIN_EVENT = 'Sync convergence suite running (14/24 green).';
 
-test('mobile: the auto-opened default room reveals at the newest event', async ({
-  app,
-  compact,
-}) => {
-  test.skip(!compact, 'desktop mounts the timeline visible; this is the hidden-mount path');
+test('mobile: the room pane reveals at the newest event', async ({ app, compact }) => {
+  test.skip(!compact, 'medium and wide keep the room pane laid out; this is the hidden-pane path');
   await app.gotoPopulated();
 
-  // The room was opened while the chat pane was hidden; first reveal must
-  // land within 140px of the bottom with the newest event exposed. On very
-  // short viewports the newest card can be taller than the visible timeline,
-  // so the contract is: its row intersects the viewport and the scroller sits
-  // at the bottom.
-  await app.openRoom(MOCK_ROOMS.main);
+  // Boot restores the room and lands inside it (decision 2), so the auto-opened
+  // room is on screen from its first paint and cannot mount hidden. The zeroed
+  // measurements that mount had to survive are still reached, though — every
+  // room tool display:none's the pane behind it — so this walks that cycle
+  // instead.
+  //
+  // The baseline first: the restored room opens at its newest event. On very
+  // short viewports the newest card can be taller than the visible timeline, so
+  // the contract is: its row intersects the viewport and the scroller sits at
+  // the bottom.
   await expect(app.timeline.getByText(NEWEST_MAIN_EVENT)).toBeVisible();
   await expect(app.timeline.locator('.timeline-row').last()).toBeInViewport();
   expect(await app.timelineBottomOffset()).toBeLessThanOrEqual(140);
+
+  // A room tool owns the whole screen on compact, so the room pane goes
+  // display:none — every measurement it had is now zero.
+  await app.goToRoomDest('People');
+  await expect(app.center).toBeHidden();
+
+  // Revealed again, it must re-derive the bottom rather than sit at the
+  // scrollTop that display:none reset for it.
+  await app.goToRoomDest('Activity');
+  await expect(app.timeline.getByText(NEWEST_MAIN_EVENT)).toBeVisible();
+  await expect(app.timeline.locator('.timeline-row').last()).toBeInViewport();
+  await expect.poll(() => app.timelineBottomOffset()).toBeLessThanOrEqual(140);
 });
 
 test('selecting a different room opens its latest activity', async ({ app }) => {
+  // Boot restores the main room on every shell, so this is a switch between two
+  // rooms and not a first open.
   await app.gotoPopulated();
-  await app.openRoom(MOCK_ROOMS.main);
   await app.openRoom(MOCK_ROOMS.design);
 
   await expect(app.timeline.getByText('Tokens v2 exploration lives here.')).toBeVisible();
@@ -41,7 +61,11 @@ test('mobile: hiding and revealing the room pane keeps the reading position', as
 }) => {
   test.skip(!compact, 'panes are only hidden on compact');
   await app.gotoPopulated();
-  await app.openRoom(MOCK_ROOMS.main);
+
+  // The backlog has to be in before a reading position means anything: the
+  // timeline renders (as skeletons) while room.open is still in flight, and a
+  // scroll offset set against that empty scroller is silently dropped.
+  await expect(app.timeline.getByText(NEWEST_MAIN_EVENT)).toBeVisible();
 
   // Scroll deliberately away from the bottom (display:none will wipe this).
   await app.timeline.evaluate((el) => {
@@ -49,9 +73,12 @@ test('mobile: hiding and revealing the room pane keeps the reading position', as
   });
   await expect.poll(() => app.timeline.evaluate((el) => el.scrollTop)).toBe(300);
 
-  await app.mobileTab('Rooms').click();
+  // A room tool hides the room pane without unmounting it, so the timeline
+  // keeps its state and loses only its layout — the exact case decision 3
+  // promises the reader will not notice.
+  await app.goToRoomDest('People');
   await expect(app.center).toBeHidden();
-  await app.roomItem(MOCK_ROOMS.main).click();
+  await app.goToRoomDest('Activity');
   await expect(app.timeline).toBeVisible();
 
   // Reinstated, not reset to the top and not jumped to the bottom.
@@ -64,7 +91,13 @@ test('returning to a scrolled-up room preserves the position and offers new acti
   app,
 }) => {
   await app.gotoPopulated();
-  await app.openRoom(MOCK_ROOMS.main);
+
+  // The room must really be open at its newest event before the reader scrolls
+  // away from it. room.open is still in flight when the timeline first renders,
+  // and scrolling an empty scroller sets nothing — the room would then be
+  // remembered as stuck-to-bottom and this would assert against a position the
+  // test never actually established.
+  await expect(app.timeline.getByText(NEWEST_MAIN_EVENT)).toBeVisible();
 
   // Deliberately read from the top…
   await app.timeline.evaluate((el) => {
@@ -95,8 +128,8 @@ test('returning to a scrolled-up room preserves the position and offers new acti
   await expect.poll(() => app.timelineBottomOffset()).toBeLessThanOrEqual(140);
 });
 
-test('desktop: stick-to-bottom keeps following new events', async ({ app, compact }) => {
-  test.skip(compact, 'desktop invariant — must not regress while fixing mobile');
+test('stick-to-bottom keeps following new events', async ({ app, compact }) => {
+  test.skip(compact, 'medium and wide invariant — must not regress while fixing mobile');
   await app.gotoPopulated();
   await expect(app.timeline.getByText(NEWEST_MAIN_EVENT)).toBeInViewport();
 

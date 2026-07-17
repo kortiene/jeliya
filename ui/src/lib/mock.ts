@@ -470,6 +470,11 @@ class MockClient implements Client {
         'member',
         'Tokens v2 exploration lives here.',
       );
+      // Connected-but-unknown-path fixture: PeerStatus.path is nullable while
+      // state is already `connected` — the SDK knows a peer is reachable
+      // before it knows how. The header must say "Connected" and never guess
+      // `relay`, which is what a `connected.length > 0` fallthrough did.
+      design.peers = design.peers.map((p) => ({ ...p, state: 'connected' as const, path: null }));
       const research = buildSideRoom(
         'research-lab',
         'Research Lab',

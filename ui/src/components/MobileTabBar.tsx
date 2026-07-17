@@ -1,13 +1,16 @@
 import type { NavKey } from './Sidebar';
 
-/** Bottom tab bar shown only on narrow (mobile) viewports — mirrors
- *  mockups/mobile-*.png (Rooms / Agents / Pipes / Files / Settings). It drives
- *  the same navigation state as the desktop left rail. */
+/** The compact bottom bar carries the global destinations and nothing else
+ *  (docs/room-workbench.md, decision 3).
+ *
+ *  It used to carry Pipes and Files as tabs, which made a room-scoped tool
+ *  look like a place you could stand without a room — and let the bar, the
+ *  visible pane, and the panel's own tab strip disagree about where you were.
+ *  Room tools are reached by entering a room; inside one, this bar gives way
+ *  to the room's app bar (the behavior mockups/mobile-triptych.png shows). */
 const TABS: { key: NavKey; label: string; glyph: string }[] = [
   { key: 'rooms', label: 'Rooms', glyph: '▦' },
-  { key: 'agents', label: 'Agents', glyph: '✦' },
-  { key: 'pipes', label: 'Pipes', glyph: '⤳' },
-  { key: 'files', label: 'Files', glyph: '▤' },
+  { key: 'fleet', label: 'Agent Fleet', glyph: '✦' },
   { key: 'settings', label: 'Settings', glyph: '⚙' },
 ];
 
@@ -15,9 +18,7 @@ export function MobileTabBar({ active, onNav }: { active: NavKey; onNav(key: Nav
   return (
     <nav className="mobile-tabbar" aria-label="Primary (mobile)">
       {TABS.map((tab) => {
-        // The chat sub-view lives under the Rooms tab, so keep Rooms highlighted
-        // while a room is open.
-        const on = active === tab.key || (tab.key === 'rooms' && (active === 'home' || active === 'calls'));
+        const on = active === tab.key;
         return (
           <button
             key={tab.key}

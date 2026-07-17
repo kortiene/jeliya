@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { DaemonErrorShape, FileEntry, Member, PipeEntry, TimelineEvent } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { extOf, fileTint, formatBytes, formatTime, labelTone, prettyLabel } from '../lib/format';
+import type { InspectorDest, RoomDest } from '../lib/routes';
+import type { Shell } from '../lib/shell';
+import { RoomNav } from './RoomNav';
 import { useNames } from './names';
 import { Avatar, ErrorNote, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
 import type { FetchAvailability, FetchState } from './ui';
 
-export type PanelTab = 'members' | 'agents' | 'files' | 'pipes';
+/** The inspector renders one room tool, and which one is the route's job
+ *  (docs/room-workbench.md, decision 3) — so the tab strip is a view of
+ *  `InspectorDest`, never a second place navigation state can live. */
+export type PanelTab = InspectorDest;
 
 export type PipeConnState =
   | { phase: 'connecting' }
@@ -35,8 +40,25 @@ function statusTone(status: string): 'active' | 'invited' | 'left' | 'removed' |
   return 'unknown';
 }
 
+/** Signed roster status, as a label (docs/room-workbench.md, decision 4).
+ *
+ *  This used to title-case the wire value, which rendered the roster's
+ *  `active` as "Active" — the same word the room rail used for a live local
+ *  session, and the collision the record exists to remove. Display labels and
+ *  wire values are never the same constant (docs/i18n.md, rule 3). */
 function displayStatus(status: string): string {
-  return status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Unknown';
+  switch (status) {
+    case 'active':
+      return 'Member';
+    case 'invited':
+      return 'Invited';
+    case 'left':
+      return 'Left';
+    case 'removed':
+      return 'Removed';
+    default:
+      return 'Unknown';
+  }
 }
 
 function displayRole(role: Member['role']): string {
@@ -80,13 +102,16 @@ function MembersTab({
       <section className="members-summary" aria-label="Room members summary">
         <div className="members-summary-copy">
           <h2>
-            {members.length} room member{members.length === 1 ? '' : 's'}
+            {members.length} in the roster
           </h2>
           <p>Roster from the signed room history. Statuses reflect membership events, not live peer reachability.</p>
         </div>
         <dl className="member-stats" aria-label="Member counts">
           <div>
-            <dt>Active</dt>
+            {/* The roster holds everyone with a membership event; only some of
+                them are currently members. Calling the whole list "members"
+                and this count "active" made the two disagree by construction. */}
+            <dt>Members</dt>
             <dd>{activeCount}</dd>
           </div>
           <div>
@@ -104,7 +129,9 @@ function MembersTab({
 
       <div className="members-section-head">
         <h3>Room roster</h3>
-        <span>{activeCount} active</span>
+        <span>
+          {activeCount} member{activeCount === 1 ? '' : 's'}
+        </span>
       </div>
 
       {sorted.map((member) => {
@@ -583,8 +610,10 @@ function PipesTab({
                 ⤳
               </span>
               <strong className="mono">{pipe.target}</strong>
+              {/* Pipe connection, and only that (decision 4): exposed with a
+                  live forwarding session, exposed with none, or closed. */}
               <span className={`chip chip-state state-${pipe.state}`}>
-                {pipe.state === 'open' ? (pipe.connected ? 'Active' : 'Open') : 'Closed'}
+                {pipe.state === 'open' ? (pipe.connected ? 'Connected' : 'Open') : 'Closed'}
               </span>
             </div>
             <div className="pipe-row-meta muted">
@@ -677,13 +706,12 @@ function PipesTab({
 
 // -- panel shell -----------------------------------------------------------------
 
-function tabCountLabel(count: number): string {
-  return count > 99 ? '99+' : String(count);
-}
-
 export function RightPanel({
   tab,
-  onTab,
+  onDest,
+  counts,
+  onClose,
+  shell,
   roomName,
   members,
   timeline,
@@ -705,7 +733,16 @@ export function RightPanel({
   onLeaveRoom,
 }: {
   tab: PanelTab;
-  onTab(tab: PanelTab): void;
+  /** Compact renders the room nav inside this panel, so it needs the same
+   *  inputs the workspace strip gets. */
+  onDest(dest: RoomDest): void;
+  counts: Partial<Record<RoomDest, number>>;
+  /** Close the inspector — which is navigating to the room's Activity
+   *  (docs/room-workbench.md, decision 3), not a local visibility toggle. */
+  onClose(): void;
+  /** Medium floats this over the workspace as a dismissible drawer; wide
+   *  places it in flow as a column; compact gives it the whole pane. */
+  shell: Shell;
   roomName?: string | null;
   members: Member[];
   timeline: TimelineEvent[];
@@ -726,60 +763,39 @@ export function RightPanel({
   onPipeExpose(target: string, peerIdentity: string): Promise<void>;
   onLeaveRoom(): void;
 }) {
-  const agentCount = members.filter((m) => m.role === 'agent').length;
-  const openPipes = pipes.filter((p) => p.state === 'open').length;
-
-  const tabs: { id: PanelTab; label: string; count: number }[] = [
-    { id: 'members', label: 'Members', count: members.length },
-    { id: 'agents', label: 'Agents', count: agentCount },
-    { id: 'files', label: 'Files', count: files.length },
-    { id: 'pipes', label: 'Pipes', count: openPipes },
-  ];
-
-  // Full ARIA tabs keyboard pattern: arrow keys move between tabs (a single tab
-  // stop via roving tabindex), Home/End jump to the ends. Without this the tab
-  // roles would announce a pattern that does not actually work.
-  const onTabsKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    const idx = tabs.findIndex((t) => t.id === tab);
-    let next = idx;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % tabs.length;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + tabs.length) % tabs.length;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = tabs.length - 1;
-    else return;
-    e.preventDefault();
-    onTab(tabs[next].id);
-    document.getElementById(`panel-tab-${tabs[next].id}`)?.focus();
-  };
-
   return (
-    <aside className="right-panel">
-      {/* Mobile-only: on the standalone Files/Pipes tab this panel is the whole
-          screen and RoomHeader (which normally carries the room name) is off in
-          the hidden `.center` pane, so without this a multi-room user has no way
-          to tell which room they're looking at. Not aria-hidden — this is the
-          only place the room name reaches the accessible tree in that view. */}
-      {roomName ? <div className="panel-room-context">{roomName}</div> : null}
-      <div className="panel-tabs" role="tablist" aria-label="Room panel" onKeyDown={onTabsKeyDown}>
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            id={`panel-tab-${t.id}`}
-            aria-selected={tab === t.id}
-            aria-controls="panel-body"
-            tabIndex={tab === t.id ? 0 : -1}
-            className={tab === t.id ? 'active' : ''}
-            onClick={() => onTab(t.id)}
-          >
-            <span className="panel-tab-label">{t.label}</span>
-            {t.count > 0 ? <span className="count">{tabCountLabel(t.count)}</span> : null}
+    <aside className={`right-panel${shell === 'medium' ? ' right-panel-drawer' : ''}`}>
+      {/* The room stays named on every room-scoped surface (decision 3). On
+          compact this panel IS the screen and the room header is off in the
+          hidden `.center` pane; on medium it floats over the workspace. Not
+          aria-hidden — on compact this is the only place the room name reaches
+          the accessible tree. */}
+      <div className="panel-head">
+        {/* One navigation, three affordances. Compact needs a Back of its own:
+            this panel is the whole screen there and the bottom bar is gone, so
+            without it the only way out would be the browser's own Back — which
+            an installed PWA does not show. */}
+        {shell === 'compact' ? (
+          <button type="button" className="icon-btn panel-back" onClick={onClose} aria-label="Back to Activity">
+            <span aria-hidden="true">‹</span>
           </button>
-        ))}
+        ) : null}
+        {roomName ? <div className="panel-room-context">{roomName}</div> : <span />}
+        {shell !== 'compact' ? (
+          <button type="button" className="icon-btn panel-close" onClick={onClose} aria-label="Close inspector">
+            <span aria-hidden="true">×</span>
+          </button>
+        ) : null}
       </div>
-      <div className="panel-body" id="panel-body" role="tabpanel" aria-labelledby={`panel-tab-${tab}`}>
-        {tab === 'members' ? <MembersTab members={members} selfId={selfId} onLeaveRoom={onLeaveRoom} /> : null}
+      {/* Whenever this panel covers the workspace — the whole pane on compact,
+          a drawer on medium — it owes the room's nav, because the workspace's
+          copy is underneath it. Only on wide, where the panel opens beside the
+          workspace rather than over it, does the workspace keep the strip and
+          this render nothing: two tablists for one room would be two tablists
+          in the a11y tree. */}
+      {shell !== 'wide' ? <RoomNav dest={tab} counts={counts} onDest={onDest} /> : null}
+      <div className="panel-body" id="panel-body" role="tabpanel" aria-labelledby={`room-tab-${tab}`}>
+        {tab === 'people' ? <MembersTab members={members} selfId={selfId} onLeaveRoom={onLeaveRoom} /> : null}
         {tab === 'agents' ? <AgentsTab members={members} timeline={timeline} /> : null}
         {tab === 'files' ? (
           <FilesTab

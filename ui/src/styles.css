@@ -30,10 +30,12 @@
   --red-dim: rgba(242, 109, 109, 0.1);
   --blue-line: rgba(106, 168, 247, 0.4);
   --blue-dim: rgba(106, 168, 247, 0.1);
-  /* stacking order: fleet page < mobile tabbar < connection banner < modal */
+  /* stacking order: fleet page < inspector drawer < mobile tabbar < modal.
+     The connection banner is no longer in this order: it reserves a grid row
+     rather than floating over the panes (docs/room-workbench.md, decision 3). */
   --z-fleet: 5;
+  --z-drawer: 20;
   --z-tabbar: 50;
-  --z-banner: 60;
   --z-modal: 100;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -113,17 +115,79 @@ select {
 
 /* ---------- app frame ---------- */
 
+/* Three shells, one information architecture (docs/room-workbench.md,
+   decision 3). The breakpoints are duplicated in ui/src/lib/shell.ts — a
+   media query cannot read a var() — and shell.test.ts parses this file and
+   fails if the two ever disagree.
+
+     compact  < 900px     one pane
+     medium   900-1279px  rail + workspace, inspector as a drawer
+     wide     >= 1280px   rail + workspace + inspector column
+
+   The banner is a grid ROW, not an overlay: connection status reserves its
+   space so it can never cover Back, a header, or list content. It collapses
+   to 0 when connected, so it costs nothing while it has nothing to say. */
+
 .app {
   position: relative;
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr) 360px;
+  grid-template-columns: 272px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: var(--vh-full);
   overflow: hidden;
 }
 
-@media (max-width: 1100px) {
+.conn-region {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+/* Explicit placement, not auto-flow: at medium the grid has two columns and
+   an auto-placed inspector would invent a third, shrinking the workspace by
+   exactly the amount this band exists to give back. */
+.app > .sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  min-height: 0;
+}
+
+.app > .center {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
+}
+
+/* Medium: the inspector shares the workspace cell and pins to its right edge —
+   a drawer, in flow, under the reserved banner row rather than over it. */
+.app > .right-panel {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
+  justify-self: end;
+  z-index: var(--z-drawer);
+  width: min(360px, 100%);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+}
+
+/* Wide: it stops being a drawer and takes a column of its own. */
+@media (min-width: 1280px) {
+  .app.inspector-open {
+    grid-template-columns: 272px minmax(0, 1fr) 360px;
+  }
+
+  .app > .right-panel {
+    grid-column: 3;
+    justify-self: stretch;
+    width: auto;
+    box-shadow: none;
+    border-left: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 1279.98px) and (min-width: 900px) {
   .app {
-    grid-template-columns: 232px minmax(0, 1fr) 300px;
+    grid-template-columns: 232px minmax(0, 1fr);
   }
 }
 
@@ -277,28 +341,31 @@ select {
   margin-top: 2px;
 }
 
-@media (max-width: 900px) {
+/* Compact: one pane at a time. 899.98 rather than 900 — the medium shell now
+   starts exactly at 900, and a fractional viewport width must not fall into a
+   gap between the two queries and match neither. Mirrored in
+   ui/src/lib/shell.ts; shell.test.ts fails if they drift apart. */
+@media (max-width: 899.98px) {
   .app {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   /* Scoped to `.app` so these win over the standalone `.sidebar/.center/
      .right-panel { display: flex }` base rules, which appear later in source
      order at equal (0,0,1) specificity and would otherwise re-show every pane —
      stacking all three columns on top of each other on a phone. `.app <pane>`
-     is (0,0,2); the mv-* show rules below are (0,0,3) and win in turn. */
+     is (0,0,2); the pane-* show rules below are (0,0,3) and win in turn. */
   .app .sidebar,
   .app .center,
   .app .right-panel {
     display: none;
     grid-column: 1;
-    grid-row: 1;
-    height: var(--vh-full);
+    grid-row: 2;
     min-height: 0;
-    /* Reserve the fixed tab bar + home-indicator inset so the last row of any
-       pane is never hidden behind the bottom chrome; reserve top/side safe
-       areas for standalone/mobile-browser landscape modes. */
+    /* Reserve top/side safe areas for standalone/mobile-browser landscape
+       modes. The bottom reservation is per-pane below: only the panes the tab
+       bar actually covers owe it space. */
     padding-top: var(--safe-top);
     padding-right: var(--safe-right);
     padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom));
@@ -307,35 +374,48 @@ select {
     border-right: none;
   }
 
-  .app.mv-rooms .sidebar {
+  /* The inspector is the whole screen here — no drawer, no shadow. */
+  .app .right-panel {
+    justify-self: stretch;
+    width: auto;
+    box-shadow: none;
+    border-left: none;
+  }
+
+  .app.pane-rooms .sidebar {
     display: flex;
   }
 
-  .app.mv-chat .center {
+  .app.pane-room .center {
     display: flex;
   }
 
-  .app.mv-pipes .right-panel,
-  .app.mv-files .right-panel {
+  .app.pane-inspector .right-panel {
     display: flex;
   }
 
-  .app.mv-agents .fleet-view {
+  /* Inside a room the tab bar is gone (the room's app bar replaces it), so
+     these two panes must not reserve its height — that reservation was ~72px
+     of dead space between the composer and the bottom of a 568px phone. */
+  .app.pane-room .center,
+  .app.pane-inspector .right-panel {
+    padding-bottom: var(--safe-bottom);
+  }
+
+  .app.pane-fleet .fleet-view {
     display: flex;
     grid-column: 1;
-    grid-row: 1;
-    height: var(--vh-full);
+    grid-row: 2;
     padding-top: var(--safe-top);
     padding-right: var(--safe-right);
     padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom));
     padding-left: var(--safe-left);
   }
 
-  .app.mv-settings .mobile-settings {
+  .app.pane-settings .mobile-settings {
     display: flex;
     grid-column: 1;
-    grid-row: 1;
-    height: var(--vh-full);
+    grid-row: 2;
   }
 
   .mobile-tabbar {
@@ -394,7 +474,8 @@ select {
      later in the file and would otherwise win by source order. */
   .app .panel-room-context {
     display: block;
-    padding: 10px 16px 0;
+    flex: 1 1 auto;
+    min-width: 0;
     font-size: 14px;
     font-weight: 700;
     color: var(--text);
@@ -402,21 +483,34 @@ select {
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* The inspector's own Back — the bottom bar is gone inside a room, so this
+     is the only in-app way to Activity on a phone. */
+  .app .panel-head {
+    padding: 4px 8px 0;
+  }
+
+  .app .panel-back {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 22px;
+    line-height: 1;
+  }
 }
 
+/* In flow, full width, and it wraps. It used to be absolutely positioned and
+   centred, which put it on top of the compact room header's Back button and
+   the first rows of every list — the one piece of chrome guaranteed to appear
+   exactly when the user most needs to leave the screen. */
 .conn-banner {
-  position: absolute;
-  top: var(--safe-top);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: var(--z-banner);
-  padding: 6px 16px;
-  border-radius: 0 0 10px 10px;
+  padding: calc(6px + var(--safe-top)) calc(16px + var(--safe-right)) 6px calc(16px + var(--safe-left));
   font-size: 12.5px;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
   background: rgba(245, 180, 83, 0.14);
   color: var(--amber);
-  border: 1px solid rgba(245, 180, 83, 0.35);
-  border-top: none;
+  border-bottom: 1px solid rgba(245, 180, 83, 0.35);
 }
 
 .conn-banner.conn-disconnected {
@@ -1128,6 +1222,119 @@ button.sender-name:not(:disabled):hover {
   background: var(--bg-raise);
 }
 
+/* ---------- compact room app bar (#61) ----------
+   The budget at 320x568 is hard: <=150px of app bar, and >=180px of timeline
+   above the composer. The old header spent it on a wrapping action row and a
+   peer-chip strip that grew with the room. Here Back, the title, the
+   connectivity summary, and Invite hold one row; everything diagnostic moves
+   behind the room-information disclosure. Nothing wraps, so the height is a
+   constant, not a function of how many peers are connected. */
+
+.room-appbar {
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.appbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  /* No wrap: a second row is exactly the overflow this bar exists to prevent. */
+  flex-wrap: nowrap;
+}
+
+.appbar-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.appbar-title h1 {
+  font-size: 15.5px;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.appbar-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.appbar-sub .sep {
+  color: var(--text-mute);
+}
+
+.appbar-back,
+.appbar-more {
+  flex: 0 0 auto;
+}
+
+.appbar-back {
+  font-size: 22px;
+  line-height: 1;
+}
+
+/* The one place a compact button may drop under the 44px floor is nowhere:
+   these keep it while staying inside the 150px budget because they sit on a
+   single row with the title. */
+.app .appbar-back,
+.app .appbar-more {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.appbar-invite {
+  flex: 0 0 auto;
+  padding: 0 12px;
+}
+
+.appbar-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.room-info-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.room-info-facts dt {
+  color: var(--text-mute);
+}
+
+.room-info-facts dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.room-info-empty {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.appbar-info-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .room-header-top {
   display: flex;
   align-items: center;
@@ -1738,11 +1945,27 @@ button.sender-name:not(:disabled):hover {
   min-height: 0;
 }
 
-/* Mobile-only room label for the standalone Files/Pipes tab — see the mobile
-   breakpoint below. Desktop always shows RoomHeader alongside this panel, so
-   it would be pure duplication there. */
+/* Room context stays visible on every room-scoped surface (decision 3), but
+   how it is delivered differs: on compact this panel IS the screen, so it
+   carries the room name itself; on medium and wide the room header is
+   alongside, so repeating it would be duplication — the close control is what
+   this row is for there. */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 0 14px;
+}
+
 .panel-room-context {
   display: none;
+}
+
+.panel-close {
+  flex: 0 0 auto;
+  font-size: 18px;
+  line-height: 1;
 }
 
 .panel-tabs {
@@ -2559,7 +2782,7 @@ textarea::placeholder {
    viewports every text-entry control is floored at 16px to suppress that zoom.
    This intentionally applies to all narrow viewports, not just pointer:coarse,
    so browser emulation and hybrid devices get the same safe behavior. */
-@media (max-width: 900px) {
+@media (max-width: 899.98px) {
   input,
   textarea,
   select,
@@ -2886,8 +3109,7 @@ select {
 .app-fleet .fleet-view {
   display: flex;
   grid-column: 2 / -1;
-  grid-row: 1;
-  height: var(--vh-full);
+  grid-row: 2;
   background: var(--bg);
   z-index: var(--z-fleet);
   overflow: hidden;
@@ -2896,7 +3118,7 @@ select {
 /* The fleet page paints over the center + right columns on desktop; hide the
    obscured room UI from the tab order and a11y tree. visibility (not display)
    preserves the timeline's stick-to-bottom scroll position. */
-@media (min-width: 901px) {
+@media (min-width: 900px) {
   .app-fleet .center,
   .app-fleet .right-panel {
     visibility: hidden;
@@ -2905,14 +3127,13 @@ select {
 
 /* Settings is a full-surface view like the fleet page — on desktop it paints
    over the center + right columns (the sidebar stays visible so the user can
-   navigate away). Keep this desktop-only: on mobile, `.mv-settings` must keep
+   navigate away). Keep this desktop-only: on compact, `.pane-settings` must keep
    the safe-area + bottom-tab padding defined in the mobile pane rules above. */
-@media (min-width: 901px) {
+@media (min-width: 900px) {
   .app-settings .mobile-settings {
     display: flex;
     grid-column: 2 / -1;
-    grid-row: 1;
-    height: var(--vh-full);
+    grid-row: 2;
     max-width: 640px;
     /* Reset the mobile pane's tab-bar/safe-area padding to a desktop rhythm. */
     padding: 24px 28px;

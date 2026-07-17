@@ -12,39 +12,47 @@ function modal(page: Page) {
   return page.getByRole('dialog');
 }
 
+/** Leave is published from the room's People roster — the room tool that names
+ *  the membership it ends (docs/room-workbench.md, decision 1). One tab click
+ *  reaches it from Activity on every shell, so the dialog is opened the same
+ *  way a user opens it. */
 async function openLeaveDialog(app: AppDriver, page: Page, room: string): Promise<void> {
   await app.openRoom(room);
-  // The Members surface hosts Leave; its tab strip is part of the panel on
-  // every breakpoint (compact reaches the panel through Files).
-  await app.navigate('Files');
-  await page.getByRole('tab', { name: 'Members', exact: false }).click();
+  await app.goToRoomDest('People');
   await app.rightPanel.getByRole('button', { name: 'Leave', exact: true }).click();
   await expect(modal(page)).toBeVisible();
 }
 
+/** Back to the rooms list from a room tool, the way a user walks there:
+ *  Activity closes the tool, then Rooms. On medium and wide the rail never
+ *  left the screen, so only the first step moves anything. */
+async function returnToRoomsList(app: AppDriver): Promise<void> {
+  await app.goToRoomDest('Activity');
+  await app.showRoomsList();
+}
+
 test('create: success creates exactly one room and navigates once', async ({ app, page }) => {
-  await app.gotoPopulated();
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.gotoRoomsList();
   await page.getByRole('button', { name: 'Create Room', exact: true }).click();
 
   await modal(page).getByLabel('Room name').fill('Containment Test Room');
   await modal(page).getByRole('button', { name: 'Create room' }).click();
 
   await expect(modal(page)).toHaveCount(0);
-  // Exactly one room of that name exists (no duplicate request fired) and it
-  // was opened exactly once (compact stays on the rooms pane by design).
+  // The create landed once: the route names the new room, on every shell.
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/activity/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Containment Test Room' })).toBeVisible();
+  // Then the rail — a pane of its own on compact, so reading the row means
+  // stepping back to it. Exactly one room of that name exists (no duplicate
+  // request fired), and the session the create opened is reported as the
+  // session it is (docs/room-workbench.md, decision 4).
+  await app.showRoomsList();
   await expect(app.roomItem('Containment Test Room')).toHaveCount(1);
-  await expect(app.roomItem('Containment Test Room')).toContainText('Active');
-  if (!app.compact) {
-    await expect(
-      page.getByRole('heading', { level: 1, name: 'Containment Test Room' }),
-    ).toBeVisible();
-  }
+  await expect(app.roomItem('Containment Test Room')).toContainText('Open');
 });
 
 test('create: a pending request cannot be dismissed or duplicated', async ({ app, page }) => {
-  await app.gotoPopulated({ mock_delay: 'room.create:1500' });
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.gotoRoomsList({ mock_delay: 'room.create:1500' });
   await page.getByRole('button', { name: 'Create Room', exact: true }).click();
 
   await modal(page).getByLabel('Room name').fill('Pending Room');
@@ -61,12 +69,12 @@ test('create: a pending request cannot be dismissed or duplicated', async ({ app
 
   // Success still lands exactly once.
   await expect(modal(page)).toHaveCount(0, { timeout: 10_000 });
+  await app.showRoomsList();
   await expect(app.roomItem('Pending Room')).toHaveCount(1);
 });
 
 test('create: failure keeps an actionable error in the dialog', async ({ app, page }) => {
-  await app.gotoPopulated({ mock_fail: 'room.create:1' });
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.gotoRoomsList({ mock_fail: 'room.create:1' });
   await page.getByRole('button', { name: 'Create Room', exact: true }).click();
 
   await modal(page).getByLabel('Room name').fill('Doomed Room');
@@ -86,8 +94,7 @@ test('join: a pending join is contained, then applies its transition once', asyn
   app,
   page,
 }) => {
-  await app.gotoPopulated({ mock_ticket: TICKET_SUFFIX, mock_delay: 'room.join:1500' });
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.gotoRoomsList({ mock_ticket: TICKET_SUFFIX, mock_delay: 'room.join:1500' });
   await page.getByRole('button', { name: 'Join with a ticket' }).click();
 
   await modal(page).getByLabel('Ticket').fill(`roomtkt1${TICKET_SUFFIX}`);
@@ -104,18 +111,14 @@ test('join: a pending join is contained, then applies its transition once', asyn
   // identity had never joined appears and opens (a real state transition,
   // not a re-open of something already there).
   await expect(modal(page)).toHaveCount(0, { timeout: 10_000 });
-  await expect(app.roomItem('Invited Workspace')).toHaveCount(1);
-  await expect(app.roomItem('Invited Workspace')).toContainText('Active');
-  if (app.compact) {
-    await app.roomItem('Invited Workspace').click();
-  }
   await expect(page.getByRole('heading', { level: 1, name: 'Invited Workspace' })).toBeVisible();
   await expect(app.timeline.getByText('You joined as member', { exact: false })).toBeVisible();
+  await app.showRoomsList();
+  await expect(app.roomItem('Invited Workspace')).toHaveCount(1);
 });
 
 test('create: a keyboard double-submit fires exactly one request', async ({ app, page }) => {
-  await app.gotoPopulated({ mock_delay: 'room.create:800' });
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.gotoRoomsList({ mock_delay: 'room.create:800' });
   await page.getByRole('button', { name: 'Create Room', exact: true }).click();
 
   const name = modal(page).getByLabel('Room name');
@@ -126,10 +129,11 @@ test('create: a keyboard double-submit fires exactly one request', async ({ app,
   await name.press('Enter');
 
   await expect(modal(page)).toHaveCount(0, { timeout: 10_000 });
-  if (app.compact) await app.mobileTab('Rooms').click();
-  // Wait for the full success transition (open flag applied), then count:
-  // a duplicated request would have produced a second same-named room.
-  await expect(app.roomItem('Double Submit Room')).toContainText('Active');
+  await expect(page.getByRole('heading', { level: 1, name: 'Double Submit Room' })).toBeVisible();
+  // Wait for the full success transition (the session the create opened), then
+  // count: a duplicated request would have produced a second same-named room.
+  await app.showRoomsList();
+  await expect(app.roomItem('Double Submit Room')).toContainText('Open');
   await expect(app.roomItem('Double Submit Room')).toHaveCount(1);
 });
 
@@ -137,8 +141,7 @@ test('join: a keyboard double-submit consumes the single-use ticket once', async
   app,
   page,
 }) => {
-  await app.gotoPopulated({ mock_ticket: TICKET_SUFFIX, mock_delay: 'room.join:800' });
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.gotoRoomsList({ mock_ticket: TICKET_SUFFIX, mock_delay: 'room.join:800' });
   await page.getByRole('button', { name: 'Join with a ticket' }).click();
 
   await modal(page).getByLabel('Ticket').fill(`roomtkt1${TICKET_SUFFIX}`);
@@ -149,14 +152,14 @@ test('join: a keyboard double-submit consumes the single-use ticket once', async
   await peerAddr.press('Enter');
 
   await expect(modal(page)).toHaveCount(0, { timeout: 10_000 });
+  await app.showRoomsList();
   await expect(app.roomItem('Invited Workspace')).toHaveCount(1);
   // No stray failure from a second redemption anywhere.
   await expect(page.locator('.error-note')).toHaveCount(0);
 });
 
 test('join: failure restores interaction with a real error', async ({ app, page }) => {
-  await app.gotoPopulated();
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await app.gotoRoomsList();
   await page.getByRole('button', { name: 'Join with a ticket' }).click();
 
   await modal(page).getByLabel('Ticket').fill(`roomtkt1${'x'.repeat(90)}`);
@@ -179,7 +182,7 @@ test('leave: initial focus is Cancel and immediate Enter cannot leave', async ({
   // Enter activated Cancel: dialog closed, membership untouched.
   await expect(modal(page)).toHaveCount(0);
   await expect(app.rightPanel.getByRole('button', { name: 'Leave', exact: true })).toBeVisible();
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await returnToRoomsList(app);
   await expect(app.roomItem(MOCK_ROOMS.review)).not.toContainText('Left');
 });
 
@@ -196,15 +199,16 @@ test('leave: a pending leave is contained, then applies once', async ({ app, pag
   await expect(modal(page)).toBeVisible();
   await expect(modal(page).getByRole('button', { name: 'Close' })).toBeDisabled();
 
-  // The departure lands exactly once: dialog closed, room marked Left,
-  // navigation reset to the rooms surface.
+  // The departure lands exactly once: dialog closed, room marked Left, and the
+  // route left the room it published a departure from — a room tool cannot
+  // stay open over a room this identity is no longer in.
   await expect(modal(page)).toHaveCount(0, { timeout: 10_000 });
+  await expect(page).toHaveURL(/\/rooms(\?|$)/);
   await expect(app.roomItem(MOCK_ROOMS.review)).toBeDisabled();
   await expect(app.roomItem(MOCK_ROOMS.review)).toContainText('Left');
+  await expect(app.sidebar).toBeVisible();
   if (!app.compact) {
     await expect(page.getByText('Select a room')).toBeVisible();
-  } else {
-    await expect(app.sidebar).toBeVisible();
   }
 });
 
@@ -219,6 +223,6 @@ test('leave: failure keeps the dialog actionable', async ({ app, page }) => {
   await modal(page).getByRole('button', { name: 'Cancel' }).click();
   await expect(modal(page)).toHaveCount(0);
   // Still a member — the failure was real, nothing was applied.
-  if (app.compact) await app.mobileTab('Rooms').click();
+  await returnToRoomsList(app);
   await expect(app.roomItem(MOCK_ROOMS.review)).not.toContainText('Left');
 });

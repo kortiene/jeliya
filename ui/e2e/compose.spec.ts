@@ -1,6 +1,12 @@
 import { expect, test, MOCK_ROOMS } from './fixtures';
 
 // Composing and sending messages through the mock daemon.
+//
+// Boot restores the last room, so `gotoPopulated()` already lands on a room's
+// Activity — but *which* room follows from the mock's ordering. Both tests
+// still open the room explicitly, so the composer under test is pinned to a
+// known room's timeline rather than to whichever room boot happened to
+// restore; reordering the fixture must not silently retarget these specs.
 
 test('sends a message and renders it as a delivered event', async ({ app }) => {
   await app.gotoPopulated();

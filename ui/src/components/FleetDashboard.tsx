@@ -503,19 +503,28 @@ export function FleetDashboard({
 
   const filters: { key: FleetFilter; label: string }[] = [
     { key: 'all', label: 'All' },
-    { key: 'active', label: 'Active' },
+    // This filter is `working || online-idle` — an agent whose peer is
+    // reachable. "Live" says that; "Active" said it in a word the room rail
+    // used for a local session and the wire uses for signed membership
+    // (docs/room-workbench.md, decision 4).
+    { key: 'active', label: 'Live' },
     { key: 'needs-attention', label: 'Needs attention' },
     { key: 'working', label: 'Working' },
     { key: 'offline', label: 'Offline' },
   ];
 
   return (
-    <section className="fleet-view" aria-label="Agents fleet">
+    <section className="fleet-view" aria-label="Agent Fleet">
       <header className="fleet-head">
         <div className="fleet-head-top">
           <div className="fleet-title">
             <TreeMark size={26} />
-            <h1>Agents</h1>
+            {/* The destination is named once (docs/room-workbench.md,
+                decision 1). A rail entry reading "Agent Fleet" that opens a
+                page titled "Agents" leaves the user to guess whether this is
+                the same place as a room's "Agents & Runs" — the exact
+                collision the record exists to remove. */}
+            <h1>Agent Fleet</h1>
           </div>
           <div className="fleet-head-actions">
             <input

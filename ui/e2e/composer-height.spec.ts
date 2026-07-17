@@ -36,12 +36,46 @@ test('mobile: a multiline draft survives hide/show with its height restored', as
   const grownBox = await textarea.boundingBox();
   expect(grownBox!.height).toBeGreaterThan(80);
 
-  // Hide the room pane, then reveal it again.
-  await app.mobileTab('Rooms').click();
+  // Hide the room pane, then reveal it again. Opening a room tool is what
+  // hides the workspace on compact, and the room stays selected across it, so
+  // the composer keeps its draft in state rather than reloading it — the same
+  // mounted-but-unlaid-out round trip the bottom tab bar used to produce.
+  await app.goToRoomDest('Files');
   await expect(app.center).toBeHidden();
-  await app.roomItem(MOCK_ROOMS.main).click();
+  await app.goToRoomDest('Activity');
 
   // Draft preserved, height re-measured for the real layout — not a strip.
+  await expect(textarea).toHaveValue(MULTILINE_DRAFT);
+  await expect
+    .poll(async () => (await textarea.boundingBox())!.height)
+    .toBeGreaterThan(80);
+});
+
+// Boot used to land compact on the rooms list, which is what made the very
+// first composer mount happen inside a display:none pane. Boot now restores
+// straight into the room, so that path is gone — but the condition it exercised
+// is not: a room tool route renders the workspace hidden with the room still
+// selected, so a composer restoring a stored draft there measures itself at 0
+// with no laid-out box to correct it. The reveal is the only chance to size it.
+test('mobile: a composer that boots into a hidden pane is sized on first reveal', async ({
+  app,
+  page,
+  compact,
+}) => {
+  test.skip(!compact, 'panes are only hidden on compact');
+  await app.gotoPopulated();
+  await app.openRoom(MOCK_ROOMS.main);
+  await app.composerTextarea.fill(MULTILINE_DRAFT);
+
+  // The route wins over the restored room, so this reloads onto the tool with
+  // the workspace — and the composer in it — mounted but never laid out.
+  await app.goToRoomDest('Files');
+  await page.reload();
+  await expect(app.rightPanel).toBeVisible();
+  await expect(app.center).toBeHidden();
+
+  await app.goToRoomDest('Activity');
+  const textarea = app.composerTextarea;
   await expect(textarea).toHaveValue(MULTILINE_DRAFT);
   await expect
     .poll(async () => (await textarea.boundingBox())!.height)
