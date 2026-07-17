@@ -160,6 +160,48 @@ Future<({DaemonSession session, List<String> overflows})> pumpReadyMobileApp(
   return (session: session, overflows: overflows);
 }
 
+// -- Room Workbench navigation (docs/room-workbench.md) ------------------------
+//
+// The route is the navigation state, and boot restores the last room — so on
+// every shell the ready app lands INSIDE a room (its Activity), not on the
+// rooms list. These helpers reach the surfaces a test wants from there, using
+// the same affordances a user would, so a test never depends on the shell's
+// internal widget structure.
+
+/// Reach the rooms list. On compact the room's app bar carries a Back to Rooms
+/// control (the bottom bar is gone inside a room); tapping it lands on the
+/// list. If already there, this is a no-op. Pumps steps so the pane settles.
+Future<void> mobileShowRoomsList(WidgetTester tester) async {
+  final back = find.bySemanticsLabel(en.roomBackToRooms);
+  if (back.evaluate().isNotEmpty) {
+    await tester.tap(back.first);
+    await pumpSteps(tester, steps: 4);
+  }
+}
+
+/// Open a room by its (unique) name from the rooms list, landing on its
+/// Activity. Reaches the list first, so it works from anywhere.
+Future<void> mobileOpenRoom(WidgetTester tester, String roomName) async {
+  await mobileShowRoomsList(tester);
+  await tester.tap(find.text(roomName).hitTestable().first);
+  await pumpSteps(tester, steps: 6);
+}
+
+/// Tap a room-nav destination (the "Room tools" tab strip): Activity, People,
+/// Agents & Runs, Files, or Pipes. Must be called while a room is open.
+Future<void> mobileGoToDest(WidgetTester tester, String destLabel) async {
+  await tester.tap(find.text(destLabel).hitTestable().first);
+  await pumpSteps(tester, steps: 4);
+}
+
+/// Tap a global bottom-bar destination (Rooms, Agent Fleet, Settings). The bar
+/// is only present outside a room, so this reaches the rooms list first.
+Future<void> mobileGoToGlobal(WidgetTester tester, String tabLabel) async {
+  await mobileShowRoomsList(tester);
+  await tester.tap(find.text(tabLabel).hitTestable().first);
+  await pumpSteps(tester, steps: 4);
+}
+
 /// Delegates every [Client] member to [inner]; subclasses bend one seam.
 class DelegatingClient implements Client {
   DelegatingClient(this.inner);
