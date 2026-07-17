@@ -31,6 +31,11 @@ export default defineConfig({
     // console errors — the latter attached by the fixture in e2e/fixtures.ts).
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    // The app honors prefers-reduced-motion (a WCAG contract, not a hint),
+    // and the suite runs under it: animations — including the timeline's
+    // jump-to-latest scroll — settle instantly, so assertions never race an
+    // in-flight animation against the mock's live-event timers.
+    contextOptions: { reducedMotion: 'reduce' },
   },
   projects: [
     {

@@ -487,7 +487,10 @@ export function Timeline({
   const scrollToBottom = () => {
     const el = scroller.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    // Reduced motion is a contract, not a hint (WCAG floor in CONTRIBUTING):
+    // the jump to the newest event lands instantly instead of animating.
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollTo({ top: el.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' });
     stickToBottom.current = true;
     setNewItemCount(0);
   };
