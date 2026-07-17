@@ -583,13 +583,20 @@ export default function App({ client }: { client: Client }) {
   };
 
   // The escape hatch from a room whose open failed: deselect it entirely so
-  // nothing renders under a room the daemon could not actually open.
+  // nothing renders under a room the daemon could not actually open — and
+  // forget it as the last room, or the next reload/reconnect would auto-open
+  // straight back into the same failure the user just walked away from.
   const backToRooms = () => {
     roomIdRef.current = null;
     setRoomId(null);
     setRoomError(null);
     setRoomLoading(false);
     setMobileView('rooms');
+    try {
+      localStorage.removeItem(LAST_ROOM_KEY);
+    } catch {
+      /* ignore */
+    }
   };
 
   const leaveCurrentRoom = () => {

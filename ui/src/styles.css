@@ -1248,7 +1248,9 @@ button.sender-name:not(:disabled):hover {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  /* `safe` so an error taller than a short viewport starts at the top and
+     scrolls, instead of centering with its beginning clipped unreachable. */
+  justify-content: safe center;
   align-items: center;
   gap: 14px;
   padding: 24px;
