@@ -394,6 +394,7 @@ test('developer documentation matches the MSRV and complete CI job matrix', () =
     .map((match) => match[1]);
   assert.deepEqual(jobs, [
     'docs-ui',
+    'ui-e2e',
     'flutter',
     'linux-flutter',
     'rust-runtime',

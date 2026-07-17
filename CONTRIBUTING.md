@@ -34,13 +34,20 @@ declined kindly.
   the contract.
 - **Prove it runs.** `node scripts/agent-e2e.mjs` proves the agent flow
   end-to-end with no network and no AI; `scripts/demo.sh` runs the full
-  two-daemon demo. Say in the PR what you ran. CI runs seven required jobs on
-  every PR and push to main: `docs-ui`, `flutter`, `linux-flutter`,
+  two-daemon demo. Say in the PR what you ran. CI runs eight required jobs on
+  every PR and push to main: `docs-ui`, `ui-e2e`, `flutter`, `linux-flutter`,
   `rust-runtime`, `msrv`, `windows-installer`, and `dependency-security`.
-  Together they cover docs, UI, Flutter/i18n, the native Linux bundle and its
-  supervised sidecar, Rust and Dart, smoke/E2E/protocol conformance, the
-  1.91.0 MSRV, Windows installer integrity, and Cargo/npm security audits.
+  Together they cover docs, UI, browser-level responsive UX regressions,
+  Flutter/i18n, the native Linux bundle and its supervised sidecar, Rust and
+  Dart, smoke/E2E/protocol conformance, the 1.91.0 MSRV, Windows installer
+  integrity, and Cargo/npm security audits.
   The same complete matrix can be dispatched manually without publishing a release.
+- **UI regressions are browser-tested.** `cd ui && npm run test:e2e` runs the
+  Playwright suite (`ui/e2e/`) against the `VITE_MOCK=1` fixture client — no
+  daemon needed — across desktop (1440×900, 920×800) and compact (390×844,
+  320×568) viewports. Changes to responsive flows (pane navigation, timeline,
+  composer, dialogs) must keep it green and should extend it; keep the suite
+  deterministic — web-first assertions only, never arbitrary sleeps.
 - **Documentation is a contract.** `docs/PROFILE.md` defines metadata,
   lifecycle, navigation, and linking rules. Every page must remain reachable
   from `docs/index.md`; run `node scripts/check-docs.mjs` after editing the
