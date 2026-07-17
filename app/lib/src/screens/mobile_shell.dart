@@ -26,8 +26,9 @@
 ///   a room tool preserves the timeline's scroll position. IndexedStack also
 ///   keeps its offstage children out of the semantics tree, so the room's nav
 ///   strip and the inspector's are never both live at once.
-/// - Agent Fleet mounts FleetDashboard ONLY while it is the visible pane (its
-///   FleetStore polls every 4s and must never run in the background).
+/// - Agent Fleet keeps FleetDashboard mounted (the IndexedStack retains its
+///   search/filter/scroll); its FleetStore poll is gated on the pane being
+///   active AND the app foregrounded, so it still never runs in the background.
 /// - Settings reuses SettingsPanel (already a max-640 single column).
 ///
 /// Presentation only: every intent arrives as a shell callback, and Back is
@@ -148,12 +149,14 @@ class MobileShell extends StatelessWidget {
                     onDest: onDest,
                     onLeaveRoom: onLeaveRoom,
                   ),
-                  // FleetDashboard mounts only while its pane is visible —
-                  // the FleetStore 4s poll loop must not run offstage.
-                  if (pane == _Pane.fleet)
-                    FleetDashboard(onOpenRoom: onSelectRoom)
-                  else
-                    const SizedBox.shrink(),
+                  // Always mounted — the IndexedStack retains its state, so its
+                  // search, filter, and scroll survive leaving the pane; the
+                  // `active` flag gates the poll instead of mount/unmount, so it
+                  // still never runs off-pane or in the background (#69).
+                  FleetDashboard(
+                    onOpenRoom: onSelectRoom,
+                    active: pane == _Pane.fleet,
+                  ),
                   SettingsPanel(onCreateRoom: onCreateRoom),
                 ],
               ),

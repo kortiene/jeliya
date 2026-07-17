@@ -20,13 +20,19 @@ library;
 import 'package:flutter/material.dart';
 import 'package:jeliya_protocol/jeliya_protocol.dart'
     show
+        AttentionReason,
         FleetAgent,
         FleetResult,
         HistoryPoint,
         LabelTone,
         LivenessValues,
+        attentionRank,
+        attentionReason,
+        hasNumericProgress,
         labelTone,
-        shortId;
+        needsAttention,
+        shortId,
+        statusUnverified;
 
 import '../format.dart';
 import '../l10n/strings_context.dart';
@@ -82,8 +88,11 @@ bool _matchesFilter(FleetAgent a, _FleetFilter f) => switch (f) {
   _FleetFilter.live =>
     a.liveness == LivenessValues.working ||
         a.liveness == LivenessValues.onlineIdle,
+  // The full closed set (docs/room-attention.md, decision 4), not the old
+  // blue-only match that silently dropped failed/blocked, stale, and
+  // offline-after-work agents.
   _FleetFilter.needsAttention =>
-    a.latest != null && labelTone(a.latest!.label) == LabelTone.blue,
+    needsAttention(a.liveness, a.latest?.label),
   _FleetFilter.working => a.liveness == LivenessValues.working,
   _FleetFilter.offline =>
     a.liveness == LivenessValues.offline || a.liveness == LivenessValues.stale,
@@ -101,34 +110,63 @@ String _filterLabel(AppStrings s, _FleetFilter f) => switch (f) {
 // -- dashboard ---------------------------------------------------------------------
 
 class FleetDashboard extends StatefulWidget {
-  const FleetDashboard({super.key, required this.onOpenRoom});
+  const FleetDashboard({super.key, required this.onOpenRoom, this.active = true});
 
   /// Room chip / Open Room clicks — the shell ignores departed rooms and
   /// switches back to the chat surface.
   final ValueChanged<String> onOpenRoom;
 
+  /// Whether the Agents surface is the current one. The dashboard stays mounted
+  /// (Offstage) either way — this gates the poll loop, not the widget.
+  final bool active;
+
   @override
   State<FleetDashboard> createState() => _FleetDashboardState();
 }
 
-class _FleetDashboardState extends State<FleetDashboard> {
+class _FleetDashboardState extends State<FleetDashboard>
+    with WidgetsBindingObserver {
   FleetStore? _store;
   _FleetFilter _filter = _FleetFilter.all;
   final TextEditingController _search = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    // The dashboard is always mounted, so it can watch the app lifecycle and
+    // pause the poll when the app is backgrounded (not just when it is off the
+    // current route).
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // The client is available by the time the shell mounts this surface;
-    // create the store once (poll loop starts here, dies in dispose).
+    // The client is available by the time the shell mounts this surface; create
+    // the store once. It does not poll until it is active AND foregrounded, so
+    // creating it Offstage at boot starts nothing.
     final client = SessionScope.of(context).client;
     if (_store == null && client != null) {
-      _store = FleetStore(client: client);
+      _store = FleetStore(client: client)..setActive(widget.active);
     }
   }
 
   @override
+  void didUpdateWidget(FleetDashboard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active != oldWidget.active) _store?.setActive(widget.active);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Only `resumed` is truly foreground; inactive/paused/hidden/detached all
+    // pause the poll.
+    _store?.setForeground(state == AppLifecycleState.resumed);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _store?.dispose();
     _search.dispose();
     super.dispose();
@@ -291,6 +329,7 @@ class _FleetDashboardState extends State<FleetDashboard> {
 
   Widget _buildBody(AppStrings s, JeliyaTokens tokens, FleetStore store) {
     final session = SessionScope.of(context);
+    final fmt = context.formats;
     final fleet = store.fleet;
     final q = _search.text.trim().toLowerCase();
     final visible = (fleet?.agents ?? const <FleetAgent>[]).where((a) {
@@ -326,6 +365,20 @@ class _FleetDashboardState extends State<FleetDashboard> {
       ),
       children: [
         if (store.error != null) ErrorNote(error: store.error),
+        // Honest freshness: when THIS client last refreshed (a device-local
+        // fact, never a signed event), so a paused poll's staleness is visible.
+        if (store.lastLoadedAtMs != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: JeliyaSpacing.x10),
+            child: Text(
+              s.fleetRefreshedAt(fmt.relTime(store.lastLoadedAtMs!)),
+              style: TextStyle(fontSize: 11.5, color: tokens.textMute),
+            ),
+          ),
+        // Actionable agents before the aggregate totals (#69) — on every shell,
+        // unlike the KPI tiles below.
+        if (store.loaded && fleet != null && fleet.total > 0)
+          _NeedsAttention(agents: fleet.agents, onOpenRoom: widget.onOpenRoom),
         // The KPI strip is deliberately hidden on phones — room coverage
         // isn't check-in-relevant there; the filter pills carry live counts
         // (web parity: styles.css hides .fleet-stats below the breakpoint).
@@ -345,6 +398,7 @@ class _FleetDashboardState extends State<FleetDashboard> {
           )
         else
           _AgentGrid(
+            key: const Key('fleetAgentGrid'),
             agents: visible,
             store: store,
             roomHomonyms: roomHomonyms,
@@ -428,6 +482,258 @@ class _FilterPill extends StatelessWidget {
 
 // -- stat tiles ------------------------------------------------------------------------
 
+// -- needs attention (actionable agents, before the aggregate tiles) ----------
+
+String _reasonLabel(AppStrings s, AttentionReason r) => switch (r) {
+  AttentionReason.failed => s.fleetAttentionFailed,
+  AttentionReason.review => s.fleetAttentionReview,
+  AttentionReason.stale => s.fleetAttentionStale,
+  AttentionReason.offline => s.fleetAttentionOffline,
+};
+
+/// The prioritized section the epic is named for: agents that need a human,
+/// ranked most-actionable first, rendered ABOVE the aggregate tiles. Membership
+/// and order come from the shared classifier (docs/room-attention.md,
+/// decision 4), so a failed or stale agent is never silently dropped again.
+class _NeedsAttention extends StatelessWidget {
+  const _NeedsAttention({required this.agents, required this.onOpenRoom});
+
+  final List<FleetAgent> agents;
+  final ValueChanged<String> onOpenRoom;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    final s = context.strings;
+
+    final items = <({FleetAgent agent, AttentionReason reason})>[];
+    for (final a in agents) {
+      final r = attentionReason(a.liveness, a.latest?.label);
+      if (r != null) items.add((agent: a, reason: r));
+    }
+    items.sort((x, y) {
+      final byRank = attentionRank(x.agent.liveness, x.agent.latest?.label)
+          .compareTo(attentionRank(y.agent.liveness, y.agent.latest?.label));
+      return byRank != 0
+          ? byRank
+          : (y.agent.lastSeenTs ?? 0).compareTo(x.agent.lastSeenTs ?? 0);
+    });
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: JeliyaSpacing.section),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: tokens.bgCard,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: tokens.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Semantics(
+            header: true,
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    s.fleetNeedsAttention,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: tokens.text,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: JeliyaSpacing.x8),
+                Container(
+                  constraints:
+                      const BoxConstraints(minWidth: 18, minHeight: 18),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: tokens.bgCard2,
+                    borderRadius: BorderRadius.circular(JeliyaRadii.pill),
+                    border: Border.all(color: tokens.borderStrong),
+                  ),
+                  child: Text(
+                    '${items.length}',
+                    style: TextStyle(fontSize: 10.5, color: tokens.textDim),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: JeliyaSpacing.x10),
+          if (items.isEmpty)
+            Text(
+              s.fleetNeedsAttentionEmpty,
+              style: TextStyle(fontSize: 13, color: tokens.textDim),
+            )
+          else
+            for (var i = 0; i < items.length; i++) ...[
+              if (i > 0) const SizedBox(height: JeliyaSpacing.x8),
+              _AttentionRow(
+                agent: items[i].agent,
+                reason: items[i].reason,
+                onOpenRoom: onOpenRoom,
+              ),
+            ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AttentionRow extends StatelessWidget {
+  const _AttentionRow({
+    required this.agent,
+    required this.reason,
+    required this.onOpenRoom,
+  });
+
+  final FleetAgent agent;
+  final AttentionReason reason;
+  final ValueChanged<String> onOpenRoom;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    final s = context.strings;
+    final fmt = context.formats;
+    final room = agent.latest?.roomId ??
+        (agent.rooms.isEmpty ? null : agent.rooms.first.roomId);
+    final message = agent.latest?.message;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+      decoration: BoxDecoration(
+        color: tokens.bgCard2,
+        borderRadius: BorderRadius.circular(11),
+        border: Border.all(color: tokens.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // name + reason chip wrap so they never overflow at 360dp / FR.
+          Wrap(
+            spacing: JeliyaSpacing.x8,
+            runSpacing: JeliyaSpacing.x6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Avatar(id: agent.identityId, size: 26),
+                  const SizedBox(width: JeliyaSpacing.x8),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 170),
+                    child: SenderName(
+                      id: agent.identityId,
+                      style: TextStyle(fontSize: 13.5, color: tokens.text),
+                    ),
+                  ),
+                ],
+              ),
+              _ReasonChip(reason: reason),
+            ],
+          ),
+          if (message != null) ...[
+            const SizedBox(height: JeliyaSpacing.x6),
+            Text(
+              message,
+              style: TextStyle(fontSize: 12.5, color: tokens.textDim),
+            ),
+          ],
+          const SizedBox(height: JeliyaSpacing.x8),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  agent.lastSeenTs != null
+                      ? s.fleetLastUpdate(fmt.relTime(agent.lastSeenTs!))
+                      : s.fleetNeverSeen,
+                  style: TextStyle(fontSize: 11.5, color: tokens.textMute),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (room != null)
+                JeliyaButton(
+                  label: s.fleetOpenRoom,
+                  size: JeliyaButtonSize.sm,
+                  onPressed: () => onOpenRoom(room),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Reason chip: dot + label, never colour alone (WCAG AA). Failed/review reuse
+/// the red/blue label tones; stale is amber (degraded); offline-after-work
+/// recedes to a quiet mark, not a hue that claims urgency.
+class _ReasonChip extends StatelessWidget {
+  const _ReasonChip({required this.reason});
+
+  final AttentionReason reason;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    final s = context.strings;
+    final (Color fg, Color bg, Color border) = switch (reason) {
+      AttentionReason.failed => (
+        tokens.toneColor(LabelTone.red),
+        tokens.toneBg(LabelTone.red) ?? Colors.transparent,
+        tokens.toneBorder(LabelTone.red),
+      ),
+      AttentionReason.review => (
+        tokens.toneColor(LabelTone.blue),
+        tokens.toneBg(LabelTone.blue) ?? Colors.transparent,
+        tokens.toneBorder(LabelTone.blue),
+      ),
+      AttentionReason.stale => (
+        tokens.amber,
+        tokens.amber.withValues(alpha: 0.08),
+        tokens.amberLine,
+      ),
+      AttentionReason.offline => (
+        tokens.textMute,
+        Colors.transparent,
+        tokens.borderStrong,
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(JeliyaRadii.pill),
+        border: Border.all(color: border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: fg, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            _reasonLabel(s, reason),
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: fg,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StatTiles extends StatelessWidget {
   const _StatTiles({required this.fleet});
 
@@ -465,9 +771,12 @@ class _StatTiles extends StatelessWidget {
                 icon: Tokens.fleetStatTasksIcon,
                 iconColor: tokens.amber,
                 iconBg: tokens.amberDim,
-                label: s.fleetStatRunningTasks,
+                // The truthful metric: agents in the `working` liveness state
+                // (a live peer + a fresh working status), not an inferred
+                // "running tasks" count — there is no task registry.
+                label: s.fleetStatWorkingNow,
                 value: '${fleet.working}',
-                sub: s.fleetStatOneTaskPerAgent,
+                sub: s.fleetStatWorkingNowSub,
               ),
             ),
             const SizedBox(width: JeliyaSpacing.x12),
@@ -725,6 +1034,7 @@ class _FleetSkeleton extends StatelessWidget {
 
 class _AgentGrid extends StatelessWidget {
   const _AgentGrid({
+    super.key,
     required this.agents,
     required this.store,
     required this.roomHomonyms,
@@ -891,7 +1201,10 @@ class _AgentCard extends StatelessWidget {
                     ? Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _LabelChip(label: latest.label),
+                          _LabelChip(
+                            label: latest.label,
+                            unverified: statusUnverified(agent.liveness),
+                          ),
                           if (latest.message != null) ...[
                             const SizedBox(height: JeliyaSpacing.x6),
                             Text(
@@ -912,7 +1225,7 @@ class _AgentCard extends StatelessWidget {
               const SizedBox(width: JeliyaSpacing.x12),
               Opacity(
                 opacity: off ? 0.5 : 1,
-                child: _Sparkline(points: points, color: tint, muted: muted),
+                child: _StatusStrip(points: points, color: tint, muted: muted),
               ),
             ],
           ),
@@ -1052,31 +1365,45 @@ class _LivePill extends StatelessWidget {
 }
 
 /// Latest-status chip: tone-{labelTone} colors (green is earned — unknown
-/// labels render neutral, no accent, no glow).
+/// labels render neutral, no accent, no glow). When [unverified] (the agent is
+/// stale/offline), the label is shown past-tense ("Last: X") and drops the
+/// earned-green accent, so a Stale pill can never sit beside a live "Working"
+/// chip — the contradiction #69 removes.
 class _LabelChip extends StatelessWidget {
-  const _LabelChip({required this.label});
+  const _LabelChip({required this.label, this.unverified = false});
 
   final String label;
+  final bool unverified;
 
   @override
   Widget build(BuildContext context) {
     final tokens = JeliyaTokens.of(context);
-    final tone = labelTone(label);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: tokens.toneBg(tone),
-        borderRadius: BorderRadius.circular(JeliyaRadii.pill),
-        border: Border.all(color: tokens.toneBorder(tone)),
-      ),
-      child: Text(
-        prettyLabel(label),
-        style: TextStyle(
-          fontSize: 11,
-          letterSpacing: 0.22,
-          color: tokens.toneColor(tone),
+    final s = context.strings;
+    final rawTone = labelTone(label);
+    final tone = unverified && rawTone == LabelTone.green
+        ? LabelTone.neutral
+        : rawTone;
+    final text = unverified
+        ? s.fleetLastStatus(prettyLabel(label))
+        : prettyLabel(label);
+    return Tooltip(
+      message: unverified ? s.fleetLastStatusHint : text,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: tokens.toneBg(tone),
+          borderRadius: BorderRadius.circular(JeliyaRadii.pill),
+          border: Border.all(color: tokens.toneBorder(tone)),
         ),
-        overflow: TextOverflow.ellipsis,
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 11,
+            letterSpacing: 0.22,
+            color: tokens.toneColor(tone),
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
       ),
     );
   }
@@ -1157,25 +1484,13 @@ class _RoomChip extends StatelessWidget {
 
 // -- sparkline (points-only, no interpolation) ---------------------------------------------
 //
-// One mark per real agent_status event from agent.history. y = progress when
-// the event carried one, else a band derived from the label tone — never a
-// fabricated intermediate point. Single series per card, so no legend.
+// One mark per real agent_status event from agent.history, positioned by its
+// REAL timestamp. No connecting line and no area fill — a curve between events
+// would fabricate intermediate state the log never recorded. Single series per
+// card, so no legend.
 
-/// The label-tone band (FleetDashboard.tsx `bandFor`): neutral (unknown
-/// label) sits low-mid — not a failure, but not an earned healthy band.
-double _bandFor(HistoryPoint p) {
-  final progress = p.progress;
-  if (progress != null) return progress.clamp(0, 100) / 100;
-  return switch (labelTone(p.label)) {
-    LabelTone.red => 0.18,
-    LabelTone.neutral => 0.45,
-    LabelTone.blue => 0.62,
-    LabelTone.green => 0.8,
-  };
-}
-
-class _Sparkline extends StatelessWidget {
-  const _Sparkline({
+class _StatusStrip extends StatelessWidget {
+  const _StatusStrip({
     required this.points,
     required this.color,
     required this.muted,
@@ -1207,11 +1522,15 @@ class _Sparkline extends StatelessWidget {
         message: label,
         child: CustomPaint(
           size: const Size(132, 40),
-          painter: _SparklinePainter(
+          painter: _StatusStripPainter(
             points: pts,
             stroke: muted ? tokens.textMute : color,
             baseline: tokens.borderStrong,
             muted: muted,
+            toneRed: tokens.toneColor(LabelTone.red),
+            toneBlue: tokens.toneColor(LabelTone.blue),
+            toneGreen: tokens.toneColor(LabelTone.green),
+            toneNeutral: tokens.toneColor(LabelTone.neutral),
           ),
         ),
       ),
@@ -1219,25 +1538,45 @@ class _Sparkline extends StatelessWidget {
   }
 }
 
-class _SparklinePainter extends CustomPainter {
-  const _SparklinePainter({
+/// A numeric-progress event rises to its measured height as a stem; a
+/// categorical (label-only) event is a dot on the baseline tinted by its label
+/// tone, never lifted to a fabricated y-value (docs/room-attention.md,
+/// decision 6). No interpolation joins the marks.
+class _StatusStripPainter extends CustomPainter {
+  const _StatusStripPainter({
     required this.points,
     required this.stroke,
     required this.baseline,
     required this.muted,
+    required this.toneRed,
+    required this.toneBlue,
+    required this.toneGreen,
+    required this.toneNeutral,
   });
 
   final List<HistoryPoint>? points;
   final Color stroke;
   final Color baseline;
   final bool muted;
+  final Color toneRed;
+  final Color toneBlue;
+  final Color toneGreen;
+  final Color toneNeutral;
 
   static const double _pad = 4;
+
+  Color _toneColor(LabelTone tone) => switch (tone) {
+    LabelTone.red => toneRed,
+    LabelTone.blue => toneBlue,
+    LabelTone.green => toneGreen,
+    LabelTone.neutral => toneNeutral,
+  };
 
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width;
     final h = size.height;
+    final base = h - _pad;
     final pts = points;
 
     // Loading (null): solid baseline. Empty: dashed baseline.
@@ -1246,20 +1585,29 @@ class _SparklinePainter extends CustomPainter {
         ..color = baseline
         ..strokeWidth = 1.5
         ..style = PaintingStyle.stroke;
-      final y = h - _pad;
       if (pts == null) {
-        canvas.drawLine(Offset(_pad, y), Offset(w - _pad, y), paint);
+        canvas.drawLine(Offset(_pad, base), Offset(w - _pad, base), paint);
       } else {
         // strokeDasharray "2 3"
         var x = _pad;
         while (x < w - _pad) {
           final end = (x + 2).clamp(_pad, w - _pad);
-          canvas.drawLine(Offset(x, y), Offset(end, y), paint);
+          canvas.drawLine(Offset(x, base), Offset(end, base), paint);
           x += 5;
         }
       }
       return;
     }
+
+    // The time axis: a static baseline, not a data line.
+    canvas.drawLine(
+      Offset(_pad, base),
+      Offset(w - _pad, base),
+      Paint()
+        ..color = baseline
+        ..strokeWidth = 1
+        ..style = PaintingStyle.stroke,
+    );
 
     final tsMin = pts.first.ts;
     final tsMax = pts.last.ts;
@@ -1271,53 +1619,31 @@ class _SparklinePainter extends CustomPainter {
       return _pad + t * (w - 2 * _pad);
     }
 
-    double yAt(int i) => h - _pad - _bandFor(pts[i]) * (h - 2 * _pad);
+    final stem = Paint()
+      ..color = stroke.withValues(alpha: muted ? 0.7 : 1)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
 
-    if (pts.length == 1) {
-      canvas.drawCircle(Offset(xAt(0), yAt(0)), 3.2, Paint()..color = stroke);
-      return;
+    for (var i = 0; i < pts.length; i++) {
+      final x = xAt(i);
+      final p = pts[i];
+      if (hasNumericProgress(p.progress)) {
+        final y = base - (p.progress!.clamp(0, 100) / 100) * (h - 2 * _pad);
+        canvas.drawLine(Offset(x, base), Offset(x, y), stem);
+        canvas.drawCircle(Offset(x, y), 2.6, Paint()..color = stroke);
+      } else {
+        canvas.drawCircle(
+          Offset(x, base),
+          2.6,
+          Paint()..color = muted ? stroke : _toneColor(labelTone(p.label)),
+        );
+      }
     }
-
-    final line = Path()..moveTo(xAt(0), yAt(0));
-    for (var i = 1; i < pts.length; i++) {
-      line.lineTo(xAt(i), yAt(i));
-    }
-    final last = pts.length - 1;
-    final area = Path.from(line)
-      ..lineTo(xAt(last), h - _pad)
-      ..lineTo(xAt(0), h - _pad)
-      ..close();
-
-    // Gradient area fill (stroke @ 0.28, 0.16 muted → transparent).
-    canvas.drawPath(
-      area,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            stroke.withValues(alpha: muted ? 0.16 : 0.28),
-            stroke.withValues(alpha: 0),
-          ],
-        ).createShader(Rect.fromLTWH(0, 0, w, h)),
-    );
-
-    canvas.drawPath(
-      line,
-      Paint()
-        ..color = stroke.withValues(alpha: muted ? 0.7 : 1)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..strokeJoin = StrokeJoin.round
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Terminal dot marks the newest real event.
-    canvas.drawCircle(Offset(xAt(last), yAt(last)), 3, Paint()..color = stroke);
   }
 
   @override
-  bool shouldRepaint(_SparklinePainter oldDelegate) =>
+  bool shouldRepaint(_StatusStripPainter oldDelegate) =>
       oldDelegate.points != points ||
       oldDelegate.stroke != stroke ||
       oldDelegate.baseline != baseline ||

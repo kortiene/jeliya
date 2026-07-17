@@ -134,6 +134,11 @@ abstract final class MockPeople {
   static final MockPerson qaAgent = _person('qa-agent', Roles.agent, 'QA Agent');
   static final MockPerson researchAgent = _person('research-agent', Roles.agent, 'Research Agent');
 
+  /// A failed-status agent for the fleet's Needs Attention section (#69). Kept
+  /// out of [everyone] deliberately: it lives only in the Agent Workspace room,
+  /// so the MVP room's roster/agent counts are unchanged.
+  static final MockPerson deployAgent = _person('deploy-agent', Roles.agent, 'Deploy Agent');
+
   static final List<MockPerson> everyone = List.unmodifiable(<MockPerson>[
     alex,
     maya,
@@ -147,8 +152,10 @@ abstract final class MockPeople {
   /// `identity_id → display name` — the Dart counterpart of mock.ts seeding
   /// names.ts `suggestedNames`. The protocol has no display names; an app can
   /// seed its local alias store from this so demo content echoes the mockups.
-  static final Map<String, String> suggestedNames =
-      Map.unmodifiable({for (final p in everyone) p.identityId: p.name});
+  static final Map<String, String> suggestedNames = Map.unmodifiable({
+    for (final p in everyone) p.identityId: p.name,
+    deployAgent.identityId: deployAgent.name,
+  });
 }
 
 // -- room fixture -------------------------------------------------------------------
@@ -350,9 +357,23 @@ class MockClient implements Client {
       final workspace = _buildSideRoom(
         'agent-workspace',
         'Agent Workspace',
-        [MockPeople.alex, MockPeople.backendAgent, MockPeople.frontendAgent, MockPeople.qaAgent],
+        [
+          MockPeople.alex,
+          MockPeople.backendAgent,
+          MockPeople.frontendAgent,
+          MockPeople.qaAgent,
+          MockPeople.deployAgent,
+        ],
         Roles.owner,
         'Scratch room for agent runs. Post statuses here.',
+      );
+      // Failed-runner fixture (#69): a connected agent whose latest signed
+      // status is a failure. It must surface in Needs Attention — the exact
+      // red-tone case the old blue-only filter silently dropped.
+      workspace.timeline.add(
+        _ev(workspace.roomId, _at(10, 6), MockPeople.deployAgent, TimelineKinds.agentStatus,
+            label: 'deploy_failed',
+            statusMessage: 'Deploy to staging failed: image build returned a non-zero exit.'),
       );
       final review = _buildSideRoom(
         'product-review',

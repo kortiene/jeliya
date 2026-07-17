@@ -1,8 +1,10 @@
 /// Fleet data store for the top-level Agents view (FleetDashboard.tsx data
-/// layer). Lives exactly as long as the dashboard is visible — the shell
-/// mounts FleetDashboard only while the Agents surface is active, so
-/// constructing/disposing this store starts/stops the poll loop (web parity:
-/// the 4s `agents.fleet` interval must not run in the background).
+/// layer). The dashboard now stays mounted across navigation (so its search,
+/// filter, and scroll survive), so this store outlives a single visit; the poll
+/// loop is instead gated on lifecycle: it runs only while the Agents surface is
+/// active AND the app is foregrounded ([setActive] / [setForeground]), and the
+/// first return runs exactly one immediate reload. It never runs in the
+/// background or behind another surface (#69).
 ///
 /// Data flow:
 /// - `agents.fleet` polled every 4000ms + one immediate load, PLUS a
@@ -45,13 +47,16 @@ class FleetStore extends ChangeNotifier {
     Duration pollInterval = const Duration(milliseconds: 4000),
     Duration pushDebounce = const Duration(milliseconds: 400),
   }) : _client = client,
+       _pollInterval = pollInterval,
        _pushDebounce = pushDebounce {
     _pushSub = client.roomEvents.listen(_onRoomEvent);
-    _poll = Timer.periodic(pollInterval, (_) => unawaited(load()));
-    unawaited(load());
+    // The poll stays OFF until the surface is active AND the app is foregrounded
+    // ([setActive] / [setForeground] drive it). The cheap push subscription
+    // stays, but it only reloads while polling is enabled.
   }
 
   final Client _client;
+  final Duration _pollInterval;
   final Duration _pushDebounce;
 
   Timer? _poll;
@@ -64,6 +69,10 @@ class FleetStore extends ChangeNotifier {
   bool _disposed = false;
   int _loadEpoch = 0;
   int _appliedEpoch = 0;
+
+  bool _active = false;
+  bool _foreground = true;
+  int? _lastLoadedAtMs;
 
   final Map<String, _AgentHistory> _histories = {};
 
@@ -80,10 +89,53 @@ class FleetStore extends ChangeNotifier {
   /// gates the skeleton state.
   bool get loaded => _loaded;
 
+  /// True while the poll loop is running (surface active AND app foreground).
+  bool get polling => _active && _foreground && !_disposed;
+
+  /// Wall-clock ms of the last successful load — a device-local fact (when THIS
+  /// client last refreshed), never a signed event. Null before the first
+  /// success; the refresh indicator reads it so staleness is honest, not hidden.
+  int? get lastLoadedAtMs => _lastLoadedAtMs;
+
   /// Sparkline points for [identityId]: null while the first history fetch is
   /// in flight, empty when there is no history (or the fetch failed).
   List<HistoryPoint>? historyFor(String identityId) =>
       _histories[identityId]?.points;
+
+  // -- lifecycle gating --------------------------------------------------------
+
+  /// Marks the Agents surface active (its route is the current one) or not. The
+  /// retention counterpart of the old unmount-to-stop: pausing keeps the data,
+  /// search, filter, and scroll; only the poll stops.
+  void setActive(bool active) {
+    if (_active == active) return;
+    _active = active;
+    _syncPoll();
+  }
+
+  /// App foreground/background, from the dashboard's [WidgetsBindingObserver].
+  /// Backgrounding pauses the poll even while the surface is active; the first
+  /// foreground resumes it with exactly one reload.
+  void setForeground(bool foreground) {
+    if (_foreground == foreground) return;
+    _foreground = foreground;
+    _syncPoll();
+  }
+
+  void _syncPoll() {
+    final shouldPoll = polling;
+    if (shouldPoll && _poll == null) {
+      // Resume: exactly one immediate reload, then the periodic tick.
+      _poll = Timer.periodic(_pollInterval, (_) => unawaited(load()));
+      unawaited(load());
+    } else if (!shouldPoll && _poll != null) {
+      _poll!.cancel();
+      _poll = null;
+      _debounce?.cancel();
+      _debounce = null;
+    }
+    if (!_disposed) notifyListeners(); // reflect the polling state in the UI
+  }
 
   // -- loading ------------------------------------------------------------------
 
@@ -100,6 +152,7 @@ class FleetStore extends ChangeNotifier {
       _fleet = f;
       _error = null;
       _loaded = true;
+      _lastLoadedAtMs = DateTime.now().millisecondsSinceEpoch;
       _syncHistories(f.agents);
       notifyListeners();
     } catch (e) {
@@ -112,6 +165,9 @@ class FleetStore extends ChangeNotifier {
   }
 
   void _onRoomEvent(RoomEventPush _) {
+    // No background reloads: a push only nudges a refresh while the poll is
+    // enabled (surface active + app foreground).
+    if (!polling) return;
     _debounce?.cancel();
     _debounce = Timer(_pushDebounce, () => unawaited(load()));
   }

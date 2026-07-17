@@ -327,10 +327,10 @@ class AppStringsFr extends AppStrings {
   }
 
   @override
-  String get fleetStatRunningTasks => 'Tâches en cours';
+  String get fleetStatWorkingNow => 'Agents au travail';
 
   @override
-  String get fleetStatOneTaskPerAgent => 'une tâche par agent';
+  String get fleetStatWorkingNowSub => 'pair connecté + statut récent';
 
   @override
   String get fleetStatRoomCoverage => 'Couverture des salons';
@@ -372,6 +372,39 @@ class AppStringsFr extends AppStrings {
 
   @override
   String get fleetNeverSeen => 'Jamais vu';
+
+  @override
+  String get fleetNeedsAttention => 'Attention requise';
+
+  @override
+  String get fleetNeedsAttentionEmpty =>
+      'Rien ne requiert d’attention pour l’instant.';
+
+  @override
+  String get fleetAttentionFailed => 'Échec';
+
+  @override
+  String get fleetAttentionReview => 'En attente de revue';
+
+  @override
+  String get fleetAttentionStale => 'Sans nouvelles';
+
+  @override
+  String get fleetAttentionOffline => 'Hors ligne après travail';
+
+  @override
+  String fleetLastStatus(String label) {
+    return 'Dernier : $label';
+  }
+
+  @override
+  String get fleetLastStatusHint =>
+      'Dernier statut publié — son état de présence ne le confirme plus';
+
+  @override
+  String fleetRefreshedAt(String rel) {
+    return 'Actualisé $rel';
+  }
 
   @override
   String get fleetOpenRoom => '⇱ Ouvrir le salon';

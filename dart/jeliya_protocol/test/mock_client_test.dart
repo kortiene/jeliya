@@ -308,10 +308,13 @@ void main() {
       // Rows 1–3: QA's peer is offline; awaiting_review is idle-class.
       expect(liveness(MockPeople.qaAgent), LivenessValues.offline);
       expect(liveness(MockPeople.researchAgent), LivenessValues.stale);
+      // Deploy is offline (its Agent Workspace room stays closed) with a failed
+      // latest status — the Needs Attention fixture (#69).
+      expect(liveness(MockPeople.deployAgent), LivenessValues.offline);
 
       expect(after.working, 1);
       expect(after.active, 2);
-      expect(after.total, 4);
+      expect(after.total, 5);
       expect(after.roomsTotal, 5);
       expect(after.roomsCovered, 5);
       // Strongest presence sorts first.

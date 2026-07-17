@@ -585,7 +585,7 @@ abstract class AppStrings {
   /// **'All'**
   String get fleetFilterAll;
 
-  /// Filter button on the fleet dashboard: show agents needing attention (stale or offline).
+  /// Filter button on the fleet dashboard: show only agents that need a human — failed, blocked, awaiting review, stale, or offline after doing work. Uses the same words as the 'Needs attention' section heading (fleetNeedsAttention) — translate both identically.
   ///
   /// In en, this message translates to:
   /// **'Needs attention'**
@@ -615,17 +615,17 @@ abstract class AppStrings {
   /// **'of {total} total'**
   String fleetStatOfTotal(num total);
 
-  /// Title of the stat tile counting tasks currently running across the fleet.
+  /// Title of the stat tile counting agents in the 'working' liveness state right now (a live peer plus a fresh working status). The truthful replacement for the old 'running tasks' — there is no task registry to count.
   ///
   /// In en, this message translates to:
-  /// **'Running tasks'**
-  String get fleetStatRunningTasks;
+  /// **'Agents working now'**
+  String get fleetStatWorkingNow;
 
-  /// Sub-caption under the running-tasks stat tile, explaining that each agent runs at most one task at a time. Deliberately lowercase.
+  /// Sub-caption under the agents-working-now stat tile, naming the evidence for the count: a connected peer and a recent working status. Deliberately lowercase.
   ///
   /// In en, this message translates to:
-  /// **'one task per agent'**
-  String get fleetStatOneTaskPerAgent;
+  /// **'live peer + fresh status'**
+  String get fleetStatWorkingNowSub;
 
   /// Title of the stat tile showing how many rooms have at least one agent in them.
   ///
@@ -698,6 +698,60 @@ abstract class AppStrings {
   /// In en, this message translates to:
   /// **'Never seen'**
   String get fleetNeverSeen;
+
+  /// Heading of the section at the top of the fleet dashboard that lists agents needing a human, before the aggregate stat tiles. Uses the same words as the 'Needs attention' filter (fleetFilterNeedsAttention) — translate both identically.
+  ///
+  /// In en, this message translates to:
+  /// **'Needs attention'**
+  String get fleetNeedsAttention;
+
+  /// Shown in the Needs attention section when no agent currently needs a human.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing needs attention right now.'**
+  String get fleetNeedsAttentionEmpty;
+
+  /// Reason chip in the Needs attention section: the agent's latest status is a failure (failed, errored, or blocked).
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get fleetAttentionFailed;
+
+  /// Reason chip in the Needs attention section: the agent is waiting on a human review (awaiting review, reviewing, or pending).
+  ///
+  /// In en, this message translates to:
+  /// **'Awaiting review'**
+  String get fleetAttentionReview;
+
+  /// Reason chip in the Needs attention section: the agent's working claim can no longer be verified. Uses the same word as the 'Stale' liveness pill (fleetLivenessStale) — translate both identically.
+  ///
+  /// In en, this message translates to:
+  /// **'Stale'**
+  String get fleetAttentionStale;
+
+  /// Reason chip in the Needs attention section: the agent did real work and is now offline and unreachable.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline after work'**
+  String get fleetAttentionOffline;
+
+  /// The latest-status chip on an agent card when the agent is stale or offline, so the label is a past claim, not a live one. {label} is the humanized status label such as 'Working'. Keep it terse.
+  ///
+  /// In en, this message translates to:
+  /// **'Last: {label}'**
+  String fleetLastStatus(String label);
+
+  /// Tooltip on the qualified (stale/offline) latest-status chip, explaining that the label is the agent's last posted status and not a currently-verified state.
+  ///
+  /// In en, this message translates to:
+  /// **'Last posted status — its liveness no longer supports it'**
+  String get fleetLastStatusHint;
+
+  /// Freshness line at the top of the fleet dashboard body: when THIS device last refreshed the fleet (a device-local fact, not a signed event). {rel} is an already-localized relative time such as 'just now' or '2m ago'.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated {rel}'**
+  String fleetRefreshedAt(String rel);
 
   /// Link on an agent card that navigates to the room the agent is in. The leading '⇱' and the following space are decorative — keep them exactly and translate only 'Open room'.
   ///

@@ -362,7 +362,7 @@
   },
   "fleetFilterNeedsAttention": "Needs attention",
   "@fleetFilterNeedsAttention": {
-    "description": "Filter button on the fleet dashboard: show agents needing attention (stale or offline)."
+    "description": "Filter button on the fleet dashboard: show only agents that need a human — failed, blocked, awaiting review, stale, or offline after doing work. Uses the same words as the 'Needs attention' section heading (fleetNeedsAttention) — translate both identically."
   },
   "fleetFilterWorking": "Working",
   "@fleetFilterWorking": {
@@ -385,13 +385,13 @@
       }
     }
   },
-  "fleetStatRunningTasks": "Running tasks",
-  "@fleetStatRunningTasks": {
-    "description": "Title of the stat tile counting tasks currently running across the fleet."
+  "fleetStatWorkingNow": "Agents working now",
+  "@fleetStatWorkingNow": {
+    "description": "Title of the stat tile counting agents in the 'working' liveness state right now (a live peer plus a fresh working status). The truthful replacement for the old 'running tasks' — there is no task registry to count."
   },
-  "fleetStatOneTaskPerAgent": "one task per agent",
-  "@fleetStatOneTaskPerAgent": {
-    "description": "Sub-caption under the running-tasks stat tile, explaining that each agent runs at most one task at a time. Deliberately lowercase."
+  "fleetStatWorkingNowSub": "live peer + fresh status",
+  "@fleetStatWorkingNowSub": {
+    "description": "Sub-caption under the agents-working-now stat tile, naming the evidence for the count: a connected peer and a recent working status. Deliberately lowercase."
   },
   "fleetStatRoomCoverage": "Room coverage",
   "@fleetStatRoomCoverage": {
@@ -454,6 +454,54 @@
   "fleetNeverSeen": "Never seen",
   "@fleetNeverSeen": {
     "description": "Timestamp line on an agent card when the agent has never been seen online (replaces the 'Last update …' line)."
+  },
+  "fleetNeedsAttention": "Needs attention",
+  "@fleetNeedsAttention": {
+    "description": "Heading of the section at the top of the fleet dashboard that lists agents needing a human, before the aggregate stat tiles. Uses the same words as the 'Needs attention' filter (fleetFilterNeedsAttention) — translate both identically."
+  },
+  "fleetNeedsAttentionEmpty": "Nothing needs attention right now.",
+  "@fleetNeedsAttentionEmpty": {
+    "description": "Shown in the Needs attention section when no agent currently needs a human."
+  },
+  "fleetAttentionFailed": "Failed",
+  "@fleetAttentionFailed": {
+    "description": "Reason chip in the Needs attention section: the agent's latest status is a failure (failed, errored, or blocked)."
+  },
+  "fleetAttentionReview": "Awaiting review",
+  "@fleetAttentionReview": {
+    "description": "Reason chip in the Needs attention section: the agent is waiting on a human review (awaiting review, reviewing, or pending)."
+  },
+  "fleetAttentionStale": "Stale",
+  "@fleetAttentionStale": {
+    "description": "Reason chip in the Needs attention section: the agent's working claim can no longer be verified. Uses the same word as the 'Stale' liveness pill (fleetLivenessStale) — translate both identically."
+  },
+  "fleetAttentionOffline": "Offline after work",
+  "@fleetAttentionOffline": {
+    "description": "Reason chip in the Needs attention section: the agent did real work and is now offline and unreachable."
+  },
+  "fleetLastStatus": "Last: {label}",
+  "@fleetLastStatus": {
+    "description": "The latest-status chip on an agent card when the agent is stale or offline, so the label is a past claim, not a live one. {label} is the humanized status label such as 'Working'. Keep it terse.",
+    "placeholders": {
+      "label": {
+        "type": "String",
+        "example": "Working"
+      }
+    }
+  },
+  "fleetLastStatusHint": "Last posted status — its liveness no longer supports it",
+  "@fleetLastStatusHint": {
+    "description": "Tooltip on the qualified (stale/offline) latest-status chip, explaining that the label is the agent's last posted status and not a currently-verified state."
+  },
+  "fleetRefreshedAt": "Updated {rel}",
+  "@fleetRefreshedAt": {
+    "description": "Freshness line at the top of the fleet dashboard body: when THIS device last refreshed the fleet (a device-local fact, not a signed event). {rel} is an already-localized relative time such as 'just now' or '2m ago'.",
+    "placeholders": {
+      "rel": {
+        "type": "String",
+        "example": "just now"
+      }
+    }
   },
   "fleetOpenRoom": "⇱ Open room",
   "@fleetOpenRoom": {

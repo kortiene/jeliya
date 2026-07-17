@@ -92,8 +92,8 @@ void main() {
     expect(en.fleetFilterWorking, "Working");
     expect(en.fleetFilterOffline, "Offline");
     expect(en.fleetStatActiveAgents, "Active agents");
-    expect(en.fleetStatRunningTasks, "Running tasks");
-    expect(en.fleetStatOneTaskPerAgent, "one task per agent");
+    expect(en.fleetStatWorkingNow, "Agents working now");
+    expect(en.fleetStatWorkingNowSub, "live peer + fresh status");
     expect(en.fleetStatRoomCoverage, "Room coverage");
     expect(en.fleetLoadingAgents, "Loading agents");
     expect(en.fleetEmptyNoAgents, "No agents in any room yet. Use “Add agent” to mint an invite.");
@@ -104,6 +104,13 @@ void main() {
     expect(en.fleetLivenessOffline, "Offline");
     expect(en.fleetNoStatusPosted, "No status posted yet.");
     expect(en.fleetNeverSeen, "Never seen");
+    expect(en.fleetNeedsAttention, "Needs attention");
+    expect(en.fleetNeedsAttentionEmpty, "Nothing needs attention right now.");
+    expect(en.fleetAttentionFailed, "Failed");
+    expect(en.fleetAttentionReview, "Awaiting review");
+    expect(en.fleetAttentionStale, "Stale");
+    expect(en.fleetAttentionOffline, "Offline after work");
+    expect(en.fleetLastStatusHint, "Last posted status — its liveness no longer supports it");
     expect(en.fleetOpenRoom, "⇱ Open room");
     expect(en.fleetSparkLoading, "Loading status history");
     expect(en.fleetSparkEmpty, "No status history yet");
@@ -425,6 +432,8 @@ void main() {
     expect(en.fleetStatOfTotal(7), "of 7 total");
     expect(en.fleetStatRoomsCovered(7, 13), "7 of 13 rooms");
     expect(en.fleetLastUpdate('XrelX'), "Last update XrelX");
+    expect(en.fleetLastStatus('XlabelX'), "Last: XlabelX");
+    expect(en.fleetRefreshedAt('XrelX'), "Updated XrelX");
     expect(en.fleetSparkEvents(7), "7 status events");
     expect(en.fleetSparkEvents(1), "1 status event");
     expect(en.fleetSparkEvents(2), "2 status events");

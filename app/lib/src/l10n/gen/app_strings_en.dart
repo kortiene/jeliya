@@ -323,10 +323,10 @@ class AppStringsEn extends AppStrings {
   }
 
   @override
-  String get fleetStatRunningTasks => 'Running tasks';
+  String get fleetStatWorkingNow => 'Agents working now';
 
   @override
-  String get fleetStatOneTaskPerAgent => 'one task per agent';
+  String get fleetStatWorkingNowSub => 'live peer + fresh status';
 
   @override
   String get fleetStatRoomCoverage => 'Room coverage';
@@ -368,6 +368,38 @@ class AppStringsEn extends AppStrings {
 
   @override
   String get fleetNeverSeen => 'Never seen';
+
+  @override
+  String get fleetNeedsAttention => 'Needs attention';
+
+  @override
+  String get fleetNeedsAttentionEmpty => 'Nothing needs attention right now.';
+
+  @override
+  String get fleetAttentionFailed => 'Failed';
+
+  @override
+  String get fleetAttentionReview => 'Awaiting review';
+
+  @override
+  String get fleetAttentionStale => 'Stale';
+
+  @override
+  String get fleetAttentionOffline => 'Offline after work';
+
+  @override
+  String fleetLastStatus(String label) {
+    return 'Last: $label';
+  }
+
+  @override
+  String get fleetLastStatusHint =>
+      'Last posted status — its liveness no longer supports it';
+
+  @override
+  String fleetRefreshedAt(String rel) {
+    return 'Updated $rel';
+  }
 
   @override
   String get fleetOpenRoom => '⇱ Open room';

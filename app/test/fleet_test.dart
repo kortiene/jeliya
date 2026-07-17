@@ -34,18 +34,26 @@ void main() {
 
     // Fixture fleet with the main room open: backend = working (connected
     // peer + fresh working label), frontend = online-idle, research = stale
-    // (working label but no live peer — never shown active), qa = offline.
-    // 4 agents across 5 rooms, every room has at least one agent.
+    // (working label but no live peer — never shown active), qa = offline,
+    // deploy = offline with a failed status (workspace closed). 5 agents across
+    // 5 rooms, every room has at least one agent.
     expectStatTile(
-        tester, en.fleetStatActiveAgents, '2', en.fleetStatOfTotal(4));
+        tester, en.fleetStatActiveAgents, '2', en.fleetStatOfTotal(5));
     expectStatTile(
-        tester, en.fleetStatRunningTasks, '1', en.fleetStatOneTaskPerAgent);
+        tester, en.fleetStatWorkingNow, '1', en.fleetStatWorkingNowSub);
     expectStatTile(tester, en.fleetStatRoomCoverage, en.commonPercent('100'),
         en.fleetStatRoomsCovered(5, 5));
 
-    // One card per fixture agent (each shows its last-update footer). The
-    // needle is the catalog message's static prefix (rel varies per card).
-    expect(find.textContaining(en.fleetLastUpdate('').trim()), findsNWidgets(4));
-    expect(find.text(en.fleetOpenRoom), findsNWidgets(4));
+    // One card per fixture agent (each shows its last-update footer + Open
+    // room). Scoped to the agent grid: the Needs Attention section above it
+    // repeats these for the actionable agents, so a whole-screen count would
+    // double-count. The needle is the catalog message's static prefix.
+    final grid = find.byKey(const Key('fleetAgentGrid'));
+    expect(
+        find.descendant(
+            of: grid, matching: find.textContaining(en.fleetLastUpdate('').trim())),
+        findsNWidgets(5));
+    expect(find.descendant(of: grid, matching: find.text(en.fleetOpenRoom)),
+        findsNWidgets(5));
   });
 }

@@ -369,12 +369,20 @@ class _ShellScreenState extends State<ShellScreen> {
                           ),
                         ),
                       ),
-                      // FleetDashboard mounts only while active (its 4s poll
-                      // loop must not run in the background) — web parity.
-                      if (fleetOpen)
-                        Positioned.fill(
-                          child: FleetDashboard(onOpenRoom: _selectRoom),
+                      // FleetDashboard stays mounted (Offstage) so its search,
+                      // filter, and scroll survive navigation; its poll loop is
+                      // gated on `active` + app lifecycle instead of on
+                      // mount/unmount, so it still never runs in the
+                      // background (#69).
+                      Positioned.fill(
+                        child: Offstage(
+                          offstage: !fleetOpen,
+                          child: FleetDashboard(
+                            onOpenRoom: _selectRoom,
+                            active: fleetOpen,
+                          ),
                         ),
+                      ),
                       // Settings stays mounted (cheap, stateful copy feedback).
                       Positioned.fill(
                         child: Offstage(
