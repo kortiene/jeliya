@@ -189,16 +189,6 @@ select {
   .app {
     grid-template-columns: 232px minmax(0, 1fr);
   }
-
-  /* The drawer floats over the workspace, and the room nav lives under the
-     workspace's header — so an open drawer buries most of the strip. A buried
-     tab is worse than a missing one: it still reports aria-selected, still
-     takes focus, and still swallows a click into the drawer on top of it.
-     The drawer carries the strip while it is open (see RightPanel), so the
-     workspace's copy stands down rather than lying there. */
-  .app.inspector-open .center .room-nav {
-    display: none;
-  }
 }
 
 /* ---------- mobile shell (mockups/mobile-*.png) ----------

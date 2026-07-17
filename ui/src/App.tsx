@@ -109,6 +109,10 @@ export default function App({ client }: { client: Client }) {
 
   const [roomId, setRoomId] = useState<string | null>(null);
   const roomIdRef = useRef<string | null>(null);
+  // The room we have actually opened, distinct from the one the route selects:
+  // a route can name a room that has not synced into `rooms` yet. See the
+  // route → session effect.
+  const openedRef = useRef<string | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const timelineRef = useRef<TimelineEvent[]>([]);
@@ -407,19 +411,33 @@ export default function App({ client }: { client: Client }) {
 
   // The open room follows the route, and this is the only place that opens
   // one: a rail click, a fleet card, and a pasted URL all just navigate.
+  //
+  // `openedRef` tracks the room we have actually called room.open for, which
+  // is NOT the same as the room the route selects. A deep link (or a
+  // create/join whose refreshRooms was swallowed by a reconnect) can name a
+  // room that room.list has not returned yet; we select it — the render shows
+  // the recoverable "not on this device" state — but do not open it. When the
+  // room later syncs into `rooms`, this effect reruns and must retry the open.
+  // Guarding on `roomIdRef` alone would skip that retry (the id already
+  // matches) and strand the user on an unopened room.
   useEffect(() => {
     if (phase !== 'ready') return;
     const rid = routeRoomId(route);
-    if (rid === roomIdRef.current) return;
-    roomIdRef.current = rid;
-    setRoomId(rid);
-    resetRoomState();
+    if (rid !== roomIdRef.current) {
+      roomIdRef.current = rid;
+      setRoomId(rid);
+      resetRoomState();
+      openedRef.current = null;
+    }
     if (rid === null) return;
     // `phase === 'ready'` means room.list has answered, so an id that is not
-    // in it is genuinely not on this device — a recoverable state the render
-    // resolves, not a reason to call room.open and surface a daemon error.
+    // in it is genuinely not on this device (yet) — a recoverable state the
+    // render resolves, not a reason to call room.open and surface a daemon
+    // error. If it appears later, the rerun opens it.
     const room = rooms.find((r) => r.room_id === rid);
     if (!room || room.status === 'left' || room.status === 'removed') return;
+    if (openedRef.current === rid) return;
+    openedRef.current = rid;
     void openRoom(rid);
   }, [phase, route, rooms, openRoom, resetRoomState]);
 
@@ -730,6 +748,17 @@ export default function App({ client }: { client: Client }) {
   /** Which single surface the compact shell shows. Derived — so the bar, the
    *  pane, and the inspector's own tab strip cannot disagree, because there is
    *  nothing left for them to disagree *with*. */
+  // A room route to a room room.list does not have — a deep link that hasn't
+  // synced, or a room this identity left. Its recovery surface (below) lives
+  // in `.center`, so the pane must stay `room` even when the route names a
+  // tool: an `inspector` pane would hide `.center` on compact and strand the
+  // user in an empty tool with no visible way out — and let file/pipe actions
+  // fire against a room that isn't open.
+  const roomUnavailable =
+    roomId !== null && (!currentRoom || currentRoom.status === 'left' || currentRoom.status === 'removed');
+
+  const inspector: InspectorDest | null = roomUnavailable ? null : inspectorDest(route);
+
   const pane: 'rooms' | 'room' | 'inspector' | 'fleet' | 'settings' =
     route.kind === 'rooms'
       ? 'rooms'
@@ -737,11 +766,9 @@ export default function App({ client }: { client: Client }) {
         ? 'fleet'
         : route.kind === 'settings'
           ? 'settings'
-          : inspectorDest(route)
+          : inspector
             ? 'inspector'
             : 'room';
-
-  const inspector: InspectorDest | null = inspectorDest(route);
   const roomDest: RoomDest = route.kind === 'room' ? route.dest : 'activity';
 
   /** Tab counts — facts the daemon has answered with, so they are only shown
@@ -906,10 +933,17 @@ export default function App({ client }: { client: Client }) {
                 onShareFile={() => openRoomDest('files')}
                 onOpenPipe={() => openRoomDest('pipes')}
               />
-              {/* The room's nested navigation, under its header on every
-                  shell. Without it, People and Agents & Runs would have no
-                  entry point at all while the inspector is closed. */}
-              <RoomNav dest={roomDest} counts={roomNavCounts} onDest={goToDest} />
+              {/* The room's nested navigation, under its header. Exactly one
+                  strip is ever live: the workspace carries it on wide (where
+                  the inspector is a column beside it) and whenever the
+                  inspector is closed; when the inspector is open on compact or
+                  medium it carries its own, and this one stands down. Two live
+                  strips would duplicate the `room-tab-*` ids, and the roving-
+                  tabindex keyboard handler's getElementById would move focus
+                  into the hidden copy. */}
+              {shell === 'wide' || !inspector ? (
+                <RoomNav dest={roomDest} counts={roomNavCounts} onDest={goToDest} />
+              ) : null}
               {roomError ? (
                 // The open failed: the error owns the pane. Rendering the
                 // empty timeline ("No events yet") and a live composer under
