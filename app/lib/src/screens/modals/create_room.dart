@@ -79,7 +79,17 @@ class _CreateRoomModalState extends State<CreateRoomModal> {
   Widget build(BuildContext context) {
     final s = context.strings;
     final tokens = JeliyaTokens.of(context);
+    final session = SessionScope.of(context);
     final canSubmit = !_busy && _name.text.trim().isNotEmpty;
+    // A local homonym WARNS but never blocks (decision 6): the name is a label
+    // the product does not own, and the new room gets its own room_id. Folds
+    // on the same DISPLAYED name the rooms list shows (name ?? Untitled room),
+    // trimmed and case-folded, so it clears the instant the name stops
+    // colliding (the field listener re-renders this).
+    final typed = _name.text.trim().toLowerCase();
+    final homonym = typed.isNotEmpty &&
+        session.rooms.any((r) =>
+            (r.name ?? s.shellUntitledRoom).trim().toLowerCase() == typed);
     return ModalScaffold(
       title: s.modalCreateRoomTitle,
       busy: _busy,
@@ -98,6 +108,18 @@ class _CreateRoomModalState extends State<CreateRoomModal> {
                 hintText: s.modalRoomNamePlaceholder),
             onSubmitted: (_) => _create(),
           ),
+          if (homonym) ...[
+            const SizedBox(height: JeliyaSpacing.x8),
+            // liveRegion: the warning appears/clears as the user types, so a
+            // screen reader hears it without the field losing focus.
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                s.modalCreateRoomHomonymWarning,
+                style: TextStyle(fontSize: 12.5, color: tokens.amber),
+              ),
+            ),
+          ],
           const SizedBox(height: JeliyaSpacing.x12),
           JeliyaButton(
             label: _busy ? s.modalCreatingRoom : s.modalCreateRoom,

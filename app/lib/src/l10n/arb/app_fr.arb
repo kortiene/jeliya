@@ -134,6 +134,8 @@
   "modalRoomNamePlaceholder": "Construire le MVP Iroh Rooms",
   "modalCreateRoom": "Créer un salon",
   "modalCreatingRoom": "Création…",
+  "modalCreateRoomHomonymWarning": "Un salon portant ce nom existe déjà sur cet appareil — celui-ci aura son propre identifiant.",
+  "roomShortIdLabel": "Identifiant du salon {shortId}",
   "modalJoinRoomTitle": "Rejoindre avec un ticket",
   "modalJoinCopy": "Collez l’invitation que vous avez reçue. Une invitation combinée ({combined}) renseigne automatiquement l’adresse du pair.",
   "modalTicketLabel": "Ticket",

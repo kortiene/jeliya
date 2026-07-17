@@ -763,6 +763,18 @@ button.sender-name:not(:disabled):hover {
   gap: 4px;
 }
 
+/* A non-blocking advisory (e.g. a locally-colliding room name): amber, not the
+   red of a failure, and it never disables the action it sits above. */
+.inline-warning {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: var(--amber-dim);
+  border: 1px solid var(--amber-line);
+  color: var(--text);
+  font-size: 13px;
+}
+
 .error-title {
   color: var(--text);
   font-size: 13.5px;
@@ -1083,6 +1095,16 @@ button.sender-name:not(:disabled):hover {
 .room-meta {
   font-size: 11.5px;
   color: var(--text-mute);
+}
+
+/* The short-id disambiguator (docs/room-workbench.md, decision 6): a subtle
+   mono token shown next to a room's name wherever two rooms share one — in a
+   rail row's meta line, a fleet room chip, and always in the Leave dialog.
+   Dim and letterspaced so it reads as an id, never competing with the name. */
+.room-disambig {
+  color: var(--text-mute);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .rooms-empty {

@@ -10,6 +10,7 @@ import type {
 } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { colorForId, labelTone, prettyLabel, relTime, shortId } from '../lib/format';
+import { homonymousRoomIds, roomDisplayName } from '../lib/rooms';
 import { useNames } from './names';
 import { Avatar, CopyButton, ErrorNote, Modal, ProgressBar, SenderName, TreeMark } from './ui';
 
@@ -128,10 +129,14 @@ function Sparkline({ points, color, muted }: { points: HistoryPoint[] | null; co
 function AgentCard({
   agent,
   client,
+  homonyms,
   onOpenRoom,
 }: {
   agent: FleetAgent;
   client: Client;
+  /** Room_ids that share a display name with another room in the fleet's room
+   *  list — those chips carry a short id (docs/room-workbench.md, decision 6). */
+  homonyms: Set<string>;
   onOpenRoom(roomId: string): void;
 }) {
   const [points, setPoints] = useState<HistoryPoint[] | null>(null);
@@ -205,18 +210,26 @@ function AgentCard({
       ) : null}
 
       <div className="fleet-rooms">
-        {agent.rooms.map((r) => (
-          <button
-            key={r.room_id}
-            type="button"
-            className="room-chip"
-            onClick={() => onOpenRoom(r.room_id)}
-            title={r.name ?? r.room_id}
-          >
-            <span aria-hidden="true">⬡</span>
-            <span className="room-chip-name">{r.name ?? shortId(r.room_id)}</span>
-          </button>
-        ))}
+        {agent.rooms.map((r) => {
+          const name = roomDisplayName(r);
+          const isHomonym = homonyms.has(r.room_id);
+          return (
+            <button
+              key={r.room_id}
+              type="button"
+              className="room-chip"
+              onClick={() => onOpenRoom(r.room_id)}
+              title={r.name ?? r.room_id}
+              // A homonym chip's name alone can't say which room it opens, so
+              // the short id joins its accessible name, not just its visuals.
+              aria-label={isHomonym ? `${name} (${shortId(r.room_id)})` : undefined}
+            >
+              <span aria-hidden="true">⬡</span>
+              <span className="room-chip-name">{name}</span>
+              {isHomonym ? <code className="room-disambig mono">{shortId(r.room_id)}</code> : null}
+            </button>
+          );
+        })}
       </div>
 
       <div className="fleet-card-foot">
@@ -447,6 +460,9 @@ export function FleetDashboard({
   onOpenRoom(roomId: string): void;
 }) {
   const names = useNames();
+  // Homonyms are keyed off this identity's room list (the same rule the rail
+  // uses), so a chip is disambiguated the moment two of its rooms share a name.
+  const homonyms = homonymousRoomIds(rooms);
   const [fleet, setFleet] = useState<FleetResult | null>(null);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -610,7 +626,7 @@ export function FleetDashboard({
         ) : (
           <div className="fleet-grid">
             {visible.map((a) => (
-              <AgentCard key={a.identity_id} agent={a} client={client} onOpenRoom={onOpenRoom} />
+              <AgentCard key={a.identity_id} agent={a} client={client} homonyms={homonyms} onOpenRoom={onOpenRoom} />
             ))}
           </div>
         )}

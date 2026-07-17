@@ -20,6 +20,7 @@ import '../../theme.dart';
 import '../../widgets/buttons.dart';
 import '../../widgets/error_note.dart';
 import '../../widgets/modal_scaffold.dart';
+import '../../widgets/room_short_id.dart';
 import '../../widgets/template_text.dart';
 
 class LeaveRoomModal extends StatefulWidget {
@@ -91,6 +92,14 @@ class _LeaveRoomModalState extends State<LeaveRoomModal> {
                       fontWeight: FontWeight.w700,
                       color: tokens.text)),
             },
+          ),
+          // The short id is repeated ALWAYS, homonym or not (decision 6):
+          // leaving publishes a signed departure that cannot be undone, and
+          // the name alone cannot identify which room that is. One mono line.
+          const SizedBox(height: JeliyaSpacing.x8),
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: RoomShortId(roomId: widget.roomId, fontSize: 12.5),
           ),
           const SizedBox(height: JeliyaSpacing.x12),
           // Wrap + scale-down, not Row: inside a 360dp phone dialog the wider

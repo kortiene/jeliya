@@ -14,7 +14,9 @@ import 'package:jeliya_protocol/jeliya_protocol.dart' show RoomSummary;
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
 import '../session/daemon_session.dart';
+import '../session/room_homonyms.dart';
 import '../theme.dart';
+import '../widgets/room_short_id.dart';
 import '../widgets/template_text.dart';
 import '../widgets/tree_mark.dart';
 import 'sidebar.dart' show IdentityFooter;
@@ -83,23 +85,38 @@ class MobileRoomsScreen extends StatelessWidget {
                               TextStyle(fontSize: 13, color: tokens.textDim)),
                     ),
                   )
-                : Semantics(
-                    container: true,
-                    label: s.sidebarRoomsListLabel,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: JeliyaSpacing.x10),
-                      itemCount: session.rooms.length,
-                      separatorBuilder: (_, _) =>
-                          const SizedBox(height: JeliyaSpacing.x4),
-                      itemBuilder: (context, index) => _MobileRoomRow(
-                        room: session.rooms[index],
-                        selected:
-                            session.rooms[index].roomId == currentRoomId,
-                        onSelectRoom: onSelectRoom,
+                : Builder(builder: (context) {
+                    // Computed once for the whole list: the short id
+                    // disambiguates rooms that DISPLAY the same name, including
+                    // two untitled rooms (docs/room-workbench.md, decision 6).
+                    // TODO(#49): a future room-search surface accepting name and
+                    // short id lives here (the rooms list).
+                    final homonyms = homonymousRoomIds(
+                      [
+                        for (final r in session.rooms) (roomId: r.roomId, name: r.name)
+                      ],
+                      untitledLabel: s.shellUntitledRoom,
+                    );
+                    return Semantics(
+                      container: true,
+                      label: s.sidebarRoomsListLabel,
+                      child: ListView.separated(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: JeliyaSpacing.x10),
+                        itemCount: session.rooms.length,
+                        separatorBuilder: (_, _) =>
+                            const SizedBox(height: JeliyaSpacing.x4),
+                        itemBuilder: (context, index) => _MobileRoomRow(
+                          room: session.rooms[index],
+                          selected:
+                              session.rooms[index].roomId == currentRoomId,
+                          homonym:
+                              homonyms.contains(session.rooms[index].roomId),
+                          onSelectRoom: onSelectRoom,
+                        ),
                       ),
-                    ),
-                  ),
+                    );
+                  }),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -138,11 +155,17 @@ class _MobileRoomRow extends StatelessWidget {
   const _MobileRoomRow({
     required this.room,
     required this.selected,
+    required this.homonym,
     required this.onSelectRoom,
   });
 
   final RoomSummary room;
   final bool selected;
+
+  /// True when another room in the list DISPLAYS the same name — then the row
+  /// carries the short id (decision 6). Unique names get no disambiguator.
+  final bool homonym;
+
   final ValueChanged<String> onSelectRoom;
 
   @override
@@ -197,10 +220,22 @@ class _MobileRoomRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(room.name ?? s.shellUntitledRoom,
-                    style: JeliyaText.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(room.name ?? s.shellUntitledRoom,
+                          style: JeliyaText.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                    // The name yields first; the short id is the disambiguator
+                    // and must stay readable at any width.
+                    if (homonym) ...[
+                      const SizedBox(width: JeliyaSpacing.x6),
+                      RoomShortId(roomId: room.roomId),
+                    ],
+                  ],
+                ),
                 _metaLine(s, tokens, stateLabel, departed),
               ],
             ),

@@ -503,6 +503,15 @@ class AppStringsEn extends AppStrings {
   String get modalCreatingRoom => 'Creating…';
 
   @override
+  String get modalCreateRoomHomonymWarning =>
+      'A room with that name already exists on this device — this one will get its own ID.';
+
+  @override
+  String roomShortIdLabel(String shortId) {
+    return 'Room ID $shortId';
+  }
+
+  @override
   String get modalJoinRoomTitle => 'Join with a ticket';
 
   @override

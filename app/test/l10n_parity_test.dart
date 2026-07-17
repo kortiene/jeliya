@@ -132,6 +132,7 @@ void main() {
     expect(en.modalRoomNamePlaceholder, "Build Iroh Rooms MVP");
     expect(en.modalCreateRoom, "Create room");
     expect(en.modalCreatingRoom, "Creating…");
+    expect(en.modalCreateRoomHomonymWarning, "A room with that name already exists on this device — this one will get its own ID.");
     expect(en.modalJoinRoomTitle, "Join with a ticket");
     expect(en.modalTicketLabel, "Ticket");
     expect(en.modalTicketPlaceholder, "roomtkt1… or roomtkt1…#<endpoint_id>@host:port");
@@ -421,6 +422,7 @@ void main() {
     expect(en.fleetRelDaysAgo(7), "7d ago");
     expect(en.addAgentIntro('XemphasisX'), "Mint an agent-role ticket for a room you own. This XemphasisX — running the command below on the agent’s machine is a deliberate, human step (the security boundary).");
     expect(en.addAgentGuidance('XnpmX', 'XjeliyadX', 'XprefixX', 'XguideX'), "The runner lives in the repo — clone it and run this from the checkout (no XnpmX needed; Node 22+ required). Installed XjeliyadX via brew/script instead of building? Prefix the command with XprefixX so the runner finds it. Full guide: XguideX.");
+    expect(en.roomShortIdLabel('XshortIdX'), "Room ID XshortIdX");
     expect(en.modalJoinCopy('XcombinedX'), "Paste the invite you received. A combined invite (XcombinedX) fills in the peer address automatically.");
     expect(en.modalLeaveCopy('XroomX'), "Leaving XroomX publishes a signed membership departure. This is different from closing the local session; you’ll need a new invite to join again.");
     expect(en.onboardingJoinAttempt(7, 13), "Attempt 7/13");

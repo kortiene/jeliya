@@ -908,6 +908,18 @@ abstract class AppStrings {
   /// **'Creating…'**
   String get modalCreatingRoom;
 
+  /// Non-blocking inline warning under the room-name field in the Create Room modal, shown when the typed name (trimmed and case-folded) matches an existing local room's display name. Creation is NOT blocked and the Create button stays enabled — the name is a non-unique label and the new room gets its own room_id (docs/room-workbench.md, decision 6). Factual, not alarming.
+  ///
+  /// In en, this message translates to:
+  /// **'A room with that name already exists on this device — this one will get its own ID.'**
+  String get modalCreateRoomHomonymWarning;
+
+  /// Accessible label announcing a room's short id — the homonym disambiguator shown as a mono/code element next to a room name wherever homonymous rooms are listed (the rooms list rows and the fleet room chips) and always on the Leave Room confirmation. {shortId} is the truncated room_id from the shared shortId helper (e.g. 4f2a…9c1b) and must NOT be translated; only the word 'Room' translates (salon).
+  ///
+  /// In en, this message translates to:
+  /// **'Room ID {shortId}'**
+  String roomShortIdLabel(String shortId);
+
   /// Reused on three surfaces: the Join Room modal title, the onboarding join-card heading, and a compact sidebar entry-point row. Keep it short enough for a one-line sidebar row.
   ///
   /// In en, this message translates to:

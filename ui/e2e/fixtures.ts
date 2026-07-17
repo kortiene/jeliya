@@ -20,7 +20,10 @@ export type GlobalDest = 'Rooms' | 'Agent Fleet' | 'Settings';
 /** The room destinations, as they are labelled. */
 export type RoomDestLabel = 'Activity' | 'People' | 'Agents & Runs' | 'Files' | 'Pipes';
 
-/** Room names from the populated mock fixture (ui/src/lib/mock.ts). */
+/** Room names from the populated mock fixture (ui/src/lib/mock.ts). Each is
+ *  UNIQUE, so `roomItem(name)` matches exactly one row — the homonym pair below
+ *  is deliberately kept out of this map so callers that iterate it stay
+ *  single-match. */
 export const MOCK_ROOMS = {
   main: 'Build Iroh Rooms MVP',
   workspace: 'Agent Workspace',
@@ -28,6 +31,11 @@ export const MOCK_ROOMS = {
   design: 'Design System',
   research: 'Research Lab',
 } as const;
+
+/** The name shared by the two homonymous fixture rooms (docs/room-workbench.md,
+ *  decision 6). `roomItem(HOMONYM_ROOM)` matches BOTH rows, which is the point:
+ *  only the short id shown on each row tells them apart. */
+export const HOMONYM_ROOM = 'Bug Triage';
 
 interface AppFixtures {
   /** True when this project's viewport is in the compact (phone) layout. */
@@ -104,10 +112,15 @@ export class AppDriver {
     ).toHaveAttribute('data-jeliya-transport', /mock fixtures \(VITE_MOCK=1\)/);
   }
 
-  roomItem(name: string) {
-    return this.page
+  /** A room row in the rail. Homonymous rooms share a name (decision 6), so
+   *  `disambig` — the short id the row shows next to that name — narrows to a
+   *  single one. Unique-named rooms need only the name, so existing callers
+   *  pass it alone and still get their one row. */
+  roomItem(name: string, disambig?: string) {
+    const byName = this.page
       .getByRole('navigation', { name: 'Rooms' })
       .getByRole('button', { name, exact: false });
+    return disambig ? byName.filter({ hasText: disambig }) : byName;
   }
 
   /** The single-pane containers (visibility differs per breakpoint). */

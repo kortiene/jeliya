@@ -19,8 +19,10 @@ import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
 import '../routes.dart';
 import '../session/daemon_session.dart';
+import '../session/room_homonyms.dart';
 import '../theme.dart';
 import '../widgets/copy_button.dart';
+import '../widgets/room_short_id.dart';
 import '../widgets/tree_mark.dart';
 
 /// One primary-nav entry (Sidebar.tsx `NAV`).
@@ -475,6 +477,14 @@ class _RoomsList extends StatelessWidget {
         ),
       );
     }
+    // Computed once for the whole list (not per row): the short id disambiguates
+    // rooms that DISPLAY the same name, including two untitled rooms
+    // (docs/room-workbench.md, decision 6). TODO(#49): a future room-search
+    // surface accepting name and short id lives here (the rooms list).
+    final homonyms = homonymousRoomIds(
+      [for (final r in rooms) (roomId: r.roomId, name: r.name)],
+      untitledLabel: s.shellUntitledRoom,
+    );
     return SliverSemantics(
       container: true,
       label: s.sidebarRoomsListLabel,
@@ -486,6 +496,7 @@ class _RoomsList extends StatelessWidget {
           itemBuilder: (context, index) => _RoomItem(
             room: rooms[index],
             selected: rooms[index].roomId == currentRoomId,
+            homonym: homonyms.contains(rooms[index].roomId),
             onSelectRoom: onSelectRoom,
           ),
         ),
@@ -498,11 +509,18 @@ class _RoomItem extends StatelessWidget {
   const _RoomItem({
     required this.room,
     required this.selected,
+    required this.homonym,
     required this.onSelectRoom,
   });
 
   final RoomSummary room;
   final bool selected;
+
+  /// True when another room in the list DISPLAYS the same name — then the row
+  /// carries the short id (decision 6). Unique names get no disambiguator:
+  /// it is noise when the name already identifies the room.
+  final bool homonym;
+
   final ValueChanged<String> onSelectRoom;
 
   @override
@@ -562,10 +580,22 @@ class _RoomItem extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(room.name ?? s.shellUntitledRoom,
-                    style: JeliyaText.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(room.name ?? s.shellUntitledRoom,
+                          style: JeliyaText.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                    // The name yields first; the short id is the disambiguator
+                    // and must stay readable at any width.
+                    if (homonym) ...[
+                      const SizedBox(width: JeliyaSpacing.x6),
+                      RoomShortId(roomId: room.roomId),
+                    ],
+                  ],
+                ),
                 Text(s.sidebarRoomMeta(room.memberCount, stateLabel),
                     style: JeliyaText.meta,
                     maxLines: 1,

@@ -17,6 +17,7 @@ import { buildDiagnostics } from './lib/diagnostics';
 import type { DiagnosticEvent } from './lib/diagnostics';
 import { loadAliases, saveAliases, suggestedNames } from './lib/names';
 import { shortId } from './lib/format';
+import { roomDisplayName } from './lib/rooms';
 import { splitInvite } from './lib/invite';
 import { joinRoomWithRetry } from './lib/join';
 import type { JoinProgress } from './lib/join';
@@ -1068,6 +1069,7 @@ export default function App({ client }: { client: Client }) {
           <CreateRoomModal
             client={client}
             connected={conn === 'connected'}
+            rooms={rooms}
             onDiagnosticError={rememberError}
             onClose={() => setCreateOpen(false)}
             onCreated={(rid) => {
@@ -1226,6 +1228,7 @@ function JoinRoomModal({
 function CreateRoomModal({
   client,
   connected,
+  rooms,
   onDiagnosticError,
   onClose,
   onCreated,
@@ -1233,6 +1236,9 @@ function CreateRoomModal({
   client: Client;
   /** See JoinRoomModal.connected. */
   connected: boolean;
+  /** The local room list, to warn — never block — on a name that already
+   *  exists on this device (docs/room-workbench.md, decision 6). */
+  rooms: RoomSummary[];
   onDiagnosticError: DiagnosticErrorRecorder;
   onClose(): void;
   onCreated(roomId: string): void;
@@ -1240,6 +1246,13 @@ function CreateRoomModal({
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
+
+  // A name is a label, not an identity: the product does not own the user's
+  // vocabulary, so a local collision warns and proceeds. Folded the same way
+  // homonym detection folds (trim + case), so the warning and the resulting
+  // short-id disambiguator agree on what "already exists" means.
+  const typed = name.trim().toLowerCase();
+  const collides = typed.length > 0 && rooms.some((r) => roomDisplayName(r).trim().toLowerCase() === typed);
 
   const create = async () => {
     if (!name.trim() || busy || !connected) return;
@@ -1266,6 +1279,13 @@ function CreateRoomModal({
           <span>Room name</span>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Build Iroh Rooms MVP" autoFocus />
         </label>
+        {/* Non-blocking: role="status" (not "alert"), and the button stays
+            enabled. A duplicate name is allowed — the new room gets its own id. */}
+        {collides ? (
+          <p className="inline-warning" role="status">
+            A room named that already exists on this device — this one will get its own ID.
+          </p>
+        ) : null}
         <button type="submit" className="btn btn-primary" disabled={busy || !name.trim() || !connected}>
           {busy ? 'Creating…' : connected ? 'Create room' : 'Reconnecting…'}
         </button>
@@ -1318,8 +1338,12 @@ function LeaveRoomModal({
         }}
       >
         <p className="muted">
-          Leaving <strong>{roomName}</strong> publishes a signed membership departure. This is different from closing
-          the local session; you’ll need a new invite to join again.
+          Leaving <strong>{roomName}</strong>{' '}
+          {/* Always shown, homonym or not: leaving publishes a signed departure
+              that can't be undone, and the name alone cannot prove which room
+              this is (docs/room-workbench.md, decision 6). */}
+          <code className="room-disambig mono">{shortId(roomId)}</code> publishes a signed membership departure. This
+          is different from closing the local session; you’ll need a new invite to join again.
         </p>
         <div className="field-row">
           <button type="submit" className="btn btn-danger" disabled={busy || !connected}>

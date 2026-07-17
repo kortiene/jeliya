@@ -34,6 +34,7 @@ import '../l10n/tokens.dart';
 import '../layout.dart';
 import '../session/daemon_session.dart';
 import '../session/fleet_store.dart';
+import '../session/room_homonyms.dart';
 import '../theme.dart';
 import '../widgets/buttons.dart';
 import '../widgets/copy_button.dart';
@@ -41,6 +42,7 @@ import '../widgets/error_note.dart';
 import '../widgets/avatar.dart';
 import '../widgets/modal_scaffold.dart';
 import '../widgets/progress_bar.dart';
+import '../widgets/room_short_id.dart';
 import '../widgets/sender_name.dart';
 import '../widgets/tree_mark.dart';
 import 'modals/add_agent.dart';
@@ -298,6 +300,23 @@ class _FleetDashboardState extends State<FleetDashboard> {
           a.identityId.toLowerCase().contains(q);
     }).toList();
 
+    // Homonyms across EVERY local room, not just the ones the fleet
+    // references. A name is ambiguous when two of the user's rooms share it —
+    // whether or not both have agents — so a fleet chip whose twin has no
+    // agents yet must still be disambiguated (it would otherwise read as
+    // unique here while the rooms rail shows it is not). A fleet chip DISPLAYS
+    // `name ?? shortId(room_id)`, so that resolved string is what we group on:
+    // two rooms named the same collide and get the disambiguator, while
+    // untitled rooms already show their own short id and never do
+    // (docs/room-workbench.md, decision 6).
+    final roomHomonyms = homonymousRoomIds(
+      [
+        for (final r in session.rooms)
+          (roomId: r.roomId, name: r.name ?? shortId(r.roomId)),
+      ],
+      untitledLabel: '',
+    );
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(
         JeliyaSpacing.page,
@@ -328,6 +347,7 @@ class _FleetDashboardState extends State<FleetDashboard> {
           _AgentGrid(
             agents: visible,
             store: store,
+            roomHomonyms: roomHomonyms,
             onOpenRoom: widget.onOpenRoom,
           ),
       ],
@@ -707,11 +727,16 @@ class _AgentGrid extends StatelessWidget {
   const _AgentGrid({
     required this.agents,
     required this.store,
+    required this.roomHomonyms,
     required this.onOpenRoom,
   });
 
   final List<FleetAgent> agents;
   final FleetStore store;
+
+  /// room_ids that share a displayed name with another fleet room (decision 6).
+  final Set<String> roomHomonyms;
+
   final ValueChanged<String> onOpenRoom;
 
   @override
@@ -736,6 +761,7 @@ class _AgentGrid extends StatelessWidget {
                 child: _AgentCard(
                   agent: agent,
                   points: store.historyFor(agent.identityId),
+                  roomHomonyms: roomHomonyms,
                   onOpenRoom: onOpenRoom,
                 ),
               ),
@@ -752,6 +778,7 @@ class _AgentCard extends StatelessWidget {
   const _AgentCard({
     required this.agent,
     required this.points,
+    required this.roomHomonyms,
     required this.onOpenRoom,
   });
 
@@ -759,6 +786,9 @@ class _AgentCard extends StatelessWidget {
 
   /// Sparkline history: null while loading, empty when none.
   final List<HistoryPoint>? points;
+
+  /// room_ids that share a displayed name with another fleet room (decision 6).
+  final Set<String> roomHomonyms;
 
   final ValueChanged<String> onOpenRoom;
 
@@ -909,7 +939,11 @@ class _AgentCard extends StatelessWidget {
               children: [
                 for (final r in agent.rooms)
                   _RoomChip(
+                    roomId: r.roomId,
                     name: r.name ?? shortId(r.roomId),
+                    // A named room shared with another fleet room repeats its
+                    // short id; an untitled room already shows one as its name.
+                    homonym: roomHomonyms.contains(r.roomId) && r.name != null,
                     tooltip: r.name ?? r.roomId,
                     onTap: () => onOpenRoom(r.roomId),
                   ),
@@ -1050,12 +1084,22 @@ class _LabelChip extends StatelessWidget {
 
 class _RoomChip extends StatelessWidget {
   const _RoomChip({
+    required this.roomId,
     required this.name,
+    required this.homonym,
     required this.tooltip,
     required this.onTap,
   });
 
+  final String roomId;
   final String name;
+
+  /// True when this room shares its DISPLAYED name with another fleet room —
+  /// then the chip repeats the short id so the two can be told apart (decision
+  /// 6). An untitled room already shows its short id as [name] and is never a
+  /// homonym here.
+  final bool homonym;
+
   final String tooltip;
   final VoidCallback onTap;
 
@@ -1098,6 +1142,12 @@ class _RoomChip extends StatelessWidget {
                 maxLines: 1,
               ),
             ),
+            // The name yields first; the short id is the disambiguator and
+            // must stay readable at any width.
+            if (homonym) ...[
+              const SizedBox(width: 5),
+              RoomShortId(roomId: roomId, fontSize: 11),
+            ],
           ],
         ),
       ),

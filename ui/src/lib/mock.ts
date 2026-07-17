@@ -504,7 +504,29 @@ class MockClient implements Client {
           progress: 60,
         }),
       );
-      for (const room of [workspace, review, design, research]) this.rooms.set(room.room_id, room);
+      // Homonym fixture (docs/room-workbench.md, decision 6): two rooms that
+      // render the SAME display name. `name` is a non-unique label, so the rail
+      // rows, the fleet chips, and any destructive action must show the short
+      // room id to keep them apart. Appended AFTER the rooms above so the first
+      // active room (the boot-restored default) stays the MVP room. `triageA`
+      // has this identity as a plain member (so its roster offers Leave);
+      // `triageB` is owned here. QA is in both, so the fleet shows one agent
+      // card with two identically-named chips that only the short id separates.
+      const triageA = buildSideRoom(
+        'bug-triage-a',
+        'Bug Triage',
+        [MAYA, ALEX, SAM, QA],
+        'member',
+        'Triage inbound bug reports here.',
+      );
+      const triageB = buildSideRoom(
+        'bug-triage-b',
+        'Bug Triage',
+        [ALEX, SAM, QA],
+        'owner',
+        'Second triage room — same name, different room.',
+      );
+      for (const room of [workspace, review, design, research, triageA, triageB]) this.rooms.set(room.room_id, room);
       // Regression-suite hook (`?mock_ticket=<suffix>`): a pre-minted,
       // redeemable ticket into a room this identity has NOT joined yet (see
       // INVITED_ID), so a join success path exercises a real membership and
