@@ -127,9 +127,24 @@ fact is true:
 | Condition | Resolution |
 |---|---|
 | Room id not in `room.list` | Stay on the route; show "That room isn't on this device", with Rooms as the way out. |
-| `status` is `left` or `removed` | Show the signed fact ("You left this room" / "You were removed from this room"); do not open it. |
+| `status` is `left` or `removed` | Show the signed fact ("You left this room" / "You were removed from this room"); do not open it. See the note below — this is a choice, not a limit. |
 | `room.open` fails | Keep the route, surface the daemon's real error code and hint, offer Retry and Rooms. |
 | Session still booting | Show the route's loading state — never an empty timeline, which reads as "no messages". |
+
+**The archive is readable, and we are choosing not to read it.** A departure
+keeps the subject in the member set, so `require_local_room_access` still
+passes and `room.open` on a left or removed room is authorized — it returns
+the roster and the full local timeline (`supervisor.rs`; `room.list`
+deliberately keeps "joined-then-left archives"). Both clients nonetheless
+stop at the signed fact, which is what shipped before this record and what
+it keeps.
+
+That is a product decision, not a protocol constraint, and it is worth
+naming as one: reading an archive needs a surface that cannot lie about
+what you may still do in it — no composer, no invite, no leave — and that
+surface does not exist yet. Until it does, the honest thing is to state the
+departure rather than open a room whose every action would fail. Filed as
+follow-up work rather than smuggled in here.
 
 ### Legacy links
 
@@ -142,10 +157,21 @@ rather than 404s, and the redirect preserves the rest of the query string.
 ### Restoration
 
 `localStorage['jeliya.lastRoom']` (web) and `prefs.lastRoomId` (Flutter)
-restore *which room*, and only when the route does not already name one.
+restore *which room*, and **only from the bare root** — `/` on the web,
+a cold start with no route on Flutter. Every route in the table above is an
+explicit destination and is honored as one: `/rooms`, `/fleet`, and
+`/settings` name no room *on purpose*, and restoring one into them would
+make a direct link to Settings open a room, and a deliberate "Back to Rooms"
+undo itself.
+
 **An explicit route always wins over a restored room.** A bootstrap that
-re-picks the last room while the URL names a different one is a race, and
-the URL is the authority.
+re-picks the last room while the route names a different one — or names none
+— is a race, and the route is the authority. Restoration therefore happens
+**once per launch**, not on every reconnect: re-running it is how a client
+drags the user back into the room they just left.
+
+The restored room is *pushed* on top of Rooms rather than replacing it, so
+Back leaves the room for the rooms list instead of leaving the app.
 
 ## Decision 3 — the responsive shell contract
 
@@ -215,8 +241,8 @@ daemon proves.** These five are distinct and may never share a word.
 |---|---|---|
 | **Room session** — this daemon has a live session for the room | `room.list.open`, `daemon.status.rooms_open` | **Open** / **Closed** |
 | **Signed membership** — this identity's roster status | `room.list.status` (`active\|left\|removed`) | **Member** / **Left** / **Removed** |
-| **Roster** — a member's signed status and role | `room.members[].status`, `.role` | **Member** / **Invited**; roles **Owner** / **Member** / **Agent** |
-| **Peer reachability** — an observed transport path | `PeerStatus.state` (`connected\|connecting\|offline`) + `.path` (`direct\|relay\|null`) | **Direct** / **Relay** / **Connecting** / **Offline**; in aggregate **No peers connected** |
+| **Roster** — a member's signed status and role | `room.members[].status` (`active\|invited\|left\|removed`), `.role` | **Member** / **Invited** / **Left** / **Removed**, and **Unknown** for a status this client does not recognize; roles **Owner** / **Member** / **Agent** |
+| **Peer reachability** — an observed transport path | `PeerStatus.state` (`connected\|connecting\|offline`) + `.path` (`direct\|relay\|null`) | **Direct** / **Relay** / **Connected** / **Connecting** / **Offline**; in aggregate **No peers connected** |
 | **Agent liveness** — a fold over signed status events plus live peer state | `FleetAgent.liveness` (`online-idle\|working\|offline\|stale`) | **Working** / **Online** / **Stale** / **Offline**; the fleet filter spanning the first two is **Live** |
 | **Pipe connection** — a local forwarding session | `pipe.list` `state` + `connected` | **Connected** (exposed, forwarding) / **Open** (exposed, nothing connected) / **Closed** |
 
@@ -233,6 +259,13 @@ daemon proves.** These five are distinct and may never share a word.
   merely offline. Absence of an observed connection is not evidence of
   solitude. The honest label is **No peers connected**, which is what the
   daemon actually reported.
+
+`PeerStatus.path` is nullable **while `state` is `connected`** — the SDK
+knows the peer is reachable before it knows how. That is why the peer
+vocabulary carries a bare **Connected**: a connected peer with no path yet
+is not a relay peer, and labelling it one would invent the very fact
+(`direct` vs `relay`) the honesty rules exist to protect. Green is earned
+here — the link is real — but the path is not claimed until it is known.
 - **"N active" in the room header is retired**, and so is its fallback.
   It counted signed-active members but silently substituted the room's
   *total* member count whenever the roster had not loaded — asserting a
