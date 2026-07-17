@@ -2390,6 +2390,16 @@ button.sender-name:not(:disabled):hover {
   border: 1px solid var(--border);
 }
 
+/* "Open in Pipes" landing marker: identifies the row the timeline action
+   referred to. A brightened border, not the emerald accent — green is
+   reserved for verified live state, and arriving here is navigation, not
+   health. The class is removed again moments later (RightPanel). */
+.pipe-row.pipe-row-flash {
+  border-color: var(--text-dim);
+  outline: 1px solid var(--text-dim);
+  outline-offset: 0;
+}
+
 /* Closed pipes recede via a muted ground + dimmed icon only — blanket
    opacity would composite the 12px info text below the AA floor. */
 .pipe-row.closed {
