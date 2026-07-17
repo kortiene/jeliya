@@ -527,10 +527,16 @@ function PipesTab({
       row.scrollIntoView({ block: 'nearest' });
       row.focus({ preventScroll: true });
       setFlashPipeId(focusPipeId);
+      onFocusPipeHandled?.();
+    } else if (pipes.length > 0 && !pipes.some((p) => p.pipe_id === focusPipeId)) {
+      // The list is in and the pipe genuinely isn't there (closed/unknown):
+      // consume so a dead id can't re-fire forever.
+      onFocusPipeHandled?.();
     }
-    // Consume the request either way (an unknown id must not re-fire forever).
-    onFocusPipeHandled?.();
-  }, [focusPipeId, onFocusPipeHandled]);
+    // Otherwise pipe.list is still loading — keep the request pending; the
+    // effect re-runs when `pipes` arrives. Consuming here would silently
+    // drop the identification the user just asked for.
+  }, [focusPipeId, pipes, onFocusPipeHandled]);
   useEffect(() => {
     if (flashPipeId === null) return;
     const timer = window.setTimeout(() => setFlashPipeId(null), 1600);

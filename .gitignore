@@ -4,6 +4,7 @@ node_modules/
 ui/dist/
 ui/test-results/
 ui/playwright-report/
+/test-results/
 .jeliya-data*/
 .jeliya-demo*/
 *.log

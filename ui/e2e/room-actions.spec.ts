@@ -76,6 +76,29 @@ test('timeline Open in Pipes opens Pipes and identifies the pipe', async ({
   await expect(row).toBeInViewport();
 });
 
+test('mobile: the panel tab strip keeps the bottom navigation truthful', async ({
+  app,
+  page,
+  compact,
+}) => {
+  test.skip(!compact, 'the bottom bar only exists on compact');
+  await app.gotoPopulated();
+  await app.navigate('Files');
+  await expect(app.mobileTab('Files')).toHaveAttribute('aria-current', 'page');
+
+  // Switching to Pipes inside the panel's own tab strip must move the bottom
+  // navigation with it — a Files highlight over Pipes content is a lie.
+  await page.getByRole('tab', { name: 'Pipes', exact: false }).click();
+  await expect(app.mobileTab('Pipes')).toHaveAttribute('aria-current', 'page');
+  await expect(app.rightPanel.getByRole('heading', { name: 'Expose a pipe' })).toBeVisible();
+
+  // Members is a sub-view of the current pane (it has no bottom-nav
+  // destination): the pane and its highlight stay put.
+  await page.getByRole('tab', { name: 'Members', exact: false }).click();
+  await expect(app.mobileTab('Pipes')).toHaveAttribute('aria-current', 'page');
+  await expect(app.rightPanel.getByRole('heading', { name: 'Room roster' })).toBeVisible();
+});
+
 test('desktop: repeating Open in Pipes stays idempotent', async ({ app, compact }) => {
   test.skip(compact, 'on compact the source button lives in the hidden chat pane');
   await app.gotoPopulated();

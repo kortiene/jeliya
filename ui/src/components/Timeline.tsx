@@ -363,6 +363,10 @@ export function Timeline({
   const stickToBottom = useRef(savedView === null);
   const previousItemCount = useRef(0);
   const restorePending = useRef<TimelineView | null>(savedView);
+  // Seen-count baseline across a wholesale backlog reload (openRoom clears
+  // then refills the same room, e.g. on reconnect) — without it the whole
+  // reloaded backlog would be announced as new activity.
+  const reloadBaseline = useRef<number | null>(null);
   const lastScrollTop = useRef(savedView?.scrollTop ?? 0);
   const [newItemCount, setNewItemCount] = useState(0);
 
@@ -373,11 +377,16 @@ export function Timeline({
   newItemCountRef.current = newItemCount;
   const onSaveViewRef = useRef(onSaveView);
   onSaveViewRef.current = onSaveView;
+  const itemCountRef = useRef(0);
 
   const items: TimelineItem[] = [
     ...events.map((event) => ({ type: 'event' as const, event })),
     ...pendingMessages.map((pending) => ({ type: 'pending' as const, pending })),
   ].sort((a, b) => itemTs(a) - itemTs(b));
+  // Updated during render, not in the effect: the ResizeObserver path can run
+  // syncScroll between a commit and its effect, and must see this render's
+  // count, never the previous one.
+  itemCountRef.current = items.length;
 
   // The one place scroll position is written. Compact keeps inactive panes
   // display:none, which zeroes every measurement and (on reveal) wipes
@@ -395,7 +404,7 @@ export function Timeline({
       // Everything beyond what the reader had seen when they left is "new" —
       // counted here, once the backlog is really in, because the brief empty
       // render while room.open reloads must not be mistaken for churn.
-      setNewItemCount(Math.max(0, previousItemCount.current - restorePending.current.itemCount));
+      setNewItemCount(Math.max(0, itemCountRef.current - restorePending.current.itemCount));
       restorePending.current = null;
       return;
     }
@@ -413,11 +422,27 @@ export function Timeline({
     const previous = previousItemCount.current;
     previousItemCount.current = items.length;
     if (!scroller.current) return;
+    if (items.length === 0 && previous > 0 && loadingRef.current) {
+      // openRoom emptied the backlog for a reload of the same room (e.g. a
+      // reconnect re-running bootstrap). Remember how much the reader had
+      // actually seen — announcing the whole reloaded backlog as new would
+      // be a lie.
+      reloadBaseline.current = previous - newItemCountRef.current;
+    }
     // Live deltas only — while a restore is pending the backlog is being
     // reloaded wholesale and syncScroll derives the count from the saved view.
     if (!stickToBottom.current && restorePending.current === null) {
-      const delta = Math.max(0, items.length - previous);
-      if (delta > 0) setNewItemCount((count) => count + delta);
+      if (reloadBaseline.current !== null) {
+        if (items.length > 0) {
+          setNewItemCount(Math.max(0, items.length - reloadBaseline.current));
+          reloadBaseline.current = null;
+        }
+      } else {
+        const delta = Math.max(0, items.length - previous);
+        if (delta > 0) setNewItemCount((count) => count + delta);
+      }
+    } else {
+      reloadBaseline.current = null;
     }
     syncScroll();
   }, [items.length, syncScroll]);
@@ -445,7 +470,7 @@ export function Timeline({
       } else {
         save({
           scrollTop: lastScrollTop.current,
-          itemCount: previousItemCount.current - newItemCountRef.current,
+          itemCount: itemCountRef.current - newItemCountRef.current,
         });
       }
     };

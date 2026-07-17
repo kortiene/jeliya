@@ -805,7 +805,14 @@ export default function App({ client }: { client: Client }) {
 
         <RightPanel
           tab={tab}
-          onTab={setTab}
+          onTab={(next) => {
+            // The panel's own tab strip must keep the bottom navigation
+            // truthful on compact: switching to Files/Pipes there moves the
+            // active pane too (Members/Agents are sub-views of whichever
+            // pane is showing and have no bottom-nav destination).
+            if (next === 'files' || next === 'pipes') openPanelTab(next);
+            else setTab(next);
+          }}
           roomName={currentRoom?.name ?? null}
           members={members}
           timeline={timeline}
