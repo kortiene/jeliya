@@ -56,4 +56,40 @@ void main() {
     expect(find.descendant(of: grid, matching: find.text(en.fleetOpenRoom)),
         findsNWidgets(5));
   });
+
+  testWidgets('Needs Attention surfaces the failed agent with a dot+label reason, '
+      'before the aggregate tiles', (tester) async {
+    await pumpReadyApp(tester, newMockClient());
+    await tester.tap(find.descendant(
+        of: find.byType(Sidebar), matching: find.text(en.sidebarNavFleet)));
+    await pumpSteps(tester, steps: 10);
+
+    // The heading appears in BOTH the section and the filter pill — the same
+    // words by design (the ARB descriptions say translate both identically).
+    expect(find.text(en.fleetNeedsAttention), findsNWidgets(2));
+
+    // The failed Deploy Agent — the red case the old blue-only filter dropped —
+    // surfaces with a "Failed" reason chip rendered as dot + label (never colour
+    // alone). "Failed" is the reason label; the status chip reads "Deploy
+    // failed", so this matches only the reason chip.
+    final failedLabel = find.text(en.fleetAttentionFailed);
+    expect(failedLabel, findsOneWidget);
+    final reasonRow =
+        find.ancestor(of: failedLabel, matching: find.byType(Row)).first;
+    final dot = find.descendant(
+        of: reasonRow,
+        matching: find.byWidgetPredicate((w) =>
+            w is Container &&
+            w.decoration is BoxDecoration &&
+            (w.decoration! as BoxDecoration).shape == BoxShape.circle));
+    expect(dot, findsOneWidget,
+        reason: 'the reason chip is dot + label, never colour alone (WCAG AA)');
+
+    // Actionable agents appear BEFORE the aggregate totals: the failed reason
+    // chip (in the section) sits above the first KPI tile.
+    final reasonY = tester.getTopLeft(failedLabel).dy;
+    final tilesY = tester.getTopLeft(find.text(en.fleetStatActiveAgents)).dy;
+    expect(reasonY, lessThan(tilesY),
+        reason: 'the Needs Attention section precedes the KPI tiles');
+  });
 }
