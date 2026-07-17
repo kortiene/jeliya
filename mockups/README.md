@@ -1,7 +1,18 @@
 # Mockups
 
-These are the original product mockups the UI is built to — **layout and
-information-architecture reference only, not identity reference**.
+These are the original product mockups the UI is built to — **layout
+reference only, not identity reference, and no longer the
+information-architecture reference**.
+
+Their navigation inventory is **superseded** by the Room Workbench decision
+(`docs/room-workbench.md`): the sidebar's Home and Calls entries are gone,
+and Files and Pipes are room-scoped tools rather than global destinations.
+Where these images and that record disagree about *which destinations exist
+or what scope they have*, the record wins. They remain accurate about
+composition — the three-pane desktop shell, the room header over timeline
+and composer, the underline-active room tab strip, and (the mobile
+triptych) the bottom bar giving way to the room's own header once a room is
+open.
 
 Their visual identity predates the brand definition and contradicts it in
 places (cube/hexagon logo, multi-hue glowing badges — see the anti-references

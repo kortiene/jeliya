@@ -10,10 +10,18 @@ Small teams of humans and their AI agents working together in private
 peer-to-peer rooms. The humans are technical operators — they run daemons,
 invite peers, watch agent fleets, open pipes to local ports. The agents are
 full participants: they post statuses, artifacts, and results into the same
-timeline. Primary context is a desktop working session (three-pane shell);
-mobile is for checking in on rooms, agents, files, and pipes on the go
-(bottom tab bar). The user is always mid-task: chatting, sharing a file,
-reviewing an agent run, connecting a pipe.
+timeline. Primary context is a desktop working session (the wide shell:
+room rail, workspace, inspector); mobile is for checking in on rooms and
+agent runs on the go, then stepping into a room's workbench. The user is
+always mid-task: chatting, sharing a file, reviewing an agent run,
+connecting a pipe.
+
+Work is organized the same way on every screen: a few **global**
+destinations (Rooms, Agent Fleet, Settings), and a **room's** workbench
+(Activity, People, Agents & Runs, Files, Pipes) that exists once a room is
+selected — files and pipes are always about one room, so they live in one.
+The hierarchy, its routes, its responsive shells, and its status vocabulary
+are recorded in `docs/room-workbench.md`.
 
 ## Product Purpose
 

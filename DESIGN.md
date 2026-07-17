@@ -281,15 +281,45 @@ spinners with text.
   none is always paired with a replacement affordance)
 
 ### Navigation
-- **Sidebar:** chrome layer; items are full-width rounded (10px) rows in dim
-  ink; hover = card surface + ink; active = emerald tint + emerald line +
-  emerald glyph
+Structure — which destinations exist, what scope each has, and the routes
+that name them — is decided in `docs/room-workbench.md`. This section styles
+that structure; it does not define it.
+
+- **Room rail:** chrome layer; items are full-width rounded (10px) rows in
+  dim ink; hover = card surface + ink; active = emerald tint + emerald line
+  + emerald glyph
 - **Panel tabs:** bare buttons with a 2px transparent underline; the emerald
   underline is the single active-tab affordance; count badges as nested pills
-- **Mobile tab bar:** 58px-minimum bottom bar — 58px is the base height, not
+- **Compact tab bar:** 58px-minimum bottom bar — 58px is the base height, not
   a cap: the bar grows with the OS accessibility font scale rather than clamp
-  or clip its labels — five glyph+label tabs, active = emerald text,
-  `aria-current="page"`
+  or clip its labels — glyph+label tabs for the global destinations only,
+  active = emerald text, `aria-current="page"`. It gives way to the room's
+  own header once a room is open.
+
+### Responsive shells
+Three shells, one information architecture. Only the mechanics change.
+
+| Shell | Width | Layout |
+|---|---|---|
+| **Compact** | `< 900px` | One pane; global destinations in the bottom bar, room destinations via nested navigation |
+| **Medium** | `900–1279px` | Room rail + workspace; the inspector is a dismissible drawer over the workspace |
+| **Wide** | `>= 1280px` | Room rail + workspace + inspector, the inspector in flow as a third column |
+
+The workspace is always the room's Activity; the inspector is where its
+tools (People, Agents & Runs, Files, Pipes) render, and the route decides
+whether it is open — collapsing it *is* navigating to Activity.
+
+- **The workspace is what the width is for.** A third column is only paid
+  for when one fits: at 901px a three-column grid leaves the workspace
+  narrower than the phone layout it just left. Medium exists to prevent that.
+- **Panes hide, they do not unmount.** Scroll and selection survive a shell
+  change, an inspector toggle, and a destination switch.
+- **Connection status reserves space.** It never overlays Back, a header, or
+  list content, and a transition is announced once through one live region.
+- **Touch targets:** ≥44px/44dp on touch and compact viewports. The desktop
+  26px icon buttons stand only where a pointer is the input.
+- Coverage: 360, 899, 900, 920, 1280 logical px, plus safe-area insets and
+  200% text; Flutter covers English and French.
 
 ### Identity Marks (signature)
 The brand mark is the flat single-accent meeting tree (`TreeMark` — see
