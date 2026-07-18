@@ -4,7 +4,7 @@ import type { Client, DaemonErrorShape } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { joinRoomWithRetry } from '../lib/join';
 import type { JoinProgress } from '../lib/join';
-import { CopyButton, ErrorNote, TreeMark, Wordmark } from './ui';
+import { CopyButton, ErrorNote, SelfLabelField, TreeMark, Wordmark } from './ui';
 
 /** No identity yet → create one. No rooms yet → create or join by ticket.
  *  Mirrors identity.create / room.create / room.join exactly. */
@@ -12,11 +12,15 @@ export function Onboarding({
   step,
   client,
   identityId,
+  selfLabel,
+  onSetSelfLabel,
   onAdvance,
 }: {
   step: 'identity' | 'rooms';
   client: Client;
   identityId: string | null;
+  selfLabel: string;
+  onSetSelfLabel(label: string): void;
   onAdvance(): void;
 }) {
   return (
@@ -29,7 +33,13 @@ export function Onboarding({
       {step === 'identity' ? (
         <IdentityStep client={client} onAdvance={onAdvance} />
       ) : (
-        <RoomsStep client={client} identityId={identityId} onAdvance={onAdvance} />
+        <RoomsStep
+          client={client}
+          identityId={identityId}
+          selfLabel={selfLabel}
+          onSetSelfLabel={onSetSelfLabel}
+          onAdvance={onAdvance}
+        />
       )}
     </div>
   );
@@ -79,10 +89,14 @@ function IdentityStep({ client, onAdvance }: { client: Client; onAdvance(): void
 function RoomsStep({
   client,
   identityId,
+  selfLabel,
+  onSetSelfLabel,
   onAdvance,
 }: {
   client: Client;
   identityId: string | null;
+  selfLabel: string;
+  onSetSelfLabel(label: string): void;
   onAdvance(): void;
 }) {
   const [name, setName] = useState('');
@@ -143,6 +157,7 @@ function RoomsStep({
             Peers show up by this same hex id at first — click any name in a room to set a local nickname for them
             (only visible to you).
           </p>
+          <SelfLabelField value={selfLabel} onChange={onSetSelfLabel} />
         </div>
       ) : null}
       <div className="onboarding-columns">

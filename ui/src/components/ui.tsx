@@ -43,7 +43,8 @@ export function Wordmark({ as: Tag = 'span', className }: { as?: 'span' | 'h1'; 
 
 export function Avatar({ id, size = 34 }: { id: string; size?: number }) {
   const names = useNames();
-  const label = names.isSelf(id) ? 'You' : names.display(id);
+  // Self resolves to its device-local label (or "You") like everyone else.
+  const label = names.display(id);
   const color = colorForId(id);
   return (
     <span
@@ -64,11 +65,12 @@ export function Avatar({ id, size = 34 }: { id: string; size?: number }) {
 
 export function SenderName({ id, className = '' }: { id: string; className?: string }) {
   const names = useNames();
-  // "You" is not renameable — plain text, not a dead button.
+  // Self shows its device-local label (or "You"); it is renamed from
+  // onboarding/settings, not inline — plain text, not a dead button.
   if (names.isSelf(id)) {
     return (
       <span className={`sender-name ${className}`} title={id}>
-        You
+        {names.display(id)}
       </span>
     );
   }
@@ -81,6 +83,40 @@ export function SenderName({ id, className = '' }: { id: string; className?: str
     >
       {names.display(id)}
     </button>
+  );
+}
+
+/** The editable, device-local self label (docs/self-label.md). Holds its own
+ *  input state so trimming on persist never fights mid-word spaces; the parent
+ *  writes it to the local alias store. Empty clears the label back to "You". */
+export function SelfLabelField({
+  value,
+  onChange,
+  autoFocus = false,
+}: {
+  value: string;
+  onChange(next: string): void;
+  autoFocus?: boolean;
+}) {
+  const [text, setText] = useState(value);
+  return (
+    <label className="field">
+      <span>
+        Your name on this device <em className="muted">(local only)</em>
+      </span>
+      <input
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          onChange(e.target.value);
+        }}
+        placeholder="e.g. Alex"
+        maxLength={40}
+        autoFocus={autoFocus}
+        aria-label="Your name on this device"
+      />
+      <span className="field-hint muted">Only visible to you — never shared or signed.</span>
+    </label>
   );
 }
 

@@ -1,9 +1,12 @@
 import type { ConnectionState, DaemonStatus } from '../lib/protocol';
 import type { DiagnosticEvent } from '../lib/diagnostics';
+import { SelfLabelField } from './ui';
 
 export function SettingsPanel({
   status,
   conn,
+  selfLabel,
+  onSetSelfLabel,
   diagnosticsCopied,
   lastDiagnosticError,
   onCopyDiagnostics,
@@ -12,6 +15,8 @@ export function SettingsPanel({
 }: {
   status: DaemonStatus | null;
   conn: ConnectionState;
+  selfLabel: string;
+  onSetSelfLabel(label: string): void;
   diagnosticsCopied: boolean;
   lastDiagnosticError: DiagnosticEvent | null;
   onCopyDiagnostics(): void;
@@ -22,10 +27,16 @@ export function SettingsPanel({
     <section className="mobile-settings" aria-label="Settings">
       <h2 className="mobile-settings-title">Settings</h2>
       <div className="settings-card">
+        <SelfLabelField value={selfLabel} onChange={onSetSelfLabel} />
+      </div>
+      <div className="settings-card">
         <span className="settings-label">P2P Identity</span>
         <code className="mono settings-val">{status?.identity?.identity_id ?? '-'}</code>
       </div>
-      <p className="muted settings-note">Unrecoverable if this device or its data folder is lost.</p>
+      <p className="muted settings-note">
+        Your name is a local label — it never changes your cryptographic identity, which is unrecoverable if this
+        device or its data folder is lost.
+      </p>
       <div className="settings-card">
         <span className="settings-label">Endpoint</span>
         <code className="mono settings-val">{status?.endpoint?.endpoint_id ?? '-'}</code>

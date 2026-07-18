@@ -618,11 +618,7 @@ function PipesTab({
             </div>
             <div className="pipe-row-meta muted">
               by <SenderName id={pipe.opened_by} /> · authorized:{' '}
-              {pipe.authorized_peer
-                ? names.isSelf(pipe.authorized_peer)
-                  ? 'You'
-                  : <SenderName id={pipe.authorized_peer} />
-                : '—'}
+              {pipe.authorized_peer ? <SenderName id={pipe.authorized_peer} /> : '—'}
             </div>
             {pipe.state === 'open' ? (
               <div className="pipe-row-actions">

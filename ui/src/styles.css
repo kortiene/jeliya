@@ -3041,6 +3041,11 @@ select {
   color: var(--text-dim);
 }
 
+.field-hint {
+  font-size: 11.5px;
+  margin-top: -1px;
+}
+
 .field-row {
   display: flex;
   gap: 12px;

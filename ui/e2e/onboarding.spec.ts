@@ -38,6 +38,32 @@ test('creates an identity and a first room', async ({ app, page }) => {
   await expect(app.roomItem('Harness Test Room')).toBeVisible();
 });
 
+test('sets a device-local self label during onboarding', async ({ app, page }) => {
+  await app.gotoFresh();
+  await page.getByRole('button', { name: 'Create identity' }).click();
+  await expect(page.getByText('Your identity id')).toBeVisible();
+
+  // The optional device label sits with the identity handoff; naming yourself
+  // here carries straight into the app.
+  await page.getByLabel('Your name on this device').fill('Ada');
+  await page.getByLabel('Room name').fill('Ada Room');
+  await page.getByRole('button', { name: 'Create room' }).click();
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/activity/);
+
+  // Self is identified by the friendly label + the distinct "this device"
+  // marker in the roster of the room just created.
+  await app.goToRoomDest('People');
+  await expect(app.rightPanel.locator('.member-row', { hasText: 'this device' })).toContainText('Ada');
+
+  // And it persisted to Settings, where it can be changed later. (Close the
+  // inspector first so the route back to Rooms is available on every shell.)
+  await app.goToRoomDest('Activity');
+  await app.navigate('Settings');
+  await expect(
+    page.getByRole('region', { name: 'Settings' }).getByLabel('Your name on this device'),
+  ).toHaveValue('Ada');
+});
+
 test('surfaces a join failure honestly', async ({ app, page }) => {
   await app.gotoFresh();
   await page.getByRole('button', { name: 'Create identity' }).click();

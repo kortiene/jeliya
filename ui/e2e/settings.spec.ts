@@ -27,6 +27,41 @@ test('shows identity, endpoint, daemon state, and diagnostics', async ({ app, pa
   await expect(settings.getByRole('button', { name: 'Report issue' })).toBeVisible();
 });
 
+test('names this device with a local label, shown as self in the roster', async ({ app, page }) => {
+  await app.gotoPopulated();
+  const selfRow = app.rightPanel.locator('.member-row', { hasText: 'this device' });
+
+  // No label yet → self is the friendly "You" (never the raw hex id), with the
+  // distinct "this device" marker in the roster.
+  await app.openRoom(MOCK_ROOMS.main);
+  await app.goToRoomDest('People');
+  await expect(selfRow).toContainText('You');
+
+  // Closing the inspector (Activity) before a global destination keeps the
+  // route back to Rooms available on every shell.
+  await app.goToRoomDest('Activity');
+  await app.navigate('Settings');
+  const settings = page.getByRole('region', { name: 'Settings' });
+  const label = settings.getByLabel('Your name on this device');
+  await expect(label).toHaveValue('');
+  await label.fill('Captain');
+  // The label is local only — the cryptographic identity is untouched.
+  await expect(settings.locator('.settings-val').first()).toHaveText(/^[0-9a-f]{64}$/);
+
+  // Self now shows the friendly label, still marked as this device.
+  await app.openRoom(MOCK_ROOMS.main);
+  await app.goToRoomDest('People');
+  await expect(selfRow).toContainText('Captain');
+
+  // Clearing it falls back to "You".
+  await app.goToRoomDest('Activity');
+  await app.navigate('Settings');
+  await settings.getByLabel('Your name on this device').fill('');
+  await app.openRoom(MOCK_ROOMS.main);
+  await app.goToRoomDest('People');
+  await expect(selfRow).toContainText('You');
+});
+
 test('Settings keeps a way back out on every shell', async ({ app, page, compact }) => {
   // Boot lands inside a room, where the compact bottom bar gives way to the
   // room's app bar. Settings has no Back of its own, so the bar has to return

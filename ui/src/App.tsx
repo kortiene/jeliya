@@ -510,12 +510,25 @@ export default function App({ client }: { client: Client }) {
   const selfId = status?.identity?.identity_id ?? null;
   const names = useMemo<NameApi>(
     () => ({
-      display: (id: string) => aliases[id] ?? suggestedNames[id] ?? shortId(id),
+      // Self resolves to its device-local label, falling back to the friendly
+      // "You" — never the raw hex id (docs/self-label.md). Peers keep the
+      // alias → mock-suggestion → short-id order.
+      display: (id: string) =>
+        selfId !== null && id === selfId
+          ? aliases[id] ?? 'You'
+          : aliases[id] ?? suggestedNames[id] ?? shortId(id),
       isSelf: (id: string) => selfId !== null && id === selfId,
       requestRename: (id: string) => setRenameTarget(id),
     }),
     [aliases, selfId],
   );
+
+  // The self label is just the self identity's alias; editing it from
+  // onboarding/settings reuses the same local-alias write (no wire call).
+  const selfLabel = selfId !== null ? aliases[selfId] ?? '' : '';
+  const setSelfLabel = (label: string) => {
+    if (selfId !== null) saveRename(selfId, label);
+  };
 
   const saveRename = (id: string, name: string) => {
     setAliases((prev) => {
@@ -906,6 +919,8 @@ export default function App({ client }: { client: Client }) {
           step={phase === 'no-identity' ? 'identity' : 'rooms'}
           client={client}
           identityId={status?.identity?.identity_id ?? null}
+          selfLabel={selfLabel}
+          onSetSelfLabel={setSelfLabel}
           onAdvance={() => setBootNonce((n) => n + 1)}
         />
       </NamesContext.Provider>
@@ -1114,6 +1129,8 @@ export default function App({ client }: { client: Client }) {
         <SettingsPanel
           status={status}
           conn={conn}
+          selfLabel={selfLabel}
+          onSetSelfLabel={setSelfLabel}
           diagnosticsCopied={diagnosticsCopied}
           lastDiagnosticError={lastDiagnosticError}
           onCopyDiagnostics={() => void copyDiagnostics()}
