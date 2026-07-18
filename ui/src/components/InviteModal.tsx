@@ -425,16 +425,17 @@ export function InviteModal({
               );
             })}
           </div>
-          <details className="invite-advanced" open={advancedOpen}>
-            <summary
-              className="muted"
-              onClick={(e) => {
-                e.preventDefault();
-                setAdvancedOpen((open) => !open);
-              }}
-            >
-              Advanced / custom expiry
-            </summary>
+          {/* `onToggle` rather than a click handler that preventDefaults the
+              native toggle: suppressing the browser's own behaviour also
+              suppressed find-in-page auto-expansion, and made the open state
+              depend on a React handler firing. The element stays the source of
+              truth; state just follows it (issue #72). */}
+          <details
+            className="invite-advanced"
+            open={advancedOpen}
+            onToggle={(e) => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
+          >
+            <summary className="muted">Advanced / custom expiry</summary>
             <label className="field">
               <span>
                 Custom expiry seconds <em className="muted">(overrides the preset above)</em>

@@ -143,6 +143,7 @@ function AgentCard({
   homonyms: Set<string>;
   onOpenRoom(roomId: string): void;
 }) {
+  const names = useNames();
   const [points, setPoints] = useState<HistoryPoint[] | null>(null);
   const historyRoom = agent.latest?.room_id ?? agent.rooms[0]?.room_id ?? null;
 
@@ -192,7 +193,13 @@ function AgentCard({
             {agent.identity_id.slice(0, 12)}…
           </code>
         </div>
-        <CopyButton text={agent.identity_id} label="⧉" ariaLabel="Copy identity ID" />
+        {/* One card per agent, so a bare "Copy identity ID" would repeat N
+            times with nothing to tell the copies apart — name whose id it is. */}
+        <CopyButton
+          text={agent.identity_id}
+          label="⧉"
+          ariaLabel={`Copy identity ID for ${names.display(agent.identity_id)}`}
+        />
       </div>
 
       <div className="fleet-card-mid">
@@ -618,7 +625,10 @@ export function FleetDashboard({
   ];
 
   return (
-    <section className="fleet-view" aria-label="Agent Fleet">
+    // A full-page destination owns the page's `main` landmark (issue #72),
+    // named by its own `h1` rather than a duplicated `aria-label` — one string,
+    // so the landmark and the heading can never drift apart.
+    <main className="fleet-view" id="fleet-main" aria-labelledby="fleet-title">
       <header className="fleet-head">
         <div className="fleet-head-top">
           <div className="fleet-title">
@@ -628,7 +638,7 @@ export function FleetDashboard({
                 page titled "Agents" leaves the user to guess whether this is
                 the same place as a room's "Agents & Runs" — the exact
                 collision the record exists to remove. */}
-            <h1>Agent Fleet</h1>
+            <h1 id="fleet-title">Agent Fleet</h1>
           </div>
           <div className="fleet-head-actions">
             <input
@@ -672,12 +682,8 @@ export function FleetDashboard({
         {!loaded ? (
           <>
             {/* Skeleton mirrors the real anatomy (stat tiles + cards) so the
-                data swap is layout-shift-free. No sr-only utility class exists,
-                hence the inline visually-hidden style on the status text. */}
-            <div
-              role="status"
-              style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clipPath: 'inset(50%)' }}
-            >
+                data swap is layout-shift-free. */}
+            <div role="status" className="visually-hidden">
               Loading agents
             </div>
             <div className="fleet-stats" aria-hidden="true">
@@ -723,6 +729,6 @@ export function FleetDashboard({
       </div>
 
       {addOpen ? <AddAgentModal client={client} rooms={rooms} onClose={() => setAddOpen(false)} /> : null}
-    </section>
+    </main>
   );
 }

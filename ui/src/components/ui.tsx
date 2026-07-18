@@ -273,6 +273,12 @@ export function Modal({
       >
         <header className="modal-head">
           <h2>{title}</h2>
+          {/* Deliberately just "Close" (the ARIA dialog pattern's own name for
+              it), not "Close <title>". Exactly one dialog is ever open, and the
+              dialog announces its own name on entry, so the short name is
+              unambiguous where it is heard. Folding the title in also makes the
+              close button match any search for the title itself — including an
+              AT user's find-by-name — which is worse, not better. */}
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close" disabled={busy}>
             ✕
           </button>
@@ -306,15 +312,25 @@ export function FetchControl({
   state,
   availability,
   availabilityPending = false,
+  fileName,
   onFetch,
   onRecheck,
 }: {
   state?: FetchState;
   availability?: FetchAvailability;
   availabilityPending?: boolean;
+  /** The file this control acts on. Many files render side by side, each
+   *  producing a control whose visible text is the same single word, so the
+   *  name joins the ACCESSIBLE name to keep "Fetch, Fetch, Fetch" from being
+   *  all a screen-reader user hears (issue #72). The visible label is
+   *  deliberately left short — the file name is already beside it. */
+  fileName?: string;
   onFetch(): void;
   onRecheck?(): void;
 }) {
+  // Undefined when no name was passed, which leaves the visible text as the
+  // accessible name — the correct fallback, never an invented one.
+  const named = (action: string) => (fileName ? `${action} ${fileName}` : undefined);
   if (!state) {
     if (availabilityPending) {
       return (
@@ -328,7 +344,12 @@ export function FetchControl({
         <span className="fetch-actions" title={providerTitle(availability)}>
           <span className="fetch-offline">No provider online</span>
           {onRecheck ? (
-            <button type="button" className="btn btn-sm btn-ghost" onClick={onRecheck}>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={onRecheck}
+              aria-label={named('Recheck providers for')}
+            >
               Recheck
             </button>
           ) : null}
@@ -336,7 +357,13 @@ export function FetchControl({
       );
     }
     return (
-      <button type="button" className="btn btn-sm" onClick={onFetch} title={providerTitle(availability)}>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={onFetch}
+        title={providerTitle(availability)}
+        aria-label={named('Fetch')}
+      >
         Fetch
       </button>
     );
@@ -352,7 +379,16 @@ export function FetchControl({
     return (
       <span className="fetch-actions">
         {state.url ? (
-          <a className="btn btn-sm btn-primary" href={state.url} target="_blank" rel="noreferrer">
+          <a
+            className="btn btn-sm btn-primary"
+            href={state.url}
+            target="_blank"
+            rel="noreferrer"
+            // Starts with the VISIBLE label. WCAG 2.5.3 Label in Name requires
+            // the accessible name to contain the visible text, or a
+            // speech-input user saying "click Open file" matches nothing.
+            aria-label={named('Open file')}
+          >
             Open file
           </a>
         ) : (
@@ -360,7 +396,11 @@ export function FetchControl({
             {state.phase === 'verified' ? '✓ Verified' : '✓ Fetched'}
           </span>
         )}
-        <CopyButton text={state.path} label="Copy path" ariaLabel="Copy saved file path" />
+        <CopyButton
+          text={state.path}
+          label="Copy path"
+          ariaLabel={fileName ? `Copy saved path for ${fileName}` : 'Copy saved file path'}
+        />
       </span>
     );
   }
@@ -373,7 +413,12 @@ export function FetchControl({
       <span className="fetch-actions" title={providerTitle(availability)}>
         <span className="fetch-offline">No provider online</span>
         {onRecheck ? (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={onRecheck}>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={onRecheck}
+            aria-label={named('Recheck providers for')}
+          >
             Recheck
           </button>
         ) : null}
@@ -381,7 +426,7 @@ export function FetchControl({
     );
   }
   return (
-    <button type="button" className="btn btn-sm btn-danger" onClick={onFetch}>
+    <button type="button" className="btn btn-sm btn-danger" onClick={onFetch} aria-label={named('Retry fetching')}>
       Retry
     </button>
   );

@@ -60,7 +60,7 @@ test('sets a device-local self label during onboarding', async ({ app, page }) =
   await app.goToRoomDest('Activity');
   await app.navigate('Settings');
   await expect(
-    page.getByRole('region', { name: 'Settings' }).getByLabel('Your name on this device'),
+    page.getByRole('main', { name: 'Settings' }).getByLabel('Your name on this device'),
   ).toHaveValue('Ada');
 });
 

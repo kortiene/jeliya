@@ -11,6 +11,7 @@ import {
   runSummary,
 } from '../lib/timelineRuns';
 import type { ActivityCategory, TimelineRun } from '../lib/timelineRuns';
+import { scrollBehavior } from '../lib/motion';
 import { Avatar, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
 import type { FetchAvailability, FetchState } from './ui';
 
@@ -67,7 +68,9 @@ function FileTile({
   return (
     <div className="file-tile-wrap">
       <div className="file-tile">
-        <span className="file-icon" style={{ background: `${tint}22`, color: tint }}>
+        {/* Decorative: the extension is already in the file name and the meta
+            line below, so announcing the glyph reads it a third time. */}
+        <span className="file-icon" style={{ background: `${tint}22`, color: tint }} aria-hidden="true">
           {ext.slice(0, 4)}
         </span>
         <span className="file-tile-info">
@@ -85,6 +88,7 @@ function FileTile({
             state={state}
             availability={availability}
             availabilityPending={!availability}
+            fileName={file.name}
             onFetch={() => onFetch(file.file_id)}
             onRecheck={onRecheckFiles}
           />
@@ -390,7 +394,15 @@ function PendingMessageCard({
           {message.phase !== 'failed' ? <span className="spinner" aria-hidden="true" /> : null}
           <span>{label}</span>
           {message.phase === 'failed' ? (
-            <button type="button" className="text-btn" onClick={() => onRetry(message.clientId)}>
+            // Several sends can fail in one timeline, so a bare "Retry" would
+            // repeat with nothing to tell the copies apart. The message's own
+            // time names which send this retries.
+            <button
+              type="button"
+              className="text-btn"
+              onClick={() => onRetry(message.clientId)}
+              aria-label={`Retry sending your message from ${formatTime(message.ts)}`}
+            >
               Retry
             </button>
           ) : null}
@@ -663,8 +675,7 @@ export function Timeline({
     if (!el) return;
     // Reduced motion is a contract, not a hint (WCAG floor in CONTRIBUTING):
     // the jump to the newest event lands instantly instead of animating.
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    el.scrollTo({ top: el.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' });
+    el.scrollTo({ top: el.scrollHeight, behavior: scrollBehavior() });
     stickToBottom.current = true;
     setNewItemCount(0);
   };

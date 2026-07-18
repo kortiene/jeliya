@@ -12,7 +12,7 @@ test('shows identity, endpoint, daemon state, and diagnostics', async ({ app, pa
   // reached is a fact about the URL, not only about what happens to be painted.
   await expect(page).toHaveURL(/\/settings$/);
 
-  const settings = page.getByRole('region', { name: 'Settings' });
+  const settings = page.getByRole('main', { name: 'Settings' });
   await expect(settings).toBeVisible();
   await expect(settings.getByText('P2P Identity')).toBeVisible();
   await expect(settings.getByText('Endpoint')).toBeVisible();
@@ -41,7 +41,7 @@ test('names this device with a local label, shown as self in the roster', async 
   // route back to Rooms available on every shell.
   await app.goToRoomDest('Activity');
   await app.navigate('Settings');
-  const settings = page.getByRole('region', { name: 'Settings' });
+  const settings = page.getByRole('main', { name: 'Settings' });
   const label = settings.getByLabel('Your name on this device');
   await expect(label).toHaveValue('');
   await label.fill('Captain');
@@ -69,7 +69,7 @@ test('Settings keeps a way back out on every shell', async ({ app, page, compact
   // rail plays the same part on medium and wide.
   await app.gotoPopulated();
   await app.navigate('Settings');
-  await expect(page.getByRole('region', { name: 'Settings' })).toBeVisible();
+  await expect(page.getByRole('main', { name: 'Settings' })).toBeVisible();
 
   if (compact) await expect(app.tabBar).toBeVisible();
   else await expect(app.sidebar).toBeVisible();

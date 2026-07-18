@@ -84,7 +84,7 @@ test('the fleet shows short ids only on homonymous room chips', async ({ app, pa
   await app.gotoPopulated();
   await app.navigate('Agent Fleet');
 
-  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
+  const fleet = page.getByRole('main', { name: 'Agent Fleet' });
   const qaCard = fleet.locator('.fleet-card', { hasText: 'QA Agent' });
   await expect(qaCard).toHaveCount(1);
 

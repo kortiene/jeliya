@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { DaemonErrorShape, FileEntry, Member, PipeEntry, TimelineEvent } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { extOf, fileTint, formatBytes, formatTime, labelTone, prettyLabel } from '../lib/format';
+import { ROOM_DEST_LABELS } from '../lib/routes';
 import type { InspectorDest, RoomDest } from '../lib/routes';
 import type { Shell } from '../lib/shell';
+import { scrollIntoView } from '../lib/motion';
 import { RoomNav } from './RoomNav';
 import { useNames } from './names';
 import { Avatar, ErrorNote, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
@@ -99,7 +101,10 @@ function MembersTab({
 
   return (
     <div className="panel-list members-panel">
-      <section className="members-summary" aria-label="Room members summary">
+      {/* A plain section, not a labelled one: an `aria-label` here would make
+          this a `region` landmark nested inside the inspector's own landmark,
+          which is noise — the h2 below already structures it (issue #72). */}
+      <section className="members-summary">
         <div className="members-summary-copy">
           <h2>
             {members.length} in the roster
@@ -290,7 +295,13 @@ function FilesTab({
     if (selectedFileId === lastScrolled.current) return;
     const row = rowRefs.current.get(selectedFileId);
     if (row) {
-      row.scrollIntoView({ block: 'nearest' });
+      // Reduced motion is a contract, not a hint (CONTRIBUTING.md) — the shared
+      // helper is the only place that decides `behavior`.
+      scrollIntoView(row);
+      // Land focus on the row the deep link named, exactly as the Pipes tool
+      // does. Scrolling a row into view while leaving focus behind was two
+      // behaviours for one navigation contract.
+      row.querySelector<HTMLElement>('.file-row-select')?.focus({ preventScroll: true });
       lastScrolled.current = selectedFileId;
     } else if (files.length > 0 && !files.some((f) => f.file_id === selectedFileId)) {
       lastScrolled.current = selectedFileId;
@@ -346,7 +357,9 @@ function FilesTab({
 
   return (
     <div className="panel-list files-panel">
-      <section className={`files-hero${files.length === 0 ? ' is-empty' : ''}`} aria-label="Files summary">
+      {/* Plain section — see the members summary above on why this is not a
+          labelled region. */}
+      <section className={`files-hero${files.length === 0 ? ' is-empty' : ''}`}>
         <span className="files-hero-mark" aria-hidden="true">
           ▤
         </span>
@@ -572,6 +585,7 @@ function FilesTab({
                     <FetchControl
                       state={fetchState}
                       availability={availability}
+                      fileName={file.name}
                       onFetch={() => onFetch(file.file_id)}
                       onRecheck={onRecheckFiles}
                     />
@@ -642,8 +656,13 @@ function PipesTab({
     if (selectedPipeId === lastFlashed.current) return;
     const row = rowRefs.current.get(selectedPipeId);
     if (row) {
-      row.scrollIntoView({ block: 'nearest' });
-      row.focus({ preventScroll: true });
+      scrollIntoView(row);
+      // Focus the row's own button rather than the row box: programmatic focus
+      // on a `tabindex="-1"` div does not match `:focus-visible`, so the global
+      // focus ring never rendered and the only landing cue was the 1.6s flash.
+      // A real control keeps the browser's keyboard-vs-pointer heuristic, so a
+      // keyboard user arriving from "Open in Pipes" gets a persistent ring.
+      row.querySelector<HTMLElement>('.pipe-row-head')?.focus({ preventScroll: true });
       setFlashPipeId(selectedPipeId);
       lastFlashed.current = selectedPipeId;
     } else if (pipes.length > 0 && !pipes.some((p) => p.pipe_id === selectedPipeId)) {
@@ -728,7 +747,6 @@ function PipesTab({
               if (el) rowRefs.current.set(pipe.pipe_id, el);
               else rowRefs.current.delete(pipe.pipe_id);
             }}
-            tabIndex={-1}
             className={`pipe-row${pipe.state === 'closed' ? ' closed' : ''}${
               flashPipeId === pipe.pipe_id ? ' pipe-row-flash' : ''
             }${selected ? ' pipe-row-selected' : ''}`}
@@ -825,6 +843,7 @@ export function RightPanel({
   onPipeClose,
   onPipeExpose,
   onLeaveRoom,
+  isPage,
 }: {
   tab: PanelTab;
   /** Compact renders the room nav inside this panel, so it needs the same
@@ -860,14 +879,33 @@ export function RightPanel({
   onPipeClose(pipeId: string): void;
   onPipeExpose(target: string, peerIdentity: string): Promise<void>;
   onLeaveRoom(): void;
+  /** True when this panel is the only live surface — the whole screen on
+   *  compact, a drawer over an inert workspace on medium. It then carries the
+   *  page's `main` landmark and its `h1` (the room name, whose `h1` in the
+   *  workspace header is out of the accessibility tree in both cases). On wide
+   *  it opens beside a live workspace and stays `complementary`. */
+  isPage: boolean;
 }) {
+  // Named for the tool it is showing, so the landmark's name changes with the
+  // route and never collides with the room rail's (issue #72).
+  const panelName = `${ROOM_DEST_LABELS[tab]} inspector`;
+  const RoomHeading = isPage ? 'h1' : 'div';
   return (
-    <aside className={`right-panel${shell === 'medium' ? ' right-panel-drawer' : ''}`}>
+    // A plain `div` with an explicit role rather than an `<aside>` — see the
+    // room rail: overriding a landmark element's implicit role trips
+    // `aria-allowed-role`, and switching the element between shells would
+    // remount the tool and lose its scroll position.
+    <div
+      className="right-panel"
+      id="room-inspector"
+      role={isPage ? 'main' : 'complementary'}
+      aria-label={isPage ? undefined : panelName}
+    >
       {/* The room stays named on every room-scoped surface (decision 3). On
           compact this panel IS the screen and the room header is off in the
-          hidden `.center` pane; on medium it floats over the workspace. Not
-          aria-hidden — on compact this is the only place the room name reaches
-          the accessible tree. */}
+          hidden `.center` pane; on medium it floats over a workspace made
+          inert. Not aria-hidden — in both cases this is the only place the room
+          name reaches the accessible tree, which is why it is the `h1` there. */}
       <div className="panel-head">
         {/* One navigation, three affordances. Compact needs a Back of its own:
             this panel is the whole screen there and the bottom bar is gone, so
@@ -878,7 +916,7 @@ export function RightPanel({
             <span aria-hidden="true">‹</span>
           </button>
         ) : null}
-        {roomName ? <div className="panel-room-context">{roomName}</div> : <span />}
+        {roomName ? <RoomHeading className="panel-room-context">{roomName}</RoomHeading> : <span />}
         {shell !== 'compact' ? (
           <button type="button" className="icon-btn panel-close" onClick={onClose} aria-label="Close inspector">
             <span aria-hidden="true">×</span>
@@ -891,7 +929,7 @@ export function RightPanel({
           workspace rather than over it, does the workspace keep the strip and
           this render nothing: two tablists for one room would be two tablists
           in the a11y tree. */}
-      {shell !== 'wide' ? <RoomNav dest={tab} counts={counts} onDest={onDest} /> : null}
+      {shell !== 'wide' ? <RoomNav dest={tab} counts={counts} onDest={onDest} controlsId="panel-body" /> : null}
       <div className="panel-body" id="panel-body" role="tabpanel" aria-labelledby={`room-tab-${tab}`}>
         {tab === 'people' ? <MembersTab members={members} selfId={selfId} onLeaveRoom={onLeaveRoom} /> : null}
         {tab === 'agents' ? <AgentsTab members={members} timeline={timeline} /> : null}
@@ -923,6 +961,6 @@ export function RightPanel({
           />
         ) : null}
       </div>
-    </aside>
+    </div>
   );
 }
