@@ -22,18 +22,6 @@ export type RoomDest = (typeof ROOM_DESTS)[number];
 /** The room tools that render in the inspector; `activity` is the workspace. */
 export type InspectorDest = Exclude<RoomDest, 'activity'>;
 
-/** The one place each room destination is named (docs/room-workbench.md,
- *  decision 1: "the destination is named once"). The tab strip, the
- *  inspector's landmark name, and the document title all read it here, so a
- *  tab reading "Files" can never open a landmark announced as something else. */
-export const ROOM_DEST_LABELS: Record<RoomDest, string> = {
-  activity: 'Activity',
-  people: 'People',
-  agents: 'Agents & Runs',
-  files: 'Files',
-  pipes: 'Pipes',
-};
-
 export type Route =
   | { kind: 'rooms' }
   | { kind: 'room'; roomId: string; dest: RoomDest; item?: string }

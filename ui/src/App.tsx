@@ -28,11 +28,17 @@ import { splitInvite } from './lib/invite';
 import { joinRoomWithRetry } from './lib/join';
 import type { JoinProgress } from './lib/join';
 import { useRoute } from './lib/history';
-import { inspectorDest, legacyTabDest, routeItem, routeRoomId, ROOM_DEST_LABELS } from './lib/routes';
+import { inspectorDest, legacyTabDest, routeItem, routeRoomId } from './lib/routes';
 import type { InspectorDest, RoomDest } from './lib/routes';
 import { useShell } from './lib/shell';
 import { documentTitle, pageRegion } from './lib/landmarks';
 import type { PageRegion } from './lib/landmarks';
+import type { Catalog } from './l10n/catalog';
+import { roomDestLabel } from './l10n/destinations';
+import { useFormats, useStrings } from './l10n/strings';
+import type { Formats } from './l10n/formats';
+import { Template } from './l10n/template';
+import { BRAND, Command, Example, ISSUE_URL } from './l10n/tokens';
 import uiPackage from '../package.json';
 import { NamesContext } from './components/names';
 import type { NameApi } from './components/names';
@@ -56,7 +62,6 @@ import { SettingsPanel } from './components/SettingsPanel';
 type Phase = 'boot' | 'no-identity' | 'no-rooms' | 'ready';
 
 const LAST_ROOM_KEY = 'jeliya.lastRoom';
-const ISSUE_URL = 'https://github.com/kortiene/jeliya/issues/new';
 
 /** The DOM id of each pane that can be the page, so the skip link can target
  *  whichever one currently is (lib/landmarks.ts). */
@@ -69,6 +74,8 @@ const PAGE_REGION_IDS: Record<PageRegion, string> = {
 };
 
 const COMPOSER_ID = 'composer-input';
+// i18n-exempt: literal combined-invite wire syntax rendered inside localized copy.
+const COMBINED_INVITE_SYNTAX = 'ticket#address';
 
 /** Skip links — the first two tab stops on every page.
  *
@@ -83,6 +90,7 @@ const COMPOSER_ID = 'composer-input';
  *  destination instead of from the rail the user just skipped.
  */
 function SkipLinks({ workspaceId, composerId }: { workspaceId: string; composerId: string | null }) {
+  const s = useStrings();
   const skipTo = (id: string) => (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
     const el = document.getElementById(id);
@@ -108,11 +116,11 @@ function SkipLinks({ workspaceId, composerId }: { workspaceId: string; composerI
   return (
     <div className="skip-links">
       <a className="skip-link" href={`#${workspaceId}`} onClick={skipTo(workspaceId)}>
-        Skip to main content
+        {s.shellSkipToMain}
       </a>
       {composerId ? (
         <a className="skip-link" href={`#${composerId}`} onClick={skipTo(composerId)}>
-          Skip to message composer
+          {s.shellSkipToComposer}
         </a>
       ) : null}
     </div>
@@ -120,6 +128,21 @@ function SkipLinks({ workspaceId, composerId }: { workspaceId: string; composerI
 }
 
 type DiagnosticErrorRecorder = (context: string, error: unknown) => DaemonErrorShape;
+
+function joinProgressMessage(s: Catalog, formats: Formats, progress: JoinProgress): string {
+  if (progress.phase === 'retrying' && progress.retryDelayMs !== undefined) {
+    const seconds = Math.round(progress.retryDelayMs / 1000);
+    return s.onboardingJoinRetryWait(seconds, formats.count(seconds));
+  }
+  return progress.attempt === 1
+    ? s.onboardingJoinFinding
+    : s.onboardingJoinRetryingAttempt(
+        progress.attempt,
+        progress.maxAttempts,
+        formats.count(progress.attempt),
+        formats.count(progress.maxAttempts),
+      );
+}
 
 async function copyText(text: string): Promise<void> {
   try {
@@ -171,6 +194,7 @@ function mergeFetchedFiles(
 }
 
 export default function App({ client }: { client: Client }) {
+  const s = useStrings();
   const [conn, setConn] = useState<ConnectionState>(client.getState());
   const [phase, setPhase] = useState<Phase>('boot');
   const [bootNonce, setBootNonce] = useState(0);
@@ -595,12 +619,12 @@ export default function App({ client }: { client: Client }) {
       // alias → mock-suggestion → short-id order.
       display: (id: string) =>
         selfId !== null && id === selfId
-          ? aliases[id] ?? 'You'
+          ? aliases[id] ?? s.identitySelf
           : aliases[id] ?? suggestedNames[id] ?? shortId(id),
       isSelf: (id: string) => selfId !== null && id === selfId,
       requestRename: (id: string) => setRenameTarget(id),
     }),
-    [aliases, selfId],
+    [aliases, selfId, s.identitySelf],
   );
 
   // The self label is just the self identity's alias; editing it from
@@ -892,9 +916,9 @@ export default function App({ client }: { client: Client }) {
 
   const reportIssue = useCallback(() => {
     void copyDiagnostics();
-    const params = new URLSearchParams({ title: 'Jeliya issue report' });
+    const params = new URLSearchParams({ title: s.settingsIssueReportTitle });
     window.open(`${ISSUE_URL}?${params.toString()}`, '_blank', 'noopener,noreferrer');
-  }, [copyDiagnostics]);
+  }, [copyDiagnostics, s.settingsIssueReportTitle]);
 
   // -- derived navigation (all of it, from the route) ---------------------------
 
@@ -927,6 +951,7 @@ export default function App({ client }: { client: Client }) {
             ? 'inspector'
             : 'room';
   const roomDest: RoomDest = route.kind === 'room' ? route.dest : 'activity';
+  const inspectorLabel = inspector ? roomDestLabel(s, inspector) : null;
 
   // Which single pane is the page — the `main` landmark and the skip link's
   // target (lib/landmarks.ts). The shell keeps every pane mounted and hides the
@@ -939,9 +964,15 @@ export default function App({ client }: { client: Client }) {
   useEffect(() => {
     document.title = documentTitle(pane, {
       roomName: currentRoom?.name ?? null,
-      destLabel: inspector ? ROOM_DEST_LABELS[inspector] : null,
+      destLabel: inspectorLabel,
+      labels: {
+        rooms: s.destRooms,
+        fleet: s.destFleet,
+        settings: s.destSettings,
+        app: BRAND,
+      },
     });
-  }, [pane, currentRoom?.name, inspector]);
+  }, [pane, currentRoom?.name, inspectorLabel, s.destRooms, s.destFleet, s.destSettings]);
 
   /** Tab counts — facts the daemon has answered with, so they are only shown
    *  once it has. */
@@ -1016,11 +1047,19 @@ export default function App({ client }: { client: Client }) {
         <TreeMark size={48} />
         <Wordmark as="h1" />
         <p className="muted" role="status" aria-live="polite">
-          {conn === 'connected' ? 'Syncing…' : conn === 'disconnected' ? 'Not connected.' : 'Contacting daemon…'}
+          {conn === 'connected' ? s.bootSyncing : conn === 'disconnected' ? s.bootNotConnected : s.bootContacting}
         </p>
         <p className="boot-target mono">{client.describe()}</p>
         {conn === 'reconnecting' ? (
-          <p className="muted">Retrying with backoff — start <code>jeliyad</code> or pass <code>?daemon=&lt;port&gt;</code>.</p>
+          <p className="muted">
+            <Template
+              template={s.bootRetryingHint}
+              slots={{
+                daemon: <code>{Command.daemon}</code>,
+                port: <code>{Command.daemonPortParam}</code>,
+              }}
+            />
+          </p>
         ) : null}
       </main>
     );
@@ -1073,8 +1112,8 @@ export default function App({ client }: { client: Client }) {
           {conn !== 'connected' ? (
             <div className={`conn-banner conn-${conn}`}>
               {conn === 'reconnecting' || conn === 'connecting'
-                ? `Connection to daemon lost — reconnecting… (${client.describe()})`
-                : 'Disconnected from daemon.'}
+                ? s.shellConnectionLost(client.describe())
+                : s.shellDisconnected}
             </div>
           ) : null}
         </div>
@@ -1108,17 +1147,19 @@ export default function App({ client }: { client: Client }) {
             <div className="room-error-surface">
               {/* This surface IS the destination — no RoomHeader renders above
                   it — so its title is the page's h1 (issue #72). */}
-              <h1 className="room-gone-title">That room isn’t on this device</h1>
+              <h1 className="room-gone-title">{s.roomNotOnDevice}</h1>
               <p className="muted">
-                Nothing here matches <code className="mono">{shortId(roomId)}</code>. It may live on another device, or
-                you may not have joined it yet.
+                <Template
+                  template={s.roomNotOnDeviceDetail}
+                  slots={{ id: <code className="mono">{shortId(roomId)}</code> }}
+                />
               </p>
               <div className="room-error-actions">
                 <button type="button" className="btn btn-primary" onClick={backToRooms}>
-                  Back to Rooms
+                  {s.roomBackToRooms}
                 </button>
                 <button type="button" className="btn btn-ghost" onClick={() => setJoinOpen(true)}>
-                  Join with a ticket
+                  {s.roomsJoinWithTicket}
                 </button>
               </div>
             </div>
@@ -1126,16 +1167,14 @@ export default function App({ client }: { client: Client }) {
             // A signed fact, so state it as one and do not open the room.
             <div className="room-error-surface">
               <h1 className="room-gone-title">
-                {currentRoom.status === 'left' ? 'You left this room' : 'You were removed from this room'}
+                {currentRoom.status === 'left' ? s.roomsYouLeft : s.roomsYouWereRemoved}
               </h1>
               <p className="muted">
-                {currentRoom.status === 'left'
-                  ? 'Your departure is published to the room’s signed log. You’ll need a new invite to rejoin.'
-                  : 'Your removal is published to the room’s signed log. You’ll need a new invite to rejoin.'}
+                {currentRoom.status === 'left' ? s.roomLeftDetail : s.roomRemovedDetail}
               </p>
               <div className="room-error-actions">
                 <button type="button" className="btn btn-primary" onClick={backToRooms}>
-                  Back to Rooms
+                  {s.roomBackToRooms}
                 </button>
               </div>
             </div>
@@ -1143,7 +1182,7 @@ export default function App({ client }: { client: Client }) {
             <>
               <RoomHeader
                 room={currentRoom}
-                name={currentRoom.name ?? 'Untitled room'}
+                name={currentRoom.name ?? s.roomsUntitled}
                 members={members}
                 membersLoaded={!roomLoading && !roomError}
                 peers={peers}
@@ -1186,10 +1225,10 @@ export default function App({ client }: { client: Client }) {
                         if (roomIdRef.current) void openRoom(roomIdRef.current);
                       }}
                     >
-                      Retry
+                      {s.commonRetry}
                     </button>
                     <button type="button" className="btn btn-ghost" onClick={backToRooms}>
-                      Back to Rooms
+                      {s.roomBackToRooms}
                     </button>
                   </div>
                 </div>
@@ -1221,7 +1260,7 @@ export default function App({ client }: { client: Client }) {
                   />
                   <Composer
                     roomId={currentRoom.room_id}
-                    roomName={currentRoom.name ?? 'Untitled room'}
+                    roomName={currentRoom.name ?? s.roomsUntitled}
                     disabled={conn !== 'connected'}
                     compact={shell === 'compact'}
                     onSend={sendMessage}
@@ -1237,8 +1276,8 @@ export default function App({ client }: { client: Client }) {
             // heading is the destination's `h1`: `/rooms` is the app's most
             // reached page and had no page title at all (issue #72).
             <div className="center-empty">
-              <h1 className="center-empty-title">Rooms</h1>
-              <p className="muted">Choose a room.</p>
+              <h1 className="center-empty-title">{s.destRooms}</h1>
+              <p className="muted">{s.roomsChoose}</p>
             </div>
           )}
         </main>
@@ -1257,7 +1296,7 @@ export default function App({ client }: { client: Client }) {
           // whose genesis event has not synced has a null name, and on compact
           // this heading IS the page's h1 — omitting it would leave the
           // destination with no heading and an unnamed main.
-          roomName={currentRoom ? (currentRoom.name ?? 'Untitled room') : null}
+          roomName={currentRoom ? (currentRoom.name ?? s.roomsUntitled) : null}
           members={members}
           timeline={timeline}
           files={files}
@@ -1353,7 +1392,7 @@ export default function App({ client }: { client: Client }) {
             client={client}
             connected={conn === 'connected'}
             roomId={roomId}
-            roomName={currentRoom.name ?? 'Untitled room'}
+            roomName={currentRoom.name ?? s.roomsUntitled}
             onDiagnosticError={rememberError}
             onClose={() => setLeaveOpen(false)}
             onLeft={() => {
@@ -1395,6 +1434,8 @@ function JoinRoomModal({
   onClose(): void;
   onJoined(roomId: string): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const [ticket, setTicket] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1421,7 +1462,7 @@ function JoinRoomModal({
   };
 
   return (
-    <Modal title="Join with a ticket" onClose={onClose} busy={busy}>
+    <Modal title={s.roomsJoinWithTicket} onClose={onClose} busy={busy}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1429,15 +1470,17 @@ function JoinRoomModal({
         }}
       >
         <p className="muted">
-          Paste the invite you received. A combined invite (<code>ticket#address</code>) fills in the peer address
-          automatically.
+          <Template
+            template={s.modalJoinCopy}
+            slots={{ combined: <code>{COMBINED_INVITE_SYNTAX}</code> }}
+          />
         </p>
         <label className="field">
-          <span>Ticket</span>
+          <span>{s.modalTicketLabel}</span>
           <textarea
             value={ticket}
             onChange={(e) => setTicket(e.target.value)}
-            placeholder="roomtkt1… or roomtkt1…#<endpoint_id>@host:port"
+            placeholder={s.modalTicketPlaceholder}
             rows={3}
             spellCheck={false}
             autoFocus
@@ -1445,24 +1488,35 @@ function JoinRoomModal({
         </label>
         <label className="field">
           <span>
-            Peer address <em className="muted">(optional)</em>
+            <Template
+              template={s.commonOptionalFieldLabel}
+              slots={{
+                label: s.modalPeerAddrLabel,
+                optional: <em className="muted">{s.commonOptional}</em>,
+              }}
+            />
           </span>
           <input
             value={peerAddr}
             onChange={(e) => setPeerAddr(e.target.value)}
-            placeholder="<endpoint_id>@203.0.113.7:4242"
+            placeholder={Example.peerAddress}
             spellCheck={false}
           />
         </label>
         <button type="submit" className="btn btn-primary" disabled={busy || !ticket.trim() || !connected}>
-          {busy ? 'Joining…' : connected ? 'Join room' : 'Reconnecting…'}
+          {busy ? s.modalJoining : connected ? s.modalJoinSubmit : s.commonReconnecting}
         </button>
         {progress ? (
           <div className="join-progress" role="status">
             <span className="spinner" aria-hidden="true" />
-            <span>{progress.message}</span>
+            <span>{joinProgressMessage(s, formats, progress)}</span>
             <em>
-              Attempt {progress.attempt}/{progress.maxAttempts}
+              {s.modalJoinAttempt(
+                progress.attempt,
+                progress.maxAttempts,
+                formats.count(progress.attempt),
+                formats.count(progress.maxAttempts),
+              )}
             </em>
           </div>
         ) : null}
@@ -1490,6 +1544,7 @@ function CreateRoomModal({
   onClose(): void;
   onCreated(roomId: string): void;
 }) {
+  const s = useStrings();
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
@@ -1499,7 +1554,9 @@ function CreateRoomModal({
   // homonym detection folds (trim + case), so the warning and the resulting
   // short-id disambiguator agree on what "already exists" means.
   const typed = name.trim().toLowerCase();
-  const collides = typed.length > 0 && rooms.some((r) => roomDisplayName(r).trim().toLowerCase() === typed);
+  const collides =
+    typed.length > 0 &&
+    rooms.some((r) => roomDisplayName(r, s.roomsUntitled).trim().toLowerCase() === typed);
 
   const create = async () => {
     if (!name.trim() || busy || !connected) return;
@@ -1515,7 +1572,7 @@ function CreateRoomModal({
   };
 
   return (
-    <Modal title="Create a room" onClose={onClose} busy={busy}>
+    <Modal title={s.modalCreateTitle} onClose={onClose} busy={busy}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1523,18 +1580,23 @@ function CreateRoomModal({
         }}
       >
         <label className="field">
-          <span>Room name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Build Iroh Rooms MVP" autoFocus />
+          <span>{s.modalRoomNameLabel}</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={s.modalRoomNamePlaceholder}
+            autoFocus
+          />
         </label>
         {/* Non-blocking: role="status" (not "alert"), and the button stays
             enabled. A duplicate name is allowed — the new room gets its own id. */}
         {collides ? (
           <p className="inline-warning" role="status">
-            A room named that already exists on this device — this one will get its own ID.
+            {s.modalCreateHomonymWarning}
           </p>
         ) : null}
         <button type="submit" className="btn btn-primary" disabled={busy || !name.trim() || !connected}>
-          {busy ? 'Creating…' : connected ? 'Create room' : 'Reconnecting…'}
+          {busy ? s.modalCreating : connected ? s.roomsCreate : s.commonReconnecting}
         </button>
         <ErrorNote error={error} />
       </form>
@@ -1560,6 +1622,7 @@ function LeaveRoomModal({
   onClose(): void;
   onLeft(): void;
 }) {
+  const s = useStrings();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
 
@@ -1577,7 +1640,7 @@ function LeaveRoomModal({
   };
 
   return (
-    <Modal title="Leave room" onClose={onClose} busy={busy}>
+    <Modal title={s.modalLeaveTitle} onClose={onClose} busy={busy}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1585,21 +1648,24 @@ function LeaveRoomModal({
         }}
       >
         <p className="muted">
-          Leaving <strong>{roomName}</strong>{' '}
-          {/* Always shown, homonym or not: leaving publishes a signed departure
-              that can't be undone, and the name alone cannot prove which room
-              this is (docs/room-workbench.md, decision 6). */}
-          <code className="room-disambig mono">{shortId(roomId)}</code> publishes a signed membership departure. This
-          is different from closing the local session; you’ll need a new invite to join again.
+          {/* The full sentence stays in one catalog message so translators can
+              move the emphasized name and mono id independently. */}
+          <Template
+            template={s.modalLeaveCopy}
+            slots={{
+              room: <strong>{roomName}</strong>,
+              id: <code className="room-disambig mono">{shortId(roomId)}</code>,
+            }}
+          />
         </p>
         <div className="field-row">
           <button type="submit" className="btn btn-danger" disabled={busy || !connected}>
-            {busy ? 'Leaving…' : connected ? 'Leave room' : 'Reconnecting…'}
+            {busy ? s.modalLeaving : connected ? s.modalLeaveSubmit : s.commonReconnecting}
           </button>
           {/* Initial focus lands on Cancel, never the destructive action —
               Enter right after opening must not publish a departure. */}
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy} autoFocus>
-            Cancel
+            {s.commonCancel}
           </button>
         </div>
         <ErrorNote error={error} />
@@ -1619,30 +1685,37 @@ function RenameModal({
   onSave(id: string, name: string): void;
   onClose(): void;
 }) {
+  const s = useStrings();
   const [name, setName] = useState(current);
   return (
-    <Modal title="Name this peer" onClose={onClose}>
+    <Modal title={s.modalRenameTitle} onClose={onClose}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           onSave(id, name);
         }}
       >
+        <p className="muted">{s.modalRenameCopy}</p>
         <p className="muted">
-          Local alias only — names never leave this machine. Identity:
+          <span>{s.modalRenameIdentityLabel}</span>
           <br />
           <code className="mono rename-id">{id}</code>
         </p>
         <label className="field">
-          <span>Alias</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Maya R." autoFocus />
+          <span>{s.modalRenameAliasLabel}</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={s.modalRenameAliasPlaceholder}
+            autoFocus
+          />
         </label>
         <div className="field-row">
           <button type="submit" className="btn btn-primary">
-            Save
+            {s.commonSave}
           </button>
           <button type="button" className="btn btn-ghost" onClick={() => onSave(id, '')}>
-            Clear alias
+            {s.modalRenameClearAlias}
           </button>
         </div>
       </form>

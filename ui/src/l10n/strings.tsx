@@ -17,6 +17,7 @@ import {
   FALLBACK_LOCALE,
   loadFormattingLocale,
   loadTextLocale,
+  platformFormattingLocale,
   resolveLocales,
   saveFormattingLocale,
   saveTextLocale,
@@ -34,7 +35,7 @@ export interface L10n {
   formats: Formats;
   /** The chosen text locale, or null when following the platform. */
   textLocale: SupportedLocale | null;
-  /** The chosen formatting locale, or null when following the text locale. */
+  /** The chosen formatting locale, or null when following the platform. */
   formattingLocale: string | null;
   /** The tags actually in effect, after fallback. */
   resolved: { text: SupportedLocale; formatting: string };
@@ -47,11 +48,12 @@ const L10nContext = createContext<L10n | null>(null);
 export function L10nProvider({ children }: { children: ReactNode }) {
   const [textLocale, setTextState] = useState<SupportedLocale | null>(loadTextLocale);
   const [formattingLocale, setFormattingState] = useState<string | null>(loadFormattingLocale);
+  const [platformRevision, setPlatformRevision] = useState(0);
 
   const value = useMemo<L10n>(() => {
     const platform = resolveLocales();
     const text = textLocale ?? platform.text;
-    const formatting = resolveFormattingLocale(formattingLocale, text);
+    const formatting = resolveFormattingLocale(formattingLocale, text, platformFormattingLocale(text));
     const strings = CATALOGS[text] ?? CATALOGS[FALLBACK_LOCALE];
     return {
       strings,
@@ -68,7 +70,16 @@ export function L10nProvider({ children }: { children: ReactNode }) {
         setFormattingState(tag);
       },
     };
-  }, [textLocale, formattingLocale]);
+  }, [textLocale, formattingLocale, platformRevision]);
+
+  // A browser can change language while the app is open. System-following
+  // preferences should react just like an explicit picker change, without a
+  // restart; explicit preferences are re-resolved to the same values.
+  useEffect(() => {
+    const onLanguageChange = () => setPlatformRevision((revision) => revision + 1);
+    window.addEventListener('languagechange', onLanguageChange);
+    return () => window.removeEventListener('languagechange', onLanguageChange);
+  }, []);
 
   // Keep the document in step with the interface. `lang` drives the screen
   // reader's pronunciation and the browser's own hyphenation — a French

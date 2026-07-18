@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DaemonErrorShape, FileEntry, FileRef, TimelineEvent } from '../lib/protocol';
-import { dayLabel, extOf, fileTint, formatBytes, formatTime, labelTone, prettyLabel, shortId } from '../lib/format';
+import { extOf, fileTint, labelTone, prettyLabel, shortId } from '../lib/format';
 import {
   ACTIVITY_CATEGORIES,
   activityBreakdown,
@@ -12,18 +12,12 @@ import {
 } from '../lib/timelineRuns';
 import type { ActivityCategory, TimelineRun } from '../lib/timelineRuns';
 import { scrollBehavior } from '../lib/motion';
+import { useFormats, useStrings } from '../l10n/strings';
+import { fillTemplate, Template } from '../l10n/template';
+import { Glyph, Punct } from '../l10n/tokens';
+import { roleInline } from '../l10n/wireDisplay';
 import { Avatar, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
 import type { FetchAvailability, FetchState } from './ui';
-
-/** The five view-only activity filters, in the shared contract's order. Labels
- *  are display-only; the category keys drive `matchesActivityFilter`. */
-const ACTIVITY_LABELS: Record<ActivityCategory, string> = {
-  conversation: 'Conversation',
-  'agent-runs': 'Agent runs',
-  membership: 'Membership',
-  files: 'Files',
-  pipes: 'Pipes',
-};
 
 export interface PendingMessage {
   clientId: string;
@@ -63,8 +57,10 @@ function FileTile({
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const tint = fileTint(file.name);
-  const ext = extOf(file.name).toUpperCase() || 'FILE';
+  const ext = extOf(file.name).toUpperCase() || s.commonFileExtFallback.toUpperCase();
   return (
     <div className="file-tile-wrap">
       <div className="file-tile">
@@ -76,12 +72,12 @@ function FileTile({
         <span className="file-tile-info">
           <strong>{file.name}</strong>
           <span className="muted">
-            {formatBytes(file.size)} · {ext}
+            {fillTemplate(s.timelineFileMeta, { bytes: formats.bytes(file.size), ext })}
           </span>
         </span>
         {isSelfOwned ? (
-          <span className="file-self-note" title="This daemon is already serving this file to peers.">
-            Serving
+          <span className="file-self-note" title={s.commonServingTooltip}>
+            {s.commonServing}
           </span>
         ) : (
           <FetchControl
@@ -112,10 +108,16 @@ function AgentStatusCard({
   files: FileEntry[];
   selfId: string | null;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const senderId = event.sender.identity_id;
-  const time = formatTime(event.ts);
+  const time = formats.clock(event.ts);
   const isOwn = selfId !== null && senderId === selfId;
-  const label = event.label ?? 'status';
+  const rawLabel = event.label;
+  const label = rawLabel ?? s.timelineStatusFallback;
+  // `labelTone` is an English wire-token classifier. Localized fallback copy
+  // must never enter it; an absent signed label earns neutral treatment.
+  const tone = rawLabel === undefined ? 'neutral' : labelTone(rawLabel);
   const artifacts = event.artifacts ?? [];
   return (
     <div className={`event-card agent-work-card${isOwn ? ' own' : ''}`}>
@@ -123,19 +125,19 @@ function AgentStatusCard({
       <div className="event-main">
         <div className="event-head">
           <SenderName id={senderId} className="event-sender" />
-          <span className="chip chip-role">AGENT</span>
+          <span className="chip chip-role">{s.timelineAgentChip.toUpperCase()}</span>
           <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
-          <span className={`chip chip-label tone-${labelTone(label)}`}>{prettyLabel(label)}</span>
+          <span className={`chip chip-label tone-${tone}`}>{prettyLabel(label)}</span>
         </div>
         <div className="agent-work-title">
-          <span aria-hidden="true">✦</span>
+          <span aria-hidden="true">{Glyph.fleet}</span>
           <strong>{prettyLabel(label)}</strong>
         </div>
         {event.status_message ? <p className="event-text">{event.status_message}</p> : null}
         {typeof event.progress === 'number' ? (
           <div className="progress-row">
             <ProgressBar value={event.progress} />
-            <span className="progress-num">{Math.max(0, Math.min(100, event.progress))}%</span>
+            <span className="progress-num">{formats.percent(Math.max(0, Math.min(100, event.progress)))}</span>
           </div>
         ) : null}
         {artifacts.length > 0 ? (
@@ -144,7 +146,7 @@ function AgentStatusCard({
               const file = files.find((f) => f.file_id === fileId);
               return (
                 <span key={fileId} className="chip chip-artifact" title={fileId}>
-                  <span aria-hidden="true">⎘</span>
+                  <span aria-hidden="true">{Glyph.file}</span>
                   {file ? file.name : shortId(fileId)}
                 </span>
               );
@@ -176,20 +178,23 @@ function RunCard({
   expanded: boolean;
   onToggle(): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const summary = runSummary(run);
   const span =
     summary.firstTs === summary.lastTs
-      ? formatTime(summary.firstTs)
-      : `${formatTime(summary.firstTs)}–${formatTime(summary.lastTs)}`;
+      ? formats.clock(summary.firstTs)
+      : `${formats.clock(summary.firstTs)}–${formats.clock(summary.lastTs)}`;
+  const count = formats.count(summary.count);
   return (
     <div className="agent-run">
       <AgentStatusCard event={summary.latest} files={files} selfId={selfId} />
       <div className="agent-run-controls">
         <span className="agent-run-count">
-          {summary.count} updates · {span}
+          {s.timelineRunEvidence(count, span)}
         </span>
         <button type="button" className="text-btn agent-run-toggle" aria-expanded={expanded} onClick={onToggle}>
-          {expanded ? 'Hide' : `Show ${summary.count} updates`}
+          {expanded ? s.timelineRunHide : s.timelineRunShow(count)}
         </button>
       </div>
       {expanded ? (
@@ -224,24 +229,37 @@ function EventCard({
   onShowFiles(fileId?: string): void;
   onShowPipes(pipeId?: string): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const senderId = event.sender.identity_id;
-  const time = formatTime(event.ts);
+  const time = formats.clock(event.ts);
   const isOwn = selfId !== null && senderId === selfId;
 
   switch (event.kind) {
     case 'room_created':
       return (
         <div className="sysline">
-          <SenderName id={senderId} /> created the room · {time}
+          <Template
+            template={s.timelineSyslineRoomCreated}
+            slots={{ sender: <SenderName id={senderId} />, time }}
+          />
         </div>
       );
 
     case 'member_invited': {
       const invitee = event.member?.identity_id;
+      const role = event.member?.role;
       return (
         <div className="sysline">
-          <SenderName id={senderId} /> invited{' '}
-          {invitee ? <SenderName id={invitee} /> : 'someone'} as {event.member?.role ?? 'member'} · {time}
+          <Template
+            template={role ? s.timelineSyslineInvited : s.timelineSyslineInvitedNoRole}
+            slots={{
+              sender: <SenderName id={senderId} />,
+              invitee: invitee ? <SenderName id={invitee} /> : s.timelineSomeone,
+              role: role ? roleInline(s, role) : null,
+              time,
+            }}
+          />
         </div>
       );
     }
@@ -250,7 +268,14 @@ function EventCard({
       const who = event.member?.identity_id ?? senderId;
       return (
         <div className="sysline">
-          <SenderName id={who} /> joined as {event.member?.role ?? event.sender.role} · {time}
+          <Template
+            template={s.timelineSyslineJoined}
+            slots={{
+              who: <SenderName id={who} />,
+              role: roleInline(s, event.member?.role ?? event.sender.role),
+              time,
+            }}
+          />
         </div>
       );
     }
@@ -259,7 +284,7 @@ function EventCard({
       const who = event.member?.identity_id ?? senderId;
       return (
         <div className="sysline">
-          <SenderName id={who} /> left the room · {time}
+          <Template template={s.timelineSyslineLeft} slots={{ who: <SenderName id={who} />, time }} />
         </div>
       );
     }
@@ -272,7 +297,9 @@ function EventCard({
             {!compact ? (
               <div className="msg-meta">
                 <SenderName id={senderId} className="msg-sender" />
-                {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
+                {event.sender.role === 'agent' ? (
+                  <span className="chip chip-role">{s.timelineAgentChip.toUpperCase()}</span>
+                ) : null}
                 <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
               </div>
             ) : null}
@@ -293,10 +320,19 @@ function EventCard({
           {isOwn ? null : <Avatar id={senderId} />}
           <div className="event-main">
             <div className="event-head">
-              <SenderName id={senderId} className="event-sender" />
-              {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
-              <span className="muted">shared a file</span>
-              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
+              <span className="event-head-copy">
+                <Template
+                  template={s.timelineFileSharedMeta}
+                  slots={{
+                    sender: <SenderName id={senderId} className="event-sender" />,
+                    role:
+                      event.sender.role === 'agent' ? (
+                        <span className="chip chip-role">{s.timelineAgentChip.toUpperCase()}</span>
+                      ) : null,
+                    time: <time dateTime={new Date(event.ts).toISOString()}>{time}</time>,
+                  }}
+                />
+              </span>
             </div>
             <FileTile
               file={event.file}
@@ -313,7 +349,7 @@ function EventCard({
                 handles a target that has not synced into file.list yet. */}
             <div className="event-card-actions">
               <button type="button" className="btn btn-sm" onClick={() => onShowFiles(event.file?.file_id)}>
-                Open in Files
+                {s.timelineOpenInFiles}
               </button>
             </div>
           </div>
@@ -328,24 +364,41 @@ function EventCard({
           {isOwn ? null : <Avatar id={senderId} />}
           <div className="event-main">
             <div className="event-head">
-              <SenderName id={senderId} className="event-sender" />
-              {event.sender.role === 'agent' ? <span className="chip chip-role">AGENT</span> : null}
-              <span className="muted">opened a pipe</span>
-              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
+              <span className="event-head-copy">
+                <Template
+                  template={s.timelinePipeOpenedMeta}
+                  slots={{
+                    sender: <SenderName id={senderId} className="event-sender" />,
+                    role:
+                      event.sender.role === 'agent' ? (
+                        <span className="chip chip-role">{s.timelineAgentChip.toUpperCase()}</span>
+                      ) : null,
+                    time: <time dateTime={new Date(event.ts).toISOString()}>{time}</time>,
+                  }}
+                />
+              </span>
             </div>
             <div className="pipe-tile">
               <span className="pipe-icon" aria-hidden="true">
-                ⤳
+                {Glyph.pipe}
               </span>
               <span className="file-tile-info">
-                <strong className="mono">{event.pipe.target ?? '—'}</strong>
+                <strong className="mono">{event.pipe.target ?? Punct.missingValue}</strong>
                 <span className="muted">
-                  authorized peer:{' '}
-                  {event.pipe.authorized_peer ? <SenderName id={event.pipe.authorized_peer} /> : '—'}
+                  <Template
+                    template={s.timelineAuthorizedPeer}
+                    slots={{
+                      peer: event.pipe.authorized_peer ? (
+                        <SenderName id={event.pipe.authorized_peer} />
+                      ) : (
+                        Punct.missingValue
+                      ),
+                    }}
+                  />
                 </span>
               </span>
               <button type="button" className="btn btn-sm" onClick={() => onShowPipes(event.pipe?.pipe_id)}>
-                Open in Pipes
+                {s.timelineOpenInPipes}
               </button>
             </div>
           </div>
@@ -356,7 +409,14 @@ function EventCard({
     case 'pipe_closed':
       return (
         <div className="sysline">
-          <SenderName id={senderId} /> closed pipe <code className="mono">{event.pipe?.target ?? ''}</code> · {time}
+          <Template
+            template={s.timelineSyslinePipeClosed}
+            slots={{
+              sender: <SenderName id={senderId} />,
+              target: <code className="mono">{event.pipe?.target ?? Punct.missingValue}</code>,
+              time,
+            }}
+          />
         </div>
       );
 
@@ -374,19 +434,22 @@ function PendingMessageCard({
   compact: boolean;
   onRetry(clientId: string): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const label =
     message.phase === 'failed'
-      ? "Couldn't send"
+      ? s.timelinePendingFailed
       : message.phase === 'syncing'
-        ? 'Sent locally, syncing...'
-        : 'Sending...';
+        ? s.timelinePendingSyncing
+        : s.timelinePendingSending;
+  const time = formats.clock(message.ts);
   return (
     <div className={`msg-row own pending ${message.phase}${compact ? ' compact' : ''}`}>
       <div className="msg-col">
         {!compact ? (
           <div className="msg-meta pending-meta">
-            <span>You</span>
-            <time dateTime={new Date(message.ts).toISOString()}>{formatTime(message.ts)}</time>
+            <span>{s.identitySelf}</span>
+            <time dateTime={new Date(message.ts).toISOString()}>{time}</time>
           </div>
         ) : null}
         <div className="msg-bubble">{message.body}</div>
@@ -401,9 +464,9 @@ function PendingMessageCard({
               type="button"
               className="text-btn"
               onClick={() => onRetry(message.clientId)}
-              aria-label={`Retry sending your message from ${formatTime(message.ts)}`}
+              aria-label={s.timelineRetryMessageAt(time)}
             >
-              Retry
+              {s.commonRetry}
             </button>
           ) : null}
         </div>
@@ -532,6 +595,8 @@ export function Timeline({
   onShowFiles(fileId?: string): void;
   onShowPipes(pipeId?: string): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const scroller = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(savedView === null);
   const previousItemCount = useRef(0);
@@ -689,8 +754,18 @@ export function Timeline({
     .map((it) => (it.type === 'pending' ? 'message' : it.event.kind));
   const allMessages = isAllMessages(activityBreakdown(newKinds));
   const counterLabel = allMessages
-    ? `${newItemCount} new message${newItemCount === 1 ? '' : 's'}`
-    : `${newItemCount} new activity`;
+    ? s.timelineNewMessages(newItemCount, formats.count(newItemCount))
+    : s.timelineNewActivity(formats.count(newItemCount));
+
+  /** The five view-only activity filters, in the shared contract's order.
+   *  Constructed at render time so a locale switch updates every chip. */
+  const activityLabels: Record<ActivityCategory, string> = {
+    conversation: s.timelineFilterConversation,
+    'agent-runs': s.timelineFilterAgentRuns,
+    membership: s.timelineFilterMembership,
+    files: s.timelineFilterFiles,
+    pipes: s.timelineFilterPipes,
+  };
 
   // Fold + filter are a view over `items`: runs collapse, filtered categories
   // drop out, pending always stay. Day dividers, 5-minute message compacting,
@@ -700,7 +775,7 @@ export function Timeline({
   const rows: { key: string; node: ReactNode; side: TimelineSide; compact: boolean }[] = [];
   let prevUnit: RenderUnit | null = null;
   for (const unit of units) {
-    const day = dayLabel(unitTs(unit));
+    const day = formats.dayLabel(unitTs(unit));
     if (day !== lastDay) {
       lastDay = day;
       rows.push({
@@ -754,7 +829,7 @@ export function Timeline({
       {/* View-only activity filters (issue #65): multi-select, none selected =
           everything shown. Filtering never deletes history — clearing the chips
           restores it — and pending messages are exempt entirely. */}
-      <div className="activity-filter" role="group" aria-label="Filter activity">
+      <div className="activity-filter" role="group" aria-label={s.timelineFilterActivity}>
         {ACTIVITY_CATEGORIES.map((category) => {
           const active = activityFilters.has(category);
           return (
@@ -765,7 +840,7 @@ export function Timeline({
               aria-pressed={active}
               onClick={() => onToggleActivityFilter(category)}
             >
-              {ACTIVITY_LABELS[category]}
+              {activityLabels[category]}
             </button>
           );
         })}
@@ -775,7 +850,7 @@ export function Timeline({
         ref={scroller}
         onScroll={onScroll}
         role="log"
-        aria-label="Room timeline"
+        aria-label={s.timelineRoomTimeline}
         aria-busy={loading}
       >
       {loading ? (
@@ -814,10 +889,10 @@ export function Timeline({
       ))}
       {!loading && rows.length === 0 ? (
         items.length === 0 ? (
-          <div className="timeline-empty muted">No events yet — say something below.</div>
+          <div className="timeline-empty muted">{s.timelineEmptyState}</div>
         ) : (
           // History isn't gone, just filtered out of view — say so honestly.
-          <div className="timeline-empty muted">No activity matches these filters.</div>
+          <div className="timeline-empty muted">{s.timelineNoActivityMatches}</div>
         )
       ) : null}
       </div>

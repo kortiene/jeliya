@@ -78,7 +78,11 @@ export class Formats {
    *  locale-dependent: French writes "42 %" with a narrow no-break space that
    *  English does not have. */
   percent(n: number): string {
-    return this.strings.formatPercent(this.count(Math.round(n)));
+    const formatted = new Intl.NumberFormat(this.localeTag, {
+      minimumFractionDigits: Number.isInteger(n) ? 0 : 1,
+      maximumFractionDigits: Number.isInteger(n) ? 0 : 4,
+    }).format(n);
+    return this.strings.formatPercent(formatted);
   }
 
   /** Relative time from a real event timestamp — display only, never a
@@ -89,22 +93,27 @@ export class Formats {
   relTime(ts: number): string {
     const delta = Math.max(0, Date.now() - ts);
     if (delta < 45_000) return this.strings.formatJustNow;
-    const rtf = new Intl.RelativeTimeFormat(this.localeTag, { numeric: 'auto', style: 'narrow' });
     const mins = Math.round(delta / 60_000);
-    if (mins < 60) return rtf.format(-mins, 'minute');
+    if (mins < 60) return this.strings.formatMinutesAgo(this.count(mins));
     const hours = Math.round(delta / 3_600_000);
-    if (hours < 24) return rtf.format(-hours, 'hour');
-    return rtf.format(-Math.round(delta / 86_400_000), 'day');
+    if (hours < 24) return this.strings.formatHoursAgo(this.count(hours));
+    return this.strings.formatDaysAgo(this.count(Math.round(delta / 86_400_000)));
   }
 }
 
 /** Resolve the formatting locale actually in effect.
  *
- *  Order: the explicit preference, else the text locale, else the platform.
+ *  Order: the explicit preference, else the platform formatting locale, else
+ *  the text locale. The platform argument is optional so pure callers and
+ *  tests can make the fallback deterministic.
  *  A tag the runtime cannot honor falls back rather than throwing — a bad
  *  stored preference must not brick the interface. */
-export function resolveFormattingLocale(preferred: string | null, textLocale: string): string {
-  const candidates = [preferred, textLocale].filter((t): t is string => Boolean(t));
+export function resolveFormattingLocale(
+  preferred: string | null,
+  textLocale: string,
+  platformLocale?: string | null,
+): string {
+  const candidates = [preferred, platformLocale, textLocale].filter((t): t is string => Boolean(t));
   for (const tag of candidates) {
     try {
       // Throws RangeError on a malformed tag; returns [] when unsupported.

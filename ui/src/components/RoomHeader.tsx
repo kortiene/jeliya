@@ -1,14 +1,28 @@
 import { useState } from 'react';
 import type { Member, PeerStatus, RoomSummary } from '../lib/protocol';
 import { shortId } from '../lib/format';
+import type { Catalog } from '../l10n/catalog';
+import { useFormats, useStrings } from '../l10n/strings';
+import { Glyph, Punct } from '../l10n/tokens';
+import { peerPath } from '../l10n/wireDisplay';
 import { useNames } from './names';
 
 /** Peer path (direct/relay) and state are shown exactly as reported by the
  *  daemon — relay fallback is never hidden (honesty rule #2). */
+function peerStateLabel(s: Catalog, peer: PeerStatus): string {
+  const state: string = peer.state;
+  if (state === 'connected') {
+    return peer.path === null ? s.roomHeaderPeerStateConnected : peerPath(s, peer.path);
+  }
+  if (state === 'connecting') return s.roomHeaderPeerStateConnecting;
+  if (state === 'offline') return s.roomHeaderPeerStateOffline;
+  return state;
+}
+
 function PeerChip({ peer }: { peer: PeerStatus }) {
+  const s = useStrings();
   const names = useNames();
-  const label =
-    peer.state === 'connected' ? (peer.path ?? 'connected') : peer.state === 'connecting' ? 'connecting' : 'offline';
+  const label = peerStateLabel(s, peer);
   // identity_id is only known once the SDK has bound the device (on admit);
   // fall back to the raw endpoint id until then, but keep the hex around in
   // the tooltip either way.
@@ -27,19 +41,23 @@ function PeerChip({ peer }: { peer: PeerStatus }) {
  *  "Alone in this room" used to render here whenever zero connections were
  *  observed — including in a five-member room whose peers are merely offline.
  *  Absence of an observed connection is not evidence of solitude. */
-function peerSummary(peers: PeerStatus[]): { dot: 'dot-green' | 'dot-neutral' | null; label: string } {
+function peerSummary(s: Catalog, peers: PeerStatus[]): { dot: 'dot-green' | 'dot-neutral' | null; label: string } {
   const connected = peers.filter((p) => p.state === 'connected');
-  if (connected.some((p) => p.path === 'direct')) return { dot: 'dot-green', label: 'Direct' };
+  if (connected.some((p) => p.path === 'direct')) return { dot: 'dot-green', label: s.roomHeaderPeerToPeer };
   // Connected, just not on the path we would prefer. Amber, and never hidden.
-  if (connected.some((p) => p.path === 'relay')) return { dot: null, label: 'Relay' };
+  if (connected.some((p) => p.path === 'relay')) return { dot: null, label: s.roomHeaderRelayOnly };
   // `path` is nullable while `state` is already `connected`: the SDK knows the
   // peer is reachable before it knows how. Falling through to Relay here —
   // which is what a bare `connected.length > 0` did — would invent the exact
   // fact (direct vs relay) the honesty rules exist to protect. Green is
   // earned, the link is real; the path is simply not claimed until it is known.
-  if (connected.length > 0) return { dot: 'dot-green', label: 'Connected' };
-  if (peers.some((p) => p.state === 'connecting')) return { dot: 'dot-neutral', label: 'Connecting…' };
-  return { dot: 'dot-neutral', label: 'No peers connected' };
+  if (connected.length > 0) return { dot: 'dot-green', label: s.roomHeaderPeerConnected };
+  if (peers.some((p) => p.state === 'connecting')) {
+    return { dot: 'dot-neutral', label: s.roomHeaderPeerConnecting };
+  }
+  const futureState = peers.find((p) => !['connected', 'connecting', 'offline'].includes(p.state));
+  if (futureState) return { dot: 'dot-neutral', label: futureState.state };
+  return { dot: 'dot-neutral', label: s.roomHeaderNoPeersConnected };
 }
 
 export function RoomHeader({
@@ -73,11 +91,13 @@ export function RoomHeader({
   onShareFile(): void;
   onOpenPipe(): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const [infoOpen, setInfoOpen] = useState(false);
   const memberCount = members.filter((m) => m.status === 'active').length;
   const invitedCount = members.filter((m) => m.status === 'invited').length;
   const agentCount = members.filter((m) => m.role === 'agent').length;
-  const p2p = peerSummary(peers);
+  const p2p = peerSummary(s, peers);
 
   const p2pBadge = (
     <span className="p2p-badge">
@@ -90,25 +110,23 @@ export function RoomHeader({
     return (
       <header className="room-header room-appbar">
         <div className="appbar-row">
-          <button type="button" className="icon-btn appbar-back" onClick={onBack} aria-label="Back to Rooms">
-            <span aria-hidden="true">‹</span>
+          <button type="button" className="icon-btn appbar-back" onClick={onBack} aria-label={s.roomBackToRooms}>
+            <span aria-hidden="true">{Glyph.back}</span>
           </button>
           <div className="appbar-title">
             <h1 title={name}>{name}</h1>
             <div className="appbar-sub">
               {membersLoaded ? (
-                <span>
-                  {memberCount} member{memberCount === 1 ? '' : 's'}
-                </span>
+                <span>{s.commonMemberCount(memberCount, formats.count(memberCount))}</span>
               ) : (
-                <span className="muted">Loading…</span>
+                <span className="muted">{s.roomLoadingMembers}</span>
               )}
-              <span className="sep">|</span>
+              <span className="sep">{Punct.metaSep}</span>
               {p2pBadge}
             </div>
           </div>
           <button type="button" className="btn btn-primary appbar-invite" onClick={onInvite}>
-            Invite
+            {s.roomHeaderInvite}
           </button>
           {/* Peer paths are diagnostic detail, not app-bar chrome: on a 320px
               phone the chip strip is what pushed the timeline under 180px.
@@ -117,47 +135,47 @@ export function RoomHeader({
             type="button"
             className="icon-btn appbar-more"
             aria-expanded={infoOpen}
-            aria-label="Room information"
+            aria-label={s.roomInformation}
             onClick={() => setInfoOpen((open) => !open)}
           >
-            <span aria-hidden="true">⋮</span>
+            <span aria-hidden="true">{Glyph.more}</span>
           </button>
         </div>
         {infoOpen ? (
           <div className="appbar-info">
             <dl className="room-info-facts">
-              <dt>Room</dt>
+              <dt>{s.roomInfoRoom}</dt>
               <dd className="mono">{shortId(room.room_id)}</dd>
-              <dt>Session</dt>
-              <dd>{room.open ? 'Open' : 'Closed'}</dd>
+              <dt>{s.roomInfoSession}</dt>
+              <dd>{room.open ? s.roomsStateOpen : s.roomsStateClosed}</dd>
               {agentCount > 0 ? (
                 <>
-                  <dt>Agents</dt>
-                  <dd>{agentCount}</dd>
+                  <dt>{s.roomInfoAgents}</dt>
+                  <dd>{formats.count(agentCount)}</dd>
                 </>
               ) : null}
               {invitedCount > 0 ? (
                 <>
-                  <dt>Invites</dt>
-                  <dd>{invitedCount} pending</dd>
+                  <dt>{s.roomInfoInvites}</dt>
+                  <dd>{s.roomHeaderInvitesPending(invitedCount, formats.count(invitedCount))}</dd>
                 </>
               ) : null}
             </dl>
             {peers.length > 0 ? (
-              <div className="peer-strip" role="group" aria-label="Peer connections">
+              <div className="peer-strip" role="group" aria-label={s.roomHeaderPeerConnections}>
                 {peers.map((p) => (
                   <PeerChip key={p.endpoint_id} peer={p} />
                 ))}
               </div>
             ) : (
-              <p className="muted room-info-empty">No peers connected.</p>
+              <p className="muted room-info-empty">{s.roomHeaderNoPeersConnected}</p>
             )}
             <div className="appbar-info-actions">
               <button type="button" className="btn" onClick={onShareFile}>
-                <span aria-hidden="true">⎘</span> Share File
+                <span aria-hidden="true">{Glyph.file}</span> {s.roomHeaderShareFile}
               </button>
               <button type="button" className="btn" onClick={onOpenPipe}>
-                <span aria-hidden="true">⤳</span> Open Pipe
+                <span aria-hidden="true">{Glyph.pipe}</span> {s.roomHeaderOpenPipe}
               </button>
             </div>
           </div>
@@ -173,48 +191,44 @@ export function RoomHeader({
           <h1>{name}</h1>
           <div className="room-subtitle">
             {membersLoaded ? (
-              <span>
-                {memberCount} member{memberCount === 1 ? '' : 's'}
-              </span>
+              <span>{s.commonMemberCount(memberCount, formats.count(memberCount))}</span>
             ) : (
               // The roster has not answered. The room's total member_count is a
               // different fact and cannot stand in for it under this label.
-              <span className="muted">Loading members…</span>
+              <span className="muted">{s.roomLoadingMembers}</span>
             )}
             {agentCount > 0 ? (
               <>
-                <span className="sep">|</span>
-                <span>
-                  {agentCount} agent{agentCount === 1 ? '' : 's'}
-                </span>
+                <span className="sep">{Punct.metaSep}</span>
+                <span>{s.roomHeaderAgentCount(agentCount, formats.count(agentCount))}</span>
               </>
             ) : null}
             {invitedCount > 0 ? (
               <>
-                <span className="sep">|</span>
+                <span className="sep">{Punct.metaSep}</span>
                 <span className="pending-invites">
-                  {invitedCount} invite{invitedCount === 1 ? '' : 's'} pending
+                  {s.roomHeaderInvitesPending(invitedCount, formats.count(invitedCount))}
                 </span>
               </>
             ) : null}
-            <span className="sep">|</span>
+            <span className="sep">{Punct.metaSep}</span>
             {p2pBadge}
           </div>
         </div>
         <div className="room-actions">
           <button type="button" className="btn" onClick={onShareFile}>
-            <span aria-hidden="true">⎘</span> Share File
+            <span aria-hidden="true">{Glyph.file}</span> {s.roomHeaderShareFile}
           </button>
           <button type="button" className="btn" onClick={onOpenPipe}>
-            <span aria-hidden="true">⤳</span> Open Pipe
+            <span aria-hidden="true">{Glyph.pipe}</span> {s.roomHeaderOpenPipe}
           </button>
           <button type="button" className="btn btn-primary" onClick={onInvite}>
-            <span aria-hidden="true">⊕</span> Invite
+            <span aria-hidden="true">{Glyph.create}</span> {s.roomHeaderInvite}
           </button>
         </div>
       </div>
       {peers.length > 0 ? (
-        <div className="peer-strip" role="group" aria-label="Peer connections">
+        <div className="peer-strip" role="group" aria-label={s.roomHeaderPeerConnections}>
           {peers.map((p) => (
             <PeerChip key={p.endpoint_id} peer={p} />
           ))}

@@ -7,7 +7,9 @@ export interface JoinProgress {
   phase: JoinPhase;
   attempt: number;
   maxAttempts: number;
-  message: string;
+  /** Present while waiting between attempts. Kept as data so every caller
+   *  resolves the narration through its current locale at render time. */
+  retryDelayMs?: number;
   lastError?: DaemonErrorShape;
 }
 
@@ -30,10 +32,6 @@ export async function joinRoomWithRetry(
       phase: 'connecting',
       attempt,
       maxAttempts: JOIN_ATTEMPTS,
-      message:
-        attempt === 1
-          ? 'Finding the inviter and syncing the room invite...'
-          : `Retrying join (${attempt}/${JOIN_ATTEMPTS})...`,
     });
 
     try {
@@ -49,7 +47,7 @@ export async function joinRoomWithRetry(
         phase: 'retrying',
         attempt,
         maxAttempts: JOIN_ATTEMPTS,
-        message: `The first path did not answer. Retrying in ${Math.round(delay / 1000)}s...`,
+        retryDelayMs: delay,
         lastError: err,
       });
       await sleep(delay);

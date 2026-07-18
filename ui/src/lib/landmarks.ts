@@ -28,6 +28,15 @@ export type Pane = 'rooms' | 'room' | 'inspector' | 'fleet' | 'settings';
 /** The elements that can carry the page's `main` landmark. */
 export type PageRegion = 'sidebar' | 'center' | 'inspector' | 'fleet' | 'settings';
 
+export interface DocumentTitleLabels {
+  /** Global destination labels come from the current text catalog. */
+  rooms: string;
+  fleet: string;
+  settings: string;
+  /** The brand is normally the non-translatable BRAND token. */
+  app: string;
+}
+
 /** The one pane that is the page — the `main` landmark and the target of the
  *  "skip to workspace" link.
  *
@@ -60,14 +69,21 @@ export function pageRegion(pane: Pane, shell: Shell): PageRegion {
  *  back to the destination alone rather than inventing a name. */
 export function documentTitle(
   pane: Pane,
-  { roomName, destLabel }: { roomName?: string | null; destLabel?: string | null } = {},
+  {
+    roomName,
+    destLabel,
+    labels,
+  }: {
+    roomName?: string | null;
+    destLabel?: string | null;
+    labels: DocumentTitleLabels;
+  },
 ): string {
-  const app = 'Jeliya';
-  if (pane === 'fleet') return `Agent Fleet · ${app}`;
-  if (pane === 'settings') return `Settings · ${app}`;
-  if (pane === 'rooms') return `Rooms · ${app}`;
+  if (pane === 'fleet') return `${labels.fleet} · ${labels.app}`;
+  if (pane === 'settings') return `${labels.settings} · ${labels.app}`;
+  if (pane === 'rooms') return `${labels.rooms} · ${labels.app}`;
   // Inside a room: name the room, and the tool when the inspector is open.
   const room = roomName?.trim() || null;
-  const parts = [destLabel || null, room, app].filter((p): p is string => Boolean(p));
+  const parts = [destLabel || null, room, labels.app].filter((p): p is string => Boolean(p));
   return parts.join(' · ');
 }

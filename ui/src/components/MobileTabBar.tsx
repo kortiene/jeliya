@@ -17,10 +17,10 @@ import type { Catalog } from '../l10n/catalog';
  *  tab naming one destination differently — two literal arrays were how that
  *  would have happened first. The glyphs are decoration and live in `tokens.ts`,
  *  outside the catalog, because a translator has nothing to do with `▦`. */
-const TABS: { key: NavKey; label: keyof Catalog; glyph: string }[] = [
-  { key: 'rooms', label: 'destRooms', glyph: Glyph.rooms },
-  { key: 'fleet', label: 'destFleet', glyph: Glyph.fleet },
-  { key: 'settings', label: 'destSettings', glyph: Glyph.settings },
+const TABS: { key: NavKey; messageKey: keyof Catalog; glyph: string }[] = [
+  { key: 'rooms', messageKey: 'destRooms', glyph: Glyph.rooms },
+  { key: 'fleet', messageKey: 'destFleet', glyph: Glyph.fleet },
+  { key: 'settings', messageKey: 'destSettings', glyph: Glyph.settings },
 ];
 
 export function MobileTabBar({ active, onNav }: { active: NavKey; onNav(key: NavKey): void }) {
@@ -40,7 +40,7 @@ export function MobileTabBar({ active, onNav }: { active: NavKey; onNav(key: Nav
             <span className="mtab-glyph" aria-hidden="true">
               {tab.glyph}
             </span>
-            <span className="mtab-label">{s[tab.label] as string}</span>
+            <span className="mtab-label">{s[tab.messageKey] as string}</span>
           </button>
         );
       })}

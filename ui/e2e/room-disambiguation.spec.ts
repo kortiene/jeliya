@@ -102,7 +102,7 @@ test('the fleet shows short ids only on homonymous room chips', async ({ app, pa
 
 test('creating a room warns on a local name collision without blocking', async ({ app, page }) => {
   await app.gotoRoomsList();
-  await page.getByRole('button', { name: 'Create Room', exact: true }).click();
+  await page.locator('button.create-room:not(.join-room)').click();
 
   const create = dialog(page);
   const input = create.getByLabel('Room name');

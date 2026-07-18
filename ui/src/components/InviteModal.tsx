@@ -9,17 +9,30 @@ import {
   type InviteState,
   type MintedInvite,
 } from '../lib/invite';
+import type { Catalog } from '../l10n/catalog';
+import { useStrings } from '../l10n/strings';
+import { Template } from '../l10n/template';
+import { Example, Glyph } from '../l10n/tokens';
+import { rolePill } from '../l10n/wireDisplay';
 import { CopyButton, ErrorNote, Modal } from './ui';
 import { QrCode } from './QrCode';
 
 /** Friendly labels for the shared EXPIRY_PRESETS keys. The convention lives in
  *  invite.ts (label-free on purpose); each client localizes the key. */
-const EXPIRY_LABELS: Record<string, string> = {
-  '1h': '1 hour',
-  '24h': '24 hours',
-  '7d': '7 days',
-  never: 'No expiry',
-};
+function expiryLabel(s: Catalog, key: string): string {
+  switch (key) {
+    case '1h':
+      return s.inviteExpiry1h;
+    case '24h':
+      return s.inviteExpiry24h;
+    case '7d':
+      return s.inviteExpiry7d;
+    case 'never':
+      return s.inviteExpiryNever;
+    default:
+      return key;
+  }
+}
 
 /** The default preset when the flow opens fresh — a bounded, single-day ticket
  *  is the safer default than a never-expiring one. */
@@ -31,37 +44,61 @@ function pendingInvite(members: readonly Member[]): Member | null {
   return members.find((m) => m.status === 'invited') ?? null;
 }
 
-function lifecycleText(state: InviteState): string {
+function lifecycleText(s: Catalog, state: InviteState): string {
   switch (state) {
     case 'joined':
-      return 'They have joined the room — the roster confirms an active membership.';
+      return s.inviteLifecycleJoinedCopy;
     case 'expired':
-      return 'This ticket has expired before they joined. Send a fresh one below.';
+      return s.inviteLifecycleExpiredCopy;
     default:
-      return 'Waiting for them to join. This updates on its own when the roster changes.';
+      return s.inviteLifecycleWaitingCopy;
   }
 }
 
 function LifecycleChip({ state }: { state: InviteState }) {
+  const s = useStrings();
   if (state === 'joined') {
     return (
       <span className="chip chip-label tone-green">
-        <span className="dot dot-green" aria-hidden="true" /> Joined
+        <span className="dot dot-green" aria-hidden="true" /> {s.inviteLifecycleJoined}
       </span>
     );
   }
   if (state === 'expired') {
     return (
       <span className="chip chip-label tone-red">
-        <span className="dot dot-red" aria-hidden="true" /> Expired
+        <span className="dot dot-red" aria-hidden="true" /> {s.inviteLifecycleExpired}
       </span>
     );
   }
   return (
     <span className="chip chip-label tone-neutral">
-      <span className="dot dot-neutral" aria-hidden="true" /> Waiting
+      <span className="dot dot-neutral" aria-hidden="true" /> {s.inviteLifecycleWaiting}
     </span>
   );
+}
+
+/** A client-local validation error is a designed form state, not a daemon
+ * diagnostic. Keep only the boolean in state so switching locale while the
+ * error is visible re-resolves all three lines on the next render. */
+function InviteErrorNote({
+  error,
+  expiryInvalid,
+}: {
+  error: DaemonErrorShape | null;
+  expiryInvalid: boolean;
+}) {
+  const s = useStrings();
+  if (expiryInvalid) {
+    return (
+      <div className="error-note" role="alert">
+        <strong className="error-title">{s.inviteExpiryErrorTitle}</strong>
+        <span>{s.inviteExpiryErrorMessage}</span>
+        <div className="error-hint">{s.inviteExpiryErrorHint}</div>
+      </div>
+    );
+  }
+  return <ErrorNote error={error} />;
 }
 
 /** Guided invitation + re-invitation flow (issue #66, P14). Presents
@@ -90,6 +127,7 @@ export function InviteModal({
   connected: boolean;
   onClose(): void;
 }) {
+  const s = useStrings();
   // Derive the initial draft from the roster ONCE, on open: a still-pending
   // `invited` row restores the waiting state (identity, role, and a Waiting
   // chip) instead of a blank form. The mounted-once lazy initializers read the
@@ -112,6 +150,7 @@ export function InviteModal({
     restored ? { identityId: restored.identity_id, expiresAtMs: null } : null,
   );
   const [error, setError] = useState<DaemonErrorShape | null>(null);
+  const [expiryInvalid, setExpiryInvalid] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   // Live expiry: while tracking a time-boxed invite, tick so waiting flips to
@@ -140,11 +179,7 @@ export function InviteModal({
     if (advancedOpen && customText) {
       const n = Number(customText);
       if (!Number.isInteger(n) || n <= 0) {
-        setError({
-          code: 'invalid_params',
-          message: 'custom expiry must be a positive number of seconds',
-          hint: 'e.g. 3600 for one hour, or pick a preset instead',
-        });
+        setExpiryInvalid(true);
         return;
       }
       expirySecs = n;
@@ -154,6 +189,7 @@ export function InviteModal({
 
     setBusy(true);
     setError(null);
+    setExpiryInvalid(false);
     try {
       const result = await client.call('invite.create', {
         room_id: roomId,
@@ -178,13 +214,14 @@ export function InviteModal({
     setMinted(null);
     setIdentityId('');
     setError(null);
+    setExpiryInvalid(false);
   };
 
   const share = async () => {
     if (!ticket) return;
     try {
       await navigator.share({
-        title: 'Jeliya room invite',
+        title: s.inviteShareTitle,
         text: buildCombinedInvite(ticket, endpointAddr ?? ''),
       });
     } catch {
@@ -197,22 +234,22 @@ export function InviteModal({
   if (ticket) {
     const combined = buildCombinedInvite(ticket, endpointAddr ?? '');
     return (
-      <Modal title="Invite to room" onClose={onClose} wide busy={busy}>
+      <Modal title={s.inviteTitle} onClose={onClose} wide busy={busy}>
         <div>
           {endpointAddr ? (
             <div className="invite-readiness invite-ready">
               <span className="dot dot-green" aria-hidden="true" />
               <div>
-                <strong>Ready to send.</strong>
-                <p>Stay in this room until they join. If they still see “couldn't reach inviter,” send a fresh invite and retry.</p>
+                <strong>{s.inviteReadyToSend}</strong>
+                <p>{s.inviteReadyToSendCopy}</p>
               </div>
             </div>
           ) : (
             <div className="invite-readiness invite-caution">
               <span className="dot" aria-hidden="true" />
               <div>
-                <strong>No dialable address reported yet.</strong>
-                <p>Keep this room open. The joiner may still connect via discovery or relay, but a fresh room address is more reliable.</p>
+                <strong>{s.inviteNoDialableAddress}</strong>
+                <p>{s.inviteNoDialableAddressCopy}</p>
               </div>
             </div>
           )}
@@ -220,14 +257,14 @@ export function InviteModal({
           {lifecycle ? (
             <div className="invite-lifecycle" role="status" aria-live="polite">
               <LifecycleChip state={lifecycle} />
-              <span className="muted">{lifecycleText(lifecycle)}</span>
+              <span className="muted">{lifecycleText(s, lifecycle)}</span>
             </div>
           ) : null}
 
           <p className="muted">
             {endpointAddr
-              ? 'Send this one paste to the invitee — it is the ticket and your dialable address together. They paste it into “Join with a ticket” and the address fills in automatically.'
-              : 'Send this ticket to the invitee. They join with it (room.join).'}
+              ? s.inviteCombinedCopy
+              : s.inviteTicketOnlyCopy}
           </p>
           <div className="ticket-box">
             <textarea
@@ -235,10 +272,10 @@ export function InviteModal({
               readOnly
               value={combined}
               rows={4}
-              aria-label={endpointAddr ? 'Combined invite (ticket and peer address)' : 'Invite ticket'}
+              aria-label={endpointAddr ? s.inviteCombinedInviteLabel : s.inviteInviteTicketLabel}
               onFocus={(e) => e.target.select()}
             />
-            <CopyButton text={combined} label={endpointAddr ? 'Copy invite' : 'Copy ticket'} />
+            <CopyButton text={combined} label={endpointAddr ? s.inviteCopyInvite : s.inviteCopyTicket} />
           </div>
 
           {/* Platform Share (Web Share API), feature-detected — rendered only
@@ -246,7 +283,8 @@ export function InviteModal({
           {canShare ? (
             <div className="invite-share-row">
               <button type="button" className="btn" onClick={() => void share()}>
-                <span aria-hidden="true">↗</span> Share…
+                <span aria-hidden="true">{Glyph.share}</span>{' '}
+                {endpointAddr ? s.inviteShareInvite : s.inviteShareTicket}
               </button>
             </div>
           ) : null}
@@ -256,32 +294,32 @@ export function InviteModal({
               too large for any symbol, leaving Copy/Share as the fallback. */}
           <QrCode
             value={combined}
-            label="QR code for the room invite — scan on another device to join"
-            caption={endpointAddr ? 'Scan to join — this is the same invite as above.' : 'Scan to import this ticket on another device.'}
+            label={s.inviteQrLabel}
+            caption={endpointAddr ? s.inviteQrCombinedCaption : s.inviteQrTicketCaption}
           />
 
           {endpointAddr ? (
             <details className="invite-advanced">
-              <summary className="muted">Send the ticket and address separately</summary>
+              <summary className="muted">{s.inviteSeparatelySummary}</summary>
               <div className="ticket-box">
                 <textarea
                   className="mono"
                   readOnly
                   value={ticket}
                   rows={4}
-                  aria-label="Invite ticket"
+                  aria-label={s.inviteInviteTicketLabel}
                   onFocus={(e) => e.target.select()}
                 />
-                <CopyButton text={ticket} label="Copy ticket" />
+                <CopyButton text={ticket} label={s.inviteCopyTicket} />
               </div>
               <div className="ticket-box">
                 <code className="mono addr-code">{endpointAddr}</code>
-                <CopyButton text={endpointAddr} label="Copy address" />
+                <CopyButton text={endpointAddr} label={s.inviteCopyAddress} />
               </div>
             </details>
           ) : (
             <p className="muted">
-              This daemon has not reported a dialable address — the joiner may connect via relay or discovery.
+              {s.inviteNoDialableAddressNote}
             </p>
           )}
 
@@ -292,15 +330,16 @@ export function InviteModal({
               onClick={() => void generate()}
               disabled={busy || !connected}
             >
-              {busy ? 'Minting…' : connected ? 'Invite again' : 'Reconnecting…'}
+              {busy ? s.inviteGenerating : connected ? s.inviteAgain : s.commonReconnecting}
             </button>
           ) : null}
 
           <button type="button" className="btn btn-ghost" onClick={newInvite}>
-            <span aria-hidden="true">←</span> New invite
+            <span aria-hidden="true">{Glyph.previous}</span>
+            {s.inviteNewInvite}
           </button>
 
-          <ErrorNote error={error} />
+          <InviteErrorNote error={error} expiryInvalid={expiryInvalid} />
         </div>
       </Modal>
     );
@@ -308,7 +347,7 @@ export function InviteModal({
 
   // ---- draft pane (identity → role → expiry) -------------------------------
   return (
-    <Modal title="Invite to room" onClose={onClose} wide busy={busy}>
+    <Modal title={s.inviteTitle} onClose={onClose} wide busy={busy}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -321,20 +360,19 @@ export function InviteModal({
           <div className="invite-lifecycle" role="status" aria-live="polite">
             <LifecycleChip state={lifecycle} />
             <span className="muted">
-              You have already invited this identity and they have not joined yet. Send a fresh invite below.
+              {s.inviteAlreadyInvited}
             </span>
           </div>
         ) : (
           <>
             <p className="muted">
-              Tickets are bound to one identity. Ask the invitee for their identity id — it is shown on their onboarding
-              screen and in their sidebar footer, with a copy button.
+              {s.inviteIntro}
             </p>
             <div className="invite-readiness">
               <span className="dot dot-green" aria-hidden="true" />
               <div>
-                <strong>This room is open for inviting.</strong>
-                <p>Keep it open until the invitee finishes joining. Jeliya can only bootstrap them while an owner is reachable.</p>
+                <strong>{s.inviteRoomOpenForInviting}</strong>
+                <p>{s.inviteRoomOpenForInvitingCopy}</p>
               </div>
             </div>
           </>
@@ -344,11 +382,11 @@ export function InviteModal({
             Submit is disabled until it is valid, so an obvious typo fails in
             the form, never as a daemon invalid_params error. */}
         <label className="field">
-          <span>Invitee identity id</span>
+          <span>{s.inviteInviteeIdentityId}</span>
           <input
             value={identityId}
             onChange={(e) => setIdentityId(e.target.value)}
-            placeholder="64-hex identity id"
+            placeholder={s.inviteInviteePlaceholder}
             className="mono"
             spellCheck={false}
             autoFocus
@@ -360,15 +398,15 @@ export function InviteModal({
             className={idTouched && !idValid ? 'field-hint field-error' : 'field-hint muted'}
           >
             {idTouched && !idValid
-              ? 'That is not a valid identity id — it must be exactly 64 hexadecimal characters.'
-              : 'Paste the invitee’s 64-hex identity id, shown on their onboarding screen and sidebar footer.'}
+              ? s.inviteIdentityInvalid
+              : s.inviteIdentityHint}
           </span>
         </label>
 
         {/* 2. Role — with a one-line consequence for each, and a security
             warning when agent is selected (matching the Add-Agent modal). */}
         <fieldset className="field invite-roles">
-          <legend>Role</legend>
+          <legend>{s.inviteRoleLabel}</legend>
           <label className="role-option">
             <input
               type="radio"
@@ -377,7 +415,10 @@ export function InviteModal({
               onChange={() => setRole('member')}
             />
             <span>
-              <strong>Member</strong> — a person in the room: reads and posts, shares files. No command execution.
+              <Template
+                template={s.inviteRoleMemberConsequence}
+                slots={{ role: <strong>{rolePill(s, 'member')}</strong> }}
+              />
             </span>
           </label>
           <label className="role-option">
@@ -388,25 +429,23 @@ export function InviteModal({
               onChange={() => setRole('agent')}
             />
             <span>
-              <strong>Agent</strong> — an automated participant that can act on this room’s allowlisted messages.
+              <Template
+                template={s.inviteRoleAgentConsequence}
+                slots={{ role: <strong>{rolePill(s, 'agent')}</strong> }}
+              />
             </span>
           </label>
         </fieldset>
         {role === 'agent' ? (
-          <p className="error-note" role="alert">
-            WARNING — an agent invite authorizes an automated participant. Minting the ticket{' '}
-            <strong>does not start anything</strong>: a human must run the agent on its own machine, where it can
-            execute this room’s allowlisted commands — arbitrary code / file execution on that host. Only invite an
-            agent for a room and senders you trust.
-          </p>
+          <p className="error-note" role="alert">{s.inviteAgentWarning}</p>
         ) : null}
 
         {/* 3. Expiry — presets over EXPIRY_PRESETS, plus an advanced custom
             seconds field behind a disclosure. The custom value, when set,
             overrides the selected preset. */}
         <div className="field">
-          <span>Ticket expiry</span>
-          <div className="expiry-presets" role="group" aria-label="Ticket expiry">
+          <span>{s.inviteTicketExpiryLabel}</span>
+          <div className="expiry-presets" role="group" aria-label={s.inviteTicketExpiryLabel}>
             {EXPIRY_PRESETS.map((p) => {
               const selected = !(advancedOpen && customExpiry.trim()) && expiryKey === p.key;
               return (
@@ -420,7 +459,7 @@ export function InviteModal({
                     setCustomExpiry('');
                   }}
                 >
-                  {EXPIRY_LABELS[p.key] ?? p.key}
+                  {expiryLabel(s, p.key)}
                 </button>
               );
             })}
@@ -435,17 +474,23 @@ export function InviteModal({
             open={advancedOpen}
             onToggle={(e) => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
           >
-            <summary className="muted">Advanced / custom expiry</summary>
+            <summary className="muted">{s.inviteAdvancedExpiry}</summary>
             <label className="field">
               <span>
-                Custom expiry seconds <em className="muted">(overrides the preset above)</em>
+                <Template
+                  template={s.commonOptionalFieldLabel}
+                  slots={{
+                    label: s.inviteCustomExpiryLabel,
+                    optional: <em className="muted">{s.inviteCustomExpiryOverride}</em>,
+                  }}
+                />
               </span>
               <input
                 value={customExpiry}
                 onChange={(e) => setCustomExpiry(e.target.value)}
-                placeholder="3600"
+                placeholder={Example.expirySeconds}
                 inputMode="numeric"
-                aria-label="Custom expiry seconds"
+                aria-label={s.inviteCustomExpiryLabel}
               />
             </label>
           </details>
@@ -456,9 +501,15 @@ export function InviteModal({
           className="btn btn-primary"
           disabled={busy || !idValid || !connected}
         >
-          {busy ? 'Generating…' : !connected ? 'Reconnecting…' : restoredWaiting ? 'Send a fresh invite' : 'Generate ticket'}
+          {busy
+            ? s.inviteGenerating
+            : !connected
+              ? s.commonReconnecting
+              : restoredWaiting
+                ? s.inviteSendFresh
+                : s.inviteGenerateTicket}
         </button>
-        <ErrorNote error={error} />
+        <InviteErrorNote error={error} expiryInvalid={expiryInvalid} />
       </form>
     </Modal>
   );

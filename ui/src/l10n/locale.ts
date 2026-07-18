@@ -28,19 +28,39 @@ export function isSupported(tag: string | null | undefined): tag is SupportedLoc
   return tag != null && (SUPPORTED_LOCALES as readonly string[]).includes(tag);
 }
 
+function platformLanguageTags(): readonly string[] {
+  if (typeof navigator === 'undefined') return [];
+  return navigator.languages?.length ? navigator.languages : [navigator.language];
+}
+
 /** The platform's preferred language, narrowed to one we have a catalog for.
  *
  *  Matches on the PRIMARY subtag, so `fr-CA` and `fr-BE` both resolve to the
  *  French catalog — a Canadian French speaker should not silently get English
  *  because the region differs. */
 export function platformLocale(): SupportedLocale {
-  const candidates = typeof navigator === 'undefined' ? [] : (navigator.languages ?? [navigator.language]);
-  for (const tag of candidates) {
+  for (const tag of platformLanguageTags()) {
     if (!tag) continue;
     const primary = tag.split('-')[0].toLowerCase();
     if (isSupported(primary)) return primary;
   }
   return FALLBACK_LOCALE;
+}
+
+/** The platform locale used for dates and numbers. Unlike `platformLocale`,
+ *  this is not narrowed to a language with a text catalog: `de-CH`, for
+ *  example, is a perfectly valid formatting choice while the UI reads in
+ *  English or French. Invalid/unsupported browser tags are skipped. */
+export function platformFormattingLocale(fallback: string = FALLBACK_LOCALE): string {
+  for (const tag of platformLanguageTags()) {
+    if (!tag) continue;
+    try {
+      if (Intl.DateTimeFormat.supportedLocalesOf([tag]).length > 0) return tag;
+    } catch {
+      /* try the next platform tag */
+    }
+  }
+  return fallback;
 }
 
 function read(key: string): string | null {
@@ -70,8 +90,8 @@ export function saveTextLocale(tag: SupportedLocale | null): void {
   write(TEXT_KEY, tag);
 }
 
-/** The stored FORMATTING-locale preference, or null for "follow the text
- *  locale". Any BCP 47 tag is allowed here — unlike the text locale it needs no
+/** The stored FORMATTING-locale preference, or null for "follow the system".
+ *  Any BCP 47 tag is allowed here — unlike the text locale it needs no
  *  catalog, only `Intl` support, so a user may read English while formatting
  *  under `de-CH`. */
 export function loadFormattingLocale(): string | null {
@@ -99,7 +119,7 @@ export function resolveLocales(): ResolvedLocales {
   const text = storedText ?? platformLocale();
   return {
     text,
-    formatting: resolveFormattingLocale(loadFormattingLocale(), text),
+    formatting: resolveFormattingLocale(loadFormattingLocale(), text, platformFormattingLocale(text)),
     textFollowsSystem: storedText === null,
   };
 }

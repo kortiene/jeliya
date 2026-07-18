@@ -1,4 +1,5 @@
 import { expect, test, MOCK_ROOMS } from './fixtures';
+import { en } from '../src/l10n/en';
 
 // Issue #53: a failed room.open must offer explicit Retry and Back to Rooms
 // paths, retry the same room without selecting another first, and never
@@ -26,7 +27,7 @@ test('a failed room open offers Retry, and Retry restores the room', async ({ ap
   const surface = page.locator('.room-error-surface');
   await expect(surface).toBeVisible();
   await expect(surface.getByText('Something went wrong')).toBeVisible();
-  await expect(surface.getByText('Technical details')).toBeVisible();
+  await expect(surface.getByText(en.commonTechnicalDetails, { exact: true })).toBeVisible();
   await expect(app.timeline).toHaveCount(0);
   await expect(app.composerTextarea).toHaveCount(0);
   await expect(page.getByText('No events yet')).toHaveCount(0);

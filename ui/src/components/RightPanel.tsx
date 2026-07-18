@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DaemonErrorShape, FileEntry, Member, PipeEntry, TimelineEvent } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
-import { extOf, fileTint, formatBytes, formatTime, labelTone, prettyLabel } from '../lib/format';
-import { ROOM_DEST_LABELS } from '../lib/routes';
+import { extOf, fileTint, labelTone, prettyLabel } from '../lib/format';
 import type { InspectorDest, RoomDest } from '../lib/routes';
 import type { Shell } from '../lib/shell';
+import type { Catalog } from '../l10n/catalog';
+import { roomDestLabel } from '../l10n/destinations';
 import { scrollIntoView } from '../lib/motion';
+import { useFormats, useStrings } from '../l10n/strings';
+import { Template } from '../l10n/template';
+import { Example, Glyph, Punct } from '../l10n/tokens';
+import { memberStatus, roleInline, rolePill } from '../l10n/wireDisplay';
 import { RoomNav } from './RoomNav';
 import { useNames } from './names';
 import { Avatar, ErrorNote, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
@@ -17,9 +22,7 @@ import type { FetchAvailability, FetchState } from './ui';
 export type PanelTab = InspectorDest;
 
 export type PipeConnState =
-  | { phase: 'connecting' }
-  | { phase: 'connected'; local_addr: string }
-  | { phase: 'error'; error: DaemonErrorShape };
+  { phase: 'connecting' } | { phase: 'connected'; local_addr: string } | { phase: 'error'; error: DaemonErrorShape };
 
 // -- Members -------------------------------------------------------------------
 
@@ -42,31 +45,6 @@ function statusTone(status: string): 'active' | 'invited' | 'left' | 'removed' |
   return 'unknown';
 }
 
-/** Signed roster status, as a label (docs/room-workbench.md, decision 4).
- *
- *  This used to title-case the wire value, which rendered the roster's
- *  `active` as "Active" — the same word the room rail used for a live local
- *  session, and the collision the record exists to remove. Display labels and
- *  wire values are never the same constant (docs/i18n.md, rule 3). */
-function displayStatus(status: string): string {
-  switch (status) {
-    case 'active':
-      return 'Member';
-    case 'invited':
-      return 'Invited';
-    case 'left':
-      return 'Left';
-    case 'removed':
-      return 'Removed';
-    default:
-      return 'Unknown';
-  }
-}
-
-function displayRole(role: Member['role']): string {
-  return role === 'owner' ? 'Owner' : role === 'agent' ? 'Agent' : 'Member';
-}
-
 function shortMemberId(id: string): string {
   return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
 }
@@ -80,6 +58,8 @@ function MembersTab({
   selfId: string | null;
   onLeaveRoom(): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const names = useNames();
   const sorted = [...members].sort((a, b) => {
     const aSelf = selfId !== null && a.identity_id === selfId;
@@ -96,7 +76,7 @@ function MembersTab({
   const agentCount = members.filter((m) => m.role === 'agent').length;
 
   if (members.length === 0) {
-    return <div className="panel-empty muted">No members have synced for this room yet.</div>;
+    return <div className="panel-empty muted">{s.panelMembersEmpty}</div>;
   }
 
   return (
@@ -106,10 +86,8 @@ function MembersTab({
           which is noise — the h2 below already structures it (issue #72). */}
       <section className="members-summary">
         <div className="members-summary-copy">
-          <h2>
-            {members.length} in the roster
-          </h2>
-          <p>Roster from the signed room history. Statuses reflect membership events, not live peer reachability.</p>
+          <h2>{s.panelRoomMemberCount(members.length, formats.count(members.length))}</h2>
+          <p>{s.panelRosterCopy}</p>
         </div>
       </section>
 
@@ -126,15 +104,15 @@ function MembersTab({
           `activeCount` are genuinely different numbers, and both keep a name
           that says which one it is. */}
       <div className="members-section-head">
-        <h3>Room roster</h3>
+        <h3>{s.panelRoomRoster}</h3>
         <span>
           {[
-            `${activeCount} member${activeCount === 1 ? '' : 's'}`,
-            `${agentCount} agent${agentCount === 1 ? '' : 's'}`,
-            invitedCount > 0 ? `${invitedCount} invited` : null,
+            s.commonMemberCount(activeCount, formats.count(activeCount)),
+            s.roomHeaderAgentCount(agentCount, formats.count(agentCount)),
+            invitedCount > 0 ? s.panelInvitedCount(invitedCount, formats.count(invitedCount)) : null,
           ]
             .filter(Boolean)
-            .join(' · ')}
+            .join(Punct.metaSep)}
         </span>
       </div>
 
@@ -149,7 +127,7 @@ function MembersTab({
             <div className="member-main">
               <div className="member-title-row">
                 <SenderName id={member.identity_id} className="member-name" />
-                {mine ? <span className="member-self-chip">this device</span> : null}
+                {mine ? <span className="member-self-chip">{s.panelThisDevice}</span> : null}
               </div>
               <code className="member-id mono">{shortMemberId(member.identity_id)}</code>
             </div>
@@ -160,19 +138,19 @@ function MembersTab({
                 below is the accessible rendering, and it already satisfies the
                 never-colour-alone rule (docs/room-attention.md). */}
             <div className="member-badges">
-              <span className={`member-role role-${member.role}`}>{displayRole(member.role)}</span>
+              <span className={`member-role role-${member.role}`}>{rolePill(s, member.role)}</span>
               <span className={`member-status status-${tone}`}>
-                <span className="dot" /> {displayStatus(member.status)}
+                <span className="dot" /> {memberStatus(s, member.status)}
               </span>
             </div>
             {canLeave ? (
               <button type="button" className="btn btn-sm btn-danger member-leave-btn" onClick={onLeaveRoom}>
-                Leave
+                {s.panelLeave}
               </button>
             ) : null}
             {ownerCannotLeave ? (
-              <span className="member-owner-note" title="Owners cannot leave until ownership transfer exists.">
-                Owner stays
+              <span className="member-owner-note" title={s.panelOwnerStaysTitle}>
+                {s.panelOwnerStays}
               </span>
             ) : null}
           </div>
@@ -185,9 +163,11 @@ function MembersTab({
 // -- Agents --------------------------------------------------------------------
 
 function AgentsTab({ members, timeline }: { members: Member[]; timeline: TimelineEvent[] }) {
+  const s = useStrings();
+  const formats = useFormats();
   const agents = members.filter((m) => m.role === 'agent');
   if (agents.length === 0) {
-    return <div className="panel-empty muted">No agent members in this room yet. Invite one with role “agent”.</div>;
+    return <div className="panel-empty muted">{s.panelAgentsEmpty}</div>;
   }
   return (
     <div className="panel-list">
@@ -211,19 +191,19 @@ function AgentsTab({ members, timeline }: { members: Member[]; timeline: Timelin
                     <span className={`dot dot-${labelTone(latest.label)}`} /> {prettyLabel(latest.label)}
                   </span>
                 ) : (
-                  <span className="agent-label muted">No status posted yet</span>
+                  <span className="agent-label muted">{s.panelNoStatusPostedYet}</span>
                 )}
               </div>
-              {latest ? <time className="muted">{formatTime(latest.ts)}</time> : null}
+              {latest ? <time className="muted">{formats.clock(latest.ts)}</time> : null}
             </div>
             {latest?.status_message ? <p className="agent-msg">{latest.status_message}</p> : null}
             {typeof latest?.progress === 'number' ? (
               <div className="progress-row">
                 <ProgressBar value={latest.progress} />
-                <span className="progress-num">{Math.max(0, Math.min(100, latest.progress))}%</span>
+                <span className="progress-num">{formats.percent(Math.max(0, Math.min(100, latest.progress)))}</span>
               </div>
             ) : null}
-            <div className="agent-foot muted">status: {agent.status}</div>
+            <div className="agent-foot muted">{s.panelAgentStatusFooter(memberStatus(s, agent.status))}</div>
           </div>
         );
       })}
@@ -233,22 +213,22 @@ function AgentsTab({ members, timeline }: { members: Member[]; timeline: Timelin
 
 // -- Files ---------------------------------------------------------------------
 
-function mimeTypeLabel(mime: string, fallback: string): string {
-  if (!mime) return fallback || 'file';
+function mimeTypeLabel(s: Catalog, mime: string, fallback: string): string {
+  if (!mime) return fallback || s.panelKindFile;
   const [type, subtype] = mime.split('/');
   if (!subtype) return mime;
-  if (subtype === 'octet-stream') return fallback || 'binary';
-  if (type === 'text' && subtype === 'plain') return 'text';
+  if (subtype === 'octet-stream') return fallback || s.panelKindBinary;
+  if (type === 'text' && subtype === 'plain') return s.panelKindText;
   return subtype.replace(/[.+-]/g, ' ');
 }
 
-function fileTypeLabel(file: FileEntry, ext: string): string {
-  return mimeTypeLabel(file.mime, ext || 'file');
+function fileTypeLabel(s: Catalog, file: FileEntry, ext: string): string {
+  return mimeTypeLabel(s, file.mime, ext);
 }
 
-function selectedFileTypeLabel(file: File): string {
+function selectedFileTypeLabel(s: Catalog, file: File): string {
   const ext = extOf(file.name).toLowerCase();
-  return mimeTypeLabel(file.type, ext || 'file');
+  return mimeTypeLabel(s, file.type, ext);
 }
 
 function FilesTab({
@@ -277,6 +257,8 @@ function FilesTab({
   onSharePath(path: string): Promise<void>;
   onShareBrowserFile(file: File): Promise<void>;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const [path, setPath] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pickerKey, setPickerKey] = useState(0);
@@ -332,12 +314,16 @@ function FilesTab({
   }).length;
   const heroDetail =
     files.length === 0
-      ? 'Share a readable path and peers can fetch a verified copy over P2P.'
-      : `${formatBytes(totalBytes)} in the room · ${availableCount} fetchable here` +
-        (fetchedCount > 0 ? ` · ${fetchedCount} fetched` : '') +
-        (servingCount > 0 ? ` · ${servingCount} served by you` : '');
+      ? s.panelFilesHeroEmptyDetail
+      : [
+          s.panelFilesHeroDetail(formats.bytes(totalBytes), availableCount, formats.count(availableCount)),
+          fetchedCount > 0 ? s.panelNFetched(fetchedCount, formats.count(fetchedCount)) : null,
+          servingCount > 0 ? s.panelServedByYou(servingCount, formats.count(servingCount)) : null,
+        ]
+          .filter(Boolean)
+          .join(Punct.metaSep);
   const shareHelpId = 'file-share-help';
-  const selectedType = selectedFile ? selectedFileTypeLabel(selectedFile) : null;
+  const selectedType = selectedFile ? selectedFileTypeLabel(s, selectedFile) : null;
 
   const share = async () => {
     const p = path.trim();
@@ -369,20 +355,29 @@ function FilesTab({
           ▤
         </span>
         <div className="files-hero-copy">
-          <h2>{files.length === 0 ? 'No shared files yet' : `${files.length} shared file${files.length === 1 ? '' : 's'}`}</h2>
+          <h2>
+            {files.length === 0
+              ? s.panelNoSharedFilesYet
+              : s.panelSharedFileCount(files.length, formats.count(files.length))}
+          </h2>
           <p>{heroDetail}</p>
         </div>
         {files.length > 0 ? (
-          <dl className="files-stats" aria-label="File availability">
+          <dl className="files-stats" aria-label={s.panelFileAvailabilityLabel}>
             <div>
-              <dt>Fetchable now</dt>
+              <dt>{s.panelFetchableNow}</dt>
               <dd>
-                {availableCount}/{files.length}
+                {s.panelFetchableNowValue(
+                  availableCount,
+                  files.length,
+                  formats.count(availableCount),
+                  formats.count(files.length),
+                )}
               </dd>
             </div>
             <div>
-              <dt>Provider devices</dt>
-              <dd>{providerCount}</dd>
+              <dt>{s.panelProviderDevices}</dt>
+              <dd>{formats.count(providerCount)}</dd>
             </div>
           </dl>
         ) : null}
@@ -399,7 +394,7 @@ function FilesTab({
           aria-controls="file-share-sheet"
           onClick={() => setPickerOpen((open) => !open)}
         >
-          {pickerOpen ? 'Close' : 'Share a file'}
+          {pickerOpen ? s.panelFilesShareToggleClose : s.panelFilesShareToggle}
         </button>
       </div>
 
@@ -414,13 +409,13 @@ function FilesTab({
         >
           <div className="panel-form-head">
             <div>
-              <h2>Choose a file to share</h2>
+              <h2>{s.panelShareCardTitle}</h2>
               <p className="muted" id={shareHelpId}>
-                Pick a local file. Jeliya uploads it to this daemon, imports it into the room blob store, and verifies it by content hash.
+                {s.panelShareCardHelp}
               </p>
             </div>
-            <span className="file-share-badge" aria-label="Verified by content hash">
-              hash checked
+            <span className="file-share-badge" aria-label={s.panelHashCheckedBadgeLabel}>
+              {s.panelHashCheckedBadge}
             </span>
           </div>
 
@@ -434,18 +429,20 @@ function FilesTab({
                 setSelectedFile(file);
                 if (file) setPath('');
               }}
-              aria-label="Choose file to share"
+              aria-label={s.panelChooseFileToShare}
               aria-describedby={shareHelpId}
             />
             {selectedFile ? (
               <div className="selected-file-card" aria-live="polite">
                 <span className="selected-file-icon" aria-hidden="true">
-                  {extOf(selectedFile.name).toUpperCase().slice(0, 4) || 'FILE'}
+                  {extOf(selectedFile.name).toUpperCase().slice(0, 4) || s.commonFileExtFallback.toUpperCase()}
                 </span>
                 <div className="selected-file-info">
                   <strong>{selectedFile.name}</strong>
                   <span className="muted">
-                    {formatBytes(selectedFile.size)} · {selectedType}
+                    {formats.bytes(selectedFile.size)}
+                    {Punct.metaSep}
+                    {selectedType}
                   </span>
                 </div>
                 <button
@@ -456,20 +453,24 @@ function FilesTab({
                     setPickerKey((key) => key + 1);
                   }}
                 >
-                  Clear
+                  {s.panelClearSelectedFile}
                 </button>
               </div>
             ) : (
-              <p className="file-picker-empty muted">No file selected yet.</p>
+              <p className="file-picker-empty muted">{s.panelNoFileSelectedYet}</p>
             )}
           </div>
 
-          <button type="submit" className="btn btn-primary file-share-submit" disabled={sharing || (!selectedFile && !path.trim())}>
-            {sharing ? 'Sharing…' : 'Share'}
+          <button
+            type="submit"
+            className="btn btn-primary file-share-submit"
+            disabled={sharing || (!selectedFile && !path.trim())}
+          >
+            {sharing ? s.panelSharing : s.panelShare}
           </button>
 
           <details className="file-advanced-path">
-            <summary>Advanced: paste a daemon-readable path</summary>
+            <summary>{s.panelAdvancedPathSummary}</summary>
             <div className="form-row file-share-row">
               <input
                 value={path}
@@ -480,12 +481,12 @@ function FilesTab({
                     setPickerKey((key) => key + 1);
                   }
                 }}
-                placeholder="/path/to/report.pdf"
-                aria-label="File path to share"
+                placeholder={s.panelPathPlaceholder}
+                aria-label={s.panelPathFieldLabel}
                 spellCheck={false}
               />
             </div>
-            <p className="form-hint muted">Use this only for files already under the daemon data directory.</p>
+            <p className="form-hint muted">{s.panelPathHint}</p>
           </details>
           <ErrorNote error={shareError} />
         </form>
@@ -493,27 +494,33 @@ function FilesTab({
 
       {files.length > 0 ? (
         <div className="files-section-head">
-          <h3>Shared in this room</h3>
+          <h3>{s.panelSharedInThisRoom}</h3>
           <span>
             {availableCount === files.length
-              ? 'All fetchable'
+              ? s.panelAllFetchable
               : [
-                  servingCount > 0 ? `${servingCount} served by you` : null,
-                  waitingProviderCount > 0 ? `${waitingProviderCount} awaiting a provider` : null,
+                  servingCount > 0 ? s.panelServedByYou(servingCount, formats.count(servingCount)) : null,
+                  waitingProviderCount > 0
+                    ? s.panelAwaitingProvider(waitingProviderCount, formats.count(waitingProviderCount))
+                    : null,
                 ]
                   .filter(Boolean)
-                  .join(' · ')}
+                  .join(Punct.metaSep)}
           </span>
         </div>
       ) : null}
 
       {files.map((file) => {
         const tint = fileTint(file.name);
-        const ext = extOf(file.name).toUpperCase() || 'FILE';
-        const type = fileTypeLabel(file, ext.toLowerCase());
+        const rawExt = extOf(file.name).toUpperCase();
+        const ext = rawExt || s.commonFileExtFallback.toUpperCase();
+        const type = fileTypeLabel(s, file, rawExt.toLowerCase());
         const mine = selfId !== null && file.sender_id === selfId;
         const fetchState = fetches[file.file_id];
-        const availability: FetchAvailability = { available: file.available, providers: file.providers };
+        const availability: FetchAvailability = {
+          available: file.available,
+          providers: file.providers,
+        };
         const fetched = fetchState?.phase === 'verified' || fetchState?.phase === 'fetched' || file.fetched;
         const failedState = fetchState?.phase === 'error' ? fetchState : null;
         const selected = selectedFileId === file.file_id;
@@ -523,18 +530,21 @@ function FilesTab({
         // by ownership so that is never shown as a fault. See list_files() in
         // crates/jeliya-core/src/supervisor.rs.
         const health = mine
-          ? { tone: 'self', text: 'Serving to peers' }
+          ? { tone: 'self', text: s.panelHealthServingToPeers }
           : fetched
-            ? { tone: 'ok', text: 'Fetched locally' }
-          : failedState
-            ? {
-                tone: 'warn',
-                text: failedState.error.code === 'hash_mismatch' ? 'Security check failed' : 'Fetch failed',
-              }
-          : file.available
-            ? { tone: 'ok', text: 'Ready to fetch' }
-            : { tone: 'warn', text: 'No provider online' };
-        const providerText = `${file.providers} provider${file.providers === 1 ? '' : 's'}`;
+            ? { tone: 'ok', text: s.panelHealthFetchedLocally }
+            : failedState
+              ? {
+                  tone: 'warn',
+                  text:
+                    failedState.error.code === 'hash_mismatch'
+                      ? s.panelHealthSecurityCheckFailed
+                      : s.panelHealthFetchFailed,
+                }
+              : file.available
+                ? { tone: 'ok', text: s.panelHealthReadyToFetch }
+                : { tone: 'warn', text: s.commonNoProviderOnline };
+        const providerText = s.panelNProviders(file.providers, formats.count(file.providers));
         return (
           <div
             key={file.file_id}
@@ -566,15 +576,21 @@ function FilesTab({
                 </span>
                 <span className={`file-health ${health.tone}`}>
                   <span className="dot" />
-                  {health.text} · {providerText}
+                  {health.text}
+                  {Punct.metaSep}
+                  {providerText}
                 </span>
               </span>
               <span className="file-row-caret" aria-hidden="true">
-                {selected ? '▾' : '▸'}
+                {selected ? Glyph.disclosureOpen : Glyph.disclosureClosed}
               </span>
             </button>
             <div className="file-meta muted">
-              {formatBytes(file.size)} · <SenderName id={file.sender_id} /> · {formatTime(file.ts)}
+              {formats.bytes(file.size)}
+              {Punct.metaSep}
+              <SenderName id={file.sender_id} />
+              {Punct.metaSep}
+              {formats.clock(file.ts)}
             </div>
             {/* The contextual inspector: the selected file's fetch controls,
                 honest state, and detail — the accounting unchanged, just moved
@@ -582,8 +598,8 @@ function FilesTab({
             {selected ? (
               <div className="file-inspector">
                 {mine ? (
-                  <span className="file-self-note" title="This daemon is already serving this file to peers.">
-                    Serving
+                  <span className="file-self-note" title={s.commonServingTooltip}>
+                    {s.commonServing}
                   </span>
                 ) : (
                   <>
@@ -607,6 +623,14 @@ function FilesTab({
 }
 
 // -- Pipes ---------------------------------------------------------------------
+
+/** Pipe state is a protocol value. Known states get display copy; a state from
+ *  a newer daemon stays visible verbatim rather than being mislabeled. */
+function pipeStateLabel(s: Catalog, state: string, connected: boolean): string {
+  if (state === 'open') return connected ? s.pipeStateConnected : s.pipeStateOpen;
+  if (state === 'closed') return s.pipeStateClosed;
+  return state;
+}
 
 function PipesTab({
   pipes,
@@ -636,6 +660,7 @@ function PipesTab({
   onClose(pipeId: string): void;
   onExpose(target: string, peerIdentity: string): Promise<void>;
 }) {
+  const s = useStrings();
   const names = useNames();
   const [target, setTarget] = useState('');
   const peerChoices = members.filter((m) => m.identity_id !== selfId);
@@ -708,14 +733,14 @@ function PipesTab({
           void expose();
         }}
       >
-        <h2>Expose a pipe</h2>
-        <p className="muted">Forward a local port to exactly one authorized peer.</p>
+        <h2>{s.panelExposeTitle}</h2>
+        <p className="muted">{s.panelExposeCopy}</p>
         <div className="form-row">
           <input
             value={target}
             onChange={(e) => setTarget(e.target.value)}
-            placeholder="127.0.0.1:3000"
-            aria-label="Local target (host:port)"
+            placeholder={Example.pipeTarget}
+            aria-label={s.panelTargetFieldLabel}
             spellCheck={false}
           />
         </div>
@@ -723,25 +748,23 @@ function PipesTab({
           <select
             value={peer || peerChoices[0]?.identity_id || ''}
             onChange={(e) => setPeer(e.target.value)}
-            aria-label="Authorized peer"
+            aria-label={s.panelAuthorizedPeerLabel}
           >
-            {peerChoices.length === 0 ? <option value="">no other members</option> : null}
+            {peerChoices.length === 0 ? <option value="">{s.panelNoOtherMembers}</option> : null}
             {peerChoices.map((m) => (
               <option key={m.identity_id} value={m.identity_id}>
-                {names.display(m.identity_id)} ({m.role})
+                {s.panelPeerChoice(names.display(m.identity_id), roleInline(s, m.role))}
               </option>
             ))}
           </select>
           <button type="submit" className="btn" disabled={exposing || !target.trim() || peerChoices.length === 0}>
-            {exposing ? 'Exposing…' : 'Expose'}
+            {exposing ? s.panelExposing : s.panelExpose}
           </button>
         </div>
         <ErrorNote error={exposeError} />
       </form>
 
-      {pipes.length === 0 ? (
-        <div className="panel-empty muted">No pipes yet — expose a local port to one authorized peer above.</div>
-      ) : null}
+      {pipes.length === 0 ? <div className="panel-empty muted">{s.panelPipesEmpty}</div> : null}
       {pipes.map((pipe) => {
         const conn = conns[pipe.pipe_id];
         const selected = selectedPipeId === pipe.pipe_id;
@@ -766,28 +789,33 @@ function PipesTab({
               onClick={() => onSelectPipe(selected ? null : pipe.pipe_id)}
             >
               <span className="pipe-icon" aria-hidden="true">
-                ⤳
+                {Glyph.pipe}
               </span>
               <strong className="mono">{pipe.target}</strong>
               {/* Pipe connection, and only that (decision 4): exposed with a
                   live forwarding session, exposed with none, or closed. */}
               <span className={`chip chip-state state-${pipe.state}`}>
-                {pipe.state === 'open' ? (pipe.connected ? 'Connected' : 'Open') : 'Closed'}
+                {pipeStateLabel(s, pipe.state, pipe.connected)}
               </span>
             </button>
             <div className="pipe-row-meta muted">
-              by <SenderName id={pipe.opened_by} /> · authorized:{' '}
-              {pipe.authorized_peer ? <SenderName id={pipe.authorized_peer} /> : '—'}
+              <Template
+                template={s.panelPipeMeta}
+                slots={{
+                  openedBy: <SenderName id={pipe.opened_by} />,
+                  authorized: pipe.authorized_peer ? <SenderName id={pipe.authorized_peer} /> : Punct.missingValue,
+                }}
+              />
             </div>
             {pipe.state === 'open' ? (
               <div className="pipe-row-actions">
                 {!conn || conn.phase === 'error' ? (
                   <button type="button" className="btn btn-sm" onClick={() => onConnect(pipe.pipe_id)}>
-                    Connect
+                    {s.panelConnect}
                   </button>
                 ) : conn.phase === 'connecting' ? (
                   <button type="button" className="btn btn-sm" disabled>
-                    <span className="spinner" aria-hidden="true" /> Connecting…
+                    <span className="spinner" aria-hidden="true" /> {s.panelConnecting}
                   </button>
                 ) : (
                   <>
@@ -798,17 +826,17 @@ function PipesTab({
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Open preview ↗
+                      {s.panelOpenPreview}
                     </a>
                   </>
                 )}
                 {closing.has(pipe.pipe_id) ? (
                   <button type="button" className="btn btn-sm btn-ghost" disabled>
-                    <span className="spinner" aria-hidden="true" /> Closing…
+                    <span className="spinner" aria-hidden="true" /> {s.panelClosingPipe}
                   </button>
                 ) : (
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => onClose(pipe.pipe_id)}>
-                    Close
+                    {s.panelClosePipe}
                   </button>
                 )}
               </div>
@@ -891,9 +919,10 @@ export function RightPanel({
    *  it opens beside a live workspace and stays `complementary`. */
   isPage: boolean;
 }) {
+  const s = useStrings();
   // Named for the tool it is showing, so the landmark's name changes with the
   // route and never collides with the room rail's (issue #72).
-  const panelName = `${ROOM_DEST_LABELS[tab]} inspector`;
+  const panelName = s.panelInspectorLabel(roomDestLabel(s, tab));
   const RoomHeading = isPage ? 'h1' : 'div';
   return (
     // A plain `div` with an explicit role rather than an `<aside>` — see the
@@ -917,14 +946,14 @@ export function RightPanel({
             without it the only way out would be the browser's own Back — which
             an installed PWA does not show. */}
         {shell === 'compact' ? (
-          <button type="button" className="icon-btn panel-back" onClick={onClose} aria-label="Back to Activity">
-            <span aria-hidden="true">‹</span>
+          <button type="button" className="icon-btn panel-back" onClick={onClose} aria-label={s.roomBackToActivity}>
+            <span aria-hidden="true">{Glyph.back}</span>
           </button>
         ) : null}
         {roomName ? <RoomHeading className="panel-room-context">{roomName}</RoomHeading> : <span />}
         {shell !== 'compact' ? (
-          <button type="button" className="icon-btn panel-close" onClick={onClose} aria-label="Close inspector">
-            <span aria-hidden="true">×</span>
+          <button type="button" className="icon-btn panel-close" onClick={onClose} aria-label={s.roomCloseInspector}>
+            <span aria-hidden="true">{Glyph.close}</span>
           </button>
         ) : null}
       </div>

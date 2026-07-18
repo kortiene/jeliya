@@ -9,7 +9,7 @@ import type {
   RoomSummary,
 } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
-import { colorForId, labelTone, prettyLabel, relTime, shortId } from '../lib/format';
+import { colorForId, labelTone, prettyLabel, shortId } from '../lib/format';
 import {
   type AttentionReason,
   attentionRank,
@@ -19,6 +19,10 @@ import {
   statusUnverified,
 } from '../lib/fleet';
 import { homonymousRoomIds, roomDisplayName } from '../lib/rooms';
+import type { Catalog } from '../l10n/catalog';
+import { useFormats, useStrings } from '../l10n/strings';
+import { Command, Glyph, Punct } from '../l10n/tokens';
+import { Template } from '../l10n/template';
 import { useNames } from './names';
 import { Avatar, CopyButton, ErrorNote, Modal, ProgressBar, SenderName, TreeMark } from './ui';
 
@@ -28,12 +32,20 @@ import { Avatar, CopyButton, ErrorNote, Modal, ProgressBar, SenderName, TreeMark
 // as active/working — peer state overrode the label upstream (docs §1.2 "THE
 // RULE"), and this view must not walk that back.
 
-const LIVENESS_LABEL: Record<Liveness, string> = {
-  working: 'Working',
-  'online-idle': 'Online',
-  stale: 'Stale',
-  offline: 'Offline',
-};
+function livenessLabel(s: Catalog, liveness: string): string {
+  switch (liveness) {
+    case 'working':
+      return s.fleetLivenessWorking;
+    case 'online-idle':
+      return s.fleetLivenessOnline;
+    case 'stale':
+      return s.fleetLivenessStale;
+    case 'offline':
+      return s.fleetLivenessOffline;
+    default:
+      return liveness;
+  }
+}
 
 /** CSS tone class + dot color per liveness. `working`/`online-idle` are live
  *  (accent), `stale` warns (amber), `offline` is dimmed and inert. */
@@ -43,6 +55,14 @@ const LIVENESS_TONE: Record<Liveness, 'live' | 'idle' | 'warn' | 'off'> = {
   stale: 'warn',
   offline: 'off',
 };
+
+function isKnownLiveness(value: string): value is Liveness {
+  return Object.prototype.hasOwnProperty.call(LIVENESS_TONE, value);
+}
+
+function livenessTone(value: string): 'live' | 'idle' | 'warn' | 'off' | 'neutral' {
+  return isKnownLiveness(value) ? LIVENESS_TONE[value] : 'neutral';
+}
 
 // -- status strip (inline SVG, discrete timestamped events) -------------------
 //
@@ -62,6 +82,8 @@ const TONE_VAR: Record<'red' | 'blue' | 'green' | 'neutral', string> = {
 };
 
 function StatusStrip({ points, color, muted }: { points: HistoryPoint[] | null; color: string; muted: boolean }) {
+  const s = useStrings();
+  const formats = useFormats();
   const W = 132;
   const H = 40;
   const pad = 4;
@@ -72,8 +94,8 @@ function StatusStrip({ points, color, muted }: { points: HistoryPoint[] | null; 
   // the dashed "no history" treatment is never flashed before data arrives.
   if (points === null) {
     return (
-      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Loading status history">
-        <title>Loading status history</title>
+      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={s.fleetSparkLoading}>
+        <title>{s.fleetSparkLoading}</title>
         <line x1={pad} y1={base} x2={W - pad} y2={base} stroke="var(--border-strong)" strokeWidth="1.5" />
       </svg>
     );
@@ -81,17 +103,20 @@ function StatusStrip({ points, color, muted }: { points: HistoryPoint[] | null; 
 
   if (points.length === 0) {
     return (
-      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="No status history yet">
-        <title>No status history yet</title>
+      <svg className="spark" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={s.fleetSparkEmpty}>
+        <title>{s.fleetSparkEmpty}</title>
         <line x1={pad} y1={base} x2={W - pad} y2={base} stroke="var(--border-strong)" strokeWidth="1.5" strokeDasharray="2 3" />
       </svg>
     );
   }
 
   const numericCount = points.filter((p) => hasNumericProgress(p.progress)).length;
-  const label =
-    `${points.length} status event${points.length === 1 ? '' : 's'}` +
-    (numericCount > 0 ? `, ${numericCount} with numeric progress` : ', no numeric progress');
+  const label = [
+    s.fleetSparkEvents(points.length, formats.count(points.length)),
+    numericCount > 0
+      ? s.fleetSparkNumericProgress(numericCount, formats.count(numericCount))
+      : s.fleetSparkNoNumericProgress,
+  ].join(Punct.metaSep);
 
   const tsMin = points[0].ts;
   const tsMax = points[points.length - 1].ts;
@@ -143,6 +168,8 @@ function AgentCard({
   homonyms: Set<string>;
   onOpenRoom(roomId: string): void;
 }) {
+  const s = useStrings();
+  const fmt = useFormats();
   const names = useNames();
   const [points, setPoints] = useState<HistoryPoint[] | null>(null);
   const historyRoom = agent.latest?.room_id ?? agent.rooms[0]?.room_id ?? null;
@@ -168,12 +195,13 @@ function AgentCard({
     // tracks live progress without polling per card.
   }, [client, agent.identity_id, historyRoom, agent.latest?.ts]);
 
-  const tone = LIVENESS_TONE[agent.liveness];
+  const runtimeLiveness: string = agent.liveness;
+  const tone = livenessTone(runtimeLiveness);
   const tint = colorForId(agent.identity_id);
   const latest = agent.latest;
   // A stale/offline agent's last posted label is a claim its liveness no longer
   // supports — it must be shown past-tense, never as a bare live status.
-  const unverified = statusUnverified(agent.liveness);
+  const unverified = !isKnownLiveness(runtimeLiveness) || statusUnverified(runtimeLiveness);
   const openRoom = latest?.room_id ?? agent.rooms[0]?.room_id ?? null;
 
   return (
@@ -211,7 +239,7 @@ function AgentCard({
           <div className="fleet-name-row">
             <SenderName id={agent.identity_id} className="fleet-name" />
             <span className={`live-pill live-${tone}`}>
-              <span className="dot" /> {LIVENESS_LABEL[agent.liveness]}
+              <span className="dot" /> {livenessLabel(s, runtimeLiveness)}
             </span>
           </div>
           <code className="fleet-idhex mono" title={agent.identity_id}>
@@ -222,8 +250,8 @@ function AgentCard({
             times with nothing to tell the copies apart — name whose id it is. */}
         <CopyButton
           text={agent.identity_id}
-          label="⧉"
-          ariaLabel={`Copy identity ID for ${names.display(agent.identity_id)}`}
+          label={Glyph.copy}
+          ariaLabel={s.fleetCopyIdentityIdFor(names.display(agent.identity_id))}
         />
       </div>
 
@@ -237,29 +265,29 @@ function AgentCard({
                 className={`chip chip-label tone-${
                   unverified && labelTone(latest.label) === 'green' ? 'neutral' : labelTone(latest.label)
                 }`}
-                title={unverified ? 'Last posted status — its liveness no longer supports it' : undefined}
+                title={unverified ? s.fleetLastStatusHint : undefined}
               >
-                {unverified ? `Last: ${prettyLabel(latest.label)}` : prettyLabel(latest.label)}
+                {unverified ? s.fleetLastStatus(prettyLabel(latest.label)) : prettyLabel(latest.label)}
               </span>
               {latest.message ? <p className="fleet-msg">{latest.message}</p> : null}
             </>
           ) : (
-            <p className="fleet-msg muted">No status posted yet.</p>
+            <p className="fleet-msg muted">{s.fleetNoStatusPosted}</p>
           )}
         </div>
-        <StatusStrip points={points} color={tint} muted={tone === 'off' || tone === 'warn'} />
+        <StatusStrip points={points} color={tint} muted={tone === 'off' || tone === 'warn' || tone === 'neutral'} />
       </div>
 
       {latest && typeof latest.progress === 'number' ? (
         <div className="progress-row">
           <ProgressBar value={latest.progress} />
-          <span className="progress-num">{Math.max(0, Math.min(100, latest.progress))}%</span>
+          <span className="progress-num">{fmt.percent(Math.max(0, Math.min(100, latest.progress)))}</span>
         </div>
       ) : null}
 
       <div className="fleet-rooms">
         {agent.rooms.map((r) => {
-          const name = roomDisplayName(r);
+          const name = roomDisplayName(r, s.roomsUntitled);
           const isHomonym = homonyms.has(r.room_id);
           return (
             <button
@@ -272,7 +300,7 @@ function AgentCard({
               // the short id joins its accessible name, not just its visuals.
               aria-label={isHomonym ? `${name} (${shortId(r.room_id)})` : undefined}
             >
-              <span aria-hidden="true">⬡</span>
+              <span aria-hidden="true">{Glyph.hex}</span>
               <span className="room-chip-name">{name}</span>
               {isHomonym ? <code className="room-disambig mono">{shortId(r.room_id)}</code> : null}
             </button>
@@ -282,11 +310,12 @@ function AgentCard({
 
       <div className="fleet-card-foot">
         <span className="muted fleet-seen">
-          {agent.last_seen_ts !== null ? `Last update ${relTime(agent.last_seen_ts)}` : 'Never seen'}
+          {agent.last_seen_ts !== null ? s.fleetLastUpdate(fmt.relTime(agent.last_seen_ts)) : s.fleetNeverSeen}
         </span>
         {openRoom ? (
           <button type="button" className="btn btn-sm" onClick={() => onOpenRoom(openRoom)}>
-            <span aria-hidden="true">⇱</span> Open Room
+            <span aria-hidden="true">{Glyph.openRoom}</span>
+            {s.fleetOpenRoom}
           </button>
         ) : null}
       </div>
@@ -313,32 +342,40 @@ function AgentCard({
 // from rather than in place of them.
 
 function FleetCoverage({ fleet }: { fleet: FleetResult }) {
+  const s = useStrings();
+  const fmt = useFormats();
   const coverage = fleet.rooms_total > 0 ? Math.round((fleet.rooms_covered / fleet.rooms_total) * 100) : 0;
   return (
     <p className="fleet-coverage muted">
       {fleet.rooms_total === 0
-        ? 'Room coverage: no rooms yet.'
-        : `Room coverage: ${fleet.rooms_covered} of ${fleet.rooms_total} room${
-            fleet.rooms_total === 1 ? '' : 's'
-          } have an agent (${coverage}%).`}
+        ? s.fleetCoverageEmpty
+        : s.fleetCoverage(fmt.count(fleet.rooms_covered), fmt.count(fleet.rooms_total), fmt.percent(coverage))}
     </p>
   );
 }
 
 // -- needs attention (actionable agents, before the aggregate tiles) ----------
 
-const REASON_LABEL: Record<AttentionReason, string> = {
-  failed: 'Failed',
-  review: 'Awaiting review',
-  stale: 'Stale',
-  offline: 'Offline after work',
-};
+function reasonLabel(s: Catalog, reason: AttentionReason): string {
+  switch (reason) {
+    case 'failed':
+      return s.fleetAttentionFailed;
+    case 'review':
+      return s.fleetAttentionReview;
+    case 'stale':
+      return s.fleetAttentionStale;
+    case 'offline':
+      return s.fleetAttentionOffline;
+  }
+}
 
 /** The prioritized section the epic is named for: agents that need a human,
  *  ranked most-actionable first, rendered ABOVE the aggregate tiles. Membership
  *  and order come from the shared classifier (docs/room-attention.md,
  *  decision 4), so it never silently drops a failed or stale agent again. */
 function NeedsAttention({ agents, onOpenRoom }: { agents: FleetAgent[]; onOpenRoom(roomId: string): void }) {
+  const s = useStrings();
+  const fmt = useFormats();
   const headingId = useId();
   const items = agents
     .map((a) => ({ a, reason: attentionReason(a.liveness, a.latest?.label ?? null) }))
@@ -353,10 +390,10 @@ function NeedsAttention({ agents, onOpenRoom }: { agents: FleetAgent[]; onOpenRo
   return (
     <section className="fleet-attention" aria-labelledby={headingId}>
       <h2 className="fleet-section-head" id={headingId}>
-        Needs attention <span className="count">{items.length}</span>
+        {s.fleetNeedsAttention} <span className="count">{fmt.count(items.length)}</span>
       </h2>
       {items.length === 0 ? (
-        <p className="fleet-attention-empty muted">Nothing needs attention right now.</p>
+        <p className="fleet-attention-empty muted">{s.fleetNeedsAttentionEmpty}</p>
       ) : (
         <ul className="fleet-attention-list">
           {items.map(({ a, reason }) => {
@@ -368,17 +405,18 @@ function NeedsAttention({ agents, onOpenRoom }: { agents: FleetAgent[]; onOpenRo
                   <SenderName id={a.identity_id} className="attention-name" />
                   {/* dot + label, never colour alone (WCAG AA). */}
                   <span className={`chip attention-reason reason-${reason}`}>
-                    <span className="dot" /> {REASON_LABEL[reason]}
+                    <span className="dot" /> {reasonLabel(s, reason)}
                   </span>
                 </div>
                 {a.latest?.message ? <p className="attention-msg muted">{a.latest.message}</p> : null}
                 <div className="attention-act">
                   <span className="muted attention-seen">
-                    {a.last_seen_ts !== null ? `Last update ${relTime(a.last_seen_ts)}` : 'Never seen'}
+                    {a.last_seen_ts !== null ? s.fleetLastUpdate(fmt.relTime(a.last_seen_ts)) : s.fleetNeverSeen}
                   </span>
                   {room ? (
                     <button type="button" className="btn btn-sm" onClick={() => onOpenRoom(room)}>
-                      <span aria-hidden="true">⇱</span> Open Room
+                      <span aria-hidden="true">{Glyph.openRoom}</span>
+                      {s.fleetOpenRoom}
                     </button>
                   ) : null}
                 </div>
@@ -424,6 +462,7 @@ function AddAgentModal({
   rooms: RoomSummary[];
   onClose(): void;
 }) {
+  const s = useStrings();
   const ownedRooms = rooms.filter((r) => r.role === 'owner');
   const [roomId, setRoomId] = useState(ownedRooms[0]?.room_id ?? '');
   const [identityId, setIdentityId] = useState('');
@@ -460,10 +499,10 @@ function AddAgentModal({
     : '';
 
   return (
-    <Modal title="Add an agent" onClose={onClose} wide>
+    <Modal title={s.addAgentTitle} onClose={onClose} wide>
       {ownedRooms.length === 0 ? (
         <p className="muted">
-          You don’t own any rooms yet. Create a room first — agent invites can only be minted for a room you own.
+          {s.addAgentNoOwnedRooms}
         </p>
       ) : !result ? (
         <form
@@ -473,86 +512,84 @@ function AddAgentModal({
           }}
         >
           <p className="muted">
-            Mint an agent-role ticket for a room you own. This <strong>does not start anything</strong> — running the
-            command below on the agent’s machine is a deliberate, human step (the security boundary).
+            <Template template={s.addAgentIntro} slots={{ emphasis: <strong>{s.addAgentIntroEmphasis}</strong> }} />
           </p>
           <label className="field">
-            <span>Room</span>
+            <span>{s.addAgentRoomLabel}</span>
             <select value={roomId} onChange={(e) => setRoomId(e.target.value)}>
               {ownedRooms.map((r) => (
                 <option key={r.room_id} value={r.room_id}>
-                  {r.name}
+                  {roomDisplayName(r, s.roomsUntitled)}
                 </option>
               ))}
             </select>
           </label>
           <label className="field">
-            <span>Agent identity id</span>
+            <span>{s.addAgentIdentityLabel}</span>
             <input
               value={identityId}
               onChange={(e) => setIdentityId(e.target.value)}
-              placeholder="64-hex identity id (from jeliya-agent.mjs --identity-only)"
+              placeholder={s.addAgentIdentityPlaceholder}
               className="mono"
               spellCheck={false}
               autoFocus
             />
           </label>
           <label className="field">
-            <span>Worker</span>
+            <span>{s.addAgentWorkerLabel}</span>
             <select value={worker} onChange={(e) => setWorker(e.target.value as 'echo' | 'claude')}>
-              <option value="echo">echo (safe — no real execution, for trying the flow)</option>
-              <option value="claude">claude (runs real commands — arbitrary code/file execution for this room’s allowlisted senders)</option>
+              <option value="echo">{s.addAgentWorkerEchoOption}</option>
+              <option value="claude">{s.addAgentWorkerClaudeOption}</option>
             </select>
           </label>
           {worker === 'claude' ? (
-            <p className="error-note" role="alert">
-              WARNING — --worker claude runs the <code>claude</code> CLI with --permission-mode acceptEdits on every
-              triggered message from an allowlisted sender. That is arbitrary code / file execution on this host.
-              Only enable it for a room and senders you trust.
-            </p>
+            <p className="error-note" role="alert">{s.addAgentClaudeWarning}</p>
           ) : null}
           <button type="submit" className="btn btn-primary" disabled={busy || !identityId.trim() || !roomId}>
-            {busy ? 'Minting…' : 'Mint agent invite'}
+            {busy ? s.addAgentMinting : s.addAgentMintInvite}
           </button>
           <ErrorNote error={error} />
         </form>
       ) : (
         <div>
-          <p className="muted">
-            Run this on the agent’s machine to bring it into the room. The daemon has no “spawn agent” call — this is
-            copied and run by a human on purpose.
-          </p>
+          <p className="muted">{s.addAgentResultIntro}</p>
           <div className="ticket-box">
             <textarea
               className="mono"
               readOnly
               value={command}
               rows={4}
-              aria-label="Agent launch command"
+              aria-label={s.addAgentLaunchCommandLabel}
               onFocus={(e) => e.target.select()}
             />
-            <CopyButton text={command} label="Copy command" />
+            <CopyButton text={command} label={s.addAgentCopyCommand} />
           </div>
           <p className="muted">
-            The runner lives in the repo — clone it and run this from the checkout (no <code>npm install</code>{' '}
-            needed; Node 22+ required). Installed <code>jeliyad</code> via brew/script instead of building? Prefix
-            the command with <code>JELIYAD=&quot;$(command -v jeliyad)&quot;</code> so the runner finds it. Full guide:{' '}
-            <code>docs/agent-guide.md</code>.
+            <Template
+              template={s.addAgentGuidance}
+              slots={{
+                npm: <code>{Command.npmInstall}</code>,
+                jeliyad: <code>{Command.daemon}</code>,
+                prefix: <code>{Command.daemonPath}</code>,
+                guide: <code>{Command.agentGuide}</code>,
+              }}
+            />
           </p>
           <div className="addr-box">
-            <p className="muted">Ticket only (if you assemble the command yourself):</p>
+            <p className="muted">{s.addAgentTicketOnly}</p>
             <div className="ticket-box">
               <code className="mono addr-code">{result.ticket}</code>
-              <CopyButton text={result.ticket} label="Copy ticket" />
+              <CopyButton text={result.ticket} label={s.addAgentCopyTicket} />
             </div>
           </div>
           {!result.addr ? (
             <p className="muted">
-              This daemon reported no dialable address — the agent may connect via relay or discovery.
+              {s.addAgentNoDialableAddr}
             </p>
           ) : null}
           <button type="button" className="btn btn-ghost" onClick={() => setResult(null)}>
-            <span aria-hidden="true">←</span> New invite
+            <span aria-hidden="true">{Glyph.previous}</span>
+            {s.addAgentNewInvite}
           </button>
         </div>
       )}
@@ -571,10 +608,12 @@ export function FleetDashboard({
   rooms: RoomSummary[];
   onOpenRoom(roomId: string): void;
 }) {
+  const s = useStrings();
+  const fmt = useFormats();
   const names = useNames();
   // Homonyms are keyed off this identity's room list (the same rule the rail
   // uses), so a chip is disambiguated the moment two of its rooms share a name.
-  const homonyms = homonymousRoomIds(rooms);
+  const homonyms = homonymousRoomIds(rooms, s.roomsUntitled);
   const [fleet, setFleet] = useState<FleetResult | null>(null);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -630,15 +669,15 @@ export function FleetDashboard({
   });
 
   const filters: { key: FleetFilter; label: string }[] = [
-    { key: 'all', label: 'All' },
+    { key: 'all', label: s.fleetFilterAll },
     // This filter is `working || online-idle` — an agent whose peer is
     // reachable. "Live" says that; "Active" said it in a word the room rail
     // used for a local session and the wire uses for signed membership
     // (docs/room-workbench.md, decision 4).
-    { key: 'active', label: 'Live' },
-    { key: 'needs-attention', label: 'Needs attention' },
-    { key: 'working', label: 'Working' },
-    { key: 'offline', label: 'Offline' },
+    { key: 'active', label: s.fleetFilterLive },
+    { key: 'needs-attention', label: s.fleetFilterNeedsAttention },
+    { key: 'working', label: s.fleetFilterWorking },
+    { key: 'offline', label: s.fleetFilterOffline },
   ];
 
   return (
@@ -655,7 +694,7 @@ export function FleetDashboard({
                 page titled "Agents" leaves the user to guess whether this is
                 the same place as a room's "Agents & Runs" — the exact
                 collision the record exists to remove. */}
-            <h1 id="fleet-title">Agent Fleet</h1>
+            <h1 id="fleet-title">{s.destFleet}</h1>
           </div>
           <div className="fleet-head-actions">
             <input
@@ -663,19 +702,19 @@ export function FleetDashboard({
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search agents…"
-              aria-label="Search agents"
+              placeholder={s.fleetSearchPlaceholder}
+              aria-label={s.fleetSearchAgents}
               spellCheck={false}
             />
             <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}>
-              <span aria-hidden="true">＋</span> Add Agent
+              {s.fleetAddAgent}
             </button>
           </div>
         </div>
         {/* Mutually-exclusive filter toggles — a group of pressed-state buttons,
             not an ARIA tabs widget (there are no tabpanels and no roving
             tabindex/arrow-key model to back that contract). */}
-        <div className="fleet-filters" role="group" aria-label="Filter agents">
+        <div className="fleet-filters" role="group" aria-label={s.fleetFilterAgents}>
           {filters.map((f) => (
             <button
               key={f.key}
@@ -684,7 +723,7 @@ export function FleetDashboard({
               className={`fleet-filter${filter === f.key ? ' active' : ''}`}
               onClick={() => setFilter(f.key)}
             >
-              {f.label} <span className="count">{counts[f.key]}</span>
+              {f.label} <span className="count">{fmt.count(counts[f.key])}</span>
             </button>
           ))}
         </div>
@@ -703,7 +742,7 @@ export function FleetDashboard({
                 tiles while they existed; now that the row is one sentence, so
                 is its placeholder. */}
             <div role="status" className="visually-hidden">
-              Loading agents
+              {s.fleetLoadingAgents}
             </div>
             <div className="fleet-coverage" aria-hidden="true" style={{ marginBottom: 18 }}>
               <span className="skel-line skel" style={{ width: 260, height: 12 }} />
@@ -727,8 +766,8 @@ export function FleetDashboard({
         ) : visible.length === 0 ? (
           <div className="fleet-empty muted">
             {fleet && fleet.total === 0
-              ? 'No agents in any room yet. Use “Add Agent” to mint an invite.'
-              : 'No agents match this filter.'}
+              ? s.fleetEmptyNoAgents
+              : s.fleetEmptyNoMatch}
           </div>
         ) : (
           <div className="fleet-grid">

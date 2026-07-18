@@ -142,6 +142,24 @@ const NEVER_TRANSLATE = new Set([
  *  gate reports the exemption itself. A stale exemption is a claim nobody has
  *  re-read, and it hides the next real one. */
 export const IDENTICAL_ALLOWLIST = Object.freeze({
+  commonOptionalFieldLabel:
+    'The template contains only two reorderable slots separated by a space; ' +
+    'French uses the same layout while each slot supplies localized text.',
+  addAgentWorkerLabel:
+    '“Worker” names the runner’s configured execution backend and is kept as ' +
+    'the same technical product term in the French Flutter catalog.',
+  roomInfoSession:
+    '“Session” is the standard French networking noun as well as the English ' +
+    'one, so the room-information label is correctly identical.',
+  settingsDiagnosticsTitle:
+    '“Diagnostics” is the standard French plural for diagnostic information ' +
+    'and is deliberately identical to the English heading.',
+  timelineFileMeta:
+    'This value is only translator-controlled punctuation around two data ' +
+    'slots; French uses the same middle-dot layout.',
+  timelineFilterConversation:
+    '“Conversation” is the same noun in French and English and names the ' +
+    'message filter accurately in both languages.',
   identityEndpointShort:
     '"ep" abbreviates the endpoint id, which docs/glossary-fr.md Tier 2 keeps ' +
     'verbatim — the prefix labels a machine identifier a user may need to ' +
@@ -156,25 +174,10 @@ export const IDENTICAL_ALLOWLIST = Object.freeze({
     'what the operator sees in daemon output.',
 });
 
-/** Rule 5 is a wide net, and it is only quiet once the components actually
- *  read the catalog. Measured on the branch that introduced this gate, with
- *  the l10n layer in place but the components not yet migrated: 292 findings
- *  across 13 files (App.tsx 36, RightPanel 47, FleetDashboard 41, InviteModal
- *  37, ui.tsx 26, Sidebar 25, RoomHeader 22, Timeline 18, Onboarding 17,
- *  SettingsPanel 16, MobileTabBar 4, Composer 2, RoomNav 1).
- *
- *  It ships DISABLED, and this is the staged case the paragraph above
- *  anticipated. The l10n layer landed with the shell surfaces migrated; the
- *  remaining eight component surfaces are follow-on work, and a gate that
- *  fails on 292 known findings on the day it lands teaches everyone to ignore
- *  it. Rules 1-4 run and BLOCK — those are the ones that keep the catalogs
- *  honest, and they are green.
- *
- *  Turn this back on in the pull request that migrates the last component.
- *  Until then `npm run i18n:report` prints the remaining findings, so the
- *  number stays visible rather than forgotten, and the companion test keeps
- *  exercising rule 5's logic so it cannot rot while switched off. */
-const LITERAL_SCAN_ENABLED = false;
+/** Rule 5 started as a staged report while the component migration was in
+ *  progress. It is blocking now that every React surface resolves copy through
+ *  the catalog: a new hard-coded user-visible literal fails CI immediately. */
+const LITERAL_SCAN_ENABLED = true;
 
 /** `--report` runs the staged rule anyway and exits 0 regardless. It is how the
  *  migration's remaining surface stays countable while the rule is off — a
@@ -730,6 +733,11 @@ export function scanComponentLiterals(file, source) {
   for (const match of skeleton.matchAll(/>([^<>{}()=`]*[A-Za-z]{2}[^<>{}()=`]*)</g)) {
     const text = code.slice(match.index + 1, match.index + match[0].length - 1);
     if (!bareLetters(text) || text.trim() === '') continue;
+    // A self-closing JSX node followed by another node inside an expression
+    // object is code, not text: `slot: <Name />, next: <Name />`. The `/` alone
+    // cannot exempt it because `<Icon />Delete account` is real visible copy.
+    // Object/type member syntax across the newline distinguishes the code case.
+    if (text.includes('\n') && /[,;]\s*[A-Za-z_$][\w$]*\??\s*:/.test(text)) continue;
     report(match.index + 1, 'jsx-text', `JSX text is not in the catalog: ${text.trim().slice(0, 60)}`);
   }
   // Copy-bearing JSX attributes and object properties, either quote style and

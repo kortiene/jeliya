@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DaemonErrorShape } from '../lib/protocol';
-import { colorForId, formatBytes, initials } from '../lib/format';
-import { friendlyError } from '../lib/errors';
+import { colorForId, initials } from '../lib/format';
+import type { Catalog } from '../l10n/catalog';
+import { friendlyError } from '../l10n/errorDisplay';
+import { useFormats, useStrings } from '../l10n/strings';
+import { Template } from '../l10n/template';
+import { BRAND, Glyph, Punct } from '../l10n/tokens';
 import { useNames } from './names';
 
 // -- brand mark ---------------------------------------------------------------
@@ -36,7 +40,7 @@ export function TreeMark({ size = 30 }: { size?: number }) {
 // ink — never emerald (the mark carries the accent; a green wordmark would
 // spend signal on decoration). Size comes from the surrounding context class.
 export function Wordmark({ as: Tag = 'span', className }: { as?: 'span' | 'h1'; className?: string }) {
-  return <Tag className={className ? `wordmark ${className}` : 'wordmark'}>Jeliya</Tag>;
+  return <Tag className={className ? `wordmark ${className}` : 'wordmark'}>{BRAND}</Tag>;
 }
 
 // -- avatars & names ----------------------------------------------------------
@@ -65,6 +69,7 @@ export function Avatar({ id, size = 34 }: { id: string; size?: number }) {
 
 export function SenderName({ id, className = '' }: { id: string; className?: string }) {
   const names = useNames();
+  const s = useStrings();
   // Self shows its device-local label (or "You"); it is renamed from
   // onboarding/settings, not inline — plain text, not a dead button.
   if (names.isSelf(id)) {
@@ -78,7 +83,7 @@ export function SenderName({ id, className = '' }: { id: string; className?: str
     <button
       type="button"
       className={`sender-name ${className}`}
-      title={`${id}\nClick to set a local name`}
+      title={s.commonSetLocalNameFor(id)}
       onClick={() => names.requestRename(id)}
     >
       {names.display(id)}
@@ -99,40 +104,48 @@ export function SelfLabelField({
   autoFocus?: boolean;
 }) {
   const [text, setText] = useState(value);
+  const s = useStrings();
   return (
     <label className="field">
-      <span>
-        Your name on this device <em className="muted">(local only)</em>
-      </span>
+      <span>{s.selfLabelTitle}</span>
       <input
         value={text}
         onChange={(e) => {
           setText(e.target.value);
           onChange(e.target.value);
         }}
-        placeholder="e.g. Alex"
+        placeholder={s.selfLabelPlaceholder}
         maxLength={40}
         autoFocus={autoFocus}
-        aria-label="Your name on this device"
+        aria-label={s.selfLabelTitle}
       />
-      <span className="field-hint muted">Only visible to you — never shared or signed.</span>
+      <span className="field-hint muted">{s.selfLabelHint}</span>
     </label>
   );
 }
 
 // -- small widgets --------------------------------------------------------------
 
-export function ProgressBar({ value, label = 'Task progress' }: { value: number; label?: string }) {
+export function ProgressBar({ value, label }: { value: number; label?: string }) {
   const v = Math.max(0, Math.min(100, value));
+  const s = useStrings();
   return (
-    <div className="progress" role="progressbar" aria-label={label} aria-valuenow={v} aria-valuemin={0} aria-valuemax={100}>
+    <div
+      className="progress"
+      role="progressbar"
+      aria-label={label ?? s.commonTaskProgress}
+      aria-valuenow={v}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
       <div className="progress-fill" style={{ width: `${v}%` }} />
     </div>
   );
 }
 
-export function CopyButton({ text, label = 'Copy', ariaLabel }: { text: string; label?: string; ariaLabel?: string }) {
+export function CopyButton({ text, label, ariaLabel }: { text: string; label?: string; ariaLabel?: string }) {
   const [done, setDone] = useState(false);
+  const s = useStrings();
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -156,21 +169,22 @@ export function CopyButton({ text, label = 'Copy', ariaLabel }: { text: string; 
       onClick={() => void copy()}
       aria-label={done ? undefined : ariaLabel}
     >
-      {done ? 'Copied ✓' : label}
+      {done ? s.commonCopied : (label ?? s.commonCopy)}
     </button>
   );
 }
 
 export function ErrorNote({ error }: { error: DaemonErrorShape | null }) {
+  const s = useStrings();
   if (!error) return null;
-  const friendly = friendlyError(error);
+  const friendly = friendlyError(s, error);
   return (
     <div className="error-note" role="alert">
       <strong className="error-title">{friendly.title}</strong>
       <span>{friendly.message}</span>
       {friendly.action ? <div className="error-hint">{friendly.action}</div> : null}
       <details className="error-details">
-        <summary>Technical details</summary>
+        <summary>{s.commonTechnicalDetails}</summary>
         <code className="error-code">{error.code}</code> {error.message}
         {error.hint ? <div>{error.hint}</div> : null}
       </details>
@@ -195,6 +209,7 @@ export function Modal({
    *  believed the action was abandoned. */
   busy?: boolean;
 }) {
+  const s = useStrings();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -279,8 +294,8 @@ export function Modal({
               unambiguous where it is heard. Folding the title in also makes the
               close button match any search for the title itself — including an
               AT user's find-by-name — which is worse, not better. */}
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close" disabled={busy}>
-            ✕
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={s.commonClose} disabled={busy}>
+            {Glyph.close}
           </button>
         </header>
         <div className="modal-body">{children}</div>
@@ -302,10 +317,11 @@ export interface FetchAvailability {
   providers: number;
 }
 
-function providerTitle(availability?: FetchAvailability): string | undefined {
+function providerTitle(s: Catalog, formats: ReturnType<typeof useFormats>, availability?: FetchAvailability): string | undefined {
   if (!availability) return undefined;
-  const providers = `${availability.providers} provider${availability.providers === 1 ? '' : 's'} listed`;
-  return availability.available ? `${providers}; at least one is online` : `${providers}; none are online right now`;
+  return availability.available
+    ? s.fetchProvidersListedOnline(availability.providers, formats.count(availability.providers))
+    : s.fetchProvidersListedOffline(availability.providers, formats.count(availability.providers));
 }
 
 export function FetchControl({
@@ -328,29 +344,30 @@ export function FetchControl({
   onFetch(): void;
   onRecheck?(): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   // Undefined when no name was passed, which leaves the visible text as the
   // accessible name — the correct fallback, never an invented one.
-  const named = (action: string) => (fileName ? `${action} ${fileName}` : undefined);
   if (!state) {
     if (availabilityPending) {
       return (
         <button type="button" className="btn btn-sm" disabled>
-          <span className="spinner" aria-hidden="true" /> Checking…
+          <span className="spinner" aria-hidden="true" /> {s.commonChecking}
         </button>
       );
     }
     if (availability && !availability.available) {
       return (
-        <span className="fetch-actions" title={providerTitle(availability)}>
-          <span className="fetch-offline">No provider online</span>
+        <span className="fetch-actions" title={providerTitle(s, formats, availability)}>
+          <span className="fetch-offline">{s.commonNoProviderOnline}</span>
           {onRecheck ? (
             <button
               type="button"
               className="btn btn-sm btn-ghost"
               onClick={onRecheck}
-              aria-label={named('Recheck providers for')}
+              aria-label={fileName ? s.fetchRecheckProvidersFor(fileName) : undefined}
             >
-              Recheck
+              {s.commonRecheck}
             </button>
           ) : null}
         </span>
@@ -361,17 +378,17 @@ export function FetchControl({
         type="button"
         className="btn btn-sm"
         onClick={onFetch}
-        title={providerTitle(availability)}
-        aria-label={named('Fetch')}
+        title={providerTitle(s, formats, availability)}
+        aria-label={fileName ? s.fetchFileNamed(fileName) : undefined}
       >
-        Fetch
+        {s.commonFetch}
       </button>
     );
   }
   if (state.phase === 'pending') {
     return (
       <button type="button" className="btn btn-sm" disabled>
-        <span className="spinner" aria-hidden="true" /> Fetching…
+        <span className="spinner" aria-hidden="true" /> {s.commonFetching}
       </button>
     );
   }
@@ -387,76 +404,96 @@ export function FetchControl({
             // Starts with the VISIBLE label. WCAG 2.5.3 Label in Name requires
             // the accessible name to contain the visible text, or a
             // speech-input user saying "click Open file" matches nothing.
-            aria-label={named('Open file')}
+            aria-label={fileName ? s.fetchOpenFileNamed(fileName) : undefined}
           >
-            Open file
+            {s.commonOpenFile}
           </a>
         ) : (
-          <span className="fetch-ok" title={`${state.phase === 'verified' ? 'verified' : 'fetched'} · ${state.path}`}>
-            {state.phase === 'verified' ? '✓ Verified' : '✓ Fetched'}
+          <span
+            className="fetch-ok"
+            title={state.phase === 'verified' ? s.fetchVerifiedTooltip(state.path) : s.fetchFetchedTooltip(state.path)}
+          >
+            {state.phase === 'verified' ? s.commonVerified : s.commonFetched}
           </span>
         )}
         <CopyButton
           text={state.path}
-          label="Copy path"
-          ariaLabel={fileName ? `Copy saved path for ${fileName}` : 'Copy saved file path'}
+          label={s.commonCopyPath}
+          ariaLabel={fileName ? s.fetchCopySavedPathFor(fileName) : s.commonCopySavedFilePath}
         />
       </span>
     );
   }
   // hash_mismatch is a hard stop per the protocol honesty rules — no retry.
   if (state.error.code === 'hash_mismatch') {
-    return <span className="fetch-err">✕ Failed</span>;
+    return <span className="fetch-err">{s.commonFailed}</span>;
   }
   if (availability && !availability.available) {
     return (
-      <span className="fetch-actions" title={providerTitle(availability)}>
-        <span className="fetch-offline">No provider online</span>
+      <span className="fetch-actions" title={providerTitle(s, formats, availability)}>
+        <span className="fetch-offline">{s.commonNoProviderOnline}</span>
         {onRecheck ? (
           <button
             type="button"
             className="btn btn-sm btn-ghost"
             onClick={onRecheck}
-            aria-label={named('Recheck providers for')}
+            aria-label={fileName ? s.fetchRecheckProvidersFor(fileName) : undefined}
           >
-            Recheck
+            {s.commonRecheck}
           </button>
         ) : null}
       </span>
     );
   }
   return (
-    <button type="button" className="btn btn-sm btn-danger" onClick={onFetch} aria-label={named('Retry fetching')}>
-      Retry
+    <button
+      type="button"
+      className="btn btn-sm btn-danger"
+      onClick={onFetch}
+      aria-label={fileName ? s.fetchRetryNamed(fileName) : undefined}
+    >
+      {s.commonRetry}
     </button>
   );
 }
 
-function fetchErrorCopy(error: DaemonErrorShape): { message: string; detail?: string } {
+function technicalErrorDetail(error: DaemonErrorShape): string {
+  return [error.message, error.hint].filter((part): part is string => Boolean(part)).join(Punct.metaSep);
+}
+
+function fetchErrorCopy(s: Catalog, error: DaemonErrorShape): { message: string; detail: string } {
   switch (error.code) {
     case 'file_unavailable':
       return {
-        message: 'No provider is online for this file yet. Recheck when the sender is back online.',
-        detail: error.hint ?? error.message,
+        message: s.fetchErrFileUnavailable,
+        detail: technicalErrorDetail(error),
       };
     case 'file_unauthorized':
       return {
-        message: 'Every provider refused this fetch — your identity is not authorized for it. Ask the sender to re-share or re-invite you.',
-        detail: error.hint ?? error.message,
+        message: s.fetchErrFileUnauthorized,
+        detail: technicalErrorDetail(error),
       };
     default:
       return {
-        message: error.message,
-        detail: error.hint ?? undefined,
+        message: friendlyError(s, error).message,
+        detail: technicalErrorDetail(error),
       };
   }
 }
 
 export function FetchDetail({ state }: { state?: FetchState }) {
+  const s = useStrings();
+  const formats = useFormats();
   if (!state) return null;
   if (state.phase === 'verified' || state.phase === 'fetched') {
     const path = state.url ? (
-      <a className="fetch-path-link" href={state.url} target="_blank" rel="noreferrer" title="Open local file copy">
+      <a
+        className="fetch-path-link"
+        href={state.url}
+        target="_blank"
+        rel="noreferrer"
+        title={s.fetchOpenLocalFileCopy}
+      >
         <code>{state.path}</code>
       </a>
     ) : (
@@ -464,8 +501,10 @@ export function FetchDetail({ state }: { state?: FetchState }) {
     );
     return (
       <div className="fetch-detail ok">
-        {state.phase === 'verified' ? 'Verified' : 'Fetched'} · {formatBytes(state.bytes)} · saved to{' '}
-        {path}
+        <Template
+          template={state.phase === 'verified' ? s.fetchDetailVerified : s.fetchDetailFetched}
+          slots={{ bytes: formats.bytes(state.bytes), path }}
+        />
       </div>
     );
   }
@@ -477,23 +516,22 @@ export function FetchDetail({ state }: { state?: FetchState }) {
     if (state.error.code === 'hash_mismatch') {
       return (
         <div className="fetch-detail err">
-          This file failed a security check and wasn't saved — it may have been
-          corrupted or tampered with in transit.
+          {s.fetchErrHashMismatch}
           <details className="fetch-detail-advanced">
-            <summary className="muted">Technical details</summary>
+            <summary className="muted">{s.commonTechnicalDetails}</summary>
             <code className="error-code">{state.error.code}</code> {state.error.message}
             {state.error.hint ? ` — ${state.error.hint}` : ''}
           </details>
         </div>
       );
     }
-    const copy = fetchErrorCopy(state.error);
+    const copy = fetchErrorCopy(s, state.error);
     return (
       <div className="fetch-detail err">
         {copy.message}
         {copy.detail ? (
           <details className="fetch-detail-advanced">
-            <summary className="muted">Technical details</summary>
+            <summary className="muted">{s.commonTechnicalDetails}</summary>
             <code className="error-code">{state.error.code}</code> {copy.detail}
           </details>
         ) : null}

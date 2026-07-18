@@ -55,6 +55,9 @@ export interface RoomListView {
 
 export interface RoomListInput {
   rooms: RoomSummary[];
+  /** Catalog-provided placeholder for a room whose genesis name has not
+   *  synced. It participates in search, ordering, and homonym detection. */
+  untitledLabel: string;
   query: string;
   filter: LifecycleFilter;
   /** Device-local pin set (docs/room-attention.md, decision 1: device-local
@@ -76,10 +79,10 @@ function rawId(id: string): string {
  *  of its display name OR of its raw room-id. Blank query matches everything.
  *  Folded exactly like the homonym key so search and disambiguation agree on
  *  what a "name" is. */
-export function roomMatchesQuery(room: RoomSummary, query: string): boolean {
+export function roomMatchesQuery(room: RoomSummary, query: string, untitledLabel: string): boolean {
   const q = query.trim().toLowerCase();
   if (q === '') return true;
-  if (roomDisplayName(room).toLowerCase().includes(q)) return true;
+  if (roomDisplayName(room, untitledLabel).toLowerCase().includes(q)) return true;
   return rawId(room.room_id).toLowerCase().includes(q);
 }
 
@@ -95,7 +98,7 @@ export function roomLifecycle(room: RoomSummary): 'active' | 'departed' {
  *  display name, then by room-id for a total, stable order. Null recency sorts
  *  last so a real daemon (which omits `last_event_ts` today) falls back to a
  *  predictable alphabetical order rather than the daemon's arbitrary one. */
-function compareRooms(a: RoomSummary, b: RoomSummary): number {
+function compareRooms(a: RoomSummary, b: RoomSummary, untitledLabel: string): number {
   const ta = a.last_event_ts ?? null;
   const tb = b.last_event_ts ?? null;
   if (ta !== tb) {
@@ -103,8 +106,8 @@ function compareRooms(a: RoomSummary, b: RoomSummary): number {
     if (tb === null) return -1;
     return tb - ta;
   }
-  const na = roomDisplayName(a).toLowerCase();
-  const nb = roomDisplayName(b).toLowerCase();
+  const na = roomDisplayName(a, untitledLabel).toLowerCase();
+  const nb = roomDisplayName(b, untitledLabel).toLowerCase();
   if (na !== nb) return na < nb ? -1 : 1;
   return a.room_id < b.room_id ? -1 : a.room_id > b.room_id ? 1 : 0;
 }
@@ -113,7 +116,7 @@ function compareRooms(a: RoomSummary, b: RoomSummary): number {
  *  view both clients render. Pure — no I/O, no clock, no localization — so it
  *  unit-tests against the shared fixtures with no environment. */
 export function projectRoomList(input: RoomListInput): RoomListView {
-  const { rooms, query, filter, pinned, archived } = input;
+  const { rooms, untitledLabel, query, filter, pinned, archived } = input;
   const totalCount = rooms.length;
   const hasQuery = query.trim() !== '';
 
@@ -123,7 +126,7 @@ export function projectRoomList(input: RoomListInput): RoomListView {
   const archivedRooms: RoomSummary[] = [];
 
   for (const room of rooms) {
-    if (!roomMatchesQuery(room, query)) continue;
+    if (!roomMatchesQuery(room, query, untitledLabel)) continue;
     // Archive is a search-only bucket, orthogonal to the lifecycle filter: a
     // room you deliberately put away stays found by name, and switching the
     // filter never surfaces it back into the main sections.
@@ -141,19 +144,20 @@ export function projectRoomList(input: RoomListInput): RoomListView {
     else departedRooms.push(room);
   }
 
-  pinnedRooms.sort(compareRooms);
-  activeRooms.sort(compareRooms);
-  departedRooms.sort(compareRooms);
-  archivedRooms.sort(compareRooms);
+  const compare = (a: RoomSummary, b: RoomSummary) => compareRooms(a, b, untitledLabel);
+  pinnedRooms.sort(compare);
+  activeRooms.sort(compare);
+  departedRooms.sort(compare);
+  archivedRooms.sort(compare);
 
   // Homonyms over the full visible subset (every section, including a pinned
   // room and its unpinned twin), so the disambiguator appears wherever two
   // on-screen rooms collide and nowhere it would be noise.
   const visible = [...pinnedRooms, ...activeRooms, ...departedRooms, ...archivedRooms];
-  const homonyms = homonymousRoomIds(visible);
+  const homonyms = homonymousRoomIds(visible, untitledLabel);
   const toRow = (room: RoomSummary): RoomListRow => ({
     room,
-    displayName: roomDisplayName(room),
+    displayName: roomDisplayName(room, untitledLabel),
     isHomonym: homonyms.has(room.room_id),
   });
 

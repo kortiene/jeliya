@@ -55,12 +55,52 @@ export interface Catalog {
   commonBack: Message;
   commonCopy: Message;
   commonCopied: Message;
+  commonCopyFailed: Message;
   commonReconnecting: Message;
   /** The em-dash-free "not available" placeholder for an absent value. */
   commonUnknown: Message;
   /** The parenthetical marking an input a user may leave blank. Rendered beside
    *  a field label, so it is a fragment of a LABEL, never of a sentence. */
   commonOptional: Message;
+  /** Template for a field label and its optional marker, whose order may vary. */
+  commonOptionalFieldLabel: Message;
+  commonServing: Message;
+  commonServingTooltip: Message;
+  commonFileExtFallback: Message;
+  commonTechnicalDetails: Message;
+  commonTaskProgress: Message;
+  commonChecking: Message;
+  commonFetch: Message;
+  commonFetching: Message;
+  commonVerified: Message;
+  commonFetched: Message;
+  commonFailed: Message;
+  commonRecheck: Message;
+  commonOpenFile: Message;
+  commonCopyPath: Message;
+  commonCopySavedFilePath: Message;
+  commonNoProviderOnline: Message;
+  /** @param id the raw identity id shown in the same tooltip. */
+  commonSetLocalNameFor: MessageFn<[id: string]>;
+
+  // -- file fetching -----------------------------------------------------------
+  fetchProvidersListedOnline: MessageFn<[n: number, formatted?: string]>;
+  fetchProvidersListedOffline: MessageFn<[n: number, formatted?: string]>;
+  fetchRecheckProvidersFor: MessageFn<[file: string]>;
+  fetchFileNamed: MessageFn<[file: string]>;
+  fetchOpenFileNamed: MessageFn<[file: string]>;
+  fetchCopySavedPathFor: MessageFn<[file: string]>;
+  fetchRetryNamed: MessageFn<[file: string]>;
+  fetchVerifiedTooltip: MessageFn<[path: string]>;
+  fetchFetchedTooltip: MessageFn<[path: string]>;
+  /** `{bytes}` is formatted display text and `{path}` is rendered as code/link. */
+  fetchDetailVerified: Message;
+  /** `{bytes}` is formatted display text and `{path}` is rendered as code/link. */
+  fetchDetailFetched: Message;
+  fetchOpenLocalFileCopy: Message;
+  fetchErrFileUnavailable: Message;
+  fetchErrFileUnauthorized: Message;
+  fetchErrHashMismatch: Message;
 
   // -- boot --------------------------------------------------------------------
   bootSyncing: Message;
@@ -123,7 +163,7 @@ export interface Catalog {
   roomsSectionPinned: Message;
   roomsSectionArchived: Message;
   /** @param n how many rooms the collapsed section holds. */
-  roomsSectionCount: MessageFn<[n: number]>;
+  roomsSectionCount: MessageFn<[n: number, formatted?: string]>;
   roomsEmpty: Message;
   /** @param query the text the user typed into the room search box. */
   roomsNoMatch: MessageFn<[query: string]>;
@@ -131,7 +171,7 @@ export interface Catalog {
   roomsUnread: Message;
   /** @param n how many members the room's roster holds. Needs one/other in
    *  English; French agrees, and treats 0 as singular. */
-  roomsMemberCount: MessageFn<[n: number]>;
+  roomsMemberCount: MessageFn<[n: number, formatted?: string]>;
   roomsUntitled: Message;
   /** The settled status vocabulary (docs/room-workbench.md, decision 4).
    *  `Open`/`Closed` is whether THIS daemon holds a live session; `Left`/
@@ -167,6 +207,7 @@ export interface Catalog {
    *  Rooms destination, which is `destRooms`. */
   roomsListLabel: Message;
   roomsProfile: Message;
+  roomsProfileHandle: MessageFn<[id: string]>;
 
   // -- room recovery surfaces --------------------------------------------------
   roomNotOnDevice: Message;
@@ -188,19 +229,307 @@ export interface Catalog {
   /** @param id the full endpoint id, for the hover title. Tier 2. */
   identityEndpointTitle: MessageFn<[id: string]>;
 
+  // -- device-local self label -------------------------------------------------
+  selfLabelTitle: Message;
+  selfLabelHint: Message;
+  selfLabelPlaceholder: Message;
+
+  // -- settings ----------------------------------------------------------------
+  settingsTitle: Message;
+  settingsLanguageLabel: Message;
+  settingsFormattingLabel: Message;
+  settingsLocaleSystemDefault: Message;
+  settingsIdentityLabel: Message;
+  settingsSelfLabelNote: Message;
+  settingsEndpointLabel: Message;
+  settingsDaemonLabel: Message;
+  settingsSupportLabel: Message;
+  settingsDiagnosticsTitle: Message;
+  settingsDiagnosticsCopy: Message;
+  settingsNoMessageBodies: Message;
+  settingsNoInviteTickets: Message;
+  settingsNoFileNamesOrPaths: Message;
+  settingsNoFullIdentityIds: Message;
+  settingsLastCapturedError: Message;
+  settingsNoErrorCaptured: Message;
+  settingsCopyDiagnostics: Message;
+  settingsCopiedDiagnostics: Message;
+  settingsReportIssue: Message;
+  settingsIssueReportTitle: Message;
+
+  // -- fleet ------------------------------------------------------------------
+  fleetLivenessWorking: Message;
+  fleetLivenessOnline: Message;
+  fleetLivenessStale: Message;
+  fleetLivenessOffline: Message;
+  fleetSparkLoading: Message;
+  fleetSparkEmpty: Message;
+  fleetSparkEvents: MessageFn<[n: number, formatted?: string]>;
+  fleetSparkNumericProgress: MessageFn<[n: number, formatted?: string]>;
+  fleetSparkNoNumericProgress: Message;
+  fleetCopyIdentityIdFor: MessageFn<[name: string]>;
+  fleetLastStatusHint: Message;
+  fleetLastStatus: MessageFn<[label: string]>;
+  fleetNoStatusPosted: Message;
+  fleetLastUpdate: MessageFn<[relativeTime: string]>;
+  fleetNeverSeen: Message;
+  fleetOpenRoom: Message;
+  fleetCoverageEmpty: Message;
+  fleetCoverage: MessageFn<[covered: string, total: string, percent: string]>;
+  fleetAttentionFailed: Message;
+  fleetAttentionReview: Message;
+  fleetAttentionStale: Message;
+  fleetAttentionOffline: Message;
+  fleetNeedsAttention: Message;
+  fleetNeedsAttentionEmpty: Message;
+  fleetFilterAll: Message;
+  fleetFilterLive: Message;
+  fleetFilterNeedsAttention: Message;
+  fleetFilterWorking: Message;
+  fleetFilterOffline: Message;
+  fleetSearchPlaceholder: Message;
+  fleetSearchAgents: Message;
+  fleetAddAgent: Message;
+  fleetFilterAgents: Message;
+  fleetLoadingAgents: Message;
+  fleetEmptyNoAgents: Message;
+  fleetEmptyNoMatch: Message;
+
+  // -- add agent --------------------------------------------------------------
+  addAgentTitle: Message;
+  addAgentNoOwnedRooms: Message;
+  addAgentIntro: Message;
+  addAgentIntroEmphasis: Message;
+  addAgentRoomLabel: Message;
+  addAgentIdentityLabel: Message;
+  addAgentIdentityPlaceholder: Message;
+  addAgentWorkerLabel: Message;
+  addAgentWorkerEchoOption: Message;
+  addAgentWorkerClaudeOption: Message;
+  addAgentClaudeWarning: Message;
+  addAgentMintInvite: Message;
+  addAgentMinting: Message;
+  addAgentResultIntro: Message;
+  addAgentLaunchCommandLabel: Message;
+  addAgentCopyCommand: Message;
+  addAgentGuidance: Message;
+  addAgentTicketOnly: Message;
+  addAgentCopyTicket: Message;
+  addAgentNoDialableAddr: Message;
+  addAgentNewInvite: Message;
+
+  // -- invite -----------------------------------------------------------------
+  inviteExpiry1h: Message;
+  inviteExpiry24h: Message;
+  inviteExpiry7d: Message;
+  inviteExpiryNever: Message;
+  inviteLifecycleJoined: Message;
+  inviteLifecycleExpired: Message;
+  inviteLifecycleWaiting: Message;
+  inviteLifecycleJoinedCopy: Message;
+  inviteLifecycleExpiredCopy: Message;
+  inviteLifecycleWaitingCopy: Message;
+  inviteExpiryErrorTitle: Message;
+  inviteExpiryErrorMessage: Message;
+  inviteExpiryErrorHint: Message;
+  inviteShareTitle: Message;
+  inviteTitle: Message;
+  inviteReadyToSend: Message;
+  inviteReadyToSendCopy: Message;
+  inviteNoDialableAddress: Message;
+  inviteNoDialableAddressCopy: Message;
+  inviteCombinedCopy: Message;
+  inviteTicketOnlyCopy: Message;
+  inviteCombinedInviteLabel: Message;
+  inviteInviteTicketLabel: Message;
+  inviteCopyInvite: Message;
+  inviteCopyTicket: Message;
+  inviteShareInvite: Message;
+  inviteShareTicket: Message;
+  inviteQrLabel: Message;
+  inviteQrCombinedCaption: Message;
+  inviteQrTicketCaption: Message;
+  inviteSeparatelySummary: Message;
+  inviteCopyAddress: Message;
+  inviteNoDialableAddressNote: Message;
+  inviteGenerating: Message;
+  inviteAgain: Message;
+  inviteNewInvite: Message;
+  inviteAlreadyInvited: Message;
+  inviteIntro: Message;
+  inviteRoomOpenForInviting: Message;
+  inviteRoomOpenForInvitingCopy: Message;
+  inviteInviteeIdentityId: Message;
+  inviteInviteePlaceholder: Message;
+  inviteIdentityInvalid: Message;
+  inviteIdentityHint: Message;
+  inviteRoleLabel: Message;
+  inviteRoleMemberConsequence: Message;
+  inviteRoleAgentConsequence: Message;
+  inviteAgentWarning: Message;
+  inviteTicketExpiryLabel: Message;
+  inviteAdvancedExpiry: Message;
+  inviteCustomExpiryLabel: Message;
+  inviteCustomExpiryOverride: Message;
+  inviteSendFresh: Message;
+  inviteGenerateTicket: Message;
+
+  // -- room header and inspector ---------------------------------------------
+  roomNavLabel: Message;
+  roomBackToActivity: Message;
+  roomCloseInspector: Message;
+  roomInformation: Message;
+  roomInfoRoom: Message;
+  roomInfoSession: Message;
+  roomInfoAgents: Message;
+  roomInfoInvites: Message;
+  roomLoadingMembers: Message;
+  commonMemberCount: MessageFn<[n: number, formatted?: string]>;
+  roomHeaderAgentCount: MessageFn<[n: number, formatted?: string]>;
+  roomHeaderInvitesPending: MessageFn<[n: number, formatted?: string]>;
+  roomHeaderNoPeersConnected: Message;
+  roomHeaderPeerToPeer: Message;
+  roomHeaderRelayOnly: Message;
+  roomHeaderPeerConnected: Message;
+  roomHeaderPeerConnecting: Message;
+  roomHeaderShareFile: Message;
+  roomHeaderOpenPipe: Message;
+  roomHeaderInvite: Message;
+  roomHeaderPeerConnections: Message;
+  roomHeaderPeerStateConnected: Message;
+  roomHeaderPeerStateConnecting: Message;
+  roomHeaderPeerStateOffline: Message;
+
+  // -- People, Agents, Files, and Pipes inspector -----------------------------
+  panelMembersEmpty: Message;
+  panelRoomMemberCount: MessageFn<[n: number, formatted?: string]>;
+  panelRosterCopy: Message;
+  panelRoomRoster: Message;
+  panelInvitedCount: MessageFn<[n: number, formatted?: string]>;
+  panelThisDevice: Message;
+  panelLeave: Message;
+  panelOwnerStays: Message;
+  panelOwnerStaysTitle: Message;
+  panelAgentsEmpty: Message;
+  panelNoStatusPostedYet: Message;
+  panelAgentStatusFooter: MessageFn<[status: string]>;
+  panelKindBinary: Message;
+  panelKindText: Message;
+  panelKindFile: Message;
+  panelFilesHeroEmptyDetail: Message;
+  panelFilesHeroDetail: MessageFn<[totalBytes: string, availableCount: number, formatted?: string]>;
+  panelNFetched: MessageFn<[n: number, formatted?: string]>;
+  panelServedByYou: MessageFn<[n: number, formatted?: string]>;
+  panelNoSharedFilesYet: Message;
+  panelSharedFileCount: MessageFn<[n: number, formatted?: string]>;
+  panelFileAvailabilityLabel: Message;
+  panelFetchableNow: Message;
+  panelFetchableNowValue: MessageFn<[available: number, total: number, availableText?: string, totalText?: string]>;
+  panelProviderDevices: Message;
+  panelFilesShareToggle: Message;
+  panelFilesShareToggleClose: Message;
+  panelShareCardTitle: Message;
+  panelShareCardHelp: Message;
+  panelHashCheckedBadge: Message;
+  panelHashCheckedBadgeLabel: Message;
+  panelChooseFileToShare: Message;
+  panelNoFileSelectedYet: Message;
+  panelClearSelectedFile: Message;
+  panelShare: Message;
+  panelSharing: Message;
+  panelAdvancedPathSummary: Message;
+  panelPathPlaceholder: Message;
+  panelPathFieldLabel: Message;
+  panelPathHint: Message;
+  panelSharedInThisRoom: Message;
+  panelAllFetchable: Message;
+  panelAwaitingProvider: MessageFn<[n: number, formatted?: string]>;
+  panelHealthServingToPeers: Message;
+  panelHealthFetchedLocally: Message;
+  panelHealthSecurityCheckFailed: Message;
+  panelHealthFetchFailed: Message;
+  panelHealthReadyToFetch: Message;
+  panelNProviders: MessageFn<[n: number, formatted?: string]>;
+  pipeStateConnected: Message;
+  pipeStateOpen: Message;
+  pipeStateClosed: Message;
+  panelExposeTitle: Message;
+  panelExposeCopy: Message;
+  panelTargetFieldLabel: Message;
+  panelAuthorizedPeerLabel: Message;
+  panelNoOtherMembers: Message;
+  panelPeerChoice: MessageFn<[name: string, role: string]>;
+  panelExpose: Message;
+  panelExposing: Message;
+  panelPipesEmpty: Message;
+  panelPipeMeta: Message;
+  panelConnect: Message;
+  panelConnecting: Message;
+  panelOpenPreview: Message;
+  panelClosePipe: Message;
+  panelClosingPipe: Message;
+  panelInspectorLabel: MessageFn<[tool: string]>;
+
+  // -- timeline ---------------------------------------------------------------
+  timelineRoomTimeline: Message;
+  timelineEmptyState: Message;
+  timelineAgentChip: Message;
+  timelineStatusFallback: Message;
+  /** Whole event-heading templates. `{sender}`, optional `{role}`, and `{time}`
+   *  are styled React slots; translators control their order. */
+  timelineFileSharedMeta: Message;
+  timelinePipeOpenedMeta: Message;
+  /** A metadata line with already-formatted `{bytes}` and a file `{ext}`. */
+  timelineFileMeta: Message;
+  timelineOpenInPipes: Message;
+  timelineOpenInFiles: Message;
+  /** One `{peer}` slot, rendered as a peer name when one is known. */
+  timelineAuthorizedPeer: Message;
+  /** System-event sentences use templates because identity names are React
+   *  nodes and translators must be free to move them. */
+  timelineSyslineRoomCreated: Message;
+  timelineSyslineInvited: Message;
+  /** Invite event variant for an older/future payload that names no role. */
+  timelineSyslineInvitedNoRole: Message;
+  timelineSyslineJoined: Message;
+  timelineSyslineLeft: Message;
+  timelineSyslinePipeClosed: Message;
+  timelineSomeone: Message;
+  timelinePendingSending: Message;
+  timelinePendingSyncing: Message;
+  timelinePendingFailed: Message;
+  timelineRetryMessage: Message;
+  timelineRetryMessageAt: MessageFn<[time: string]>;
+  /** @param n raw count for plural choice; @param formatted display count. */
+  timelineNewMessages: MessageFn<[n: number, formatted?: string]>;
+  /** Activity is a mass noun in both shipped locales. */
+  timelineNewActivity: MessageFn<[n: string]>;
+  timelineRunEvidence: MessageFn<[count: string, span: string]>;
+  timelineRunShow: MessageFn<[count: string]>;
+  timelineRunHide: Message;
+  timelineFilterActivity: Message;
+  timelineFilterConversation: Message;
+  timelineFilterAgentRuns: Message;
+  timelineFilterMembership: Message;
+  timelineFilterFiles: Message;
+  timelineFilterPipes: Message;
+  timelineNoActivityMatches: Message;
+
   // -- modals (App.tsx) --------------------------------------------------------
   /** One slot: `{combined}` is the literal shape of a combined invite,
    *  `ticket#address`, rendered mono. A wire-format example, not a word. */
   modalJoinCopy: Message;
   modalTicketLabel: Message;
+  modalTicketPlaceholder: Message;
   modalPeerAddrLabel: Message;
   modalJoinSubmit: Message;
   modalJoining: Message;
   /** @param attempt the join attempt now running, 1-based.
    *  @param max how many attempts the client will make in total. */
-  modalJoinAttempt: MessageFn<[attempt: number, max: number]>;
+  modalJoinAttempt: MessageFn<[attempt: number, max: number, attemptText?: string, maxText?: string]>;
   modalCreateTitle: Message;
   modalRoomNameLabel: Message;
+  modalRoomNamePlaceholder: Message;
   modalCreating: Message;
   modalCreateHomonymWarning: Message;
   modalLeaveTitle: Message;
@@ -214,7 +543,35 @@ export interface Catalog {
   modalRenameCopy: Message;
   modalRenameIdentityLabel: Message;
   modalRenameAliasLabel: Message;
+  modalRenameAliasPlaceholder: Message;
   modalRenameClearAlias: Message;
+
+  // -- onboarding -------------------------------------------------------------
+  onboardingTagline: Message;
+  onboardingIdentityTitle: Message;
+  onboardingIdentityCopy1: Message;
+  onboardingIdentityCopy2: Message;
+  onboardingCreateIdentity: Message;
+  onboardingCreatingIdentity: Message;
+  onboardingYourIdentityId: Message;
+  onboardingIdentityCardCopy1: Message;
+  onboardingIdentityCardCopy2: Message;
+  onboardingCreateRoomCopy: Message;
+  onboardingJoinFinding: Message;
+  onboardingJoinRetryingAttempt: MessageFn<[
+    attempt: number,
+    max: number,
+    attemptText?: string,
+    maxText?: string,
+  ]>;
+  onboardingJoinRetryWait: MessageFn<[seconds: number, formatted?: string]>;
+
+  // -- composer ---------------------------------------------------------------
+  composerMessagePlaceholder: MessageFn<[roomName: string]>;
+  composerSendMessage: Message;
+  composerShareAFile: Message;
+  composerHint: Message;
+  composerSharingFile: Message;
 
   // -- formatting vocabulary (formats.ts, rule 4) ------------------------------
   //
@@ -232,10 +589,15 @@ export interface Catalog {
   formatBytesMb: MessageFn<[n: string]>;
   /** @param n a gigabyte count, already formatted. French unit: Go. */
   formatBytesGb: MessageFn<[n: string]>;
-  /** @param n a whole percentage, already formatted. The SPACING is the
-   *  localized part: French writes "42 %" with a narrow no-break space. */
+  /** @param n a percentage, already formatted. The SPACING is the localized
+   *  part: French writes "42 %" with a narrow no-break space. */
   formatPercent: MessageFn<[n: string]>;
   formatJustNow: Message;
+  /** Relative-time words follow the text catalog; only `{n}` follows the
+   *  independently selected number-formatting locale. */
+  formatMinutesAgo: MessageFn<[n: string]>;
+  formatHoursAgo: MessageFn<[n: string]>;
+  formatDaysAgo: MessageFn<[n: string]>;
 
   // -- wire enums and daemon errors ---------------------------------------------
   //

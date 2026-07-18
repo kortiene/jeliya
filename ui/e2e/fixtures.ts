@@ -203,8 +203,7 @@ export class AppDriver {
   /** Load the app with the fresh-onboarding fixture (`?mock=fresh`). */
   async gotoFresh(): Promise<void> {
     await this.goto({ mock: 'fresh' });
-    // TODO(#74 migration): literal — onboarding copy has no catalog key yet.
-    await expect(this.page.getByRole('heading', { name: 'Create your identity' })).toBeVisible();
+    await expect(this.page.getByRole('heading', { name: en.onboardingIdentityTitle })).toBeVisible();
   }
 
   private async goto(params: Record<string, string>): Promise<void> {
@@ -282,7 +281,7 @@ export class AppDriver {
     return this.page.locator('.composer-bar textarea');
   }
   get tabBar() {
-    return this.page.getByRole('navigation', { name: 'Primary (mobile)' });
+    return this.page.getByRole('navigation', { name: en.shellNavPrimaryMobile });
   }
 
   /** The room's nested navigation — visible under the room header, and inside
@@ -314,8 +313,7 @@ export class AppDriver {
     // `body` is fixture DATA — a literal on purpose.
     await this.composerTextarea.fill(body);
     if (this.currentShell() === 'compact') {
-      // TODO(#74 migration): literal — the composer has no catalog key yet.
-      await this.page.getByRole('button', { name: 'Send message' }).click();
+      await this.page.getByRole('button', { name: en.composerSendMessage }).click();
     } else {
       await this.composerTextarea.press('Enter');
     }
@@ -341,15 +339,12 @@ export class AppDriver {
       // Inside a room the bar gives way to the room's app bar; Back returns to
       // it, exactly as a user would have to.
       if (!(await this.tabBar.isVisible())) {
-        // TODO(#74 migration): still a literal — the back button's accessible
-        // name has no catalog key yet. It gets one when the room app bar is
-        // migrated, and this line becomes `en.roomBackToRooms`.
-        await this.page.getByRole('button', { name: 'Back to Rooms' }).click();
+        await this.page.getByRole('button', { name: en.roomBackToRooms }).click();
       }
       await this.mobileTab(dest).click();
     } else {
       await this.page
-        .getByRole('navigation', { name: 'Primary', exact: true })
+        .getByRole('navigation', { name: en.shellNavPrimary, exact: true })
         .getByRole('button', { name: globalDestLabel(dest), exact: true })
         .click();
     }

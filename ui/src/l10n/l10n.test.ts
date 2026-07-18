@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { en } from './en';
 import { fr } from './fr';
-import { Formats } from './formats';
+import { Formats, resolveFormattingLocale } from './formats';
 import { fillTemplate, templateParts } from './template';
 import { isSupported, SUPPORTED_LOCALES } from './locale';
+import { LANGUAGE_NAMES } from './tokens';
 
 /** The catalog contract, asserted rather than assumed (issue #74).
  *
@@ -34,6 +35,13 @@ describe('catalog parity', () => {
     for (const tag of SUPPORTED_LOCALES) {
       expect(isSupported(tag)).toBe(true);
       expect(catalogs[tag], `no catalog for the supported locale ${tag}`).toBeDefined();
+    }
+  });
+
+  it('gives every supported locale an endonym for the Settings picker', () => {
+    for (const tag of SUPPORTED_LOCALES) {
+      expect(LANGUAGE_NAMES[tag]).toBeTruthy();
+      expect(LANGUAGE_NAMES[tag]).not.toBe(tag);
     }
   });
 });
@@ -78,6 +86,18 @@ describe('the vocabulary both clients share', () => {
 });
 
 describe('Formats', () => {
+  it('uses the system locale when formatting follows system', () => {
+    expect(resolveFormattingLocale(null, 'fr', 'en-US')).toBe('en-US');
+  });
+
+  it('keeps an explicit formatting locale ahead of the system locale', () => {
+    expect(resolveFormattingLocale('de-DE', 'fr', 'en-US')).toBe('de-DE');
+  });
+
+  it('falls through an invalid stored locale without throwing', () => {
+    expect(resolveFormattingLocale('not_a_locale', 'fr', 'en-US')).toBe('en-US');
+  });
+
   it('formats byte units with the text locale s words', () => {
     // The accepted deviation carried over from Flutter: unit WORDS follow the
     // text locale (they are vocabulary), numeric conventions follow the
@@ -93,10 +113,21 @@ describe('Formats', () => {
     expect(mixed.bytes(1024 * 1024 * 3.5)).toContain(','); // convention: German decimal comma
   });
 
+  it('preserves signed fractional progress with localized percent spacing', () => {
+    expect(new Formats(en, 'en').percent(42)).toBe('42%');
+    expect(new Formats(fr, 'fr').percent(42)).toBe('42\u202f%');
+    expect(new Formats(en, 'en').percent(12.3456)).toBe('12.3456%');
+  });
+
   it('never renders a negative age from a future timestamp', () => {
     // Clock skew must read "just now", never "-2m ago".
     const f = new Formats(en, 'en');
     expect(f.relTime(Date.now() + 60_000)).toBe(en.formatJustNow);
+  });
+
+  it('keeps relative-time words in the text locale when number formatting differs', () => {
+    const mixed = new Formats(fr, 'en-US');
+    expect(mixed.relTime(Date.now() - 5 * 60_000)).toMatch(/^il y a 5 min$/);
   });
 
   it('refuses to invent a size for a non-size', () => {

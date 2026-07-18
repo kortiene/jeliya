@@ -1,9 +1,12 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { ROOM_DESTS, ROOM_DEST_LABELS } from '../lib/routes';
+import { ROOM_DESTS } from '../lib/routes';
 import type { RoomDest } from '../lib/routes';
+import { roomDestLabel } from '../l10n/destinations';
+import { useFormats, useStrings } from '../l10n/strings';
+import { Punct } from '../l10n/tokens';
 
-function tabCountLabel(count: number): string {
-  return count > 99 ? '99+' : String(count);
+function tabCountLabel(count: number, formatted: string): string {
+  return count > 99 ? Punct.countCap : formatted;
 }
 
 /** The room's nested navigation — one model, every shell
@@ -41,6 +44,8 @@ export function RoomNav({
    *  worse for assistive tech than an absent optional attribute (issue #72). */
   controlsId?: string;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   // Full ARIA tabs keyboard pattern: arrows move between tabs (one tab stop via
   // roving tabindex), Home/End jump to the ends. Without this the tab roles
   // would announce a pattern that does not actually work.
@@ -58,7 +63,7 @@ export function RoomNav({
   };
 
   return (
-    <div className="panel-tabs room-nav" role="tablist" aria-label="Room tools" onKeyDown={onKeyDown}>
+    <div className="panel-tabs room-nav" role="tablist" aria-label={s.roomNavLabel} onKeyDown={onKeyDown}>
       {ROOM_DESTS.map((d) => {
         const count = counts[d];
         return (
@@ -73,8 +78,10 @@ export function RoomNav({
             className={dest === d ? 'active' : ''}
             onClick={() => onDest(d)}
           >
-            <span className="panel-tab-label">{ROOM_DEST_LABELS[d]}</span>
-            {count !== undefined && count > 0 ? <span className="count">{tabCountLabel(count)}</span> : null}
+            <span className="panel-tab-label">{roomDestLabel(s, d)}</span>
+            {count !== undefined && count > 0 ? (
+              <span className="count">{tabCountLabel(count, formats.count(count))}</span>
+            ) : null}
           </button>
         );
       })}

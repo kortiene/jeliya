@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { projectRoomList, roomLifecycle, roomMatchesQuery, type LifecycleFilter } from './roomList';
 import type { RoomSummary } from './protocol';
+import type { RoomListInput } from './roomList';
 import fixtures from './conformance/room-list.fixtures.json';
+
+const UNTITLED_ROOM = 'Untitled room';
+const project = (input: Omit<RoomListInput, 'untitledLabel'>) =>
+  projectRoomList({ ...input, untitledLabel: UNTITLED_ROOM });
 
 const room = (over: Partial<RoomSummary> & { room_id: string }): RoomSummary => ({
   name: null,
@@ -16,27 +21,27 @@ const room = (over: Partial<RoomSummary> & { room_id: string }): RoomSummary => 
 describe('roomMatchesQuery', () => {
   it('matches everything on a blank or whitespace-only query', () => {
     const r = room({ room_id: 'blake3:aa', name: 'Design' });
-    expect(roomMatchesQuery(r, '')).toBe(true);
-    expect(roomMatchesQuery(r, '   ')).toBe(true);
+    expect(roomMatchesQuery(r, '', UNTITLED_ROOM)).toBe(true);
+    expect(roomMatchesQuery(r, '   ', UNTITLED_ROOM)).toBe(true);
   });
 
   it('matches a case-folded, trimmed substring of the display name', () => {
     const r = room({ room_id: 'blake3:aa', name: 'Design System' });
-    expect(roomMatchesQuery(r, '  SYSTEM ')).toBe(true);
-    expect(roomMatchesQuery(r, 'ops')).toBe(false);
+    expect(roomMatchesQuery(r, '  SYSTEM ', UNTITLED_ROOM)).toBe(true);
+    expect(roomMatchesQuery(r, 'ops', UNTITLED_ROOM)).toBe(false);
   });
 
   it('matches the untitled placeholder for a null-named room', () => {
     const r = room({ room_id: 'blake3:aa', name: null });
-    expect(roomMatchesQuery(r, 'untitled')).toBe(true);
+    expect(roomMatchesQuery(r, 'untitled', UNTITLED_ROOM)).toBe(true);
   });
 
   it('matches the raw room id (namespace stripped), not the wire namespace', () => {
     const r = room({ room_id: 'blake3:beef0000cafe', name: 'Sandbox' });
-    expect(roomMatchesQuery(r, 'cafe')).toBe(true);
-    expect(roomMatchesQuery(r, 'beef')).toBe(true);
+    expect(roomMatchesQuery(r, 'cafe', UNTITLED_ROOM)).toBe(true);
+    expect(roomMatchesQuery(r, 'beef', UNTITLED_ROOM)).toBe(true);
     // the "blake3" namespace is not part of the id the user reads
-    expect(roomMatchesQuery(r, 'blake3')).toBe(false);
+    expect(roomMatchesQuery(r, 'blake3', UNTITLED_ROOM)).toBe(false);
   });
 });
 
@@ -52,7 +57,7 @@ describe('roomLifecycle', () => {
 
 describe('projectRoomList', () => {
   it('orders a section by recency desc, null recency last, then name, then id', () => {
-    const view = projectRoomList({
+    const view = project({
       rooms: [
         room({ room_id: 'blake3:z', name: 'Zeta', last_event_ts: null }),
         room({ room_id: 'blake3:a', name: 'Alpha', last_event_ts: null }),
@@ -67,7 +72,7 @@ describe('projectRoomList', () => {
   });
 
   it('breaks a full tie (equal recency and name) by room id for a stable order', () => {
-    const view = projectRoomList({
+    const view = project({
       rooms: [
         room({ room_id: 'blake3:b', name: 'Same', last_event_ts: 10 }),
         room({ room_id: 'blake3:a', name: 'Same', last_event_ts: 10 }),
@@ -81,7 +86,7 @@ describe('projectRoomList', () => {
   });
 
   it('emits no empty sections', () => {
-    const view = projectRoomList({
+    const view = project({
       rooms: [room({ room_id: 'blake3:a', name: 'Only', status: 'active' })],
       query: '',
       filter: 'all',
@@ -92,11 +97,11 @@ describe('projectRoomList', () => {
   });
 
   it('distinguishes an empty search result from a genuinely roomless account', () => {
-    const empty = projectRoomList({ rooms: [], query: '', filter: 'all', pinned: new Set(), archived: new Set() });
+    const empty = project({ rooms: [], query: '', filter: 'all', pinned: new Set(), archived: new Set() });
     expect(empty.totalCount).toBe(0);
     expect(empty.visibleCount).toBe(0);
 
-    const noMatch = projectRoomList({
+    const noMatch = project({
       rooms: [room({ room_id: 'blake3:a', name: 'Design' })],
       query: 'zzz',
       filter: 'all',
@@ -149,7 +154,7 @@ describe('shared room-list fixtures (parity with Flutter)', () => {
 
   for (const c of cases) {
     it(`case "${c.name}"`, () => {
-      const view = projectRoomList({
+      const view = project({
         rooms: c.rooms.map(toRoom),
         query: c.query,
         filter: c.filter,

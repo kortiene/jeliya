@@ -1,4 +1,5 @@
 import { expect, test, MOCK_ROOMS } from './fixtures';
+import { en } from '../src/l10n/en';
 
 // The room header's connectivity summary states what the daemon reported about
 // peer reachability, and nothing else (docs/room-workbench.md, decision 4).
@@ -25,7 +26,7 @@ test('a direct path is named, and a relay path is never hidden behind it', async
   await app.gotoPopulated();
   await app.openRoom(MOCK_ROOMS.main);
 
-  await expect(page.locator('.p2p-badge')).toContainText('Direct');
+  await expect(page.locator('.p2p-badge')).toContainText(en.roomHeaderPeerToPeer);
 
   // Compact keeps the chips behind the room-information disclosure, so the app
   // bar can hold a constant height; above compact the strip is already on

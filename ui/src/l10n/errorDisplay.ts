@@ -22,9 +22,8 @@
  *  below is not a downgrade from that; it is the honest version, and it sits
  *  next to a disclosure that still shows the operator the exact raw error.
  *
- *  `lib/errors.ts` should be retired by the integrator: this file supersedes it
- *  wholesale, and the two must not both exist once call sites move, or the
- *  untranslated one will quietly be the one someone imports next.
+ *  The obsolete `lib/errors.ts` was removed with the React migration so there
+ *  is no untranslated mapper left for a future call site to import.
  *
  *  Codes cover the fourteen the daemon can put on the wire plus the three the
  *  client synthesizes (`connection_lost` from the transport, `file_too_large`
@@ -36,8 +35,7 @@ import type { Catalog } from './catalog';
 /** The catalog subset this file reads. */
 type S = Catalog;
 
-/** Plain-language title/message/action triple. The shape `lib/errors.ts`
- *  exported, kept so call sites move over without rewriting their JSX. */
+/** Plain-language title/message/action triple shared by every error surface. */
 export interface FriendlyError {
   title: string;
   message: string;

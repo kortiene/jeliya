@@ -582,7 +582,8 @@ select {
      clipped to the strip and the real target stays short of 44px. The strip
      itself has to be tall enough, so it reserves the floor and centres the
      chips inside it — about 2px more than the padding gave, which the compact
-     timeline budget absorbs (verified by the 320x568 budget test). */
+     timeline budget absorbs (verified by the 320x568 budget test).
+
      The chip itself has to carry the floor — a tall strip around a short chip
      just centres a small target in a big box. Compact trades the strip's
      vertical padding for the chip's height, so the strip grows from 42px to

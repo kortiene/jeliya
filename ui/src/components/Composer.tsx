@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DaemonErrorShape } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
+import { useStrings } from '../l10n/strings';
+import { Glyph } from '../l10n/tokens';
 import { ErrorNote } from './ui';
 
 export function Composer({
@@ -21,6 +23,7 @@ export function Composer({
   onSend(body: string): Promise<void>;
   onShareFile(file: File): Promise<void>;
 }) {
+  const s = useStrings();
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -156,8 +159,8 @@ export function Composer({
               void send();
             }
           }}
-          placeholder={`Message ${roomName}`}
-          aria-label={`Message ${roomName}`}
+          placeholder={s.composerMessagePlaceholder(roomName)}
+          aria-label={s.composerMessagePlaceholder(roomName)}
           rows={1}
           disabled={disabled}
         />
@@ -182,18 +185,18 @@ export function Composer({
           className="icon-btn composer-attach"
           onClick={() => attachRef.current?.click()}
           disabled={disabled || sharing}
-          aria-label="Attach a file"
+          aria-label={s.composerShareAFile}
         >
-          {sharing ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">⎘</span>}
+          {sharing ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">{Glyph.file}</span>}
         </button>
         <button
           type="button"
           className="btn btn-primary composer-send"
           onClick={() => void send()}
           disabled={disabled || sending || !draft.trim()}
-          aria-label="Send message"
+          aria-label={s.composerSendMessage}
         >
-          {sending ? '…' : '➤'}
+          {sending ? '…' : Glyph.send}
         </button>
       </div>
       {/* The hint describes desktop Enter behavior; on compact that claim is
@@ -201,7 +204,7 @@ export function Composer({
           carrying live sharing feedback. */}
       {sharing || !compact ? (
         <div className="composer-hint muted">
-          {sharing ? 'Sharing file…' : 'Enter to send · Shift+Enter for a new line · Attach, paste, or drop a file to share'}
+          {sharing ? s.composerSharingFile : s.composerHint}
         </div>
       ) : null}
     </div>

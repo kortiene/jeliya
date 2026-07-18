@@ -69,7 +69,7 @@ function base32ish(seed: string, len: number): string {
  *  regardless of what time the demo is opened — anchoring on today put
  *  morning fixtures (8:58 etc.) in the future for anyone opening the app
  *  before those hours, which buried live messages under "future" history and
- *  masked a hardcoded-stale agent behind relTime()'s just-now floor. Relative
+ *  masked a hardcoded-stale agent behind Formats.relTime()'s just-now floor. Relative
  *  ordering between fixtures is unaffected since they all shift by the same
  *  24h. */
 function at(h: number, m: number, s = 0): number {

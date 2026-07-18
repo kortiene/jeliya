@@ -444,6 +444,32 @@ export function Panel({ open }: { open: boolean }) {
   assert.deepEqual(scanComponentLiterals('ui/src/components/Panel.tsx', source), []);
 });
 
+test('rule 5 does not mistake JSX slots or TypeScript generics for copy', () => {
+  const source = `export function Panel({ rows }: { rows: Record<string, Row> }) {
+  return (
+    <Template
+      template={s.panelPipeMeta}
+      slots={{
+        openedBy: <SenderName id={rows.openedBy} />,
+        authorized: <SenderName id={rows.authorized} />,
+      }}
+    />
+  );
+}
+`;
+  assert.deepEqual(scanComponentLiterals('ui/src/components/Panel.tsx', source), []);
+});
+
+test('rule 5 catches visible copy immediately after a self-closing child', () => {
+  const source = `export function DeleteButton() {
+  return <button><Icon />Delete account</button>;
+}
+`;
+  const findings = scanComponentLiterals('ui/src/components/DeleteButton.tsx', source);
+  assert.deepEqual(codes(findings), ['jsx-text']);
+  assert.match(findings[0].message, /Delete account/);
+});
+
 test('rule 5 skips the modules that stay English by decision', () => {
   const tree = cleanTree({
     'ui/src/App.tsx': 'export const App = () => <p>Untranslated copy here</p>;\n',

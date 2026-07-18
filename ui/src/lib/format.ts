@@ -6,45 +6,6 @@ export function shortId(id: string): string {
   return `${raw.slice(0, 4)}…${raw.slice(-4)}`;
 }
 
-export function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return '?';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(1)} GB`;
-}
-
-export function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
-
-export function dayLabel(ts: number): string {
-  const date = new Date(ts);
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  if (date.toDateString() === today.toDateString()) return 'Today';
-  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-/** Relative time from a real event timestamp — display only, never a
- *  liveness claim. */
-export function relTime(ts: number): string {
-  // Clamp at 0: a `ts` more than 45s in the future (should never happen —
-  // fixtures are authored strictly in the past — but a clock skew or a bad
-  // caller shouldn't produce one) would otherwise fall through to a negative
-  // `mins`/`hours` and render as nonsense like "-2m ago" instead of "just now".
-  const delta = Math.max(0, Date.now() - ts);
-  if (delta < 45_000) return 'just now';
-  const mins = Math.round(delta / 60_000);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}
-
 export function prettyLabel(label: string): string {
   const s = label.replace(/[_-]+/g, ' ').trim();
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : label;

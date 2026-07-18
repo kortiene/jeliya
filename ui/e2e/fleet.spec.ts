@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures';
+import { en } from '../src/l10n/en';
 
 // The Agent Fleet dashboard — one of the three global destinations
 // (docs/room-workbench.md, decision 1). It answers "are my agents alive,
@@ -112,7 +113,9 @@ test('the working count is the Working filter chip, and a stale status is qualif
 
   // Room coverage is the one aggregate no chip carries, so it survives — as a
   // sentence, on every shell rather than desktop-only.
-  await expect(fleet.locator('.fleet-coverage')).toHaveText(/Room coverage:/);
+  await expect(fleet.locator('.fleet-coverage')).toHaveText(
+    en.fleetCoverage('7', '7', en.formatPercent('100')),
+  );
 
   // A stale agent's last label is shown past-tense on every shell, never as a
   // bare live status (the Stale-pill-beside-"Working"-chip contradiction). The

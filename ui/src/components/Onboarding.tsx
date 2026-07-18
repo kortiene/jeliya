@@ -4,7 +4,30 @@ import type { Client, DaemonErrorShape } from '../lib/protocol';
 import { errorShape } from '../lib/protocol';
 import { joinRoomWithRetry } from '../lib/join';
 import type { JoinProgress } from '../lib/join';
+import type { Catalog } from '../l10n/catalog';
+import type { Formats } from '../l10n/formats';
+import { useFormats, useStrings } from '../l10n/strings';
+import { Template } from '../l10n/template';
+import { Example } from '../l10n/tokens';
 import { CopyButton, ErrorNote, SelfLabelField, TreeMark, Wordmark } from './ui';
+
+// i18n-exempt: literal combined-invite wire syntax rendered inside localized copy.
+const COMBINED_INVITE_SYNTAX = 'ticket#address';
+
+function joinProgressMessage(s: Catalog, formats: Formats, progress: JoinProgress): string {
+  if (progress.phase === 'retrying' && progress.retryDelayMs !== undefined) {
+    const seconds = Math.round(progress.retryDelayMs / 1000);
+    return s.onboardingJoinRetryWait(seconds, formats.count(seconds));
+  }
+  return progress.attempt === 1
+    ? s.onboardingJoinFinding
+    : s.onboardingJoinRetryingAttempt(
+        progress.attempt,
+        progress.maxAttempts,
+        formats.count(progress.attempt),
+        formats.count(progress.maxAttempts),
+      );
+}
 
 /** No identity yet → create one. No rooms yet → create or join by ticket.
  *  Mirrors identity.create / room.create / room.join exactly. */
@@ -23,6 +46,7 @@ export function Onboarding({
   onSetSelfLabel(label: string): void;
   onAdvance(): void;
 }) {
+  const s = useStrings();
   return (
     // Onboarding is a full-page destination, so its content lives in a page
     // landmark rather than a bare div — every step's copy used to be
@@ -34,7 +58,7 @@ export function Onboarding({
       <div className="onboarding-brand">
         <TreeMark size={44} />
         <Wordmark as="h1" />
-        <p className="onboarding-tag">Your rooms, your data. Private by default — built for humans &amp; agents.</p>
+        <p className="onboarding-tag">{s.onboardingTagline}</p>
       </div>
       {step === 'identity' ? (
         <IdentityStep client={client} onAdvance={onAdvance} />
@@ -52,6 +76,7 @@ export function Onboarding({
 }
 
 function IdentityStep({ client, onAdvance }: { client: Client; onAdvance(): void }) {
+  const s = useStrings();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
 
@@ -75,17 +100,11 @@ function IdentityStep({ client, onAdvance }: { client: Client; onAdvance(): void
 
   return (
     <div className="onboarding-card">
-      <h2>Create your identity</h2>
-      <p className="muted">
-        A keypair generated and stored by your local daemon. No account, no server — the private key never leaves this
-        machine.
-      </p>
-      <p className="muted">
-        There's no password reset and no recovery — if you lose this device or its data folder, this identity is gone
-        for good.
-      </p>
+      <h2>{s.onboardingIdentityTitle}</h2>
+      <p className="muted">{s.onboardingIdentityCopy1}</p>
+      <p className="muted">{s.onboardingIdentityCopy2}</p>
       <button type="button" className="btn btn-primary btn-lg" disabled={busy} onClick={() => void create()}>
-        {busy ? 'Creating…' : 'Create identity'}
+        {busy ? s.onboardingCreatingIdentity : s.onboardingCreateIdentity}
       </button>
       <ErrorNote error={error} />
     </div>
@@ -105,6 +124,8 @@ function RoomsStep({
   onSetSelfLabel(label: string): void;
   onAdvance(): void;
 }) {
+  const s = useStrings();
+  const formats = useFormats();
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<DaemonErrorShape | null>(null);
@@ -154,90 +175,100 @@ function RoomsStep({
       {identityId ? (
         <div className="onboarding-identity">
           <div className="onboarding-identity-head">
-            <span className="identity-label">Your identity id</span>
-            <CopyButton text={identityId} label="Copy" ariaLabel="Copy identity ID" />
+            <span className="identity-label">{s.onboardingYourIdentityId}</span>
+            <CopyButton text={identityId} label={s.commonCopy} ariaLabel={s.identityCopy} />
           </div>
           <code className="mono onboarding-identity-id">{identityId}</code>
-          <p className="muted">Being invited to a room? Send this id to the inviter first — tickets are bound to it.</p>
-          <p className="muted">
-            Peers show up by this same hex id at first — click any name in a room to set a local nickname for them
-            (only visible to you).
-          </p>
+          <p className="muted">{s.onboardingIdentityCardCopy1}</p>
+          <p className="muted">{s.onboardingIdentityCardCopy2}</p>
           <SelfLabelField value={selfLabel} onChange={onSetSelfLabel} />
         </div>
       ) : null}
       <div className="onboarding-columns">
-      <form
-        className="onboarding-card"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void create();
-        }}
-      >
-        <h2>Create a room</h2>
-        <p className="muted">Start a space and invite people or agents with tickets.</p>
-        <label className="field">
-          <span>Room name</span>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Build Iroh Rooms MVP"
-            autoFocus
-          />
-        </label>
-        <button type="submit" className="btn btn-primary" disabled={creating || !name.trim()}>
-          {creating ? 'Creating…' : 'Create room'}
-        </button>
-        <ErrorNote error={createError} />
-      </form>
+        <form
+          className="onboarding-card"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create();
+          }}
+        >
+          <h2>{s.modalCreateTitle}</h2>
+          <p className="muted">{s.onboardingCreateRoomCopy}</p>
+          <label className="field">
+            <span>{s.modalRoomNameLabel}</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={s.modalRoomNamePlaceholder}
+              autoFocus
+            />
+          </label>
+          <button type="submit" className="btn btn-primary" disabled={creating || !name.trim()}>
+            {creating ? s.modalCreating : s.roomsCreate}
+          </button>
+          <ErrorNote error={createError} />
+        </form>
 
-      <form
-        className="onboarding-card"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void join();
-        }}
-      >
-        <h2>Join with a ticket</h2>
-        <p className="muted">
-          Paste the invite you received. A combined invite (<code>ticket#address</code>) fills in the peer address
-          automatically.
-        </p>
-        <label className="field">
-          <span>Ticket</span>
-          <textarea
-            value={ticket}
-            onChange={(e) => setTicket(e.target.value)}
-            placeholder="roomtkt1… or roomtkt1…#<endpoint_id>@host:port"
-            rows={3}
-            spellCheck={false}
-          />
-        </label>
-        <label className="field">
-          <span>
-            Peer address <em className="muted">(optional)</em>
-          </span>
-          <input
-            value={peerAddr}
-            onChange={(e) => setPeerAddr(e.target.value)}
-            placeholder="<endpoint_id>@203.0.113.7:4242"
-            spellCheck={false}
-          />
-        </label>
-        <button type="submit" className="btn btn-primary" disabled={joining || !ticket.trim()}>
-          {joining ? 'Joining…' : 'Join room'}
-        </button>
-        {joinProgress ? (
-          <div className="join-progress" role="status">
-            <span className="spinner" aria-hidden="true" />
-            <span>{joinProgress.message}</span>
-            <em>
-              Attempt {joinProgress.attempt}/{joinProgress.maxAttempts}
-            </em>
-          </div>
-        ) : null}
-        <ErrorNote error={joinError} />
-      </form>
+        <form
+          className="onboarding-card"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void join();
+          }}
+        >
+          <h2>{s.roomsJoinWithTicket}</h2>
+          <p className="muted">
+            <Template
+              template={s.modalJoinCopy}
+              slots={{ combined: <code>{COMBINED_INVITE_SYNTAX}</code> }}
+            />
+          </p>
+          <label className="field">
+            <span>{s.modalTicketLabel}</span>
+            <textarea
+              value={ticket}
+              onChange={(e) => setTicket(e.target.value)}
+              placeholder={s.modalTicketPlaceholder}
+              rows={3}
+              spellCheck={false}
+            />
+          </label>
+          <label className="field">
+            <span>
+              <Template
+                template={s.commonOptionalFieldLabel}
+                slots={{
+                  label: s.modalPeerAddrLabel,
+                  optional: <em className="muted">{s.commonOptional}</em>,
+                }}
+              />
+            </span>
+            <input
+              value={peerAddr}
+              onChange={(e) => setPeerAddr(e.target.value)}
+              placeholder={Example.peerAddress}
+              spellCheck={false}
+            />
+          </label>
+          <button type="submit" className="btn btn-primary" disabled={joining || !ticket.trim()}>
+            {joining ? s.modalJoining : s.modalJoinSubmit}
+          </button>
+          {joinProgress ? (
+            <div className="join-progress" role="status">
+              <span className="spinner" aria-hidden="true" />
+              <span>{joinProgressMessage(s, formats, joinProgress)}</span>
+              <em>
+                {s.modalJoinAttempt(
+                  joinProgress.attempt,
+                  joinProgress.maxAttempts,
+                  formats.count(joinProgress.attempt),
+                  formats.count(joinProgress.maxAttempts),
+                )}
+              </em>
+            </div>
+          ) : null}
+          <ErrorNote error={joinError} />
+        </form>
       </div>
     </div>
   );

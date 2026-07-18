@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { documentTitle, pageRegion } from './landmarks';
+import { en } from '../l10n/en';
+import { BRAND } from '../l10n/tokens';
 import type { Pane, PageRegion } from './landmarks';
 import type { Shell } from './shell';
 
@@ -49,28 +51,35 @@ describe('pageRegion', () => {
 });
 
 describe('documentTitle', () => {
+  const labels = {
+    rooms: en.destRooms,
+    fleet: en.destFleet,
+    settings: en.destSettings,
+    app: BRAND,
+  };
+
   it('names each global destination', () => {
-    expect(documentTitle('rooms')).toBe('Rooms · Jeliya');
-    expect(documentTitle('fleet')).toBe('Agent Fleet · Jeliya');
-    expect(documentTitle('settings')).toBe('Settings · Jeliya');
+    expect(documentTitle('rooms', { labels })).toBe('Rooms · Jeliya');
+    expect(documentTitle('fleet', { labels })).toBe('Agent Fleet · Jeliya');
+    expect(documentTitle('settings', { labels })).toBe('Settings · Jeliya');
   });
 
   it('leads with the room inside a room', () => {
-    expect(documentTitle('room', { roomName: 'Design System' })).toBe('Design System · Jeliya');
+    expect(documentTitle('room', { roomName: 'Design System', labels })).toBe('Design System · Jeliya');
   });
 
   it('leads with the tool when the inspector is open', () => {
-    expect(documentTitle('inspector', { roomName: 'Design System', destLabel: 'Files' })).toBe(
+    expect(documentTitle('inspector', { roomName: 'Design System', destLabel: 'Files', labels })).toBe(
       'Files · Design System · Jeliya',
     );
   });
 
   it('falls back to the app alone rather than inventing a room name', () => {
-    expect(documentTitle('room', { roomName: null })).toBe('Jeliya');
-    expect(documentTitle('room', { roomName: '   ' })).toBe('Jeliya');
+    expect(documentTitle('room', { roomName: null, labels })).toBe('Jeliya');
+    expect(documentTitle('room', { roomName: '   ', labels })).toBe('Jeliya');
   });
 
   it('passes room names through verbatim — they are user data, never copy', () => {
-    expect(documentTitle('room', { roomName: '  Bug Triage  ' })).toBe('Bug Triage · Jeliya');
+    expect(documentTitle('room', { roomName: '  Bug Triage  ', labels })).toBe('Bug Triage · Jeliya');
   });
 });

@@ -33,7 +33,7 @@ async function returnToRoomsList(app: AppDriver): Promise<void> {
 
 test('create: success creates exactly one room and navigates once', async ({ app, page }) => {
   await app.gotoRoomsList();
-  await page.getByRole('button', { name: 'Create Room', exact: true }).click();
+  await page.locator('button.create-room:not(.join-room)').click();
 
   await modal(page).getByLabel('Room name').fill('Containment Test Room');
   await modal(page).getByRole('button', { name: 'Create room' }).click();
@@ -53,7 +53,7 @@ test('create: success creates exactly one room and navigates once', async ({ app
 
 test('create: a pending request cannot be dismissed or duplicated', async ({ app, page }) => {
   await app.gotoRoomsList({ mock_delay: 'room.create:1500' });
-  await page.getByRole('button', { name: 'Create Room', exact: true }).click();
+  await page.locator('button.create-room:not(.join-room)').click();
 
   await modal(page).getByLabel('Room name').fill('Pending Room');
   const submit = modal(page).getByRole('button', { name: 'Create room' });
@@ -75,7 +75,7 @@ test('create: a pending request cannot be dismissed or duplicated', async ({ app
 
 test('create: failure keeps an actionable error in the dialog', async ({ app, page }) => {
   await app.gotoRoomsList({ mock_fail: 'room.create:1' });
-  await page.getByRole('button', { name: 'Create Room', exact: true }).click();
+  await page.locator('button.create-room:not(.join-room)').click();
 
   await modal(page).getByLabel('Room name').fill('Doomed Room');
   await modal(page).getByRole('button', { name: 'Create room' }).click();
@@ -119,7 +119,7 @@ test('join: a pending join is contained, then applies its transition once', asyn
 
 test('create: a keyboard double-submit fires exactly one request', async ({ app, page }) => {
   await app.gotoRoomsList({ mock_delay: 'room.create:800' });
-  await page.getByRole('button', { name: 'Create Room', exact: true }).click();
+  await page.locator('button.create-room:not(.join-room)').click();
 
   const name = modal(page).getByLabel('Room name');
   await name.fill('Double Submit Room');
