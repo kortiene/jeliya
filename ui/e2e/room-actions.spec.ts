@@ -72,7 +72,9 @@ test('timeline Open in Pipes opens Pipes and identifies the pipe', async ({
   // The fixture's first pipe event is the logs pipe on 127.0.0.1:4000.
   await app.timeline.getByRole('button', { name: 'Open in Pipes' }).first().click();
 
-  await expect(page).toHaveURL(/\/rooms\/[^/]+\/pipes(\?|$)/);
+  // "Open in Pipes" deep-links to the pipe itself now (#67) — the item, not
+  // just the dest — so the URL carries the pipe id.
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/pipes\/.+/);
   await expect(app.rightPanel).toBeVisible();
   await expect(app.roomTab('Pipes')).toHaveAttribute('aria-selected', 'true');
   if (compact) await expect(app.center).toBeHidden();
@@ -165,16 +167,24 @@ test('opening a room tool leaves the room tab strip usable', async ({ app, page 
   await expect(app.rightPanel.getByRole('heading', { name: 'Expose a pipe' })).toBeVisible();
 });
 
-test('desktop: repeating Open in Pipes stays idempotent', async ({ app, compact }) => {
+test('desktop: repeating Open in Pipes stays idempotent', async ({ app, page, compact }) => {
   test.skip(compact, 'on compact the source button lives in the hidden chat pane');
   await app.gotoPopulated();
   await app.openRoom(MOCK_ROOMS.main);
 
   const openInPipes = app.timeline.getByRole('button', { name: 'Open in Pipes' }).first();
   await openInPipes.click();
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/pipes\/.+/);
+  // Arrival marks the row transiently and identifies it durably.
   await expect(app.rightPanel.locator('.pipe-row-flash')).toContainText('127.0.0.1:4000');
+  const row = app.rightPanel.locator('.pipe-row', { hasText: '127.0.0.1:4000' });
+  await expect(row).toHaveClass(/pipe-row-selected/);
+
   await openInPipes.click();
-  // Same destination, same identified row — no toggling, no stacking.
-  await expect(app.rightPanel.locator('.pipe-row-flash')).toContainText('127.0.0.1:4000');
+  // Same destination, same selected pipe (the selection is route state now, so
+  // repeating the deep link is a genuine no-op) — no toggling, no stacking: the
+  // URL is unchanged and the row stays the identified one.
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/pipes\/.+/);
+  await expect(row).toHaveClass(/pipe-row-selected/);
   await expect(app.rightPanel.getByRole('heading', { name: 'Expose a pipe' })).toBeVisible();
 });

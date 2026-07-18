@@ -7,12 +7,17 @@ export function Composer({
   roomId,
   roomName,
   disabled,
+  compact,
   onSend,
   onShareFile,
 }: {
   roomId: string;
   roomName: string;
   disabled: boolean;
+  /** Compact widths get the touch-composer behavior (web parity with the
+   *  Flutter composer): Enter inserts a newline and the ➤ button is the
+   *  explicit send, so the "Enter to send" hint — false there — is withheld. */
+  compact: boolean;
   onSend(body: string): Promise<void>;
   onShareFile(file: File): Promise<void>;
 }) {
@@ -22,6 +27,7 @@ export function Composer({
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<DaemonErrorShape | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachRef = useRef<HTMLInputElement | null>(null);
   const draftKey = `jeliya.draft.${roomId}`;
 
   useEffect(() => {
@@ -139,7 +145,10 @@ export function Composer({
             void shareFiles(e.clipboardData.files);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            // Desktop: Enter sends, Shift+Enter is a newline. Compact: Enter is
+            // always a newline and the ➤ button is the explicit send (the soft
+            // keyboard's own newline key), so this handler stands down there.
+            if (!compact && e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               void send();
             }
@@ -149,6 +158,31 @@ export function Composer({
           rows={1}
           disabled={disabled}
         />
+        {/* Touch-native attachment (#67 P20), the counterpart to paste/drop for
+            devices that have neither. Wired to the same verified share flow;
+            disabled only by `sharing`, never by `sending` — a share in flight
+            must never block a send, nor the reverse. */}
+        <input
+          ref={attachRef}
+          type="file"
+          className="composer-attach-input"
+          onChange={(e) => {
+            const picked = e.currentTarget.files;
+            if (picked && picked.length > 0) void shareFiles(picked);
+            e.currentTarget.value = '';
+          }}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
+        <button
+          type="button"
+          className="icon-btn composer-attach"
+          onClick={() => attachRef.current?.click()}
+          disabled={disabled || sharing}
+          aria-label="Attach a file"
+        >
+          {sharing ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">⎘</span>}
+        </button>
         <button
           type="button"
           className="btn btn-primary composer-send"
@@ -159,9 +193,14 @@ export function Composer({
           {sending ? '…' : '➤'}
         </button>
       </div>
-      <div className="composer-hint muted">
-        {sharing ? 'Sharing file…' : 'Enter to send · Shift+Enter for a new line · Paste or drop a file to share'}
-      </div>
+      {/* The hint describes desktop Enter behavior; on compact that claim is
+          false (Enter is a newline), so the line is withheld there unless it is
+          carrying live sharing feedback. */}
+      {sharing || !compact ? (
+        <div className="composer-hint muted">
+          {sharing ? 'Sharing file…' : 'Enter to send · Shift+Enter for a new line · Attach, paste, or drop a file to share'}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -28,7 +28,7 @@ import { splitInvite } from './lib/invite';
 import { joinRoomWithRetry } from './lib/join';
 import type { JoinProgress } from './lib/join';
 import { useRoute } from './lib/history';
-import { inspectorDest, legacyTabDest, routeRoomId } from './lib/routes';
+import { inspectorDest, legacyTabDest, routeItem, routeRoomId } from './lib/routes';
 import type { InspectorDest, RoomDest } from './lib/routes';
 import { useShell } from './lib/shell';
 import uiPackage from '../package.json';
@@ -144,7 +144,9 @@ export default function App({ client }: { client: Client }) {
   // other. Everything below derives from `route`; nothing mirrors it.
   const [route, navigate] = useRoute();
   const shell = useShell();
-  const [pipeFocus, setPipeFocus] = useState<string | null>(null);
+  // The selected file/pipe is route state now (#67): `routeItem(route)`, wired
+  // into the inspector below. It replaced an ephemeral `pipeFocus` useState that
+  // a deep link or a reload could not restore.
   // Deliberate per-room reading positions (see TimelineView); a ref because
   // saving one on room switch must not re-render the outgoing timeline.
   const timelineViews = useRef(new Map<string, TimelineView>());
@@ -876,13 +878,29 @@ export default function App({ client }: { client: Client }) {
    *  medium it opens the drawer; on wide it opens the column. One route, three
    *  mechanics — and Back undoes it on all three. */
   const openRoomDest = useCallback(
-    (dest: InspectorDest, pipeId?: string) => {
+    (dest: InspectorDest, itemId?: string) => {
       const rid = roomIdRef.current;
       if (!rid) return;
-      setPipeFocus(dest === 'pipes' ? (pipeId ?? null) : null);
-      navigate({ kind: 'room', roomId: rid, dest });
+      // The selected file/pipe is part of the destination now (#67): a timeline
+      // "Open in Files/Pipes" deep-links to the item, and a bare tab click drops
+      // it. One navigation carries both which tool and which item.
+      navigate({ kind: 'room', roomId: rid, dest, item: itemId });
     },
     [navigate],
+  );
+
+  /** Select (or, with null, deselect) a file/pipe within the tool the route is
+   *  already on. Selection is a deep link — `/rooms/:id/files/:fileId` — so it
+   *  survives a reload and a paste, and the inspector reads it off the route. */
+  const selectRoomItem = useCallback(
+    (itemId: string | null) => {
+      const rid = roomIdRef.current;
+      if (!rid) return;
+      const dest = inspectorDest(route);
+      if (dest !== 'files' && dest !== 'pipes') return;
+      navigate({ kind: 'room', roomId: rid, dest, item: itemId ?? undefined });
+    },
+    [navigate, route],
   );
 
   /** Closing the inspector *is* navigating to Activity (decision 3). */
@@ -1090,12 +1108,14 @@ export default function App({ client }: { client: Client }) {
                     onFetch={fetchFile}
                     onRecheckFiles={recheckFiles}
                     onRetryPendingMessage={retryPendingMessage}
+                    onShowFiles={(fileId) => openRoomDest('files', fileId)}
                     onShowPipes={(pipeId) => openRoomDest('pipes', pipeId)}
                   />
                   <Composer
                     roomId={currentRoom.room_id}
                     roomName={currentRoom.name ?? 'Untitled room'}
                     disabled={conn !== 'connected'}
+                    compact={shell === 'compact'}
                     onSend={sendMessage}
                     onShareFile={shareBrowserFile}
                   />
@@ -1103,7 +1123,10 @@ export default function App({ client }: { client: Client }) {
               )}
             </>
           ) : (
-            <div className="center-empty muted">Select a room</div>
+            // No room selected: the room tools are unavailable and there is no
+            // composer — the surface just names the one recoverable next step,
+            // and the rooms list beside it is how you take it (#67).
+            <div className="center-empty muted">Choose a room.</div>
           )}
         </main>
 
@@ -1124,8 +1147,8 @@ export default function App({ client }: { client: Client }) {
           pipes={pipes}
           selfId={selfId}
           fetches={fetches}
-          focusPipeId={pipeFocus}
-          onFocusPipeHandled={() => setPipeFocus(null)}
+          selectedItem={routeItem(route)}
+          onSelectItem={selectRoomItem}
           onFetch={fetchFile}
           onRecheckFiles={recheckFiles}
           onSharePath={shareFilePath}

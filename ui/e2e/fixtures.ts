@@ -191,6 +191,19 @@ export class AppDriver {
     await expect(this.timeline).toBeVisible();
   }
 
+  /** Compose and send a message the way this shell requires (#67 P20): desktop
+   *  sends on Enter, compact inserts a newline there so the ➤ button is the
+   *  explicit send. Specs that are about scroll/filter behavior, not the send
+   *  gesture itself, use this so they run unchanged on every viewport. */
+  async sendMessage(body: string): Promise<void> {
+    await this.composerTextarea.fill(body);
+    if (this.currentShell() === 'compact') {
+      await this.page.getByRole('button', { name: 'Send message' }).click();
+    } else {
+      await this.composerTextarea.press('Enter');
+    }
+  }
+
   /** Go to a room destination. Activity closes the inspector; a tool opens it —
    *  a column on wide, a drawer on medium, the whole pane on compact, and one
    *  navigation on all three. */

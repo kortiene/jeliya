@@ -207,6 +207,7 @@ function EventCard({
   compact,
   onFetch,
   onRecheckFiles,
+  onShowFiles,
   onShowPipes,
 }: {
   event: TimelineEvent;
@@ -216,6 +217,7 @@ function EventCard({
   compact: boolean;
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
+  onShowFiles(fileId?: string): void;
   onShowPipes(pipeId?: string): void;
 }) {
   const senderId = event.sender.identity_id;
@@ -302,6 +304,14 @@ function EventCard({
               onFetch={onFetch}
               onRecheckFiles={onRecheckFiles}
             />
+            {/* Deep-link into the Files workspace on this file (#67), the
+                counterpart to pipe_opened's "Open in Pipes". The Files tab
+                handles a target that has not synced into file.list yet. */}
+            <div className="event-card-actions">
+              <button type="button" className="btn btn-sm" onClick={() => onShowFiles(event.file?.file_id)}>
+                Open in Files
+              </button>
+            </div>
           </div>
         </div>
       );
@@ -488,6 +498,7 @@ export function Timeline({
   onFetch,
   onRecheckFiles,
   onRetryPendingMessage,
+  onShowFiles,
   onShowPipes,
 }: {
   events: TimelineEvent[];
@@ -506,6 +517,7 @@ export function Timeline({
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
   onRetryPendingMessage(clientId: string): void;
+  onShowFiles(fileId?: string): void;
   onShowPipes(pipeId?: string): void;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -704,6 +716,7 @@ export function Timeline({
           compact={compact}
           onFetch={onFetch}
           onRecheckFiles={onRecheckFiles}
+          onShowFiles={onShowFiles}
           onShowPipes={onShowPipes}
         />
       );

@@ -116,8 +116,7 @@ test('returning to a scrolled-up room preserves the position and offers new acti
   expect(await app.timelineBottomOffset()).toBeGreaterThan(140);
 
   // New activity surfaces as a control, not a jump.
-  await app.composerTextarea.fill('note to self while reading history');
-  await app.composerTextarea.press('Enter');
+  await app.sendMessage('note to self while reading history');
   const newMessages = app.page.locator('.new-messages');
   await expect(newMessages).toBeVisible();
   await expect.poll(() => app.timeline.evaluate((el) => el.scrollTop)).toBe(0);

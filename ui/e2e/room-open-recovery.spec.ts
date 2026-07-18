@@ -96,7 +96,7 @@ test('Back to Rooms escapes a room that cannot open', async ({ app, page, compac
     await expect(app.center).toBeHidden();
     await expect(app.sidebar).toBeVisible();
   } else {
-    await expect(page.getByText('Select a room')).toBeVisible();
+    await expect(page.getByText('Choose a room.')).toBeVisible();
   }
 
   // The escape is durable (issue #88). Reloading holds `/rooms`, because

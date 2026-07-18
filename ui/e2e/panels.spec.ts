@@ -7,7 +7,7 @@ import { expect, test, MOCK_ROOMS } from './fixtures';
 // changes is only where the chosen tool renders: a third column on wide, a
 // drawer over the workspace on medium, the whole screen on compact.
 
-test('opens the Files surface with the shared-file inventory', async ({ app, page, shell }) => {
+test('opens the Files surface list-first, sharing behind a compact picker', async ({ app, page, shell }) => {
   // Boot restores the last room, so the strip is already on screen.
   await app.gotoPopulated();
   await app.goToRoomDest('Files');
@@ -18,10 +18,19 @@ test('opens the Files surface with the shared-file inventory', async ({ app, pag
   await expect(app.rightPanel).toBeVisible();
   await expect(app.roomTab('Files')).toHaveAttribute('aria-selected', 'true');
 
-  // The default room's five fixture files. Scoped to the panel: the same
-  // file names also render inside timeline event cards.
+  // List-first (#67): the shared-file list is what the panel leads with — the
+  // default room's five fixture files render (scoped to the panel: the same
+  // names also render inside timeline event cards), and the honest summary is
+  // still here.
   await expect(app.rightPanel.getByRole('heading', { name: '5 shared files' })).toBeVisible();
   await expect(app.rightPanel.getByText('PRD_v0.2.pdf')).toBeVisible();
+
+  // Sharing is a compact affordance, not a form standing open above the list:
+  // the picker's own heading is absent until the button reveals it.
+  await expect(app.rightPanel.getByRole('button', { name: 'Share a file' })).toBeVisible();
+  await expect(app.rightPanel.getByRole('heading', { name: 'Choose a file to share' })).toHaveCount(0);
+  await app.rightPanel.getByRole('button', { name: 'Share a file' }).click();
+  await expect(app.rightPanel.getByRole('heading', { name: 'Choose a file to share' })).toBeVisible();
 
   // Room context stays visible on every room-scoped surface, on every shell
   // (decision 3) — but each shell owes it from a different element.
@@ -37,18 +46,78 @@ test('opens the Files surface with the shared-file inventory', async ({ app, pag
   }
 });
 
-test('opens the Pipes surface with live pipes and the expose form', async ({ app, page }) => {
+test('opens the Pipes surface action-first, live pipes intact', async ({ app, page }) => {
   await app.gotoPopulated();
   await app.goToRoomDest('Pipes');
 
   await expect(page).toHaveURL(/\/rooms\/[^/]+\/pipes$/);
   await expect(app.rightPanel).toBeVisible();
   await expect(app.roomTab('Pipes')).toHaveAttribute('aria-selected', 'true');
+  // Action-first (#67): the expose form is anchored at the top, reachable
+  // without scrolling past the existing pipes — which remain visible below it.
   await expect(app.rightPanel.getByRole('heading', { name: 'Expose a pipe' })).toBeVisible();
   // The two fixture pipes for the default room (scoped: pipe targets also
   // render inside timeline event cards).
   await expect(app.rightPanel.getByText('127.0.0.1:3000')).toBeVisible();
   await expect(app.rightPanel.getByText('127.0.0.1:4000')).toBeVisible();
+});
+
+test('selecting a file deep-links to it and opens its inspector without losing the list', async ({
+  app,
+  page,
+}) => {
+  await app.gotoPopulated();
+  await app.goToRoomDest('Files');
+
+  const prd = app.rightPanel.locator('.file-row', { hasText: 'PRD_v0.2.pdf' });
+  await prd.locator('.file-row-select').click();
+
+  // The selection is a deep link — the file id is in the URL, so the inspector
+  // survives a reload and a paste.
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/files\/.+/);
+  await expect(prd).toHaveClass(/file-row-selected/);
+
+  // The list is not lost: the other rows are still on screen, and the
+  // selected file's own fetch control is now revealed in its inspector.
+  await expect(app.rightPanel.getByText('room-protocol.md')).toBeVisible();
+  await expect(prd.locator('.file-inspector')).toBeVisible();
+
+  // Deselecting returns to the list URL (no item).
+  await prd.locator('.file-row-select').click();
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/files$/);
+  await expect(app.rightPanel.locator('.file-row-selected')).toHaveCount(0);
+});
+
+test('selecting a pipe deep-links to it, expose form still reachable', async ({ app, page }) => {
+  await app.gotoPopulated();
+  await app.goToRoomDest('Pipes');
+
+  const row = app.rightPanel.locator('.pipe-row', { hasText: '127.0.0.1:3000' });
+  await row.locator('.pipe-row-head').click();
+
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/pipes\/.+/);
+  await expect(row).toHaveClass(/pipe-row-selected/);
+  // The list and the action-first expose form both stay in place.
+  await expect(app.rightPanel.getByText('127.0.0.1:4000')).toBeVisible();
+  await expect(app.rightPanel.getByRole('heading', { name: 'Expose a pipe' })).toBeVisible();
+});
+
+test('timeline "Open in Files" deep-links to the file in the Files workspace', async ({
+  app,
+  page,
+  shell,
+}) => {
+  await app.gotoPopulated();
+  await app.openRoom(MOCK_ROOMS.main);
+
+  await app.timeline.getByRole('button', { name: 'Open in Files' }).first().click();
+
+  // Lands on the Files tool, deep-linked to the shared file (the item, not just
+  // the dest), with the row selected.
+  await expect(page).toHaveURL(/\/rooms\/[^/]+\/files\/.+/);
+  await expect(app.roomTab('Files')).toHaveAttribute('aria-selected', 'true');
+  await expect(app.rightPanel.locator('.file-row-selected')).toBeVisible();
+  if (shell === 'compact') await expect(app.center).toBeHidden();
 });
 
 test('the room tab strip moves between every room tool', async ({ app, page }) => {

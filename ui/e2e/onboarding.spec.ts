@@ -23,7 +23,7 @@ test('creates an identity and a first room', async ({ app, page }) => {
 
   // The ready shell restores the only room there is, so a first-run user
   // lands *inside* the room they just named — on every shell, compact
-  // included — instead of on a rooms list or an empty "Select a room" pane.
+  // included — instead of on a rooms list or an empty "Choose a room." pane.
   // Naming a room is the act of choosing it; making the user pick it again
   // would be the shell forgetting what it was just told.
   await expect(page).toHaveURL(/\/rooms\/[^/]+\/activity/);

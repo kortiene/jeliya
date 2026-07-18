@@ -2068,6 +2068,14 @@ button.sender-name:not(:disabled):hover {
   margin-top: 8px;
 }
 
+/* The file_shared card's "Open in Files" deep-link (#67), mirroring the
+   pipe_opened card's inline "Open in Pipes". */
+.event-card-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .file-tile,
 .pipe-tile {
   display: flex;
@@ -2237,6 +2245,17 @@ button.sender-name:not(:disabled):hover {
 
 .composer-send {
   padding: 8px 16px;
+}
+
+/* The touch-native attachment control (#67 P20): a quiet icon button beside
+   Send, wired to the same verified share flow as paste/drop. */
+.composer-attach {
+  flex: none;
+  align-self: flex-end;
+}
+
+.composer-attach-input {
+  display: none;
 }
 
 .composer-hint {
@@ -2661,6 +2680,17 @@ button.sender-name:not(:disabled):hover {
   font: 700 15px/1.2 var(--mono);
 }
 
+/* List-first (#67): the share affordance is a compact button that reveals the
+   picker sheet, so the list — not a form — is what the panel leads with. */
+.files-share-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.file-share-toggle {
+  padding: 8px 14px;
+}
+
 .file-share-card {
   border-style: solid;
   background: var(--bg-card);
@@ -2822,6 +2852,9 @@ button.sender-name:not(:disabled):hover {
 }
 
 .file-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 12px;
   border-radius: 14px;
   background: var(--bg-card);
@@ -2832,11 +2865,53 @@ button.sender-name:not(:disabled):hover {
   background: var(--bg-raise);
 }
 
-.file-row-main {
+/* The selected file's row: an accent hairline marks the one whose contextual
+   inspector is open (#67), the same vocabulary the pipe selection uses. */
+.file-row-selected {
+  border-color: var(--accent-line);
+}
+
+/* The row header is the select control — clicking it opens the inspector at
+   `/rooms/:id/files/:fileId`. A reset button, laid out like the old row main. */
+.file-row-select {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: flex-start;
   gap: 11px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-row-caret {
+  align-self: center;
+  color: var(--text-mute);
+  font-size: 12px;
+}
+
+/* The contextual inspector: the selected file's fetch controls and detail,
+   unchanged in meaning — just gathered behind selection. */
+.file-inspector {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-meta {
+  color: var(--text-dim);
+}
+
+.file-meta .sender-name {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-dim);
 }
 
 .file-row-info {
@@ -2906,11 +2981,6 @@ button.sender-name:not(:disabled):hover {
   color: var(--amber);
 }
 
-.file-row-action {
-  grid-column: 2;
-  justify-self: start;
-}
-
 .file-self-note {
   display: inline-flex;
   align-items: center;
@@ -2968,10 +3038,27 @@ button.sender-name:not(:disabled):hover {
   opacity: 0.5;
 }
 
+/* The pipe row header is the select control (#67): clicking it opens the
+   inspector at `/rooms/:id/pipes/:pipeId`. A reset button so no interactive
+   descendant (the meta's SenderName, the actions) nests inside a button. */
 .pipe-row-head {
   display: flex;
   align-items: center;
   gap: 9px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The selected pipe's row — accent hairline, distinct from the transient
+   navigation flash below (which brightens the border on arrival). */
+.pipe-row-selected {
+  border-color: var(--accent-line);
 }
 
 .pipe-row-head strong {
@@ -4075,25 +4162,29 @@ select {
     font-size: 16px;
   }
 
-  .file-row-main {
-    flex-wrap: wrap;
-  }
-
-  .file-row-action {
+  /* The selected file's inspector controls span the row on touch layouts. */
+  .file-inspector {
     width: 100%;
   }
 
-  .file-row-action .btn,
-  .file-row-action .fetch-actions,
-  .file-self-note {
+  .file-inspector > .btn,
+  .file-inspector > .fetch-actions,
+  .file-inspector > .file-self-note {
     justify-content: center;
     width: 100%;
   }
 
-  .file-row-action .fetch-actions .btn,
-  .file-row-action .fetch-offline {
+  .file-inspector .fetch-actions .btn,
+  .file-inspector .fetch-offline {
     flex: 1 1 140px;
     justify-content: center;
+  }
+
+  /* Touch floor for the composer attach button (web parity with the Flutter
+     44dp share affordance). */
+  .composer-attach {
+    width: 44px;
+    height: 44px;
   }
 }
 

@@ -245,6 +245,8 @@ function FilesTab({
   files,
   selfId,
   fetches,
+  selectedFileId = null,
+  onSelectFile,
   onFetch,
   onRecheckFiles,
   onSharePath,
@@ -253,6 +255,13 @@ function FilesTab({
   files: FileEntry[];
   selfId: string | null;
   fetches: Record<string, FetchState>;
+  /** The file the route deep-links to, or null (#67). Its row is the one the
+   *  contextual inspector opens on — route state, never held here. */
+  selectedFileId?: string | null;
+  /** Select a file row (navigates to `/rooms/:id/files/:fileId`) or null to
+   *  deselect (back to the list). Toggling is the caller's job to express as a
+   *  route; this tab only asks for it. */
+  onSelectFile(fileId: string | null): void;
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
   onSharePath(path: string): Promise<void>;
@@ -261,8 +270,33 @@ function FilesTab({
   const [path, setPath] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pickerKey, setPickerKey] = useState(0);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareError, setShareError] = useState<DaemonErrorShape | null>(null);
+
+  // A deep link (or an "Open in Files" from the timeline) can name a file far
+  // down the list: bring the selected row on screen. Keyed on the selection so
+  // a manual scroll away is never yanked back, and it never fires twice for the
+  // same id. If the id isn't in `files` yet the effect re-runs when they arrive;
+  // an id that is genuinely absent (once the list is in) is consumed so a dead
+  // deep link cannot loop.
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const lastScrolled = useRef<string | null>(null);
+  useEffect(() => {
+    if (selectedFileId === null) {
+      lastScrolled.current = null;
+      return;
+    }
+    if (selectedFileId === lastScrolled.current) return;
+    const row = rowRefs.current.get(selectedFileId);
+    if (row) {
+      row.scrollIntoView({ block: 'nearest' });
+      lastScrolled.current = selectedFileId;
+    } else if (files.length > 0 && !files.some((f) => f.file_id === selectedFileId)) {
+      lastScrolled.current = selectedFileId;
+    }
+  }, [selectedFileId, files]);
+
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   const availableCount = files.filter((file) => file.available).length;
   const fetchedCount = files.filter((file) => {
@@ -336,90 +370,108 @@ function FilesTab({
         ) : null}
       </section>
 
-      <form
-        className="panel-form file-share-card"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void share();
-        }}
-      >
-        <div className="panel-form-head">
-          <div>
-            <h2>Choose a file to share</h2>
-            <p className="muted" id={shareHelpId}>
-              Pick a local file. Jeliya uploads it to this daemon, imports it into the room blob store, and verifies it by content hash.
-            </p>
-          </div>
-          <span className="file-share-badge" aria-label="Verified by content hash">
-            hash checked
-          </span>
-        </div>
-
-        <div className="file-picker-shell">
-          <input
-            key={pickerKey}
-            className="file-picker-input"
-            type="file"
-            onChange={(e) => {
-              const file = e.currentTarget.files?.[0] ?? null;
-              setSelectedFile(file);
-              if (file) setPath('');
-            }}
-            aria-label="Choose file to share"
-            aria-describedby={shareHelpId}
-          />
-          {selectedFile ? (
-            <div className="selected-file-card" aria-live="polite">
-              <span className="selected-file-icon" aria-hidden="true">
-                {extOf(selectedFile.name).toUpperCase().slice(0, 4) || 'FILE'}
-              </span>
-              <div className="selected-file-info">
-                <strong>{selectedFile.name}</strong>
-                <span className="muted">
-                  {formatBytes(selectedFile.size)} · {selectedType}
-                </span>
-              </div>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => {
-                  setSelectedFile(null);
-                  setPickerKey((key) => key + 1);
-                }}
-              >
-                Clear
-              </button>
-            </div>
-          ) : (
-            <p className="file-picker-empty muted">No file selected yet.</p>
-          )}
-        </div>
-
-        <button type="submit" className="btn btn-primary file-share-submit" disabled={sharing || (!selectedFile && !path.trim())}>
-          {sharing ? 'Sharing…' : 'Share'}
+      {/* List-first (#67): sharing is a compact affordance that reveals the
+          picker, not a form standing open above the list. The list below is
+          what the panel is *for*; the sheet is one click away when it's needed. */}
+      <div className="files-share-bar">
+        <button
+          type="button"
+          className="btn btn-primary file-share-toggle"
+          aria-expanded={pickerOpen}
+          aria-controls="file-share-sheet"
+          onClick={() => setPickerOpen((open) => !open)}
+        >
+          {pickerOpen ? 'Close' : 'Share a file'}
         </button>
+      </div>
 
-        <details className="file-advanced-path">
-          <summary>Advanced: paste a daemon-readable path</summary>
-          <div className="form-row file-share-row">
-            <input
-              value={path}
-              onChange={(e) => {
-                setPath(e.target.value);
-                if (e.target.value.trim()) {
-                  setSelectedFile(null);
-                  setPickerKey((key) => key + 1);
-                }
-              }}
-              placeholder="/path/to/report.pdf"
-              aria-label="File path to share"
-              spellCheck={false}
-            />
+      {pickerOpen ? (
+        <form
+          id="file-share-sheet"
+          className="panel-form file-share-card"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void share();
+          }}
+        >
+          <div className="panel-form-head">
+            <div>
+              <h2>Choose a file to share</h2>
+              <p className="muted" id={shareHelpId}>
+                Pick a local file. Jeliya uploads it to this daemon, imports it into the room blob store, and verifies it by content hash.
+              </p>
+            </div>
+            <span className="file-share-badge" aria-label="Verified by content hash">
+              hash checked
+            </span>
           </div>
-          <p className="form-hint muted">Use this only for files already under the daemon data directory.</p>
-        </details>
-        <ErrorNote error={shareError} />
-      </form>
+
+          <div className="file-picker-shell">
+            <input
+              key={pickerKey}
+              className="file-picker-input"
+              type="file"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0] ?? null;
+                setSelectedFile(file);
+                if (file) setPath('');
+              }}
+              aria-label="Choose file to share"
+              aria-describedby={shareHelpId}
+            />
+            {selectedFile ? (
+              <div className="selected-file-card" aria-live="polite">
+                <span className="selected-file-icon" aria-hidden="true">
+                  {extOf(selectedFile.name).toUpperCase().slice(0, 4) || 'FILE'}
+                </span>
+                <div className="selected-file-info">
+                  <strong>{selectedFile.name}</strong>
+                  <span className="muted">
+                    {formatBytes(selectedFile.size)} · {selectedType}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => {
+                    setSelectedFile(null);
+                    setPickerKey((key) => key + 1);
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <p className="file-picker-empty muted">No file selected yet.</p>
+            )}
+          </div>
+
+          <button type="submit" className="btn btn-primary file-share-submit" disabled={sharing || (!selectedFile && !path.trim())}>
+            {sharing ? 'Sharing…' : 'Share'}
+          </button>
+
+          <details className="file-advanced-path">
+            <summary>Advanced: paste a daemon-readable path</summary>
+            <div className="form-row file-share-row">
+              <input
+                value={path}
+                onChange={(e) => {
+                  setPath(e.target.value);
+                  if (e.target.value.trim()) {
+                    setSelectedFile(null);
+                    setPickerKey((key) => key + 1);
+                  }
+                }}
+                placeholder="/path/to/report.pdf"
+                aria-label="File path to share"
+                spellCheck={false}
+              />
+            </div>
+            <p className="form-hint muted">Use this only for files already under the daemon data directory.</p>
+          </details>
+          <ErrorNote error={shareError} />
+        </form>
+      ) : null}
 
       {files.length > 0 ? (
         <div className="files-section-head">
@@ -446,6 +498,7 @@ function FilesTab({
         const availability: FetchAvailability = { available: file.available, providers: file.providers };
         const fetched = fetchState?.phase === 'verified' || fetchState?.phase === 'fetched' || file.fetched;
         const failedState = fetchState?.phase === 'error' ? fetchState : null;
+        const selected = selectedFileId === file.file_id;
         // `available` is "another provider device is a connected peer right now"
         // (the daemon excludes THIS device), so a file you shared reads as
         // not-available from your own view even though peers can fetch it. Label
@@ -467,42 +520,66 @@ function FilesTab({
         return (
           <div
             key={file.file_id}
-            className={`file-row${!file.available && !mine && !fetched ? ' unavailable' : ''}`}
+            ref={(el) => {
+              if (el) rowRefs.current.set(file.file_id, el);
+              else rowRefs.current.delete(file.file_id);
+            }}
+            className={`file-row${!file.available && !mine && !fetched ? ' unavailable' : ''}${
+              selected ? ' file-row-selected' : ''
+            }`}
             title={file.file_id}
           >
-            <div className="file-row-main">
+            {/* Selecting a row opens its inspector at `/rooms/:id/files/:fileId`;
+                the SenderName rename button stays outside this control so a
+                button never nests inside a button. */}
+            <button
+              type="button"
+              className="file-row-select"
+              aria-expanded={selected}
+              onClick={() => onSelectFile(selected ? null : file.file_id)}
+            >
               <span className="file-icon" style={{ background: `${tint}22`, color: tint }} aria-hidden="true">
                 {ext.slice(0, 4)}
               </span>
-              <div className="file-row-info">
-                <div className="file-title-row">
+              <span className="file-row-info">
+                <span className="file-title-row">
                   <strong>{file.name}</strong>
                   <span className="file-kind">{type}</span>
-                </div>
-                <span className="file-meta muted">
-                  {formatBytes(file.size)} · <SenderName id={file.sender_id} /> · {formatTime(file.ts)}
                 </span>
                 <span className={`file-health ${health.tone}`}>
                   <span className="dot" />
                   {health.text} · {providerText}
                 </span>
-              </div>
-              <div className="file-row-action">
+              </span>
+              <span className="file-row-caret" aria-hidden="true">
+                {selected ? '▾' : '▸'}
+              </span>
+            </button>
+            <div className="file-meta muted">
+              {formatBytes(file.size)} · <SenderName id={file.sender_id} /> · {formatTime(file.ts)}
+            </div>
+            {/* The contextual inspector: the selected file's fetch controls,
+                honest state, and detail — the accounting unchanged, just moved
+                behind selection so the list reads as a list. */}
+            {selected ? (
+              <div className="file-inspector">
                 {mine ? (
                   <span className="file-self-note" title="This daemon is already serving this file to peers.">
                     Serving
                   </span>
                 ) : (
-                  <FetchControl
-                    state={fetchState}
-                    availability={availability}
-                    onFetch={() => onFetch(file.file_id)}
-                    onRecheck={onRecheckFiles}
-                  />
+                  <>
+                    <FetchControl
+                      state={fetchState}
+                      availability={availability}
+                      onFetch={() => onFetch(file.file_id)}
+                      onRecheck={onRecheckFiles}
+                    />
+                    <FetchDetail state={fetchState} />
+                  </>
                 )}
               </div>
-            </div>
-            {mine ? null : <FetchDetail state={fetchState} />}
+            ) : null}
           </div>
         );
       })}
@@ -518,8 +595,8 @@ function PipesTab({
   selfId,
   conns,
   closing,
-  focusPipeId = null,
-  onFocusPipeHandled,
+  selectedPipeId = null,
+  onSelectPipe,
   onConnect,
   onClose,
   onExpose,
@@ -529,8 +606,13 @@ function PipesTab({
   selfId: string | null;
   conns: Record<string, PipeConnState>;
   closing: Set<string>;
-  focusPipeId?: string | null;
-  onFocusPipeHandled?(): void;
+  /** The pipe the route deep-links to, or null (#67) — route state, not held
+   *  here. It drives selection, and the flash/scroll that identifies the row a
+   *  timeline "Open in Pipes" referred to. */
+  selectedPipeId?: string | null;
+  /** Select a pipe row (navigates to `/rooms/:id/pipes/:pipeId`) or null to
+   *  deselect. */
+  onSelectPipe(pipeId: string | null): void;
   onConnect(pipeId: string): void;
   onClose(pipeId: string): void;
   onExpose(target: string, peerIdentity: string): Promise<void>;
@@ -542,28 +624,32 @@ function PipesTab({
   const [exposing, setExposing] = useState(false);
   const [exposeError, setExposeError] = useState<DaemonErrorShape | null>(null);
 
-  // "Open in Pipes" lands here with the pipe it came from: move focus to that
-  // row and mark it so the destination identifies the relevant item instead
-  // of appearing unchanged (the row may be far down a long list).
+  // The selected pipe (route state) is identified on arrival: focus its row and
+  // flash it so a deep link — "Open in Pipes" from the timeline, or a pasted
+  // URL — lands somewhere visible instead of appearing to change nothing (the
+  // row may be far down). `lastFlashed` fires the flash once per selection: if
+  // the id isn't in `pipes` yet the effect re-runs when they arrive; an id
+  // genuinely absent once the list is in is consumed so a dead deep link can't
+  // loop.
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const [flashPipeId, setFlashPipeId] = useState<string | null>(null);
+  const lastFlashed = useRef<string | null>(null);
   useEffect(() => {
-    if (!focusPipeId) return;
-    const row = rowRefs.current.get(focusPipeId);
+    if (selectedPipeId === null) {
+      lastFlashed.current = null;
+      return;
+    }
+    if (selectedPipeId === lastFlashed.current) return;
+    const row = rowRefs.current.get(selectedPipeId);
     if (row) {
       row.scrollIntoView({ block: 'nearest' });
       row.focus({ preventScroll: true });
-      setFlashPipeId(focusPipeId);
-      onFocusPipeHandled?.();
-    } else if (pipes.length > 0 && !pipes.some((p) => p.pipe_id === focusPipeId)) {
-      // The list is in and the pipe genuinely isn't there (closed/unknown):
-      // consume so a dead id can't re-fire forever.
-      onFocusPipeHandled?.();
+      setFlashPipeId(selectedPipeId);
+      lastFlashed.current = selectedPipeId;
+    } else if (pipes.length > 0 && !pipes.some((p) => p.pipe_id === selectedPipeId)) {
+      lastFlashed.current = selectedPipeId;
     }
-    // Otherwise pipe.list is still loading — keep the request pending; the
-    // effect re-runs when `pipes` arrives. Consuming here would silently
-    // drop the identification the user just asked for.
-  }, [focusPipeId, pipes, onFocusPipeHandled]);
+  }, [selectedPipeId, pipes]);
   useEffect(() => {
     if (flashPipeId === null) return;
     const timer = window.setTimeout(() => setFlashPipeId(null), 1600);
@@ -587,12 +673,54 @@ function PipesTab({
   };
 
   return (
-    <div className="panel-list">
+    <div className="panel-list pipes-panel">
+      {/* Action-first (#67): the expose form is anchored at the top, reachable
+          without scrolling past every existing pipe. The live pipes remain
+          below it — hoisting the action never hides the state. */}
+      <form
+        className="panel-form pipe-expose"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void expose();
+        }}
+      >
+        <h2>Expose a pipe</h2>
+        <p className="muted">Forward a local port to exactly one authorized peer.</p>
+        <div className="form-row">
+          <input
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            placeholder="127.0.0.1:3000"
+            aria-label="Local target (host:port)"
+            spellCheck={false}
+          />
+        </div>
+        <div className="form-row">
+          <select
+            value={peer || peerChoices[0]?.identity_id || ''}
+            onChange={(e) => setPeer(e.target.value)}
+            aria-label="Authorized peer"
+          >
+            {peerChoices.length === 0 ? <option value="">no other members</option> : null}
+            {peerChoices.map((m) => (
+              <option key={m.identity_id} value={m.identity_id}>
+                {names.display(m.identity_id)} ({m.role})
+              </option>
+            ))}
+          </select>
+          <button type="submit" className="btn" disabled={exposing || !target.trim() || peerChoices.length === 0}>
+            {exposing ? 'Exposing…' : 'Expose'}
+          </button>
+        </div>
+        <ErrorNote error={exposeError} />
+      </form>
+
       {pipes.length === 0 ? (
-        <div className="panel-empty muted">No pipes yet — expose a local port to one authorized peer below.</div>
+        <div className="panel-empty muted">No pipes yet — expose a local port to one authorized peer above.</div>
       ) : null}
       {pipes.map((pipe) => {
         const conn = conns[pipe.pipe_id];
+        const selected = selectedPipeId === pipe.pipe_id;
         return (
           <div
             key={pipe.pipe_id}
@@ -603,9 +731,17 @@ function PipesTab({
             tabIndex={-1}
             className={`pipe-row${pipe.state === 'closed' ? ' closed' : ''}${
               flashPipeId === pipe.pipe_id ? ' pipe-row-flash' : ''
-            }`}
+            }${selected ? ' pipe-row-selected' : ''}`}
           >
-            <div className="pipe-row-head">
+            {/* Selecting a pipe opens its inspector at `/rooms/:id/pipes/:pipeId`.
+                The SenderName rename buttons and the connect/close actions stay
+                outside this control so no button nests inside a button. */}
+            <button
+              type="button"
+              className="pipe-row-head"
+              aria-expanded={selected}
+              onClick={() => onSelectPipe(selected ? null : pipe.pipe_id)}
+            >
               <span className="pipe-icon" aria-hidden="true">
                 ⤳
               </span>
@@ -615,7 +751,7 @@ function PipesTab({
               <span className={`chip chip-state state-${pipe.state}`}>
                 {pipe.state === 'open' ? (pipe.connected ? 'Connected' : 'Open') : 'Closed'}
               </span>
-            </div>
+            </button>
             <div className="pipe-row-meta muted">
               by <SenderName id={pipe.opened_by} /> · authorized:{' '}
               {pipe.authorized_peer ? <SenderName id={pipe.authorized_peer} /> : '—'}
@@ -658,44 +794,6 @@ function PipesTab({
           </div>
         );
       })}
-
-      <form
-        className="panel-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void expose();
-        }}
-      >
-        <h2>Expose a pipe</h2>
-        <p className="muted">Forward a local port to exactly one authorized peer.</p>
-        <div className="form-row">
-          <input
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            placeholder="127.0.0.1:3000"
-            aria-label="Local target (host:port)"
-            spellCheck={false}
-          />
-        </div>
-        <div className="form-row">
-          <select
-            value={peer || peerChoices[0]?.identity_id || ''}
-            onChange={(e) => setPeer(e.target.value)}
-            aria-label="Authorized peer"
-          >
-            {peerChoices.length === 0 ? <option value="">no other members</option> : null}
-            {peerChoices.map((m) => (
-              <option key={m.identity_id} value={m.identity_id}>
-                {names.display(m.identity_id)} ({m.role})
-              </option>
-            ))}
-          </select>
-          <button type="submit" className="btn" disabled={exposing || !target.trim() || peerChoices.length === 0}>
-            {exposing ? 'Exposing…' : 'Expose'}
-          </button>
-        </div>
-        <ErrorNote error={exposeError} />
-      </form>
     </div>
   );
 }
@@ -715,8 +813,8 @@ export function RightPanel({
   pipes,
   selfId,
   fetches,
-  focusPipeId = null,
-  onFocusPipeHandled,
+  selectedItem = null,
+  onSelectItem,
   onFetch,
   onRecheckFiles,
   onSharePath,
@@ -746,8 +844,12 @@ export function RightPanel({
   pipes: PipeEntry[];
   selfId: string | null;
   fetches: Record<string, FetchState>;
-  focusPipeId?: string | null;
-  onFocusPipeHandled?(): void;
+  /** The file/pipe the route deep-links to, or null (#67). The active tool
+   *  reads it as its selected file (files) or pipe (pipes) id. */
+  selectedItem?: string | null;
+  /** Select a file/pipe within the active tool (or null to deselect); the
+   *  parent turns it into a route so the selection is a deep link. */
+  onSelectItem(itemId: string | null): void;
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
   onSharePath(path: string): Promise<void>;
@@ -798,6 +900,8 @@ export function RightPanel({
             files={files}
             selfId={selfId}
             fetches={fetches}
+            selectedFileId={selectedItem}
+            onSelectFile={onSelectItem}
             onFetch={onFetch}
             onRecheckFiles={onRecheckFiles}
             onSharePath={onSharePath}
@@ -811,8 +915,8 @@ export function RightPanel({
             selfId={selfId}
             conns={pipeConns}
             closing={closingPipes}
-            focusPipeId={focusPipeId}
-            onFocusPipeHandled={onFocusPipeHandled}
+            selectedPipeId={selectedItem}
+            onSelectPipe={onSelectItem}
             onConnect={onPipeConnect}
             onClose={onPipeClose}
             onExpose={onPipeExpose}

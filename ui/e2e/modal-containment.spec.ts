@@ -211,7 +211,7 @@ test('leave: a pending leave is contained, then applies once', async ({ app, pag
   await expect(app.roomItem(MOCK_ROOMS.review)).toContainText('Left');
   await expect(app.sidebar).toBeVisible();
   if (!app.compact) {
-    await expect(page.getByText('Select a room')).toBeVisible();
+    await expect(page.getByText('Choose a room.')).toBeVisible();
   }
 });
 

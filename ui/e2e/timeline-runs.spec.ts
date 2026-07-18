@@ -74,8 +74,7 @@ test('pending messages are never filtered out', async ({ app }) => {
   // resolves away, so we can prove a filter never touches it.
   await app.gotoPopulated({ mock_fail: 'message.send:1' });
 
-  await app.composerTextarea.fill('ping that must survive filtering');
-  await app.composerTextarea.press('Enter');
+  await app.sendMessage('ping that must survive filtering');
   const pending = app.timeline.getByText('ping that must survive filtering');
   await expect(pending).toBeVisible();
   await expect(app.timeline.getByRole('button', { name: 'Retry' })).toBeVisible();
