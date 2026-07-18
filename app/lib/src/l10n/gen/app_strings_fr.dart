@@ -83,6 +83,13 @@ class AppStringsFr extends AppStrings {
   String get composerSharingFile => 'Partage du fichier…';
 
   @override
+  String get composerShareEmptyFileTitle => 'Rien à partager';
+
+  @override
+  String get composerShareEmptyFile =>
+      'Ce fichier est vide (0 octet) — il n’y a rien à partager.';
+
+  @override
   String get errPeerUnreachableTitle => 'Impossible de joindre l’invitant';
 
   @override
@@ -1257,6 +1264,10 @@ class AppStringsFr extends AppStrings {
   String get settingsLocaleSystemDefault => 'Par défaut du système';
 
   @override
+  String get settingsPrefsSessionOnly =>
+      'Enregistré pour cette session seulement — impossible de l’écrire sur le disque.';
+
+  @override
   String get settingsIdentityLabel => 'Identité P2P';
 
   @override
@@ -1366,6 +1377,10 @@ class AppStringsFr extends AppStrings {
 
   @override
   String get settingsReportIssue => 'Signaler un problème';
+
+  @override
+  String get settingsReportIssueLaunchFailed =>
+      'Impossible d’ouvrir votre navigateur. Les diagnostics sont dans votre presse-papiers — collez-les dans un nouveau ticket.';
 
   @override
   String get shellSelectRoom => 'Sélectionnez un salon';
@@ -1654,6 +1669,10 @@ class AppStringsFr extends AppStrings {
 
   @override
   String get commonCopied => 'Copié ✓';
+
+  @override
+  String get commonCopyFailed =>
+      'Impossible de copier — sélectionnez le texte et copiez-le manuellement.';
 
   @override
   String get commonRetry => 'Réessayer';

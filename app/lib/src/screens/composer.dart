@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 import 'package:jeliya_protocol/jeliya_protocol.dart'
     show ConnectionState, RequestError, errorShape;
 
+import '../l10n/error_display.dart';
 import '../l10n/strings_context.dart';
 import '../l10n/tokens.dart';
 import '../layout.dart';
@@ -139,10 +140,15 @@ class _ComposerState extends State<Composer> {
       _error = null;
     });
     try {
-      // Zero-byte files are filtered out, like the reference paste/drop path.
       final length = await file.length();
       if (length > 0) {
         await room.shareUserFile(file.path, name: file.name, mime: file.mimeType);
+      } else {
+        // A zero-byte file was silently dropped before; now it says so inline
+        // (there is nothing to send) and records the miss without leaking the
+        // file's name or path. Send stays independent — this never blocks it.
+        final err = session.recordLocalFailure('file.share', _emptyFileCode);
+        if (mounted) setState(() => _error = err);
       }
     } catch (e) {
       if (mounted) setState(() => _error = errorShape(e));
@@ -150,6 +156,11 @@ class _ComposerState extends State<Composer> {
       if (mounted) setState(() => _sharing = false);
     }
   }
+
+  /// Synthetic code marking the "empty file" share failure so [build] composes
+  /// its friendly copy from the catalog at render time (live-locale correct),
+  /// rather than storing a localized string in state.
+  static const String _emptyFileCode = 'file_empty';
 
   /// Enter sends; Shift+Enter falls through and inserts a newline. Repeat
   /// events from a HELD Enter are swallowed too — letting them through would
@@ -200,7 +211,15 @@ class _ComposerState extends State<Composer> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: JeliyaSpacing.x10),
-              child: ErrorNote(error: _error),
+              child: ErrorNote(
+                error: _error,
+                friendly: _error!.code == _emptyFileCode
+                    ? FriendlyError(
+                        title: s.composerShareEmptyFileTitle,
+                        message: s.composerShareEmptyFile,
+                      )
+                    : null,
+              ),
             ),
           Container(
             padding: const EdgeInsets.symmetric(

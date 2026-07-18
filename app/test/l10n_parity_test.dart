@@ -26,6 +26,8 @@ void main() {
     expect(en.composerShareAFile, "Share a file");
     expect(en.composerHint, "Enter to send · Shift+Enter for a new line · ⎘ to share a file");
     expect(en.composerSharingFile, "Sharing file…");
+    expect(en.composerShareEmptyFileTitle, "Nothing to share");
+    expect(en.composerShareEmptyFile, "This file is empty (0 bytes) — there's nothing to share.");
     expect(en.errPeerUnreachableTitle, "Couldn't reach the inviter");
     expect(en.errPeerUnreachableMessage, "The invite is readable, but this device could not reach the room admin in time.");
     expect(en.errPeerUnreachableAction, "Ask the inviter to keep the room open, then retry. A fresh combined invite can help if the address changed.");
@@ -304,6 +306,7 @@ void main() {
     expect(en.settingsLanguageLabel, "Language");
     expect(en.settingsFormattingLabel, "Dates & numbers");
     expect(en.settingsLocaleSystemDefault, "System default");
+    expect(en.settingsPrefsSessionOnly, "Saved for this session only — couldn't write it to disk.");
     expect(en.settingsIdentityLabel, "P2P Identity");
     expect(en.settingsDeviceLabel, "Device");
     expect(en.settingsCopyDeviceId, "Copy device ID");
@@ -337,6 +340,7 @@ void main() {
     expect(en.settingsCopyDiagnostics, "Copy diagnostics");
     expect(en.settingsCopiedDiagnostics, "Copied diagnostics");
     expect(en.settingsReportIssue, "Report issue");
+    expect(en.settingsReportIssueLaunchFailed, "Couldn't open your browser. The diagnostics are on your clipboard — paste them into a new issue.");
     expect(en.shellSelectRoom, "Select a room");
     expect(en.shellUntitledRoom, "Untitled room");
     expect(en.shellBannerDisconnected, "Disconnected from daemon.");
@@ -390,6 +394,7 @@ void main() {
     expect(en.timelineBytesUnknown, "?");
     expect(en.commonCopy, "Copy");
     expect(en.commonCopied, "Copied ✓");
+    expect(en.commonCopyFailed, "Couldn't copy — select the text and copy it manually.");
     expect(en.commonRetry, "Retry");
     expect(en.commonCopyIdentityId, "Copy identity ID");
     expect(en.commonServing, "Serving");

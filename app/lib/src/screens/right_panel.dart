@@ -461,6 +461,11 @@ class _DashedBorderPainter extends CustomPainter {
 
 void _launch(String url) => unawaited(launchUrl(Uri.parse(url)));
 
+/// Synthetic code marking an "empty file" share failure, so the ErrorNote
+/// composes its friendly copy from the catalog at render time (shared with the
+/// composer's own zero-byte guard).
+const String _kEmptyFileCode = 'file_empty';
+
 // -- Members tab -------------------------------------------------------------------------
 
 int _roleRank(String role) => switch (role) {
@@ -1032,9 +1037,17 @@ class _FilesTabState extends State<_FilesTab> {
     });
     try {
       if (selected != null) {
-        await room.shareUserFile(selected.path,
-            name: selected.name, mime: selected.mime);
-        if (mounted) setState(() => _selected = null);
+        if (selected.size == 0) {
+          // A zero-byte pick was silently dropped before; say so inline and
+          // record the miss without leaking the file's name or path.
+          final err =
+              widget.session.recordLocalFailure('file.share', _kEmptyFileCode);
+          if (mounted) setState(() => _shareError = err);
+        } else {
+          await room.shareUserFile(selected.path,
+              name: selected.name, mime: selected.mime);
+          if (mounted) setState(() => _selected = null);
+        }
       } else {
         await room.shareFilePath(path);
         _path.clear();
@@ -1320,7 +1333,15 @@ class _FilesTabState extends State<_FilesTab> {
           const SizedBox(height: JeliyaSpacing.x10),
           _AdvancedPath(
               controller: _path, touchTargets: widget.touchTargets),
-          ErrorNote(error: _shareError),
+          ErrorNote(
+            error: _shareError,
+            friendly: _shareError?.code == _kEmptyFileCode
+                ? FriendlyError(
+                    title: s.composerShareEmptyFileTitle,
+                    message: s.composerShareEmptyFile,
+                  )
+                : null,
+          ),
         ],
       ),
     );

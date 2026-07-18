@@ -32,6 +32,16 @@ class PrefsStore extends ChangeNotifier {
   final Set<String> _pinnedRooms = {};
   final Set<String> _archivedRooms = {};
 
+  bool _lastWriteOk = true;
+
+  /// Whether the MOST RECENT persistence attempt reached disk. True also for
+  /// the in-memory no-op path (`path == null`): nothing to persist is not a
+  /// failure. False only when a real disk write threw — the setter's in-memory
+  /// change still took effect this session, so the caller can honestly say the
+  /// change applies for this session but was not written. Read it right after
+  /// a setter to decide whether to surface a "session only" note.
+  bool get lastWriteOk => _lastWriteOk;
+
   /// UI language as a BCP-47 tag ('textLocale'); null follows the system
   /// language (MaterialApp resolves against supportedLocales).
   String? get textLocale => _textLocale;
@@ -233,9 +243,15 @@ class PrefsStore extends ChangeNotifier {
     };
   }
 
-  void _save() {
+  /// Persist to disk. Returns true when the write reached disk OR when there is
+  /// nothing to persist (in-memory mode, `path == null`); false when the write
+  /// threw. Either way the in-memory change made by the calling setter has
+  /// already taken effect — persistence failure never rolls it back. Sets
+  /// [lastWriteOk] on every call so a setter can be followed by an honest
+  /// "session only" check.
+  bool _save() {
     final p = path;
-    if (p == null) return;
+    if (p == null) return _lastWriteOk = true;
     try {
       final file = File(p);
       file.parent.createSync(recursive: true);
@@ -253,8 +269,12 @@ class PrefsStore extends ChangeNotifier {
         'archivedRooms': _archivedRooms.toList(),
       }));
       tmp.renameSync(p);
+      return _lastWriteOk = true;
     } catch (_) {
-      // Save failures are silently ignored (reference behavior).
+      // The write failed (unwritable dir, full disk, permissions). The setter's
+      // in-memory change stands for this session; record the miss so the UI can
+      // say so instead of implying a false persisted success.
+      return _lastWriteOk = false;
     }
   }
 }

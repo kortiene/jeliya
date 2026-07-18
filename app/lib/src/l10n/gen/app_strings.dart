@@ -213,6 +213,18 @@ abstract class AppStrings {
   /// **'Sharing file…'**
   String get composerSharingFile;
 
+  /// Title of the inline error note shown when the user picks a zero-byte (empty) file to share. Short headline; the detail line composerShareEmptyFile follows it.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing to share'**
+  String get composerShareEmptyFileTitle;
+
+  /// Detail line of the empty-file share note, under the composerShareEmptyFileTitle headline. Explains the picked file has zero bytes so there is nothing to send. '0 bytes' states the exact size; keep the byte unit. Contains a spaced em dash (—); keep the trailing period.
+  ///
+  /// In en, this message translates to:
+  /// **'This file is empty (0 bytes) — there\'s nothing to share.'**
+  String get composerShareEmptyFile;
+
   /// Error card headline: joining via an invite failed because the inviter (the room admin) could not be reached over the network in time. Short, plain-language, no blame.
   ///
   /// In en, this message translates to:
@@ -2102,6 +2114,12 @@ abstract class AppStrings {
   /// **'System default'**
   String get settingsLocaleSystemDefault;
 
+  /// Inline note under the Settings language/formatting pickers shown when the preference change applied for this run but could not be persisted to disk. Says honestly that the change holds only for this session rather than implying a false saved success. Contains a spaced em dash (—); keep the trailing period.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved for this session only — couldn\'t write it to disk.'**
+  String get settingsPrefsSessionOnly;
+
   /// Row label in the Settings identity card for the user's peer-to-peer identity ID. Keep the abbreviation 'P2P' (peer-to-peer) as-is.
   ///
   /// In en, this message translates to:
@@ -2305,6 +2323,12 @@ abstract class AppStrings {
   /// In en, this message translates to:
   /// **'Report issue'**
   String get settingsReportIssue;
+
+  /// Inline note in the Settings support card shown when 'Report issue' copied the diagnostics but could not open the browser to the new-issue page. Reassures the user the diagnostics are already on the clipboard and tells them to paste into a new issue manually. Contains a spaced em dash (—); keep the trailing period.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t open your browser. The diagnostics are on your clipboard — paste them into a new issue.'**
+  String get settingsReportIssueLaunchFailed;
 
   /// Empty-state headline shown wherever room-scoped content has no room yet: the desktop shell's center column, and the mobile Pipes/Files tabs and room screens. Imperative prompt inviting the user to pick a room (from the sidebar or the Rooms tab).
   ///
@@ -2760,6 +2784,12 @@ abstract class AppStrings {
   /// In en, this message translates to:
   /// **'Copied ✓'**
   String get commonCopied;
+
+  /// Shown instead of the false 'Copied ✓' when a clipboard write fails (no clipboard owner, denied portal, headless session): as the CopyButton's swapped label and as an inline note beside the Settings copy-diagnostics button. Actionable — tells the user to select and copy the text by hand. Contains a spaced em dash (—); keep the trailing period.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t copy — select the text and copy it manually.'**
+  String get commonCopyFailed;
 
   /// Generic retry button label (boot failure, failed sends, failed fetches).
   ///

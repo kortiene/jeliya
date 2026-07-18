@@ -983,6 +983,29 @@ class DaemonSession extends ChangeNotifier {
     return err;
   }
 
+  /// Record a LOCAL (client-side) action failure — a clipboard write, a
+  /// url_launcher launch, a prefs write, an empty-file share — for the
+  /// diagnostics report WITHOUT ever letting raw platform text (file paths,
+  /// invite tickets, message bodies, full identities) reach the
+  /// [DiagnosticEvent]. Unlike [recordError], which shapes and stores the raw
+  /// exception's message, this takes a SYNTHETIC [context] + [code] and keeps
+  /// the stored message empty. Returns a [RequestError] the caller can render;
+  /// its user-facing copy is composed at the call site from the catalog, never
+  /// from the daemon's English text. Callers pass a fixed friendly [hint] only
+  /// when it is catalog copy, never raw platform text.
+  RequestError recordLocalFailure(String context, String code, {String? hint}) {
+    _lastDiagnosticError = DiagnosticEvent(
+      context: context,
+      code: code,
+      message: '', // synthetic — raw platform text must never land here
+      hint: hint,
+      // UTC with the trailing 'Z', matching recordError's convention.
+      at: DateTime.now().toUtc().toIso8601String(),
+    );
+    if (!_disposed) notifyListeners();
+    return RequestError(code, '', hint: hint);
+  }
+
   /// The privacy-safe markdown report (package `buildDiagnostics` with the
   /// app-side runtime fields filled in).
   String buildDiagnosticsReport() {

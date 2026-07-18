@@ -44,6 +44,9 @@ class _SettingsPanelState extends State<SettingsPanel> {
   static const double _maxWidth = 640;
 
   bool _copied = false;
+  bool _copyFailed = false;
+  bool _reportLaunchFailed = false;
+  bool _prefsSessionOnly = false;
   Timer? _copiedTimer;
 
   @override
@@ -53,30 +56,66 @@ class _SettingsPanelState extends State<SettingsPanel> {
   }
 
   /// Copy the redacted markdown report; the primary button label swaps to
-  /// 'Copied diagnostics' for 1600ms (in-place swap — no toasts exist).
-  Future<void> _copyDiagnostics(DaemonSession session) async {
-    await Clipboard.setData(
-        ClipboardData(text: session.buildDiagnosticsReport()));
-    if (!mounted) return;
-    setState(() => _copied = true);
+  /// 'Copied diagnostics' for 1600ms (in-place swap — no toasts exist). A
+  /// failed clipboard write must NOT read as success: it clears the copied
+  /// flag, raises an inline "copy it manually" note, and records the miss.
+  /// Returns whether the copy reached the clipboard, so [_reportIssue] can
+  /// tailor its own note.
+  Future<bool> _copyDiagnostics(DaemonSession session) async {
+    try {
+      await Clipboard.setData(
+          ClipboardData(text: session.buildDiagnosticsReport()));
+    } catch (_) {
+      if (!mounted) return false;
+      session.recordLocalFailure('clipboard.copy', 'clipboard_write_failed');
+      setState(() {
+        _copied = false;
+        _copyFailed = true;
+      });
+      return false;
+    }
+    if (!mounted) return true;
+    setState(() {
+      _copied = true;
+      _copyFailed = false;
+    });
     _copiedTimer?.cancel();
     _copiedTimer = Timer(const Duration(milliseconds: 1600), () {
       if (mounted) setState(() => _copied = false);
     });
+    return true;
   }
 
   /// Copies diagnostics AND opens the GitHub issue form (App.tsx
-  /// `reportIssue`).
+  /// `reportIssue`). A failed browser launch is no longer swallowed: it raises
+  /// an inline note telling the user the diagnostics are already on their
+  /// clipboard to paste into a new issue, and records the miss.
   Future<void> _reportIssue(DaemonSession session) async {
-    await _copyDiagnostics(session);
+    final copied = await _copyDiagnostics(session);
+    if (mounted) setState(() => _reportLaunchFailed = false);
     try {
       await launchUrl(
         Uri.parse(Tokens.issueUrl),
         mode: LaunchMode.externalApplication,
       );
     } catch (_) {
-      // Browser launch failed — the diagnostics are already on the clipboard.
+      if (!mounted) return;
+      session.recordLocalFailure('issue.launch', 'url_launch_failed');
+      // Only claim "on your clipboard" when the copy actually landed there;
+      // otherwise the copy-failed note already tells the honest story.
+      setState(() => _reportLaunchFailed = copied);
     }
+  }
+
+  /// Apply a locale pref, then tell the truth about persistence: the change
+  /// takes effect this session regardless, but if the disk write failed we show
+  /// a "session only" note and record the miss instead of implying it was
+  /// saved. Called for both the UI-language and the formatting dropdowns.
+  void _applyLocalePref(DaemonSession session, void Function() apply) {
+    apply();
+    final ok = session.prefs.lastWriteOk;
+    if (!ok) session.recordLocalFailure('prefs.write', 'prefs_write_failed');
+    setState(() => _prefsSessionOnly = !ok);
   }
 
   @override
@@ -262,7 +301,8 @@ class _SettingsPanelState extends State<SettingsPanel> {
                         for (final locale in AppStrings.supportedLocales)
                           locale.toLanguageTag(),
                       ],
-                      onChanged: (tag) => session.prefs.textLocale = tag,
+                      onChanged: (tag) => _applyLocalePref(
+                          session, () => session.prefs.textLocale = tag),
                     ),
                     const SizedBox(height: JeliyaSpacing.x8),
                     _CardLabel(s.settingsFormattingLabel),
@@ -271,15 +311,23 @@ class _SettingsPanelState extends State<SettingsPanel> {
                     _LocaleDropdown(
                       value: session.prefs.formattingLocale,
                       options: const ['en', 'fr'],
-                      onChanged: (tag) =>
-                          session.prefs.formattingLocale = tag,
+                      onChanged: (tag) => _applyLocalePref(
+                          session, () => session.prefs.formattingLocale = tag),
                     ),
+                    // The change applies this session even when the write to
+                    // disk failed — say so rather than imply a saved success.
+                    if (_prefsSessionOnly) ...[
+                      const SizedBox(height: JeliyaSpacing.x6),
+                      _InlineActionNote(s.settingsPrefsSessionOnly),
+                    ],
                   ],
                 ),
                 const SizedBox(height: JeliyaSpacing.x12),
                 _DiagnosticsCard(
                   lastError: session.lastDiagnosticError,
                   copied: _copied,
+                  copyFailed: _copyFailed,
+                  reportLaunchFailed: _reportLaunchFailed,
                   onCopy: () => _copyDiagnostics(session),
                   onReportIssue: () => _reportIssue(session),
                 ),
@@ -304,12 +352,16 @@ class _DiagnosticsCard extends StatelessWidget {
   const _DiagnosticsCard({
     required this.lastError,
     required this.copied,
+    required this.copyFailed,
+    required this.reportLaunchFailed,
     required this.onCopy,
     required this.onReportIssue,
   });
 
   final DiagnosticEvent? lastError;
   final bool copied;
+  final bool copyFailed;
+  final bool reportLaunchFailed;
   final VoidCallback onCopy;
   final VoidCallback onReportIssue;
 
@@ -413,7 +465,37 @@ class _DiagnosticsCard extends StatelessWidget {
             ),
           ],
         ),
+        if (copyFailed) ...[
+          const SizedBox(height: JeliyaSpacing.x8),
+          _InlineActionNote(s.commonCopyFailed),
+        ],
+        if (reportLaunchFailed) ...[
+          const SizedBox(height: JeliyaSpacing.x8),
+          _InlineActionNote(s.settingsReportIssueLaunchFailed),
+        ],
       ],
+    );
+  }
+}
+
+/// A quiet inline action note — the only inline feedback the app has besides
+/// the [ErrorNote] card and the CopyButton label swap (no toasts exist). Amber
+/// ink marks it as an advisory the reader should act on; a live region so it is
+/// announced when it appears.
+class _InlineActionNote extends StatelessWidget {
+  const _InlineActionNote(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    return Semantics(
+      liveRegion: true,
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 12.5, height: 1.4, color: tokens.amber),
+      ),
     );
   }
 }

@@ -82,6 +82,13 @@ class AppStringsEn extends AppStrings {
   String get composerSharingFile => 'Sharing file…';
 
   @override
+  String get composerShareEmptyFileTitle => 'Nothing to share';
+
+  @override
+  String get composerShareEmptyFile =>
+      'This file is empty (0 bytes) — there\'s nothing to share.';
+
+  @override
   String get errPeerUnreachableTitle => 'Couldn\'t reach the inviter';
 
   @override
@@ -1233,6 +1240,10 @@ class AppStringsEn extends AppStrings {
   String get settingsLocaleSystemDefault => 'System default';
 
   @override
+  String get settingsPrefsSessionOnly =>
+      'Saved for this session only — couldn\'t write it to disk.';
+
+  @override
   String get settingsIdentityLabel => 'P2P Identity';
 
   @override
@@ -1339,6 +1350,10 @@ class AppStringsEn extends AppStrings {
 
   @override
   String get settingsReportIssue => 'Report issue';
+
+  @override
+  String get settingsReportIssueLaunchFailed =>
+      'Couldn\'t open your browser. The diagnostics are on your clipboard — paste them into a new issue.';
 
   @override
   String get shellSelectRoom => 'Select a room';
@@ -1625,6 +1640,10 @@ class AppStringsEn extends AppStrings {
 
   @override
   String get commonCopied => 'Copied ✓';
+
+  @override
+  String get commonCopyFailed =>
+      'Couldn\'t copy — select the text and copy it manually.';
 
   @override
   String get commonRetry => 'Retry';
