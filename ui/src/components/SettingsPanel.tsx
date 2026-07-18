@@ -24,8 +24,14 @@ export function SettingsPanel({
   onCreateRoom(): void;
 }) {
   return (
-    <section className="mobile-settings" aria-label="Settings">
-      <h2 className="mobile-settings-title">Settings</h2>
+    // Settings is a full-page destination, so it owns the page's `main`
+    // landmark and its `h1` (issue #72). It is mounted on every route and
+    // hidden by CSS elsewhere, which keeps it out of the accessibility tree —
+    // so a second `main` is never exposed even though two are in the DOM.
+    <main className="mobile-settings" id="settings-main" aria-labelledby="settings-title">
+      <h1 className="mobile-settings-title" id="settings-title">
+        Settings
+      </h1>
       <div className="settings-card">
         <SelfLabelField value={selfLabel} onChange={onSetSelfLabel} />
       </div>
@@ -51,7 +57,7 @@ export function SettingsPanel({
       <div className="settings-card diagnostics-card">
         <div>
           <span className="settings-label">Support</span>
-          <h3 className="diagnostics-title">Diagnostics</h3>
+          <h2 className="diagnostics-title">Diagnostics</h2>
         </div>
         <p className="diagnostics-copy">
           Copy a privacy-safe snapshot for bug reports: daemon version, connection state, room counts, peer state,
@@ -85,6 +91,6 @@ export function SettingsPanel({
       <button type="button" className="btn btn-primary" onClick={onCreateRoom}>
         Create a room
       </button>
-    </section>
+    </main>
   );
 }

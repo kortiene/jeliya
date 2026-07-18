@@ -66,6 +66,7 @@ export function Sidebar({
   onTogglePin,
   onToggleArchive,
   lastSeen,
+  isPage,
 }: {
   rooms: RoomSummary[];
   currentRoomId: string | null;
@@ -84,6 +85,11 @@ export function Sidebar({
   onTogglePin(roomId: string): void;
   onToggleArchive(roomId: string): void;
   lastSeen: LastSeen;
+  /** True when the rail IS the destination rather than a column beside it —
+   *  the compact `/rooms` screen. It then carries the page's `main` landmark
+   *  and its `h1`; otherwise it stays `complementary` under a named region
+   *  (issue #72, `lib/landmarks.ts`). */
+  isPage: boolean;
 }) {
   const names = useNames();
   // Collapsed/expanded state for the two disclosure sections. Local and
@@ -133,7 +139,10 @@ export function Sidebar({
           className="room-select"
           onClick={() => onSelectRoom(room.room_id)}
           disabled={departed}
-          aria-current={active ? 'true' : undefined}
+          // `page`, not the generic `true`: a room row inside `<nav>` is a
+          // page navigation, matching the rail's own nav items and the compact
+          // tab bar.
+          aria-current={active ? 'page' : undefined}
           title={departed ? `You ${room.status === 'left' ? 'left' : 'were removed from'} this room` : undefined}
         >
           <span className="room-hex" style={{ color: tint, background: `${tint}1f` }} aria-hidden="true">
@@ -202,8 +211,24 @@ export function Sidebar({
     );
   };
 
+  // The rail is the whole screen on compact `/rooms` and a column beside the
+  // workspace everywhere else. Same markup, two landmark roles: `main` when it
+  // is the page, otherwise a NAMED `complementary` — it used to be an unnamed
+  // `<aside>` sharing the page with the inspector's unnamed `<aside>`, which is
+  // both an axe `landmark-unique` failure and useless to landmark navigation.
+  // A plain `div` carrying an explicit role, not an `<aside>`: overriding a
+  // landmark element's implicit role is an `aria-allowed-role` violation, and
+  // switching the ELEMENT between shells would remount the rail and lose the
+  // list scroll position that DESIGN.md requires to survive a shell change.
+  // One element, one role attribute that follows the route.
+  const RailHeading = isPage ? 'h1' : 'h2';
   return (
-    <aside className="sidebar">
+    <div
+      className="sidebar"
+      id="rooms-rail"
+      role={isPage ? 'main' : 'complementary'}
+      aria-label={isPage ? undefined : 'Room rail'}
+    >
       <div className="brand">
         <TreeMark size={30} />
         <Wordmark className="brand-name" />
@@ -250,7 +275,7 @@ export function Sidebar({
       </nav>
 
       <div className="rooms-head">
-        <span className="rooms-title">Your Rooms</span>
+        <RailHeading className="rooms-title">Your Rooms</RailHeading>
         <button type="button" className="icon-btn" onClick={onCreateRoom} aria-label="Create room" title="Create room">
           +
         </button>
@@ -350,7 +375,10 @@ export function Sidebar({
         <span aria-hidden="true">⇥</span> Join with a ticket
       </button>
 
-      <footer className="identity-footer">
+      {/* Not a `<footer>` element: outside sectioning content it would map to
+          the page's `contentinfo` landmark, which this identity strip is not —
+          it belongs to the rail, and on compact it would sit inside `main`. */}
+      <div className="identity-footer">
         <span className="identity-hex" aria-hidden="true">
           <TreeMark size={22} />
         </span>
@@ -365,7 +393,7 @@ export function Sidebar({
         <span className={`conn-badge conn-${conn}`} title={CONN_LABEL[conn]}>
           <span className="dot" /> {CONN_LABEL[conn]}
         </span>
-      </footer>
-    </aside>
+      </div>
+    </div>
   );
 }

@@ -17,7 +17,7 @@ test('shows the agent fleet with honest liveness', async ({ app, page }) => {
   // once Back to Rooms has left the room.
   await expect(page).toHaveURL(/\/fleet$/);
 
-  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
+  const fleet = page.getByRole('main', { name: 'Agent Fleet' });
   await expect(fleet).toBeVisible();
   await expect(fleet.getByRole('heading', { level: 1, name: 'Agent Fleet' })).toBeVisible();
 
@@ -47,7 +47,7 @@ test('searching filters the fleet list', async ({ app, page }) => {
   await app.gotoPopulated();
   await app.navigate('Agent Fleet');
 
-  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
+  const fleet = page.getByRole('main', { name: 'Agent Fleet' });
   await fleet.getByLabel('Search agents').fill('Research');
   await expect(fleet.getByText('Research Agent').first()).toBeVisible();
   await expect(fleet.getByText('Backend Agent')).toHaveCount(0);
@@ -57,7 +57,7 @@ test('needs attention surfaces the widened closed set before the aggregate tiles
   await app.gotoPopulated();
   await app.navigate('Agent Fleet');
 
-  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
+  const fleet = page.getByRole('main', { name: 'Agent Fleet' });
   const attention = fleet.locator('.fleet-attention');
   await expect(attention).toBeVisible();
 
@@ -82,7 +82,7 @@ test('metric reads "Agents working now" and a stale status is qualified', async 
   await app.gotoPopulated();
   await app.navigate('Agent Fleet');
 
-  const fleet = page.getByRole('region', { name: 'Agent Fleet' });
+  const fleet = page.getByRole('main', { name: 'Agent Fleet' });
 
   // "Running tasks" was an inferred count the daemon cannot prove; it is gone on
   // every shell. The KPI tiles are a desktop affordance (the phone layout drops

@@ -1,5 +1,5 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { ROOM_DESTS } from '../lib/routes';
+import { ROOM_DESTS, ROOM_DEST_LABELS } from '../lib/routes';
 import type { RoomDest } from '../lib/routes';
 
 function tabCountLabel(count: number): string {
@@ -26,19 +26,21 @@ export function RoomNav({
   dest,
   counts,
   onDest,
+  controlsId,
 }: {
   dest: RoomDest;
   counts: Partial<Record<RoomDest, number>>;
   onDest(dest: RoomDest): void;
+  /** The id of the tabpanel these tabs control, or undefined when no panel is
+   *  rendered — which is exactly the Activity destination, where the room's
+   *  workspace IS the content and the inspector is closed.
+   *
+   *  This has to be conditional: `aria-controls` pointed unconditionally at
+   *  `panel-body`, so on Activity it named an element that does not exist. That
+   *  is an `aria-valid-attr-value` failure (critical), and a dangling idref is
+   *  worse for assistive tech than an absent optional attribute (issue #72). */
+  controlsId?: string;
 }) {
-  const labels: Record<RoomDest, string> = {
-    activity: 'Activity',
-    people: 'People',
-    agents: 'Agents & Runs',
-    files: 'Files',
-    pipes: 'Pipes',
-  };
-
   // Full ARIA tabs keyboard pattern: arrows move between tabs (one tab stop via
   // roving tabindex), Home/End jump to the ends. Without this the tab roles
   // would announce a pattern that does not actually work.
@@ -66,12 +68,12 @@ export function RoomNav({
             role="tab"
             id={`room-tab-${d}`}
             aria-selected={dest === d}
-            aria-controls="panel-body"
+            aria-controls={controlsId}
             tabIndex={dest === d ? 0 : -1}
             className={dest === d ? 'active' : ''}
             onClick={() => onDest(d)}
           >
-            <span className="panel-tab-label">{labels[d]}</span>
+            <span className="panel-tab-label">{ROOM_DEST_LABELS[d]}</span>
             {count !== undefined && count > 0 ? <span className="count">{tabCountLabel(count)}</span> : null}
           </button>
         );

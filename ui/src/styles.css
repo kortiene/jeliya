@@ -170,6 +170,21 @@ select {
   box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
 }
 
+/* The drawer shares the workspace's grid cell, so without this the workspace
+   runs UNDERNEATH it: a Tab into the timeline could put the focus ring on a
+   control hidden behind the drawer (issue #72 — "visible focus is never
+   obscured by ... drawers"). Reserving the drawer's width keeps the workspace
+   fully interactive — which medium deliberately preserves, unlike compact —
+   while guaranteeing nothing focusable is ever beneath it.
+
+   Not `inert`: the workspace beside a medium drawer is genuinely usable, and
+   docs/room-workbench.md keeps it that way (a timeline action taken while a
+   tool is open is a tested flow). Reserving space is what makes both true at
+   once. Wide overrides this below, where the inspector has its own column. */
+.app.inspector-open > .center {
+  padding-right: min(360px, 100%);
+}
+
 /* Wide: it stops being a drawer and takes a column of its own. */
 @media (min-width: 1280px) {
   .app.inspector-open {
@@ -182,6 +197,12 @@ select {
     width: auto;
     box-shadow: none;
     border-left: 1px solid var(--border);
+  }
+
+  /* The inspector has a column of its own here, so the workspace owes it no
+     reservation — it never overlapped in the first place. */
+  .app.inspector-open > .center {
+    padding-right: 0;
   }
 }
 
@@ -438,6 +459,123 @@ select {
   }
 
   .app .panel-tabs button {
+    min-height: 44px;
+  }
+
+  /* The floor is a floor, not a list of the controls someone remembered
+     (issue #72). `.btn`/`.icon-btn`/`.panel-tabs` above covered the obvious
+     ones and missed every chip, text button and row action — including the
+     exact controls the accessibility contract names: sender rename, Retry,
+     fetch, filters, chips and new-activity. Each of these sets `min-height`
+     rather than `height` so a control still grows with the OS font scale. */
+  .app .filter-chip,
+  .app .fleet-filter,
+  .app .room-chip,
+  .app .room-section-toggle,
+  .app .create-room,
+  .app .new-messages,
+  .app summary {
+    min-height: 44px;
+  }
+
+  /* THE DOCUMENTED SPACING EXCEPTION (the accessibility contract allows one).
+
+     Three controls sit INSIDE a line of prose — a sender name in a message meta
+     row, "Retry" after a failure line, "Clear" after an empty-search sentence.
+     A 44px line box would roughly triple the height of an 18px timeline row and
+     spend the compact budget that reserves >=180px of timeline at 320x568.
+
+     An overhanging hit area does NOT solve this, and the attempt is instructive:
+     an absolutely-positioned 44px pseudo-element on a 14px inline control
+     overlaps the 18px rows above and below, which paint over it — the real
+     measured target came out 23x32, and worse, the overhang reached into the
+     NEIGHBOURING row's control. Faking the number would have shipped a target
+     that opens the wrong person's rename dialog.
+
+     So these three take the WCAG 2.5.8 spacing exception instead: each grows to
+     clear the 24x24 minimum, and the e2e suite asserts BOTH that floor and that
+     no two of them sit closer than 24px apart. Every other compact control
+     takes the full 44px floor above. */
+  .app .sender-name,
+  .app .text-btn,
+  .app .link-btn {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    min-width: 24px;
+    padding-inline: 2px;
+  }
+
+  /* On compact the rail IS the page, and it was squeezing its own content out
+     of existence: the brand, profile card, search, filters, two create/join
+     buttons and the identity strip are all fixed-height, so at 320x568 the
+     room list — the entire point of the destination — got 13px of flex space
+     and could show no complete row. Raising the touch targets makes that worse,
+     not better.
+
+     Let the whole rail scroll as one column instead of nesting a scroller
+     inside a crushed flex child. One scroll region, every row reachable, and
+     the layout now degrades by scrolling rather than by clipping — the same
+     rule large-text reflow needs. Desktop keeps the inner scroller, where the
+     rail is a full-height column beside the workspace and this cannot happen. */
+  .app .sidebar {
+    overflow-y: auto;
+  }
+
+  /* The bottom tab bar is `position: fixed` over these panes. Each already
+     reserves its height as padding so content can scroll clear of it — but
+     scrolling an element INTO VIEW stops as soon as it is inside the scrollport,
+     which includes the strip the bar covers. Without this, tabbing to a control
+     near the bottom of the rail or the fleet lands it underneath the bar:
+     focused, and invisible. `scroll-padding` is what makes "in view" mean "in
+     the part the user can actually see". */
+  .app .sidebar,
+  .app.pane-fleet .fleet-view,
+  .app.pane-settings .mobile-settings {
+    scroll-padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 8px);
+  }
+
+  .app .rooms-list {
+    /* Sizes to its content (`flex: none` => basis auto) so it neither gets
+       crushed nor overflows onto the buttons beneath it — the rail's own
+       scroller handles the overall length. */
+    flex: none;
+    overflow-y: visible;
+  }
+
+  /* Row actions reveal on hover — which touch does not have, so pin and archive
+     were unreachable on the one layout where the rail IS the screen. */
+  .app .room-row-actions {
+    opacity: 1;
+  }
+
+  .app .room-row-action {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* The activity filters are a deliberately single, non-wrapping, horizontally
+     scrolling row: the compact room budget reserves >=180px of timeline at
+     320x568 (see `.room-appbar`), and a wrapping filter strip spends it.
+
+     A centred `::after` hit area does NOT work here, unlike the inline text
+     controls above. `overflow-x: auto` makes the strip a scroll container on
+     BOTH axes (per CSS Overflow 3, a non-`visible` value on one axis computes
+     `visible` to `auto` on the other), so an overhanging pseudo-element is
+     clipped to the strip and the real target stays short of 44px. The strip
+     itself has to be tall enough, so it reserves the floor and centres the
+     chips inside it — about 2px more than the padding gave, which the compact
+     timeline budget absorbs (verified by the 320x568 budget test). */
+     The chip itself has to carry the floor — a tall strip around a short chip
+     just centres a small target in a big box. Compact trades the strip's
+     vertical padding for the chip's height, so the strip grows from 42px to
+     44px rather than to 58px, and the timeline budget absorbs the 2px. */
+  .app .activity-filter {
+    padding-block: 0;
+    align-items: center;
+  }
+
+  .app .activity-chip {
     min-height: 44px;
   }
 
@@ -1311,6 +1449,47 @@ button.sender-name:not(:disabled):hover {
   border: 0;
 }
 
+/* ---------- skip links (issue #72) ----------
+   The first tab stops on every page: hidden until focused, then a real, fully
+   visible control above everything else. They are the only way to reach the
+   workspace without tabbing the whole room rail, and the composer without
+   tabbing the whole timeline. */
+
+.skip-links {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: var(--z-modal);
+}
+
+.skip-link {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.skip-link:focus-visible {
+  position: static;
+  display: inline-block;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+  margin: 8px;
+  padding: 10px 14px;
+  min-height: 44px;
+  border-radius: 9px;
+  background: var(--bg-raise);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
 .create-room {
   display: flex;
   align-items: center;
@@ -1435,6 +1614,16 @@ button.sender-name:not(:disabled):hover {
 .panel-empty {
   padding: 40px 20px;
   text-align: center;
+}
+
+/* `/rooms` is the app's most-reached destination and the recovery target for
+   every unknown URL, so it names itself (issue #72). Headline scale — this is
+   a page title, not a card title. */
+.center-empty-title {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-bottom: 6px;
 }
 
 .room-header {
@@ -3163,11 +3352,41 @@ textarea:focus-visible,
 select:focus-visible,
 button:focus-visible,
 a:focus-visible,
+summary:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-color: var(--accent);
 }
+
+/* The ring is drawn 4px outside the border box (2px wide, 2px offset), so a
+   scroll container that brings a focused control flush to its edge clips it.
+   Every scroller in the app reserves that much and a little more, which is what
+   keeps focus VISIBLE — not merely present — after an arrow-key scroll or a
+   deep link's `scrollIntoView` (issue #72). */
+:focus-visible {
+  scroll-margin: 8px;
+}
+
+.timeline,
+.panel-body,
+.rooms-list,
+.fleet-body,
+.mobile-settings,
+.modal {
+  scroll-padding: 8px;
+}
+
+/* The jump-to-latest pill is absolutely positioned over the timeline's last
+   rows — the one place in the app where a control can be covered by chrome
+   (the connection banner reserves a grid row precisely so it cannot). Rather
+   than restructure the timeline, reserve the pill's height when scrolling
+   focus into view, so a focused Retry or "Open in Files" in the final row is
+   never left underneath it. */
+.timeline :focus-visible {
+  scroll-margin-bottom: 56px;
+}
+
 
 input::placeholder,
 textarea::placeholder {

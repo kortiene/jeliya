@@ -137,6 +137,9 @@ export function Composer({
       >
         <textarea
           ref={textareaRef}
+          // The "skip to message composer" link's target (App.tsx). Reaching
+          // the composer otherwise means tabbing the entire timeline.
+          id="composer-input"
           value={draft}
           onChange={(e) => updateDraft(e.target.value)}
           onPaste={(e) => {

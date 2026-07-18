@@ -80,10 +80,13 @@ test('timeline Open in Pipes opens Pipes and identifies the pipe', async ({
   if (compact) await expect(app.center).toBeHidden();
 
   // The referenced pipe row is identified: transiently marked, and durably
-  // focused + on screen (focus outlives the 1.6s visual marker).
+  // focused + on screen (focus outlives the 1.6s visual marker). Focus lands on
+  // the row's own button, not the row box — a programmatically focused
+  // `tabindex="-1"` div never matches `:focus-visible`, so the keyboard user
+  // who arrived here got no ring at all (issue #72).
   await expect(app.rightPanel.locator('.pipe-row-flash')).toContainText('127.0.0.1:4000');
   const row = app.rightPanel.locator('.pipe-row', { hasText: '127.0.0.1:4000' });
-  await expect(row).toBeFocused();
+  await expect(row.locator('.pipe-row-head')).toBeFocused();
   await expect(row).toBeInViewport();
 });
 
@@ -98,7 +101,7 @@ test('Open in Pipes identifies the pipe even while pipe.list is still loading', 
 
   await expect(app.roomTab('Pipes')).toHaveAttribute('aria-selected', 'true');
   const row = app.rightPanel.locator('.pipe-row', { hasText: '127.0.0.1:4000' });
-  await expect(row).toBeFocused({ timeout: 10_000 });
+  await expect(row.locator('.pipe-row-head')).toBeFocused({ timeout: 10_000 });
   await expect(row).toBeInViewport();
 });
 

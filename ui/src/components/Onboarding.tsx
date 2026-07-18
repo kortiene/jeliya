@@ -24,7 +24,13 @@ export function Onboarding({
   onAdvance(): void;
 }) {
   return (
-    <div className="onboarding">
+    // Onboarding is a full-page destination, so its content lives in a page
+    // landmark rather than a bare div — every step's copy used to be
+    // landmark-orphaned (issue #72). The `h1` stays the wordmark: the rooms
+    // step offers TWO equal tasks ("Create a room" and "Join with a ticket"),
+    // so there is no single task heading that could honestly be the h1, and
+    // promoting either would rank one above the other.
+    <main className="onboarding" id="onboarding-main">
       <div className="onboarding-brand">
         <TreeMark size={44} />
         <Wordmark as="h1" />
@@ -41,7 +47,7 @@ export function Onboarding({
           onAdvance={onAdvance}
         />
       )}
-    </div>
+    </main>
   );
 }
 

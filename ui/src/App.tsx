@@ -28,9 +28,11 @@ import { splitInvite } from './lib/invite';
 import { joinRoomWithRetry } from './lib/join';
 import type { JoinProgress } from './lib/join';
 import { useRoute } from './lib/history';
-import { inspectorDest, legacyTabDest, routeItem, routeRoomId } from './lib/routes';
+import { inspectorDest, legacyTabDest, routeItem, routeRoomId, ROOM_DEST_LABELS } from './lib/routes';
 import type { InspectorDest, RoomDest } from './lib/routes';
 import { useShell } from './lib/shell';
+import { documentTitle, pageRegion } from './lib/landmarks';
+import type { PageRegion } from './lib/landmarks';
 import uiPackage from '../package.json';
 import { NamesContext } from './components/names';
 import type { NameApi } from './components/names';
@@ -55,6 +57,67 @@ type Phase = 'boot' | 'no-identity' | 'no-rooms' | 'ready';
 
 const LAST_ROOM_KEY = 'jeliya.lastRoom';
 const ISSUE_URL = 'https://github.com/kortiene/jeliya/issues/new';
+
+/** The DOM id of each pane that can be the page, so the skip link can target
+ *  whichever one currently is (lib/landmarks.ts). */
+const PAGE_REGION_IDS: Record<PageRegion, string> = {
+  sidebar: 'rooms-rail',
+  center: 'workspace',
+  inspector: 'room-inspector',
+  fleet: 'fleet-main',
+  settings: 'settings-main',
+};
+
+const COMPOSER_ID = 'composer-input';
+
+/** Skip links — the first two tab stops on every page.
+ *
+ *  Visually hidden until focused, then they become real, visible controls
+ *  (`.skip-link:focus-visible` in styles.css). They target the CURRENT page
+ *  region rather than a fixed id, because which pane is the page changes with
+ *  the route and the shell.
+ *
+ *  An in-page anchor alone only scrolls — a pane is not a control, so it cannot
+ *  take focus. `skipTo` gives the target a temporary programmatic tab stop so
+ *  focus genuinely MOVES, which is what makes the next Tab continue from the
+ *  destination instead of from the rail the user just skipped.
+ */
+function SkipLinks({ workspaceId, composerId }: { workspaceId: string; composerId: string | null }) {
+  const skipTo = (id: string) => (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    const el = document.getElementById(id);
+    if (!el) return;
+    // The pane is not a control, so it needs a programmatic tab stop to receive
+    // focus. Removed again on blur so it never becomes a stray Tab stop of its
+    // own for users who never invoke the skip link.
+    const hadTabIndex = el.hasAttribute('tabindex');
+    if (!hadTabIndex) el.setAttribute('tabindex', '-1');
+    el.focus();
+    if (hadTabIndex) return;
+    // Focus can legitimately fail to land — a disabled composer while the
+    // daemon is disconnected is the real case. Clean up NOW rather than arming
+    // a blur listener that will never fire, which would strand `tabindex="-1"`
+    // on the control and drop it out of the natural Tab order for the rest of
+    // the session.
+    if (document.activeElement !== el) {
+      el.removeAttribute('tabindex');
+      return;
+    }
+    el.addEventListener('blur', () => el.removeAttribute('tabindex'), { once: true });
+  };
+  return (
+    <div className="skip-links">
+      <a className="skip-link" href={`#${workspaceId}`} onClick={skipTo(workspaceId)}>
+        Skip to main content
+      </a>
+      {composerId ? (
+        <a className="skip-link" href={`#${composerId}`} onClick={skipTo(composerId)}>
+          Skip to message composer
+        </a>
+      ) : null}
+    </div>
+  );
+}
 
 type DiagnosticErrorRecorder = (context: string, error: unknown) => DaemonErrorShape;
 
@@ -865,6 +928,21 @@ export default function App({ client }: { client: Client }) {
             : 'room';
   const roomDest: RoomDest = route.kind === 'room' ? route.dest : 'activity';
 
+  // Which single pane is the page — the `main` landmark and the skip link's
+  // target (lib/landmarks.ts). The shell keeps every pane mounted and hides the
+  // inactive ones, so the landmark role has to move with the route instead of
+  // living permanently on the workspace.
+  const region = pageRegion(pane, shell);
+
+  // Announce the destination. The SPA never changed `document.title`, so every
+  // navigation left the same static "Jeliya" for a screen reader to read.
+  useEffect(() => {
+    document.title = documentTitle(pane, {
+      roomName: currentRoom?.name ?? null,
+      destLabel: inspector ? ROOM_DEST_LABELS[inspector] : null,
+    });
+  }, [pane, currentRoom?.name, inspector]);
+
   /** Tab counts — facts the daemon has answered with, so they are only shown
    *  once it has. */
   const roomNavCounts: Partial<Record<RoomDest, number>> = {
@@ -931,17 +1009,20 @@ export default function App({ client }: { client: Client }) {
 
   if (phase === 'boot') {
     return (
-      <div className="boot-screen">
+      // The first screen every user sees is a page like any other: a landmark,
+      // an h1, and — unlike before — a live region, so the connection state it
+      // reports is announced when it changes instead of swapping silently.
+      <main className="boot-screen" id="boot-main">
         <TreeMark size={48} />
         <Wordmark as="h1" />
-        <p className="muted">
+        <p className="muted" role="status" aria-live="polite">
           {conn === 'connected' ? 'Syncing…' : conn === 'disconnected' ? 'Not connected.' : 'Contacting daemon…'}
         </p>
         <p className="boot-target mono">{client.describe()}</p>
         {conn === 'reconnecting' ? (
           <p className="muted">Retrying with backoff — start <code>jeliyad</code> or pass <code>?daemon=&lt;port&gt;</code>.</p>
         ) : null}
-      </div>
+      </main>
     );
   }
 
@@ -967,6 +1048,22 @@ export default function App({ client }: { client: Client }) {
           route.kind === 'settings' ? ' app-settings' : ''
         }${inspector ? ' inspector-open' : ''}`}
       >
+        {/* Reaching the workspace used to mean tabbing the whole room rail, and
+            reaching the composer meant tabbing the whole timeline. Both skips
+            are real anchors, not scroll tricks: they move focus, so the next Tab
+            continues from the destination. The composer link is only offered
+            where a composer exists — a link to nothing is worse than no link. */}
+        {/* The composer link follows the WORKSPACE, not the pane: opening a
+            room tool makes `pane` 'inspector' on every shell, but only compact
+            actually hides the workspace. On medium and wide the composer is
+            still on screen and usable beside the tool, so the link belongs
+            there too. `region === 'center'` is exactly "the workspace is the
+            page", which is the condition that matters. */}
+        <SkipLinks
+          workspaceId={PAGE_REGION_IDS[region]}
+          composerId={region === 'center' && currentRoom && !roomError && conn === 'connected' ? COMPOSER_ID : null}
+        />
+
         {/* Reserved, not overlaid (decision 3): the banner is a grid row above
             every pane, so it can never cover Back, a header, or list content.
             One live region, announced once — `aria-live="polite"` on a node
@@ -1000,15 +1097,18 @@ export default function App({ client }: { client: Client }) {
           onTogglePin={toggleRoomPin}
           onToggleArchive={toggleRoomArchive}
           lastSeen={lastSeen}
+          isPage={region === 'sidebar'}
         />
 
-        <main className="center">
+        <main className="center" id="workspace">
           {roomId && !currentRoom ? (
             // The route names a room room.list does not have. Not an error
             // page and not a blank panel — say which fact is true, and offer
             // the way out (decision 2).
             <div className="room-error-surface">
-              <h2 className="room-gone-title">That room isn’t on this device</h2>
+              {/* This surface IS the destination — no RoomHeader renders above
+                  it — so its title is the page's h1 (issue #72). */}
+              <h1 className="room-gone-title">That room isn’t on this device</h1>
               <p className="muted">
                 Nothing here matches <code className="mono">{shortId(roomId)}</code>. It may live on another device, or
                 you may not have joined it yet.
@@ -1025,9 +1125,9 @@ export default function App({ client }: { client: Client }) {
           ) : currentRoom && (currentRoom.status === 'left' || currentRoom.status === 'removed') ? (
             // A signed fact, so state it as one and do not open the room.
             <div className="room-error-surface">
-              <h2 className="room-gone-title">
+              <h1 className="room-gone-title">
                 {currentRoom.status === 'left' ? 'You left this room' : 'You were removed from this room'}
-              </h2>
+              </h1>
               <p className="muted">
                 {currentRoom.status === 'left'
                   ? 'Your departure is published to the room’s signed log. You’ll need a new invite to rejoin.'
@@ -1062,7 +1162,15 @@ export default function App({ client }: { client: Client }) {
                   tabindex keyboard handler's getElementById would move focus
                   into the hidden copy. */}
               {shell === 'wide' || !inspector ? (
-                <RoomNav dest={roomDest} counts={roomNavCounts} onDest={goToDest} />
+                // Only claim to control the inspector's panel when one is
+                // actually mounted — on Activity the workspace IS the content
+                // and there is no tabpanel to point at.
+                <RoomNav
+                  dest={roomDest}
+                  counts={roomNavCounts}
+                  onDest={goToDest}
+                  controlsId={inspector ? 'panel-body' : undefined}
+                />
               ) : null}
               {roomError ? (
                 // The open failed: the error owns the pane. Rendering the
@@ -1125,8 +1233,13 @@ export default function App({ client }: { client: Client }) {
           ) : (
             // No room selected: the room tools are unavailable and there is no
             // composer — the surface just names the one recoverable next step,
-            // and the rooms list beside it is how you take it (#67).
-            <div className="center-empty muted">Choose a room.</div>
+            // and the rooms list beside it is how you take it (#67). The
+            // heading is the destination's `h1`: `/rooms` is the app's most
+            // reached page and had no page title at all (issue #72).
+            <div className="center-empty">
+              <h1 className="center-empty-title">Rooms</h1>
+              <p className="muted">Choose a room.</p>
+            </div>
           )}
         </main>
 
@@ -1140,7 +1253,11 @@ export default function App({ client }: { client: Client }) {
           counts={roomNavCounts}
           onClose={closeInspector}
           shell={shell}
-          roomName={currentRoom?.name ?? null}
+          // Falls back like every other room-name call site: a joined room
+          // whose genesis event has not synced has a null name, and on compact
+          // this heading IS the page's h1 — omitting it would leave the
+          // destination with no heading and an unnamed main.
+          roomName={currentRoom ? (currentRoom.name ?? 'Untitled room') : null}
           members={members}
           timeline={timeline}
           files={files}
@@ -1159,6 +1276,7 @@ export default function App({ client }: { client: Client }) {
           onPipeClose={pipeClose}
           onPipeExpose={pipeExpose}
           onLeaveRoom={() => setLeaveOpen(true)}
+          isPage={region === 'inspector'}
         />
         ) : null}
 
