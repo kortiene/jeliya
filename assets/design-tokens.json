@@ -1,0 +1,115 @@
+{
+  "$comment": [
+    "The shared design-token fixture (issue #75). ONE source of truth for the",
+    "values both clients render, so the React and Flutter palettes cannot drift",
+    "apart again — which is exactly how the message bubble ended up with a",
+    "gradient in CSS and a matching pair of gradient TOKENS in Dart.",
+    "",
+    "Normative prose lives in DESIGN.md; this file is the machine-checkable",
+    "half. Two tests read it and fail on any divergence:",
+    "  - scripts/check-design-tokens.mjs  -> ui/src/styles.css :root",
+    "  - app/test/design_tokens_test.dart -> app/lib/src/theme.dart",
+    "",
+    "Scope note. Colors and radii are shared VALUES and are pinned here. Spacing",
+    "is deliberately NOT pinned: DESIGN.md names five design steps while Flutter",
+    "carries a ten-step scale with intermediate values, and forcing one onto the",
+    "other would encode a disagreement rather than resolve it. The mapping is",
+    "documented in DESIGN.md instead."
+  ],
+
+  "color": {
+    "$comment": "DESIGN.md section 2. Hex is authoritative; alpha companions are derived below.",
+    "ground": "#070d10",
+    "chrome": "#0a1116",
+    "card": "#0e161b",
+    "card-nested": "#111b21",
+    "input-well": "#0c1419",
+    "bubble-remote": "#0c1519",
+
+    "border-quiet": "#16232a",
+    "border-strong": "#21343c",
+    "border-interactive": "#41707e",
+
+    "accent": "#2fd6a4",
+    "accent-deep": "#1fb4a8",
+
+    "ink": "#dcebe6",
+    "ink-dim": "#8aa39d",
+    "ink-mute": "#7a938c",
+
+    "amber": "#f5b453",
+    "red": "#f26d6d",
+    "blue": "#6aa8f7",
+
+    "scrim": "#030709b8",
+    "shadow": "#00000080"
+  },
+
+  "alpha": {
+    "$comment": [
+      "The system specifies exactly two alpha companions per hue — a ~10-12%",
+      "tint and a 40% line. Every value outside this set was drift: the audit",
+      "found five different alphas in use where two are specified.",
+      "The accent's tinted-button states are the one sanctioned extension."
+    ],
+    "dim": { "accent": 0.12, "amber": 0.12, "red": 0.1, "blue": 0.1 },
+    "line": { "accent": 0.4, "amber": 0.4, "red": 0.4, "blue": 0.4 },
+    "accent-hover": 0.2,
+    "accent-active": 0.28
+  },
+
+  "radius": {
+    "$comment": "DESIGN.md `rounded`. Flutter mirrors these in JeliyaRadii.",
+    "tail": 4,
+    "tight": 7,
+    "sm": 8,
+    "control": 9,
+    "nav": 10,
+    "tile": 11,
+    "card-sm": 12,
+    "card": 13,
+    "stat": 14,
+    "card-lg": 15,
+    "surface": 16,
+    "pill": 999
+  },
+
+  "contrast": {
+    "$comment": [
+      "The floors CONTRIBUTING.md makes a contribution requirement, recorded",
+      "here so a test can assert them rather than a comment claiming them.",
+      "`text` is WCAG 1.4.3 AA for information-bearing text; `non-text` is",
+      "1.4.11 for the boundaries and indicators that identify controls."
+    ],
+    "text": 4.5,
+    "non-text": 3.0
+  },
+
+  "elevation": {
+    "$comment": [
+      "DESIGN.md section 4: flat by doctrine. Depth is tonal layering plus 1px",
+      "borders — there are NO resting shadows. This list is exhaustive and a",
+      "conformance test treats anything outside it as drift.",
+      "The medium-shell inspector drawer is the third entry, added in #75: it",
+      "genuinely floats over the workspace, and DESIGN.md was amended to say so",
+      "rather than leaving it as undocumented drift."
+    ],
+    "allowed": ["modal-lift", "status-glow", "drawer-lift"],
+    "modal-lift": "0 24px 60px rgba(0, 0, 0, 0.5)",
+    "status-glow": "0 0 6px",
+    "drawer-lift": "-12px 0 32px rgba(0, 0, 0, 0.45)"
+  },
+
+  "gradient": {
+    "$comment": [
+      "The progress fill is the only sanctioned ACCENT gradient (DESIGN.md,",
+      "Identity Marks). Faint single-hue tint washes on card surfaces are a",
+      "separate, quieter device with an explicit alpha ceiling — the two-hue",
+      "blue-to-emerald wash the audit found was drift toward the crypto/web3",
+      "anti-reference, not an instance of it."
+    ],
+    "accent-fill": "linear-gradient(90deg, accent-deep, accent)",
+    "wash-max-alpha": 0.1,
+    "wash-max-hues": 1
+  }
+}

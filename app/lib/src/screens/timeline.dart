@@ -941,69 +941,34 @@ class _TimelineViewState extends State<TimelineView> {
       bottomLeft: const Radius.circular(JeliyaRadii.bubble),
       bottomRight: const Radius.circular(JeliyaRadii.bubble),
     );
-    final text = Text(
-      body,
-      style: JeliyaText.body.copyWith(color: dim ? tokens.textDim : tokens.text),
-    );
-    final Widget bubble;
-    if (own) {
-      bubble = Container(
+    // One anatomy for both sides (issue #75). Ownership reads FOUR ways —
+    // right alignment, the suppressed avatar, the flipped tail radius above,
+    // and the emerald edge here — which is plenty; the accent gradient and
+    // resting shadow this replaces each broke a Named Rule in DESIGN.md (the
+    // progress fill is the only sanctioned accent gradient; depth is tonal
+    // layering plus 1px borders, so there are no resting shadows).
+    //
+    // Authorship reads from the SURFACE: the remote bubble sits one tonal step
+    // below the card. The 2px blue border-left it replaces was the exact
+    // side-stripe construct DESIGN.md forbids, and carrying it in Flutter cost
+    // a ClipRRect + IntrinsicHeight + stretch Row to fake a non-uniform border
+    // under a radius.
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: _bubbleMaxWidth),
+      child: Container(
         padding: const EdgeInsets.symmetric(
             horizontal: JeliyaSpacing.x14, vertical: JeliyaSpacing.x10),
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [tokens.bubbleOwnGradientStart, tokens.bubbleOwnGradientEnd],
-          ),
-          border: Border.all(color: tokens.bubbleOwnBorder),
-          borderRadius: radius,
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x29000000), // rgba(0,0,0,0.16)
-              offset: Offset(0, 10),
-              blurRadius: 26,
-            ),
-          ],
-        ),
-        child: text,
-      );
-    } else {
-      // 1px hairline + the 2px blue LEFT edge: a clipped stripe (Flutter
-      // can't mix non-uniform border widths with a radius).
-      bubble = Container(
-        decoration: BoxDecoration(
-          color: tokens.bubbleRemoteBg,
-          border: Border.all(color: tokens.border),
+          color: own ? tokens.bgCard : tokens.bubbleRemoteBg,
+          border: Border.all(color: own ? tokens.accentLine : tokens.border),
           borderRadius: radius,
         ),
-        child: ClipRRect(
-          borderRadius: radius,
-          // IntrinsicHeight bounds the stretch: timeline rows get unbounded
-          // height from the list, and a stretch Row under an infinite max
-          // height is a layout error (the stripe must match the text height).
-          child: IntrinsicHeight(
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Container(width: 2, color: tokens.bubbleRemoteEdge),
-                Flexible(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: JeliyaSpacing.x12, vertical: JeliyaSpacing.x10),
-                    child: text,
-                  ),
-                ),
-              ],
-            ),
-          ),
+        child: Text(
+          body,
+          style:
+              JeliyaText.body.copyWith(color: dim ? tokens.textDim : tokens.text),
         ),
-      );
-    }
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: _bubbleMaxWidth),
-      child: bubble,
+      ),
     );
   }
 
@@ -1597,33 +1562,26 @@ class _TimelineViewState extends State<TimelineView> {
   /// and its label already states how many and of what kind. It is a small leaf
   /// whose label changes only when the count does, so assistive tech hears the
   /// delta once per change instead of on every list rebuild.
+  ///
+  /// It separates from the timeline beneath it by its own tonal step
+  /// ([JeliyaTokens.bgCard2]) and its accent border, NOT by a resting shadow
+  /// (DESIGN.md section 4: flat by doctrine). Matches `.new-messages` in
+  /// styles.css after the #75 conformance pass.
   Widget _newMessagesPill(
       BuildContext context, JeliyaTokens tokens, String label) {
     final touch = isMobileWidth(context);
-    final pill = DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(JeliyaRadii.pill),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x47000000), // rgba(0,0,0,0.28)
-            offset: Offset(0, 10),
-            blurRadius: 30,
-          ),
-        ],
+    final pill = TextButton(
+      onPressed: _scrollToBottom,
+      style: TextButton.styleFrom(
+        backgroundColor: tokens.bgCard2,
+        foregroundColor: tokens.accent,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        minimumSize: touch ? const Size(44, 44) : Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
+        shape: StadiumBorder(side: BorderSide(color: tokens.accentLine)),
       ),
-      child: TextButton(
-        onPressed: _scrollToBottom,
-        style: TextButton.styleFrom(
-          backgroundColor: tokens.bgCard2,
-          foregroundColor: tokens.accent,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          minimumSize: touch ? const Size(44, 44) : Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
-          shape: StadiumBorder(side: BorderSide(color: tokens.accentLine)),
-        ),
-        child: Text(label),
-      ),
+      child: Text(label),
     );
     // The labelled node carries the tap itself (the room_header lesson): the
     // TextButton's own semantics are excluded so the announcement is the count

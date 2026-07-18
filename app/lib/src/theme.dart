@@ -21,7 +21,8 @@ const Color _bgInput = Color(0xFF0C1419); // --bg-input
 const Color _bubbleRemoteBg = Color(0xFF0C1519); // remote bubble (one-off)
 const Color _border = Color(0xFF16232A); // --border
 const Color _borderStrong = Color(0xFF21343C); // --border-strong
-// The 3:1 non-text-contrast boundary (issue #73). See `borderInteractive`.
+// The 3:1 non-text-contrast boundary (issues #73, #75). See
+// `borderInteractive`; pinned in assets/design-tokens.json.
 const Color _borderInteractive = Color(0xFF41707E);
 const Color _accent = Color(0xFF2FD6A4); // --accent (emerald)
 const Color _accent2 = Color(0xFF1FB4A8); // --accent-2 (teal, gradients only)
@@ -97,6 +98,9 @@ class JeliyaTokens extends ThemeExtension<JeliyaTokens> {
   /// Kept SEPARATE from [borderStrong] rather than replacing it, because
   /// several controls encode selected/active state in their border colour;
   /// widening the token would have made those states unreadable.
+  ///
+  /// Mirrors `--border-interactive` in `ui/src/styles.css`; both answer to
+  /// `assets/design-tokens.json` (issue #75).
   Color get borderInteractive => _borderInteractive;
 
   /// The keyboard focus ring — DESIGN.md's "global 2px emerald ring, offset 2",
@@ -108,11 +112,15 @@ class JeliyaTokens extends ThemeExtension<JeliyaTokens> {
   /// overwrites, a border already carrying state.
   Color get focusRing => _accent;
 
+
   // -- accent (emerald — earned, never a fallback) -------------------------------
 
   Color get accent => _accent;
 
-  /// Gradient partner only — progress fill start, own-bubble gradient end.
+  /// Gradient partner only — the progress fill start, and nothing else. The
+  /// progress fill is the ONLY sanctioned accent gradient (DESIGN.md, Identity
+  /// Marks); this token previously also fed an own-bubble gradient, which is
+  /// why the drift was invisible in review.
   Color get accent2 => _accent2;
 
   /// Accent tint fills (primary button bg, selected nav/room, self-chip).
@@ -146,25 +154,30 @@ class JeliyaTokens extends ThemeExtension<JeliyaTokens> {
   Color get redLine => _alpha(_red, 0.4);
   Color get redDim => _alpha(_red, 0.1);
 
-  /// Informational/agent hue — connecting peers, agent-work card, remote
-  /// bubble edge, agent role chip, invited status, doc-file tint.
+  /// Informational/agent hue — connecting peers, agent-work card, agent role
+  /// chip, invited status, doc-file tint.
   Color get blue => _blue;
   Color get blueLine => _alpha(_blue, 0.4);
   Color get blueDim => _alpha(_blue, 0.1);
 
   // -- message bubbles ------------------------------------------------------------------
 
-  /// Own bubble gradient 135deg start (accent @ 0.20).
-  Color get bubbleOwnGradientStart => _alpha(_accent, 0.20);
-
-  /// Own bubble gradient end (teal @ 0.13).
-  Color get bubbleOwnGradientEnd => _alpha(_accent2, 0.13);
-
-  /// Own bubble border (accent @ 0.42).
-  Color get bubbleOwnBorder => _alpha(_accent, 0.42);
-
-  /// Remote bubble 2px LEFT accent edge (blue @ 0.34).
-  Color get bubbleRemoteEdge => _alpha(_blue, 0.34);
+  // Four bubble tokens were removed here in issue #75, because naming drift as
+  // a first-class token is what let both clients stay confidently wrong in the
+  // same direction — the reviewer sees a token, not a rule being broken:
+  //
+  //   bubbleOwnGradientStart (accent @ 0.20) + bubbleOwnGradientEnd
+  //     (accent2 @ 0.13) — an own-message accent gradient. The progress fill
+  //     is the only sanctioned accent gradient (DESIGN.md, Identity Marks).
+  //   bubbleRemoteEdge (blue @ 0.34) — the 2px LEFT accent edge, which is
+  //     exactly the side-stripe DESIGN.md forbids.
+  //   bubbleOwnBorder (accent @ 0.42) — a fifth alpha where the system
+  //     specifies two (assets/design-tokens.json `alpha`); the own bubble now
+  //     takes the sanctioned [accentLine] (0.4) like every other accent edge.
+  //
+  // Ownership still reads four ways, which is plenty: right alignment, the
+  // suppressed avatar, the flipped tail radius, and the emerald border.
+  // Authorship reads from [bubbleRemoteBg] — the surface, not a stripe.
 
   /// Own event tile tint border (accent @ 0.34).
   Color get ownTileBorder => _alpha(_accent, 0.34);

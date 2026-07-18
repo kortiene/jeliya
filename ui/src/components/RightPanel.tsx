@@ -111,31 +111,30 @@ function MembersTab({
           </h2>
           <p>Roster from the signed room history. Statuses reflect membership events, not live peer reachability.</p>
         </div>
-        <dl className="member-stats" aria-label="Member counts">
-          <div>
-            {/* The roster holds everyone with a membership event; only some of
-                them are currently members. Calling the whole list "members"
-                and this count "active" made the two disagree by construction. */}
-            <dt>Members</dt>
-            <dd>{activeCount}</dd>
-          </div>
-          <div>
-            <dt>Agents</dt>
-            <dd>{agentCount}</dd>
-          </div>
-          {invitedCount > 0 ? (
-            <div>
-              <dt>Invited</dt>
-              <dd>{invitedCount}</dd>
-            </div>
-          ) : null}
-        </dl>
       </section>
 
+      {/* The breakdown of the roster, stated once. It used to be a
+          `.member-stats` grid of hero-metric tiles here AND a "{activeCount}
+          member(s)" line eighteen rows down — the same number twice inside one
+          scroll view, in the very tile pattern PRODUCT.md names as an
+          anti-reference. The tiles are gone and the counts moved onto the
+          section head that was already carrying one of them, so each fact
+          renders exactly once, next to the list it describes.
+
+          The roster holds everyone who has a membership event; only some of
+          them are currently members — so `members.length` above and this
+          `activeCount` are genuinely different numbers, and both keep a name
+          that says which one it is. */}
       <div className="members-section-head">
         <h3>Room roster</h3>
         <span>
-          {activeCount} member{activeCount === 1 ? '' : 's'}
+          {[
+            `${activeCount} member${activeCount === 1 ? '' : 's'}`,
+            `${agentCount} agent${agentCount === 1 ? '' : 's'}`,
+            invitedCount > 0 ? `${invitedCount} invited` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         </span>
       </div>
 
@@ -154,7 +153,13 @@ function MembersTab({
               </div>
               <code className="member-id mono">{shortMemberId(member.identity_id)}</code>
             </div>
-            <div className="member-badges" aria-label={`${displayRole(member.role)}, ${displayStatus(member.status)}`}>
+            {/* No `aria-label` here. It repeated verbatim the two strings the
+                child spans already render visibly, on a generic `div` with no
+                role — which most screen readers ignore outright, so it was
+                markup that only ever cost maintenance. The dot+label pair
+                below is the accessible rendering, and it already satisfies the
+                never-colour-alone rule (docs/room-attention.md). */}
+            <div className="member-badges">
               <span className={`member-role role-${member.role}`}>{displayRole(member.role)}</span>
               <span className={`member-status status-${tone}`}>
                 <span className="dot" /> {displayStatus(member.status)}

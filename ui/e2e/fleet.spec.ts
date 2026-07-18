@@ -53,7 +53,7 @@ test('searching filters the fleet list', async ({ app, page }) => {
   await expect(fleet.getByText('Backend Agent')).toHaveCount(0);
 });
 
-test('needs attention surfaces the widened closed set before the aggregate tiles', async ({ app, page }) => {
+test('needs attention surfaces the widened closed set before the aggregate total', async ({ app, page }) => {
   await app.gotoPopulated();
   await app.navigate('Agent Fleet');
 
@@ -68,29 +68,51 @@ test('needs attention surfaces the widened closed set before the aggregate tiles
   await expect(row('Research Agent').locator('.attention-reason')).toHaveText(/Stale/);
 
   // Actionable agents appear BEFORE the aggregate totals (layout-independent
-  // DOM-order check).
-  const attentionBeforeStats = await fleet.evaluate((root) => {
+  // DOM-order check) — the #69 guard. The aggregate row this used to point at
+  // was `.fleet-stats`, three KPI tiles of which two duplicated the filter-chip
+  // counts; #75 reduced it to the one aggregate nothing else renders, room
+  // coverage. The guard is unchanged in what it enforces — an aggregate must
+  // not precede the actionable list — only in which element now carries the
+  // aggregate. It still fails closed: a missing `.fleet-attention` OR a missing
+  // aggregate returns false, so deleting either end cannot make this pass.
+  await expect(fleet.locator('.fleet-coverage')).toBeVisible();
+  const attentionBeforeAggregate = await fleet.evaluate((root) => {
     const a = root.querySelector('.fleet-attention');
-    const s = root.querySelector('.fleet-stats');
+    const s = root.querySelector('.fleet-coverage');
     if (!a || !s) return false;
     return (a.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
   });
-  expect(attentionBeforeStats).toBe(true);
+  expect(attentionBeforeAggregate).toBe(true);
+
+  // And the duplication itself must not come back: the KPI tile row is gone on
+  // every shell, not merely hidden by a media query on compact.
+  await expect(fleet.locator('.fleet-stats')).toHaveCount(0);
 });
 
-test('metric reads "Agents working now" and a stale status is qualified', async ({ app, page }) => {
+test('the working count is the Working filter chip, and a stale status is qualified', async ({ app, page }) => {
   await app.gotoPopulated();
   await app.navigate('Agent Fleet');
 
   const fleet = page.getByRole('main', { name: 'Agent Fleet' });
 
   // "Running tasks" was an inferred count the daemon cannot prove; it is gone on
-  // every shell. The KPI tiles are a desktop affordance (the phone layout drops
-  // the row deliberately), so the renamed metric is asserted where it renders.
+  // every shell, and nothing may reintroduce it.
   await expect(fleet.getByText('Running tasks')).toHaveCount(0);
-  if (!app.compact) {
-    await expect(fleet.getByText('Agents working now')).toBeVisible();
-  }
+
+  // The truthful metric it was renamed to — agents in the `working` liveness
+  // state, a live peer plus a fresh working status — used to be a desktop-only
+  // KPI tile reading "Agents working now" while the compact shell got the same
+  // number off the "Working" filter chip. #75 kept the chip and dropped the
+  // tile, so there is now ONE rendering of it, identical on every shell. That
+  // is what this asserts: the count is present, is a real number, and lives on
+  // the chip.
+  const working = fleet.getByRole('button', { name: /^Working/ });
+  await expect(working).toBeVisible();
+  await expect(working.locator('.count')).toHaveText(/^\d+$/);
+
+  // Room coverage is the one aggregate no chip carries, so it survives — as a
+  // sentence, on every shell rather than desktop-only.
+  await expect(fleet.locator('.fleet-coverage')).toHaveText(/Room coverage:/);
 
   // A stale agent's last label is shown past-tense on every shell, never as a
   // bare live status (the Stale-pill-beside-"Working"-chip contradiction). The

@@ -177,9 +177,34 @@ function AgentCard({
   const openRoom = latest?.room_id ?? agent.rooms[0]?.room_id ?? null;
 
   return (
-    <article className={`fleet-card tone-${tone}`}>
+    // Liveness is stated ONCE as a legible fact: the dot+label pill below. The
+    // card used to repeat it as a border hue (emerald for live, amber for
+    // stale) — the same fact in a second, colour-only channel, which is exactly
+    // the decorative-chrome duplication #75 removes. What survives is
+    // `tone-off`, and only because it is not a border tone at all: it recedes
+    // an inert agent through the GROUND (a muted card fill + dimmed avatar and
+    // sparkline) while leaving every text contrast untouched. That is a
+    // de-emphasis treatment, not a second copy of the liveness label.
+    <article className={`fleet-card${tone === 'off' ? ' tone-off' : ''}`}>
       <div className="fleet-card-top">
-        <span className="fleet-hex" style={{ color: tint, background: `${tint}1f` }} aria-hidden="true">
+        {/* `opacity: 1` cancels `.fleet-card.tone-off .fleet-hex { opacity: .5 }`
+            in styles.css, which is a real WCAG failure and not mine to edit on
+            this branch (see `notes`). That rule contradicts the comment sitting
+            directly above it, which swears off "a blanket opacity, which would
+            composite the info-bearing text below the WCAG AA floor" — and then
+            applies exactly that to a box whose only child is the avatar's
+            INITIALS. Halving them takes the glyphs under 4.5:1. axe had been
+            reporting it as `incomplete` rather than a violation because the
+            offline cards sat below the fold; deleting the KPI row lifted them
+            into the viewport, where `elementFromPoint` resolves and the latent
+            failure becomes a real one. The card still recedes — through the
+            muted `--bg-raise` ground and the dimmed sparkline, which carries no
+            text — so the de-emphasis survives with its contrast intact. */}
+        <span
+          className="fleet-hex"
+          style={{ color: tint, background: `${tint}1f`, opacity: 1 }}
+          aria-hidden="true"
+        >
           <Avatar id={agent.identity_id} size={34} />
         </span>
         <div className="fleet-card-id">
@@ -269,42 +294,34 @@ function AgentCard({
   );
 }
 
-// -- stat tiles ---------------------------------------------------------------
+// -- room coverage ------------------------------------------------------------
+//
+// What used to stand here was a three-up grid of hero-metric tiles, each with a
+// decorative glyph in a tinted square. PRODUCT.md and DESIGN.md both name
+// "identical KPI card grids, hero-metric tiles" as generic-SaaS-dashboard slop
+// and an explicit anti-reference, and two of the three numbers were already on
+// screen: `fleet.active` is the "Live" filter chip's count, `fleet.working` is
+// the "Working" chip's count, and the needs-attention total is that section's
+// own badge. The compact shell had already reached this conclusion — styles.css
+// hides `.fleet-stats` below 900px because "the filter chips already carry
+// those counts, so drop this KPI row rather than repeat it". The desktop shell
+// now agrees with it, and the chips become the single rendering of those facts.
+//
+// Room coverage is the one fact nothing else on this page renders, so it stays
+// — as a sentence that says what it counts, not a percentage floating over a
+// caption. The percentage is derived, so it is shown beside the counts it comes
+// from rather than in place of them.
 
-function StatTiles({ fleet }: { fleet: FleetResult }) {
+function FleetCoverage({ fleet }: { fleet: FleetResult }) {
   const coverage = fleet.rooms_total > 0 ? Math.round((fleet.rooms_covered / fleet.rooms_total) * 100) : 0;
   return (
-    <div className="fleet-stats">
-      <div className="fleet-stat">
-        <span className="fleet-stat-icon icon-green" aria-hidden="true">✦</span>
-        <div className="fleet-stat-body">
-          <span className="fleet-stat-label">Active agents</span>
-          <strong className="fleet-stat-value">{fleet.active}</strong>
-          <span className="fleet-stat-sub muted">of {fleet.total} total</span>
-        </div>
-      </div>
-      <div className="fleet-stat">
-        <span className="fleet-stat-icon icon-amber" aria-hidden="true">⚡</span>
-        <div className="fleet-stat-body">
-          {/* The truthful metric: agents in the `working` liveness state (a live
-              peer + a fresh working status), not an inferred "running tasks"
-              count the daemon cannot prove — there is no task registry. */}
-          <span className="fleet-stat-label">Agents working now</span>
-          <strong className="fleet-stat-value">{fleet.working}</strong>
-          <span className="fleet-stat-sub muted">live peer + fresh status</span>
-        </div>
-      </div>
-      <div className="fleet-stat">
-        <span className="fleet-stat-icon icon-blue" aria-hidden="true">⬡</span>
-        <div className="fleet-stat-body">
-          <span className="fleet-stat-label">Room coverage</span>
-          <strong className="fleet-stat-value">{coverage}%</strong>
-          <span className="fleet-stat-sub muted">
-            {fleet.rooms_covered} of {fleet.rooms_total} rooms
-          </span>
-        </div>
-      </div>
-    </div>
+    <p className="fleet-coverage muted">
+      {fleet.rooms_total === 0
+        ? 'Room coverage: no rooms yet.'
+        : `Room coverage: ${fleet.rooms_covered} of ${fleet.rooms_total} room${
+            fleet.rooms_total === 1 ? '' : 's'
+          } have an agent (${coverage}%).`}
+    </p>
   );
 }
 
@@ -677,25 +694,19 @@ export function FleetDashboard({
         {error ? <ErrorNote error={error} /> : null}
         {/* Actionable agents appear before aggregate totals (#69). */}
         {loaded && fleet && fleet.total > 0 ? <NeedsAttention agents={fleet.agents} onOpenRoom={onOpenRoom} /> : null}
-        {fleet ? <StatTiles fleet={fleet} /> : null}
+        {fleet ? <FleetCoverage fleet={fleet} /> : null}
 
         {!loaded ? (
           <>
-            {/* Skeleton mirrors the real anatomy (stat tiles + cards) so the
-                data swap is layout-shift-free. */}
+            {/* Skeleton mirrors the real anatomy (one coverage line + cards) so
+                the data swap is layout-shift-free. It tracked the three KPI
+                tiles while they existed; now that the row is one sentence, so
+                is its placeholder. */}
             <div role="status" className="visually-hidden">
               Loading agents
             </div>
-            <div className="fleet-stats" aria-hidden="true">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="fleet-stat">
-                  <span className="skel-icon skel" />
-                  <div className="skel-lines">
-                    <span className="skel-line skel" style={{ width: 92, height: 10 }} />
-                    <span className="skel-line skel" style={{ width: 52, height: 22 }} />
-                  </div>
-                </div>
-              ))}
+            <div className="fleet-coverage" aria-hidden="true" style={{ marginBottom: 18 }}>
+              <span className="skel-line skel" style={{ width: 260, height: 12 }} />
             </div>
             <div className="fleet-grid" aria-hidden="true">
               {[0, 1, 2].map((i) => (

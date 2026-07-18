@@ -7,8 +7,10 @@ colors:
   card: "#0e161b"
   card-nested: "#111b21"
   input-well: "#0c1419"
+  bubble-remote: "#0c1519"
   border-quiet: "#16232a"
   border-strong: "#21343c"
+  border-interactive: "#41707e"
   emerald: "#2fd6a4"
   emerald-deep: "#1fb4a8"
   ink: "#dcebe6"
@@ -174,8 +176,20 @@ truthful status hues.
 - **Nested surface** (#111b21): the one level allowed above card — file/pipe
   tiles, count badges, input tracks.
 - **Input well** (#0c1419): all text inputs, the composer bar.
+- **Remote bubble** (#0c1519): the incoming message bubble, one step below
+  card. Authorship reads from this surface — a received message sits on its
+  own ground rather than carrying a coloured stripe down its edge — while an
+  own message keeps the card surface and is marked by alignment, a suppressed
+  avatar, the flipped tail radius, and an emerald border.
 - **Quiet border** (#16232a) / **Strong border** (#21343c): dividers vs.
   interactive edges.
+- **Interactive border** (#41707e): the boundary that *identifies* a control,
+  at the 3:1 non-text floor (WCAG 1.4.11). This is a separate token, not a
+  widening of strong border. Strong border measures 1.35–1.51:1 against the
+  surfaces it sits on, so it cannot carry that duty alone — but several
+  controls encode selected or active state in that same border colour, and
+  brightening the token itself would flatten those states into each other.
+  Two tokens: one draws the control, one still has room to change.
 - **Ink** (#dcebe6) / **Dim ink** (#8aa39d) / **Mute ink** (#7a938c): primary
   text, secondary text, and small info-bearing text. Mute ink is
   contrast-audited in source: ≥4.5:1 on every surface it sits on.
@@ -221,20 +235,29 @@ are prohibited.
 
 Flat by doctrine: depth is tonal layering (ground → chrome → card → nested
 surface) plus 1px borders. There are no resting shadows anywhere in the
-system. Exactly one component elevates — the modal
-(`box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5)` over a 72% scrim with a 3px
-functional blur). The 6px color glows on status dots are signal, not depth.
+system. Two components elevate, and both do it because they genuinely sit
+*over* something: the modal (`box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5)`
+over a 72% scrim with a 3px functional blur) and the medium-shell inspector
+drawer. The 6px color glows on status dots are signal, not depth.
 
 ### Shadow Vocabulary
 - **Modal lift** (`box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5)`): the modal
   dialog only.
+- **Drawer lift** (`box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45)`): the
+  inspector at the medium shell only. There it is a drawer pinned to the
+  right edge of a workspace that stays live behind it, and the shadow is what
+  says which surface is on top — the tonal step cannot, because both panes
+  are chrome. It nulls out at the other two shells: at wide the inspector
+  takes a column of its own and separates by border like everything else, and
+  at compact there is only one pane, so nothing is over anything.
 - **Status glow** (`box-shadow: 0 0 6px <hue at 70%>`): live/error/info dots
   and the live pill's dot. Never on containers.
 
 ### Named Rules
 **The Border-Not-Shadow Rule.** Surfaces separate by tonal step and 1px
-border. If a new component seems to need a shadow, it's either a modal or
-it's wrong.
+border. If a new component seems to need a shadow, it is either overlaying a
+surface that stays live beneath it — the modal, the medium drawer — or it is
+wrong. A shadow on a component that sits *in* the layout is always wrong.
 
 ## 5. Components
 
@@ -242,6 +265,15 @@ Interactive states are a contract: default, hover, focus-visible (global 2px
 emerald ring, offset 2), active (pressed tonal step), and disabled (0.55
 opacity) exist on every control; loading renders as skeletons or in-button
 spinners with text.
+
+**The disabled opacity is qualified by ink tier.** 0.55 applies to primary
+ink, which lands at 5.20:1 and still clears AA. It does not generalize: dim
+ink and mute ink are already spent against their surfaces, and dimming them
+further drops information-bearing text under the floor. Dim and mute ink
+recede the way everything else in this system recedes — through the ground,
+by stepping the surface back and dimming graphic marks — never by opacity
+over the text itself. Three real contrast failures came from applying the
+0.55 rule as if it were global.
 
 ### Buttons
 - **Shape:** gently rounded (9px; 8px for small, 7px for icon buttons)
@@ -327,8 +359,12 @@ The brand mark is the flat single-accent meeting tree (`TreeMark` — see
 avatars tinted by a 6-color identity hash at ~15% alpha remain the identity
 signature for people and agents — flat clips, never glowing, never gradient.
 Nothing else in the system is hexagonal; the progress fill is the only
-sanctioned accent gradient (faint tonal tint washes on card surfaces are a
-separate, quieter device).
+sanctioned accent gradient. Faint tonal tint washes on card surfaces are a
+separate, quieter device, and "faint" is a number: **a single hue, at alpha
+≤ 0.10**. A wash that blends two hues stops being tonal and becomes the
+gradient the crypto/web3 anti-reference is made of — which is exactly how a
+blue-into-emerald members wash got in while every reviewer read it as one
+faint tint.
 
 ## 6. Do's and Don'ts
 

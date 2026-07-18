@@ -7,12 +7,29 @@
   --bg-card: #0e161b;
   --bg-card-2: #111b21;
   --bg-input: #0c1419;
+  /* Remote message bubble — one step below the card, so authorship reads from
+     the surface itself rather than from a coloured stripe down its edge. */
+  --bg-bubble-remote: #0c1519;
   --border: #16232a;
   --border-strong: #21343c;
+  /* The boundary that IDENTIFIES a control, at the 3:1 non-text floor
+     (WCAG 1.4.11). `--border-strong` measures 1.35-1.51:1 against the app's
+     surfaces — invisible to anyone who needs contrast — but it also encodes
+     selected/active state on several controls, so this is a SEPARATE token
+     rather than a widening of that one. Mirrors Flutter's `borderInteractive`
+     (issue #73); both answer to assets/design-tokens.json. */
+  --border-interactive: #41707e;
   --accent: #2fd6a4;
   --accent-2: #1fb4a8;
   --accent-dim: rgba(47, 214, 164, 0.12);
   --accent-line: rgba(47, 214, 164, 0.4);
+  /* The two sanctioned tinted-button states (DESIGN.md section 5: hover
+     deepens to 20%, pressed 28%) and the brighter emerald for a hovered link.
+     `--accent-strong` was REFERENCED by the fetched-path hover and never
+     declared, so that state silently did nothing. */
+  --accent-hover: rgba(47, 214, 164, 0.2);
+  --accent-active: rgba(47, 214, 164, 0.28);
+  --accent-strong: #5ce9c0;
   --text: #dcebe6;
   --text-dim: #8aa39d;
   /* WCAG AA (>=4.5:1 on every surface, worst case 5.3:1 on --bg-card-2): this
@@ -586,21 +603,11 @@ select {
     flex-wrap: wrap;
   }
 
-  /* The filter chips above the fleet list (All/Active/Needs attention/Working/
-     Offline) already carry live Active/Working counts, and room coverage isn't
-     check-in-relevant on a phone — so drop this KPI row rather than repeat it.
-     `.app`-scoped (see the note above on `.app .sidebar` etc.): the base
-     `.fleet-stats` rule sits later in this file at equal specificity and would
-     otherwise win by source order regardless of this media query. */
-  .app .fleet-stats {
-    display: none;
-  }
-
   /* Redundant with the fixed bottom `.mobile-tabbar`; the sidebar's other
      content (profile card, rooms list) reflows fine without it since
      `.sidebar` is a plain flex column and `.rooms-list` already has `flex: 1`
      to take up whatever space opens up. `.app`-scoped for the same
-     later-in-file-base-rule reason as `.fleet-stats` above. */
+     later-in-file-base-rule reason as `.app .sidebar` above. */
   .app .nav-list {
     display: none;
   }
@@ -1119,8 +1126,17 @@ button.sender-name:not(:disabled):hover {
 }
 
 .nav-item:disabled {
-  opacity: 0.5;
+  /* Recede by muting the GROUND and the graphic mark, never by blanketing the
+     row in opacity (DESIGN.md: "recede via muted grounds and dimmed marks,
+     never blanket opacity over text"). At 0.5 the label composited to 2.62:1
+     and the glyph to 2.32:1 — both under the 4.5:1 text floor AND the 3:1
+     non-text floor. The label keeps full mute ink, which clears AA on chrome. */
+  color: var(--text-mute);
   cursor: default;
+}
+
+.nav-item:disabled .nav-glyph {
+  opacity: 0.55;
 }
 
 .nav-glyph {
@@ -1308,7 +1324,16 @@ button.sender-name:not(:disabled):hover {
 }
 
 .room-item.departed {
-  opacity: 0.62;
+  /* Same rule as the disabled nav item: the row recedes through its ground,
+     not through opacity over its text. At 0.62 the meta line and the short-id
+     disambiguator — both information-bearing — measured 2.93:1. The pattern
+     that gets this right already exists in this file: see `.peer-chip
+     .peer-offline`, `.pipe-row.closed` and `.fleet-card.tone-off`. */
+  background: var(--bg-raise);
+}
+
+.room-item.departed .room-hex {
+  opacity: 0.55;
 }
 
 .room-select:disabled {
@@ -1595,9 +1620,13 @@ button.sender-name:not(:disabled):hover {
   border-color: var(--red-line);
 }
 
+/* The connecting/reconnecting status dot. The trough is floored at 0.6 rather
+   than 0.25: these dots are MEANINGFUL non-text (WCAG 1.4.11, 3:1), and at
+   0.25 amber measured 1.70:1 and blue 1.56:1 — for half of every cycle the
+   status they report was effectively invisible. */
 @keyframes pulse {
   50% {
-    opacity: 0.25;
+    opacity: 0.6;
   }
 }
 
@@ -2060,16 +2089,31 @@ button.sender-name:not(:disabled):hover {
   max-width: 72ch;
 }
 
+/* Authorship reads from the SURFACE, not a stripe down the edge. The 2px blue
+   border-left this replaces is the exact construct DESIGN.md forbids
+   ("side-stripe borders (>1px coloured border-left/right as an accent)"). */
 .msg-row:not(.own) .msg-bubble {
-  border-left: 2px solid rgba(106, 168, 247, 0.34);
-  background: #0c1519;
+  background: var(--bg-bubble-remote);
 }
 
+/* Ownership was signalled FIVE ways at once — right alignment, a suppressed
+   avatar, a flipped tail radius, an emerald gradient and a resting shadow —
+   and the last two each broke a Named Rule: depth is tonal layering plus 1px
+   borders (there are no resting shadows), and the progress fill is the only
+   sanctioned accent gradient.
+
+   The three structural signals carry it perfectly well on their own; this adds
+   only the emerald edge, which is the accent doing what the accent is for.
+
+   The gradient also hid a real contrast bug. Its `background:` SHORTHAND reset
+   the `var(--bg-card)` inherited from `.msg-bubble`, so the translucent fill
+   composited over the GROUND rather than the card — dropping muted ink inside
+   a pending own bubble to 4.06:1, a fail. An opaque surface is the fix, not a
+   tuning of the ink. */
 .msg-row.own .msg-bubble {
-  border-color: rgba(47, 214, 164, 0.42);
+  border-color: var(--accent-line);
   border-radius: 14px 4px 14px 14px;
-  background: linear-gradient(135deg, rgba(47, 214, 164, 0.2), rgba(31, 180, 168, 0.13));
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.16);
+  background: var(--bg-card);
 }
 
 .msg-row.compact .msg-bubble {
@@ -2121,7 +2165,8 @@ button.sender-name:not(:disabled):hover {
   border: 1px solid var(--accent-line);
   background: var(--bg-card-2);
   color: var(--accent);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  /* Separated from the timeline beneath it by its own tonal step and border,
+     not by a resting shadow (DESIGN.md: flat by doctrine). */
   font-size: 12.5px;
   font-weight: 700;
 }
@@ -2228,7 +2273,10 @@ button.sender-name:not(:disabled):hover {
   margin-top: 8px;
   margin-left: 46px;
   padding-left: 14px;
-  border-left: 2px solid var(--blue-line);
+  /* A 1px quiet hairline, not a 2px coloured stripe: the indent already says
+     "these belong to the run above", so the rail is a divider and takes the
+     divider token (DESIGN.md forbids >1px coloured side borders as accents). */
+  border-left: 1px solid var(--border);
   /* Compositor-only reveal (no layout animation): the height change is instant
      — content is real DOM the moment it expands — so this never fights the
      ResizeObserver-driven scroll sync. Turned off under reduced motion below. */
@@ -2570,7 +2618,10 @@ button.sender-name:not(:disabled):hover {
   gap: 12px;
   padding: 14px;
   border-radius: 15px;
-  background: linear-gradient(135deg, rgba(106, 168, 247, 0.1), rgba(47, 214, 164, 0.035) 62%), var(--bg-card);
+  /* A single-hue tint wash within the documented ceiling. It used to blend
+     blue INTO emerald, which spent the accent on decoration and read as the
+     purple-blue-gradient anti-reference PRODUCT.md names. */
+  background: linear-gradient(135deg, rgba(106, 168, 247, 0.1), rgba(106, 168, 247, 0.02) 62%), var(--bg-card);
   border: 1px solid var(--border-strong);
 }
 
@@ -2583,33 +2634,6 @@ button.sender-name:not(:disabled):hover {
   margin-top: 4px;
   color: var(--text-dim);
   font-size: 12.5px;
-}
-
-.member-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
-  gap: 8px;
-  margin: 0;
-}
-
-.member-stats div {
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(7, 13, 16, 0.42);
-  border: 1px solid var(--border);
-}
-
-.member-stats dt {
-  color: var(--text-mute);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.member-stats dd {
-  margin: 2px 0 0;
-  color: var(--text);
-  font: 700 15px/1.2 var(--mono);
 }
 
 .members-section-head {
@@ -3820,7 +3844,6 @@ select {
   padding: 12px;
   background: #ffffff;
   border: 1px solid var(--border-strong);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
 }
 
 .invite-qr figcaption {
@@ -3984,72 +4007,6 @@ select {
   min-height: 0;
 }
 
-/* stat tiles */
-
-.fleet-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-.fleet-stat {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-}
-
-.fleet-stat-icon {
-  width: 38px;
-  height: 38px;
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  font-size: 18px;
-}
-
-.fleet-stat-icon.icon-green {
-  color: var(--accent);
-  background: var(--accent-dim);
-}
-
-.fleet-stat-icon.icon-amber {
-  color: var(--amber);
-  background: var(--amber-dim);
-}
-
-.fleet-stat-icon.icon-blue {
-  color: var(--blue);
-  background: rgba(106, 168, 247, 0.12);
-}
-
-.fleet-stat-body {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.fleet-stat-label {
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.fleet-stat-value {
-  font-size: 26px;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.fleet-stat-sub {
-  font-size: 11.5px;
-}
-
 /* needs attention — actionable agents, above the aggregate tiles (#69) */
 
 .fleet-attention {
@@ -4196,9 +4153,23 @@ select {
   border-color: var(--border);
 }
 
+/* Graphic marks ONLY, which is what the rule above sanctions — not a
+   contradiction of it. `.spark` is a pure sparkline, and `.fleet-hex` holds the
+   identity avatar, which is `aria-hidden` decoration whose meaning is already
+   carried by the agent name beside it. No information-bearing text is inside
+   either, so no contrast floor applies to them. */
 .fleet-card.tone-off .fleet-hex,
 .fleet-card.tone-off .spark {
   opacity: 0.5;
+}
+
+/* The Fleet's one aggregate fact, replacing the three-up hero-metric tile row
+   (#75). Room coverage is the only number on that row that was not already
+   rendered by a filter chip or the needs-attention badge — the other two were
+   the same fact told three times, which is what the consolidation criterion is
+   about, and identical KPI card grids are a named PRODUCT.md anti-reference. */
+.fleet-coverage {
+  margin-bottom: 18px;
 }
 
 .fleet-card.tone-live {
