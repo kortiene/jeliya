@@ -209,6 +209,8 @@ void main() {
     expect(en.panelFileAvailabilityLabel, "File availability");
     expect(en.panelFetchableNow, "Fetchable now");
     expect(en.panelProviderDevices, "Provider devices");
+    expect(en.panelFilesShareToggle, "Share a file");
+    expect(en.panelFilesShareToggleClose, "Close");
     expect(en.panelShareCardTitle, "Choose a file to share");
     expect(en.panelShareCardHelp, "Pick a local file. Jeliya uploads it to this daemon, imports it into the room blob store, and verifies it by content hash.");
     expect(en.panelHashCheckedBadge, "hash checked");
@@ -232,7 +234,7 @@ void main() {
     expect(en.panelKindBinary, "binary");
     expect(en.panelKindText, "text");
     expect(en.panelKindFile, "file");
-    expect(en.panelPipesEmpty, "No pipes yet — expose a local port to one authorized peer below.");
+    expect(en.panelPipesEmpty, "No pipes yet — expose a local port to one authorized peer above.");
     expect(en.panelConnect, "Connect");
     expect(en.panelConnecting, "Connecting…");
     expect(en.panelOpenPreview, "Open preview ↗");
@@ -363,7 +365,7 @@ void main() {
     expect(en.settingsCopiedDiagnostics, "Copied diagnostics");
     expect(en.settingsReportIssue, "Report issue");
     expect(en.settingsReportIssueLaunchFailed, "Couldn't open your browser. The diagnostics are on your clipboard — paste them into a new issue.");
-    expect(en.shellSelectRoom, "Select a room");
+    expect(en.shellSelectRoom, "Choose a room.");
     expect(en.shellUntitledRoom, "Untitled room");
     expect(en.shellBannerDisconnected, "Disconnected from daemon.");
     expect(en.shellConnConnected, "Connected");
@@ -407,6 +409,7 @@ void main() {
     expect(en.timelineSharedAFile, "shared a file");
     expect(en.timelineOpenedAPipe, "opened a pipe");
     expect(en.timelineOpenInPipes, "Open in Pipes");
+    expect(en.timelineOpenInFiles, "Open in Files");
     expect(en.timelineSomeone, "someone");
     expect(en.timelinePendingSending, "Sending…");
     expect(en.timelinePendingSyncing, "Sent locally, syncing…");

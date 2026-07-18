@@ -40,6 +40,18 @@ Finder _visiblePanel() => find.byType(RightPanel).hitTestable();
 Finder _panelTab(String label) => find.descendant(
     of: _visiblePanel(), matching: find.widgetWithText(InkWell, label));
 
+/// Scope a finder to the visible inspector. Files/pipes names also appear on
+/// the offstage timeline pane (IndexedStack keeps it built), so an unscoped
+/// text finder is ambiguous — the inspector's own copy is a descendant of the
+/// hit-testable RightPanel.
+Finder _inPanel(Finder matching) =>
+    find.descendant(of: _visiblePanel(), matching: matching);
+
+/// The Fetch control inside the visible inspector — scoped so an offstage
+/// timeline fetch tile can never be the one a test taps.
+Finder _panelFetch() =>
+    _inPanel(find.widgetWithText(TextButton, en.commonFetch));
+
 /// Reach a room tool from wherever the room-nav strip is on screen (the room's
 /// Activity pane or another tool's inspector — both carry the strip). The strip
 /// scrolls horizontally: five labels overflow a phone, so some tabs sit off an
@@ -136,8 +148,16 @@ void main() {
 
     expect(tester.widget<RightPanel>(_visiblePanel()).tab, RoomDest.files,
         reason: 'Share file navigates to the room Files tool');
+    // List-first (#67): sharing is one tap away behind a compact 'Share a file'
+    // button, not a form standing open. The button is on the visible pane, and
+    // tapping it reveals the share card.
+    final toggle = _inPanel(find.text(en.panelFilesShareToggle));
+    expect(toggle.hitTestable(), findsOneWidget,
+        reason: 'the Share a file toggle leads the visible Files pane');
+    await tester.tap(toggle.hitTestable());
+    await pumpSteps(tester, steps: 3);
     expect(find.text(en.panelShareCardTitle).hitTestable(), findsOneWidget,
-        reason: 'the share form is immediately in reach on a visible pane');
+        reason: 'the toggle reveals the share form');
   });
 
   testWidgets("deep link: chat header 'Open pipe' opens the visible Pipes "
@@ -156,8 +176,8 @@ void main() {
     expect(find.text('127.0.0.1:3000').hitTestable(), findsOneWidget);
   });
 
-  testWidgets("deep link: a timeline pipe tile's 'Open in Pipes' opens the "
-      'visible Pipes tool', (tester) async {
+  testWidgets("deep link: a timeline pipe tile's 'Open in Pipes' lands on the "
+      'Pipes tool WITH the pipe selected', (tester) async {
     await pumpReadyMobileApp(tester, newMockClient());
     await _openChat(tester);
 
@@ -166,9 +186,77 @@ void main() {
     await tester.tap(tile.hitTestable().first);
     await pumpSteps(tester, steps: 6);
 
-    expect(tester.widget<RightPanel>(_visiblePanel()).tab, RoomDest.pipes,
+    final panel = tester.widget<RightPanel>(_visiblePanel());
+    expect(panel.tab, RoomDest.pipes,
         reason: 'the pipe tile lands on the Pipes tool');
+    expect(panel.selectedItem, isNotNull,
+        reason: 'the tile deep-links to the pipe, not just the tool (#67)');
     expect(find.text('127.0.0.1:3000').hitTestable(), findsOneWidget);
+  });
+
+  testWidgets("deep link: a timeline file tile's 'Open in Files' lands on the "
+      'Files tool WITH the file selected, list intact', (tester) async {
+    await pumpReadyMobileApp(tester, newMockClient());
+    await _openChat(tester);
+
+    final tile = find.text(en.timelineOpenInFiles);
+    await _revealInTimeline(tester, tile);
+    await tester.tap(tile.hitTestable().first);
+    await pumpSteps(tester, steps: 6);
+
+    final panel = tester.widget<RightPanel>(_visiblePanel());
+    expect(panel.tab, RoomDest.files,
+        reason: 'the file tile lands on the Files tool');
+    expect(panel.selectedItem, isNotNull,
+        reason: 'the tile deep-links to the file, not just the tool (#67)');
+    // The list is not lost behind the opened inspector — the shared-files
+    // section head (uppercased) is still laid out on the pane.
+    expect(_inPanel(find.text(en.panelSharedInThisRoom.toUpperCase())),
+        findsOneWidget,
+        reason: 'the file list survives the deep link');
+  });
+
+  testWidgets(
+      'file-select deep link: tapping a file row opens its inspector without '
+      'losing the list', (tester) async {
+    await pumpReadyMobileApp(tester, newMockClient());
+    await _goToTool(tester, en.roomDestFiles);
+
+    // A fetchable, non-self fixture file (room-protocol.md is self-shared).
+    final row = _inPanel(find.text('wireframe.png'));
+    await tester.ensureVisible(row.first);
+    await tester.pump();
+    await tester.tap(row.hitTestable().first);
+    await pumpSteps(tester, steps: 4);
+
+    // The selection became route state (the panel reads it off the route).
+    expect(tester.widget<RightPanel>(_visiblePanel()).selectedItem, isNotNull,
+        reason: 'selecting a row is a deep link, not a local field');
+    // The contextual inspector opened: exactly the selected file's fetch
+    // control (single-selection — one control, not one per row).
+    expect(_panelFetch(), findsOneWidget,
+        reason: 'the selected file inspector renders its FetchControl');
+    // The list is intact: the section head (uppercased) and the other rows are
+    // still there.
+    expect(_inPanel(find.text(en.panelSharedInThisRoom.toUpperCase())),
+        findsOneWidget);
+    expect(_inPanel(find.text('room-protocol.md')), findsOneWidget);
+  });
+
+  testWidgets(
+      'pipe-select deep link: tapping a pipe row marks it selected on the route',
+      (tester) async {
+    await pumpReadyMobileApp(tester, newMockClient());
+    await _goToTool(tester, en.roomDestPipes);
+
+    final row = _inPanel(find.text('127.0.0.1:3000'));
+    await tester.ensureVisible(row.first);
+    await tester.pump();
+    await tester.tap(row.hitTestable().first);
+    await pumpSteps(tester, steps: 4);
+
+    expect(tester.widget<RightPanel>(_visiblePanel()).selectedItem, isNotNull,
+        reason: 'selecting a pipe row is a deep link the route carries');
   });
 
   testWidgets(
@@ -185,9 +273,11 @@ void main() {
 
     final panel = _visiblePanel();
     // The pane (and the route it is derived from): the visible inspector is
-    // Files, and its Files body is the one on screen.
+    // Files, and its Files body is the one on screen — the list-leading
+    // 'Share a file' toggle is Files-specific and always present.
     expect(tester.widget<RightPanel>(panel).tab, RoomDest.files);
-    expect(find.text(en.panelShareCardTitle).hitTestable(), findsOneWidget,
+    expect(_inPanel(find.text(en.panelFilesShareToggle)).hitTestable(),
+        findsOneWidget,
         reason: 'the Files tool body is the one on screen');
     // The strip: the Files tab is the selected one (aria-selected), so the tab
     // strip and the pane cannot say different things — both are the route. The
@@ -209,20 +299,27 @@ void main() {
     await pumpReadyMobileApp(tester, newMockClient());
     await _goToTool(tester, en.roomDestFiles);
 
+    // The health line is the always-visible honest summary in every row.
     // Exactly the one self-shared fixture file (room-protocol.md) serves.
     final serving = find.textContaining(en.panelHealthServingToPeers);
     await tester.ensureVisible(serving.first);
     await tester.pump();
     expect(serving, findsOneWidget);
-    expect(find.text(en.commonServing), findsOneWidget,
-        reason: 'the self-shared row carries the Serving pill, not a fetch');
-
     // The genuinely unavailable non-self file stays an honest amber state.
     expect(find.textContaining(en.commonNoProviderOnline), findsWidgets);
 
-    // Fetch renders only for available non-self unfetched files (3 in the
-    // fixture) — never for the self-shared or provider-less rows.
-    expect(find.widgetWithText(TextButton, en.commonFetch), findsNWidgets(3));
+    // Selecting the self-shared row opens its contextual inspector: the Serving
+    // pill, NEVER a fetch control (SELF-OWNED FILE SEMANTICS survives the move
+    // behind selection).
+    final selfRow = _inPanel(find.text('room-protocol.md'));
+    await tester.ensureVisible(selfRow.first);
+    await tester.pump();
+    await tester.tap(selfRow.hitTestable().first);
+    await pumpSteps(tester, steps: 4);
+    expect(find.text(en.commonServing), findsOneWidget,
+        reason: 'the self-shared inspector carries the Serving pill');
+    expect(find.widgetWithText(TextButton, en.commonFetch), findsNothing,
+        reason: 'a self-shared file is never offered a fetch');
   });
 
   testWidgets(
@@ -232,10 +329,18 @@ void main() {
         tester, _HashMismatchClient(newMockClient()));
     await _goToTool(tester, en.roomDestFiles);
 
-    final fetch = find.widgetWithText(TextButton, en.commonFetch);
-    await tester.ensureVisible(fetch.first);
+    // The fetch control lives in a selected file's inspector now (#67): select
+    // a fetchable non-self fixture file to reveal it.
+    final row = _inPanel(find.text('wireframe.png'));
+    await tester.ensureVisible(row.first);
     await tester.pump();
-    await tester.tap(fetch.first);
+    await tester.tap(row.hitTestable().first);
+    await pumpSteps(tester, steps: 4);
+
+    final fetch = _panelFetch();
+    await tester.ensureVisible(fetch);
+    await tester.pump();
+    await tester.tap(fetch);
     await pumpSteps(tester, steps: 6);
 
     expect(find.text(en.commonFailed), findsOneWidget);
@@ -243,8 +348,6 @@ void main() {
         reason: 'the integrity failure leads with plain language');
     expect(find.text(en.commonRetry), findsNothing,
         reason: 'hash_mismatch is a hard stop — retry is withheld');
-    expect(fetch, findsNWidgets(2),
-        reason: 'the other fetchable rows keep their controls');
   });
 
   testWidgets('room-tool actions meet the 44dp touch floor', (tester) async {
@@ -258,16 +361,29 @@ void main() {
           greaterThanOrEqualTo(44),
           reason: "room-nav tab '$label' is under the 44dp floor");
     }
+    // The share controls live behind the list-first 'Share a file' toggle now;
+    // reveal them, then measure.
+    await tester.tap(_inPanel(find.text(en.panelFilesShareToggle)).hitTestable());
+    await pumpSteps(tester, steps: 3);
     final chooseFile = find.widgetWithText(TextButton, en.panelChooseFile);
+    await tester.ensureVisible(chooseFile);
+    await tester.pump();
     expect(tester.getSize(chooseFile).height, greaterThanOrEqualTo(44));
     final share = find.widgetWithText(TextButton, en.panelShare);
     await tester.ensureVisible(share);
     await tester.pump();
     expect(tester.getSize(share).height, greaterThanOrEqualTo(44));
-    final fetch = find.widgetWithText(TextButton, en.commonFetch);
-    await tester.ensureVisible(fetch.first);
+    // The fetch control is in a selected file's inspector; select one, then
+    // measure.
+    final row = _inPanel(find.text('wireframe.png'));
+    await tester.ensureVisible(row.first);
     await tester.pump();
-    expect(tester.getSize(fetch.first).height, greaterThanOrEqualTo(44));
+    await tester.tap(row.hitTestable().first);
+    await pumpSteps(tester, steps: 4);
+    final fetch = _panelFetch();
+    await tester.ensureVisible(fetch);
+    await tester.pump();
+    expect(tester.getSize(fetch).height, greaterThanOrEqualTo(44));
 
     await _goToTool(tester, en.roomDestPipes);
     final connect = find.widgetWithText(TextButton, en.panelConnect);
@@ -303,7 +419,19 @@ void main() {
             reason: 'the inspector head carries the room name on compact');
 
         await _goToTool(tester, s.roomDestFiles);
+        // Reveal the share sheet (list-first: behind a toggle now) so its full
+        // layout participates in the overflow check.
+        await tester
+            .tap(_inPanel(find.text(s.panelFilesShareToggle)).hitTestable());
+        await pumpSteps(tester, steps: 3);
         expect(find.text(s.panelShareCardTitle), findsOneWidget);
+        // Select a non-self file so the contextual inspector (FetchControl +
+        // detail) lays out under the reflow too.
+        final fileRow = _inPanel(find.text('wireframe.png'));
+        await tester.ensureVisible(fileRow.first);
+        await tester.pump();
+        await tester.tap(fileRow.hitTestable().first);
+        await pumpSteps(tester, steps: 3);
 
         await _goToTool(tester, s.roomDestPeople);
         // A room tool covers the pane (there is no pushed detail route now); the

@@ -72,6 +72,9 @@ class MobileShell extends StatelessWidget {
     required this.onCreateRoom,
     required this.onJoinRoom,
     required this.onDest,
+    required this.onSelectItem,
+    required this.onShowFiles,
+    required this.onShowPipes,
     required this.onBackToRooms,
     required this.onInvite,
     required this.onLeaveRoom,
@@ -91,6 +94,16 @@ class MobileShell extends StatelessWidget {
 
   /// Room-nav taps (Activity included — closing a tool is navigating to it).
   final ValueChanged<RoomDest> onDest;
+
+  /// Select (or, with null, deselect) a file/pipe within the open tool — the
+  /// inspector's row taps become a deep link the route carries (#67).
+  final ValueChanged<String?> onSelectItem;
+
+  /// Timeline 'Open in Files' — deep-links into the Files tool and its file.
+  final ValueChanged<String> onShowFiles;
+
+  /// Timeline 'Open in Pipes' — deep-links into the Pipes tool and its pipe.
+  final ValueChanged<String?> onShowPipes;
 
   /// The room app bar's Back.
   final VoidCallback onBackToRooms;
@@ -139,6 +152,8 @@ class MobileShell extends StatelessWidget {
                     onBack: onBackToRooms,
                     onInvite: onInvite,
                     onDest: onDest,
+                    onShowFiles: onShowFiles,
+                    onShowPipes: onShowPipes,
                   ),
                   MobileInspectorPane(
                     roomId: route.roomId,
@@ -146,7 +161,11 @@ class MobileShell extends StatelessWidget {
                     // simply the first one — nothing reads it there, and a
                     // remembered last tool would be route state kept twice.
                     dest: route.inspectorDest ?? RoomDest.people,
+                    // The selected file/pipe id is route state (#67); the
+                    // inspector reads it and turns row taps back into a route.
+                    selectedItem: route.item,
                     onDest: onDest,
+                    onSelectItem: onSelectItem,
                     onLeaveRoom: onLeaveRoom,
                   ),
                   // Always mounted — the IndexedStack retains its state, so its

@@ -77,6 +77,8 @@ class RightPanel extends StatelessWidget {
     required this.onClose,
     required this.shell,
     required this.onLeaveRoom,
+    this.selectedItem,
+    this.onSelectItem,
     this.roomName,
     this.chrome = true,
     this.touchTargets = false,
@@ -92,6 +94,15 @@ class RightPanel extends StatelessWidget {
   /// Close the inspector — which is navigating to the room's Activity, not a
   /// local visibility toggle.
   final VoidCallback onClose;
+
+  /// The file/pipe id the route deep-links to, or null (#67). The active tool
+  /// reads it as its selected file (Files) or pipe (Pipes).
+  final String? selectedItem;
+
+  /// Select (or, with null, deselect) a file/pipe within the active tool; the
+  /// shell turns it into a route so the selection is a deep link that survives
+  /// a reload. Null on surfaces that never select an item.
+  final ValueChanged<String?>? onSelectItem;
 
   final Shell shell;
 
@@ -156,12 +167,16 @@ class RightPanel extends StatelessWidget {
           key: ValueKey('files-${room?.roomId}'),
           room: room,
           session: session,
+          selectedFileId: selectedItem,
+          onSelectFile: onSelectItem ?? (_) {},
           touchTargets: touchTargets,
         ),
       RoomDest.pipes => _PipesTab(
           key: ValueKey('pipes-${room?.roomId}'),
           room: room,
           session: session,
+          selectedPipeId: selectedItem,
+          onSelectPipe: onSelectItem ?? (_) {},
           touchTargets: touchTargets,
         ),
       // Activity is the workspace, not a tool: the shell closes this panel
@@ -966,11 +981,23 @@ class _FilesTab extends StatefulWidget {
     super.key,
     required this.room,
     required this.session,
+    required this.selectedFileId,
+    required this.onSelectFile,
     this.touchTargets = false,
   });
 
   final RoomStore? room;
   final DaemonSession session;
+
+  /// The file the route deep-links to, or null (#67). Its row is the one the
+  /// contextual inspector opens on — route state, never held here.
+  final String? selectedFileId;
+
+  /// Select a file row (navigates to `/rooms/:id/files/:fileId`) or null to
+  /// deselect. Toggling is expressed as a route by the shell; this tab only
+  /// asks for it.
+  final ValueChanged<String?> onSelectFile;
+
   final bool touchTargets;
 
   @override
@@ -983,6 +1010,21 @@ class _FilesTabState extends State<_FilesTab> {
   bool _sharing = false;
   RequestError? _shareError;
 
+  /// List-first (#67): sharing is a compact affordance that reveals the picker,
+  /// not a form standing open above the list. Local, ephemeral view state — the
+  /// sheet need not survive a reload the way the file *selection* (route state)
+  /// does.
+  bool _pickerOpen = false;
+
+  /// Per-row keys so a deep link (or an 'Open in Files' from the timeline) can
+  /// bring the selected row on screen — Flutter has no scrollIntoView, so we
+  /// locate the row and ask the enclosing Scrollable to reveal it.
+  final Map<String, GlobalKey> _rowKeys = {};
+
+  /// Fires the reveal once per selection: a manual scroll away is never yanked
+  /// back, and a dead deep link cannot loop.
+  String? _lastScrolled;
+
   @override
   void initState() {
     super.initState();
@@ -992,6 +1034,39 @@ class _FilesTabState extends State<_FilesTab> {
         setState(() => _selected = null);
       } else {
         setState(() {});
+      }
+    });
+    if (widget.selectedFileId != null) _scheduleReveal(widget.selectedFileId);
+  }
+
+  @override
+  void didUpdateWidget(_FilesTab old) {
+    super.didUpdateWidget(old);
+    if (widget.selectedFileId != old.selectedFileId) {
+      _scheduleReveal(widget.selectedFileId);
+    }
+  }
+
+  /// Bring [fileId]'s row into view after the frame that lays it out. Consumes
+  /// an id genuinely absent from the list so a dead deep link cannot loop.
+  void _scheduleReveal(String? fileId) {
+    if (fileId == null) {
+      _lastScrolled = null;
+      return;
+    }
+    if (fileId == _lastScrolled) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.selectedFileId != fileId) return;
+      final ctx = _rowKeys[fileId]?.currentContext;
+      if (ctx != null) {
+        // Instant, not animated: an in-flight scroll from a post-frame reveal
+        // would move a control out from under a pointer that lands on it.
+        Scrollable.ensureVisible(ctx, alignment: 0.1);
+        _lastScrolled = fileId;
+      } else if ((widget.room?.files ?? const <FileEntry>[])
+          .every((f) => f.fileId != fileId)) {
+        // In the list, but no such file: consume it so we do not re-check.
+        _lastScrolled = fileId;
       }
     });
   }
@@ -1083,7 +1158,14 @@ class _FilesTabState extends State<_FilesTab> {
       children: [
         _buildHero(context, files, availableCount, fetchedCount, servingCount),
         const SizedBox(height: JeliyaSpacing.x12),
-        _buildShareForm(context),
+        // List-first (#67): the file list leads; 'Share a file' is a compact
+        // button that reveals the picker sheet, not a form standing open above
+        // the list. The advanced-path disclosure stays kept inside the sheet.
+        _buildShareBar(context),
+        if (_pickerOpen) ...[
+          const SizedBox(height: JeliyaSpacing.x10),
+          _buildShareForm(context),
+        ],
         if (files.isNotEmpty) ...[
           const SizedBox(height: JeliyaSpacing.x12),
           _SectionHead(
@@ -1102,6 +1184,25 @@ class _FilesTabState extends State<_FilesTab> {
           ],
         ],
       ],
+    );
+  }
+
+  /// The compact 'Share a file' toggle that leads the list (#67). Open, it
+  /// reads panelFilesShareToggleClose and collapses the picker below.
+  Widget _buildShareBar(BuildContext context) {
+    final s = context.strings;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: _TouchFloor(
+        on: widget.touchTargets,
+        child: JeliyaButton(
+          label: _pickerOpen
+              ? s.panelFilesShareToggleClose
+              : s.panelFilesShareToggle,
+          variant: JeliyaButtonVariant.primary,
+          onPressed: () => setState(() => _pickerOpen = !_pickerOpen),
+        ),
+      ),
     );
   }
 
@@ -1378,152 +1479,195 @@ class _FilesTabState extends State<_FilesTab> {
                     ? (tokens.accent, s.panelHealthReadyToFetch)
                     : (tokens.amber, s.commonNoProviderOnline);
 
-    return Tooltip(
-      message: file.fileId,
-      child: Container(
-        padding: const EdgeInsets.all(JeliyaSpacing.x12),
-        decoration: BoxDecoration(
-          color: unavailable ? tokens.bgRaise : tokens.bgCard,
-          borderRadius: BorderRadius.circular(JeliyaRadii.bubble),
-          border: Border.all(color: tokens.border),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ExcludeSemantics(
-              child: Container(
-                width: 40,
-                height: 40,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: tint.withAlpha(0x22),
-                  borderRadius: BorderRadius.circular(JeliyaRadii.btn),
-                ),
-                child: Text(
-                  ext.length > 4 ? ext.substring(0, 4) : ext,
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.4,
-                      color: tint),
+    final selected = widget.selectedFileId == file.fileId;
+    final rowKey = _rowKeys.putIfAbsent(file.fileId, GlobalKey.new);
+
+    // Selecting a row opens its inspector at `/rooms/:id/files/:fileId`; the
+    // header is the tap target and the fetch/serving controls live below it,
+    // outside the tap, so no button nests inside a button (#67).
+    final header = InkWell(
+      onTap: () =>
+          widget.onSelectFile(selected ? null : file.fileId),
+      borderRadius: BorderRadius.circular(JeliyaRadii.bubble),
+      child: Semantics(
+        button: true,
+        expanded: selected,
+        child: Padding(
+          padding: const EdgeInsets.all(JeliyaSpacing.x12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ExcludeSemantics(
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: tint.withAlpha(0x22),
+                    borderRadius: BorderRadius.circular(JeliyaRadii.btn),
+                  ),
+                  child: Text(
+                    ext.length > 4 ? ext.substring(0, 4) : ext,
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.4,
+                        color: tint),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: JeliyaSpacing.x12 - 1),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          file.name,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: tokens.text),
+              const SizedBox(width: JeliyaSpacing.x12 - 1),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            file.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: tokens.text),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 7),
-                      Container(
-                        constraints: const BoxConstraints(maxWidth: 92),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: JeliyaSpacing.x6, vertical: 1),
-                        decoration: BoxDecoration(
-                          borderRadius:
-                              BorderRadius.circular(JeliyaRadii.pill),
-                          border: Border.all(color: tokens.borderStrong),
-                        ),
-                        child: Text(
-                          kind.toUpperCase(),
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 10.5, color: tokens.textMute),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 3),
-                  Wrap(
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text('${fmt.bytes(file.size)}${Tokens.metaSep}',
-                          style: JeliyaText.meta),
-                      SenderName(
-                        id: file.senderId,
-                        style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w500,
-                            color: tokens.textDim),
-                      ),
-                      Text(Tokens.metaSep + fmt.clock(file.ts),
-                          style: JeliyaText.meta),
-                    ],
-                  ),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: [
-                      _Dot(color: healthColor),
-                      const SizedBox(width: 5),
-                      Flexible(
-                        child: Text(
-                          '$healthText${Tokens.metaSep}'
-                          '${s.panelNProviders(file.providers)}',
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              TextStyle(fontSize: 11.5, color: healthColor),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: JeliyaSpacing.x8),
-                  if (mine)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Tooltip(
-                        message: s.commonServingTooltip,
-                        child: Container(
-                          constraints: const BoxConstraints(minHeight: 28),
+                        const SizedBox(width: 7),
+                        Container(
+                          constraints: const BoxConstraints(maxWidth: 92),
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 9, vertical: JeliyaSpacing.x4),
+                              horizontal: JeliyaSpacing.x6, vertical: 1),
                           decoration: BoxDecoration(
-                            color: tokens.bgCard2,
                             borderRadius:
                                 BorderRadius.circular(JeliyaRadii.pill),
                             border: Border.all(color: tokens.borderStrong),
                           ),
-                          child: Text(s.commonServing,
-                              style: TextStyle(
-                                  fontSize: 12, color: tokens.textDim)),
+                          child: Text(
+                            kind.toUpperCase(),
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 10.5, color: tokens.textMute),
+                          ),
                         ),
-                      ),
-                    )
-                  else ...[
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      // The floor reaches the single-button states (Fetch /
-                      // Fetching / Retry); the Wrap states keep their own
-                      // compact children (FetchControl internals).
-                      child: _TouchFloor(
-                        on: widget.touchTargets,
-                        child: FetchControl(
-                          state: state,
-                          availability: FetchAvailability(
-                              available: file.available,
-                              providers: file.providers),
-                          onFetch: () =>
-                              unawaited(room?.fetchFile(file.fileId)),
-                          onRecheck: () => unawaited(room?.refreshFiles()),
-                        ),
-                      ),
+                      ],
                     ),
-                    FetchDetail(state: state),
+                    const SizedBox(height: 3),
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text('${fmt.bytes(file.size)}${Tokens.metaSep}',
+                            style: JeliyaText.meta),
+                        SenderName(
+                          id: file.senderId,
+                          style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w500,
+                              color: tokens.textDim),
+                        ),
+                        Text(Tokens.metaSep + fmt.clock(file.ts),
+                            style: JeliyaText.meta),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        _Dot(color: healthColor),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            '$healthText${Tokens.metaSep}'
+                            '${s.panelNProviders(file.providers)}',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 11.5, color: healthColor),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
-                ],
+                ),
+              ),
+              const SizedBox(width: JeliyaSpacing.x6),
+              ExcludeSemantics(
+                child: Text(selected ? '▾' : '▸',
+                    style: TextStyle(fontSize: 13, color: tokens.textMute)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    // The contextual inspector: the selected file's fetch controls, honest
+    // state, and detail — the accounting unchanged, just moved behind selection
+    // so the list reads as a list (#67). Preserves SELF-OWNED FILE SEMANTICS:
+    // a self-shared file shows the Serving pill, never a fetch/fault.
+    final Widget inspector = mine
+        ? Align(
+            alignment: Alignment.centerLeft,
+            child: Tooltip(
+              message: s.commonServingTooltip,
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 28),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 9, vertical: JeliyaSpacing.x4),
+                decoration: BoxDecoration(
+                  color: tokens.bgCard2,
+                  borderRadius: BorderRadius.circular(JeliyaRadii.pill),
+                  border: Border.all(color: tokens.borderStrong),
+                ),
+                child: Text(s.commonServing,
+                    style: TextStyle(fontSize: 12, color: tokens.textDim)),
               ),
             ),
+          )
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                // The floor reaches the single-button states (Fetch /
+                // Fetching / Retry); the Wrap states keep their own compact
+                // children (FetchControl internals).
+                child: _TouchFloor(
+                  on: widget.touchTargets,
+                  child: FetchControl(
+                    state: state,
+                    availability: FetchAvailability(
+                        available: file.available,
+                        providers: file.providers),
+                    onFetch: () => unawaited(room?.fetchFile(file.fileId)),
+                    onRecheck: () => unawaited(room?.refreshFiles()),
+                  ),
+                ),
+              ),
+              FetchDetail(state: state),
+            ],
+          );
+
+    return Tooltip(
+      message: file.fileId,
+      child: Container(
+        key: rowKey,
+        decoration: BoxDecoration(
+          color: unavailable ? tokens.bgRaise : tokens.bgCard,
+          borderRadius: BorderRadius.circular(JeliyaRadii.bubble),
+          // Selected rows lift to the accent line so a deep link lands
+          // somewhere visibly distinct.
+          border: Border.all(
+              color: selected ? tokens.accentLine : tokens.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            header,
+            if (selected)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(JeliyaSpacing.x12, 0,
+                    JeliyaSpacing.x12, JeliyaSpacing.x12),
+                child: inspector,
+              ),
           ],
         ),
       ),
@@ -1684,11 +1828,23 @@ class _PipesTab extends StatefulWidget {
     super.key,
     required this.room,
     required this.session,
+    required this.selectedPipeId,
+    required this.onSelectPipe,
     this.touchTargets = false,
   });
 
   final RoomStore? room;
   final DaemonSession session;
+
+  /// The pipe the route deep-links to, or null (#67) — route state, not held
+  /// here. It drives the highlight and scroll-to that identify the row a
+  /// timeline 'Open in Pipes' referred to.
+  final String? selectedPipeId;
+
+  /// Select a pipe row (navigates to `/rooms/:id/pipes/:pipeId`) or null to
+  /// deselect.
+  final ValueChanged<String?> onSelectPipe;
+
   final bool touchTargets;
 
   @override
@@ -1701,10 +1857,48 @@ class _PipesTabState extends State<_PipesTab> {
   bool _exposing = false;
   RequestError? _exposeError;
 
+  /// Per-row keys, so the selected pipe (route state) can be brought on screen
+  /// — a deep link may name a row far down the list.
+  final Map<String, GlobalKey> _rowKeys = {};
+  String? _lastScrolled;
+
   @override
   void initState() {
     super.initState();
     _target.addListener(() => setState(() {}));
+    if (widget.selectedPipeId != null) _scheduleReveal(widget.selectedPipeId);
+  }
+
+  @override
+  void didUpdateWidget(_PipesTab old) {
+    super.didUpdateWidget(old);
+    if (widget.selectedPipeId != old.selectedPipeId) {
+      _scheduleReveal(widget.selectedPipeId);
+    }
+  }
+
+  /// Bring [pipeId]'s row into view after the frame that lays it out; fires
+  /// once per selection and consumes an absent id so a dead deep link can't
+  /// loop.
+  void _scheduleReveal(String? pipeId) {
+    if (pipeId == null) {
+      _lastScrolled = null;
+      return;
+    }
+    if (pipeId == _lastScrolled) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.selectedPipeId != pipeId) return;
+      final ctx = _rowKeys[pipeId]?.currentContext;
+      if (ctx != null) {
+        // Instant, not animated: an in-flight scroll from a post-frame reveal
+        // would move a control out from under a pointer that lands on it.
+        Scrollable.ensureVisible(ctx, alignment: 0.1);
+        _lastScrolled = pipeId;
+      } else if ((widget.room?.pipes ?? const <PipeEntry>[])
+          .every((p) => p.pipeId != pipeId)) {
+        _lastScrolled = pipeId;
+      }
+    });
   }
 
   @override
@@ -1744,16 +1938,23 @@ class _PipesTabState extends State<_PipesTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Action-first (#67): Open Pipe is reachable first — the expose form
+        // leads, the existing pipes stay visible below it. Hoisting the action
+        // never hides the state.
+        _buildExposeForm(context),
+        const SizedBox(height: JeliyaSpacing.x12),
         if (pipes.isEmpty) _PanelEmpty(s.panelPipesEmpty),
         for (final pipe in pipes) ...[
           _PipeRow(
+              key: _rowKeys.putIfAbsent(pipe.pipeId, GlobalKey.new),
               pipe: pipe,
               room: widget.room,
+              selected: widget.selectedPipeId == pipe.pipeId,
+              onSelect: () => widget.onSelectPipe(
+                  widget.selectedPipeId == pipe.pipeId ? null : pipe.pipeId),
               touchTargets: widget.touchTargets),
           const SizedBox(height: JeliyaSpacing.x10),
         ],
-        const SizedBox(height: JeliyaSpacing.x6),
-        _buildExposeForm(context),
       ],
     );
   }
@@ -1893,13 +2094,24 @@ class _PipesTabState extends State<_PipesTab> {
 
 class _PipeRow extends StatelessWidget {
   const _PipeRow({
+    super.key,
     required this.pipe,
     required this.room,
+    required this.selected,
+    required this.onSelect,
     this.touchTargets = false,
   });
 
   final PipeEntry pipe;
   final RoomStore? room;
+
+  /// True when the route deep-links to this pipe — the row is highlighted and
+  /// scrolled into view so an 'Open in Pipes' lands somewhere visible (#67).
+  final bool selected;
+
+  /// Toggle this pipe as the route's selected item.
+  final VoidCallback onSelect;
+
   final bool touchTargets;
 
   @override
@@ -1929,53 +2141,71 @@ class _PipeRow extends StatelessWidget {
         // never dims below the AA floor.
         color: closed ? tokens.bgRaise : tokens.bgCard,
         borderRadius: BorderRadius.circular(JeliyaRadii.composer),
-        border: Border.all(color: tokens.border),
+        // Selected rows lift to the accent line so a deep link lands somewhere
+        // visibly distinct (#67).
+        border: Border.all(color: selected ? tokens.accentLine : tokens.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              ExcludeSemantics(
-                child: Opacity(
-                  opacity: closed ? 0.5 : 1,
-                  child: Container(
-                    width: 34,
-                    height: 34,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: tokens.accentDim,
-                      borderRadius: BorderRadius.circular(JeliyaRadii.btn),
+          // Selecting a pipe opens it at `/rooms/:id/pipes/:pipeId`. The head
+          // (icon + target + state chip) is the tap target; the connect/close
+          // actions stay outside it so no button nests inside a button.
+          InkWell(
+            onTap: onSelect,
+            borderRadius: BorderRadius.circular(JeliyaRadii.btn),
+            child: Semantics(
+              button: true,
+              expanded: selected,
+              child: _TouchFloor(
+                on: touchTargets,
+                child: Row(
+                  children: [
+                    ExcludeSemantics(
+                      child: Opacity(
+                        opacity: closed ? 0.5 : 1,
+                        child: Container(
+                          width: 34,
+                          height: 34,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: tokens.accentDim,
+                            borderRadius:
+                                BorderRadius.circular(JeliyaRadii.btn),
+                          ),
+                          child: Text(Tokens.pipeIcon,
+                              style: TextStyle(
+                                  fontSize: 17, color: tokens.accent)),
+                        ),
+                      ),
                     ),
-                    child: Text(Tokens.pipeIcon,
-                        style:
-                            TextStyle(fontSize: 17, color: tokens.accent)),
-                  ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        pipe.target,
+                        overflow: TextOverflow.ellipsis,
+                        style: JeliyaText.mono(
+                            fontSize: 12.9,
+                            color: tokens.text,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    const SizedBox(width: 9),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: JeliyaSpacing.x8,
+                          vertical: JeliyaSpacing.x2),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(JeliyaRadii.pill),
+                        border: Border.all(color: chipBorder),
+                      ),
+                      child: Text(chipText,
+                          style: TextStyle(fontSize: 11, color: chipColor)),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(
-                  pipe.target,
-                  overflow: TextOverflow.ellipsis,
-                  style: JeliyaText.mono(
-                      fontSize: 12.9,
-                      color: tokens.text,
-                      fontWeight: FontWeight.w600),
-                ),
-              ),
-              const SizedBox(width: 9),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: JeliyaSpacing.x8, vertical: JeliyaSpacing.x2),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(JeliyaRadii.pill),
-                  border: Border.all(color: chipBorder),
-                ),
-                child: Text(chipText,
-                    style: TextStyle(fontSize: 11, color: chipColor)),
-              ),
-            ],
+            ),
           ),
           const SizedBox(height: 5),
           templateText(

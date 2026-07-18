@@ -230,10 +230,20 @@ const double _bubbleMaxWidth = 520;
 const double _agentCardMaxWidth = 620;
 
 class TimelineView extends StatefulWidget {
-  const TimelineView({super.key, required this.onShowPipes});
+  const TimelineView({
+    super.key,
+    required this.onShowPipes,
+    required this.onShowFiles,
+  });
 
-  /// 'Open in Pipes' on pipe tiles — switches the right panel tab.
-  final VoidCallback onShowPipes;
+  /// 'Open in Pipes' on pipe tiles — deep-links into the Pipes tool AND the
+  /// pipe the tile refers to (its id, or null when the tile has none), the
+  /// route carrying both which tool and which item (#67).
+  final ValueChanged<String?> onShowPipes;
+
+  /// 'Open in Files' on shared-file tiles — the symmetric deep link into the
+  /// Files tool and the file the tile shared (#67).
+  final ValueChanged<String> onShowFiles;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -1339,10 +1349,26 @@ class _TimelineViewState extends State<TimelineView> {
       ),
     );
 
-    if (own) return tile;
+    // Deep link into the Files workspace on this file (#67), the counterpart
+    // to the pipe tile's 'Open in Pipes'. The Files tool handles a target that
+    // has not synced into file.list yet.
+    final openInFiles = Padding(
+      padding: const EdgeInsets.only(top: JeliyaSpacing.x8),
+      child: JeliyaButton(
+        label: s.timelineOpenInFiles,
+        size: JeliyaButtonSize.sm,
+        onPressed: () => widget.onShowFiles(file.fileId),
+      ),
+    );
+    if (own) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [tile, openInFiles],
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [tile, FetchDetail(state: state)],
+      children: [tile, FetchDetail(state: state), openInFiles],
     );
   }
 
@@ -1476,14 +1502,14 @@ class _TimelineViewState extends State<TimelineView> {
               child: JeliyaButton(
                 label: s.timelineOpenInPipes,
                 size: JeliyaButtonSize.sm,
-                onPressed: widget.onShowPipes,
+                onPressed: () => widget.onShowPipes(pipe.pipeId),
               ),
             )
           else
             JeliyaButton(
               label: s.timelineOpenInPipes,
               size: JeliyaButtonSize.sm,
-              onPressed: widget.onShowPipes,
+              onPressed: () => widget.onShowPipes(pipe.pipeId),
             ),
         ],
       ),

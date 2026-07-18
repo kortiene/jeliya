@@ -36,6 +36,17 @@ Future<void> _pumpFrenchShell(WidgetTester tester) async {
 Finder _inPanel(Finder matching) =>
     find.descendant(of: find.byType(RightPanel), matching: matching);
 
+/// Switch the open French drawer to [label]'s tool. The 5-tab strip scrolls at
+/// the 360dp drawer width under wide French copy, so reveal the tab before
+/// tapping (ensureVisible scrolls the horizontal strip).
+Future<void> _openDrawerTool(WidgetTester tester, String label) async {
+  final tab = _inPanel(find.text(label));
+  await tester.ensureVisible(tab.first);
+  await tester.pump();
+  await tester.tap(tab.hitTestable().first);
+  await pumpSteps(tester, steps: 4);
+}
+
 void main() {
   testWidgets('fr roster: the self-owner row lays out horizontally',
       (tester) async {
@@ -107,5 +118,54 @@ void main() {
     // or ellipsizing — the graceful degradation the rigid strip lacked.
     expect(position.maxScrollExtent, greaterThan(0),
         reason: 'wide French copy must scroll the strip, not clip it');
+  });
+
+  testWidgets(
+      'fr reflow: the list-first Files tool holds at the 360dp drawer (#67)',
+      (tester) async {
+    await _pumpFrenchShell(tester);
+    await _openDrawerTool(tester, fr.roomDestFiles);
+
+    // List-first: the 'Partager un fichier' toggle leads and the share card is
+    // NOT standing open above the list.
+    expect(_inPanel(find.text(fr.panelFilesShareToggle)).hitTestable(),
+        findsOneWidget);
+    expect(_inPanel(find.text(fr.panelShareCardTitle)), findsNothing,
+        reason: 'the share card is behind the toggle, not open above the list');
+
+    // The #14 clip guard on the reflowed panel: the shared-files section head's
+    // French title keeps its full intrinsic width (it ellipsizes under overflow
+    // pressure, so a shortfall is the clip this file exists to catch).
+    final headTitle = fr.panelSharedInThisRoom.toUpperCase();
+    final scaler =
+        TextScaler.linear(tester.platformDispatcher.textScaleFactor);
+    final painter = TextPainter(
+      text: TextSpan(
+          text: headTitle,
+          style: const TextStyle(fontSize: 12, letterSpacing: 0.72)),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+    )..layout();
+    final rendered = tester.getSize(_inPanel(find.text(headTitle)).first);
+    expect(rendered.width, greaterThanOrEqualTo(painter.width - 0.5),
+        reason: 'the Files section head clips under wide French copy');
+
+    // Revealing the sheet brings the share card into reach.
+    await tester
+        .tap(_inPanel(find.text(fr.panelFilesShareToggle)).hitTestable());
+    await pumpSteps(tester, steps: 3);
+    expect(_inPanel(find.text(fr.panelShareCardTitle)), findsOneWidget);
+  });
+
+  testWidgets(
+      'fr reflow: the action-first Pipes tool leads with the expose form (#67)',
+      (tester) async {
+    await _pumpFrenchShell(tester);
+    await _openDrawerTool(tester, fr.roomDestPipes);
+
+    // Action-first: the expose form leads; the live pipes stay visible below.
+    expect(_inPanel(find.text(fr.panelExposeTitle)), findsOneWidget);
+    expect(_inPanel(find.text('127.0.0.1:3000')), findsWidgets,
+        reason: 'existing pipes remain visible below the hoisted form');
   });
 }

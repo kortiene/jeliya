@@ -160,6 +160,34 @@ class _ShellScreenState extends State<ShellScreen> {
 
   void _closeInspector() => _goToDest(RoomDest.activity);
 
+  /// Select (or, with null, deselect) a file/pipe within the tool the route is
+  /// already on. Selection is a deep link — `/rooms/:id/files/:fileId` — so it
+  /// survives a reload and the inspector reads it off the route, never a local
+  /// field that a rebuild could drop (#67).
+  void _selectRoomItem(String? itemId) {
+    final roomId = _route.roomId;
+    final dest = _route.inspectorDest;
+    if (roomId == null || dest == null) return;
+    if (dest != RoomDest.files && dest != RoomDest.pipes) return;
+    _navigate(RoomRoute(roomId, dest, itemId));
+  }
+
+  /// A timeline 'Open in Files' — deep-links to the Files tool AND the file the
+  /// tile shared. One navigation carries both which tool and which item (#67).
+  void _showFiles(String? fileId) {
+    final roomId = _route.roomId;
+    if (roomId == null) return;
+    _navigate(RoomRoute(roomId, RoomDest.files, fileId));
+  }
+
+  /// A timeline 'Open in Pipes' — the symmetric deep link into the Pipes tool
+  /// and the pipe the tile opened (#67).
+  void _showPipes(String? pipeId) {
+    final roomId = _route.roomId;
+    if (roomId == null) return;
+    _navigate(RoomRoute(roomId, RoomDest.pipes, pipeId));
+  }
+
   void _backToRooms() => _navigate(kRoomsRoute);
 
   /// System and predictive Back, on every shell: a room tool falls back to the
@@ -293,6 +321,9 @@ class _ShellScreenState extends State<ShellScreen> {
               onCreateRoom: _openCreateRoom,
               onJoinRoom: _openJoinRoom,
               onDest: _goToDest,
+              onSelectItem: _selectRoomItem,
+              onShowFiles: _showFiles,
+              onShowPipes: _showPipes,
               onBackToRooms: _backToRooms,
               onInvite: _openInvite,
               onLeaveRoom: _openLeaveRoom,
@@ -362,6 +393,8 @@ class _ShellScreenState extends State<ShellScreen> {
                                     onDest: _goToDest,
                                     onClose: _closeInspector,
                                     shell: shell,
+                                    selectedItem: _route.item,
+                                    onSelectItem: _selectRoomItem,
                                     onLeaveRoom: _openLeaveRoom,
                                   ),
                                 ),
@@ -408,6 +441,8 @@ class _ShellScreenState extends State<ShellScreen> {
                               onDest: _goToDest,
                               onClose: _closeInspector,
                               shell: shell,
+                              selectedItem: _route.item,
+                              onSelectItem: _selectRoomItem,
                               onLeaveRoom: _openLeaveRoom,
                             ),
                           ),
@@ -488,7 +523,8 @@ class _ShellScreenState extends State<ShellScreen> {
             Expanded(
               child: TimelineView(
                 key: ValueKey(room.roomId),
-                onShowPipes: () => _goToDest(RoomDest.pipes),
+                onShowPipes: _showPipes,
+                onShowFiles: _showFiles,
               ),
             ),
             const Composer(),

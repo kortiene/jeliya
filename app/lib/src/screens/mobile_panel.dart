@@ -31,7 +31,9 @@ class MobileInspectorPane extends StatelessWidget {
     super.key,
     required this.roomId,
     required this.dest,
+    required this.selectedItem,
     required this.onDest,
+    required this.onSelectItem,
     required this.onLeaveRoom,
   });
 
@@ -41,7 +43,13 @@ class MobileInspectorPane extends StatelessWidget {
   /// The tool to show.
   final RoomDest dest;
 
+  /// The selected file/pipe id the route deep-links to, or null (#67).
+  final String? selectedItem;
+
   final ValueChanged<RoomDest> onDest;
+
+  /// Select (or, with null, deselect) a file/pipe within [dest].
+  final ValueChanged<String?> onSelectItem;
   final VoidCallback onLeaveRoom;
 
   @override
@@ -61,6 +69,8 @@ class MobileInspectorPane extends StatelessWidget {
       onClose: () => onDest(RoomDest.activity),
       shell: Shell.compact,
       roomName: summary?.name ?? s.shellUntitledRoom,
+      selectedItem: selectedItem,
+      onSelectItem: onSelectItem,
       onLeaveRoom: onLeaveRoom,
       chrome: false,
       touchTargets: true,

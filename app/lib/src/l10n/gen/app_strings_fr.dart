@@ -849,6 +849,12 @@ class AppStringsFr extends AppStrings {
   String get panelProviderDevices => 'Appareils fournisseurs';
 
   @override
+  String get panelFilesShareToggle => 'Partager un fichier';
+
+  @override
+  String get panelFilesShareToggleClose => 'Fermer';
+
+  @override
   String get panelShareCardTitle => 'Choisir un fichier à partager';
 
   @override
@@ -944,7 +950,7 @@ class AppStringsFr extends AppStrings {
 
   @override
   String get panelPipesEmpty =>
-      'Aucun pipe pour l’instant — exposez ci-dessous un port local à un seul pair autorisé.';
+      'Aucun pipe pour l’instant — exposez ci-dessus un port local à un seul pair autorisé.';
 
   @override
   String panelPipeMeta(String openedBy, String authorized) {
@@ -1458,7 +1464,7 @@ class AppStringsFr extends AppStrings {
       'Impossible d’ouvrir votre navigateur. Les diagnostics sont dans votre presse-papiers — collez-les dans un nouveau ticket.';
 
   @override
-  String get shellSelectRoom => 'Sélectionnez un salon';
+  String get shellSelectRoom => 'Choisissez un salon.';
 
   @override
   String get shellUntitledRoom => 'Salon sans titre';
@@ -1651,6 +1657,9 @@ class AppStringsFr extends AppStrings {
 
   @override
   String get timelineOpenInPipes => 'Ouvrir dans Pipes';
+
+  @override
+  String get timelineOpenInFiles => 'Ouvrir dans Files';
 
   @override
   String timelineAuthorizedPeer(String peer) {

@@ -1093,6 +1093,14 @@
   "@panelProviderDevices": {
     "description": "Stat tile label on the Files tab: number of devices currently able to provide (serve) files."
   },
+  "panelFilesShareToggle": "Share a file",
+  "@panelFilesShareToggle": {
+    "description": "Compact button that leads the Files tab (list-first): tapping it reveals the share-a-file picker sheet below. When the sheet is open the button reads panelFilesShareToggleClose instead."
+  },
+  "panelFilesShareToggleClose": "Close",
+  "@panelFilesShareToggleClose": {
+    "description": "Label of the 'Share a file' toggle button when the share picker sheet is open; tapping it collapses the sheet. This is a hide/collapse 'Close', not ending a connection."
+  },
   "panelShareCardTitle": "Choose a file to share",
   "@panelShareCardTitle": {
     "description": "Heading of the share-a-file card on the Files tab."
@@ -1212,9 +1220,9 @@
   "@panelKindFile": {
     "description": "Generic file kind label in a file row's meta line when the type is unknown. Deliberately lowercase in English."
   },
-  "panelPipesEmpty": "No pipes yet — expose a local port to one authorized peer below.",
+  "panelPipesEmpty": "No pipes yet — expose a local port to one authorized peer above.",
   "@panelPipesEmpty": {
-    "description": "Empty state of the Pipes tab, pointing at the expose form below it. 'Pipe' is the product term for a forwarded local port."
+    "description": "Empty state of the Pipes tab, pointing at the expose form above it (the Pipes tab is action-first: the expose form leads). 'Pipe' is the product term for a forwarded local port."
   },
   "panelPipeMeta": "by {openedBy} · authorized: {authorized}",
   "@panelPipeMeta": {
@@ -1860,9 +1868,9 @@
   "@settingsReportIssueLaunchFailed": {
     "description": "Inline note in the Settings support card shown when 'Report issue' copied the diagnostics but could not open the browser to the new-issue page. Reassures the user the diagnostics are already on the clipboard and tells them to paste into a new issue manually. Contains a spaced em dash (—); keep the trailing period."
   },
-  "shellSelectRoom": "Select a room",
+  "shellSelectRoom": "Choose a room.",
   "@shellSelectRoom": {
-    "description": "Empty-state headline shown wherever room-scoped content has no room yet: the desktop shell's center column, and the mobile Pipes/Files tabs and room screens. Imperative prompt inviting the user to pick a room (from the sidebar or the Rooms tab)."
+    "description": "Empty-state headline shown wherever room-scoped content has no room yet: the desktop shell's center column, and the mobile Pipes/Files tabs and room screens. Imperative prompt inviting the user to pick a room (from the sidebar or the Rooms tab). Both clients say the same sentence (web parity). Keep the trailing period."
   },
   "shellUntitledRoom": "Untitled room",
   "@shellUntitledRoom": {
@@ -2154,6 +2162,10 @@
   "timelineOpenInPipes": "Open in Pipes",
   "@timelineOpenInPipes": {
     "description": "Action on a pipe tile in the timeline that jumps to the Pipes panel. “Pipes” is the panel's name — match its translated title."
+  },
+  "timelineOpenInFiles": "Open in Files",
+  "@timelineOpenInFiles": {
+    "description": "Action on a shared-file tile in the timeline that jumps to the Files panel and selects that file (deep link). The counterpart to timelineOpenInPipes. “Files” is the panel's name — match its translated title."
   },
   "timelineAuthorizedPeer": "authorized peer: {peer}",
   "@timelineAuthorizedPeer": {

@@ -1454,6 +1454,18 @@ abstract class AppStrings {
   /// **'Provider devices'**
   String get panelProviderDevices;
 
+  /// Compact button that leads the Files tab (list-first): tapping it reveals the share-a-file picker sheet below. When the sheet is open the button reads panelFilesShareToggleClose instead.
+  ///
+  /// In en, this message translates to:
+  /// **'Share a file'**
+  String get panelFilesShareToggle;
+
+  /// Label of the 'Share a file' toggle button when the share picker sheet is open; tapping it collapses the sheet. This is a hide/collapse 'Close', not ending a connection.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get panelFilesShareToggleClose;
+
   /// Heading of the share-a-file card on the Files tab.
   ///
   /// In en, this message translates to:
@@ -1610,10 +1622,10 @@ abstract class AppStrings {
   /// **'file'**
   String get panelKindFile;
 
-  /// Empty state of the Pipes tab, pointing at the expose form below it. 'Pipe' is the product term for a forwarded local port.
+  /// Empty state of the Pipes tab, pointing at the expose form above it (the Pipes tab is action-first: the expose form leads). 'Pipe' is the product term for a forwarded local port.
   ///
   /// In en, this message translates to:
-  /// **'No pipes yet — expose a local port to one authorized peer below.'**
+  /// **'No pipes yet — expose a local port to one authorized peer above.'**
   String get panelPipesEmpty;
 
   /// Meta line under a pipe row: who opened the pipe and which peer may connect. Both placeholders are styled spans the app splits on: {openedBy} and {authorized} are replaced by clickable member-name widgets (or the 'You' word / an em-dash when there is no peer). Keep both placeholders; reorder freely.
@@ -2462,10 +2474,10 @@ abstract class AppStrings {
   /// **'Couldn\'t open your browser. The diagnostics are on your clipboard — paste them into a new issue.'**
   String get settingsReportIssueLaunchFailed;
 
-  /// Empty-state headline shown wherever room-scoped content has no room yet: the desktop shell's center column, and the mobile Pipes/Files tabs and room screens. Imperative prompt inviting the user to pick a room (from the sidebar or the Rooms tab).
+  /// Empty-state headline shown wherever room-scoped content has no room yet: the desktop shell's center column, and the mobile Pipes/Files tabs and room screens. Imperative prompt inviting the user to pick a room (from the sidebar or the Rooms tab). Both clients say the same sentence (web parity). Keep the trailing period.
   ///
   /// In en, this message translates to:
-  /// **'Select a room'**
+  /// **'Choose a room.'**
   String get shellSelectRoom;
 
   /// Fallback display name for a room that has no title, supplied by the app shell wherever the room name would appear. Keep it short and neutral, like an unnamed-document placeholder.
@@ -2791,6 +2803,12 @@ abstract class AppStrings {
   /// In en, this message translates to:
   /// **'Open in Pipes'**
   String get timelineOpenInPipes;
+
+  /// Action on a shared-file tile in the timeline that jumps to the Files panel and selects that file (deep link). The counterpart to timelineOpenInPipes. “Files” is the panel's name — match its translated title.
+  ///
+  /// In en, this message translates to:
+  /// **'Open in Files'**
+  String get timelineOpenInFiles;
 
   /// Note on a pipe tile saying which peer is allowed to connect. Lowercase in English. {peer} is a styled span: the clickable peer-name widget, or an em dash when no peer is set — reorder it freely but keep it in the sentence.
   ///

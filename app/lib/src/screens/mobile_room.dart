@@ -120,6 +120,8 @@ class MobileRoomScreen extends StatelessWidget {
     required this.onBack,
     required this.onInvite,
     required this.onDest,
+    required this.onShowFiles,
+    required this.onShowPipes,
   });
 
   /// The room the route names. The pane renders THIS room or none: a store
@@ -130,6 +132,11 @@ class MobileRoomScreen extends StatelessWidget {
   final VoidCallback onBack;
   final VoidCallback onInvite;
   final ValueChanged<RoomDest> onDest;
+
+  /// Timeline 'Open in Files' / 'Open in Pipes' — deep-link into the tool AND
+  /// the file/pipe the tile refers to (#67).
+  final ValueChanged<String> onShowFiles;
+  final ValueChanged<String?> onShowPipes;
 
   @override
   Widget build(BuildContext context) {
@@ -185,7 +192,8 @@ class MobileRoomScreen extends StatelessWidget {
             Expanded(
               child: TimelineView(
                 key: ValueKey(room.roomId),
-                onShowPipes: () => onDest(RoomDest.pipes),
+                onShowPipes: onShowPipes,
+                onShowFiles: onShowFiles,
               ),
             ),
             const Composer(),
