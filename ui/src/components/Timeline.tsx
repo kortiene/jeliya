@@ -2,8 +2,27 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DaemonErrorShape, FileEntry, FileRef, TimelineEvent } from '../lib/protocol';
 import { dayLabel, extOf, fileTint, formatBytes, formatTime, labelTone, prettyLabel, shortId } from '../lib/format';
+import {
+  ACTIVITY_CATEGORIES,
+  activityBreakdown,
+  groupRuns,
+  isAllMessages,
+  matchesActivityFilter,
+  runSummary,
+} from '../lib/timelineRuns';
+import type { ActivityCategory, TimelineRun } from '../lib/timelineRuns';
 import { Avatar, FetchControl, FetchDetail, ProgressBar, SenderName } from './ui';
 import type { FetchAvailability, FetchState } from './ui';
+
+/** The five view-only activity filters, in the shared contract's order. Labels
+ *  are display-only; the category keys drive `matchesActivityFilter`. */
+const ACTIVITY_LABELS: Record<ActivityCategory, string> = {
+  conversation: 'Conversation',
+  'agent-runs': 'Agent runs',
+  membership: 'Membership',
+  files: 'Files',
+  pipes: 'Pipes',
+};
 
 export interface PendingMessage {
   clientId: string;
@@ -72,6 +91,110 @@ function FileTile({
         )}
       </div>
       {isSelfOwned ? null : <FetchDetail state={state} />}
+    </div>
+  );
+}
+
+/** One signed `agent_status` update, rendered identically whether it stands
+ *  alone or is one of the cards a run reveals when expanded (issue #65). Only
+ *  real evidence: the sender, the signed timestamp, the label + its tone, the
+ *  status message, real progress, real artifacts. */
+function AgentStatusCard({
+  event,
+  files,
+  selfId,
+}: {
+  event: TimelineEvent;
+  files: FileEntry[];
+  selfId: string | null;
+}) {
+  const senderId = event.sender.identity_id;
+  const time = formatTime(event.ts);
+  const isOwn = selfId !== null && senderId === selfId;
+  const label = event.label ?? 'status';
+  const artifacts = event.artifacts ?? [];
+  return (
+    <div className={`event-card agent-work-card${isOwn ? ' own' : ''}`}>
+      {isOwn ? null : <Avatar id={senderId} />}
+      <div className="event-main">
+        <div className="event-head">
+          <SenderName id={senderId} className="event-sender" />
+          <span className="chip chip-role">AGENT</span>
+          <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
+          <span className={`chip chip-label tone-${labelTone(label)}`}>{prettyLabel(label)}</span>
+        </div>
+        <div className="agent-work-title">
+          <span aria-hidden="true">✦</span>
+          <strong>{prettyLabel(label)}</strong>
+        </div>
+        {event.status_message ? <p className="event-text">{event.status_message}</p> : null}
+        {typeof event.progress === 'number' ? (
+          <div className="progress-row">
+            <ProgressBar value={event.progress} />
+            <span className="progress-num">{Math.max(0, Math.min(100, event.progress))}%</span>
+          </div>
+        ) : null}
+        {artifacts.length > 0 ? (
+          <div className="artifact-row">
+            {artifacts.map((fileId) => {
+              const file = files.find((f) => f.file_id === fileId);
+              return (
+                <span key={fileId} className="chip chip-artifact" title={fileId}>
+                  <span aria-hidden="true">⎘</span>
+                  {file ? file.name : shortId(fileId)}
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** A folded run of ≥2 consecutive same-sender `agent_status` updates (issue
+ *  #65). Collapsed, it shows exactly the LATEST signed status (as one
+ *  AgentStatusCard) plus honest run evidence from `runSummary` — the count and
+ *  the real first→last time span — and a disclosure. Expanded, it reveals every
+ *  original update in chronological order: history is only folded, never lost.
+ *  The reveal is a compositor-only fade that `prefers-reduced-motion` turns off
+ *  (see styles.css), so a reduced-motion reader gets an instant show/hide. */
+function RunCard({
+  run,
+  files,
+  selfId,
+  expanded,
+  onToggle,
+}: {
+  run: TimelineRun;
+  files: FileEntry[];
+  selfId: string | null;
+  expanded: boolean;
+  onToggle(): void;
+}) {
+  const summary = runSummary(run);
+  const span =
+    summary.firstTs === summary.lastTs
+      ? formatTime(summary.firstTs)
+      : `${formatTime(summary.firstTs)}–${formatTime(summary.lastTs)}`;
+  return (
+    <div className="agent-run">
+      <AgentStatusCard event={summary.latest} files={files} selfId={selfId} />
+      <div className="agent-run-controls">
+        <span className="agent-run-count">
+          {summary.count} updates · {span}
+        </span>
+        <button type="button" className="text-btn agent-run-toggle" aria-expanded={expanded} onClick={onToggle}>
+          {expanded ? 'Hide' : `Show ${summary.count} updates`}
+        </button>
+      </div>
+      {expanded ? (
+        <div className="agent-run-history">
+          {run.events.map((e) => (
+            <AgentStatusCard key={e.event_id} event={e} files={files} selfId={selfId} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -153,47 +276,8 @@ function EventCard({
       );
     }
 
-    case 'agent_status': {
-      const label = event.label ?? 'status';
-      const artifacts = event.artifacts ?? [];
-      return (
-        <div className={`event-card agent-work-card${isOwn ? ' own' : ''}`}>
-          {isOwn ? null : <Avatar id={senderId} />}
-          <div className="event-main">
-            <div className="event-head">
-              <SenderName id={senderId} className="event-sender" />
-              <span className="chip chip-role">AGENT</span>
-              <time dateTime={new Date(event.ts).toISOString()}>{time}</time>
-              <span className={`chip chip-label tone-${labelTone(label)}`}>{prettyLabel(label)}</span>
-            </div>
-            <div className="agent-work-title">
-              <span aria-hidden="true">✦</span>
-              <strong>{prettyLabel(label)}</strong>
-            </div>
-            {event.status_message ? <p className="event-text">{event.status_message}</p> : null}
-            {typeof event.progress === 'number' ? (
-              <div className="progress-row">
-                <ProgressBar value={event.progress} />
-                <span className="progress-num">{Math.max(0, Math.min(100, event.progress))}%</span>
-              </div>
-            ) : null}
-            {artifacts.length > 0 ? (
-              <div className="artifact-row">
-                {artifacts.map((fileId) => {
-                  const file = files.find((f) => f.file_id === fileId);
-                  return (
-                    <span key={fileId} className="chip chip-artifact" title={fileId}>
-                      <span aria-hidden="true">⎘</span>
-                      {file ? file.name : shortId(fileId)}
-                    </span>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      );
-    }
+    case 'agent_status':
+      return <AgentStatusCard event={event} files={files} selfId={selfId} />;
 
     case 'file_shared': {
       if (!event.file) return null;
@@ -310,19 +394,6 @@ function itemTs(item: TimelineItem): number {
   return item.type === 'event' ? item.event.ts : item.pending.ts;
 }
 
-function itemSender(item: TimelineItem, selfId: string | null): string | null {
-  if (item.type === 'pending') return selfId;
-  return item.event.kind === 'message' ? item.event.sender.identity_id : null;
-}
-
-function shouldGroup(prev: TimelineItem | null, item: TimelineItem, selfId: string | null): boolean {
-  if (!prev) return false;
-  const sender = itemSender(item, selfId);
-  const prevSender = itemSender(prev, selfId);
-  if (!sender || !prevSender || sender !== prevSender) return false;
-  return itemTs(item) - itemTs(prev) <= GROUP_WINDOW_MS;
-}
-
 function itemSide(item: TimelineItem, selfId: string | null): TimelineSide {
   if (item.type === 'pending') return 'own';
   const { event } = item;
@@ -330,6 +401,77 @@ function itemSide(item: TimelineItem, selfId: string | null): TimelineSide {
     return 'system';
   }
   return selfId !== null && event.sender.identity_id === selfId ? 'own' : 'remote';
+}
+
+/** What actually gets a timeline row: a standalone event, a folded agent-status
+ *  run, or a pending message. Runs and the activity filter are layered ON TOP
+ *  of the raw event list — the counter and scroll accounting keep counting the
+ *  unfolded, unfiltered `items`, so folding/filtering never rewrites history. */
+type RenderUnit =
+  | { type: 'event'; event: TimelineEvent }
+  | { type: 'run'; run: TimelineRun }
+  | { type: 'pending'; pending: PendingMessage };
+
+function unitTs(u: RenderUnit): number {
+  if (u.type === 'event') return u.event.ts;
+  if (u.type === 'pending') return u.pending.ts;
+  const { events } = u.run;
+  return events[events.length - 1].ts;
+}
+
+/** The message sender used for 5-minute compacting — null for runs and every
+ *  non-message event, so neither ever groups (or lets a neighbour group into
+ *  it), exactly as the pre-fold loop behaved. */
+function unitMessageSender(u: RenderUnit, selfId: string | null): string | null {
+  if (u.type === 'pending') return selfId;
+  if (u.type === 'run') return null;
+  return u.event.kind === 'message' ? u.event.sender.identity_id : null;
+}
+
+function shouldGroupUnit(prev: RenderUnit | null, u: RenderUnit, selfId: string | null): boolean {
+  if (!prev) return false;
+  const sender = unitMessageSender(u, selfId);
+  const prevSender = unitMessageSender(prev, selfId);
+  if (!sender || !prevSender || sender !== prevSender) return false;
+  return unitTs(u) - unitTs(prev) <= GROUP_WINDOW_MS;
+}
+
+function unitSide(u: RenderUnit, selfId: string | null): TimelineSide {
+  if (u.type === 'pending') return 'own';
+  if (u.type === 'run') return selfId !== null && u.run.senderId === selfId ? 'own' : 'remote';
+  return itemSide({ type: 'event', event: u.event }, selfId);
+}
+
+function unitKey(u: RenderUnit): string {
+  if (u.type === 'pending') return u.pending.clientId;
+  if (u.type === 'run') return `run-${u.run.events[0].event_id}`;
+  return u.event.event_id;
+}
+
+/** Fold the timeline into render units: filter events to the active categories
+ *  (an empty set means everything passes), collapse maximal same-sender
+ *  agent-status runs via the shared `groupRuns`, then merge the always-shown
+ *  pending messages back in by timestamp. Pending are NEVER filtered — retry
+ *  must stay reachable (issue #65 AC). */
+function buildRenderUnits(
+  events: TimelineEvent[],
+  pending: PendingMessage[],
+  active: ReadonlySet<ActivityCategory>,
+): RenderUnit[] {
+  const visible = active.size === 0 ? events : events.filter((e) => matchesActivityFilter(e.kind, active));
+  const rows = groupRuns(visible);
+  const sortedPending = [...pending].sort((a, b) => a.ts - b.ts);
+  const units: RenderUnit[] = [];
+  let pi = 0;
+  for (const row of rows) {
+    const ts = row.kind === 'event' ? row.event.ts : row.run.events[row.run.events.length - 1].ts;
+    while (pi < sortedPending.length && sortedPending[pi].ts <= ts) {
+      units.push({ type: 'pending', pending: sortedPending[pi++] });
+    }
+    units.push(row.kind === 'event' ? { type: 'event', event: row.event } : { type: 'run', run: row.run });
+  }
+  while (pi < sortedPending.length) units.push({ type: 'pending', pending: sortedPending[pi++] });
+  return units;
 }
 
 export function Timeline({
@@ -340,6 +482,8 @@ export function Timeline({
   loading,
   selfId,
   savedView = null,
+  activityFilters,
+  onToggleActivityFilter,
   onSaveView,
   onFetch,
   onRecheckFiles,
@@ -353,6 +497,11 @@ export function Timeline({
   loading: boolean;
   selfId: string | null;
   savedView?: TimelineView | null;
+  /** The active activity-filter categories (issue #65). Session state lifted to
+   *  App so it survives the compact display:none hide and the keyed remount on
+   *  room switch; an empty set means no filter (everything shows). */
+  activityFilters: ReadonlySet<ActivityCategory>;
+  onToggleActivityFilter(category: ActivityCategory): void;
   onSaveView?(view: TimelineView | null): void;
   onFetch(fileId: string): void;
   onRecheckFiles(): void;
@@ -369,6 +518,19 @@ export function Timeline({
   const reloadBaseline = useRef<number | null>(null);
   const lastScrollTop = useRef(savedView?.scrollTop ?? 0);
   const [newItemCount, setNewItemCount] = useState(0);
+  // Which runs the reader has expanded, keyed by the run's first event id (an
+  // id stable as a run grows with live status updates). Per-session and
+  // per-room: the Timeline is keyed by room, so a room switch resets it —
+  // folding is a view, never a mutation of the signed log.
+  const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleRun = useCallback((key: string) => {
+    setExpandedRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   // Render-time mirrors so the stable callbacks below never go stale.
   const loadingRef = useRef(loading);
@@ -495,16 +657,31 @@ export function Timeline({
     setNewItemCount(0);
   };
 
+  // The counter tells the truth about a mixed batch: it counts the SAME
+  // unfolded, unfiltered new items as before, but words itself by what those
+  // items actually are. The `newItemCount` items at the bottom are exactly the
+  // ones below the reader's position; pending count as messages.
+  const newKinds = items
+    .slice(Math.max(0, items.length - newItemCount))
+    .map((it) => (it.type === 'pending' ? 'message' : it.event.kind));
+  const allMessages = isAllMessages(activityBreakdown(newKinds));
+  const counterLabel = allMessages
+    ? `${newItemCount} new message${newItemCount === 1 ? '' : 's'}`
+    : `${newItemCount} new activity`;
+
+  // Fold + filter are a view over `items`: runs collapse, filtered categories
+  // drop out, pending always stay. Day dividers, 5-minute message compacting,
+  // and sides ride on top exactly as before.
+  const units = buildRenderUnits(events, pendingMessages, activityFilters);
   let lastDay = '';
   const rows: { key: string; node: ReactNode; side: TimelineSide; compact: boolean }[] = [];
-  let prevItem: TimelineItem | null = null;
-  for (const item of items) {
-    const ts = itemTs(item);
-    const day = dayLabel(ts);
+  let prevUnit: RenderUnit | null = null;
+  for (const unit of units) {
+    const day = dayLabel(unitTs(unit));
     if (day !== lastDay) {
       lastDay = day;
       rows.push({
-        key: `day-${day}-${item.type === 'event' ? item.event.event_id : item.pending.clientId}`,
+        key: `day-${day}-${unitKey(unit)}`,
         side: 'system',
         compact: false,
         node: (
@@ -514,33 +691,61 @@ export function Timeline({
         ),
       });
     }
-    const compact = shouldGroup(prevItem, item, selfId);
-    const side = itemSide(item, selfId);
-    rows.push({
-      key: item.type === 'event' ? item.event.event_id : item.pending.clientId,
-      side,
-      compact,
-      node:
-        item.type === 'event' ? (
-          <EventCard
-            event={item.event}
-            files={files}
-            fetches={fetches}
-            selfId={selfId}
-            compact={compact}
-            onFetch={onFetch}
-            onRecheckFiles={onRecheckFiles}
-            onShowPipes={onShowPipes}
-          />
-        ) : (
-          <PendingMessageCard message={item.pending} compact={compact} onRetry={onRetryPendingMessage} />
-        ),
-    });
-    prevItem = item;
+    const compact = shouldGroupUnit(prevUnit, unit, selfId);
+    const side = unitSide(unit, selfId);
+    let node: ReactNode;
+    if (unit.type === 'event') {
+      node = (
+        <EventCard
+          event={unit.event}
+          files={files}
+          fetches={fetches}
+          selfId={selfId}
+          compact={compact}
+          onFetch={onFetch}
+          onRecheckFiles={onRecheckFiles}
+          onShowPipes={onShowPipes}
+        />
+      );
+    } else if (unit.type === 'run') {
+      const runKey = `run-${unit.run.events[0].event_id}`;
+      node = (
+        <RunCard
+          run={unit.run}
+          files={files}
+          selfId={selfId}
+          expanded={expandedRuns.has(runKey)}
+          onToggle={() => toggleRun(runKey)}
+        />
+      );
+    } else {
+      node = <PendingMessageCard message={unit.pending} compact={compact} onRetry={onRetryPendingMessage} />;
+    }
+    rows.push({ key: unitKey(unit), side, compact, node });
+    prevUnit = unit;
   }
 
   return (
     <div className="timeline-shell">
+      {/* View-only activity filters (issue #65): multi-select, none selected =
+          everything shown. Filtering never deletes history — clearing the chips
+          restores it — and pending messages are exempt entirely. */}
+      <div className="activity-filter" role="group" aria-label="Filter activity">
+        {ACTIVITY_CATEGORIES.map((category) => {
+          const active = activityFilters.has(category);
+          return (
+            <button
+              key={category}
+              type="button"
+              className={`activity-chip${active ? ' active' : ''}`}
+              aria-pressed={active}
+              onClick={() => onToggleActivityFilter(category)}
+            >
+              {ACTIVITY_LABELS[category]}
+            </button>
+          );
+        })}
+      </div>
       <div
         className="timeline"
         ref={scroller}
@@ -583,13 +788,18 @@ export function Timeline({
           {row.node}
         </div>
       ))}
-      {!loading && items.length === 0 ? (
-        <div className="timeline-empty muted">No events yet — say something below.</div>
+      {!loading && rows.length === 0 ? (
+        items.length === 0 ? (
+          <div className="timeline-empty muted">No events yet — say something below.</div>
+        ) : (
+          // History isn't gone, just filtered out of view — say so honestly.
+          <div className="timeline-empty muted">No activity matches these filters.</div>
+        )
       ) : null}
       </div>
       {newItemCount > 0 ? (
         <button type="button" className="new-messages" onClick={scrollToBottom}>
-          {newItemCount} new message{newItemCount === 1 ? '' : 's'}
+          {counterLabel}
         </button>
       ) : null}
     </div>
