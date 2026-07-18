@@ -10,6 +10,7 @@ import {
   type MintedInvite,
 } from '../lib/invite';
 import { CopyButton, ErrorNote, Modal } from './ui';
+import { QrCode } from './QrCode';
 
 /** Friendly labels for the shared EXPIRY_PRESETS keys. The convention lives in
  *  invite.ts (label-free on purpose); each client localizes the key. */
@@ -241,9 +242,7 @@ export function InviteModal({
           </div>
 
           {/* Platform Share (Web Share API), feature-detected — rendered only
-              where navigator.share exists. Copy is always the fallback. No QR:
-              deferred to a follow-up (the Flutter side needs a vendored
-              encoder), so this PR ships Copy + Share only. */}
+              where navigator.share exists. Copy is always the fallback. */}
           {canShare ? (
             <div className="invite-share-row">
               <button type="button" className="btn" onClick={() => void share()}>
@@ -251,6 +250,15 @@ export function InviteModal({
               </button>
             </div>
           ) : null}
+
+          {/* QR of the SAME combined invite the Copy button carries (#103).
+              Self-contained encoder (no CDN); returns nothing if the payload is
+              too large for any symbol, leaving Copy/Share as the fallback. */}
+          <QrCode
+            value={combined}
+            label="QR code for the room invite — scan on another device to join"
+            caption={endpointAddr ? 'Scan to join — this is the same invite as above.' : 'Scan to import this ticket on another device.'}
+          />
 
           {endpointAddr ? (
             <details className="invite-advanced">

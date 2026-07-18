@@ -281,6 +281,9 @@ void main() {
     expect(en.inviteCopyTicket, "Copy ticket");
     expect(en.inviteShareTicket, "Share ticket");
     expect(en.inviteCopyAddress, "Copy address");
+    expect(en.inviteQrLabel, "QR code for the room invite — scan on another device to join");
+    expect(en.inviteQrCombinedCaption, "Scan to join — this is the same invite as above.");
+    expect(en.inviteQrTicketCaption, "Scan to import this ticket on another device.");
     expect(en.inviteNewInvite, "← New invite");
     expect(en.inviteNoDialableAddress, "No dialable address reported yet.");
     expect(en.inviteNoDialableAddressCopy, "Keep this room open. The joiner may still connect via discovery or relay, but a fresh room address is more reliable.");

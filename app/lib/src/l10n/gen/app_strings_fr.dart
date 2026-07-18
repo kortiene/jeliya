@@ -1119,6 +1119,18 @@ class AppStringsFr extends AppStrings {
   String get inviteCopyAddress => 'Copier l’adresse';
 
   @override
+  String get inviteQrLabel =>
+      'QR code de l’invitation au salon — scannez-le sur un autre appareil pour rejoindre';
+
+  @override
+  String get inviteQrCombinedCaption =>
+      'Scannez pour rejoindre — c’est la même invitation que ci-dessus.';
+
+  @override
+  String get inviteQrTicketCaption =>
+      'Scannez pour importer ce ticket sur un autre appareil.';
+
+  @override
   String get inviteNewInvite => '← Nouvelle invitation';
 
   @override

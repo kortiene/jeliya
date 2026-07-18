@@ -3582,6 +3582,34 @@ select {
   margin: 4px 0 10px;
 }
 
+/* QR of the combined invite (#103). Dark-on-light with a built-in quiet zone —
+   it deliberately does NOT invert in dark mode (scanners need the contrast), so
+   the white plate sits on a soft light card that reads on either theme. */
+.invite-qr {
+  margin: 6px 0 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.invite-qr .qr-code {
+  width: 208px;
+  height: 208px;
+  max-width: 100%;
+  border-radius: 12px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+}
+
+.invite-qr figcaption {
+  font-size: 12.5px;
+  text-align: center;
+  max-width: 260px;
+}
+
 .invite-again {
   margin-bottom: 10px;
 }

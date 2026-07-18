@@ -1916,6 +1916,24 @@ abstract class AppStrings {
   /// **'Copy address'**
   String get inviteCopyAddress;
 
+  /// Accessible name (screen-reader label) for the QR code image of the invite. The raw invite is separately copyable, so this only names the decorative code. Keep the em dash (—).
+  ///
+  /// In en, this message translates to:
+  /// **'QR code for the room invite — scan on another device to join'**
+  String get inviteQrLabel;
+
+  /// Caption under the QR code in the combined-invite result (ticket plus dialable address). Reassures that the code carries the same invite as the copyable text above it. Keep the em dash (—).
+  ///
+  /// In en, this message translates to:
+  /// **'Scan to join — this is the same invite as above.'**
+  String get inviteQrCombinedCaption;
+
+  /// Caption under the QR code in the ticket-only result (no dialable address). The code carries just the invite ticket.
+  ///
+  /// In en, this message translates to:
+  /// **'Scan to import this ticket on another device.'**
+  String get inviteQrTicketCaption;
+
   /// Back-style button that resets the modal to create another invite. Keep the leading ← arrow and its trailing space.
   ///
   /// In en, this message translates to:

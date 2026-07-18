@@ -1097,6 +1097,18 @@ class AppStringsEn extends AppStrings {
   String get inviteCopyAddress => 'Copy address';
 
   @override
+  String get inviteQrLabel =>
+      'QR code for the room invite — scan on another device to join';
+
+  @override
+  String get inviteQrCombinedCaption =>
+      'Scan to join — this is the same invite as above.';
+
+  @override
+  String get inviteQrTicketCaption =>
+      'Scan to import this ticket on another device.';
+
+  @override
   String get inviteNewInvite => '← New invite';
 
   @override

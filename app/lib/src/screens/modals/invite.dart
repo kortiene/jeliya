@@ -42,6 +42,7 @@ import '../../l10n/strings_context.dart';
 import '../../l10n/tokens.dart';
 import '../../l10n/wire_display.dart';
 import '../../layout.dart';
+import '../../qr/qr_view.dart';
 import '../../session/daemon_session.dart';
 import '../../theme.dart';
 import '../../widgets/buttons.dart';
@@ -434,7 +435,19 @@ class _InviteModalState extends State<InviteModal> {
           const SizedBox(height: JeliyaSpacing.x10),
           _ShareButton(text: combined, label: s.inviteShareInvite),
         ],
-        const SizedBox(height: JeliyaSpacing.x10),
+        // QR of the SAME combined invite the Copy button carries (#103). The
+        // hand-vendored encoder returns nothing if the payload is too large for
+        // any symbol, leaving Copy/Share as the fallback.
+        const SizedBox(height: JeliyaSpacing.x12),
+        Center(
+          child: QrView(
+            value: combined,
+            semanticLabel: s.inviteQrLabel,
+            caption: s.inviteQrCombinedCaption,
+            captionStyle: TextStyle(fontSize: 12.5, color: tokens.textDim),
+          ),
+        ),
+        const SizedBox(height: JeliyaSpacing.x12),
         _SeparatePartsDisclosure(ticket: ticket, endpointAddr: endpointAddr),
         const SizedBox(height: JeliyaSpacing.x14),
         _lifecycleActions(context, lifecycle),
@@ -475,6 +488,17 @@ class _InviteModalState extends State<InviteModal> {
           const SizedBox(height: JeliyaSpacing.x10),
           _ShareButton(text: ticket, label: s.inviteShareTicket),
         ],
+        // QR of the bare ticket the Copy button carries (#103); same graceful
+        // fallback as the combined surface.
+        const SizedBox(height: JeliyaSpacing.x12),
+        Center(
+          child: QrView(
+            value: ticket,
+            semanticLabel: s.inviteQrLabel,
+            caption: s.inviteQrTicketCaption,
+            captionStyle: TextStyle(fontSize: 12.5, color: tokens.textDim),
+          ),
+        ),
         const SizedBox(height: JeliyaSpacing.x10),
         Text(s.inviteNoDialableAddressNote,
             style: TextStyle(fontSize: 13, color: tokens.textDim)),

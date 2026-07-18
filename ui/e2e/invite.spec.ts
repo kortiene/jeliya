@@ -68,6 +68,9 @@ test('a preset expiry mints the combined ticket#address with Copy and a Waiting 
 
   // The lifecycle chip reads Waiting — the roster has no active row yet.
   await expect(dlg.locator('.chip-label')).toHaveText('Waiting');
+
+  // A scannable QR of the SAME combined invite renders alongside Copy (#103).
+  await expect(dlg.getByRole('img', { name: /QR code for the room invite/ })).toBeVisible();
 });
 
 test('a custom expiry mints a ticket', async ({ app, page }) => {

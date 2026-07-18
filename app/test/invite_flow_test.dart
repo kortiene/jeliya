@@ -14,6 +14,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jeliya_app/src/l10n/tokens.dart';
+import 'package:jeliya_app/src/qr/qr_view.dart';
 import 'package:jeliya_app/src/screens/modals/invite.dart';
 import 'package:jeliya_app/src/widgets/buttons.dart';
 import 'package:jeliya_app/src/widgets/copy_button.dart';
@@ -93,6 +94,11 @@ void main() {
         .text;
     expect(copyPayload, startsWith('roomtkt1'));
     expect(copyPayload, contains('#'));
+
+    // A scannable QR of the SAME combined invite renders alongside Copy (#103):
+    // it encodes the copyable payload, and its matrix is well-formed.
+    final qr = tester.widget<QrView>(_inModal(find.byType(QrView)));
+    expect(qr.value, copyPayload);
 
     // The lifecycle chip is honest: Waiting (no active roster row yet).
     expect(_modalText(en.inviteLifecycleWaiting), findsOneWidget);
