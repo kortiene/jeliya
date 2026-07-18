@@ -1636,6 +1636,46 @@ class AppStringsFr extends AppStrings {
   }
 
   @override
+  String timelineNewActivity(int n) {
+    return '$n nouvelle activité';
+  }
+
+  @override
+  String timelineRunEvidence(int count, String span) {
+    return '$count mises à jour · $span';
+  }
+
+  @override
+  String timelineRunShow(int count) {
+    return 'Afficher $count mises à jour';
+  }
+
+  @override
+  String get timelineRunHide => 'Masquer';
+
+  @override
+  String get timelineFilterActivity => 'Filtrer l’activité';
+
+  @override
+  String get timelineFilterConversation => 'Conversation';
+
+  @override
+  String get timelineFilterAgentRuns => 'Exécutions d’agent';
+
+  @override
+  String get timelineFilterMembership => 'Membres';
+
+  @override
+  String get timelineFilterFiles => 'Fichiers';
+
+  @override
+  String get timelineFilterPipes => 'Pipes';
+
+  @override
+  String get timelineNoActivityMatches =>
+      'Aucune activité ne correspond à ces filtres.';
+
+  @override
   String get timelineToday => 'Aujourd’hui';
 
   @override

@@ -329,8 +329,11 @@ void main() {
         roomId: MockClient.mainRoomId,
         identityId: MockPeople.backendAgent.identityId,
       );
-      expect(points, hasLength(4));
-      expect([for (final p in points) p.progress], [15, 35, 60, 68]);
+      // Six real backend agent_status points now: the 9:05 status is followed
+      // by the two that form the folded run (9:07/22, 9:09/28, issue #65), then
+      // 9:40/35, 10:15/60, and the freshest working status/68.
+      expect(points, hasLength(6));
+      expect([for (final p in points) p.progress], [15, 22, 28, 35, 60, 68]);
       expect(points.map((p) => p.ts).toList(), points.map((p) => p.ts).toList()..sort());
       final limited = await client.agentHistory(
         roomId: MockClient.mainRoomId,

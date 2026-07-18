@@ -609,10 +609,23 @@ class MockClient implements Client {
           file: FileRef(fileId: _fProtocol, name: 'room-protocol.md', size: 12 * 1024, mime: 'text/markdown')),
       _ev(r, _at(9, 48), sam, TimelineKinds.fileShared,
           file: FileRef(fileId: _fWireframe, name: 'wireframe.png', size: 320 * 1024, mime: 'image/png')),
+      // A short burst of consecutive same-agent statuses (9:05–9:09, no other
+      // event between them in ts order) — the ONLY streak in the fixtures that
+      // folds into a run (issue #65). Every other agent_status here is
+      // separated by a file/message/different sender, so the fold sees both the
+      // folded and the standalone cases against real data.
       _ev(r, _at(9, 5), backend, TimelineKinds.agentStatus,
           label: 'working',
           statusMessage: 'Scaffolding room invite flow and peer discovery.',
           progress: 15),
+      _ev(r, _at(9, 7), backend, TimelineKinds.agentStatus,
+          label: 'working',
+          statusMessage: 'Peer discovery handshakes verified across 3 relays.',
+          progress: 22),
+      _ev(r, _at(9, 9), backend, TimelineKinds.agentStatus,
+          label: 'working',
+          statusMessage: 'Invite tickets minting and redeeming end-to-end.',
+          progress: 28),
       _ev(r, _at(9, 25), frontend, TimelineKinds.agentStatus,
           label: 'working',
           statusMessage: 'Blocking out the room shell and timeline components.',
@@ -652,7 +665,11 @@ class MockClient implements Client {
           file: FileRef(fileId: _fReport, name: 'test-report.json', size: 85 * 1024, mime: 'application/json')),
       // A fresh working-class status so the fleet dashboard has one truthfully
       // "working" agent (connected peer + fresh working label, §1.2 row 4).
-      _ev(r, math.max(_at(10, 50), _now() - 90000), backend, TimelineKinds.agentStatus,
+      // Anchored ~6 min back (still within STALE_WORKING_MS = 20 min, so
+      // "working" holds) — deliberately MORE than the run window (runGapMs =
+      // 5 min) before any live-simulation status that lands ~6 s after open, so
+      // this newest standalone card never folds INTO that live run (issue #65).
+      _ev(r, math.max(_at(10, 50), _now() - 6 * 60000), backend, TimelineKinds.agentStatus,
           label: 'working',
           statusMessage: 'Sync convergence suite running (14/24 green).',
           progress: 68),

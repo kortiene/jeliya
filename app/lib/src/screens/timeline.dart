@@ -28,6 +28,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:jeliya_protocol/jeliya_protocol.dart'
     show
+        ActivityCategories,
         FetchState,
         FileEntry,
         FileRef,
@@ -38,7 +39,13 @@ import 'package:jeliya_protocol/jeliya_protocol.dart'
         Roles,
         TimelineEvent,
         TimelineKinds,
+        TimelineRun,
+        activityBreakdown,
+        groupRuns,
+        isAllMessages,
         labelTone,
+        matchesActivityFilter,
+        runSummary,
         shortId;
 
 import '../format.dart';
@@ -79,20 +86,48 @@ class _Item {
   int get ts => event?.ts ?? pendingMsg!.ts;
 }
 
-/// Grouping identity: pending items are attributed to self; only `message`
-/// events group (event cards/syslines never do).
-String? _itemSender(_Item item, String? selfId) {
-  if (item.pendingMsg != null) return selfId;
-  final e = item.event!;
+/// What actually gets a timeline row once folding + filtering are layered on: a
+/// standalone [event] (any kind, incl. a lone agent-status), a folded
+/// agent-status [run], or an optimistic [pendingMsg]. Runs and the activity
+/// filter are a VIEW over the raw event list — the counter and the scroll/anchor
+/// accounting keep counting the unfolded, unfiltered `_Item`s, so folding and
+/// filtering never rewrite history (issue #65). Mirrors ui RenderUnit.
+class _Unit {
+  const _Unit.event(TimelineEvent this.event)
+      : run = null,
+        pendingMsg = null;
+  const _Unit.run(TimelineRun this.run)
+      : event = null,
+        pendingMsg = null;
+  const _Unit.pending(PendingMessage this.pendingMsg)
+      : event = null,
+        run = null;
+
+  final TimelineEvent? event;
+  final TimelineRun? run;
+  final PendingMessage? pendingMsg;
+
+  /// A run sorts by its latest (last) status; an event/pending by its own ts.
+  int get ts =>
+      run != null ? run!.events.last.ts : (event?.ts ?? pendingMsg!.ts);
+}
+
+/// The message sender used for 5-minute compacting — null for runs and every
+/// non-message event, so neither ever groups (or lets a neighbour group into
+/// it), exactly as the pre-fold loop behaved.
+String? _unitMessageSender(_Unit u, String? selfId) {
+  if (u.pendingMsg != null) return selfId;
+  if (u.run != null) return null;
+  final e = u.event!;
   return e.kind == TimelineKinds.message ? e.sender.identityId : null;
 }
 
-bool _shouldGroup(_Item? prev, _Item item, String? selfId) {
+bool _shouldGroupUnit(_Unit? prev, _Unit u, String? selfId) {
   if (prev == null) return false;
-  final sender = _itemSender(item, selfId);
-  final prevSender = _itemSender(prev, selfId);
+  final sender = _unitMessageSender(u, selfId);
+  final prevSender = _unitMessageSender(prev, selfId);
   if (sender == null || prevSender == null || sender != prevSender) return false;
-  return item.ts - prev.ts <= _groupWindowMs;
+  return u.ts - prev.ts <= _groupWindowMs;
 }
 
 const Set<String> _sidedKinds = {
@@ -102,32 +137,78 @@ const Set<String> _sidedKinds = {
   TimelineKinds.pipeOpened,
 };
 
-_Side _itemSide(_Item item, String? selfId) {
-  if (item.pendingMsg != null) return _Side.own;
-  final e = item.event!;
+_Side _unitSide(_Unit u, String? selfId) {
+  if (u.pendingMsg != null) return _Side.own;
+  if (u.run != null) {
+    return selfId != null && u.run!.senderId == selfId
+        ? _Side.own
+        : _Side.remote;
+  }
+  final e = u.event!;
   if (!_sidedKinds.contains(e.kind)) return _Side.system;
   return selfId != null && e.sender.identityId == selfId
       ? _Side.own
       : _Side.remote;
 }
 
+/// Fold the timeline into render units: filter events to the active categories
+/// (an empty set means everything passes), collapse maximal same-sender
+/// agent-status runs via the shared [groupRuns], then merge the always-shown
+/// pending messages back in by timestamp. Pending are NEVER filtered — retry
+/// must stay reachable (issue #65 AC). Mirrors ui buildRenderUnits.
+List<_Unit> _buildRenderUnits(
+  List<TimelineEvent> events,
+  List<PendingMessage> pending,
+  Set<String> active,
+) {
+  final visible = active.isEmpty
+      ? events
+      : [for (final e in events) if (matchesActivityFilter(e.kind, active)) e];
+  final rows = groupRuns(visible);
+  final sortedPending = [...pending]..sort((a, b) => a.ts.compareTo(b.ts));
+  final units = <_Unit>[];
+  var pi = 0;
+  for (final row in rows) {
+    final ts = row.isRun ? row.run!.events.last.ts : row.event!.ts;
+    while (pi < sortedPending.length && sortedPending[pi].ts <= ts) {
+      units.add(_Unit.pending(sortedPending[pi++]));
+    }
+    units.add(row.isRun ? _Unit.run(row.run!) : _Unit.event(row.event!));
+  }
+  while (pi < sortedPending.length) {
+    units.add(_Unit.pending(sortedPending[pi++]));
+  }
+  return units;
+}
+
+/// The five activity-filter categories in the shared contract's order, paired
+/// with their display labels. Labels are display-only; the category KEYS drive
+/// [matchesActivityFilter].
+List<(String, String)> _activityCategories(AppStrings s) => [
+      (ActivityCategories.conversation, s.timelineFilterConversation),
+      (ActivityCategories.agentRuns, s.timelineFilterAgentRuns),
+      (ActivityCategories.membership, s.timelineFilterMembership),
+      (ActivityCategories.files, s.timelineFilterFiles),
+      (ActivityCategories.pipes, s.timelineFilterPipes),
+    ];
+
 /// One render row: a day divider or an item, with its resolved side/compact
 /// flags and the vertical rhythm (the web's collapsed margins + flex gap).
 class _Row {
   const _Row.divider(String this.dividerLabel, {required this.topSpacing})
-      : item = null,
+      : unit = null,
         side = _Side.system,
         compact = false;
 
-  const _Row.item(
-    _Item this.item, {
+  const _Row.unit(
+    _Unit this.unit, {
     required this.side,
     required this.compact,
     required this.topSpacing,
   }) : dividerLabel = null;
 
   final String? dividerLabel;
-  final _Item? item;
+  final _Unit? unit;
   final _Side side;
   final bool compact;
   final double topSpacing;
@@ -179,6 +260,12 @@ class _TimelineViewState extends State<TimelineView> {
 
   int _newItemCount = 0;
   double _viewportDim = 0;
+
+  /// Which agent runs the reader has expanded, keyed by the run's FIRST event id
+  /// (stable as a run grows with live status updates). View-local + per-room:
+  /// this TimelineView is keyed by roomId, so a room switch resets it — folding
+  /// is a view, never a mutation of the signed log (issue #65).
+  final Set<String> _expandedRuns = <String>{};
 
   // -- reload / anchor bookkeeping ----------------------------------------------
   //
@@ -357,6 +444,14 @@ class _TimelineViewState extends State<TimelineView> {
     if (!_controller.hasClients) return;
     _stick = true;
     setState(() => _newItemCount = 0);
+    // Reduced motion is a contract, not a hint (the WCAG floor in CONTRIBUTING):
+    // the jump to the newest event lands instantly instead of animating. Mirrors
+    // ui Timeline.scrollToBottom's prefers-reduced-motion branch; the
+    // keyboard-inset tail-follow (_onViewportChanged) is unaffected.
+    if (mounted && MediaQuery.disableAnimationsOf(context)) {
+      _jumpToBottom(2);
+      return;
+    }
     _controller
         .animateTo(
           _controller.position.maxScrollExtent,
@@ -432,7 +527,27 @@ class _TimelineViewState extends State<TimelineView> {
       }
     }
 
-    final rows = _buildRows(fmt, items, selfId);
+    // The counter tells the truth about a mixed batch: it counts the SAME
+    // unfolded, unfiltered new items as before (the `_newItemCount` items at the
+    // bottom — exactly those below the reader), but words itself by what those
+    // items actually are. Pending count as messages. Mirrors ui counterLabel.
+    final newKinds = [
+      for (final it in items.skip(math.max(0, items.length - _newItemCount)))
+        it.event?.kind ?? TimelineKinds.message,
+    ];
+    final counterLabel = isAllMessages(activityBreakdown(newKinds))
+        ? s.timelineNewMessages(_newItemCount)
+        : s.timelineNewActivity(_newItemCount);
+
+    // Fold + filter are a VIEW over the raw events: runs collapse, filtered
+    // categories drop out, pending always stay. Built from the store's events
+    // (already ts-ascending) — the count/tail/anchor accounting above still
+    // rides the unfolded, unfiltered `items`, so folding/filtering never touch
+    // history or the honest "new" count (issue #65).
+    final activeFilters = session.activityFilters;
+    final units = _buildRenderUnits(
+        store.timeline, store.pendingMessages, activeFilters);
+    final rows = _buildRows(fmt, units, selfId);
     // Each row carries a stable GlobalKey (below) so [_captureAnchor] can locate
     // and measure the reader's anchor row; prune keys for rows that left so the
     // map tracks only what is currently on screen.
@@ -440,10 +555,13 @@ class _TimelineViewState extends State<TimelineView> {
     _rowKeys.removeWhere((id, _) => !rowIds.contains(id));
 
     Widget scroller;
-    if (!loading && items.isEmpty) {
+    if (!loading && rows.isEmpty) {
+      // Nothing to show: either the room is genuinely empty, or active filters
+      // hid every event — history isn't gone, clearing the chips restores it, so
+      // say which case honestly (issue #65).
       scroller = Center(
         child: Text(
-          s.timelineEmptyState,
+          items.isEmpty ? s.timelineEmptyState : s.timelineNoActivityMatches,
           style: TextStyle(fontSize: 13.5, color: tokens.textDim),
         ),
       );
@@ -482,30 +600,48 @@ class _TimelineViewState extends State<TimelineView> {
       );
     }
 
-    return Semantics(
-      container: true,
-      liveRegion: true, // role="log"
-      label: s.timelineRoomTimeline,
-      child: Stack(
-        children: [
-          // SelectionArea holds on BOTH form factors. Evaluated for the
-          // mobile release (2026-07-10): SelectableRegion gives touch only a
-          // horizontal-drag recognizer + long-press, so vertical drags scroll
-          // the list untouched; long-press selects and its native toolbar
-          // already offers Copy (timeline_touch_selection_test.dart and
-          // mobile_chat_route_test.dart pin both). Do NOT add another
-          // long-press action here — a second recognizer would create the
-          // selection-vs-scroll conflict this arrangement avoids.
-          Positioned.fill(child: SelectionArea(child: scroller)),
-          if (_newItemCount > 0)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: JeliyaSpacing.x14,
-              child: Center(child: _newMessagesPill(s, tokens)),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // View-only activity filters (issue #65): a strip ABOVE the scroller,
+        // never inside the role="log" live region. Multi-select; none selected =
+        // everything shows. Filtering never deletes history — clearing the chips
+        // restores it — and pending messages are exempt entirely. Shown on BOTH
+        // shells because each mounts this TimelineView.
+        _ActivityFilterStrip(
+          categories: _activityCategories(s),
+          active: activeFilters,
+          onToggle: session.toggleActivityFilter,
+          semanticsLabel: s.timelineFilterActivity,
+        ),
+        Expanded(
+          child: Semantics(
+            container: true,
+            liveRegion: true, // role="log"
+            label: s.timelineRoomTimeline,
+            child: Stack(
+              children: [
+                // SelectionArea holds on BOTH form factors. Evaluated for the
+                // mobile release (2026-07-10): SelectableRegion gives touch only
+                // a horizontal-drag recognizer + long-press, so vertical drags
+                // scroll the list untouched; long-press selects and its native
+                // toolbar already offers Copy (timeline_touch_selection_test.dart
+                // and mobile_chat_route_test.dart pin both). Do NOT add another
+                // long-press action here — a second recognizer would create the
+                // selection-vs-scroll conflict this arrangement avoids.
+                Positioned.fill(child: SelectionArea(child: scroller)),
+                if (_newItemCount > 0)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: JeliyaSpacing.x14,
+                    child: Center(child: _newMessagesPill(tokens, counterLabel)),
+                  ),
+              ],
             ),
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -513,27 +649,28 @@ class _TimelineViewState extends State<TimelineView> {
   /// label, an item on its signed `event_id` or optimistic `clientId`. Feeds the
   /// ListView row keys + [ListView.builder]'s `findChildIndexCallback`.
   String _rowKey(_Row row) {
-    final item = row.item;
-    if (item == null) return 'div:${row.dividerLabel}';
-    return 'it:${item.event?.eventId ?? item.pendingMsg!.clientId}';
+    final unit = row.unit;
+    if (unit == null) return 'div:${row.dividerLabel}';
+    if (unit.run != null) return 'run:${unit.run!.events.first.eventId}';
+    return 'it:${unit.event?.eventId ?? unit.pendingMsg!.clientId}';
   }
 
-  List<_Row> _buildRows(JeliyaFormats fmt, List<_Item> items, String? selfId) {
+  List<_Row> _buildRows(JeliyaFormats fmt, List<_Unit> units, String? selfId) {
     final rows = <_Row>[];
     var lastDay = '';
-    _Item? prevItem;
+    _Unit? prevUnit;
     _Side? prevSide;
     var afterDivider = false;
-    for (final item in items) {
-      final day = fmt.dayLabel(item.ts);
+    for (final unit in units) {
+      final day = fmt.dayLabel(unit.ts);
       if (day != lastDay) {
         lastDay = day;
         rows.add(_Row.divider(day,
             topSpacing: rows.isEmpty ? 0 : _gapDivider));
         afterDivider = true;
       }
-      final compact = _shouldGroup(prevItem, item, selfId);
-      final side = _itemSide(item, selfId);
+      final compact = _shouldGroupUnit(prevUnit, unit, selfId);
+      final side = _unitSide(unit, selfId);
       final double top;
       if (rows.isEmpty) {
         top = 0;
@@ -547,8 +684,8 @@ class _TimelineViewState extends State<TimelineView> {
       } else {
         top = _gapNormal;
       }
-      rows.add(_Row.item(item, side: side, compact: compact, topSpacing: top));
-      prevItem = item;
+      rows.add(_Row.unit(unit, side: side, compact: compact, topSpacing: top));
+      prevUnit = unit;
       prevSide = side;
       afterDivider = false;
     }
@@ -563,8 +700,8 @@ class _TimelineViewState extends State<TimelineView> {
     final fmt = context.formats;
     final divider = row.dividerLabel;
     if (divider != null) return _DayDivider(label: divider);
-    final item = row.item!;
-    final pending = item.pendingMsg;
+    final unit = row.unit!;
+    final pending = unit.pendingMsg;
     if (pending != null) {
       return _alignRow(
         _Side.own,
@@ -572,7 +709,14 @@ class _TimelineViewState extends State<TimelineView> {
         _pendingCard(context, store, pending, row.compact),
       );
     }
-    final event = item.event!;
+    final run = unit.run;
+    if (run != null) {
+      return _eventCardRow(row.side, rowCap,
+          avatarId: run.senderId,
+          main: _runCardMain(context, store, run),
+          mainMaxWidth: _agentCardMaxWidth);
+    }
+    final event = unit.event!;
     switch (event.kind) {
       case TimelineKinds.message:
         return _alignRow(
@@ -1018,6 +1162,69 @@ class _TimelineViewState extends State<TimelineView> {
     );
   }
 
+  // -- folded agent run (issue #65) ---------------------------------------------
+
+  /// A folded run of ≥2 consecutive same-sender agent-status updates, rendered
+  /// as ONE card: the LATEST signed status (the same [_agentCardMain] a lone
+  /// status uses) + an honest evidence line ("N updates · first–last", real
+  /// timestamps via [JeliyaFormats.clock]) + a disclosure. Expanded, it reveals
+  /// every original update in order — history is only folded, never lost. The
+  /// reveal is a compositor-only fade that reduced motion turns off (mirrors ui
+  /// RunCard / .agent-run-history).
+  Widget _runCardMain(BuildContext context, RoomStore store, TimelineRun run) {
+    final tokens = JeliyaTokens.of(context);
+    final s = context.strings;
+    final fmt = context.formats;
+    final summary = runSummary(run);
+    final span = summary.firstTs == summary.lastTs
+        ? fmt.clock(summary.firstTs)
+        : '${fmt.clock(summary.firstTs)}–${fmt.clock(summary.lastTs)}';
+    final key = run.events.first.eventId;
+    final expanded = _expandedRuns.contains(key);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _agentCardMain(context, store, summary.latest),
+        const SizedBox(height: JeliyaSpacing.x4),
+        Row(
+          children: [
+            Flexible(
+              child: Text(
+                s.timelineRunEvidence(summary.count, span),
+                style: TextStyle(fontSize: 12, color: tokens.textMute),
+              ),
+            ),
+            const SizedBox(width: JeliyaSpacing.x10),
+            _RunToggle(
+              expanded: expanded,
+              label: expanded
+                  ? s.timelineRunHide
+                  : s.timelineRunShow(summary.count),
+              onTap: () => setState(() {
+                if (!_expandedRuns.remove(key)) _expandedRuns.add(key);
+              }),
+            ),
+          ],
+        ),
+        if (expanded) ...[
+          const SizedBox(height: JeliyaSpacing.x8),
+          _RunHistory(
+            reduceMotion: MediaQuery.disableAnimationsOf(context),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < run.events.length; i++) ...[
+                  if (i > 0) const SizedBox(height: JeliyaSpacing.x4),
+                  _agentCardMain(context, store, run.events[i]),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
   // -- file_shared card ---------------------------------------------------------------------
 
   Widget _fileCardMain(BuildContext context, RoomStore store,
@@ -1314,7 +1521,7 @@ class _TimelineViewState extends State<TimelineView> {
   Widget _time(BuildContext context, int ts) =>
       Text(context.formats.clock(ts), style: JeliyaText.meta);
 
-  Widget _newMessagesPill(AppStrings s, JeliyaTokens tokens) {
+  Widget _newMessagesPill(JeliyaTokens tokens, String label) {
     return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(JeliyaRadii.pill),
@@ -1337,7 +1544,7 @@ class _TimelineViewState extends State<TimelineView> {
           textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
           shape: StadiumBorder(side: BorderSide(color: tokens.accentLine)),
         ),
-        child: Text(s.timelineNewMessages(_newItemCount)),
+        child: Text(label),
       ),
     );
   }
@@ -1397,6 +1604,186 @@ class _LabelChip extends StatelessWidget {
           color: tone == LabelTone.neutral
               ? tokens.textDim
               : tokens.toneColor(tone),
+        ),
+      ),
+    );
+  }
+}
+
+/// The run disclosure: a bare accent text button that announces its expanded
+/// state to assistive tech (Semantics button + expanded), mirroring ui's
+/// aria-expanded run toggle.
+class _RunToggle extends StatelessWidget {
+  const _RunToggle(
+      {required this.expanded, required this.label, required this.onTap});
+
+  final bool expanded;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    return Semantics(
+      button: true,
+      expanded: expanded,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: tokens.accent,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The expanded run's history: every original agent-status card behind a 2px
+/// blue rule, revealed with a compositor-only fade + slide that reduced motion
+/// turns off (mirrors ui .agent-run-history / prefers-reduced-motion). The
+/// HEIGHT change is always instant — the cards are real the moment they expand —
+/// so this never fights the scroll-anchor reconcile.
+class _RunHistory extends StatelessWidget {
+  const _RunHistory({required this.reduceMotion, required this.child});
+
+  final bool reduceMotion;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    final body = Container(
+      padding: const EdgeInsets.only(left: JeliyaSpacing.x14),
+      decoration: BoxDecoration(
+        border: Border(left: BorderSide(color: tokens.blueLine, width: 2)),
+      ),
+      child: child,
+    );
+    if (reduceMotion) return body;
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, -4 * (1 - value)),
+          child: child,
+        ),
+      ),
+      child: body,
+    );
+  }
+}
+
+/// The view-only activity filter strip above the timeline (issue #65): five
+/// multi-select chips, none selected = everything shows. Kept OUTSIDE the
+/// role="log" live region (a sibling above it), mirroring ui .activity-filter.
+///
+/// A SINGLE, constant-height row (each chip an equal share of the width, its
+/// label truncating rather than wrapping) — exactly the shape the room-list
+/// lifecycle filter uses. This keeps the strip's height a constant so it can't
+/// erode the compact timeline budget under a keyboard inset (the reason ui makes
+/// its strip a constant-height row), and adds NO second Scrollable — the one
+/// vertical Scrollable in this subtree stays the timeline list.
+class _ActivityFilterStrip extends StatelessWidget {
+  const _ActivityFilterStrip({
+    required this.categories,
+    required this.active,
+    required this.onToggle,
+    required this.semanticsLabel,
+  });
+
+  final List<(String, String)> categories;
+  final Set<String> active;
+  final ValueChanged<String> onToggle;
+  final String semanticsLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    return Semantics(
+      container: true,
+      label: semanticsLabel,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: tokens.border)),
+        ),
+        // A tight, CONSTANT-height strip: it must clear the compact keyboard-inset
+        // budget and stay under the timeline's touch gutter so a drag started just
+        // inside the list still scrolls (mobile_chat_route_test), never landing on
+        // a chip.
+        padding: const EdgeInsets.symmetric(
+            horizontal: JeliyaSpacing.x24 + 2, vertical: 4),
+        child: Row(
+          children: [
+            for (var i = 0; i < categories.length; i++) ...[
+              if (i > 0) const SizedBox(width: JeliyaSpacing.x6),
+              Expanded(
+                child: _ActivityChip(
+                  label: categories[i].$2,
+                  active: active.contains(categories[i].$1),
+                  onTap: () => onToggle(categories[i].$1),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One activity-filter chip: tinted accent when active (aria-pressed/selected),
+/// muted otherwise; its label truncates rather than overflowing the shared row.
+/// Mirrors ui .activity-chip.
+class _ActivityChip extends StatelessWidget {
+  const _ActivityChip(
+      {required this.label, required this.active, required this.onTap});
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = JeliyaTokens.of(context);
+    return Semantics(
+      button: true,
+      selected: active,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(JeliyaRadii.pill),
+          child: Container(
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(
+                horizontal: JeliyaSpacing.x8, vertical: 3),
+            decoration: BoxDecoration(
+              color: active ? tokens.accentDim : Colors.transparent,
+              borderRadius: BorderRadius.circular(JeliyaRadii.pill),
+              border: Border.all(
+                  color: active ? tokens.accentLine : tokens.border),
+            ),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: active ? tokens.accent : tokens.textMute,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+              ),
+            ),
+          ),
         ),
       ),
     );

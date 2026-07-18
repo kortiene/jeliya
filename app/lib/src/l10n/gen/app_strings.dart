@@ -2731,6 +2731,72 @@ abstract class AppStrings {
   /// **'{n, plural, one{{n} new message} other{{n} new messages}}'**
   String timelineNewMessages(num n);
 
+  /// Floating counter at the bottom of the timeline when the unseen items below the reader are NOT all plain messages (e.g. an agent status or a file share is mixed in). "activity" is a mass noun — it reads the same for any count, so this is a plain placeholder, never a plural. Compare timelineNewMessages, used when every unseen item is a message.
+  ///
+  /// In en, this message translates to:
+  /// **'{n} new activity'**
+  String timelineNewActivity(int n);
+
+  /// Evidence line under a folded agent run in the timeline (issue #65): how many status updates the run folded, a middle dot, then the real first-to-last time span (e.g. “3 updates · 9:05–9:09”). count is always ≥2, so “updates” is always plural. span is a preformatted clock range built by the app.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} updates · {span}'**
+  String timelineRunEvidence(int count, String span);
+
+  /// Disclosure button on a collapsed agent run that expands it to reveal every folded status update. count is always ≥2, so “updates” is always plural.
+  ///
+  /// In en, this message translates to:
+  /// **'Show {count} updates'**
+  String timelineRunShow(int count);
+
+  /// Disclosure button on an expanded agent run that collapses it back to just its latest status. Short verb.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide'**
+  String get timelineRunHide;
+
+  /// Accessibility group label (screen readers only) for the row of activity-filter chips above the timeline.
+  ///
+  /// In en, this message translates to:
+  /// **'Filter activity'**
+  String get timelineFilterActivity;
+
+  /// Activity-filter chip that shows only conversation (chat message) events in the timeline. Multi-select with the other four chips; none selected shows everything.
+  ///
+  /// In en, this message translates to:
+  /// **'Conversation'**
+  String get timelineFilterConversation;
+
+  /// Activity-filter chip that shows only agent status/run events in the timeline. “Agent” is the AI-agent role. Multi-select with the other four chips.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent runs'**
+  String get timelineFilterAgentRuns;
+
+  /// Activity-filter chip that shows only room membership events (created, invited, joined, left) in the timeline. Multi-select with the other four chips.
+  ///
+  /// In en, this message translates to:
+  /// **'Membership'**
+  String get timelineFilterMembership;
+
+  /// Activity-filter chip that shows only file-share events in the timeline. Multi-select with the other four chips.
+  ///
+  /// In en, this message translates to:
+  /// **'Files'**
+  String get timelineFilterFiles;
+
+  /// Activity-filter chip that shows only pipe events (opened/closed) in the timeline. “Pipes” is the product term for live peer-to-peer connections — translate consistently with the Pipes panel. Multi-select with the other four chips.
+  ///
+  /// In en, this message translates to:
+  /// **'Pipes'**
+  String get timelineFilterPipes;
+
+  /// Empty-state line shown in place of the timeline when active activity filters hide every event. History is only filtered from view, not deleted — clearing the filters restores it.
+  ///
+  /// In en, this message translates to:
+  /// **'No activity matches these filters.'**
+  String get timelineNoActivityMatches;
+
   /// Day-separator label in the timeline for events from today.
   ///
   /// In en, this message translates to:

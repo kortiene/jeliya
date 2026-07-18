@@ -389,6 +389,14 @@ void main() {
     expect(en.timelinePendingSending, "Sending…");
     expect(en.timelinePendingSyncing, "Sent locally, syncing…");
     expect(en.timelinePendingFailed, "Couldn't send");
+    expect(en.timelineRunHide, "Hide");
+    expect(en.timelineFilterActivity, "Filter activity");
+    expect(en.timelineFilterConversation, "Conversation");
+    expect(en.timelineFilterAgentRuns, "Agent runs");
+    expect(en.timelineFilterMembership, "Membership");
+    expect(en.timelineFilterFiles, "Files");
+    expect(en.timelineFilterPipes, "Pipes");
+    expect(en.timelineNoActivityMatches, "No activity matches these filters.");
     expect(en.timelineToday, "Today");
     expect(en.timelineYesterday, "Yesterday");
     expect(en.timelineBytesUnknown, "?");
@@ -513,6 +521,9 @@ void main() {
     expect(en.timelineNewMessages(7), "7 new messages");
     expect(en.timelineNewMessages(1), "1 new message");
     expect(en.timelineNewMessages(2), "2 new messages");
+    expect(en.timelineNewActivity(7), "7 new activity");
+    expect(en.timelineRunEvidence(7, 'XspanX'), "7 updates · XspanX");
+    expect(en.timelineRunShow(7), "Show 7 updates");
     expect(en.timelineBytesB(7), "7 B");
     expect(en.timelineBytesKb(7), "7 KB");
     expect(en.timelineBytesMb('XnX'), "XnX MB");

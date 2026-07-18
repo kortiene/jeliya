@@ -1607,6 +1607,45 @@ class AppStringsEn extends AppStrings {
   }
 
   @override
+  String timelineNewActivity(int n) {
+    return '$n new activity';
+  }
+
+  @override
+  String timelineRunEvidence(int count, String span) {
+    return '$count updates · $span';
+  }
+
+  @override
+  String timelineRunShow(int count) {
+    return 'Show $count updates';
+  }
+
+  @override
+  String get timelineRunHide => 'Hide';
+
+  @override
+  String get timelineFilterActivity => 'Filter activity';
+
+  @override
+  String get timelineFilterConversation => 'Conversation';
+
+  @override
+  String get timelineFilterAgentRuns => 'Agent runs';
+
+  @override
+  String get timelineFilterMembership => 'Membership';
+
+  @override
+  String get timelineFilterFiles => 'Files';
+
+  @override
+  String get timelineFilterPipes => 'Pipes';
+
+  @override
+  String get timelineNoActivityMatches => 'No activity matches these filters.';
+
+  @override
   String get timelineToday => 'Today';
 
   @override

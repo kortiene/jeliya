@@ -49,9 +49,12 @@ Finder _panelTab(String label) => find.descendant(
 /// taps blind and cannot reach an off-screen tab, so rewind the strip to the
 /// start, then advance until the target is on screen, and tap it.
 Future<void> _goToTool(WidgetTester tester, String label) async {
-  final tab = find.text(label);
   final strip = find.byWidgetPredicate(
       (w) => w is Scrollable && w.axisDirection == AxisDirection.right);
+  // Scope to the room-nav strip: the activity-filter chips below the timeline
+  // repeat "Files"/"Pipes" (issue #65), so an unscoped text finder is ambiguous
+  // on the Activity pane — the nav tab lives in the horizontal strip.
+  final tab = find.descendant(of: strip.first, matching: find.text(label));
   for (var i = 0; i < 6; i++) {
     await tester.drag(strip.first, const Offset(240, 0));
     await tester.pump();
