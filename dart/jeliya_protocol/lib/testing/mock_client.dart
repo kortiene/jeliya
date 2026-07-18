@@ -826,6 +826,31 @@ class MockClient implements Client {
     }
   }
 
+  /// Test/demo hook (issue #66, waiting→joined): simulate the invitee accepting
+  /// — flip their `invited` roster row to `active` and publish member_joined,
+  /// exactly as the inviter's daemon observes a remote join. No-op without a
+  /// non-active invited row.
+  void acceptInvite(String roomId, String identityId) {
+    final room = _rooms[roomId];
+    if (room == null) return;
+    final idx = room.members.indexWhere((m) => m.identityId == identityId);
+    if (idx < 0 || room.members[idx].status == 'active') return;
+    final role = room.members[idx].role;
+    room.members[idx] =
+        Member(identityId: identityId, role: role, status: 'active');
+    final joiner = MockPerson(
+      identityId: identityId,
+      deviceId: _hex('$identityId-device', 64),
+      endpointId: _hex('$identityId-endpoint', 64),
+      role: role,
+      name: '',
+    );
+    _ingest(
+        room,
+        _ev(room.roomId, _now(), joiner, TimelineKinds.memberJoined,
+            member: MemberRef(identityId: identityId, role: role)));
+  }
+
   void _pushPeers(_MockRoom room) {
     if (room.open) {
       _emit('peers.changed', {
@@ -1199,10 +1224,21 @@ class MockClient implements Client {
           }
           final role = params['role'] is String ? params['role'] as String : Roles.member;
           final me = _me(room);
+          final invitee = identityId.trim();
           _ingest(
               room,
               _ev(room.roomId, _now(), me, TimelineKinds.memberInvited,
-                  member: MemberRef(identityId: identityId.trim(), role: role)));
+                  member: MemberRef(identityId: invitee, role: role)));
+          // The real daemon persists member.invited directly, so the inviter's
+          // roster shows the pending row at once (issue #66) — upsert unless the
+          // invitee is already active (a redundant invite must not demote them).
+          final row = room.members.indexWhere((m) => m.identityId == invitee);
+          if (row < 0) {
+            room.members.add(Member(identityId: invitee, role: role, status: 'invited'));
+          } else if (room.members[row].status != 'active') {
+            room.members[row] =
+                Member(identityId: invitee, role: role, status: 'invited');
+          }
           final ticket =
               'roomtkt1${_base32ish('${room.roomId}:$identityId:${_now()}', 96)}';
           // `expiry` accepts a duration string ("24h"/"3600") or a number of

@@ -673,6 +673,28 @@ class MockClient implements Client {
       : { id: identity.identity_id, dev: identity.device_id, ep: hex('self-endpoint', 64), role, name: 'You' };
   }
 
+  /** Test/demo hook (issue #66, waiting→joined): simulate the invitee accepting
+   *  — flip their `invited` roster row to `active` and publish member_joined,
+   *  exactly as the inviter's daemon observes a remote join. No-op without a
+   *  non-active invited row. */
+  acceptInvite(roomId: string, identityId: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    const member = room.members.find((m) => m.identity_id === identityId);
+    if (!member || member.status === 'active') return;
+    member.status = 'active';
+    const joiner: Person = {
+      id: identityId,
+      dev: hex(`${identityId}-device`, 64),
+      ep: hex(`${identityId}-endpoint`, 64),
+      role: member.role,
+      name: '',
+    };
+    this.ingest(room, ev(room.room_id, Date.now(), joiner, 'member_joined', {
+      member: { identity_id: identityId, role: member.role },
+    }));
+  }
+
   /** Append + push (exactly once per event; pushes flow only for open rooms). */
   private ingest(room: MockRoom, event: TimelineEvent): void {
     room.timeline.push(event);
@@ -969,9 +991,20 @@ class MockClient implements Client {
           this.err('invalid_params', 'identity_id must be the invitee\'s hex identity id', 'ask the invitee to copy their identity id from their onboarding screen or sidebar footer');
         }
         const me = this.me(room);
+        const invitee = p.identity_id.trim();
         this.ingest(room, ev(room.room_id, Date.now(), me, 'member_invited', {
-          member: { identity_id: p.identity_id.trim(), role: p.role },
+          member: { identity_id: invitee, role: p.role },
         }));
+        // The real daemon persists member.invited directly, so the inviter's
+        // roster shows the pending row at once (issue #66) — upsert unless the
+        // invitee is already active (a redundant invite must not demote them).
+        const existingRow = room.members.find((m) => m.identity_id === invitee);
+        if (!existingRow) {
+          room.members.push({ identity_id: invitee, role: p.role, status: 'invited' });
+        } else if (existingRow.status !== 'active') {
+          existingRow.status = 'invited';
+          existingRow.role = p.role;
+        }
         const ticket = `roomtkt1${base32ish(`${room.room_id}:${p.identity_id}:${Date.now()}`, 96)}`;
         // `expiry` accepts a duration string ("24h"/"3600") or a number of
         // seconds (see docs/PROTOCOL.md); no expiry means single-use, not

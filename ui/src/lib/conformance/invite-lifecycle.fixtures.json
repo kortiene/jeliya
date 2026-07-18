@@ -1,0 +1,25 @@
+{
+  "note": "Shared invite-lifecycle contract fixtures for issue #66. Consumed by BOTH ui/src/lib/invite.test.ts (TS) and app/test/invite_lifecycle_test.dart (Dart), so React and Flutter validate the invitee identity, build the combined invite, and derive the waiting/expired/joined lifecycle identically. `identity` pins the bare-64-hex validator (never the blake3: room id). `combined` pins the ticket#address builder. `lifecycle` pins the honest state machine: Joined comes ONLY from a signed active roster row, and Joined outranks a lapsed expiry.",
+  "identity": [
+    { "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "valid": true },
+    { "value": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF", "valid": true },
+    { "value": "  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  ", "valid": true },
+    { "value": "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab", "valid": false },
+    { "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde", "valid": false },
+    { "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg", "valid": false },
+    { "value": "", "valid": false }
+  ],
+  "combined": [
+    { "ticket": "roomtkt1abc", "addr": "ep7@203.0.113.7:4242", "combined": "roomtkt1abc#ep7@203.0.113.7:4242" },
+    { "ticket": "roomtkt1abc", "addr": "   ", "combined": "roomtkt1abc" },
+    { "ticket": "roomtkt1abc", "addr": "", "combined": "roomtkt1abc" }
+  ],
+  "lifecycle": [
+    { "name": "joined when the invitee is an active roster member", "identity_id": "peerA", "expires_at_ms": null, "members": [{ "identity_id": "peerA", "status": "active" }], "now_ms": 100, "state": "joined" },
+    { "name": "waiting while invited and not yet expired", "identity_id": "peerA", "expires_at_ms": 200, "members": [{ "identity_id": "peerA", "status": "invited" }], "now_ms": 100, "state": "waiting" },
+    { "name": "expired once the ticket lapses and still not active", "identity_id": "peerA", "expires_at_ms": 50, "members": [{ "identity_id": "peerA", "status": "invited" }], "now_ms": 100, "state": "expired" },
+    { "name": "joined outranks a lapsed expiry", "identity_id": "peerA", "expires_at_ms": 50, "members": [{ "identity_id": "peerA", "status": "active" }], "now_ms": 100, "state": "joined" },
+    { "name": "waiting with no expiry and no roster row yet", "identity_id": "peerA", "expires_at_ms": null, "members": [], "now_ms": 100, "state": "waiting" },
+    { "name": "a left member is never reported joined", "identity_id": "peerA", "expires_at_ms": null, "members": [{ "identity_id": "peerA", "status": "left" }], "now_ms": 100, "state": "waiting" }
+  ]
+}
