@@ -358,6 +358,12 @@ class DaemonSession extends ChangeNotifier {
   // last-seen marks are device-local storage owned by [prefs].
   String _roomQuery = '';
   LifecycleFilter _roomFilter = LifecycleFilter.all;
+  // Timeline activity-filter categories (issue #65), the counterpart of App.tsx's
+  // lifted activityFilters: session-local so the view-only filter survives a room
+  // switch (the TimelineView is keyed by room, so folding/expanded state resets,
+  // but the filter vocabulary does not) and the compact hide/show cycle. Empty =
+  // no filter (everything shows). Never persisted, never sent — a pure view.
+  final Set<String> _activityFilters = <String>{};
   RoomStore? _room;
   final Map<String, PendingMessages> _pendingByRoom = {};
   DiagnosticEvent? _lastDiagnosticError;
@@ -414,6 +420,21 @@ class DaemonSession extends ChangeNotifier {
   set roomFilter(LifecycleFilter value) {
     if (_roomFilter == value) return;
     _roomFilter = value;
+    notifyListeners();
+  }
+
+  /// The active timeline activity-filter categories (issue #65) — session-local
+  /// view state both shells' timeline reads. An EMPTY set means no filter, so
+  /// everything shows; a non-empty set shows only the matching categories.
+  /// Values are the shared [ActivityCategories] keys. Read-only view: mutate
+  /// through [toggleActivityFilter] so the session notifies.
+  Set<String> get activityFilters => Set.unmodifiable(_activityFilters);
+
+  /// Flip one activity-filter category on or off (multi-select). Clearing every
+  /// chip restores the full timeline. View-only — never mutates the signed log,
+  /// never touches pending messages (those are always shown).
+  void toggleActivityFilter(String category) {
+    if (!_activityFilters.remove(category)) _activityFilters.add(category);
     notifyListeners();
   }
 

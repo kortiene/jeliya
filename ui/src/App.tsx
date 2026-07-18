@@ -23,6 +23,7 @@ import type { RoomFlags } from './lib/roomFlags';
 import { loadLastSeen, markRoomSeen, saveLastSeen, seedRoomSeen } from './lib/lastSeen';
 import type { LastSeen } from './lib/lastSeen';
 import type { LifecycleFilter } from './lib/roomList';
+import type { ActivityCategory } from './lib/timelineRuns';
 import { splitInvite } from './lib/invite';
 import { joinRoomWithRetry } from './lib/join';
 import type { JoinProgress } from './lib/join';
@@ -162,6 +163,20 @@ export default function App({ client }: { client: Client }) {
   const [roomFilter, setRoomFilter] = useState<LifecycleFilter>('all');
   const [roomFlags, setRoomFlags] = useState<RoomFlags>(loadRoomFlags);
   const [lastSeen, setLastSeen] = useState<LastSeen>(loadLastSeen);
+
+  // Timeline activity-filter view state (issue #65). Session-local like
+  // roomQuery/roomFilter: it survives entering a room and returning (and the
+  // compact display:none hide) but is per-session — it does not persist across
+  // reload, and is never written to the signed log.
+  const [activityFilters, setActivityFilters] = useState<ReadonlySet<ActivityCategory>>(() => new Set());
+  const toggleActivityFilter = useCallback((category: ActivityCategory) => {
+    setActivityFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }, []);
 
   const toggleRoomPin = useCallback((roomId: string) => {
     setRoomFlags((f) => {
@@ -1064,6 +1079,8 @@ export default function App({ client }: { client: Client }) {
                     fetches={fetches}
                     loading={roomLoading}
                     selfId={selfId}
+                    activityFilters={activityFilters}
+                    onToggleActivityFilter={toggleActivityFilter}
                     savedView={roomId ? (timelineViews.current.get(roomId) ?? null) : null}
                     onSaveView={(view) => {
                       if (!roomId) return;

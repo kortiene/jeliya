@@ -213,10 +213,25 @@ function buildMainRoom(): MockRoom {
     ev(r, at(9, 48), SAM, 'file_shared', {
       file: { file_id: F_WIREFRAME, name: 'wireframe.png', size: 320 * 1024, mime: 'image/png' },
     }),
+    // A short burst of consecutive same-agent statuses (9:05–9:09, no other
+    // event between them) — the ONLY streak in the fixtures that folds into a
+    // run (issue #65). Every other agent_status here is separated by a file/
+    // message/different sender, so the fold code sees both the folded and the
+    // standalone cases against real data.
     ev(r, at(9, 5), BACKEND, 'agent_status', {
       label: 'working',
       status_message: 'Scaffolding room invite flow and peer discovery.',
       progress: 15,
+    }),
+    ev(r, at(9, 7), BACKEND, 'agent_status', {
+      label: 'working',
+      status_message: 'Peer discovery handshakes verified across 3 relays.',
+      progress: 22,
+    }),
+    ev(r, at(9, 9), BACKEND, 'agent_status', {
+      label: 'working',
+      status_message: 'Invite tickets minting and redeeming end-to-end.',
+      progress: 28,
     }),
     ev(r, at(9, 25), FRONTEND, 'agent_status', {
       label: 'working',
@@ -268,7 +283,11 @@ function buildMainRoom(): MockRoom {
     }),
     // A fresh working-class status so the fleet dashboard has one truthfully
     // "working" agent (connected peer + fresh working label, §1.2 row 4).
-    ev(r, Math.max(at(10, 50), Date.now() - 90_000), BACKEND, 'agent_status', {
+    // Anchored ~6 min back (still well within STALE_WORKING_MS = 20 min, so
+    // "working" holds) — deliberately MORE than the run window (RUN_GAP_MS =
+    // 5 min) before the live-simulation status that lands ~6 s after open, so
+    // this newest standalone card never folds INTO that live run (issue #65).
+    ev(r, Math.max(at(10, 50), Date.now() - 6 * 60_000), BACKEND, 'agent_status', {
       label: 'working',
       status_message: 'Sync convergence suite running (14/24 green).',
       progress: 68,

@@ -23,5 +23,6 @@ export 'conventions/format.dart';
 export 'conventions/invite.dart';
 export 'conventions/join.dart';
 export 'conventions/pending_messages.dart';
+export 'conventions/timeline_runs.dart';
 export 'conventions/room_attention.dart';
 export 'conventions/timeline_fold.dart';

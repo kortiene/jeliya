@@ -1,0 +1,106 @@
+{
+  "note": "Shared timeline run-folding + activity-classification + counter fixtures for issue #65. Consumed by BOTH the TypeScript (ui/src/lib/timelineRuns.test.ts) and Dart (app/test/timeline_runs_test.dart) projection tests, so React and Flutter fold agent runs, classify activity, and word the floating counter identically. `grouping[*].events` supply only the fields the projection reads (event_id, ts, sender.identity_id, kind, artifacts); `grouping[*].expect` lists rows in order, each either {event: id} or {run: {sender, events:[ids], artifacts:[deduped union]}}. `categories` pins every kind's activity bucket. `breakdown` pins the message-vs-non-message split the counter wording depends on.",
+  "grouping": [
+    {
+      "name": "a burst of same-agent status folds into one run",
+      "events": [
+        { "event_id": "s1", "ts": 1000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "s2", "ts": 2000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "s3", "ts": 3000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" }
+      ],
+      "expect": [
+        { "run": { "sender": "agentA", "events": ["s1", "s2", "s3"], "artifacts": [] } }
+      ]
+    },
+    {
+      "name": "a lone agent status stays a standalone event",
+      "events": [
+        { "event_id": "s1", "ts": 1000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" }
+      ],
+      "expect": [
+        { "event": "s1" }
+      ]
+    },
+    {
+      "name": "different senders never fold together",
+      "events": [
+        { "event_id": "a1", "ts": 1000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "b1", "ts": 2000, "sender": { "identity_id": "agentB" }, "kind": "agent_status" }
+      ],
+      "expect": [
+        { "event": "a1" },
+        { "event": "b1" }
+      ]
+    },
+    {
+      "name": "a gap wider than the window splits the run",
+      "events": [
+        { "event_id": "s1", "ts": 1000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "s2", "ts": 2000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "s3", "ts": 400000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "s4", "ts": 401000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" }
+      ],
+      "expect": [
+        { "run": { "sender": "agentA", "events": ["s1", "s2"], "artifacts": [] } },
+        { "run": { "sender": "agentA", "events": ["s3", "s4"], "artifacts": [] } }
+      ]
+    },
+    {
+      "name": "a message breaks the run and never folds",
+      "events": [
+        { "event_id": "s1", "ts": 1000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "m1", "ts": 2000, "sender": { "identity_id": "human" }, "kind": "message" },
+        { "event_id": "s2", "ts": 3000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "s3", "ts": 4000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" }
+      ],
+      "expect": [
+        { "event": "s1" },
+        { "event": "m1" },
+        { "run": { "sender": "agentA", "events": ["s2", "s3"], "artifacts": [] } }
+      ]
+    },
+    {
+      "name": "a run summary dedups artifacts across its events in first-seen order",
+      "events": [
+        { "event_id": "s1", "ts": 1000, "sender": { "identity_id": "agentA" }, "kind": "agent_status", "artifacts": ["fileX"] },
+        { "event_id": "s2", "ts": 2000, "sender": { "identity_id": "agentA" }, "kind": "agent_status", "artifacts": ["fileX", "fileY"] },
+        { "event_id": "s3", "ts": 3000, "sender": { "identity_id": "agentA" }, "kind": "agent_status", "artifacts": ["fileZ"] }
+      ],
+      "expect": [
+        { "run": { "sender": "agentA", "events": ["s1", "s2", "s3"], "artifacts": ["fileX", "fileY", "fileZ"] } }
+      ]
+    },
+    {
+      "name": "non-status events pass through untouched between runs",
+      "events": [
+        { "event_id": "c1", "ts": 500, "sender": { "identity_id": "owner" }, "kind": "room_created" },
+        { "event_id": "f1", "ts": 1500, "sender": { "identity_id": "agentA" }, "kind": "file_shared" },
+        { "event_id": "s1", "ts": 2000, "sender": { "identity_id": "agentA" }, "kind": "agent_status" },
+        { "event_id": "s2", "ts": 2500, "sender": { "identity_id": "agentA" }, "kind": "agent_status" }
+      ],
+      "expect": [
+        { "event": "c1" },
+        { "event": "f1" },
+        { "run": { "sender": "agentA", "events": ["s1", "s2"], "artifacts": [] } }
+      ]
+    }
+  ],
+  "categories": [
+    { "kind": "message", "category": "conversation" },
+    { "kind": "agent_status", "category": "agent-runs" },
+    { "kind": "file_shared", "category": "files" },
+    { "kind": "pipe_opened", "category": "pipes" },
+    { "kind": "pipe_closed", "category": "pipes" },
+    { "kind": "room_created", "category": "membership" },
+    { "kind": "member_invited", "category": "membership" },
+    { "kind": "member_joined", "category": "membership" },
+    { "kind": "member_left", "category": "membership" },
+    { "kind": "some_future_kind", "category": "conversation" }
+  ],
+  "breakdown": [
+    { "name": "all messages", "kinds": ["message", "message", "message"], "total": 3, "messages": 3, "nonMessages": 0, "allMessages": true },
+    { "name": "one agent status makes it activity", "kinds": ["message", "agent_status"], "total": 2, "messages": 1, "nonMessages": 1, "allMessages": false },
+    { "name": "only non-messages", "kinds": ["file_shared", "member_joined"], "total": 2, "messages": 0, "nonMessages": 2, "allMessages": false },
+    { "name": "empty batch is vacuously all-messages", "kinds": [], "total": 0, "messages": 0, "nonMessages": 0, "allMessages": true }
+  ]
+}

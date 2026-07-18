@@ -2187,6 +2187,68 @@
       }
     }
   },
+  "timelineNewActivity": "{n} new activity",
+  "@timelineNewActivity": {
+    "description": "Floating counter at the bottom of the timeline when the unseen items below the reader are NOT all plain messages (e.g. an agent status or a file share is mixed in). \"activity\" is a mass noun — it reads the same for any count, so this is a plain placeholder, never a plural. Compare timelineNewMessages, used when every unseen item is a message.",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineRunEvidence": "{count} updates · {span}",
+  "@timelineRunEvidence": {
+    "description": "Evidence line under a folded agent run in the timeline (issue #65): how many status updates the run folded, a middle dot, then the real first-to-last time span (e.g. “3 updates · 9:05–9:09”). count is always ≥2, so “updates” is always plural. span is a preformatted clock range built by the app.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "span": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineRunShow": "Show {count} updates",
+  "@timelineRunShow": {
+    "description": "Disclosure button on a collapsed agent run that expands it to reveal every folded status update. count is always ≥2, so “updates” is always plural.",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineRunHide": "Hide",
+  "@timelineRunHide": {
+    "description": "Disclosure button on an expanded agent run that collapses it back to just its latest status. Short verb."
+  },
+  "timelineFilterActivity": "Filter activity",
+  "@timelineFilterActivity": {
+    "description": "Accessibility group label (screen readers only) for the row of activity-filter chips above the timeline."
+  },
+  "timelineFilterConversation": "Conversation",
+  "@timelineFilterConversation": {
+    "description": "Activity-filter chip that shows only conversation (chat message) events in the timeline. Multi-select with the other four chips; none selected shows everything."
+  },
+  "timelineFilterAgentRuns": "Agent runs",
+  "@timelineFilterAgentRuns": {
+    "description": "Activity-filter chip that shows only agent status/run events in the timeline. “Agent” is the AI-agent role. Multi-select with the other four chips."
+  },
+  "timelineFilterMembership": "Membership",
+  "@timelineFilterMembership": {
+    "description": "Activity-filter chip that shows only room membership events (created, invited, joined, left) in the timeline. Multi-select with the other four chips."
+  },
+  "timelineFilterFiles": "Files",
+  "@timelineFilterFiles": {
+    "description": "Activity-filter chip that shows only file-share events in the timeline. Multi-select with the other four chips."
+  },
+  "timelineFilterPipes": "Pipes",
+  "@timelineFilterPipes": {
+    "description": "Activity-filter chip that shows only pipe events (opened/closed) in the timeline. “Pipes” is the product term for live peer-to-peer connections — translate consistently with the Pipes panel. Multi-select with the other four chips."
+  },
+  "timelineNoActivityMatches": "No activity matches these filters.",
+  "@timelineNoActivityMatches": {
+    "description": "Empty-state line shown in place of the timeline when active activity filters hide every event. History is only filtered from view, not deleted — clearing the filters restores it."
+  },
   "timelineToday": "Today",
   "@timelineToday": {
     "description": "Day-separator label in the timeline for events from today."

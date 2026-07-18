@@ -1702,7 +1702,49 @@ button.sender-name:not(:disabled):hover {
   position: relative;
   flex: 1;
   display: flex;
+  flex-direction: column;
   min-height: 0;
+}
+
+/* Activity filters (issue #65): a strip above the scroller, never inside the
+   role="log" live region. Multi-select chips; the active accent matches the
+   room-list lifecycle filter so the two filter vocabularies read as one.
+   Deliberately a SINGLE row that scrolls horizontally rather than wrapping —
+   its height is then a constant, not a function of width, so it can't erode the
+   compact 180px timeline budget (docs/room-workbench.md, decision 3). */
+.activity-filter {
+  display: flex;
+  gap: 6px;
+  padding: 7px 26px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.activity-filter::-webkit-scrollbar {
+  display: none;
+}
+
+.activity-chip {
+  flex: none;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-mute);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.activity-chip:hover {
+  color: var(--text-dim);
+}
+
+.activity-chip.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .timeline {
@@ -1966,6 +2008,53 @@ button.sender-name:not(:disabled):hover {
   color: var(--text);
   overflow-wrap: break-word;
   max-width: 72ch;
+}
+
+/* A folded agent run (issue #65): the latest status card, then honest run
+   evidence (count + real time span) and a disclosure; expanding reveals every
+   original update, indented under a rail so the fold reads as one thread. */
+.agent-run {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-run-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  padding-left: 46px; /* clear the 34px avatar + 12px gap of the card above */
+  font-size: 12px;
+  color: var(--text-mute);
+}
+
+.agent-run-toggle {
+  font-size: 12px;
+}
+
+.agent-run-history {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  margin-left: 46px;
+  padding-left: 14px;
+  border-left: 2px solid var(--blue-line);
+  /* Compositor-only reveal (no layout animation): the height change is instant
+     — content is real DOM the moment it expands — so this never fights the
+     ResizeObserver-driven scroll sync. Turned off under reduced motion below. */
+  animation: run-reveal 180ms ease;
+}
+
+@keyframes run-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .artifact-row {
@@ -3981,5 +4070,11 @@ select {
 
   .progress-fill {
     transition: none;
+  }
+
+  /* Expanding a folded run lands instantly for a reduced-motion reader — the
+     revealed history is identical, just without the fade-in (issue #65). */
+  .agent-run-history {
+    animation: none;
   }
 }
