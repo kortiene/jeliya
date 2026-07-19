@@ -30,7 +30,7 @@ Security conclusions must name the source being evaluated:
 | Surface | Revision | Security meaning |
 |---|---|---|
 | Current public Jeliya dependency | Iroh Rooms `a5d98b70d717f35d3ce60953a88e12e646f2e871` (untagged upstream `main`) | first merge carrying the fixes for `kortiene/iroh-room#121` and `kortiene/iroh-room#119` plus the `kortiene/iroh-room#126` connection-generation follow-ups; local fanout, isolation, and store-degradation qualification passes |
-| Current source candidate | Jeliya `42614709c03277acdb001b1a855952c6d5427625` | exact dependency pin in `Cargo.toml` and `Cargo.lock`; workspace and 67-assertion loopback suites pass; network qualification pending |
+| Current source candidate | Jeliya `9c71fac2104a74076662177cf4ef74bb5050bae9` | exact dependency pin in `Cargo.toml` and `Cargo.lock`; workspace and 67-assertion loopback suites pass; network qualification pending |
 | Last network-qualified snapshot | Jeliya `55024a46b3e112796ba2acf1dc408dab26dbba2e` plus Iroh Rooms `71fbb5007bef4ce83631c94762ec68c2beef3d79` | signed direct and forced-relay schema 2 evidence remains valid for this exact prior pair only |
 | Superseded `v0.5.0` dependency | Iroh Rooms `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` | carried the isolation remediation and relay-only seam; certified for the published `v0.5.0` at Jeliya `c5f740e67d043a1153cf285691e3bc5b2b9a7203`. Still fetchable by commit SHA, but no longer named by tag `v0.1.0-rc.2`, which was re-created upstream and now resolves elsewhere; the `v0.5.0` evidence binds the SHA, not the tag |
 | Historical local-remediation verification | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` plus local Iroh Rooms `3702e8cbcd5ac1808791124dd6bc44068be5f822` | schema 1 direct and forced-relay checks passed, but this older unpublished pair does not qualify a release |
@@ -40,7 +40,7 @@ commit `55024a4…` and published Iroh Rooms pin `71fbb500…`: they
 establish direct and relay network operation and public-RPC non-disclosure. They
 do not establish room-scoped synchronization isolation — both manifests set
 `synchronization_isolation_claimed: false`; that control rests on the upstream
-suite at that revision. They do not transfer to `4261470…` + `a5d98b70…`.
+suite at that revision. They do not transfer to `9c71fac…` + `a5d98b70…`.
 Fresh source-built direct and relay runs and signatures are security
 requirements, not release administration.
 
