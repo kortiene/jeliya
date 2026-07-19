@@ -147,6 +147,18 @@ then delete the staged copy after the call returns (the daemon has imported
 the blob by then). This mirrors what the daemon itself does for browser
 uploads on `POST /api/files/share`.
 
+`file.fetch {room_id, file_id, save_dir?}` is confined in the opposite
+direction: `save_dir` must resolve inside `<data_dir>/downloads`, and a
+relative value resolves against that directory rather than the daemon's working
+directory. Symlinks are resolved before the check, and `..` is refused outright.
+Without this the method is an arbitrary-file-write primitive — it writes bytes
+chosen by whoever shared the blob, under a name largely chosen by the same
+party, into a process that holds the identity keys. A native client that wants
+the file elsewhere **unstages** it: fetch into the downloads tree, copy to the
+user-chosen destination under the client's own authority, then delete the
+staged copy. Choosing a destination outside the data dir is a user-consented
+native capability, not a daemon capability.
+
 ## Envelope
 
 Client → server (request):
@@ -371,7 +383,7 @@ for exactly-once reconciliation — but that requires a field on the signed
 |---|---|---|
 | `file.share` | `{ room_id, path, name?, mime? }` | `{ file_id, event_id }` — imports into the blob store and authors `file.shared`; `path` MUST resolve inside the daemon data dir (see *Native file sharing*), file size ≤ **100 MiB** (`104_857_600` bytes) |
 | `file.list` | `{ room_id }` | `{ files: [{ file_id, name, size, mime, sender_id, ts, available, providers, fetched?, local_path?, local_bytes?, fetched_at_ms? }] }` — see the availability note below |
-| `file.fetch` | `{ room_id, file_id, save_dir? }` | `{ path, bytes, verified: true }` — writes into `save_dir`, defaulting to **`<data_dir>/downloads`** when omitted; distinctive errors `file_unavailable` / `file_unauthorized` / `hash_mismatch`, never a silent partial. `hash_mismatch` is a hard stop (discard, no retry) |
+| `file.fetch` | `{ room_id, file_id, save_dir? }` | `{ path, bytes, verified: true }` — writes into `save_dir`, defaulting to **`<data_dir>/downloads`** when omitted; `save_dir` MUST resolve inside `<data_dir>/downloads` (see *Native file sharing*), and a relative value resolves against it; distinctive errors `file_unavailable` / `file_unauthorized` / `hash_mismatch`, never a silent partial. `hash_mismatch` is a hard stop (discard, no retry) |
 
 **`available` and `providers` (file.list) — read carefully, the meaning is
 non-obvious:**
