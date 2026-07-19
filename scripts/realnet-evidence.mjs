@@ -68,7 +68,7 @@ const DEFAULT_LOCAL_BIN = join(REPO_ROOT, "target", "release", "jeliyad");
 const DEFAULT_DEBUG_BIN = join(REPO_ROOT, "target", "debug", "jeliyad");
 const EVIDENCE_ROOT = process.env.JELIYA_EVIDENCE_ROOT
   ? resolve(process.env.JELIYA_EVIDENCE_ROOT)
-  : join(REPO_ROOT, ".jeliya-gatea", "v0.6.0");
+  : join(REPO_ROOT, ".jeliya-gatea", "v0.6.1");
 const WAIT_MS = 120_000;
 const LINUX_TARGET = "x86_64-unknown-linux-musl";
 const REQUIRED_RUST_TOOLCHAIN = "1.91.0";
@@ -2321,7 +2321,7 @@ async function runFlow({ peers, expectedPath, runId, resources, record }) {
   }
 
   const room = await record("A: room created", () => a.client.call("room.create", {
-    name: `v0.6.0 network evidence ${runId}`,
+    name: `v0.6.1 network evidence ${runId}`,
   }));
   const roomId = room.room_id;
   const openedA = await record("A: room opened", async () => {
@@ -2408,7 +2408,7 @@ async function runFlow({ peers, expectedPath, runId, resources, record }) {
   }
 
   const payload = Buffer.concat([
-    Buffer.from(`jeliya-v0.6.0-${runId}\n`),
+    Buffer.from(`jeliya-v0.6.1-${runId}\n`),
     randomBytes(256 * 1024),
   ]);
   const payloadPath = join(a.dataDir, `payload-${runId}.bin`);
@@ -2864,7 +2864,7 @@ export function parseCli(argv) {
     withThird: localDryrun ? Boolean(args["with-third"]) : true,
     allowDirty: Boolean(args["allow-dirty"] || localDryrun),
     allowSharedEgress: Boolean(args["allow-shared-egress"] || args["allow-same-network"] || localDryrun),
-    expectedVersion: String(args["expected-version"] ?? "0.6.0"),
+    expectedVersion: String(args["expected-version"] ?? "0.6.1"),
     localBin: String(args["local-bin"] ?? (localDryrun ? DEFAULT_DEBUG_BIN : DEFAULT_LOCAL_BIN)),
     linuxBin: args["linux-bin"] ? String(args["linux-bin"]) : null,
     linuxSha256: args["linux-sha256"] ? String(args["linux-sha256"]) : null,

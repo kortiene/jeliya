@@ -1,7 +1,7 @@
 ---
 type: "Architecture"
 title: "Security and threat model"
-description: "Trust boundaries, assets, threats, controls, and residual risks for the v0.6.0 Jeliya candidate."
+description: "Trust boundaries, assets, threats, controls, and residual risks for the v0.6.1 Jeliya candidate."
 tags: ["authorization", "privacy", "security", "threat-model"]
 timestamp: "2026-07-19T15:15:00Z"
 status: "canonical"
@@ -15,13 +15,13 @@ audience: ["contributors", "maintainers", "operators", "security-reviewers"]
 
 Jeliya is a local daemon or in-process mobile engine that stores identity keys,
 room state, files, and agent events while communicating with untrusted network
-peers. The `v0.6.0` target is a trustworthy technical preview, not a claim of
+peers. The `v0.6.1` target is a trustworthy technical preview, not a claim of
 complete security. The current dependency pin carries the room-scoped
 synchronization remediation, provisional-peer gate, store retry/degradation
 controls, and relay-only verification seam. Exact-revision local qualification
 passes. Signed direct and forced-relay evidence still binds the prior dependency
-pin and must be repeated before the current source candidate is network-
-qualified.
+pin and must be repeated after the exact post-merge source candidate is
+designated.
 
 ## Candidate boundary
 
@@ -30,17 +30,18 @@ Security conclusions must name the source being evaluated:
 | Surface | Revision | Security meaning |
 |---|---|---|
 | Current public Jeliya dependency | Iroh Rooms `a5d98b70d717f35d3ce60953a88e12e646f2e871` (untagged upstream `main`) | first merge carrying the fixes for `kortiene/iroh-room#121` and `kortiene/iroh-room#119` plus the `kortiene/iroh-room#126` connection-generation follow-ups; local fanout, isolation, and store-degradation qualification passes |
-| Current source candidate | Jeliya `105744b6c27633e5ccc576d86f1a15e3fe443b94` | exact dependency pin in `Cargo.toml` and `Cargo.lock`; workspace and 67-assertion loopback suites pass; network qualification pending |
-| Last network-qualified snapshot | Jeliya `55024a46b3e112796ba2acf1dc408dab26dbba2e` plus Iroh Rooms `71fbb5007bef4ce83631c94762ec68c2beef3d79` | signed direct and forced-relay schema 2 evidence remains valid for this exact prior pair only |
+| Current source candidate | pending after the v0.6.1 version PR merges | the version-preparation branch is not a qualification candidate; its pre-version baseline `105744b…` passed the workspace and 67-assertion loopback suites |
+| Released `v0.6.0` qualification source | Jeliya `55024a46b3e112796ba2acf1dc408dab26dbba2e` plus Iroh Rooms `71fbb5007bef4ce83631c94762ec68c2beef3d79`; release tag `2283a441220031485a7a212dc585772231d0f428` | signed direct and forced-relay schema 2 evidence authorized the released v0.6.0 artifact set and remains valid for this exact pair only |
 | Superseded `v0.5.0` dependency | Iroh Rooms `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` | carried the isolation remediation and relay-only seam; certified for the published `v0.5.0` at Jeliya `c5f740e67d043a1153cf285691e3bc5b2b9a7203`. Still fetchable by commit SHA, but no longer named by tag `v0.1.0-rc.2`, which was re-created upstream and now resolves elsewhere; the `v0.5.0` evidence binds the SHA, not the tag |
 | Historical local-remediation verification | Jeliya `fe870c7c5b63f2bf52b031dd1bc8e27e83183be5` plus local Iroh Rooms `3702e8cbcd5ac1808791124dd6bc44068be5f822` | schema 1 direct and forced-relay checks passed, but this older unpublished pair does not qualify a release |
 
 The retained certifying direct and forced-relay runs bind published Jeliya
-commit `55024a4…` and published Iroh Rooms pin `71fbb500…`: they
+source commit `55024a4…` and published Iroh Rooms pin `71fbb500…`: they
 establish direct and relay network operation and public-RPC non-disclosure. They
 do not establish room-scoped synchronization isolation — both manifests set
 `synchronization_isolation_claimed: false`; that control rests on the upstream
-suite at that revision. They do not transfer to `105744b…` + `a5d98b70…`.
+suite at that revision. They do not transfer to the future v0.6.1 candidate +
+`a5d98b70…`.
 Fresh source-built direct and relay runs and signatures are security
 requirements, not release administration.
 
@@ -84,10 +85,10 @@ implemented control.
 | Android identity copied through backup or device transfer | long-lived identity disclosure outside the device | `allowBackup=false`, explicit backup/data-extraction exclusions, `noBackupFilesDir`, fail-closed migration | repository validation passes; no Keystore protection and no claim against a rooted or compromised device |
 | Agent identity or state committed from a checkout | public secret disclosure and identity reuse | platform data directory outside the checkout, per-directory deny-all `.gitignore`, repository ignore rules, tracked-secret gate | six secret-storage tests plus repository validation pass locally |
 | Reachable vulnerable dependency | code execution, compromise, or denial of service | automated cargo/npm audits; high/critical findings block; explicit owned/expiring exception only when unavoidable | zero cargo/npm vulnerabilities; three maintenance warnings and one yanked version expire 2026-09-30 |
-| Compromised action or downloaded build tool | release supply-chain compromise | third-party Actions pinned to immutable revisions; Zig and Gradle distributions verified before execution; certifying network builds use the official complete Zig archive and exact tool bindings; least-privilege jobs | workflow and local contract tests pass; only the complete Zig archive is independently verified by schema 2, while other recorded tool digests are execution identities; the hosted double run executed for the published `v0.5.0` and executes again for `v0.6.0` on dispatch |
-| Partial, mismatched, or post-validation-modified release | incomplete, stale, mislabeled, or candidate-mutated binaries | validate and seal all five private archives in a no-execution job; smoke the immutable artifact separately; verify the receipt without execution before tag/release creation; expose the write token only to the final step | workflow and receipt negative tests pass locally, and the path executed end to end for the published `v0.5.0` five-archive set; it has not yet run for `v0.6.0` |
+| Compromised action or downloaded build tool | release supply-chain compromise | third-party Actions pinned to immutable revisions; Zig and Gradle distributions verified before execution; certifying network builds use the official complete Zig archive and exact tool bindings; least-privilege jobs | workflow and local contract tests pass; only the complete Zig archive is independently verified by schema 2, while other recorded tool digests are execution identities; the hosted double run executed for published `v0.6.0` and must execute again for `v0.6.1` |
+| Partial, mismatched, or post-validation-modified release | incomplete, stale, mislabeled, or candidate-mutated binaries | validate and seal all five private archives in a no-execution job; smoke the immutable artifact separately; verify the receipt without execution before tag/release creation; expose the write token only to the final step | workflow and receipt negative tests pass locally, and the path executed end to end for the published `v0.6.0` five-archive set; it has not yet run for `v0.6.1` |
 | Installer extracts modified bytes | local code execution | fetch the matching published checksum, validate filename/format, verify SHA-256, then extract | Unix behavior passes; Windows checksum, tamper, and simulated-reparse behavior passed on public `main` run `29688515781` at `a24f223…`; current-candidate rerun pending |
-| Forged or edited verification record | false release confidence | retained exact manifest, canonical public key, detached Ed25519 signature, source/publication/ancestry checks | retained signatures verify for the prior snapshot; the current release gate is BLOCKED until replacement manifests bind the new revision pair |
+| Forged or edited verification record | false release confidence | retained exact manifest, canonical public key, detached Ed25519 signature, source/publication/ancestry checks | retained signatures verify for released `v0.6.0`; the v0.6.1 gate is BLOCKED until new manifests bind the new revision pair without modifying v0.6.0 evidence |
 | Secrets copied into logs or evidence | credential or identity disclosure | transient logs confined to run-owned data directories, no address retention, and digest-only retained summaries | retained runs report completed cleanup. Manifests keep only line/byte counts and stream SHA-256 digests and contain no tickets, tokens, seeds, private keys, excerpts, or IP addresses |
 
 ## Authorization invariant

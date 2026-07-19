@@ -125,11 +125,13 @@ Note: these builds are unsigned, so macOS/Windows will show a security warning
 on first run (see [Troubleshooting](#troubleshooting)) — the `brew`/`curl`/
 PowerShell installs above don't trigger this.
 
-Release `v0.4.3` publishes SHA-256 sidecars, but its installer implementation
-does not automatically verify them before extraction. Automatic installer
-verification is a `v0.5.0` release gate; until that release is published,
-verify a manually downloaded archive against its matching `.sha256` file. See
-the exact [release-versus-main matrix](docs/release-vs-main.md).
+Release `v0.4.3` publishes SHA-256 sidecars, but the installer stored at that
+tag does not automatically verify them before extraction. The fail-closed
+installer shipped in `v0.5.0` and is retained by released `v0.6.0`; the current
+`main` installer also verifies a selected archive against its matching
+`.sha256` file before extraction. Because `v0.6.0` is a prerelease, pin
+`JELIYA_VERSION=v0.6.0` to install that preview explicitly. See the exact
+[release-versus-main matrix](docs/release-vs-main.md).
 
 ### 2. Run it
 

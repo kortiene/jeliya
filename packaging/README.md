@@ -8,35 +8,36 @@ refreshed from each release's sidecars. Native-app packaging helpers also
 exist in `../scripts`, but their outputs are source-built developer artifacts,
 not public downloads.
 
-**`v0.5.0` publishes exactly five `jeliyad` archives with the embedded web UI,
+**`v0.6.0` publishes exactly five `jeliyad` archives with the embedded web UI,
 plus one checksum sidecar per archive.** It does not publish the macOS Flutter
 app or DMG, the Linux Flutter app or its tarball, Android APK/AAB files, an iOS
 app, or the Homebrew app cask. Native build instructions below remain
-development references, not `v0.5.0` release scope.
+development references, not `v0.6.0` release scope.
 
 ## Files
 
 | File | What it is |
 | --- | --- |
-| `../.github/workflows/release.yml` | Manual GitHub Actions promotion workflow. For `v0.5.0`, it runs the complete CI workflow twice on the exact `main` revision, builds `jeliyad` plus its embedded UI for five targets, validates the private archive/checksum set, and then exposes one complete release from the sole write-enabled job. It publishes no native app artifact. |
+| `../.github/workflows/release.yml` | Manual GitHub Actions promotion workflow. For `v0.6.0`, it ran the complete CI workflow twice on the exact release revision, built `jeliyad` plus its embedded UI for five targets, validated the private archive/checksum set, and then exposed one complete release from the sole write-enabled job. It publishes no native app artifact. |
 | `install.sh` | POSIX-sh one-liner installer for macOS + Linux (`curl \| sh`). Detects OS/arch, downloads the matching archive and checksum, verifies SHA-256 before extraction, then installs `jeliyad` to `/usr/local/bin` (or `~/.local/bin`). |
 | `install.ps1` | Windows PowerShell equivalent. Downloads the archive and checksum, verifies SHA-256 before extraction, installs to `%LOCALAPPDATA%\Programs\Jeliya`, and adds it to the user PATH. |
 | `jeliya.rb` | Homebrew formula template. Belongs in a tap (`kortiene/homebrew-jeliya`), not homebrew-core. |
-| `jeliya-app.rb` | Unpublished Homebrew cask template for a future desktop-app release. It is not completed, uploaded, or updated by the `v0.5.0` release. |
+| `jeliya-app.rb` | Unpublished Homebrew cask template for a future desktop-app release. It is not completed, uploaded, or updated by the `v0.6.0` release. |
 | `../scripts/package-linux.mjs` | Source-only Linux Flutter packager. Builds the host-native app and `jeliyad`, installs the adjacent sidecar and freedesktop metadata, exercises the bundle, then emits a tarball and SHA-256 sidecar under `dist/`. CI checks but does not publish them. |
 
 ## How they fit together
 
-1. An authorized release operator dispatches `release.yml` from the current
-   `main` tip with the exact `v0.5.0` input. No release tag exists yet.
+1. An authorized release operator dispatches `release.yml` from the exact
+   qualified `main` tip with the intended `vX.Y.Z` input. The workflow refuses
+   to proceed if that tag or release already exists.
 2. Two independent clean executions of the required CI workflow must pass on
    that exact commit.
 3. Read-only jobs build and validate the complete private set:
-   - `jeliyad-v0.5.0-aarch64-apple-darwin.tar.gz`
-   - `jeliyad-v0.5.0-x86_64-apple-darwin.tar.gz`
-   - `jeliyad-v0.5.0-x86_64-unknown-linux-musl.tar.gz`
-   - `jeliyad-v0.5.0-aarch64-unknown-linux-musl.tar.gz`
-   - `jeliyad-v0.5.0-x86_64-pc-windows-msvc.zip`
+   - `jeliyad-vX.Y.Z-aarch64-apple-darwin.tar.gz`
+   - `jeliyad-vX.Y.Z-x86_64-apple-darwin.tar.gz`
+   - `jeliyad-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz`
+   - `jeliyad-vX.Y.Z-aarch64-unknown-linux-musl.tar.gz`
+   - `jeliyad-vX.Y.Z-x86_64-pc-windows-msvc.zip`
    - plus a `<asset>.sha256` next to each one.
 4. The sole write-enabled job revalidates the commit and complete set, refuses
    any existing tag or release, creates a run-owned tag plus private draft,
@@ -55,25 +56,24 @@ before the write boundary and that the release stays draft until remote bytes
 match. Its scoped failure cleanup minimizes orphan-tag risk, but an interrupted
 GitHub API cleanup must still be inspected before retrying.
 
-`v0.5.0` is intentionally a prerelease technical preview, so GitHub's
+`v0.6.0` is intentionally a prerelease technical preview, so GitHub's
 `/releases/latest` endpoint and an unpinned installer continue to select the
 latest non-prerelease version (`v0.4.3` at this snapshot). Preview operators
 must pin it explicitly:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kortiene/jeliya/v0.5.0/packaging/install.sh \
-  | JELIYA_VERSION=v0.5.0 sh
+curl -fsSL https://raw.githubusercontent.com/kortiene/jeliya/v0.6.0/packaging/install.sh \
+  | JELIYA_VERSION=v0.6.0 sh
 ```
 
 ```powershell
-$env:JELIYA_VERSION = 'v0.5.0'
-irm https://raw.githubusercontent.com/kortiene/jeliya/v0.5.0/packaging/install.ps1 | iex
+$env:JELIYA_VERSION = 'v0.6.0'
+irm https://raw.githubusercontent.com/kortiene/jeliya/v0.6.0/packaging/install.ps1 | iex
 ```
 
 Installer code at the `v0.4.3` tag did not perform this automatic sidecar
-verification. The fail-closed implementation is part of the unreleased
-`v0.5.0` hardening candidate and must pass its adversarial tests before the
-release claim changes.
+verification. The fail-closed implementation shipped in `v0.5.0`, was reused
+for `v0.6.0`, and remains covered by adversarial installer tests.
 
 ## Mandatory build ordering (UI before cargo)
 
@@ -123,10 +123,10 @@ shipped:
 
 ## Per-release follow-up
 
-After the five `v0.5.0` daemon archives are published and independently
-verified, update `version` and checksums in `jeliya.rb` in a separate reviewed
-tap change. Do not update or publish `jeliya-app.rb`: no DMG belongs to this
-release.
+Prerelease daemon archives do not automatically advance the stable Homebrew
+formula. For a stable release, update `version` and checksums in `jeliya.rb` in
+a separate reviewed tap change. Do not update or publish `jeliya-app.rb`: no
+DMG belongs to the current v0.6.x release scope.
 
 `release.yml` needs no slug edit — it always builds the repo it runs in.
 
@@ -136,7 +136,7 @@ The daemon archives are **unsigned**. A *browser* download of an unsigned
 binary trips Gatekeeper (macOS) and SmartScreen (Windows). The `curl | sh` and
 Homebrew install paths do **not** set the quarantine bit, so they install
 cleanly. The repository contains a Developer ID and notarization design for a
-future macOS app release, but `v0.5.0` must not execute a DMG publishing job or
+future macOS app release, but v0.6.x must not execute a DMG publishing job or
 attach a DMG to its release. Every release to date carries only unsigned daemon
 archives. Signing the bare daemon archives (issue #1) and Windows Authenticode
 (issue #2) are tracked in
@@ -201,7 +201,7 @@ distribution.
 
 ## Android release builds
 
-These commands are development and future-release references. `v0.5.0` does
+These commands are development and future-release references. v0.6.x does
 not build or publish an APK or AAB, and its release workflow must not receive or
 upload one.
 

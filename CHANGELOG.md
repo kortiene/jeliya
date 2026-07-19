@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-19
+
 ### Changed
 
 - Repinned `iroh-rooms` from tag `v0.1.0-rc.3` (`71fbb500…`) to the
@@ -10,7 +12,11 @@
   guards, and bounded store-insert recovery with durable critical degradation
   reporting. Exact-revision upstream, workspace, and loopback qualification
   passes. Signed direct and forced-relay evidence at the prior pin remains
-  valid for that snapshot but does not transfer to the new candidate.
+  valid for released `v0.6.0` but does not transfer to the new candidate.
+- Reserved a separate `docs/evidence/v0.6.1/` boundary for fresh qualification
+  records. The `v0.6.0` manifests and signatures remain immutable, and the
+  secret-storage gate now rejects private evidence-signing material even when
+  it is gitignored inside the checkout.
 
 ## [0.6.0] - 2026-07-16
 
