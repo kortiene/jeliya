@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Verification evidence"
 description: "Revision-bound verification ledger and evidence-recording contract for the v0.6.1 candidate."
 tags: ["evidence", "networking", "release", "testing", "verification"]
-timestamp: "2026-07-19T19:05:30Z"
+timestamp: "2026-07-19T21:49:56Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -19,9 +19,9 @@ the exact public Jeliya commit, public immutable dependency revisions,
 environment, timestamps, assertions, retained sanitized manifest, and detached
 signature. The retained direct and forced-relay schema 2 runs meet that bar for
 released v0.6.0 source Jeliya `55024a4...` + Iroh Rooms `71fbb500...`; the
-lightweight release tag is `2283a441...`. The v0.6.1 preparation line repins
-Iroh Rooms to `a5d98b70...`. Those signed manifests remain immutable and do not
-transfer to the new dependency revision.
+lightweight release tag is `2283a441...`. The designated v0.6.1 source
+candidate is `a1af1cdc...` and pins Iroh Rooms to `a5d98b70...`. Those signed
+manifests remain immutable and do not transfer to the new revision pair.
 
 ## Candidate identity
 
@@ -29,14 +29,14 @@ transfer to the new dependency revision.
 |---|---|
 | Milestone | `v0.6.1 — corrective technical-preview candidate`, not yet qualified or published |
 | Baseline commit | `2283a441220031485a7a212dc585772231d0f428` — the published `v0.6.0` tag |
-| Current source candidate | `pending — designate the exact public SHA after the version PR merges` |
+| Current source candidate | `a1af1cdc974bc307317779afa0765c3988cb871f` |
 | Network-qualified commit | `pending — fresh signed direct and relay runs required` |
 | Current public `iroh-rooms` pin | `a5d98b70d717f35d3ce60953a88e12e646f2e871` — deliberately untagged first upstream `main` merge carrying the fixes for `kortiene/iroh-room#121` and `kortiene/iroh-room#119` plus the connection-generation follow-ups |
 | Candidate upstream remediation revision | `a5d98b70d717f35d3ce60953a88e12e646f2e871` |
 | Last released qualification source | Jeliya `55024a46b3e112796ba2acf1dc408dab26dbba2e` + Iroh Rooms `71fbb5007bef4ce83631c94762ec68c2beef3d79` (tag `v0.1.0-rc.3`), released as Jeliya `v0.6.0` at `2283a441…` |
 | Retained evidence signatures | present and valid for released v0.6.0; not transferable to the current pin |
 | Release evidence gate | BLOCKED |
-| Evidence window | pre-version local exact-revision qualification on 2026-07-19 UTC; post-merge candidate and network evidence pending |
+| Evidence window | pre-version local exact-revision qualification plus hosted candidate CI on 2026-07-19 UTC; qualification refs and network evidence pending |
 
 The current pin is the first upstream `main` merge containing both required
 fixes. The two commits after it change only `iroh-rooms-cli`, which Jeliya does
@@ -47,8 +47,9 @@ predates both fixes.
 The retained signed direct and forced-relay runs remain valid evidence for released v0.6.0 source
 `55024a4...` + `71fbb500...`: they covered three peers across two BGP origin
 ASNs, passed every recorded assertion, and set `certifiable: true`. They are
-historical for v0.6.1. Fresh manifests must bind the post-merge designated SHA
-and `a5d98b70...` before the v0.6.1 evidence gate can return to `READY`.
+historical for v0.6.1. Fresh manifests must bind
+`a1af1cdc974bc307317779afa0765c3988cb871f` and `a5d98b70...` before the v0.6.1
+evidence gate can return to `READY`.
 
 The pre-version source baseline was recorded as `4261470...` while the repin was in
 review. `main` enforces linear history, so the merge rebased that work and
@@ -68,6 +69,15 @@ All eight hosted checks passed on public `main` run `29699530741` at the exact
 candidate commit, including the network evidence harness qualification step.
 The evidence gate remains `BLOCKED`: neither the prior signed manifests nor
 the local dry runs can qualify this new public commit.
+
+Jeliya `a1af1cdc974bc307317779afa0765c3988cb871f` is the exact post-merge
+v0.6.1 source candidate. Its tree (`675dcd4c...`) matches the reviewed version
+PR head `be6e43b7...`; PR run `29703977510` and public `main` run
+`29704754961` both passed all eight hosted jobs on that source tree. The
+post-merge run includes the 67-assertion loopback harness but is not real-network
+qualification. The evidence gate stays `BLOCKED` until the dedicated
+qualification refs exist and fresh signed direct and forced-relay manifests
+bind this exact candidate and pin.
 
 The `v0.5.0`-certified pin remains `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb`.
 That revision is still publicly fetchable by commit SHA, but it is no longer
@@ -97,15 +107,15 @@ manifests are the certifying set.
 | Agent secret location | platform data directory outside the checkout, deny-all state-directory Git guard, repository ignore rules, and commit-prevention validation | local PASS |
 | Rust dependency audit | zero vulnerability advisories; three unmaintained-crate warnings and one yanked-version warning remain in the register below | PASS for vulnerability threshold |
 | npm dependency audit | zero vulnerabilities | PASS |
-| Complete CI definition | Rust, MSRV, TypeScript, Dart, Flutter, Linux native packaging, docs, smoke, sidecar, agent, fleet, protocol, and dependency gates are configured with required-tool failures; manual dispatch is non-publishing and Gradle is checksum-verified | all jobs, including `linux-flutter` and Windows installer integrity, passed on public `main` run `29688515781` at `a24f223...`; current-candidate rerun pending |
-| Repeatability | two complete hosted CI executions from clean environments | configured in `release.yml`; not executed for the current candidate |
+| Complete CI definition | Rust, MSRV, TypeScript, Dart, Flutter, Linux native packaging, docs, smoke, sidecar, agent, fleet, protocol, and dependency gates are configured with required-tool failures; manual dispatch is non-publishing and Gradle is checksum-verified | all eight jobs, including `linux-flutter` and Windows installer integrity, passed on public `main` run `29704754961` at exact candidate `a1af1cdc...`; PR run `29703977510` passed on its identical tree |
+| Repeatability | two complete hosted CI executions from clean environments | PR run `29703977510` and public `main` run `29704754961` passed on the identical candidate tree; the post-evidence release workflow has not run |
 | Direct different-network P2P | retained schema 2 run `1ca39cfa`: three peers, three distinct observed egresses, two ASNs (AS11426 + AS24940), stable direct paths on roles A/B/C, all assertions pass | certifying PASS for `55024a4…` + `71fbb500…`; current-pin rerun required |
 | Deliberately forced relay | retained schema 2 run `cf28bc63`: the relay-only source build self-attests on all three hosts and proves relay paths on roles A/B/C | certifying PASS for `55024a4…` + `71fbb500…`; current-pin rerun required |
 | Join, reconnect, and resynchronization | the current two-daemon loopback run passes 67/67 assertions; retained network runs cover the same integration boundary at the prior dependency pin | local current-pin PASS; current-pin direct and relay evidence pending |
 | Messages, files, and pipes | current loopback covers messages, byte-identical BLAKE3-verified file fetch, authorized pipe, and unauthorized denial; retained network runs cover the prior dependency pin | local current-pin PASS; current-pin direct and relay evidence pending |
 | Installer integrity | Unix behavioral tests verify checksum-before-extraction; Windows jobs execute checksum/tamper behavior, simulate reparse rejection, and smoke the native daemon | Unix PASS; hosted `windows-latest` job passes on `main` |
 | Complete asset-set visibility | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step; the release stays draft until all uploaded bytes match | executed end to end for `v0.6.0`, which built, verified, and published the five-archive set with sidecars; the same path must execute for `v0.6.1` after qualification. GitHub tag and release operations remain non-transactional |
-| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.6.1` | PASS on the version-preparation branch; the exact candidate is designated only after merge |
+| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.6.1` | PASS at exact public candidate `a1af1cdc...` |
 | Documentation | required OKF pages distinguish the current locally qualified candidate, the prior signed schema 2 snapshot, and historical schema 1 local-remediation evidence | local docs and release-contract gates pass on this documentation diff |
 
 ## Dependency-risk exception register
@@ -322,17 +332,18 @@ Completed work:
    `kortiene/iroh-room#119` are public
    and present at immutable revision
    `a5d98b70d717f35d3ce60953a88e12e646f2e871`;
-2. the v0.6.1 preparation line resolves that exact revision in `Cargo.toml`
-   and `Cargo.lock`; and
+2. exact public v0.6.1 source candidate
+   `a1af1cdc974bc307317779afa0765c3988cb871f` resolves that revision in
+   `Cargo.toml` and `Cargo.lock`; and
 3. the targeted fanout, isolation, and store-degradation regressions, the full
    upstream core/net suite, the Jeliya workspace suite, and the loopback E2E
-   suite passed at pre-version baseline
-   `105744b6c27633e5ccc576d86f1a15e3fe443b94`.
+   suite passed at the pre-version baseline; both hosted matrices passed on the
+   candidate's exact source tree.
 
 Remaining work before `READY`:
 
-1. merge the version PR, designate its exact public SHA, and create the Jeliya
-   and Iroh Rooms qualification refs with explicit authorization;
+1. create the dedicated Jeliya and Iroh Rooms qualification refs with explicit
+   authorization, pointing to `a1af1cdc...` and `a5d98b70...` respectively;
 2. run direct and forced-relay qualification from that clean public commit,
    retaining new sanitized manifests under `docs/evidence/v0.6.1/` and bound
    to `a5d98b70...`;

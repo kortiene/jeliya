@@ -3,7 +3,7 @@ type: "Runbook"
 title: "Real-network NAT runbook"
 description: "Operator procedure for collecting revision-bound direct and forced-relay evidence across three distinct public egress paths."
 tags: ["nat", "networking", "operations", "p2p"]
-timestamp: "2026-07-19T15:15:00Z"
+timestamp: "2026-07-19T21:49:56Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -35,11 +35,11 @@ Neither run certifies room-scoped synchronization isolation: both manifests set
 administrative-tip traversal rest on the upstream suite at the recorded
 revision.
 
-The v0.6.1 preparation line uses the deliberately untagged Iroh Rooms pin
-`a5d98b70...`. Local exact-revision qualification passed at pre-version
-baseline `105744b...`, but the retained manifests do not transfer. Do not run
-the procedures below until the version PR is merged, the exact public Jeliya
-SHA is designated, and both dedicated qualification refs exist. Then run both
+Designated v0.6.1 source candidate
+`a1af1cdc974bc307317779afa0765c3988cb871f` uses the deliberately untagged
+Iroh Rooms pin `a5d98b70...`. Local exact-revision qualification and all eight
+hosted jobs pass, but the retained manifests do not transfer. Do not run the
+procedures below until both dedicated qualification refs exist. Then run both
 procedures from that clean public candidate and place/sign only new v0.6.1
 manifests before marking its release evidence gate ready.
 

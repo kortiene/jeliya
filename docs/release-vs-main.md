@@ -1,9 +1,9 @@
 ---
 type: "Status Report"
 title: "Release versus main"
-description: "Exact boundary between released v0.6.0 artifacts, their qualified source, and the v0.6.1 preparation line."
+description: "Exact boundary between released v0.6.0 artifacts, their qualified source, and the designated v0.6.1 candidate."
 tags: ["artifacts", "main", "release", "versions"]
-timestamp: "2026-07-19T15:15:00Z"
+timestamp: "2026-07-19T21:49:56Z"
 status: "canonical"
 implementation_status: "not-applicable"
 verification_status: "partial"
@@ -15,15 +15,16 @@ audience: ["contributors", "maintainers", "operators", "release-engineers"]
 
 Git branches, test revisions, tags, and release assets answer different
 questions. `v0.6.0` shipped on 2026-07-16 as a daemon-only prerelease at
-`2283a441...`. The v0.6.1 version-preparation branch is neither a designated
-candidate nor a release.
+`2283a441...`. Jeliya `a1af1cdc974bc307317779afa0765c3988cb871f`
+is the designated v0.6.1 source candidate; it is not network-qualified or a
+release.
 
 ## Current boundary
 
 | Layer | Exact revision | Dependency state | Artifact/evidence state | Claim allowed |
 |---|---|---|---|---|
 | Latest public release | lightweight tag `v0.6.0` at `2283a441220031485a7a212dc585772231d0f428` (prerelease) | release source pins published `iroh-rooms` `71fbb5007bef4ce83631c94762ec68c2beef3d79` (`v0.1.0-rc.3`) | five published daemon archives and five checksum sidecars; signed certifying direct (`1ca39cfa`) and relay (`cf28bc63`) manifests bind the qualified source commit | behavior in those archives is released; the tag adds only the reviewed evidence documentation to the qualified source |
-| `v0.6.1` preparation line | exact candidate pending designation after the version PR merges | pins untagged public Iroh Rooms `a5d98b70d717f35d3ce60953a88e12e646f2e871`, the first merge carrying `kortiene/iroh-room#121` and `kortiene/iroh-room#119` fixes plus the `kortiene/iroh-room#126` follow-ups | exact-revision upstream, workspace, and 67-assertion loopback suites passed at pre-version baseline `105744b…`; fresh signed direct/relay evidence pending | corrective source only; not network-qualified or published |
+| Current `v0.6.1` source candidate | `a1af1cdc974bc307317779afa0765c3988cb871f` | pins untagged public Iroh Rooms `a5d98b70d717f35d3ce60953a88e12e646f2e871`, the first merge carrying `kortiene/iroh-room#121` and `kortiene/iroh-room#119` fixes plus the `kortiene/iroh-room#126` follow-ups | all eight hosted jobs passed on public `main` run `29704754961`; fresh signed direct/relay evidence pending | corrective source only; designated but not network-qualified or published |
 | Released `v0.6.0` qualification source | `55024a46b3e112796ba2acf1dc408dab26dbba2e` | pins `v0.1.0-rc.3` at `71fbb5007bef4ce83631c94762ec68c2beef3d79` | signed certifying direct (`1ca39cfa`) and relay (`cf28bc63`) manifests bind this exact pair | evidence authorized `v0.6.0`; it does not transfer to v0.6.1 |
 | Superseded `v0.5.0` network-qualified commit | `c5f740e67d043a1153cf285691e3bc5b2b9a7203` | pins `d0ceb0b…` | both `v0.5.0` certifying schema 2 runs bind this commit | the certified evidence speaks for that revision pair only; it does not transfer to the rc.3 pin |
 | Audited baseline | `1285b42037a3713840955fa518f2b81b19f2929f` | pins vulnerable `iroh-rooms` `3cb9bfd…` | no artifact for this commit | baseline source behavior only |
@@ -35,8 +36,8 @@ The certifying [direct](evidence/v0.6.0/direct.json) and
 [relay](evidence/v0.6.0/relay.json) schema 2 manifests bind the
 network-qualified commit `55024a4…` and published pin `71fbb500…`, carry
 detached Ed25519 signatures, and set `certifiable: true` — they qualify that
-released `v0.6.0` source. They do not qualify the future v0.6.1 candidate +
-`a5d98b70…`. The `v0.5.0` manifests
+released `v0.6.0` source. They do not qualify `a1af1cdc…` + `a5d98b70…`.
+The `v0.5.0` manifests
 ([direct](evidence/v0.5.0/direct.json), [relay](evidence/v0.5.0/relay.json))
 bind `c5f740e…` + `d0ceb0b…` and authorized that prerelease; they do not
 transfer to another pin. Neither generation certifies room-scoped
@@ -59,7 +60,8 @@ prerelease only.
 
 ## Candidate changes are not released capabilities
 
-The v0.6.1 preparation line repins `iroh-rooms` to untagged `a5d98b70...`.
+The v0.6.1 candidate `a1af1cdc...` pins `iroh-rooms` to untagged
+`a5d98b70...`.
 Alongside the rc.3 join capability, bounded membership sync, and gap healing,
 this adds provisional-peer fanout/handshake gating, connection-generation
 teardown guards, and bounded store-insert recovery with durable critical
@@ -100,7 +102,7 @@ the ref and release operations requires operator inspection before retry.
 
 This snapshot records the released `v0.6.0` boundary (tag at `2283a441…`,
 certifying signed direct/relay manifests bound to `55024a4…` + `71fbb500…`),
-the v0.6.1 untagged dependency preparation line, the superseded v0.5.0 pair,
+the designated v0.6.1 candidate and its untagged dependency, the superseded v0.5.0 pair,
 and the retained historical
 manifests (the unsigned schema 2 preview run at `0f6769a…` and the schema 1
 local-remediation runs). Neither tickets, tokens, identity material, nor

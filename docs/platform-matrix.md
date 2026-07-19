@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Platform matrix"
 description: "Implementation, verification, packaging, and release status for every Jeliya runtime and target platform."
 tags: ["packaging", "platforms", "release", "verification"]
-timestamp: "2026-07-19T15:15:00Z"
+timestamp: "2026-07-19T21:49:56Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -14,10 +14,10 @@ audience: ["contributors", "maintainers", "operators", "release-engineers"]
 # Platform matrix
 
 The latest public release is `v0.6.0` (2026-07-16, daemon-only prerelease at
-`2283a441...` with certified network evidence). The v0.6.1 preparation line
-repins `iroh-rooms` to untagged `a5d98b70...`; local exact-revision and
-loopback qualification passed at the pre-version baseline, but the exact
-post-merge candidate and signed direct/relay reruns are pending. The retained
+`2283a441...` with certified network evidence). Designated v0.6.1 source
+candidate `a1af1cdc...` pins `iroh-rooms` to untagged `a5d98b70...`; local
+exact-revision, loopback, and hosted qualification pass, but signed
+direct/relay reruns are pending. The retained
 2026-07-16 runs certify released v0.6.0 source `55024a4...` + `71fbb500...`
 only. A source build or passing test is not a release.
 
@@ -35,8 +35,8 @@ The certifying [direct](evidence/v0.6.0/direct.json) and
 [relay](evidence/v0.6.0/relay.json) schema 2 manifests bind macOS x86_64 and
 Linux x86_64 musl builds to Jeliya `55024a4…`, published Iroh Rooms pin
 `71fbb500…`, and the verified toolchain; both are signed and set
-`certifiable: true` for released v0.6.0. They do not transfer to the future
-v0.6.1 candidate + `a5d98b70…`. The `v0.5.0` manifests
+`certifiable: true` for released v0.6.0. They do not transfer to
+`a1af1cdc…` + `a5d98b70…`. The `v0.5.0` manifests
 ([direct](evidence/v0.5.0/direct.json), [relay](evidence/v0.5.0/relay.json))
 bind the released pair `c5f740e…` + `d0ceb0b…` and do not transfer to another
 pin. The earlier unsigned
@@ -55,18 +55,18 @@ local-remediation evidence only. See
 | Surface | Implementation | Verification evidence | Release status | `v0.6.0` decision |
 |---|---|---|---|---|
 | macOS Flutter app | application and DMG pipeline exist | local tests only; current app sidecar is loopback-only; signing/notarization inactive | no DMG published | excluded |
-| Linux Flutter app | GTK application, XDG storage policy, bundled-sidecar CMake contract, and host-architecture source packaging exist | Ubuntu 24.04 ARM64 local qualification passes; the x86_64 hosted gate passed on public `main` at `a24f223…`; current-candidate rerun and Wayland remain pending | no native Linux app archive published; the local ARM64 daemon requires GLIBC 2.39 and the tarball lacks a complete Rust dependency license inventory | excluded |
+| Linux Flutter app | GTK application, XDG storage policy, bundled-sidecar CMake contract, and host-architecture source packaging exist | Ubuntu 24.04 ARM64 local qualification passes; the x86_64 hosted gate passed on public `main` run `29704754961` at `a1af1cdc…`; Wayland remains pending | no native Linux app archive published; the local ARM64 daemon requires GLIBC 2.39 and the tarball lacks a complete Rust dependency license inventory | excluded |
 | Android Flutter app with in-process Rust engine | application and three-ABI build path exist | Android 13 local lifecycle/FFI smoke only; no cross-network, NAT, direct, or relay evidence | no APK/AAB published | excluded |
 | Android identity storage | app-private no-backup storage with cloud and device-transfer exclusions | rules and validation pass | unreleased | included security control; not Keystore-backed |
 | iOS app | no scaffold or engine build | none | none | excluded |
 | Agent runner and fleet launcher | JavaScript scripts exist | agent E2E pass; fleet stability 5/5; Linux orphan/zombie cleanup verified remotely | source only | no separate artifact |
-| Dart protocol package | source package exists | candidate unit, replay, and integration gates are implemented locally; hosted result pending | not published separately | source only |
+| Dart protocol package | source package exists | candidate unit, replay, and integration gates pass locally and on public `main` run `29704754961` | not published separately | source only |
 
 ## Network claims by runtime
 
 | Runtime | Local protocol | Cross-network direct | Forced relay | Reconnect/resync |
 |---|---|---|---|---|
-| `jeliyad` on macOS x86_64 and Linux x86_64 | implemented | signed direct pass for released v0.6.0 source `55024a4…` + `71fbb500…`; v0.6.1 candidate pending | signed relay pass with self-attestation for that released pair; v0.6.1 candidate pending | local current-pin loopback passed at the pre-version baseline; signed v0.6.1 reconnect/resync pending |
+| `jeliyad` on macOS x86_64 and Linux x86_64 | implemented | signed direct pass for released v0.6.0 source `55024a4…` + `71fbb500…`; designated v0.6.1 candidate `a1af1cdc…` pending rerun | signed relay pass with self-attestation for that released pair; designated v0.6.1 candidate pending rerun | local current-pin loopback passed at `a1af1cdc…`; signed v0.6.1 reconnect/resync pending |
 | Other daemon targets | implemented | no candidate evidence | no candidate evidence | no candidate evidence |
 | Android in-process engine | local device-smoke evidence | unverified | unverified | local lifecycle only; cross-peer unverified |
 | macOS Flutter sidecar | loopback-only configuration | unsupported by current app configuration | unsupported by current app configuration | local sidecar lifecycle only |

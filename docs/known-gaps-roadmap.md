@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Known gaps and roadmap"
 description: "Release blockers, deferred risks, owners, and next actions after the v0.6.0 evidence-backed technical preview."
 tags: ["gaps", "release", "risks", "roadmap"]
-timestamp: "2026-07-19T15:15:00Z"
+timestamp: "2026-07-19T21:49:56Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -16,9 +16,9 @@ audience: ["contributors", "maintainers", "product", "release-engineers"]
 `v0.6.0` shipped on 2026-07-16 at `2283a441...`: the release conditions were
 met for source `55024a4...` + `71fbb500...` (signed certifying direct and relay
 evidence, hosted gates, and a complete verified artifact set). The table below
-records the gaps that carry forward to v0.6.1, whose preparation line repins
-`iroh-rooms` to `a5d98b70...`. The exact Jeliya candidate must be designated
-after the version PR merges and then earn fresh signed evidence at that pair.
+records the gaps that carry forward to v0.6.1, whose candidate pins
+`iroh-rooms` to `a5d98b70...`. Exact Jeliya candidate `a1af1cdc...` is now
+designated and must earn fresh signed evidence at that pair.
 
 ## NOW — closure status
 
@@ -29,17 +29,17 @@ after the version PR merges and then earn fresh signed evidence at that pair.
 | Upstream synchronization, provisional-peer, and store integrity | certified baseline for `v0.5.0` at `d0ceb0b…`; current `a5d98b70…` pin passes targeted fanout, isolation, and store-degradation regressions plus 806 core/net tests and the full Jeliya suites locally | rerun signed direct and relay qualification at `a5d98b70…` before the next release | upstream and core maintainer | current pin locally requalified; network qualification pending |
 | Android and agent secrets | Android cloud/device-transfer exclusions, app-private no-backup identity storage, external agent data default, ignore and tracked-secret gates pass | keep controls; Keystore wrapping is defense-in-depth, not a current claim | mobile and agent maintainers | closed |
 | Dependency security | Cargo and npm report zero vulnerabilities; four unmaintained/yanked warnings have owner, mitigation, and expiry records | rerun against the next candidate's lockfiles | dependency owner | closed |
-| CI completeness | all eight required matrix jobs, including `linux-flutter`, pass on public `main` run `29699530741` at pre-version baseline `105744b…`; the PR matrix passed on the identical tree after rerunning an unrelated transient Playwright offset failure; manual dispatch does not publish; Gradle is checksum-verified | run two clean full matrices on the designated post-merge v0.6.1 commit | CI maintainer | baseline clean; candidate pending |
+| CI completeness | all eight required matrix jobs, including `linux-flutter`, pass on public `main` run `29704754961` at exact candidate `a1af1cdc…`; PR run `29703977510` passed on the identical tree; manual dispatch does not publish; Gradle is checksum-verified | preserve the two clean source-tree matrices through qualification and run the release gates after evidence lands | CI maintainer | candidate source tree clean twice |
 | Agent/fleet reliability | agent E2E passes; fleet stability passed 5/5; Linux orphan/zombie cleanup verified on `demo1` under UID `65534` | repeat in the next candidate's hosted gates | agent maintainer | closed |
-| Linux Flutter source app | Ubuntu 24.04 ARM64 local qualification and the hosted x86_64 `linux-flutter` job pass; the hosted result binds public `main` at `a24f223…` | rerun at the current candidate; obtain a Wayland result; define a compatibility baseline and distribution format; bundle a complete Rust dependency license inventory; establish signing before publication | desktop maintainer | source-supported; unpublished |
-| Direct network behavior | signed run certifies released `v0.6.0` source `55024a4…` + `71fbb500…` | rerun at the post-merge v0.6.1 SHA + `a5d98b70…` | verification owner | v0.6.1 candidate pending |
-| Forced relay behavior | signed run certifies released `v0.6.0` source `55024a4…` + `71fbb500…`; the relay-only verifier still builds locally | rerun the source-built relay qualification at the designated v0.6.1 pair | verification owner | v0.6.1 candidate pending |
+| Linux Flutter source app | Ubuntu 24.04 ARM64 local qualification and the hosted x86_64 `linux-flutter` job pass; the hosted result binds public `main` at exact candidate `a1af1cdc…` | obtain a Wayland result; define a compatibility baseline and distribution format; bundle a complete Rust dependency license inventory; establish signing before publication | desktop maintainer | source-supported; unpublished |
+| Direct network behavior | signed run certifies released `v0.6.0` source `55024a4…` + `71fbb500…` | rerun at `a1af1cdc…` + `a5d98b70…` after both qualification refs exist | verification owner | designated; network run pending |
+| Forced relay behavior | signed run certifies released `v0.6.0` source `55024a4…` + `71fbb500…`; the relay-only verifier still builds locally | rerun the source-built relay qualification at `a1af1cdc…` + `a5d98b70…` after the direct run | verification owner | designated; network run pending |
 | Evidence authenticity | detached Ed25519 signatures over both v0.6.0 manifests verify against the committed public SPKI; the private key is absent from the checkout, repository history, and audited release archives | confirm approved out-of-band custody and key availability without importing it into the checkout; sign the v0.6.1 runs there | release authority | checkout clean; custody confirmation required |
 | Unix installer integrity | behavioral checksum-before-extraction tests pass; `v0.6.0` installs via the version-pinned installer path | rerun against the next artifacts | release maintainer | closed |
 | Windows installer integrity | hosted `windows-latest` behavioral job passes on `main`; a `v0.6.0` Windows zip and sidecar are published | rerun against the next artifacts | release maintainer | closed |
 | Complete asset-set visibility | the publication workflow executed for `v0.6.0`: validation, sealing, isolated smoke, receipt verification, and draft-until-complete publication | re-execute for v0.6.1 under explicit authority | release authority | executed for `v0.6.0` |
 | Complete artifact set | `v0.6.0` published all five daemon-plus-embedded-UI archives with sidecars | build and verify the v0.6.1 set together | release maintainer | closed for `v0.6.0` |
-| Documentation alignment | status pages distinguish released `v0.6.0`, its immutable signed evidence, and the v0.6.1 preparation line | bind fresh signed evidence only under `docs/evidence/v0.6.1/` after the network reruns | documentation owner | current for version preparation |
+| Documentation alignment | status pages distinguish released `v0.6.0`, its immutable signed evidence, and designated v0.6.1 candidate `a1af1cdc…` | bind fresh signed evidence only under `docs/evidence/v0.6.1/` after the network reruns | documentation owner | current for candidate designation |
 
 No reachable high or critical advisory is currently unresolved. The four
 maintenance/yank warnings are tracked with mitigation and an expiry of
