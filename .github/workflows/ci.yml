@@ -372,13 +372,11 @@ jobs:
           test -s target/debug/libjeliya_ffi.so
           command -v lsof >/dev/null
 
-      - name: Network evidence harness safety and loopback qualification
-        run: |
-          set -euo pipefail
-          test -x target/debug/jeliyad
-          node --test scripts/realnet-evidence.test.mjs
-          node scripts/realnet-evidence.mjs --local-dryrun --with-third
-
+      # Step order matters: the deterministic checks below run BEFORE the
+      # network evidence harness at the end of this job. A step that fails
+      # skips every later step, so putting the slowest and least deterministic
+      # check first meant one flake hid every result after it. Keep new
+      # deterministic steps above the harness.
       - name: Dart protocol (analysis + daemon and FFI conformance)
         working-directory: dart/jeliya_protocol
         run: |
@@ -416,6 +414,18 @@ jobs:
 
       - name: Fleet orchestration E2E
         run: node scripts/fleet-e2e.mjs --trials 5
+
+      # Last on purpose: this is the slowest step in the job and the only one
+      # that has flaked on unrelated changes (it waits up to 120s for a third
+      # loopback peer to settle a direct path). It consumes nothing the steps
+      # above produce and uses a port none of them touch, so running it last
+      # costs nothing and stops a flake here from skipping real results.
+      - name: Network evidence harness safety and loopback qualification
+        run: |
+          set -euo pipefail
+          test -x target/debug/jeliyad
+          node --test scripts/realnet-evidence.test.mjs
+          node scripts/realnet-evidence.mjs --local-dryrun --with-third
 
   msrv:
     name: MSRV 1.91.0
