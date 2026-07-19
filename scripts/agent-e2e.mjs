@@ -202,6 +202,20 @@ function assert(cond, msg) {
   console.log(`agent-e2e: ok — ${msg}`);
 }
 
+/** Assert a call is refused with `invalid_params` rather than succeeding. */
+async function expectRefused(client, method, params, msg) {
+  let refused = false;
+  try {
+    await client.call(method, params, 30_000);
+  } catch (error) {
+    if (error?.code !== "invalid_params") {
+      fail(`${msg} — refused with ${error?.code ?? error?.message} instead of invalid_params`);
+    }
+    refused = true;
+  }
+  assert(refused, msg);
+}
+
 async function pollUntil(fn, timeoutMs, what, intervalMs = 300) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -248,8 +262,9 @@ const humanData = scratchDir("human-data");
 const agentData = scratchDir("agent-data");
 const intruderData = scratchDir("intruder-data");
 const workDir = scratchDir("work");
-const fetchDir1 = scratchDir("fetch1");
-const fetchDir2 = scratchDir("fetch2");
+// #122: an out-of-tree destination for file.fetch, kept only to assert it is
+// refused. Fetches themselves land in the daemon's confined downloads tree.
+const outOfTreeFetchDir = scratchDir("out-of-tree-fetch");
 
 try {
   // ---- 1. human daemon: identity + room + open -----------------------------
@@ -433,9 +448,18 @@ try {
   );
   assert(true, "human: file.list shows result.txt shared by the agent, available");
 
+  // #122: file.fetch is confined to <data-dir>/downloads. An out-of-tree
+  // destination is the arbitrary-file-write primitive; assert it stays refused.
+  await expectRefused(
+    human,
+    "file.fetch",
+    { room_id: roomId, file_id: fileRow.file_id, save_dir: outOfTreeFetchDir },
+    "human: file.fetch refuses a save_dir outside the downloads tree",
+  );
+
   const fetched = await human.call(
     "file.fetch",
-    { room_id: roomId, file_id: fileRow.file_id, save_dir: fetchDir1 },
+    { room_id: roomId, file_id: fileRow.file_id },
     120_000,
   );
   assert(fetched.verified === true, "human: file.fetch reports verified:true");
@@ -535,9 +559,11 @@ try {
     60_000,
     "the second task's result.txt",
   );
+  // #122: a relative save_dir resolves under the downloads tree, not the
+  // daemon's working directory, so this stays inside the confinement.
   const fetched2 = await human.call(
     "file.fetch",
-    { room_id: roomId, file_id: file2.file_id, save_dir: fetchDir2 },
+    { room_id: roomId, file_id: file2.file_id, save_dir: "second-fetch" },
     120_000,
   );
   assert(fetched2.verified === true, "second fetch verified:true");
