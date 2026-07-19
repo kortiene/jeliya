@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Repinned `iroh-rooms` from tag `v0.1.0-rc.3` (`71fbb500…`) to the
+  deliberately untagged upstream merge `a5d98b70…`, the first `main` revision
+  carrying the provisional-peer fanout fix, connection-generation teardown
+  guards, and bounded store-insert recovery with durable critical degradation
+  reporting. Exact-revision upstream, workspace, and loopback qualification
+  passes. Signed direct and forced-relay evidence at the prior pin remains
+  valid for that snapshot but does not transfer to the new candidate.
+
 ## [0.6.0] - 2026-07-16
 
 ### Changed

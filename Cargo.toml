@@ -8,11 +8,11 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.91"
 
 [workspace.dependencies]
-# Pinned to the published v0.1.0-rc.3 tag commit (carries the cross-room
-# isolation remediation, relay seam, join-after-conversation fix, and the
-# join-bootstrap capability gate). The local ~/TAC/iroh-room working tree is
-# intentionally NOT used (it drifts).
-iroh-rooms = { git = "https://github.com/kortiene/iroh-room", rev = "71fbb5007bef4ce83631c94762ec68c2beef3d79", features = ["experimental"] }
+# Pinned to the first upstream main commit carrying the provisional-peer gate
+# and store-insert recovery fixes, including the connection-generation follow-ups.
+# This revision is deliberately untagged: rc.3 predates the fixes, while later
+# main adds CLI-only code Jeliya does not consume. Local working trees may drift.
+iroh-rooms = { git = "https://github.com/kortiene/iroh-room", rev = "a5d98b70d717f35d3ce60953a88e12e646f2e871", features = ["experimental"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
