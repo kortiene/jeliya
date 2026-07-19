@@ -1,7 +1,7 @@
 ---
 type: "Status Report"
 title: "Verification evidence"
-description: "Revision-bound verification ledger and evidence-recording contract for the v0.6.0 candidate."
+description: "Revision-bound verification ledger and evidence-recording contract for the v0.6.1 candidate."
 tags: ["evidence", "networking", "release", "testing", "verification"]
 timestamp: "2026-07-19T19:05:30Z"
 status: "canonical"
@@ -18,25 +18,25 @@ evidence. A result is transferable to a release candidate only when it binds
 the exact public Jeliya commit, public immutable dependency revisions,
 environment, timestamps, assertions, retained sanitized manifest, and detached
 signature. The retained direct and forced-relay schema 2 runs meet that bar for
-the earlier Jeliya `55024a4...` + Iroh Rooms `71fbb500...` snapshot. The current
-source candidate repins Iroh Rooms to `a5d98b70...`; those signed manifests do
-not transfer to the new dependency revision and do not authorize a `v0.6.0`
-release from the current tree.
+released v0.6.0 source Jeliya `55024a4...` + Iroh Rooms `71fbb500...`; the
+lightweight release tag is `2283a441...`. The v0.6.1 preparation line repins
+Iroh Rooms to `a5d98b70...`. Those signed manifests remain immutable and do not
+transfer to the new dependency revision.
 
 ## Candidate identity
 
 | Field | Value |
 |---|---|
-| Milestone | `v0.6.0 — Capability-Gated Join Candidate`, not yet published |
-| Baseline commit | `045d85cb1d066f16d564b6051363b9328063ee01` — the published `v0.5.0` tag |
-| Current source candidate | `105744b6c27633e5ccc576d86f1a15e3fe443b94` |
+| Milestone | `v0.6.1 — corrective technical-preview candidate`, not yet qualified or published |
+| Baseline commit | `2283a441220031485a7a212dc585772231d0f428` — the published `v0.6.0` tag |
+| Current source candidate | `pending — designate the exact public SHA after the version PR merges` |
 | Network-qualified commit | `pending — fresh signed direct and relay runs required` |
 | Current public `iroh-rooms` pin | `a5d98b70d717f35d3ce60953a88e12e646f2e871` — deliberately untagged first upstream `main` merge carrying the fixes for `kortiene/iroh-room#121` and `kortiene/iroh-room#119` plus the connection-generation follow-ups |
 | Candidate upstream remediation revision | `a5d98b70d717f35d3ce60953a88e12e646f2e871` |
-| Last network-qualified snapshot | Jeliya `55024a46b3e112796ba2acf1dc408dab26dbba2e` + Iroh Rooms `71fbb5007bef4ce83631c94762ec68c2beef3d79` (tag `v0.1.0-rc.3`) |
-| Retained evidence signatures | present and valid for the last network-qualified snapshot; not transferable to the current pin |
+| Last released qualification source | Jeliya `55024a46b3e112796ba2acf1dc408dab26dbba2e` + Iroh Rooms `71fbb5007bef4ce83631c94762ec68c2beef3d79` (tag `v0.1.0-rc.3`), released as Jeliya `v0.6.0` at `2283a441…` |
+| Retained evidence signatures | present and valid for released v0.6.0; not transferable to the current pin |
 | Release evidence gate | BLOCKED |
-| Evidence window | local exact-revision qualification on 2026-07-19 UTC; current network evidence pending |
+| Evidence window | pre-version local exact-revision qualification on 2026-07-19 UTC; post-merge candidate and network evidence pending |
 
 The current pin is the first upstream `main` merge containing both required
 fixes. The two commits after it change only `iroh-rooms-cli`, which Jeliya does
@@ -44,14 +44,13 @@ not consume, so pinning later would expand the reviewed surface without changing
 the SDK behavior. The newest tag remains `v0.1.0-rc.3` at `71fbb500...` and
 predates both fixes.
 
-The retained signed direct and forced-relay runs remain valid evidence for
+The retained signed direct and forced-relay runs remain valid evidence for released v0.6.0 source
 `55024a4...` + `71fbb500...`: they covered three peers across two BGP origin
 ASNs, passed every recorded assertion, and set `certifiable: true`. They are
-historical for the current source candidate. Fresh manifests must bind
-`105744b...` and `a5d98b70...` before the release
-evidence gate can return to `READY`.
+historical for v0.6.1. Fresh manifests must bind the post-merge designated SHA
+and `a5d98b70...` before the v0.6.1 evidence gate can return to `READY`.
 
-The current source candidate was recorded as `4261470...` while the repin was in
+The pre-version source baseline was recorded as `4261470...` while the repin was in
 review. `main` enforces linear history, so the merge rebased that work and
 rewrote its commit SHA to `9c71fac...`. The rebased commit has the identical
 tree (`53e5ce2c...`) and the identical parent (`a24f2238...`), so it is the same
@@ -61,8 +60,8 @@ must not be used in reproduction steps. This restatement does not alter the
 `Network-qualified commit` row, which stays `pending` until fresh signed direct
 and forced-relay runs are performed.
 
-Jeliya `105744b6c27633e5ccc576d86f1a15e3fe443b94` advances the source
-candidate to include the bounded concurrent path-settlement observer and
+Jeliya `105744b6c27633e5ccc576d86f1a15e3fe443b94` is the pre-version source
+baseline that includes the bounded concurrent path-settlement observer and
 sanitized timeout diagnostics from `kortiene/jeliya#133`. Its tree
 (`4aeed8ce...`) and parent (`05b5f4e...`) match the reviewed PR head exactly.
 All eight hosted checks passed on public `main` run `29699530741` at the exact
@@ -88,7 +87,7 @@ manifests are the certifying set.
 
 | Gate | Current evidence | Status |
 |---|---|---|
-| Public read-RPC authorization | centralized guard and local negative suite cover foreign timelines, members, agents, files, pipes, local-file HTTP, and aggregate projections; the retained schema 2 runs denied all 17 room-scoped RPCs and filtered local-file and aggregate reads | certifying PASS at the superseded `55024a4…` + `71fbb500…` snapshot; current-pin network rerun required |
+| Public read-RPC authorization | centralized guard and local negative suite cover foreign timelines, members, agents, files, pipes, local-file HTTP, and aggregate projections; the retained schema 2 runs denied all 17 room-scoped RPCs and filtered local-file and aggregate reads | certifying PASS for released v0.6.0 source `55024a4…` + `71fbb500…`; v0.6.1 network rerun required |
 | Accepted-room provenance | create/join failure injection proves provenance is accepted before irreversible event publication; 24 concurrent mutations retain every room; direct reads reuse the authorized snapshot cache; Unix mode is pinned to `0600`; exact `atomicwrites 0.4.4` uses synchronized Unix directory replacement and Windows write-through replacement | local PASS; Windows semantics source-reviewed but not behaviorally executed on `windows-latest` |
 | Pre-identity protocol contract | `room.list` returns the successful empty onboarding result `{ rooms: [] }` consistently across the core engine, TypeScript mock, Dart daemon, Dart FFI, Dart mock, and golden-corpus oracles | local PASS |
 | Upstream synchronization isolation | malicious `WantEvents`, foreign-parent, and administrative-tip checks pass at `a5d98b70d717f35d3ce60953a88e12e646f2e871`, which carries forward the isolation remediation first published at `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb` | local exact-revision PASS. NOT network-certified: the retained manifests set `synchronization_isolation_claimed: false` and do not exercise these internals |
@@ -105,8 +104,8 @@ manifests are the certifying set.
 | Join, reconnect, and resynchronization | the current two-daemon loopback run passes 67/67 assertions; retained network runs cover the same integration boundary at the prior dependency pin | local current-pin PASS; current-pin direct and relay evidence pending |
 | Messages, files, and pipes | current loopback covers messages, byte-identical BLAKE3-verified file fetch, authorized pipe, and unauthorized denial; retained network runs cover the prior dependency pin | local current-pin PASS; current-pin direct and relay evidence pending |
 | Installer integrity | Unix behavioral tests verify checksum-before-extraction; Windows jobs execute checksum/tamper behavior, simulate reparse rejection, and smoke the native daemon | Unix PASS; hosted `windows-latest` job passes on `main` |
-| Complete asset-set visibility | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step; the release stays draft until all uploaded bytes match | executed end to end for `v0.5.0`, which built, verified, and published the five-archive set with sidecars; the same path executes for `v0.6.0` on release dispatch and has not yet run at this candidate. GitHub tag and release operations remain non-transactional |
-| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.6.0` | PASS locally at `105744b`; the public `v0.6.0` tag does not exist yet |
+| Complete asset-set visibility | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step; the release stays draft until all uploaded bytes match | executed end to end for `v0.6.0`, which built, verified, and published the five-archive set with sidecars; the same path must execute for `v0.6.1` after qualification. GitHub tag and release operations remain non-transactional |
+| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.6.1` | PASS on the version-preparation branch; the exact candidate is designated only after merge |
 | Documentation | required OKF pages distinguish the current locally qualified candidate, the prior signed schema 2 snapshot, and historical schema 1 local-remediation evidence | local docs and release-contract gates pass on this documentation diff |
 
 ## Dependency-risk exception register
@@ -316,38 +315,40 @@ real-network evidence.
 
 ## Exact release blockers
 
-The evidence gate is **BLOCKED** for the current `v0.6.0` source candidate.
+The evidence gate is **BLOCKED** for `v0.6.1`.
 Completed work:
 
 1. upstream fixes for `kortiene/iroh-room#121`, `kortiene/iroh-room#126`, and
    `kortiene/iroh-room#119` are public
    and present at immutable revision
    `a5d98b70d717f35d3ce60953a88e12e646f2e871`;
-2. public Jeliya source candidate
-   `105744b6c27633e5ccc576d86f1a15e3fe443b94` resolves that exact revision in
-   `Cargo.toml` and `Cargo.lock`; and
+2. the v0.6.1 preparation line resolves that exact revision in `Cargo.toml`
+   and `Cargo.lock`; and
 3. the targeted fanout, isolation, and store-degradation regressions, the full
    upstream core/net suite, the Jeliya workspace suite, and the loopback E2E
-   suite pass at source candidate
+   suite passed at pre-version baseline
    `105744b6c27633e5ccc576d86f1a15e3fe443b94`.
 
 Remaining work before `READY`:
 
-1. run direct and forced-relay qualification from that clean public commit,
-   retaining new sanitized manifests bound to `a5d98b70...`;
-2. sign the exact manifest bytes with the approved out-of-band Ed25519 key;
-3. pass the evidence signature, source ancestry, and docs-only-after-
+1. merge the version PR, designate its exact public SHA, and create the Jeliya
+   and Iroh Rooms qualification refs with explicit authorization;
+2. run direct and forced-relay qualification from that clean public commit,
+   retaining new sanitized manifests under `docs/evidence/v0.6.1/` and bound
+   to `a5d98b70...`;
+3. sign the exact manifest bytes with the approved out-of-band Ed25519 key;
+4. pass the evidence signature, source ancestry, and docs-only-after-
    qualification checks; and
-4. complete the hosted double CI run and remaining release gates under explicit
+5. complete the hosted double CI run and remaining release gates under explicit
    release authority.
 
-`v0.5.0` remains released and certified at its own revision pair. The retained
-`v0.6.0` manifests remain valid for the older `55024a4...` + `71fbb500...`
-snapshot but cannot clear the current candidate's gate.
+`v0.6.0` remains released and certified at its own revision pair. Its retained
+manifests remain valid for `55024a4...` + `71fbb500...` but cannot clear the
+v0.6.1 gate and must not be modified or copied.
 
-## Candidate provenance: untagged upstream fixes (2026-07-19)
+## v0.6.1 dependency provenance: untagged upstream fixes (2026-07-19)
 
-Jeliya source candidate `105744b6c27633e5ccc576d86f1a15e3fe443b94`
+The pre-version Jeliya baseline `105744b6c27633e5ccc576d86f1a15e3fe443b94`
 repins the SDK crates to upstream merge
 `a5d98b70d717f35d3ce60953a88e12e646f2e871`. This is the first `main` commit
 that contains:

@@ -16,9 +16,9 @@ CI rules for every page in this wiki.
 
 ## Current status and evidence
 
-- [Capability status](capability-status.md) - What is implemented, verified, and publicly released as of v0.5.0 and the post-release candidate.
+- [Capability status](capability-status.md) - What is implemented, verified, and publicly released as of v0.6.0 and the v0.6.1 preparation line.
 - [Platform matrix](platform-matrix.md) - Runtime, packaging, verification, and release status by operating system and artifact.
-- [Release versus main](release-vs-main.md) - Exact boundary between released v0.5.0, its certified evidence, and the post-release candidate on main.
+- [Release versus main](release-vs-main.md) - Exact boundary between released v0.6.0, its certified evidence, and the v0.6.1 preparation line on main.
 - [Verification evidence](verification-evidence.md) - Revision-bound milestone ledger, remote-test record, and evidence-sanitization contract.
 - [Known gaps and roadmap](known-gaps-roadmap.md) - Release blockers, deferred risks, owners, and the NOW/NEXT/LATER boundary.
 
@@ -46,6 +46,7 @@ CI rules for every page in this wiki.
 
 - [Accessibility release checklist](accessibility-checklist.md) - The screen-reader and keyboard behaviours automated checks cannot prove, verified by hand before a release.
 - [Real-network NAT runbook](realnet-runbook.md) - Procedure for proving direct or relayed connectivity across two networks.
+- [v0.6.1 evidence boundary](evidence/v0.6.1/index.md) - Empty qualification boundary reserved for fresh, signed v0.6.1 manifests after candidate designation.
 - [Historical Gate A result](gate-a-result.md) - Older direct-connectivity evidence that does not certify the v0.5.0 candidate.
 - [Signing and notarization](signing-notarization.md) - Release-security plan for macOS and Windows artifacts.
 

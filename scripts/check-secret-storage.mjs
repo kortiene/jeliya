@@ -1,13 +1,27 @@
 #!/usr/bin/env node
 // Static release gate for secret-bearing local state. No npm dependencies.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const failures = [];
+
+const forbiddenCheckoutSecrets = [
+  "release/evidence-ed25519-private.pem",
+  "release/evidence-operator.key",
+  "docs/evidence/v0.5.0/direct.private.pem",
+  "docs/evidence/v0.6.0/direct.private.pem",
+  "docs/evidence/v0.6.1/direct.private.pem",
+];
+
+for (const candidate of forbiddenCheckoutSecrets) {
+  if (existsSync(join(repoRoot, candidate))) {
+    failures.push(`${candidate}: private signing material must remain in out-of-band custody, not the checkout`);
+  }
+}
 
 function read(path) {
   return readFileSync(join(repoRoot, path), "utf8");
@@ -141,6 +155,7 @@ for (const candidate of [
   "release/evidence-operator.key",
   "docs/evidence/v0.5.0/direct.private.pem",
   "docs/evidence/v0.6.0/direct.private.pem",
+  "docs/evidence/v0.6.1/direct.private.pem",
 ]) {
   const ignored = spawnSync("git", ["check-ignore", "--no-index", "--quiet", candidate], {
     cwd: repoRoot,
@@ -154,4 +169,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("secret-storage: PASS — Android backup/transfer and local identity guards are explicit");
+console.log("secret-storage: PASS — private signing material is absent and local identity guards are explicit");

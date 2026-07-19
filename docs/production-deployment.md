@@ -58,15 +58,16 @@ The exact qualification boundary is different:
 - Signed direct and forced-relay evidence binds the earlier Jeliya commit
   `55024a46b3e112796ba2acf1dc408dab26dbba2e` and Iroh Rooms commit
   `71fbb5007bef4ce83631c94762ec68c2beef3d79` (tag `v0.1.0-rc.3`).
-- The current dependency candidate is Jeliya
+- The pre-version v0.6.1 baseline is Jeliya
   `105744b6c27633e5ccc576d86f1a15e3fe443b94` with the deliberately untagged
   Iroh Rooms revision `a5d98b70d717f35d3ce60953a88e12e646f2e871`, the first upstream `main`
   merge carrying the fixes for `kortiene/iroh-room#121` and
   `kortiene/iroh-room#119` plus the intervening connection-generation fixes.
 - Exact-revision upstream regressions, the Jeliya workspace tests, and the
-  two-daemon loopback suite pass at the new pair. The older signed manifests do
-  not transfer: fresh signed direct and forced-relay runs must bind the new
-  public Jeliya commit and dependency revision before release qualification.
+  two-daemon loopback suite pass at that pair. The `v0.6.0` signed manifests do
+  not transfer: after the version PR merges, the exact v0.6.1 SHA must be
+  designated and fresh signed direct and forced-relay runs must bind it before
+  release qualification.
 
 Local verification performed during the assessment:
 

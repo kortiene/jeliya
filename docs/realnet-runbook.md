@@ -13,17 +13,17 @@ audience: ["contributors", "maintainers", "operators"]
 
 # Real-network NAT runbook
 
-This is the canonical `v0.6.0` network-evidence procedure. It drives one local
+This is the canonical `v0.6.1` network-evidence procedure. It drives one local
 operator process and two supervised remote daemons through
 `scripts/realnet-evidence.mjs`. The older `gate-a.mjs` flow is retained only as
 a diagnostic and historical reference; it cannot qualify a release.
 
 ## Current evidence status
 
-The retained certifying `v0.6.0` runs bind published Jeliya commit
+The retained certifying `v0.6.0` runs bind released Jeliya source commit
 `55024a46b3e112796ba2acf1dc408dab26dbba2e` and Iroh Rooms pin `71fbb500…`
 (tag `v0.1.0-rc.3`); both are signed and set `certifiable: true` for that exact
-prior snapshot:
+release:
 
 | Path | Run | Evidence status |
 |---|---|---|
@@ -35,11 +35,13 @@ Neither run certifies room-scoped synchronization isolation: both manifests set
 administrative-tip traversal rest on the upstream suite at the recorded
 revision.
 
-The current source candidate is Jeliya `105744b...` with the deliberately
-untagged Iroh Rooms pin `a5d98b70...`. Its local exact-revision qualification
-passes, but the retained manifests do not transfer. Run both procedures below
-from the clean public candidate and replace/sign the manifests together before
-marking the current release evidence gate ready.
+The v0.6.1 preparation line uses the deliberately untagged Iroh Rooms pin
+`a5d98b70...`. Local exact-revision qualification passed at pre-version
+baseline `105744b...`, but the retained manifests do not transfer. Do not run
+the procedures below until the version PR is merged, the exact public Jeliya
+SHA is designated, and both dedicated qualification refs exist. Then run both
+procedures from that clean public candidate and place/sign only new v0.6.1
+manifests before marking its release evidence gate ready.
 
 The superseded `v0.5.0` runs (direct `3b86ac67`,
 [manifest](evidence/v0.5.0/direct.json); forced relay `a3c76859`,
@@ -276,7 +278,7 @@ lockfile.
 ## Interpret and retain the result
 
 The harness writes its initial sanitized record to
-`.jeliya-gatea/v0.6.0/<run-id>.json`. This local directory is gitignored. A
+`.jeliya-gatea/v0.6.1/<run-id>.json`. This local directory is gitignored. A
 successful functional result still fails release qualification when any source
 or dependency revision is local/unpublished, topology is insufficient, the
 working tree is dirty, or the build is not source-bound.
@@ -297,8 +299,8 @@ For a release candidate:
 2. review the structured record for secrets and remove all log excerpts while
    retaining per-role line count, byte count, and stream SHA-256 records;
 3. copy the final exact JSON bytes to
-   `docs/evidence/v0.6.0/direct.json` or
-   `docs/evidence/v0.6.0/relay.json` (the release gate derives this
+   `docs/evidence/v0.6.1/direct.json` or
+   `docs/evidence/v0.6.1/relay.json` (the release gate derives this
    directory from the daemon crate version);
 4. sign those final bytes with the approved out-of-band Ed25519 private key and
    retain the canonical base64 detached signature as the adjacent `.sig` file;
@@ -314,10 +316,11 @@ and only documentation paths may change after network qualification.
 
 The retained `v0.6.0` manifests have valid adjacent signatures verified against
 `release/evidence-ed25519-public.pem`; they remain certifying for
-`55024a4...` + `71fbb500...`. Do not relabel or edit them to match the current
-candidate. Replace each manifest only with fresh source-bound output, then sign
-the final exact bytes. Historical schema 1 and preview records remain
-non-certifying and cannot be promoted by adding signatures.
+`55024a4...` + `71fbb500...`. Never relabel, edit, replace, or copy them for
+v0.6.1. Add fresh source-bound output only under `docs/evidence/v0.6.1/`, then
+sign the final exact bytes from approved out-of-band custody. Historical schema
+1 and preview records remain non-certifying and cannot be promoted by adding
+signatures.
 
 ## Evidence and log hygiene
 
