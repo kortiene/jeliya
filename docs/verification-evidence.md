@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Verification evidence"
 description: "Revision-bound verification ledger and evidence-recording contract for the v0.6.0 candidate."
 tags: ["evidence", "networking", "release", "testing", "verification"]
-timestamp: "2026-07-19T15:15:00Z"
+timestamp: "2026-07-19T19:05:30Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -29,7 +29,7 @@ release from the current tree.
 |---|---|
 | Milestone | `v0.6.0 — Capability-Gated Join Candidate`, not yet published |
 | Baseline commit | `045d85cb1d066f16d564b6051363b9328063ee01` — the published `v0.5.0` tag |
-| Current source candidate | `9c71fac2104a74076662177cf4ef74bb5050bae9` |
+| Current source candidate | `105744b6c27633e5ccc576d86f1a15e3fe443b94` |
 | Network-qualified commit | `pending — fresh signed direct and relay runs required` |
 | Current public `iroh-rooms` pin | `a5d98b70d717f35d3ce60953a88e12e646f2e871` — deliberately untagged first upstream `main` merge carrying the fixes for `kortiene/iroh-room#121` and `kortiene/iroh-room#119` plus the connection-generation follow-ups |
 | Candidate upstream remediation revision | `a5d98b70d717f35d3ce60953a88e12e646f2e871` |
@@ -48,7 +48,7 @@ The retained signed direct and forced-relay runs remain valid evidence for
 `55024a4...` + `71fbb500...`: they covered three peers across two BGP origin
 ASNs, passed every recorded assertion, and set `certifiable: true`. They are
 historical for the current source candidate. Fresh manifests must bind
-`9c71fac...` and `a5d98b70...` before the release
+`105744b...` and `a5d98b70...` before the release
 evidence gate can return to `READY`.
 
 The current source candidate was recorded as `4261470...` while the repin was in
@@ -60,6 +60,15 @@ results carry over unchanged. The pre-merge SHA is not reachable from `main` and
 must not be used in reproduction steps. This restatement does not alter the
 `Network-qualified commit` row, which stays `pending` until fresh signed direct
 and forced-relay runs are performed.
+
+Jeliya `105744b6c27633e5ccc576d86f1a15e3fe443b94` advances the source
+candidate to include the bounded concurrent path-settlement observer and
+sanitized timeout diagnostics from `kortiene/jeliya#133`. Its tree
+(`4aeed8ce...`) and parent (`05b5f4e...`) match the reviewed PR head exactly.
+All eight hosted checks passed on public `main` run `29699530741` at the exact
+candidate commit, including the network evidence harness qualification step.
+The evidence gate remains `BLOCKED`: neither the prior signed manifests nor
+the local dry runs can qualify this new public commit.
 
 The `v0.5.0`-certified pin remains `d0ceb0b320f1ff3a576b63d8b24aa1bf76a2d3bb`.
 That revision is still publicly fetchable by commit SHA, but it is no longer
@@ -97,7 +106,7 @@ manifests are the certifying set.
 | Messages, files, and pipes | current loopback covers messages, byte-identical BLAKE3-verified file fetch, authorized pipe, and unauthorized denial; retained network runs cover the prior dependency pin | local current-pin PASS; current-pin direct and relay evidence pending |
 | Installer integrity | Unix behavioral tests verify checksum-before-extraction; Windows jobs execute checksum/tamper behavior, simulate reparse rejection, and smoke the native daemon | Unix PASS; hosted `windows-latest` job passes on `main` |
 | Complete asset-set visibility | an execution-free read-only job validates and seals the complete set, a separate read-only job performs smoke execution, and the sole writer verifies the receipt without candidate execution before its final token-bearing step; the release stays draft until all uploaded bytes match | executed end to end for `v0.5.0`, which built, verified, and published the five-archive set with sidecars; the same path executes for `v0.6.0` on release dispatch and has not yet run at this candidate. GitHub tag and release operations remain non-transactional |
-| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.6.0` | PASS locally at `9c71fac`; the public `v0.6.0` tag does not exist yet |
+| Version consistency | local source checks bind daemon/UI/lockfile/changelog naming to `0.6.0` | PASS locally at `105744b`; the public `v0.6.0` tag does not exist yet |
 | Documentation | required OKF pages distinguish the current locally qualified candidate, the prior signed schema 2 snapshot, and historical schema 1 local-remediation evidence | local docs and release-contract gates pass on this documentation diff |
 
 ## Dependency-risk exception register
@@ -315,12 +324,12 @@ Completed work:
    and present at immutable revision
    `a5d98b70d717f35d3ce60953a88e12e646f2e871`;
 2. public Jeliya source candidate
-   `9c71fac2104a74076662177cf4ef74bb5050bae9` resolves that exact revision in
+   `105744b6c27633e5ccc576d86f1a15e3fe443b94` resolves that exact revision in
    `Cargo.toml` and `Cargo.lock`; and
 3. the targeted fanout, isolation, and store-degradation regressions, the full
    upstream core/net suite, the Jeliya workspace suite, and the loopback E2E
    suite pass at source candidate
-   `9c71fac2104a74076662177cf4ef74bb5050bae9`.
+   `105744b6c27633e5ccc576d86f1a15e3fe443b94`.
 
 Remaining work before `READY`:
 
@@ -338,7 +347,7 @@ snapshot but cannot clear the current candidate's gate.
 
 ## Candidate provenance: untagged upstream fixes (2026-07-19)
 
-Jeliya source candidate `9c71fac2104a74076662177cf4ef74bb5050bae9`
+Jeliya source candidate `105744b6c27633e5ccc576d86f1a15e3fe443b94`
 repins the SDK crates to upstream merge
 `a5d98b70d717f35d3ce60953a88e12e646f2e871`. This is the first `main` commit
 that contains:

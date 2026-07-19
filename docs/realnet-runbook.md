@@ -35,7 +35,7 @@ Neither run certifies room-scoped synchronization isolation: both manifests set
 administrative-tip traversal rest on the upstream suite at the recorded
 revision.
 
-The current source candidate is Jeliya `9c71fac...` with the deliberately
+The current source candidate is Jeliya `105744b...` with the deliberately
 untagged Iroh Rooms pin `a5d98b70...`. Its local exact-revision qualification
 passes, but the retained manifests do not transfer. Run both procedures below
 from the clean public candidate and replace/sign the manifests together before

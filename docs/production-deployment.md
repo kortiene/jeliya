@@ -59,7 +59,7 @@ The exact qualification boundary is different:
   `55024a46b3e112796ba2acf1dc408dab26dbba2e` and Iroh Rooms commit
   `71fbb5007bef4ce83631c94762ec68c2beef3d79` (tag `v0.1.0-rc.3`).
 - The current dependency candidate is Jeliya
-  `9c71fac2104a74076662177cf4ef74bb5050bae9` with the deliberately untagged
+  `105744b6c27633e5ccc576d86f1a15e3fe443b94` with the deliberately untagged
   Iroh Rooms revision `a5d98b70d717f35d3ce60953a88e12e646f2e871`, the first upstream `main`
   merge carrying the fixes for `kortiene/iroh-room#121` and
   `kortiene/iroh-room#119` plus the intervening connection-generation fixes.
