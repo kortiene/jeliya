@@ -34,6 +34,7 @@ import {
   parseRipeAsn,
   pathMatches,
   pathMatchesExpectedIdentities,
+  pathObservationSummary,
   pathSummary,
   redactLogExcerpt,
   remoteBinaryVerificationCommand,
@@ -48,6 +49,7 @@ import {
   seedForeignIsolationFixture,
   SOURCE_BUILD_ALLOWED_AMBIENT_NAMES,
   SOURCE_BUILD_ENVIRONMENT_POLICY,
+  settlePathChecks,
   sourceBuildEnvironment,
   summarizeLogCollector,
   topologyClaim,
@@ -59,6 +61,7 @@ import {
   validateZigInstallationBinding,
   waitForLogCollectors,
   waitForReady,
+  waitPath,
   zigArchiveMembersValid,
 } from "./realnet-evidence.mjs";
 
@@ -720,6 +723,63 @@ test("path gate requires every expected connected peer", () => {
   assert.equal(pathMatchesExpectedIdentities(identified, "direct", ["alice", "bob"]), true);
   assert.equal(pathMatchesExpectedIdentities(identified, "relay", ["alice", "bob"]), false);
   assert.equal(pathMatchesExpectedIdentities(identified, "direct", ["alice", "missing"]), false);
+});
+
+test("path timeout diagnostics are bounded and omit peer identifiers", async () => {
+  const peers = [
+    { endpoint_id: "secret-endpoint", identity_id: "secret-identity", state: "connected", path: "relay" },
+    { endpoint_id: "anonymous-endpoint", identity_id: null, state: "connecting", path: null },
+  ];
+  assert.deepEqual(pathObservationSummary(peers, ["secret-identity"]), {
+    observed_peers: 2,
+    expected_identities: 1,
+    matched_identities: 1,
+    duplicate_identities: 0,
+    state_counts: { connected: 1, connecting: 0, offline: 0, other: 0 },
+    path_counts: { direct: 0, relay: 1, none: 0, other: 0 },
+  });
+  const peer = {
+    role: "b",
+    client: { async call() { return { peers }; } },
+  };
+  await assert.rejects(
+    () => waitPath(peer, "room", "direct", ["secret-identity"], {
+      timeoutMs: 0,
+      intervalMs: 0,
+      sleepFn: async () => {},
+    }),
+    (error) => {
+      assert.equal(error.code, "path_settlement_timeout");
+      assert.match(error.message, /observations=1 best_consecutive=0/);
+      assert.match(error.message, /"relay":1/);
+      assert.doesNotMatch(error.message, /secret|endpoint|identity/);
+      return true;
+    },
+  );
+});
+
+test("path checks start concurrently and retain declaration order", async () => {
+  const started = [];
+  const recorded = [];
+  let release;
+  const gate = new Promise((resolvePromise) => { release = resolvePromise; });
+  const checks = ["a", "b", "c"].map((key) => ({
+    key,
+    name: key.toUpperCase(),
+    run: async () => {
+      started.push(key);
+      if (started.length === 3) release();
+      await gate;
+      return `${key}-path`;
+    },
+  }));
+  const result = await settlePathChecks(checks, async (name, run) => {
+    recorded.push(name);
+    return run();
+  });
+  assert.deepEqual(started, ["a", "b", "c"]);
+  assert.deepEqual(recorded, ["A", "B", "C"]);
+  assert.deepEqual(result, { a: "a-path", b: "b-path", c: "c-path" });
 });
 
 test("foreign-room security fixtures join the agent before non-membership events", async () => {

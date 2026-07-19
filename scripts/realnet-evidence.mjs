@@ -446,6 +446,40 @@ export function pathMatchesExpectedIdentities(peers, expected, identityIds) {
   });
 }
 
+export function pathObservationSummary(peers, identityIds) {
+  const rows = Array.isArray(peers) ? peers : [];
+  const expected = Array.isArray(identityIds) ? identityIds : [];
+  const stateCounts = { connected: 0, connecting: 0, offline: 0, other: 0 };
+  const pathCounts = { direct: 0, relay: 0, none: 0, other: 0 };
+  let matchedIdentities = 0;
+  let duplicateIdentities = 0;
+
+  for (const identityId of expected) {
+    const matches = rows.filter((peer) => peer.identity_id === identityId);
+    if (matches.length === 0) continue;
+    if (matches.length > 1) {
+      duplicateIdentities += 1;
+      continue;
+    }
+    matchedIdentities += 1;
+    const [peer] = matches;
+    if (Object.hasOwn(stateCounts, peer.state)) stateCounts[peer.state] += 1;
+    else stateCounts.other += 1;
+    if (peer.path == null) pathCounts.none += 1;
+    else if (peer.path === "direct" || peer.path === "relay") pathCounts[peer.path] += 1;
+    else pathCounts.other += 1;
+  }
+
+  return {
+    observed_peers: rows.length,
+    expected_identities: expected.length,
+    matched_identities: matchedIdentities,
+    duplicate_identities: duplicateIdentities,
+    state_counts: stateCounts,
+    path_counts: pathCounts,
+  };
+}
+
 export function assertEvidenceContainsNoSecrets(evidence, secrets) {
   const encoded = JSON.stringify(evidence);
   for (const secret of secrets) {
@@ -2069,22 +2103,67 @@ async function waitTimeline(peer, roomId, predicate, what, timeoutMs = WAIT_MS) 
   }, timeoutMs, what, 500);
 }
 
-async function waitPath(peer, roomId, expected, expectedIdentityIds) {
+export async function waitPath(
+  peer,
+  roomId,
+  expected,
+  expectedIdentityIds,
+  { timeoutMs = WAIT_MS, intervalMs = 1_000, sleepFn = sleep } = {},
+) {
   let consecutive = 0;
-  return pollUntil(async () => {
+  let bestConsecutive = 0;
+  let observations = 0;
+  let lastPeers = [];
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
     const { peers } = await peer.client.call("peers.status", { room_id: roomId });
+    observations += 1;
+    lastPeers = peers;
     if (!pathMatchesExpectedIdentities(peers, expected, expectedIdentityIds)) {
       consecutive = 0;
-      return null;
+    } else {
+      consecutive += 1;
+      bestConsecutive = Math.max(bestConsecutive, consecutive);
+      if (consecutive >= 3) {
+        return {
+          expected_identities: expectedIdentityIds.length,
+          consecutive_observations: consecutive,
+          expected_path: expected,
+        };
+      }
     }
-    consecutive += 1;
-    if (consecutive < 3) return null;
-    return {
-      expected_identities: expectedIdentityIds.length,
-      consecutive_observations: consecutive,
-      expected_path: expected,
-    };
-  }, WAIT_MS, `${peer.role} to report ${expected} path`, 1_000);
+    if (Date.now() >= deadline) {
+      const summary = pathObservationSummary(lastPeers, expectedIdentityIds);
+      const error = new Error(
+        `timed out after ${timeoutMs}ms waiting for ${peer.role} to report ${expected} path; `
+        + `observations=${observations} best_consecutive=${bestConsecutive} `
+        + `last=${JSON.stringify(summary)}`,
+      );
+      error.code = "path_settlement_timeout";
+      throw error;
+    }
+    await sleepFn(intervalMs);
+  }
+}
+
+export async function settlePathChecks(checks, record) {
+  const results = await Promise.allSettled(
+    checks.map((check) => record(check.name, check.run)),
+  );
+  const failures = results.flatMap((result, index) => (
+    result.status === "rejected"
+      ? [`${checks[index].name}: ${result.reason?.message ?? "unknown failure"}`]
+      : []
+  ));
+  if (failures.length > 0) {
+    const error = new Error(`path settlement failed — ${failures.join(" | ")}`);
+    error.code = "path_settlement_failed";
+    throw error;
+  }
+  return Object.fromEntries(results.map((result, index) => [
+    checks[index].key,
+    result.value,
+  ]));
 }
 
 async function downloadLocalFile(peer, roomId, fileId) {
@@ -2283,27 +2362,31 @@ async function runFlow({ peers, expectedPath, runId, resources, record }) {
   await joinPeer(b, identities[1]);
   if (c) await joinPeer(c, identities[2]);
 
-  const pathEvidence = {};
-  pathEvidence.a = await record(`A: ${expectedPath} path settled`, () => waitPath(
-    a,
-    roomId,
-    expectedPath,
-    identities.slice(1).map((identity) => identity.identity_id),
-  ));
-  pathEvidence.b = await record(`B: ${expectedPath} path settled`, () => waitPath(
-    b,
-    roomId,
-    expectedPath,
-    [identities[0].identity_id],
-  ));
+  const pathChecks = [
+    {
+      key: "a",
+      name: `A: ${expectedPath} path settled`,
+      run: () => waitPath(
+        a,
+        roomId,
+        expectedPath,
+        identities.slice(1).map((identity) => identity.identity_id),
+      ),
+    },
+    {
+      key: "b",
+      name: `B: ${expectedPath} path settled`,
+      run: () => waitPath(b, roomId, expectedPath, [identities[0].identity_id]),
+    },
+  ];
   if (c) {
-    pathEvidence.c = await record(`C: ${expectedPath} path settled`, () => waitPath(
-      c,
-      roomId,
-      expectedPath,
-      [identities[0].identity_id],
-    ));
+    pathChecks.push({
+      key: "c",
+      name: `C: ${expectedPath} path settled`,
+      run: () => waitPath(c, roomId, expectedPath, [identities[0].identity_id]),
+    });
   }
+  const pathEvidence = await settlePathChecks(pathChecks, record);
 
   const aBody = `network-a-${runId}`;
   const bBody = `network-b-${runId}`;
@@ -2860,6 +2943,8 @@ async function main(argv = process.argv.slice(2)) {
   const assertions = [];
   const record = async (name, fn) => {
     const started = Date.now();
+    const assertion = { name, result: "running", duration_ms: 0 };
+    assertions.push(assertion);
     try {
       if (resources.abortSignal.aborted) {
         throw resources.abortSignal.reason ?? new Error("network verification interrupted");
@@ -2868,11 +2953,14 @@ async function main(argv = process.argv.slice(2)) {
       if (resources.abortSignal.aborted) {
         throw resources.abortSignal.reason ?? new Error("network verification interrupted");
       }
-      assertions.push({ name, result: "pass", duration_ms: Date.now() - started });
+      assertion.result = "pass";
+      assertion.duration_ms = Date.now() - started;
       console.log(`network-evidence: ok — ${name}`);
       return value;
     } catch (error) {
-      assertions.push({ name, result: "fail", duration_ms: Date.now() - started, error_code: error.code ?? "assertion_failed" });
+      assertion.result = "fail";
+      assertion.duration_ms = Date.now() - started;
+      assertion.error_code = error.code ?? "assertion_failed";
       throw error;
     }
   };
