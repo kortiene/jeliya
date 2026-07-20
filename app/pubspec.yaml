@@ -39,7 +39,7 @@ dependencies:
   # win32 (→ ffi_leak_tracker) — everything else it needs (cross_file, ffi,
   # url_launcher_*, path_provider, web) was already resolved via
   # file_selector/url_launcher/path_provider.
-  share_plus: ^13.2.0
+  share_plus: ^13.2.1
 
   # Platform data dir (mobile has no ~/Library/Application Support); backs the
   # Android/iOS PrefsStore path and the FFI data dir.
