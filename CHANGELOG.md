@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Rooms created or joined from now on bind a **room-scoped device key**, so a
+  daemon in several rooms no longer collapses them onto one `EndpointId`.
+  iroh-rooms routes on `EndpointId == device_id`, so every room previously
+  sharing the one global device meant only the last-opened room actually
+  received traffic; the others sat open and silently deaf. The per-room key is
+  derived with BLAKE3's KDF over the identity's device seed and the room id —
+  **derived on demand, never persisted** — so it needs no migration, adds no
+  second secret-bearing file, and is reproducible after a lost, rolled-back, or
+  older-daemon-rewritten `state.json`. Which key a room uses is read back from
+  that room's own signed log (the membership fold's device binding), never from
+  local state, so the answer cannot drift from what peers will accept.
+
+### Changed
+
+- Rooms created **before** this change keep authoring with the global device,
+  because their logs bind it and the owner's device binding is fixed by the
+  genesis with no rebinding path. Two such rooms still cannot both be online;
+  `room.open` now closes the colliding one explicitly and says so on stderr,
+  rather than leaving it open and unable to receive. The closed room stays
+  fully readable offline and re-opens on demand. Rooms created after this
+  change are unaffected and stay live together.
+
 ## [0.6.1] - 2026-07-19
 
 ### Changed

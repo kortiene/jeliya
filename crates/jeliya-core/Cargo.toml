@@ -31,6 +31,10 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
+# KDF mode only (`Hasher::new_derive_key`), for the room-scoped device keys in
+# `supervisor::derive_room_device`. Same version the pinned iroh-rooms already
+# resolves to, so this adds no second BLAKE3 in the tree.
+blake3 = "1"
 getrandom = "0.4"
 zeroize = "1"
 tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
