@@ -2131,6 +2131,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "atomicwrites",
+ "blake3",
  "getrandom 0.4.3",
  "hex",
  "iroh",

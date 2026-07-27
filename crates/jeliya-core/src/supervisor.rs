@@ -46,7 +46,7 @@ use iroh_rooms::experimental::session::{
 use iroh_rooms::experimental::store::{EventStore, StoreOptions, StoredEvent};
 use iroh_rooms::experimental::sync::{SyncConfig, SyncEngine};
 use iroh_rooms::files::build_file_shared;
-use iroh_rooms::identity::{DeviceBinding, DeviceKey, IdentityKey};
+use iroh_rooms::identity::{DeviceBinding, DeviceKey, IdentityKey, SigningKey};
 use iroh_rooms::room::{
     build_member_invited, build_member_joined, build_member_left, build_room_created,
     derive_room_id, Ingest, MembershipSnapshot, Role, RoomId, RoomInviteTicket, RoomMembership,
@@ -58,6 +58,36 @@ use crate::fleet::{self, Liveness};
 use crate::identity::SecretKeys;
 use crate::materializer::{self, bare_event_hex, file_handle, role_label};
 use crate::{localstate, now_ms};
+
+/// BLAKE3 KDF domain separator for [`derive_room_device`].
+///
+/// This string is part of the on-wire contract: changing it changes every
+/// derived `device_id`, which the membership fold has already bound in every
+/// room created or joined under the old string. Rotating it would strand those
+/// rooms exactly the way losing a stored seed would, so it is versioned and
+/// must not be edited in place.
+const ROOM_DEVICE_KDF_CONTEXT: &str = "jeliya room-scoped device key v1";
+
+/// The room-scoped device key this identity authors with in `room_id`.
+///
+/// iroh-rooms treats `EndpointId == device_id` as the P2P routing key, so two
+/// live rooms sharing one device key also share one `EndpointId` and inbound
+/// traffic collapses onto whichever endpoint bound last. Giving each room its
+/// own device key is what lets several rooms stay reachable at once.
+///
+/// The key is **derived, never stored**: BLAKE3's KDF mode over this identity's
+/// device seed and the room id. That makes it reproducible from
+/// `identity.secret` alone, so it survives a lost, rolled-back, or
+/// older-daemon-rewritten `state.json`, needs no migration, and adds no second
+/// secret-bearing file. The room id is available before the genesis is built
+/// (`derive_room_id` covers only sender/nonce/timestamp, not the device), so
+/// the creator can derive it too — there is no circularity.
+fn derive_room_device(device: &SigningKey, room_id: &RoomId) -> SigningKey {
+    let mut kdf = blake3::Hasher::new_derive_key(ROOM_DEVICE_KDF_CONTEXT);
+    kdf.update(device.to_seed().as_slice());
+    kdf.update(room_id.as_bytes());
+    SigningKey::from_seed(kdf.finalize().as_bytes())
+}
 
 /// The single event-store database file under the data dir (mirrors the CLI).
 pub const DB_FILE: &str = "rooms.db";
@@ -799,6 +829,41 @@ impl RoomSupervisor {
         addr
     }
 
+    /// The device key this daemon must sign `room_id`'s events with, and bind
+    /// its endpoint to.
+    ///
+    /// **The room's own signed log is the authority, not local state.** Rooms
+    /// created or joined by this build bind the derived room-scoped device
+    /// ([`derive_room_device`]); rooms from before it bind the one global
+    /// device from `identity.secret`. The membership fold has already recorded
+    /// which, and peers reject any event whose `device_id` is not the bound one
+    /// (`UnboundDevice`), so resolving against the snapshot is the only answer
+    /// that cannot drift: it is correct after a state.json loss, after a
+    /// downgrade-and-upgrade, and on a fresh install restored from the log.
+    ///
+    /// When the bound device is neither key — a room bound to a device this
+    /// identity does not hold — the derived key is returned so the attempt
+    /// fails loudly as `unbound_device` rather than silently signing with a key
+    /// that is equally wrong but harder to diagnose.
+    fn authoring_device_key(
+        &self,
+        snapshot: &MembershipSnapshot,
+        secret: &SecretKeys,
+        room_id: &RoomId,
+    ) -> SigningKey {
+        let bound = snapshot
+            .member(&secret.identity.identity_key())
+            .and_then(|m| m.device);
+        if bound == Some(secret.device.device_key()) {
+            // Legacy room: the log binds the global device and no rebinding
+            // path exists for it (the admin's device is genesis-bound), so this
+            // room keeps the historical one-endpoint-across-rooms limitation.
+            SigningKey::from_seed(&secret.device.to_seed())
+        } else {
+            derive_room_device(&secret.device, room_id)
+        }
+    }
+
     /// Spawn the managed room session node (the CLI `room tail` pattern):
     /// live `SnapshotAdmission` refreshed by the pump, join bootstrap hosted
     /// while we are the room owner, blob serving from the room's store, and
@@ -808,6 +873,7 @@ impl RoomSupervisor {
         let self_id = secret.identity.identity_key();
         let store = self.open_store()?;
         let (_, snapshot) = self.fold(&store, room_id)?;
+        let room_device = self.authoring_device_key(&snapshot, &secret, room_id);
         if !snapshot.is_active(&self_id) {
             return Err(CoreError::new(
                 ErrorKind::NotAMember,
@@ -831,7 +897,7 @@ impl RoomSupervisor {
         ));
         let engine = SyncEngine::open(store, *room_id, SyncConfig::default())
             .map_err(|e| internal("could not open the sync engine", e))?;
-        let secret_key = SecretKey::from_bytes(&secret.device.to_seed());
+        let secret_key = SecretKey::from_bytes(&room_device.to_seed());
         let node = Node::spawn_room(
             secret_key,
             admission,
@@ -914,10 +980,15 @@ impl RoomSupervisor {
         let created_at = now_ms();
         let sender_id = secret.identity.identity_key();
         let room_id = derive_room_id(&sender_id, &room_nonce, created_at);
+        // The room id covers sender/nonce/timestamp only, so it is settled
+        // before the genesis is signed and the room-scoped device can be
+        // derived from it here. The genesis binds this device permanently for
+        // the owner (the fold never re-resolves the admin's device).
+        let room_device = derive_room_device(&secret.device, &room_id);
 
         let wire = build_room_created(
             &secret.identity,
-            &secret.device,
+            &room_device,
             name,
             &room_nonce,
             created_at,
@@ -1028,7 +1099,13 @@ impl RoomSupervisor {
         // Serialize node spawn/teardown so two structural flows never race the
         // room's exclusive blob-store lock.
         let _structural = self.structural.lock().await;
+        // ONE ENDPOINT-ID PER LIVE NODE — see `close_colliding_live_sessions`
+        // below for the multi-room reception bug this guards against.
         if !self.is_open(&room_id) {
+            // Resolve the EndpointId this room will bind and clear any collision
+            // BEFORE spawning, so two nodes with the same id are never live at
+            // once. Only legacy rooms can collide (see the helper's docs).
+            self.close_colliding_live_sessions(&room_id).await?;
             let (node, accept_joins, is_owner) = self.spawn_node(&room_id).await?;
             // Seed the push dedupe set with the full history the caller receives
             // here, BEFORE the session is visible to the push loop, so it never
@@ -1109,6 +1186,77 @@ impl RoomSupervisor {
         self.shutdown_session(&room_id, session).await
     }
 
+    /// Shut down every OTHER open session that would present the SAME
+    /// `EndpointId` as the node about to be spawned for `opening`.
+    ///
+    /// iroh-rooms v1 treats `EndpointId == device_id` as the P2P routing key:
+    /// `Node::spawn_room` binds a fresh `iroh::Endpoint` per call, the
+    /// endpoint's public key IS the device key, and the accept-side admission
+    /// authorizes purely on `Connection::remote_id()` (the QUIC/TLS-proven
+    /// EndpointId). When two live nodes share one EndpointId, a remote peer
+    /// dialing it is routed — by iroh's per-EndpointId address cache in
+    /// loopback mode, and by relay/DNS discovery in real-network mode — to
+    /// whichever endpoint bound LAST. Inbound room-A traffic then lands on the
+    /// room-B node: if this identity is in both rooms, room-B admission accepts
+    /// the link and feeds room-A frames to the room-B engine, which drops them
+    /// (room_id mismatch); if not, room-B admission rejects the room-A member
+    /// outright. Either way every room but the last-opened goes dark — the
+    /// "only the last-joined room receives" symptom. The reference
+    /// `iroh-rooms room tail` never hits this: it is one process = one room =
+    /// one Endpoint.
+    ///
+    /// This guard is **collision-aware, not blanket**. Rooms created or joined
+    /// by this build derive a distinct device key per room
+    /// ([`derive_room_device`]), so they present distinct EndpointIds, this
+    /// guard closes nothing, and they stay live together — that is the point of
+    /// the derivation. It fires only for **legacy** rooms, whose logs bind the
+    /// one global device and which have no rebinding path (the owner's device
+    /// is genesis-bound). Two such rooms genuinely cannot both receive, so this
+    /// closes one instead of letting it sit open and silently deaf. The closed
+    /// room stays fully readable offline (its events live in the shared SQLite
+    /// store) and re-opens on demand.
+    ///
+    /// Called from `open_room` under the structural lock and BEFORE the new
+    /// node is spawned, so two nodes sharing an EndpointId are never live at
+    /// the same time. Best-effort: a session whose shutdown fails is logged and
+    /// dropped from the map regardless, so a stuck teardown never blocks
+    /// opening the requested room.
+    ///
+    /// Cost note: `shutdown_session` waits for in-flight ops on the closed room
+    /// to release their session handle, and `open_room` holds `structural`
+    /// throughout. For legacy rooms this makes `room.open` wait on another
+    /// room's slow `file.fetch`. That is confined to the legacy path and goes
+    /// away as rooms are recreated under derived keys.
+    async fn close_colliding_live_sessions(&self, opening: &RoomId) -> CoreResult<()> {
+        let secret = self.secrets()?;
+        let snapshot = self.snapshot_for(opening).await?;
+        let device = self.authoring_device_key(&snapshot, &secret, opening);
+        let new_id = endpoint_id_of(device.device_key())?;
+        let colliders: Vec<RoomId> = self
+            .sessions()
+            .iter()
+            .filter(|(id, sess)| **id != *opening && sess.node.id() == new_id)
+            .map(|(id, _)| *id)
+            .collect();
+        for room_id in colliders {
+            // `shutdown_session` already harvests the freshest peer hints so a
+            // later re-open of this room can redial.
+            let Some(session) = self.sessions().remove(&room_id) else {
+                continue;
+            };
+            // Say it out loud: a room the user had open is going offline, and
+            // the only other signal is `room.list`'s `open` flag flipping.
+            eprintln!(
+                "warning: closing room {room_id} to open {opening} — both are legacy rooms bound \
+                 to this identity's global device, so they cannot be online at the same time"
+            );
+            if let Err(err) = self.shutdown_session(&room_id, session).await {
+                eprintln!("warning: could not close room {room_id} while opening another: {err}");
+            }
+        }
+        Ok(())
+    }
+
     /// `room.leave`: publish a signed `member.left` for this identity, then
     /// close this daemon's local live session if one is open. The immutable room
     /// owner cannot leave yet: the protocol has no ownership transfer, and an
@@ -1126,6 +1274,7 @@ impl RoomSupervisor {
                 .await
                 .map_err(|e| internal("could not read the membership snapshot", e))?;
             ensure_can_leave(&snapshot, &self_id, &room_id)?;
+            let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
             let admin_identity = snapshot
                 .admin()
                 .copied()
@@ -1136,7 +1285,7 @@ impl RoomSupervisor {
             };
             let wire = build_member_left(
                 &secret.identity,
-                &secret.device,
+                &room_device,
                 &room_id,
                 None,
                 &heads,
@@ -1187,6 +1336,7 @@ impl RoomSupervisor {
             let mut store = self.open_store()?;
             let (mut membership, snapshot) = self.fold(&store, &room_id)?;
             ensure_can_leave(&snapshot, &self_id, &room_id)?;
+            let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
             let admin_identity = snapshot
                 .admin()
                 .copied()
@@ -1194,7 +1344,7 @@ impl RoomSupervisor {
             let heads = Self::authorization_class_heads(&store, &room_id, &admin_identity)?;
             let wire = build_member_left(
                 &secret.identity,
-                &secret.device,
+                &room_device,
                 &room_id,
                 None,
                 &heads,
@@ -1314,7 +1464,7 @@ impl RoomSupervisor {
         let is_open = self.is_open(&room_id);
         // The whole store-backed authoring path lives in one sync scope so no
         // !Sync store borrow crosses the publish await below.
-        let wire = {
+        let (wire, room_device) = {
             let mut store = self.open_store()?;
             let (mut membership, snapshot) = self.fold(&store, &room_id)?;
             if snapshot.admin() != Some(&admin_identity) {
@@ -1323,11 +1473,12 @@ impl RoomSupervisor {
                     format!("only the room owner can issue invites for {room_id}"),
                 ));
             }
+            let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
             let heads = Self::authorization_class_heads(&store, &room_id, &admin_identity)?;
 
             let wire = build_member_invited(
                 &secret.identity,
-                &secret.device,
+                &room_device,
                 &room_id,
                 &invite_id,
                 &cap_hash,
@@ -1365,7 +1516,10 @@ impl RoomSupervisor {
                     .insert(&validated)
                     .map_err(|e| internal("could not persist the invite", e))?;
             }
-            wire
+            // The ticket's `discovery` hint must name the endpoint this owner
+            // actually binds for this room, so it travels out of the same
+            // resolution the room's log dictates.
+            (wire, room_device)
         };
         if let Some(session) = self.session_opt(&room_id) {
             // The engine owns the persistence path while the room is open.
@@ -1389,7 +1543,7 @@ impl RoomSupervisor {
             role: role.to_owned(),
             expires_at,
             inviter_identity: admin_identity,
-            discovery: vec![secret.device.device_key()],
+            discovery: vec![room_device.device_key()],
         };
         Ok(ticket.to_string())
     }
@@ -1414,6 +1568,10 @@ impl RoomSupervisor {
                     )
                 })?;
         let secret = self.secrets()?;
+        // The ticket carries the room id, so the room-scoped device is derived
+        // before the first dial: the endpoint this joiner binds and the device
+        // its `member.joined` binds are the same key, by construction.
+        let room_device = derive_room_device(&secret.device, &ticket.room_id);
         let self_id = secret.identity.identity_key();
         if self_id != ticket.invitee_key {
             return Err(CoreError::new(
@@ -1476,7 +1634,7 @@ impl RoomSupervisor {
         let store = self.open_store()?;
         let engine = SyncEngine::open(store, room_id, SyncConfig::default())
             .map_err(|e| internal("could not open the sync engine", e))?;
-        let secret_key = SecretKey::from_bytes(&secret.device.to_seed());
+        let secret_key = SecretKey::from_bytes(&room_device.to_seed());
         // The admin serves the membership closure only after this node proves it
         // holds the invite (upstream issue #112); a plain `Node::spawn` joiner is
         // never bootstrapped and times out.
@@ -1500,7 +1658,7 @@ impl RoomSupervisor {
         }
 
         let outcome = self
-            .bootstrap_and_join(&node, &secret, &ticket, display_name, peers)
+            .bootstrap_and_join(&node, &secret, &room_device, &ticket, display_name, peers)
             .await;
         let shutdown = node.shutdown().await;
         let joined = outcome?;
@@ -1515,6 +1673,7 @@ impl RoomSupervisor {
         &self,
         node: &Node,
         secret: &SecretKeys,
+        room_device: &SigningKey,
         ticket: &RoomInviteTicket,
         display_name: Option<&str>,
         peers: &[String],
@@ -1553,10 +1712,10 @@ impl RoomSupervisor {
             Self::authorization_class_heads(&store, &room_id, &ticket.inviter_identity)?
         };
         let created_at = now_ms();
-        let binding = DeviceBinding::create(&room_id, &secret.identity, secret.device.device_key());
+        let binding = DeviceBinding::create(&room_id, &secret.identity, room_device.device_key());
         let wire = build_member_joined(
             &secret.identity,
-            &secret.device,
+            room_device,
             &room_id,
             &ticket.invite_id,
             &ticket.capability_secret,
@@ -1662,10 +1821,11 @@ impl RoomSupervisor {
                 format!("this identity ({sender_id}) is not an active member of room {room_id}"),
             ));
         }
+        let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
         let heads = Self::node_heads(&session.node).await?;
         let wire = build_message_text(
             &secret.identity,
-            &secret.device,
+            &room_device,
             &room_id,
             body,
             None,
@@ -1730,10 +1890,11 @@ impl RoomSupervisor {
                 format!("this identity ({sender_id}) is not an active member of room {room_id}"),
             ));
         }
+        let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
         let heads = Self::node_heads(&session.node).await?;
         let wire = build_agent_status(
             &secret.identity,
-            &secret.device,
+            &room_device,
             &room_id,
             label,
             message,
@@ -1831,10 +1992,11 @@ impl RoomSupervisor {
             .filter(|m| !m.is_empty())
             .map_or_else(|| guess_mime(path), str::to_owned);
 
+        let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
         let heads = Self::node_heads(&session.node).await?;
         let wire = build_file_shared(
             &secret.identity,
-            &secret.device,
+            &room_device,
             &room_id,
             file_id,
             &display_name,
@@ -1842,7 +2004,7 @@ impl RoomSupervisor {
             import.size_bytes,
             iroh_rooms::files::HashRef::from_bytes(import.hash),
             Some("raw"),
-            &[secret.device.device_key()],
+            &[room_device.device_key()],
             &heads,
             now_ms(),
         );
@@ -1939,8 +2101,11 @@ impl RoomSupervisor {
         let snapshot = self.readable_snapshot(&room_id).await?;
         let session = self.session(&room_id)?;
         let secret = self.secrets()?;
+        let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
         let self_id = secret.identity.identity_key();
-        let self_device = endpoint_id_of(secret.device.device_key())?;
+        // The endpoint this node actually binds for this room, so the
+        // self-provider filter below matches what peers see us dial from.
+        let self_device = endpoint_id_of(room_device.device_key())?;
 
         // Fetch is stricter than archive reads: the shared guard above proves
         // prior membership, while transfer additionally requires ACTIVE
@@ -2159,11 +2324,12 @@ impl RoomSupervisor {
                 format!("this identity ({self_id}) is not an active member of room {room_id}"),
             ));
         }
+        let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
         let pipe_id = session
             .node
             .pipe_expose(
                 &secret.identity,
-                &secret.device,
+                &room_device,
                 &room_id,
                 target,
                 "pipe",
@@ -2315,6 +2481,7 @@ impl RoomSupervisor {
         // Access check from the fast membership snapshot (live for an open
         // session, cached fold for a closed room) — not an O(history) re-fold.
         let snapshot = self.snapshot_for(&room_id).await?;
+        let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
         // Sync scope: no !Sync store borrow crosses the pipe_close await.
         {
             let store = self.open_store()?;
@@ -2339,7 +2506,7 @@ impl RoomSupervisor {
             .node
             .pipe_close(
                 &secret.identity,
-                &secret.device,
+                &room_device,
                 &room_id,
                 pipe_id,
                 Some("closed"),
@@ -4014,6 +4181,309 @@ mod tests {
             store.room_ids().unwrap().is_empty(),
             "a failed provenance write must happen before the genesis becomes durable"
         );
+    }
+
+    #[test]
+    fn room_device_derivation_is_deterministic_and_room_scoped() {
+        let device = SigningKey::generate();
+        let other_device = SigningKey::generate();
+        let room_a: RoomId = format!("blake3:{:064x}", 0xaau32).parse().unwrap();
+        let room_b: RoomId = format!("blake3:{:064x}", 0xbbu32).parse().unwrap();
+
+        // Deterministic: the same (device seed, room id) always reproduces the
+        // same key. This is what lets the key be derived instead of stored.
+        assert_eq!(
+            super::derive_room_device(&device, &room_a).device_key(),
+            super::derive_room_device(&device, &room_a).device_key(),
+        );
+        // Room-scoped: distinct rooms get distinct devices, which is the whole
+        // point — distinct devices mean distinct EndpointIds.
+        assert_ne!(
+            super::derive_room_device(&device, &room_a).device_key(),
+            super::derive_room_device(&device, &room_b).device_key(),
+        );
+        // Identity-scoped: two identities never collide in the same room.
+        assert_ne!(
+            super::derive_room_device(&device, &room_a).device_key(),
+            super::derive_room_device(&other_device, &room_a).device_key(),
+        );
+        // And never the global device itself.
+        assert_ne!(
+            super::derive_room_device(&device, &room_a).device_key(),
+            device.device_key(),
+        );
+    }
+
+    #[test]
+    fn created_rooms_bind_derived_devices_with_distinct_endpoint_ids() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let secret = sup.secrets().unwrap();
+        let self_id = secret.identity.identity_key();
+
+        let room_a: RoomId = sup.create_room("Room A").unwrap().parse().unwrap();
+        let room_b: RoomId = sup.create_room("Room B").unwrap().parse().unwrap();
+
+        let store = sup.open_store().unwrap();
+        let bound = |room: &RoomId| {
+            sup.fold(&store, room)
+                .unwrap()
+                .1
+                .member(&self_id)
+                .and_then(|m| m.device)
+                .expect("the creator is device-bound by the genesis")
+        };
+
+        // The genesis binds the DERIVED device, not the global one.
+        assert_eq!(
+            bound(&room_a),
+            super::derive_room_device(&secret.device, &room_a).device_key(),
+        );
+        assert_ne!(bound(&room_a), secret.device.device_key());
+
+        // Two rooms of the same identity present different EndpointIds, so both
+        // can be live at once instead of collapsing onto one endpoint.
+        assert_ne!(
+            super::endpoint_id_of(bound(&room_a)).unwrap(),
+            super::endpoint_id_of(bound(&room_b)).unwrap(),
+        );
+    }
+
+    #[test]
+    fn authoring_device_follows_the_log_not_local_state() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let secret = sup.secrets().unwrap();
+
+        // A room this build created: the log binds the derived device.
+        let derived_room: RoomId = sup.create_room("Derived").unwrap().parse().unwrap();
+
+        // A LEGACY room, exactly as a pre-derivation daemon wrote it: genesis
+        // signed by the one global device.
+        let mut nonce = [0u8; super::ROOM_NONCE_LEN];
+        nonce[0] = 7;
+        let created_at = crate::now_ms();
+        let legacy_room =
+            super::derive_room_id(&secret.identity.identity_key(), &nonce, created_at);
+        let wire = super::build_room_created(
+            &secret.identity,
+            &secret.device,
+            "Legacy",
+            &nonce,
+            created_at,
+        );
+        crate::localstate::remember_room(dir.path(), &legacy_room.to_string(), Some("Legacy"))
+            .unwrap();
+        insert_wire(&sup, &legacy_room, &wire);
+
+        let store = sup.open_store().unwrap();
+        let resolve = |room: &RoomId| {
+            let snapshot = sup.fold(&store, room).unwrap().1;
+            sup.authoring_device_key(&snapshot, &secret, room)
+                .device_key()
+        };
+
+        // Legacy room: keep signing with the global device the log already
+        // binds, or every event would be rejected as `unbound_device`.
+        assert_eq!(resolve(&legacy_room), secret.device.device_key());
+        // Derived room: use the derived device.
+        assert_eq!(
+            resolve(&derived_room),
+            super::derive_room_device(&secret.device, &derived_room).device_key(),
+        );
+    }
+
+    #[test]
+    fn authoring_device_survives_losing_local_state() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room: RoomId = sup.create_room("Durable").unwrap().parse().unwrap();
+
+        let expected = {
+            let secret = sup.secrets().unwrap();
+            let store = sup.open_store().unwrap();
+            let snapshot = sup.fold(&store, &room).unwrap().1;
+            sup.authoring_device_key(&snapshot, &secret, &room)
+                .device_key()
+        };
+        drop(sup);
+
+        // Nothing about the room device lives in state.json, so deleting it —
+        // as a rollback to an older daemon or a wiped profile would — must not
+        // change which device this identity authors with. A stored seed would
+        // be gone here, and every later event would be rejected.
+        std::fs::remove_file(dir.path().join(crate::localstate::STATE_FILE)).unwrap();
+
+        let reopened = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let secret = reopened.secrets().unwrap();
+        let store = reopened.open_store().unwrap();
+        let snapshot = reopened.fold(&store, &room).unwrap().1;
+        assert_eq!(
+            reopened
+                .authoring_device_key(&snapshot, &secret, &room)
+                .device_key(),
+            expected,
+        );
+    }
+
+    /// Issue #151: a profile in two rooms must receive live events in BOTH
+    /// while both stay open, instead of only the last-opened one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_open_rooms_receive_concurrently_loopback() {
+        // One user, two rooms, a different remote peer publishing into each.
+        let user_dir = tempdir().unwrap();
+        crate::identity::create(user_dir.path()).unwrap();
+        let user = RoomSupervisor::new(user_dir.path().to_path_buf(), true).unwrap();
+        let room_a = user.create_room("Room A").unwrap();
+        let room_b = user.create_room("Room B").unwrap();
+
+        let open_a = user.open_room(&room_a, &[]).await.unwrap();
+        let open_b = user.open_room(&room_b, &[]).await.unwrap();
+
+        // The fix itself: two live sessions, two distinct EndpointIds. Sharing
+        // one is what made inbound traffic collapse onto the last-bound node.
+        let id_a = open_a["endpoint"]["endpoint_id"].as_str().unwrap();
+        let id_b = open_b["endpoint"]["endpoint_id"].as_str().unwrap();
+        assert_ne!(
+            id_a, id_b,
+            "each open room must bind its own EndpointId, got {id_a} for both"
+        );
+        assert_eq!(
+            user.open_rooms().len(),
+            2,
+            "both rooms must stay open at once; open_rooms: {:?}",
+            user.open_rooms()
+        );
+
+        let addr_a = open_a["endpoint"]["addr"].as_str().unwrap().to_owned();
+        let addr_b = open_b["endpoint"]["addr"].as_str().unwrap().to_owned();
+
+        // A distinct remote peer joins each room.
+        let mut peers = Vec::new();
+        for (room, addr, name) in [(&room_a, &addr_a, "peer-a"), (&room_b, &addr_b, "peer-b")] {
+            let dir = tempdir().unwrap();
+            let profile = crate::identity::create(dir.path()).unwrap();
+            let peer = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+            let ticket = user
+                .create_invite(room, &profile.identity_id, "member", None)
+                .await
+                .unwrap();
+            peer.join_room(&ticket, Some(name), std::slice::from_ref(addr))
+                .await
+                .unwrap();
+            peer.open_room(room, std::slice::from_ref(addr))
+                .await
+                .unwrap();
+            wait_member_status(&user, room, &profile.identity_id, "active").await;
+            peers.push((dir, peer));
+        }
+
+        // Both peers publish. Neither room is re-opened or switched to.
+        peers[0]
+            .1
+            .send_message(&room_a, "hello from A")
+            .await
+            .unwrap();
+        peers[1]
+            .1
+            .send_message(&room_b, "hello from B")
+            .await
+            .unwrap();
+
+        // The user must see BOTH, with both sessions untouched throughout.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let saw_a = user
+                .timeline(&room_a, None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e["body"].as_str() == Some("hello from A"));
+            let saw_b = user
+                .timeline(&room_b, None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e["body"].as_str() == Some("hello from B"));
+            if saw_a && saw_b {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only one room received while both were open (room A: {saw_a}, room B: {saw_b}) \
+                 — this is the issue #151 collision"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        assert_eq!(
+            user.open_rooms().len(),
+            2,
+            "neither room may have been closed to make the other receive"
+        );
+
+        for (_dir, peer) in &peers {
+            peer.close_room(&room_a).await.ok();
+            peer.close_room(&room_b).await.ok();
+        }
+        user.close_room(&room_a).await.unwrap();
+        user.close_room(&room_b).await.unwrap();
+    }
+
+    /// Legacy rooms (genesis bound to the one global device) genuinely cannot
+    /// both receive. Opening the second must close the first EXPLICITLY rather
+    /// than leave it open and silently deaf.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn colliding_legacy_rooms_close_instead_of_going_silently_deaf() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let secret = sup.secrets().unwrap();
+
+        // Two rooms exactly as a pre-derivation daemon wrote them: both
+        // genesis-signed by the single global device, so both would bind the
+        // same EndpointId.
+        let mut legacy = Vec::new();
+        for (i, name) in ["Legacy One", "Legacy Two"].iter().enumerate() {
+            let mut nonce = [0u8; super::ROOM_NONCE_LEN];
+            nonce[0] = u8::try_from(i).unwrap() + 1;
+            let created_at = crate::now_ms() + u64::try_from(i).unwrap();
+            let room_id =
+                super::derive_room_id(&secret.identity.identity_key(), &nonce, created_at);
+            let wire = super::build_room_created(
+                &secret.identity,
+                &secret.device,
+                name,
+                &nonce,
+                created_at,
+            );
+            crate::localstate::remember_room(dir.path(), &room_id.to_string(), Some(name)).unwrap();
+            insert_wire(&sup, &room_id, &wire);
+            legacy.push(room_id.to_string());
+        }
+
+        let first = sup.open_room(&legacy[0], &[]).await.unwrap();
+        assert_eq!(sup.open_rooms(), vec![legacy[0].clone()]);
+
+        let second = sup.open_room(&legacy[1], &[]).await.unwrap();
+        // Same global device => same EndpointId, which is why they collide.
+        assert_eq!(
+            first["endpoint"]["endpoint_id"], second["endpoint"]["endpoint_id"],
+            "legacy rooms share the global device, so they share an EndpointId"
+        );
+        // The older session is closed, not left open and unable to receive.
+        assert_eq!(
+            sup.open_rooms(),
+            vec![legacy[1].clone()],
+            "opening a colliding legacy room must close the other, not keep both nominally open"
+        );
+        // The closed room stays readable offline.
+        assert!(sup.timeline(&legacy[0], None).await.is_ok());
+
+        sup.close_room(&legacy[1]).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
