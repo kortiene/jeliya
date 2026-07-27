@@ -4329,6 +4329,163 @@ mod tests {
         );
     }
 
+    /// Issue #151: a profile in two rooms must receive live events in BOTH
+    /// while both stay open, instead of only the last-opened one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_open_rooms_receive_concurrently_loopback() {
+        // One user, two rooms, a different remote peer publishing into each.
+        let user_dir = tempdir().unwrap();
+        crate::identity::create(user_dir.path()).unwrap();
+        let user = RoomSupervisor::new(user_dir.path().to_path_buf(), true).unwrap();
+        let room_a = user.create_room("Room A").unwrap();
+        let room_b = user.create_room("Room B").unwrap();
+
+        let open_a = user.open_room(&room_a, &[]).await.unwrap();
+        let open_b = user.open_room(&room_b, &[]).await.unwrap();
+
+        // The fix itself: two live sessions, two distinct EndpointIds. Sharing
+        // one is what made inbound traffic collapse onto the last-bound node.
+        let id_a = open_a["endpoint"]["endpoint_id"].as_str().unwrap();
+        let id_b = open_b["endpoint"]["endpoint_id"].as_str().unwrap();
+        assert_ne!(
+            id_a, id_b,
+            "each open room must bind its own EndpointId, got {id_a} for both"
+        );
+        assert_eq!(
+            user.open_rooms().len(),
+            2,
+            "both rooms must stay open at once; open_rooms: {:?}",
+            user.open_rooms()
+        );
+
+        let addr_a = open_a["endpoint"]["addr"].as_str().unwrap().to_owned();
+        let addr_b = open_b["endpoint"]["addr"].as_str().unwrap().to_owned();
+
+        // A distinct remote peer joins each room.
+        let mut peers = Vec::new();
+        for (room, addr, name) in [(&room_a, &addr_a, "peer-a"), (&room_b, &addr_b, "peer-b")] {
+            let dir = tempdir().unwrap();
+            let profile = crate::identity::create(dir.path()).unwrap();
+            let peer = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+            let ticket = user
+                .create_invite(room, &profile.identity_id, "member", None)
+                .await
+                .unwrap();
+            peer.join_room(&ticket, Some(name), std::slice::from_ref(addr))
+                .await
+                .unwrap();
+            peer.open_room(room, std::slice::from_ref(addr))
+                .await
+                .unwrap();
+            wait_member_status(&user, room, &profile.identity_id, "active").await;
+            peers.push((dir, peer));
+        }
+
+        // Both peers publish. Neither room is re-opened or switched to.
+        peers[0]
+            .1
+            .send_message(&room_a, "hello from A")
+            .await
+            .unwrap();
+        peers[1]
+            .1
+            .send_message(&room_b, "hello from B")
+            .await
+            .unwrap();
+
+        // The user must see BOTH, with both sessions untouched throughout.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let saw_a = user
+                .timeline(&room_a, None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e["body"].as_str() == Some("hello from A"));
+            let saw_b = user
+                .timeline(&room_b, None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e["body"].as_str() == Some("hello from B"));
+            if saw_a && saw_b {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only one room received while both were open (room A: {saw_a}, room B: {saw_b}) \
+                 — this is the issue #151 collision"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        assert_eq!(
+            user.open_rooms().len(),
+            2,
+            "neither room may have been closed to make the other receive"
+        );
+
+        for (_dir, peer) in &peers {
+            peer.close_room(&room_a).await.ok();
+            peer.close_room(&room_b).await.ok();
+        }
+        user.close_room(&room_a).await.unwrap();
+        user.close_room(&room_b).await.unwrap();
+    }
+
+    /// Legacy rooms (genesis bound to the one global device) genuinely cannot
+    /// both receive. Opening the second must close the first EXPLICITLY rather
+    /// than leave it open and silently deaf.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn colliding_legacy_rooms_close_instead_of_going_silently_deaf() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let secret = sup.secrets().unwrap();
+
+        // Two rooms exactly as a pre-derivation daemon wrote them: both
+        // genesis-signed by the single global device, so both would bind the
+        // same EndpointId.
+        let mut legacy = Vec::new();
+        for (i, name) in ["Legacy One", "Legacy Two"].iter().enumerate() {
+            let mut nonce = [0u8; super::ROOM_NONCE_LEN];
+            nonce[0] = u8::try_from(i).unwrap() + 1;
+            let created_at = crate::now_ms() + u64::try_from(i).unwrap();
+            let room_id =
+                super::derive_room_id(&secret.identity.identity_key(), &nonce, created_at);
+            let wire = super::build_room_created(
+                &secret.identity,
+                &secret.device,
+                name,
+                &nonce,
+                created_at,
+            );
+            crate::localstate::remember_room(dir.path(), &room_id.to_string(), Some(name)).unwrap();
+            insert_wire(&sup, &room_id, &wire);
+            legacy.push(room_id.to_string());
+        }
+
+        let first = sup.open_room(&legacy[0], &[]).await.unwrap();
+        assert_eq!(sup.open_rooms(), vec![legacy[0].clone()]);
+
+        let second = sup.open_room(&legacy[1], &[]).await.unwrap();
+        // Same global device => same EndpointId, which is why they collide.
+        assert_eq!(
+            first["endpoint"]["endpoint_id"], second["endpoint"]["endpoint_id"],
+            "legacy rooms share the global device, so they share an EndpointId"
+        );
+        // The older session is closed, not left open and unable to receive.
+        assert_eq!(
+            sup.open_rooms(),
+            vec![legacy[1].clone()],
+            "opening a colliding legacy room must close the other, not keep both nominally open"
+        );
+        // The closed room stays readable offline.
+        assert!(sup.timeline(&legacy[0], None).await.is_ok());
+
+        sup.close_room(&legacy[1]).await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn join_requires_durable_provenance_before_network_mutation() {
         let owner_dir = tempdir().unwrap();
