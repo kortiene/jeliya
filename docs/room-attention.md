@@ -3,10 +3,10 @@ type: "Decision"
 title: "Room attention — evidence-backed recency, unread, and actionable state"
 description: "Decision record defining how Jeliya's clients derive room recency, device-local unread, and actionable attention from provable facts, and the evidence rule each displayed field must satisfy."
 tags: ["architecture", "attention", "room-list", "ux"]
-timestamp: "2026-07-17T19:47:25Z"
+timestamp: "2026-07-27T09:20:00Z"
 status: "canonical"
-implementation_status: "planned"
-verification_status: "unverified"
+implementation_status: "partial"
+verification_status: "partial"
 release_status: "unreleased"
 audience: ["contributors", "maintainers", "product"]
 ---
@@ -337,7 +337,7 @@ The room list owns all six truthful states from the Room Workbench record
 | #63 | This record; the `last_event_ts` shape + device-local unread fixtures; the identified daemon projection. |
 | #64 | The room list renders recency (dot) and consumes the projection; search/filter/pin are independent of this record. |
 | #69 | The Agent Fleet renders the actionable-attention set defined here. |
-| (follow-up) | Daemon: `list_rooms` emits `last_event_ts`; later, the attention-severity projection field. Deferrable; not gated on #46/#47/#50. |
+| (follow-up) | ~~Daemon: `list_rooms` emits `last_event_ts`~~ — **shipped**: `list_rooms` emits `last_event_ts` and `last_event_kind` as a store projection, and both clients fold live `room.event` activity for rooms the user is not viewing (issue #151). The attention-severity projection field is still outstanding, which is why this record reads `partial`. Not gated on #46/#47/#50. |
 
 Each slice tests against this record. Where an implementation and this document
 disagree, one of them is a bug — say which in the pull request.

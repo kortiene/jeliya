@@ -872,9 +872,9 @@ class MockClient implements Client {
       }
     }
     // Recency is the newest signed event's ts — a daemon projection
-    // (docs/room-attention.md, decision 2). The real daemon does not emit this
-    // yet (the identified, deferrable follow-up); the mock derives it so the
-    // room-list recency slice of #64 can build against the real shape now.
+    // (docs/room-attention.md, decision 2). The real daemon emits this from
+    // `list_rooms`; the mock derives the same value from its own timeline so
+    // both sides answer identically.
     final newest = _newestEvent(room.timeline);
     return RoomSummary(
       roomId: room.roomId,

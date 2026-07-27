@@ -1069,6 +1069,18 @@ impl RoomSupervisor {
             let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
             let status = self_member
                 .map(|member| status_label(member.status, &self_key, &removed_ids, &left_ids));
+            // Recency projection (docs/room-attention.md decision 2): the
+            // `created_at` the newest signed event's author actually signed —
+            // never the wall clock, never render time. One bounded store read
+            // (`room_tail` limit 1, canonical `(lamport, event_id)` order) with
+            // no live session, so a closed room answers exactly like an open
+            // one. Both fields stay null when the room has no readable event,
+            // so a client renders no recency rather than a fabricated one.
+            let (last_event_ts, last_event_kind) = store
+                .room_tail(&room_id, 1)
+                .ok()
+                .and_then(|rows| rows.last().and_then(materializer::stored_event_recency))
+                .map_or((None, None), |(ts, kind)| (Some(ts), kind));
             rooms.push(json!({
                 "room_id": room_id.to_string(),
                 "name": name,
@@ -1076,6 +1088,8 @@ impl RoomSupervisor {
                 "status": status,
                 "member_count": snapshot.members().count(),
                 "open": self.is_open(&room_id),
+                "last_event_ts": last_event_ts,
+                "last_event_kind": last_event_kind,
             }));
         }
         Ok(rooms)
@@ -4594,15 +4608,76 @@ mod tests {
         assert_eq!(rooms[0]["role"], "owner");
         assert_eq!(rooms[0]["member_count"], 1);
         assert_eq!(rooms[0]["open"], false);
+        // The recency projection answers on a CLOSED room — it reads the store,
+        // not a session.
+        assert_eq!(rooms[0]["last_event_kind"], "room_created");
 
         let timeline = sup.timeline(&room_id, None).await.unwrap();
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0]["kind"], "room_created");
+        // Recency is the author-signed `created_at` of the newest event, not a
+        // clock read at list time.
+        assert_eq!(rooms[0]["last_event_ts"], timeline[0]["ts"]);
 
         let members = sup.members(&room_id).await.unwrap();
         assert_eq!(members.len(), 1);
         assert_eq!(members[0]["role"], "owner");
         assert_eq!(members[0]["status"], "active");
+    }
+
+    /// `docs/room-attention.md` decision 2: recency is the newest signed
+    /// event's own `created_at`, projected from the store, per room — and it
+    /// agrees with what that room's timeline shows.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn room_list_recency_tracks_the_newest_event_per_room() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let quiet = sup.create_room("Quiet").unwrap();
+        let busy = sup.create_room("Busy").unwrap();
+
+        let row = |rooms: &[serde_json::Value], id: &str| {
+            rooms
+                .iter()
+                .find(|r| r["room_id"] == id)
+                .cloned()
+                .expect("room is listed")
+        };
+
+        let before = sup.list_rooms().await.unwrap();
+        let quiet_ts = row(&before, &quiet)["last_event_ts"].as_u64().unwrap();
+        assert_eq!(row(&before, &busy)["last_event_kind"], "room_created");
+
+        // Real activity in ONE room, through the ordinary authoring path.
+        sup.open_room(&busy, &[]).await.unwrap();
+        sup.send_message(&busy, "later").await.unwrap();
+        sup.close_room(&busy).await.unwrap();
+
+        let after = sup.list_rooms().await.unwrap();
+        let newest = sup
+            .timeline(&busy, None)
+            .await
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("the room has events");
+        assert_eq!(newest["kind"], "message");
+        // The row's recency IS the newest timeline event's signed timestamp —
+        // not a clock read at list time, and consistent with the room's own
+        // timeline. Asserted on a CLOSED room: this is a store projection.
+        assert_eq!(
+            row(&after, &busy)["last_event_ts"].as_u64(),
+            newest["ts"].as_u64(),
+            "recency must be the newest event's signed created_at"
+        );
+        assert_eq!(row(&after, &busy)["last_event_kind"], "message");
+        // Per-room, not global: the quiet room is untouched.
+        assert_eq!(
+            row(&after, &quiet)["last_event_ts"].as_u64(),
+            Some(quiet_ts),
+            "another room's activity must not move this room's recency"
+        );
+        assert_eq!(row(&after, &quiet)["last_event_kind"], "room_created");
     }
 
     #[tokio::test]

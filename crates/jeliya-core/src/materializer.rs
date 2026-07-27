@@ -96,6 +96,21 @@ pub fn materialize_signed(
     Some(Value::Object(obj))
 }
 
+/// The `created_at` and protocol `kind` of a stored event, for the `room.list`
+/// recency projection (`docs/room-attention.md` decision 2).
+///
+/// The kind is `None` for an event the protocol's `TimelineEvent` enumeration
+/// does not name (`member.removed`) — the timestamp is still real, so the row
+/// says *when* without inventing *what*.
+#[must_use]
+pub fn stored_event_recency(se: &StoredEvent) -> Option<(u64, Option<&'static str>)> {
+    let ev = SignedEvent::decode(&se.wire.signed).ok()?;
+    Some((
+        ev.created_at,
+        kind_fields(&ev.content).map(|(kind, _)| kind),
+    ))
+}
+
 /// The protocol `kind` plus its kind-specific fields, or `None` for kinds the
 /// protocol does not enumerate (`member.removed`).
 fn kind_fields(content: &Content) -> Option<(&'static str, Map<String, Value>)> {
