@@ -1096,17 +1096,23 @@ impl RoomSupervisor {
             // the room ordering and the unread comparison this field exists to
             // serve, and disagreeing with the mock oracles, which already pick
             // max-by-ts. `event_id` breaks ties so the answer is deterministic.
+            //
+            // A read failure PROPAGATES rather than degrading to null, matching
+            // the `departure_sets` call above. Clients read a null recency on a
+            // listed row as "this daemon predates the projection" and adjust
+            // their unread baseline accordingly (docs/room-attention.md
+            // decision 3), so a current daemon emitting null for a transient
+            // store error would be misread as a legacy one and would swallow a
+            // genuine unread. Every listed room has folded at least one event
+            // by this point, so this yields `Some` or fails loudly.
             let (last_event_ts, last_event_kind) = store
                 .room_tail(&room_id, RECENCY_SCAN)
-                .ok()
-                .and_then(|rows| {
-                    rows.iter()
-                        .filter_map(|se| {
-                            materializer::stored_event_recency(se)
-                                .map(|(ts, kind)| (ts, se.event_id, kind))
-                        })
-                        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
+                .map_err(|e| internal("could not read the room's recency", e))?
+                .iter()
+                .filter_map(|se| {
+                    materializer::stored_event_recency(se).map(|(ts, kind)| (ts, se.event_id, kind))
                 })
+                .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
                 .map_or((None, None), |(ts, _, kind)| (Some(ts), kind));
             rooms.push(json!({
                 "room_id": room_id.to_string(),
@@ -4752,6 +4758,47 @@ mod tests {
             ahead,
             "recency must not regress to a causally-later but older-signed event"
         );
+    }
+
+    /// Issue #154: every room this daemon LISTS carries recency. A room with no
+    /// stored events fails its own fold (`RoomUnknown`) and is skipped by
+    /// `list_rooms`, so a listed room always has at least one event to project
+    /// from. Clients rely on this: a listed row with a null `last_event_ts`
+    /// means the daemon predates the projection, not that the room is empty.
+    #[tokio::test]
+    async fn every_listed_room_carries_recency() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+
+        // A room recorded in the local index but holding no events: the index
+        // entry alone must not put it on the list, precisely because there
+        // would be nothing to project recency from.
+        let ghost = "blake3:00000000000000000000000000000000000000000000000000000000000000aa";
+        crate::localstate::remember_room(dir.path(), ghost, Some("Ghost")).unwrap();
+
+        let created = sup.create_room("Created").unwrap();
+        let opened = sup.create_room("Opened").unwrap();
+        sup.open_room(&opened, &[]).await.unwrap();
+
+        let rooms = sup.list_rooms().await.unwrap();
+        assert!(
+            !rooms.iter().any(|r| r["room_id"] == ghost),
+            "a room with no stored events must not be listed at all"
+        );
+        assert_eq!(rooms.len(), 2, "listed: {rooms:?}");
+        for room in &rooms {
+            assert!(
+                room["last_event_ts"].as_u64().is_some(),
+                "every listed room must carry recency; {room:?}"
+            );
+            assert!(
+                room["last_event_kind"].is_string(),
+                "and the kind of that event; {room:?}"
+            );
+        }
+        assert!(rooms.iter().any(|r| r["room_id"] == created));
+        sup.close_room(&opened).await.unwrap();
     }
 
     #[tokio::test]

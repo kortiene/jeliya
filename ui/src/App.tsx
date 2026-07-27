@@ -26,6 +26,7 @@ import {
   mergeLiveActivity,
   saveLastSeen,
   seedRoomSeen,
+  shouldSeedFromLiveEvent,
 } from './lib/lastSeen';
 import type { LastSeen, LiveActivityMap } from './lib/lastSeen';
 import type { LifecycleFilter } from './lib/roomList';
@@ -308,15 +309,24 @@ export default function App({ client }: { client: Client }) {
   // synced before you ever saw the room must not read as unread. seedRoomSeen
   // writes only when no mark exists, so a returning user's advanced marks — the
   // whole basis of an honest unread dot — are untouched.
+  //
+  // A row carrying NO recency comes from a daemon predating the projection, so
+  // there is nothing to seed from; its baseline comes from the first event we
+  // observed live instead (issue #154). That is resolved HERE rather than in
+  // the push handler so it cannot be lost to ordering: a room can push before
+  // the first `room.list` populates it, and this effect sees both.
   useEffect(() => {
     setLastSeen((prev) => {
       let next = prev;
       for (const room of rooms) {
-        if (room.last_event_ts != null) next = seedRoomSeen(next, room.room_id, room.last_event_ts);
+        const baseline = shouldSeedFromLiveEvent(room)
+          ? liveActivity[room.room_id]?.ts
+          : room.last_event_ts;
+        if (baseline != null) next = seedRoomSeen(next, room.room_id, baseline);
       }
       return next;
     });
-  }, [rooms]);
+  }, [rooms, liveActivity]);
 
   /** Room rows with live push activity folded in. Deliberately NOT the array
    *  the seeding effect above reads: seeding from a live event would mark a

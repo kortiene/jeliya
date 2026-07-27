@@ -947,9 +947,16 @@ class DaemonSession extends ChangeNotifier {
   /// [PrefsStore.seedRoomSeen] writes only when no mark exists, so a returning
   /// user's advanced marks — the whole basis of an honest unread dot — are
   /// untouched. Called after every `_rooms = …` assignment.
+  /// A row carrying NO recency comes from a daemon predating the projection,
+  /// so there is nothing to seed from; its baseline is the first event observed
+  /// live instead (issue #154). Resolved here, and re-run on every push, so it
+  /// cannot be lost to ordering — a room can push before the first `room.list`
+  /// populates [_rooms], and this sees both.
   void _seedUnread() {
     for (final room in _rooms) {
-      final ts = room.lastEventTs;
+      final ts = shouldSeedFromLiveEvent(room)
+          ? _liveActivity[room.roomId]?.ts
+          : room.lastEventTs;
       if (ts != null) prefs.seedRoomSeen(room.roomId, ts);
     }
   }
@@ -980,6 +987,9 @@ class DaemonSession extends ChangeNotifier {
       _liveActivity[push.roomId] = (ts: push.event.ts, kind: push.event.kind);
       notifyListeners();
     }
+    // A no-recency room's baseline comes from live activity, so re-resolve it
+    // now that this push has been recorded. Inert once a mark exists.
+    _seedUnread();
     final store = _room;
     // Only the current room folds pushes into a timeline; other rooms
     // re-baseline from room.open when next selected.

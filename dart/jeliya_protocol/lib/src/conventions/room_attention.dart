@@ -23,3 +23,20 @@ bool roomUnread(RoomSummary room, int? lastSeen) {
   if (ts == null || lastSeen == null) return false;
   return ts > lastSeen;
 }
+
+/// Whether a live `room.event` for [room] should establish that room's unread
+/// baseline (docs/room-attention.md, decision 3, amended for issue #154) — the
+/// Dart mirror of `shouldSeedFromLiveEvent` in `ui/src/lib/lastSeen.ts`.
+///
+/// True only when the listed row carries NO recency. The daemon guarantees
+/// every listed room has recency — a room with no stored events is not listed
+/// at all — so a null here means the daemon predates the projection, and there
+/// is nothing for the normal seeding path to seed from. Absorbing the first
+/// observed event as the baseline is the honest floor: a push can carry
+/// late-validated backlog, so "arrived live" is not proof of new activity, but
+/// without a baseline such a daemon could never raise a dot at all.
+///
+/// False for an unlisted room (nothing to be unread yet) and false whenever the
+/// row has recency, so this can never mask activity against a current daemon.
+bool shouldSeedFromLiveEvent(RoomSummary? room) =>
+    room != null && room.lastEventTs == null;
