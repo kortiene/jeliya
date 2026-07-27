@@ -11,9 +11,11 @@ import {
   isRoomUnread,
   loadLastSeen,
   markRoomSeen,
+  mergeLiveActivity,
   saveLastSeen,
   seedRoomSeen,
   type LastSeen,
+  type LiveActivityMap,
 } from './lastSeen';
 import fixtures from './conformance/room-attention.fixtures.json';
 
@@ -121,4 +123,53 @@ describe('shared room-attention fixtures (parity with Dart)', () => {
       expect(isRoomUnread(c.room, lastSeen)).toBe(c.expect.unread);
     });
   }
+});
+
+describe('mergeLiveActivity', () => {
+  const row = (room_id: string, last_event_ts: number | null) => ({
+    room_id,
+    name: 'r',
+    role: 'member' as const,
+    status: 'active',
+    member_count: 2,
+    open: true,
+    last_event_ts,
+  });
+
+  it('advances a room the user is NOT viewing, so its activity is not lost', () => {
+    // The whole point: every open room pushes its own events, and room.list is
+    // only re-fetched on user action.
+    const live: LiveActivityMap = { [R2]: { ts: 500, kind: 'message' } };
+    const merged = mergeLiveActivity([row(R1, 100), row(R2, 200)], live);
+    expect(merged[0].last_event_ts).toBe(100);
+    expect(merged[1].last_event_ts).toBe(500);
+    expect(merged[1].last_event_kind).toBe('message');
+  });
+
+  it('never moves recency backwards past a newer daemon projection', () => {
+    const live: LiveActivityMap = { [R1]: { ts: 100, kind: 'message' } };
+    const merged = mergeLiveActivity([row(R1, 900)], live);
+    expect(merged[0].last_event_ts).toBe(900);
+    expect(merged[0].last_event_kind).toBeUndefined();
+  });
+
+  it('fills recency for a room the daemon reports no recency for', () => {
+    const live: LiveActivityMap = { [R1]: { ts: 42, kind: 'agent_status' } };
+    const merged = mergeLiveActivity([row(R1, null)], live);
+    expect(merged[0].last_event_ts).toBe(42);
+    expect(merged[0].last_event_kind).toBe('agent_status');
+  });
+
+  it('returns untouched rows by identity, so React can skip re-rendering them', () => {
+    const rooms = [row(R1, 100)];
+    expect(mergeLiveActivity(rooms, {})[0]).toBe(rooms[0]);
+  });
+
+  it('feeds an unread dot for a room with activity after its baseline', () => {
+    // The end-to-end verdict: merge, then ask the same predicate the rail uses.
+    const rooms = mergeLiveActivity([row(R1, 100)], { [R1]: { ts: 700, kind: 'message' } });
+    expect(isRoomUnread(rooms[0], { [R1]: 100 })).toBe(true);
+    // …and no dot once the mark has caught up.
+    expect(isRoomUnread(rooms[0], { [R1]: 700 })).toBe(false);
+  });
 });

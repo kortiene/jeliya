@@ -74,3 +74,38 @@ export function isRoomUnread(room: RecencyRoom, lastSeen: LastSeen): boolean {
   if (seen === undefined) return false;
   return ts > seen;
 }
+
+/** The newest signed event observed live for a room, taken straight off a
+ *  `room.event` push. Both values are the event's own — never a local clock. */
+export interface LiveActivity {
+  ts: number;
+  kind: string;
+}
+
+/** room_id → the newest event seen live on this connection. */
+export type LiveActivityMap = Record<string, LiveActivity>;
+
+/** Fold live push activity into `room.list` rows.
+ *
+ *  Every open room pushes its own events, so activity arrives for rooms the
+ *  user is not currently viewing. `room.list` is only re-fetched on user
+ *  action, so without this the rail would stay silent about those rooms until
+ *  the next refresh. Recency only ever moves FORWARD: a stale or equal live
+ *  value never overwrites a newer daemon projection, and a room with no live
+ *  activity is returned untouched (identity-preserved, so React can skip it).
+ *
+ *  This is a render-time projection. It must NOT feed `seedRoomSeen` — seeding
+ *  a baseline from a live event would mark the room seen the moment it became
+ *  active, and the unread dot could never appear. */
+export function mergeLiveActivity<T extends RecencyRoom>(
+  rooms: readonly T[],
+  live: LiveActivityMap,
+): T[] {
+  return rooms.map((room) => {
+    const seen = live[room.room_id];
+    if (!seen) return room;
+    const known = room.last_event_ts;
+    if (known != null && known >= seen.ts) return room;
+    return { ...room, last_event_ts: seen.ts, last_event_kind: seen.kind };
+  });
+}

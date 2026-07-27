@@ -89,6 +89,17 @@ fn derive_room_device(device: &SigningKey, room_id: &RoomId) -> SigningKey {
     SigningKey::from_seed(kdf.finalize().as_bytes())
 }
 
+/// How many of a room's most recent causally-placed events `room.list` scans
+/// for the recency projection (`docs/room-attention.md` decision 2).
+///
+/// Causal order is not timestamp order once authors' clocks disagree, so the
+/// projection takes the maximum `created_at` over this window rather than the
+/// single causally-last event. Bounded so the projection stays one cheap read
+/// per room: a window this size absorbs any realistic skew between peers, and
+/// an event older than 64 causal positions is not this room's "last activity"
+/// under any reading.
+const RECENCY_SCAN: u32 = 64;
+
 /// The single event-store database file under the data dir (mirrors the CLI).
 pub const DB_FILE: &str = "rooms.db";
 /// Root for the per-room durable blob stores.
@@ -1069,6 +1080,34 @@ impl RoomSupervisor {
             let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
             let status = self_member
                 .map(|member| status_label(member.status, &self_key, &removed_ids, &left_ids));
+            // Recency projection (docs/room-attention.md decision 2): the
+            // `created_at` the newest signed event's author actually signed —
+            // never the wall clock, never render time. One bounded store read
+            // with no live session, so a closed room answers exactly like an
+            // open one. Both fields stay null when the room has no readable
+            // event, so a client renders no recency rather than a fabricated
+            // one.
+            //
+            // MAX BY TIMESTAMP, not causal order. `room_tail` returns canonical
+            // `(lamport, event_id)` order, and independently clocked authors
+            // can place an event causally last while signing an OLDER
+            // `created_at`. Taking the causally-last event would then report a
+            // recency that moves backward on the next refresh — breaking both
+            // the room ordering and the unread comparison this field exists to
+            // serve, and disagreeing with the mock oracles, which already pick
+            // max-by-ts. `event_id` breaks ties so the answer is deterministic.
+            let (last_event_ts, last_event_kind) = store
+                .room_tail(&room_id, RECENCY_SCAN)
+                .ok()
+                .and_then(|rows| {
+                    rows.iter()
+                        .filter_map(|se| {
+                            materializer::stored_event_recency(se)
+                                .map(|(ts, kind)| (ts, se.event_id, kind))
+                        })
+                        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
+                })
+                .map_or((None, None), |(ts, _, kind)| (Some(ts), kind));
             rooms.push(json!({
                 "room_id": room_id.to_string(),
                 "name": name,
@@ -1076,6 +1115,8 @@ impl RoomSupervisor {
                 "status": status,
                 "member_count": snapshot.members().count(),
                 "open": self.is_open(&room_id),
+                "last_event_ts": last_event_ts,
+                "last_event_kind": last_event_kind,
             }));
         }
         Ok(rooms)
@@ -4594,15 +4635,123 @@ mod tests {
         assert_eq!(rooms[0]["role"], "owner");
         assert_eq!(rooms[0]["member_count"], 1);
         assert_eq!(rooms[0]["open"], false);
+        // The recency projection answers on a CLOSED room — it reads the store,
+        // not a session.
+        assert_eq!(rooms[0]["last_event_kind"], "room_created");
 
         let timeline = sup.timeline(&room_id, None).await.unwrap();
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0]["kind"], "room_created");
+        // Recency is the author-signed `created_at` of the newest event, not a
+        // clock read at list time.
+        assert_eq!(rooms[0]["last_event_ts"], timeline[0]["ts"]);
 
         let members = sup.members(&room_id).await.unwrap();
         assert_eq!(members.len(), 1);
         assert_eq!(members[0]["role"], "owner");
         assert_eq!(members[0]["status"], "active");
+    }
+
+    /// `docs/room-attention.md` decision 2: recency is the newest signed
+    /// event's own `created_at`, projected from the store, per room — and it
+    /// agrees with what that room's timeline shows.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn room_list_recency_tracks_the_newest_event_per_room() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let quiet = sup.create_room("Quiet").unwrap();
+        let busy = sup.create_room("Busy").unwrap();
+
+        let row = |rooms: &[serde_json::Value], id: &str| {
+            rooms
+                .iter()
+                .find(|r| r["room_id"] == id)
+                .cloned()
+                .expect("room is listed")
+        };
+
+        let before = sup.list_rooms().await.unwrap();
+        let quiet_ts = row(&before, &quiet)["last_event_ts"].as_u64().unwrap();
+        assert_eq!(row(&before, &busy)["last_event_kind"], "room_created");
+
+        // Real activity in ONE room, through the ordinary authoring path.
+        sup.open_room(&busy, &[]).await.unwrap();
+        sup.send_message(&busy, "later").await.unwrap();
+        sup.close_room(&busy).await.unwrap();
+
+        let after = sup.list_rooms().await.unwrap();
+        let newest = sup
+            .timeline(&busy, None)
+            .await
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("the room has events");
+        assert_eq!(newest["kind"], "message");
+        // The row's recency IS the newest timeline event's signed timestamp —
+        // not a clock read at list time, and consistent with the room's own
+        // timeline. Asserted on a CLOSED room: this is a store projection.
+        assert_eq!(
+            row(&after, &busy)["last_event_ts"].as_u64(),
+            newest["ts"].as_u64(),
+            "recency must be the newest event's signed created_at"
+        );
+        assert_eq!(row(&after, &busy)["last_event_kind"], "message");
+        // Per-room, not global: the quiet room is untouched.
+        assert_eq!(
+            row(&after, &quiet)["last_event_ts"].as_u64(),
+            Some(quiet_ts),
+            "another room's activity must not move this room's recency"
+        );
+        assert_eq!(row(&after, &quiet)["last_event_kind"], "room_created");
+    }
+
+    /// Recency is the MAX signed timestamp, not the causally-last event's.
+    /// A peer whose clock lags signs an event that lands causally last with an
+    /// older `created_at`; reporting that would move a room's recency backward
+    /// and silently clear an unread dot.
+    #[tokio::test]
+    async fn room_list_recency_does_not_move_backward_on_a_lagging_clock() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let secret = sup.secrets().unwrap();
+        let room = sup.create_room("Skewed").unwrap();
+
+        async fn listed(sup: &RoomSupervisor) -> u64 {
+            sup.list_rooms().await.unwrap()[0]["last_event_ts"]
+                .as_u64()
+                .expect("the room has events, so it has recency")
+        }
+
+        // A well-clocked author posts at T.
+        let ahead = crate::now_ms() + 60_000;
+        seed_message(
+            &sup,
+            &room,
+            &secret.identity,
+            &secret.device,
+            "ahead",
+            ahead,
+        );
+        assert_eq!(listed(&sup).await, ahead);
+
+        // A lagging peer then posts; it is causally LAST (it cites the newer
+        // heads) but signs an older timestamp.
+        seed_message(
+            &sup,
+            &room,
+            &secret.identity,
+            &secret.device,
+            "behind",
+            ahead - 30_000,
+        );
+        assert_eq!(
+            listed(&sup).await,
+            ahead,
+            "recency must not regress to a causally-later but older-signed event"
+        );
     }
 
     #[tokio::test]

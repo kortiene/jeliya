@@ -351,6 +351,14 @@ class DaemonSession extends ChangeNotifier {
   ConnectionState _conn = ConnectionState.disconnected;
   DaemonStatus? _status;
   List<RoomSummary> _rooms = const [];
+
+  /// Newest signed event seen live per room, from `room.event` pushes for ANY
+  /// open room — including rooms not currently being viewed. It only ever
+  /// moves a row's recency FORWARD past what the last `room.list` said, so the
+  /// list reflects activity between refreshes instead of going quiet.
+  /// Session-scoped by design: the durable answer is the daemon's
+  /// `last_event_ts` projection, which survives a restart.
+  final Map<String, ({int ts, String kind})> _liveActivity = {};
   // Room-list view state (issue #64), the counterpart of App.tsx's lifted
   // roomQuery / roomFilter: session-local so search and filter survive
   // entering a room and returning (both shells switch panes without dropping
@@ -401,7 +409,36 @@ class DaemonSession extends ChangeNotifier {
   BootstrapPhase get phase => _phase;
   ConnectionState get conn => _conn;
   DaemonStatus? get status => _status;
-  List<RoomSummary> get rooms => _rooms;
+  /// The room-list rows with live push activity folded in.
+  ///
+  /// Deliberately NOT what [_seedUnread] reads: seeding from a live event
+  /// would mark a room seen the instant it became active and the unread dot
+  /// would never appear. Seeding stays on the `room.list` snapshot ([_rooms]);
+  /// only the rows surfaces render advance.
+  List<RoomSummary> get rooms {
+    if (_liveActivity.isEmpty) return _rooms;
+    return [for (final room in _rooms) _withLiveActivity(room)];
+  }
+
+  /// [room] with its recency advanced to live push activity, when that is
+  /// genuinely newer than what the last `room.list` reported. Never moves
+  /// recency backward.
+  RoomSummary _withLiveActivity(RoomSummary room) {
+    final live = _liveActivity[room.roomId];
+    if (live == null) return room;
+    final known = room.lastEventTs;
+    if (known != null && known >= live.ts) return room;
+    return RoomSummary(
+      roomId: room.roomId,
+      name: room.name,
+      role: room.role,
+      status: room.status,
+      memberCount: room.memberCount,
+      open: room.open,
+      lastEventTs: live.ts,
+      lastEventKind: live.kind,
+    );
+  }
 
   /// The room-list search query (name / short-id substring) — session-local
   /// view state the sidebar and mobile rooms list both read.
@@ -932,9 +969,20 @@ class DaemonSession extends ChangeNotifier {
   // -- push routing ------------------------------------------------------------------
 
   void _onRoomEvent(RoomEventPush push) {
+    // BEFORE the current-room guard: every open room pushes its own events
+    // (each room binds its own endpoint), so an event for a room the user is
+    // not looking at is real activity, not noise. Record its signed ts/kind so
+    // the room list can show recency and an unread dot without waiting for the
+    // next `room.list`. Still evidence-backed — both values come off the
+    // signed event, never a clock read here.
+    final live = _liveActivity[push.roomId];
+    if (live == null || push.event.ts > live.ts) {
+      _liveActivity[push.roomId] = (ts: push.event.ts, kind: push.event.kind);
+      notifyListeners();
+    }
     final store = _room;
-    // Only the current room folds pushes (App.tsx); other rooms re-baseline
-    // from room.open when next selected.
+    // Only the current room folds pushes into a timeline; other rooms
+    // re-baseline from room.open when next selected.
     if (store != null && store.roomId == push.roomId) {
       store.handleRoomEvent(push.event);
       // You are viewing this room, so an event arriving here is seen, not

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- `room.list` rows now carry **`last_event_ts`** and **`last_event_kind`** —
+  the `created_at` the newest locally-held signed event's author signed, and
+  that event's kind. This is the daemon projection `docs/room-attention.md`
+  (decision 2) specified and deferred: one bounded store read per row, no live
+  session required, so a closed room answers exactly like an open one. Both are
+  optional, read-only and nullable — a room with no readable event reports
+  `null`, and `last_event_kind` is `null` for an event the kind enumeration
+  does not name — so a client renders no recency rather than a fabricated one.
+
 ### Fixed
 
 - Rooms created or joined from now on bind a **room-scoped device key**, so a
@@ -15,6 +26,16 @@
   older-daemon-rewritten `state.json`. Which key a room uses is read back from
   that room's own signed log (the membership fold's device binding), never from
   local state, so the answer cannot drift from what peers will accept.
+- Activity in a room you are **not** currently viewing is no longer thrown
+  away. Both clients applied `room.event` pushes only when the push matched the
+  open room, so with several rooms live the room list stayed silent about all
+  but the current one until the next `room.list`. React and Flutter now record
+  each push's signed timestamp and kind for **every** open room and fold it
+  into the rows the room list renders, which lights the existing recency label
+  and unread dot as activity happens. The values still come off the signed
+  event — never a local clock — and live activity deliberately does not seed a
+  room's own unread baseline, which would mark it seen the instant it became
+  active. Completes the user-facing half of issue #151.
 
 ### Changed
 

@@ -20,8 +20,14 @@ import { shortId } from './lib/format';
 import { roomDisplayName } from './lib/rooms';
 import { loadRoomFlags, saveRoomFlags, togglePinned, toggleArchived } from './lib/roomFlags';
 import type { RoomFlags } from './lib/roomFlags';
-import { loadLastSeen, markRoomSeen, saveLastSeen, seedRoomSeen } from './lib/lastSeen';
-import type { LastSeen } from './lib/lastSeen';
+import {
+  loadLastSeen,
+  markRoomSeen,
+  mergeLiveActivity,
+  saveLastSeen,
+  seedRoomSeen,
+} from './lib/lastSeen';
+import type { LastSeen, LiveActivityMap } from './lib/lastSeen';
 import type { LifecycleFilter } from './lib/roomList';
 import type { ActivityCategory } from './lib/timelineRuns';
 import { splitInvite } from './lib/invite';
@@ -200,6 +206,13 @@ export default function App({ client }: { client: Client }) {
   const [bootNonce, setBootNonce] = useState(0);
   const [status, setStatus] = useState<DaemonStatus | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  /** Newest signed event seen live per room, from `room.event` pushes for ANY
+   *  open room — including rooms the user is not currently viewing. It only
+   *  ever moves a row's recency FORWARD past what the last `room.list` said,
+   *  so the rail reflects activity between refreshes instead of going quiet.
+   *  Session-scoped by design: the durable answer is the daemon's
+   *  `last_event_ts` projection, which survives restart. */
+  const [liveActivity, setLiveActivity] = useState<LiveActivityMap>({});
 
   const [roomId, setRoomId] = useState<string | null>(null);
   const roomIdRef = useRef<string | null>(null);
@@ -304,6 +317,15 @@ export default function App({ client }: { client: Client }) {
       return next;
     });
   }, [rooms]);
+
+  /** Room rows with live push activity folded in. Deliberately NOT the array
+   *  the seeding effect above reads: seeding from a live event would mark a
+   *  room seen the instant it became active, and the dot would never appear.
+   *  Seeding stays on the `room.list` snapshot; only the rendered rows advance. */
+  const roomsWithActivity = useMemo<RoomSummary[]>(
+    () => mergeLiveActivity(rooms, liveActivity),
+    [rooms, liveActivity],
+  );
 
   const rememberError = useCallback<DiagnosticErrorRecorder>((context, e) => {
     const err = errorShape(e);
@@ -466,6 +488,17 @@ export default function App({ client }: { client: Client }) {
     client.start();
     const offState = client.onState(setConn);
     const offEvent = client.on('room.event', ({ room_id, event }) => {
+      // BEFORE the current-room guard: every open room pushes its own events
+      // (each room binds its own endpoint), so an event for a room you are not
+      // looking at is real activity, not noise. Record its signed `ts`/`kind`
+      // so the rail can show recency and an unread dot without waiting for the
+      // next `room.list`. Still evidence-backed — the values come from the
+      // signed event, never a clock read here.
+      setLiveActivity((prev) => {
+        const seen = prev[room_id];
+        if (seen && seen.ts >= event.ts) return prev;
+        return { ...prev, [room_id]: { ts: event.ts, kind: event.kind } };
+      });
       if (room_id !== roomIdRef.current) return;
       // Insert by timestamp, not arrival order: a peer that reconnects after a
       // gap has its backlog validated late, so a `room.event` can carry an older
@@ -1119,7 +1152,7 @@ export default function App({ client }: { client: Client }) {
         </div>
 
         <Sidebar
-          rooms={rooms}
+          rooms={roomsWithActivity}
           currentRoomId={roomId}
           status={status}
           conn={conn}
