@@ -26,6 +26,7 @@ import {
   mergeLiveActivity,
   saveLastSeen,
   seedRoomSeen,
+  shouldSeedFromLiveEvent,
 } from './lib/lastSeen';
 import type { LastSeen, LiveActivityMap } from './lib/lastSeen';
 import type { LifecycleFilter } from './lib/roomList';
@@ -213,6 +214,13 @@ export default function App({ client }: { client: Client }) {
    *  Session-scoped by design: the durable answer is the daemon's
    *  `last_event_ts` projection, which survives restart. */
   const [liveActivity, setLiveActivity] = useState<LiveActivityMap>({});
+
+  /** The latest `room.list` rows, readable from the push handler (which is
+   *  registered once and must not re-subscribe on every list refresh). */
+  const roomsRef = useRef<RoomSummary[]>([]);
+  useEffect(() => {
+    roomsRef.current = rooms;
+  }, [rooms]);
 
   const [roomId, setRoomId] = useState<string | null>(null);
   const roomIdRef = useRef<string | null>(null);
@@ -499,6 +507,14 @@ export default function App({ client }: { client: Client }) {
         if (seen && seen.ts >= event.ts) return prev;
         return { ...prev, [room_id]: { ts: event.ts, kind: event.kind } };
       });
+      // Against a daemon that supplies no recency there is nothing for the
+      // room.list seeding effect to seed from, so this first observed event
+      // becomes the baseline instead of being claimed as unread
+      // (docs/room-attention.md, decision 3; issue #154). seedRoomSeen writes
+      // only when no mark exists, so this is inert once a baseline is set.
+      if (shouldSeedFromLiveEvent(roomsRef.current.find((r) => r.room_id === room_id))) {
+        setLastSeen((prev) => seedRoomSeen(prev, room_id, event.ts));
+      }
       if (room_id !== roomIdRef.current) return;
       // Insert by timestamp, not arrival order: a peer that reconnects after a
       // gap has its backlog validated late, so a `room.event` can carry an older

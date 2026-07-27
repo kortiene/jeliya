@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A room list backed by a daemon that supplies **no** `last_event_ts` can raise
+  an unread dot again. Nothing seeded a baseline for such a room, and the
+  unread predicate reads an unseeded room as not-unread, so no dot could ever
+  appear. The first `room.event` observed for a room whose listed row carries
+  no recency now establishes that room's baseline, and every later event flags
+  normally. The first event is deliberately absorbed rather than claimed as
+  unread: a push can carry late-validated backlog from a reconnecting peer, so
+  arriving live is not by itself proof of new activity. Rooms from a current
+  daemon are untouched — they always carry recency, so `room.list` keeps
+  owning the baseline and the rule never fires. Issue #154.
+
+  This rests on a daemon guarantee now pinned by a test: **every listed room
+  carries recency.** A room with no stored events fails its own fold and is not
+  listed at all, so a null `last_event_ts` on a listed row means one specific
+  thing — the daemon predates the projection — and never "this room is empty".
+
 ### Added
 
 - `room.list` rows now carry **`last_event_ts`** and **`last_event_kind`** —

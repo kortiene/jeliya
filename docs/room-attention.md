@@ -128,13 +128,32 @@ only on this device, that advances when you view the room.
   Jeliya has no delivery or read receipt; unread here is the absence of one,
   named honestly. The copy and the accessible label must never say or imply
   "seen", "delivered", or "they read it".
-- **The last-seen mark initializes to when the room first appeared on this
-  device** (its local first-seen time), not to zero. A room whose entire
-  backlog synced before you ever opened it does not retroactively flag every
-  historical message as unread; genuinely new activity after the room arrived
-  does flag. This initialization is a deliberate choice to keep unread
-  meaningful rather than noisy, and it is stated so it is not later changed by
-  accident.
+- **The last-seen mark initializes to the room's recency when it first
+  appeared on this device**, not to zero. A room whose entire backlog synced
+  before you ever opened it does not retroactively flag every historical
+  message as unread; genuinely new activity after the room arrived does flag.
+  This initialization is a deliberate choice to keep unread meaningful rather
+  than noisy, and it is stated so it is not later changed by accident.
+- **Where that baseline comes from (amended 2026-07-27, issue #154).** The
+  daemon guarantees that **every listed room carries recency**: a room with no
+  stored events fails its own fold and is not listed at all, so `last_event_ts`
+  is non-null for every row a current daemon returns (pinned by
+  `every_listed_room_carries_recency`). A listed row whose `last_event_ts` is
+  null therefore means one specific thing — **this daemon predates the
+  projection** — and not "this room is empty".
+  - **Normal case.** The baseline is the row's `last_event_ts`, seeded the
+    first time the room appears in a `room.list` result.
+  - **No-recency daemon.** When the row carries no recency there is nothing to
+    seed from, and the client holds no evidence about what preceded it. The
+    **first live event observed for that room establishes the baseline** — it
+    is treated as the starting point, not as unread — and every later event
+    flags normally. This is the honest floor: a `room.event` push can carry
+    late-validated backlog (a peer reconnecting replays events older than ones
+    already shown), so "arrived live" is not by itself proof of new activity,
+    and the client must not claim unread from it. One event is absorbed to buy
+    a baseline; without it, such a daemon could never raise a dot at all.
+  - Live activity never seeds a baseline in the normal case — the row already
+    has one — so this rule cannot mask activity against a current daemon.
 - **Clearing unread advances `deviceLastSeen[r]` to the newest event
   timestamp known for `r`, and affects that room only.** It is written to
   device-local storage and survives restart. The persistence rule is fixed:

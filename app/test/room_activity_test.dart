@@ -47,6 +47,27 @@ class _PushInjectingClient extends DelegatingClient {
       }));
 }
 
+/// Strips `last_event_ts` / `last_event_kind` from every `room.list` row, the
+/// way a daemon predating the recency projection answers (issue #154). Nothing
+/// else changes: pushes still flow.
+class _NoRecencyClient extends _PushInjectingClient {
+  _NoRecencyClient(super.inner);
+
+  @override
+  Future<dynamic> call(String method, [Map<String, dynamic>? params]) async {
+    final result = await super.call(method, params);
+    if (method != 'room.list') return result;
+    final map = Map<String, dynamic>.from(result as Map);
+    map['rooms'] = [
+      for (final row in (map['rooms'] as List).cast<Map<String, dynamic>>())
+        Map<String, dynamic>.from(row)
+          ..remove('last_event_ts')
+          ..remove('last_event_kind'),
+    ];
+    return map;
+  }
+}
+
 /// The room the session is NOT viewing: any listed room other than the one the
 /// mock opens by default.
 RoomSummary _otherRoom(DaemonSession session) => session.rooms
@@ -127,5 +148,53 @@ void main() {
     await pumpSteps(tester, steps: 3);
 
     expect(_otherRoom(session).lastEventTs, newer);
+  });
+  testWidgets('a daemon with no recency projection still raises a dot after '
+      'the first event establishes a baseline (#154)', (tester) async {
+    final client = _NoRecencyClient(newMockClient());
+    final ready = await pumpReadyMobileApp(tester, client, size: const Size(360, 800));
+    final session = ready.session;
+
+    final room = _otherRoom(session);
+    expect(room.lastEventTs, isNull,
+        reason: 'this daemon supplies no recency, so nothing seeds a baseline');
+    expect(session.isRoomUnread(room), isFalse);
+
+    // First observed event: absorbed as the baseline, NOT claimed as unread —
+    // a push can carry late-validated backlog, which is no proof of newness.
+    client.injectRoomEvent(
+      room.roomId,
+      syntheticMessage(ts: 500_000, body: 'first', roomId: room.roomId),
+    );
+    await pumpSteps(tester, steps: 3);
+    expect(session.isRoomUnread(_otherRoom(session)), isFalse,
+        reason: 'the first event buys the baseline');
+
+    // Every later event now flags, which is the whole point: without the
+    // baseline this daemon could never raise a dot at all.
+    client.injectRoomEvent(
+      room.roomId,
+      syntheticMessage(ts: 900_000, body: 'second', roomId: room.roomId),
+    );
+    await pumpSteps(tester, steps: 3);
+    expect(session.isRoomUnread(_otherRoom(session)), isTrue);
+  });
+
+  testWidgets('a current daemon is unaffected: room.list still owns the baseline',
+      (tester) async {
+    final client = _PushInjectingClient(newMockClient());
+    final ready = await pumpReadyMobileApp(tester, client, size: const Size(360, 800));
+    final session = ready.session;
+    final room = _otherRoom(session);
+    expect(room.lastEventTs, isNotNull);
+
+    // With recency present the live-seed rule must not fire, so the very first
+    // live event flags immediately rather than being absorbed.
+    client.injectRoomEvent(
+      room.roomId,
+      syntheticMessage(ts: room.lastEventTs! + 60_000, body: 'new', roomId: room.roomId),
+    );
+    await pumpSteps(tester, steps: 3);
+    expect(session.isRoomUnread(_otherRoom(session)), isTrue);
   });
 }

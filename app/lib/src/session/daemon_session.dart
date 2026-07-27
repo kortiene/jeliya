@@ -980,6 +980,21 @@ class DaemonSession extends ChangeNotifier {
       _liveActivity[push.roomId] = (ts: push.event.ts, kind: push.event.kind);
       notifyListeners();
     }
+    // Against a daemon that supplies no recency there is nothing for
+    // [_seedUnread] to seed from, so this first observed event becomes the
+    // baseline instead of being claimed as unread (docs/room-attention.md,
+    // decision 3; issue #154). seedRoomSeen writes only when no mark exists, so
+    // this is inert once a baseline is set.
+    RoomSummary? listed;
+    for (final room in _rooms) {
+      if (room.roomId == push.roomId) {
+        listed = room;
+        break;
+      }
+    }
+    if (shouldSeedFromLiveEvent(listed)) {
+      prefs.seedRoomSeen(push.roomId, push.event.ts);
+    }
     final store = _room;
     // Only the current room folds pushes into a timeline; other rooms
     // re-baseline from room.open when next selected.

@@ -4754,6 +4754,47 @@ mod tests {
         );
     }
 
+    /// Issue #154: every room this daemon LISTS carries recency. A room with no
+    /// stored events fails its own fold (`RoomUnknown`) and is skipped by
+    /// `list_rooms`, so a listed room always has at least one event to project
+    /// from. Clients rely on this: a listed row with a null `last_event_ts`
+    /// means the daemon predates the projection, not that the room is empty.
+    #[tokio::test]
+    async fn every_listed_room_carries_recency() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+
+        // A room recorded in the local index but holding no events: the index
+        // entry alone must not put it on the list, precisely because there
+        // would be nothing to project recency from.
+        let ghost = "blake3:00000000000000000000000000000000000000000000000000000000000000aa";
+        crate::localstate::remember_room(dir.path(), ghost, Some("Ghost")).unwrap();
+
+        let created = sup.create_room("Created").unwrap();
+        let opened = sup.create_room("Opened").unwrap();
+        sup.open_room(&opened, &[]).await.unwrap();
+
+        let rooms = sup.list_rooms().await.unwrap();
+        assert!(
+            !rooms.iter().any(|r| r["room_id"] == ghost),
+            "a room with no stored events must not be listed at all"
+        );
+        assert_eq!(rooms.len(), 2, "listed: {rooms:?}");
+        for room in &rooms {
+            assert!(
+                room["last_event_ts"].as_u64().is_some(),
+                "every listed room must carry recency; {room:?}"
+            );
+            assert!(
+                room["last_event_kind"].is_string(),
+                "and the kind of that event; {room:?}"
+            );
+        }
+        assert!(rooms.iter().any(|r| r["room_id"] == created));
+        sup.close_room(&opened).await.unwrap();
+    }
+
     #[tokio::test]
     async fn room_reads_exclude_rooms_this_identity_never_belonged_to() {
         // Regression: a foreign room's membership sub-DAG can be backfilled into

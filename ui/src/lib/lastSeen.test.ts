@@ -14,6 +14,7 @@ import {
   mergeLiveActivity,
   saveLastSeen,
   seedRoomSeen,
+  shouldSeedFromLiveEvent,
   type LastSeen,
   type LiveActivityMap,
 } from './lastSeen';
@@ -171,5 +172,45 @@ describe('mergeLiveActivity', () => {
     expect(isRoomUnread(rooms[0], { [R1]: 100 })).toBe(true);
     // …and no dot once the mark has caught up.
     expect(isRoomUnread(rooms[0], { [R1]: 700 })).toBe(false);
+  });
+});
+
+describe('shouldSeedFromLiveEvent (issue #154)', () => {
+  const row = (last_event_ts: number | null) => ({ room_id: R1, last_event_ts });
+
+  it('seeds when the listed row carries no recency — a daemon predating the projection', () => {
+    // The daemon lists no room without events, so a null here is not "empty
+    // room"; it is "this daemon does not compute recency".
+    expect(shouldSeedFromLiveEvent(row(null))).toBe(true);
+    expect(shouldSeedFromLiveEvent({ room_id: R1 })).toBe(true);
+  });
+
+  it('does NOT seed when the row has recency, so it cannot mask activity', () => {
+    expect(shouldSeedFromLiveEvent(row(100))).toBe(false);
+    expect(shouldSeedFromLiveEvent(row(0))).toBe(false);
+  });
+
+  it('does NOT seed for a room that is not listed yet', () => {
+    expect(shouldSeedFromLiveEvent(undefined)).toBe(false);
+  });
+
+  it('absorbs the first event as a baseline, then flags every later one', () => {
+    // The whole point of the rule: without a baseline this daemon could never
+    // raise a dot at all; with one, only the first event is absorbed.
+    let seen: LastSeen = {};
+    const first = { ts: 500, kind: 'message' };
+    if (shouldSeedFromLiveEvent(row(null))) seen = seedRoomSeen(seen, R1, first.ts);
+    expect(isRoomUnread(mergeLiveActivity([row(null)], { [R1]: first })[0], seen)).toBe(false);
+
+    const second = { ts: 900, kind: 'message' };
+    if (shouldSeedFromLiveEvent(row(null))) seen = seedRoomSeen(seen, R1, second.ts);
+    expect(isRoomUnread(mergeLiveActivity([row(null)], { [R1]: second })[0], seen)).toBe(true);
+  });
+
+  it('a current daemon keeps seeding from room.list, unaffected by live events', () => {
+    const seen = seedRoomSeen({}, R1, 100);
+    expect(shouldSeedFromLiveEvent(row(100))).toBe(false);
+    const merged = mergeLiveActivity([row(100)], { [R1]: { ts: 700, kind: 'message' } });
+    expect(isRoomUnread(merged[0], seen)).toBe(true);
   });
 });
