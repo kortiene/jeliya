@@ -220,16 +220,36 @@ This is the finding the issue asks for: **is daemon or protocol work required
 because non-current-room pushes are unavailable or discarded?** Yes — and this
 record identifies the minimal work rather than smuggling it in.
 
-**Live pushes cannot back non-current recency.** Two independent facts make
-this certain:
+**Live pushes cannot back non-current recency on their own.** The deciding
+fact is the source, not the sink:
 
 - The daemon's push fan-out iterates only open rooms
   (`crates/jeliya-core/src/engine.rs`, `push_loop` over `sup.open_room_ids()`):
-  a closed room emits no `room.event` at all.
-- Even for a non-current room that *is* open, the client drops the event
+  a closed room emits no `room.event` at all. No client-side change can
+  recover recency for a room that is not open.
+- At the time this record was written the sink discarded the rest too: a
+  non-current room's events were dropped even when that room *was* open
   (`ui/src/App.tsx` — `if (room_id !== roomIdRef.current) return;`; the Flutter
-  `RoomStore` is likewise scoped to the current room). Non-current-room events
-  are unavailable at the source and discarded at the sink.
+  `RoomStore` is likewise scoped to the current room).
+
+**Amended 2026-07-27 (issue #151).** That second bullet is no longer true, and
+the change is deliberate. Both clients now record each push's signed `ts` and
+`kind` for **every** open room and fold it into the rows the room list renders.
+This is a *supplement*, not a replacement, and it does not weaken anything
+below:
+
+- The store projection remains the required mechanism and the only answer for
+  a **closed** room, across restarts, and on a fresh install. Live activity is
+  session-scoped and is discarded with the connection.
+- The supplement only ever moves a row's recency **forward** past what the last
+  `room.list` reported, so it can add activity between refreshes but can never
+  contradict or rewind the projection.
+- It must not seed the device-local unread baseline (decision 3). Seeding from
+  a live event would mark a room seen the instant it became active, and the dot
+  could never appear; baselines stay sourced from the `room.list` snapshot.
+
+The rejection below still stands unchanged: this supplement covers rooms the
+user has already opened in this session, and is not a reason to hold rooms open.
 
 "Keep every room open so every room pushes" is rejected: opening a room spawns
 a per-room node session (`supervisor.rs`, `open_room`), and holding one open
@@ -247,13 +267,14 @@ store to read its genesis name and departure sets (`supervisor.rs`,
 wire event, no transport change; one read-only field on an existing result.
 
 **Scope and sequencing.** This mechanism is *identified* here as the #63
-deliverable. Its daemon implementation is a small, self-contained follow-up PR
-(extend `list_rooms` to emit `last_event_ts`, plus conformance vectors) that
-may land in the opening slice of #64. It is explicitly **not** coupled to the
-open Rust release-gate bugs (#46/#47/#50); it is new read-only work, not a bug
-fix. Clients and fixtures adopt the field as compatibility-nullable now
-(see [the fixtures section](#fixtures-and-parity)); the daemon fills it in
-when the follow-up merges.
+deliverable. It is explicitly **not** coupled to the open Rust release-gate
+bugs (#46/#47/#50); it is new read-only work, not a bug fix. Clients and
+fixtures adopted the field as compatibility-nullable first; the daemon
+follow-up **shipped with issue #151** — `list_rooms` emits `last_event_ts` and
+`last_event_kind`, selecting the maximum signed `created_at` over a bounded
+window of the room's most recent events (causal order is not timestamp order
+once peers' clocks disagree, and a recency that can move backward would break
+the very comparison this field exists to serve).
 
 ## Decision 6 — the per-affordance evidence rule
 
