@@ -1,9 +1,9 @@
 ---
 type: "Status Report"
 title: "Known gaps and roadmap"
-description: "Release blockers, deferred risks, owners, and next actions after the v0.6.0 evidence-backed technical preview."
+description: "Release blockers, deferred risks, owners, next actions after the v0.6.0 evidence-backed technical preview, and the verification the decided client retirement removes."
 tags: ["gaps", "release", "risks", "roadmap"]
-timestamp: "2026-07-19T21:49:56Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -19,6 +19,18 @@ evidence, hosted gates, and a complete verified artifact set). The table below
 records the gaps that carry forward to v0.6.1, whose candidate pins
 `iroh-rooms` to `a5d98b70...`. Exact Jeliya candidate `a1af1cdc...` is now
 designated and must earn fresh signed evidence at that pair.
+
+**Amended 2026-07-27 (issue #157).** A clean-slate client architecture is now
+decided, and none of it is built: one typed Rust client stack rendering in the
+platform's system WebView is to replace the React and Flutter clients, one new
+protocol and storage generation is to replace protocol v1, and the Dart
+protocol package, the C ABI, and `jeliya-ffi` are to be retired. Read
+[Dioxus clean-slate architecture](dioxus-architecture.md) first; it governs
+this page's forward-looking sections — how the preview limitations are read,
+the verification the retirement removes, NEXT, and LATER. It binds nothing in
+the v0.6.1 candidate: the released `v0.6.0` facts, the closure table below, the
+candidate's evidence, and its exit criteria stand exactly as recorded, and no
+candidate reference moves because of the decision.
 
 ## NOW — closure status
 
@@ -46,6 +58,17 @@ maintenance/yank warnings are tracked with mitigation and an expiry of
 2026-09-30; expiry requires reassessment, not silent acceptance.
 
 ## Explicit preview limitations
+
+**Amended 2026-07-27 (issue #157).** Every limitation below is a true statement
+about the stack that is retiring — the React web client, the Flutter desktop
+and Android applications, and their Dart transport — and about what `v0.6.0`
+published. They are preserved as released fact and are not restated or softened
+by the decision. None of them is *new* work in that stack: the conditions the
+closure table already records for the `v0.6.1` candidate stand, and the
+decision adds nothing beyond them. Where a limitation names behavior the
+replacement stack must also provide, it is re-qualified against the
+replacement on a clean install rather than closed here. Nothing is retired
+before its replacement is qualified.
 
 - the macOS Flutter application is unpublished and its bundled sidecar remains
   loopback-only;
@@ -96,21 +119,95 @@ new candidate:
    [Verification evidence](verification-evidence.md) match that final commit;
 8. explicit release authority is granted to the sole publishing job.
 
+## Verification the retirement removes
+
+Retiring React, Flutter, and the Dart protocol package removes working
+enforcement for which no replacement exists yet. The losses are recorded here
+because they are invisible in the code that remains: every gate below passes
+today and keeps passing right up to the change that deletes the stack it
+inspects, so the coverage disappears without a failing check to announce it.
+
+| Enforcement today | What retirement removes | Condition before it may lapse | Owner |
+|---|---|---|---|
+| the golden protocol conformance corpus, replayed by three independent oracles — the daemon, the TypeScript client, and the Dart/FFI client (see the [Dart protocol package](../dart/jeliya_protocol/README.md)) against the shared `ui/src/lib/conformance/corpus.json` | two of the three oracles; one implementation replaying its own vectors demonstrates self-consistency, not conformance | the replacement corpus is authored independently by hand and never generated from the implementation under test, and a corpus-versus-implementation disagreement is resolved by deciding which one is wrong | core maintainer and verification owner |
+| both localization gates — `scripts/i18n-gate.mjs` over the Flutter catalog and `scripts/check-ui-i18n.mjs` over the React catalogs (key parity, empty values, and French values still byte-identical to their English source) | both gates, because each inspects a catalog that retires with its client | an equivalent gate enforces the same properties over the replacement catalog and passes before either is removed. French parity is the property most likely to regress silently, because an untranslated string still renders and still reads as working software | web maintainer |
+| the cross-client design-token gate — `scripts/check-design-tokens.mjs` with `app/test/design_tokens_test.dart` over `assets/design-tokens.json`, recorded in [cross-client design tokens](design-tokens.md) | the parity half, which is meaningful only while two clients exist, and the contrast floors enforced alongside it, which have no successor consumer | the contrast floors are enforced against the replacement stack, and the token fixture keeps a consumer that fails when a floor is violated | cross-platform maintainers |
+| the [accessibility checklist](accessibility-checklist.md)'s "what CI already covers" table, which points at `ui/e2e/a11y-matrix.spec.ts`, `ui/e2e/a11y.spec.ts`, and the `app/test/a11y_*.dart` suites | every suite the table names; the checklist would otherwise keep instructing reviewers not to re-verify by hand what nothing verifies | equivalent enforced coverage exists on the replacement, and the table is rewritten in the same change that removes the suites | web maintainer and documentation owner |
+
+**No enforcement may lapse before its replacement is qualified.** Removing a
+gate together with the code it inspects is permitted; removing the gate first
+is not. A retirement change that cannot name the passing replacement gate is
+not ready, and an unenforced property is an open gap even when the behavior it
+protected is believed intact.
+
+**New qualification results are enforced evidence, not certification.** A
+replacement result states what was enforced, on which platform, at which
+commit. WCAG 2.1 AA stays a design target with targeted checks until a gate
+says otherwise, and no result claims certified conformance.
+
 ## NEXT — after the preview
 
+The clean-slate decision re-scopes this list. Apart from key custody,
+everything below is qualification work for the replacement stack on a clean
+install rather than work on the retiring clients. None of it is started, no
+result below exists, and each result is enforced evidence, not certification.
+
 - operate signing, notarization, and evidence keys with documented custody,
-  rotation, and incident response;
-- add comprehensive accessibility automation and scheduled manual audits;
-- verify Android direct, relay, reconnect, background, and NAT behavior across
-  representative devices and networks;
-- evaluate Android Keystore-backed identity wrapping without weakening backup
-  exclusions or recoverability;
-- define member removal and key-rotation semantics before promising revocation;
+  rotation, and incident response. The decision changes nothing here, and it
+  applies to every artifact the replacement stack would publish — release
+  authority;
+- qualify Android network behavior on a clean install of the replacement
+  stack — direct, relay, reconnect, background, and NAT across representative
+  devices and networks — against the in-process client the decision selects,
+  not against the retiring Flutter application — mobile maintainer;
+- decide an Android system-WebView floor or evergreen policy. None exists: the
+  decision captures a device's WebView version as evidence only and leaves the
+  policy open, so no Android result may state a supported WebView range until
+  one is decided — mobile maintainer;
+- decide identity storage for the new generation, including whether Keystore
+  wrapping is adopted, without weakening backup exclusion or recoverability.
+  App-private, backup-excluded storage remains the floor, and Keystore wrapping
+  remains defense-in-depth rather than a claim — mobile maintainer;
+- gate the replacement stack on comprehensive accessibility automation and
+  scheduled manual audits. This is no longer an increment on the current
+  suites, because those retire with the clients they test — web, desktop, and
+  mobile maintainers;
+- qualify the packaged system WebView per platform: Linux on WebKitGTK with
+  recorded library and glibc floors; Windows on WebView2 only if Windows is
+  explicitly included rather than formally deferred, which is itself undecided;
+  and macOS on the system WebView, whose floor is not yet recorded. Navigation,
+  new-window, download, devtools, and storage policy fail closed, and a missing
+  platform gate blocks that platform's publication row alone — there is no
+  all-platform release barrier — desktop maintainer;
+- carry the localization, design-token, and accessibility enforcement recorded
+  above onto the replacement before any of it lapses — web maintainer and
+  cross-platform maintainers;
+- author the replacement conformance corpus independently, so the new protocol
+  generation regains an oracle it does not generate itself — core maintainer
+  and verification owner;
+- define member removal and key-rotation semantics before promising
+  revocation. The new protocol generation is where they would be specified, and
+  the decision does not specify them — core maintainer;
 - automate privacy-reviewed retained evidence publication after a successful
-  release.
+  release — verification owner.
 
 ## LATER — separate product decisions
 
-iOS support, hosted agents, an agent marketplace, new protocol event types,
-and other user-facing capabilities require separate product, security, and
-architecture decisions. They remain outside this milestone.
+iOS support, hosted agents, and an agent marketplace remain deferred and
+require separate product, security, and architecture decisions. iOS is out of
+scope in the clean-slate decision too, and no application scaffold or engine
+build exists for it.
+
+A future hosted or delegated browser architecture — a hosted origin, a service
+worker, a delegated browser controller, a browser-resident room peer, native
+companion pairing, or a browser-owned identity — is deferred on the same terms.
+Each requires a new decision record, a new threat model, and a separately
+approved backlog before any of it is built; the clean-slate decision authorizes
+none of them.
+
+New protocol event types are no longer a separate deferral. They belong to the
+new generation's specification, which is open and unwritten, together with the
+questions the decision deliberately left to it: the shared-file maximum — the
+current 100 MiB limit is a v1 reference, not a decision for the new generation
+— and absolute performance budgets. A new user-facing capability still needs a
+product decision; it no longer needs a protocol-generation decision beside it.

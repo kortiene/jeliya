@@ -24,7 +24,8 @@ CI rules for every page in this wiki.
 
 ## Architecture and protocols
 
-- [Daemon protocol](PROTOCOL.md) - Normative transport-neutral contract between `jeliya-core` and every Jeliya client.
+- [Dioxus clean-slate architecture](dioxus-architecture.md) - Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, its protocol and storage generation, the single embedded artifact, and the retirement of React, Flutter, the Dart protocol, and the C ABI. Decided and not yet built.
+- [Daemon protocol](PROTOCOL.md) - Normative transport-neutral contract between `jeliya-core` and every Jeliya client, and the contract every released daemon speaks.
 - [Room Workbench](room-workbench.md) - Decision record for the global-versus-room hierarchy, canonical routes, responsive shells, and status vocabulary.
 - [Room attention](room-attention.md) - Decision record for evidence-backed room recency, device-local unread, and actionable attention, and the evidence rule each displayed field must satisfy.
 - [Device-local self label](self-label.md) - Decision record for the editable, device-local self display name reusing the alias store keyed by the self identity id, its fallback, validation, migration, and privacy rules.
@@ -39,8 +40,15 @@ CI rules for every page in this wiki.
 ## Proposals
 
 - [Agent marketplace architecture](agent-marketplace.md) - Proposed, not-yet-implemented hosted-agent marketplace architecture, trust model, product flow, and delivery plan.
-- [Production deployment architecture](production-deployment.md) - Repository-grounded assessment, hybrid browser/native/server target, trust boundaries, infrastructure, release gates, and the first production slice for app.jeliya.ai.
-- [Production deployment architecture review](production-deployment-review.md) - Adversarially verified findings, refuted candidates, and confirmed claims behind the six amendments the deployment proposal needs before it becomes a decision.
+
+## Superseded records
+
+The proposal below is superseded by
+[Dioxus clean-slate architecture](dioxus-architecture.md). Its review is
+retained as a valid, dated evidence record about the revision it examined.
+
+- [Production deployment architecture](production-deployment.md) - Superseded pre-Dioxus proposal for a hosted PWA and native companion at app.jeliya.ai; never accepted, replaced under #113 by the [Dioxus clean-slate architecture](dioxus-architecture.md), and excluded from the first release.
+- [Production deployment architecture review](production-deployment-review.md) - Adversarially verified findings against that proposal, bound to the revision it reviewed at `043bd1e`.
 
 ## Operations and release evidence
 

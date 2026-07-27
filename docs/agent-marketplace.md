@@ -3,7 +3,7 @@ type: "Architecture"
 title: "Agent marketplace architecture"
 description: "Proposed hosted-agent marketplace architecture, trust model, product flow, and delivery plan."
 tags: ["agents", "architecture", "marketplace", "security"]
-timestamp: "2026-07-12T19:25:00Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "proposal"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -74,6 +74,20 @@ runtime is the source/version it advertises.
 ## Current-state architecture
 
 ### Verified current behavior
+
+**Amended 2026-07-27 (issue #157).** Everything marked verified in this
+document — including the launch-surface facts stated above: the Flutter macOS
+sidecar's loopback mode, Android's in-process `FfiClient` engine with real
+networking, and the absent iOS scaffold behind the shared `FfiClient` path —
+describes the current release candidate only. The
+[Dioxus clean-slate architecture](dioxus-architecture.md) record decides to
+retire React, Flutter, the Dart protocol package, the C ABI, and `jeliya-ffi`
+in favour of one typed Rust client stack, and to define one new protocol and
+storage generation in place of protocol v1 and all existing state. Nothing in
+that record is built and nothing has been retired, so the statements here
+remain true of the tree today; none of them may be carried forward as facts
+about the replacement stack, and each retirement waits on its replacement
+being qualified. iOS is out of scope there as well.
 
 Jeliya reconstructs room state from signed Iroh Rooms events. The SDK is
 intentionally isolated to [`jeliya-core`](../crates/jeliya-core); the

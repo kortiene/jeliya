@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Capability status"
 description: "Evidence-aware capability matrix for the released v0.6.0 preview and the designated v0.6.1 candidate."
 tags: ["capabilities", "release", "status", "verification"]
-timestamp: "2026-07-19T21:49:56Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -22,6 +22,17 @@ the corrective repin to untagged upstream revision `a5d98b70...`, the first
 exact `v0.6.1` source candidate is
 `a1af1cdc974bc307317779afa0765c3988cb871f`; no current v0.6.0 evidence
 transfers to it.
+
+**Amended 2026-07-27 (issue #157).** Every capability recorded below belongs to
+the retiring stack. The
+[Dioxus clean-slate architecture](dioxus-architecture.md) record decides that
+React, Flutter, the Dart protocol package, the C ABI, and `jeliya-ffi` are
+replaced by one clean-slate typed Rust client stack rendered by Dioxus 0.7 in
+the platform's system WebView, on one new protocol and storage generation.
+That program is decided and entirely unbuilt: no Dioxus code exists in this
+tree, and nothing is retired before its replacement is qualified. Every
+released `v0.6.0` fact on this page, the retained certified evidence, and the
+`v0.6.1` candidate designation are unaffected and remain the current evidence.
 
 ## Snapshot boundary
 
@@ -67,6 +78,24 @@ especially its admin, must move together.
 | Complete asset-set visibility and version consistency | implemented | executed for `v0.6.0` | released in `v0.6.0` | The publication workflow validated, sealed, smoked, and receipt-verified the complete five-archive set; the evidence key is provisioned and the signed evidence passed the release gate before publication. |
 | WCAG 2.1 AA | partial | automated gate on every pull request; manual checklist per release | partial | Enforced, not certified. CI rejects any critical or serious axe violation across every destination at 1440x900, 920x800, 390x844 and 320x568, and fails on clipped layout at 100/200/320% text in English and French; `docs/accessibility-checklist.md` covers the screen-reader and keyboard behaviours automation cannot decide. The English/French automation is not a conformance claim, and required-check policy remains an external repository setting. |
 | OKF-compatible documentation | implemented | locally checked; reconciled to the released `v0.5.0`, prior signed snapshot, and current untagged candidate | released posture documented | The profile separates lifecycle, implementation, verification, and release status. |
+
+### Decided but unbuilt clean-slate surfaces
+
+**Amended 2026-07-27 (issue #157).** The matrix above records what exists in
+the candidate tree. This separate table records surfaces that the
+[Dioxus clean-slate architecture](dioxus-architecture.md) record decides and
+that no revision implements. None of them has a candidate revision, an
+evidence run, or an artifact, and the same bar applies: no row here may be
+promoted because a decision is recorded or because code later appears on a
+branch.
+
+| Capability | Implementation | Verification | Public release | Honest current claim |
+|---|---|---|---|---|
+| Dioxus web client (`jeliya-ui` in the browser) | planned | unverified | unreleased | Decided, not built. The record requires one Dioxus 0.7 client in the browser's WebSocket path through the `WsWeb` adapter, holding no Iroh dependency and no identity of its own. No Dioxus code exists in this tree; the embedded React UI above remains the shipped web surface, and React is removed only after the Dioxus web release candidate passes. |
+| Dioxus desktop packages (macOS, Linux, and any approved Windows target) | planned | unverified | unreleased | Decided, not built. The record names WebKitGTK for Linux and WebView2 for Windows, and names macOS only as the system WebView (WebKit). Windows is not a committed first-release target: its scope decision may include it or formally defer it. Desktop qualification is required per platform, and a missing platform gate blocks only that platform's publication row. |
+| Android `DirectClient` client | planned | unverified | unreleased | Decided, not built. The record requires typed `jeliya-core` in-process behind one bounded serialized actor, with no JSON, Dart, C ABI, socket, token, or portfile in the path. No Android system-WebView floor or evergreen policy has been decided; that is an open gap. The Flutter Android app, the Dart protocol package, the C ABI, and `jeliya-ffi` are retired only atomically, after a clean-install `DirectClient` candidate passes. |
+| Protocol v2 | planned | unverified | unreleased | Decided, not specified. Its handshake and version gate, envelopes, operations, errors, limits, and independently authored conformance corpus are open work, and this page describes none of them. [The daemon protocol](PROTOCOL.md) v1 remains the contract every released daemon speaks. The v1 100 MiB shared-file limit is a reference, not a v2 decision. |
+| Single embedded Dioxus artifact | planned | unverified | unreleased | Decided, not built. The record requires one reproducible, content-addressed web artifact whose exact bytes are embedded in every daemon target, with a sealed manifest and failure on legacy-artifact consumption. No such artifact is produced, and no React or renderer rollback artifact is planned. |
 
 ## Preview publication rule
 

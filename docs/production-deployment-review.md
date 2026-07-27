@@ -3,7 +3,7 @@ type: "Research"
 title: "Production deployment architecture review"
 description: "Adversarially verified three-track review of the production deployment proposal, recording every surviving finding, every refuted finding, and every claim checked and found accurate."
 tags: ["architecture", "deployment", "review", "verification", "security", "evidence"]
-timestamp: "2026-07-19T00:08:29Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "not-applicable"
 verification_status: "partial"
@@ -21,6 +21,16 @@ every claim that was checked and found accurate.
 The review informs the architecture decision. It does not enact it. The proposal remains
 a proposal until an accepted decision record supersedes it, and this page does not change
 any status on that page.
+
+**Amended 2026-07-27 (issue #157).** The proposal this page reviews has since been
+superseded by the [Dioxus clean-slate architecture](dioxus-architecture.md), and a
+superseding notice was added to its opening. Every finding below cites line numbers in
+the revision that was reviewed: `docs/production-deployment.md` as it stood at
+`043bd1e`, whose frontmatter timestamp is `2026-07-18T20:29:18Z` — the value finding F1
+cites. That file was edited five times on 2026-07-19 and again by the superseding
+notice, so the citations bind the reviewed revision alone. They are not renumbered, and
+no finding is reworded: this page remains a dated evidence record and is not rewritten
+to match a later decision.
 
 ## Scope and method
 

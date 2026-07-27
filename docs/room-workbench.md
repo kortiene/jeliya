@@ -3,7 +3,7 @@ type: "Decision"
 title: "Room Workbench — information architecture, routes, and status vocabulary"
 description: "Decision record defining Jeliya's global-versus-room hierarchy, the canonical navigation state for every client, the wide/medium/compact shell contract, and the status vocabulary that keeps each surface bound to one provable fact."
 tags: ["architecture", "ia", "navigation", "ux"]
-timestamp: "2026-07-17T12:29:12Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -20,6 +20,15 @@ defines that hierarchy, the canonical navigation state every client must
 keep, the responsive shell contract, and the status vocabulary each
 surface may use. It is the contract the UX 1 implementation issues test
 against.
+
+**Amended 2026-07-27 (issue #162).** The hierarchy, the route family, the
+responsive shell contract, and the status vocabulary remain the product
+contract, and they are requirements-mining input to the clean-slate
+cross-platform behavior contract required by the
+[Dioxus clean-slate architecture](dioxus-architecture.md). This record is no
+longer a parity or a compatibility authority: nothing in the clean-slate
+stack must reproduce a React or Flutter rendering to be correct. The
+client-specific mechanics named below describe the retiring stack.
 
 This document is normative for clients. It changes no protocol method and
 no wire value; `docs/PROTOCOL.md` remains the daemon contract.
@@ -113,6 +122,10 @@ Rules:
    deep links work in production without a daemon change.
 5. **Flutter uses the same strings as named routes.** One spelling, two
    clients; a route in this table means the same destination in both.
+   **Amended 2026-07-27 (issue #162).** Named Flutter routes are a retiring
+   client's mechanics. The route family above is the part that carries
+   forward: the clean-slate stack has one client, and its router must resolve
+   the same strings to the same destinations.
 6. **Query and fragment are not navigation state.** `?daemon=`, `?mock…`
    are transport and fixture inputs. Any canonicalizing redirect
    **must preserve `location.search`** — dropping it silently unfixtures
@@ -163,6 +176,15 @@ explicit destination and is honored as one: `/rooms`, `/fleet`, and
 `/settings` name no room *on purpose*, and restoring one into them would
 make a direct link to Settings open a room, and a deliberate "Back to Rooms"
 undo itself.
+
+**Amended 2026-07-27 (issue #162).** `localStorage['jeliya.lastRoom']`,
+`prefs.lastRoomId`, and a Flutter cold start are the retiring clients'
+mechanics, not the decision. The navigation facts survive: which room was
+last open, restored only from the bare root, once per launch, and always
+losing to an explicit route. Under the
+[Dioxus clean-slate architecture](dioxus-architecture.md) the clean-slate
+stack persists those facts in a new namespaced storage generation through its
+injected platform services, and implements no reader for either legacy key.
 
 **An explicit route always wins over a restored room.** A bootstrap that
 re-picks the last room while the route names a different one — or names none
@@ -342,6 +364,12 @@ unbound peer endpoints, not a second id-shortening rule. Rules:
   to a project whose entire runtime dependency set is `react` +
   `react-dom` would need its own decision, with the rationale and
   provenance that `app/pubspec.yaml` records for Flutter plugins.
+  **Amended 2026-07-27 (issue #162).** That clause reasoned about the
+  retiring stack and its dependency set, and it no longer describes the
+  question. The dependency question is answered instead by the
+  [Dioxus clean-slate architecture](dioxus-architecture.md) record, under
+  which the shared `jeliya-ui` crate pins Dioxus and `dx`. This record
+  decides no dependency for the clean-slate stack.
 - **`labelTone`'s dependence on wire prose.** Recorded above as a known
   residual, not fixed here.
 - **Calls.** Hidden, not designed.
@@ -355,6 +383,13 @@ unbound peer endpoints, not a second id-shortening rule. Rules:
 | #60 | Flutter: the nested Room Workbench. |
 | #62 | Both: adaptive wide/medium/compact shells. |
 | #49 | Both: homonymous room disambiguation. |
+
+**Amended 2026-07-27 (issue #162).** Those slices shipped against the
+retiring React and Flutter clients. The decisions they implement stand; the
+implementations do not carry forward, and this table is a record of what was
+built, not a plan for the clean-slate stack. The work that re-satisfies these
+decisions is scoped by the cross-platform behavior contract of the
+[Dioxus clean-slate architecture](dioxus-architecture.md).
 
 Each slice tests against this record. Where an implementation and this
 document disagree, one of them is a bug — say which in the pull request.

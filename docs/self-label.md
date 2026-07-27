@@ -3,7 +3,7 @@ type: "Decision"
 title: "Device-local self label — a friendly name for you, never signed"
 description: "Decision record defining how Jeliya gives the local user an editable, device-local display label reusing the alias store keyed by the self identity id, its fallback, validation, migration, and privacy rules, and where self is rendered consistently across both clients."
 tags: ["ux", "identity", "naming", "privacy"]
-timestamp: "2026-07-18T12:00:00Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -36,6 +36,17 @@ id. There is no new store, no new key, and no wire field.
   lives only on this device, is never sent, never appears in a signed event or
   roster, and is **excluded from diagnostics** (which already redact full
   identities). Every editor states this in copy.
+
+**Amended 2026-07-27 (issue #162).** `jeliya.aliases.v1` and the Flutter
+`aliases` map in `app_prefs.json` are the retiring clients' stores, not the
+decision. The decision survives whole: one device-local alias per identity id,
+including the self id, never signed and never on the wire. Under the
+[Dioxus clean-slate architecture](dioxus-architecture.md) the replacement
+stack writes that alias in a new namespaced storage generation through its
+injected platform services and implements no reader for either legacy store,
+so the automatic-migration clause above describes the retiring clients only —
+a returning user on the new stack starts with no label and sees "You" until
+they set one. Both legacy stores keep working in the clients that ship today.
 
 ## Validation (shared by both clients)
 

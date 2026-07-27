@@ -1,0 +1,395 @@
+---
+type: "Decision"
+title: "Dioxus clean-slate architecture"
+description: "Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, the protocol and storage generation it defines, the single embedded web artifact every daemon target ships, and the retirement of React, Flutter, the Dart protocol package, and the C ABI."
+tags: ["architecture", "clean-slate", "dioxus", "protocol", "release"]
+timestamp: "2026-07-27T22:58:56Z"
+status: "canonical"
+implementation_status: "planned"
+verification_status: "unverified"
+release_status: "unreleased"
+audience: ["contributors", "maintainers", "release-engineers"]
+---
+
+# Dioxus clean-slate architecture
+
+**Status: DECIDED 2026-07-27. Nothing in this record is built.** Jeliya
+replaces its two user-facing clients with one clean-slate typed Rust client
+stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
+protocol and storage generation, and retires React, Flutter, the Dart
+protocol package, the C ABI, and `jeliya-ffi`.
+
+Read every statement below as a requirement on unwritten code. The released
+`v0.6.x` line and the current source candidate ship React in `ui/`, Flutter
+in `app/`, and Dart transports in `dart/jeliya_protocol/`; the workspace
+crates are `jeliya-core`, `jeliyad`, and `jeliya-ffi`. No Dioxus code exists
+in the tree, and [the daemon protocol](PROTOCOL.md) remains the contract every
+released daemon speaks until protocol v2 is specified.
+
+Program: #156. This record satisfies #157 and records the canonical
+architecture selected by the first-release distribution decision, #113. It
+supersedes the [production deployment proposal](production-deployment.md).
+
+## Why
+
+Three recorded repository facts forced the decision.
+
+**The protocol contract exists three times.** `jeliya-core` exposes 24 v1 RPC
+methods. The authoritative method map is duplicated in
+`ui/src/lib/protocol.ts`, Dart models live in
+`dart/jeliya_protocol/lib/src/models.dart`, and all 24 dispatch arms live in
+`crates/jeliya-core/src/engine.rs`. The workspace has no shared API crate, so
+no compiler checks that the three agree (#163).
+
+**Every user-facing decision ships twice.** React and Flutter each need their
+own implementation, their own fixtures, and a gate to hold them together —
+[cross-client design tokens](design-tokens.md) maps every token to a React
+custom property and a Flutter getter, and the
+[room attention](room-attention.md) record keeps two mock clients aligned so
+both render identical decisions. Every product decision pays that cost again.
+
+**The prior deployment proposal was not adopted.** The
+[production deployment proposal](production-deployment.md) argued for a
+capability-aware hybrid — an installable PWA plus a native companion. It was
+adversarially reviewed and then superseded by #113 rather than amended.
+
+The backlog records this decision as scope and non-goals, not as a
+comparative benchmark. **This record therefore claims no measured
+performance, bundle-size, or ecosystem advantage** for Dioxus over the
+retired stack. Its stated purpose is one typed contract, one client stack,
+and one artifact.
+
+## Decision 1 — one renderer, in the system WebView
+
+Jeliya builds one clean-slate typed Rust client stack around **Dioxus 0.7
+system-WebView rendering**. Experimental WGPU and Blitz renderers are
+excluded (#156, #157, #176).
+
+Rendering happens in the platform's system WebView. Process, network, and
+file authority stay in native Rust, and RSX components receive typed state
+and actions only (#184). Desktop Rust handlers run natively even though UI
+rendering occurs in a WebView (#172). **No daemon token crosses into
+untrusted WebView script** (#159).
+
+This record makes no claim that the system WebView sandboxes native Rust.
+Asserting that is an explicit non-goal of the security review that will
+establish what the WebView boundary does and does not contain (#196).
+
+## Decision 2 — one protocol and storage generation
+
+The program's clean-slate policy, verbatim from #156:
+
+> Jeliya is pre-release. Protocol v1 and all existing developer identities,
+> rooms, preferences, and signed logs are disposable. Define one protocol-v2
+> and storage generation. Do not implement v1 support, dual read/write,
+> schema migration, identity continuity, or data-preserving rollback. Old
+> clients and old data fail closed with an actionable reset path; no
+> unverified directory is deleted automatically.
+
+**How old clients fail.** `jeliyad` becomes v2-only and rejects unsupported
+clients during the handshake, **before dispatch and before any mutation
+executes** (#161, #164, #166). No legacy client may execute a v2 mutation
+(#157). Stale processes and state generations fail explicitly; a
+protocol or storage mismatch fails closed, and only a proven-owned incumbent
+may be replaced (#156, #170).
+
+**How old state is treated.** Each platform writes only the new namespaced
+schema. Legacy keys are ignored or explicitly removed, never interpreted as
+new state (#178); the legacy `app_prefs.json` is ignored and no migration
+reader is implemented (#185); DirectClient opens only new-generation state
+(#173). **No unverified directory is deleted automatically** — silently
+deleting or reinterpreting an unverified old data directory is an explicit
+non-goal (#156), and the Android beachhead fails closed on one (#160). The
+reset path is shown to the user; it is not taken on their behalf.
+
+**The namespaces themselves are not named here.** #178 fixes the browser key
+namespace, #185 the desktop preferences store and its version key, and #173
+the Android data directory. Until those land, no page may state a replacement
+key name, and each must be a name no retiring client ever wrote.
+
+**What does not remain.** No active v1 codec, legacy state reader, migration
+path, dual artifact, or rollback package (#156, #164). No migration tooling,
+dual readers or writers, N-1 packages, canaries, observation windows, or
+mixed-version windows (#156, #113).
+
+**Where JSON survives.** `jeliya-api` is the Iroh-free typed contract and
+JSON exists **only at the WebSocket edge** (#156); public API types contain
+no `serde_json::Value` (#163); no JSON or method-string dispatch escapes the
+codec (#164). **Internal persistence JSON is unaffected** and remains out of
+scope (#165).
+
+**Protocol v2 is not specified here.** #161 owns the v2 handshake and version
+gate, envelopes, approved operations, outputs, pushes, errors, authorization,
+resource limits, mutation identity and retry guarantees, push ordering, gap
+detection, and authoritative resync — together with a hand-authored,
+independently written conformance corpus. The 24 v1 methods are inventory,
+not authority: v2 may retain, rename, combine, or remove operations
+deliberately, and no requirement preserves a v1 field, event, null, or
+storage shape.
+
+**Retained scenarios, re-expressed in v2 terms against fresh state.** Their
+v1 bytes and persistence shapes are not retained (#161, #162, #175, #195):
+late join after multi-author history (#46); an expired ticket replaced by a
+fresh ticket for the same identity (#47); multiple rooms live at once without
+routing or push loss (#147); provider availability and Pipe reachability as
+authoritative protocol facts rather than inferences from membership display
+state (#50, #94); presence and liveness across rooms and network paths (#79);
+departed rooms opened as local read-only historical archives (#91).
+
+## Decision 3 — layering, owners, and allowed dependency direction
+
+Owners are roles, not people. `core maintainer`, `desktop maintainer`, and
+`release maintainer` are the vocabulary the
+[known gaps and roadmap](known-gaps-roadmap.md) already used; `web
+maintainer`, `mobile maintainer`, and `cross-platform maintainers` are
+introduced by this record and adopted by that page in the same change. No
+issue assigns owners, so these roles are this record's own allocation.
+
+| Crate or module | Disposition | Owner | Must not depend on |
+|---|---|---|---|
+| `crates/jeliya-api` | new — typed requests with paired outputs, pushes, errors, and view models for every approved v2 operation | core maintainer | Iroh, WebSocket, Dioxus, or any platform crate; no `serde_json::Value` in public types |
+| protocol-v2 codec | new — a dedicated crate or tightly isolated module with exhaustive request routing | core maintainer | anything that would let JSON or method-string dispatch escape it |
+| `crates/jeliya-core` | retained, retyped — protocol-facing materializer and supervisor signatures stop returning `serde_json::Value` | core maintainer | envelope or push framing, which moves out of core |
+| `jeliyad` | retained — v2-only, keeps its process, token, lock, and ownership safety invariants | core maintainer | any path that admits an unsupported client past the handshake |
+| daemon supervisor | new — one reviewed Rust supervisor for Dioxus desktop and other native control planes, owned or adopted | desktop maintainer | UI state; it owns spawn and stop, transports do not |
+| client kernel and seam | new — one cloneable UI-facing handle over a transport-independent kernel | core maintainer | a specific transport; backend erasure stays internal |
+| `jeliya-ui` | new — the shared UI crate, with Dioxus and `dx` pinned | web maintainer | platform authority; it reaches it only through injected services |
+| `PlatformServices` | new — one injectable boundary for files, persistence, lifecycle, URLs, clipboard and share, navigation, and window actions | cross-platform maintainers | nothing; every service has a deterministic test implementation |
+| package identity | new — one reserved application or bundle identifier per packaged target | release maintainer | any identifier a retiring client already ships, which would let a legacy install upgrade into the new generation |
+| `crates/jeliya-ffi` | to be removed — still present, still building, and still the Android transport; quarantined from the active build under #166, deleted under #202 | mobile maintainer | — |
+
+Direction rules that hold across the stack:
+
+- Browser WASM must stay free of Iroh and native dependencies; `jeliya-api`
+  must compile for `wasm32-unknown-unknown`, and CI must assert its
+  dependency tree once the crate exists (#157, #163, #171).
+- Iroh types are not moved into `jeliya-api`. Conversion happens at explicit
+  module boundaries (#165).
+- Shared components contain no platform business-logic `cfg` forks (#174).
+- `ClientHandle` and `PlatformServices` are injected separately (#174).
+
+## Decision 4 — one seam, four adapters, one platform boundary
+
+**The seam** (#167) is one cloneable concrete UI handle, preferred over an
+object-unsafe generic trait, keeping backend erasure internal. It models
+`Push`, `StateChanged`, `Gap`, and `ResyncRequired`. Calls are compile-time
+paired with their outputs; multiple consumers cannot silently steal each
+other's pushes; stop settles all accepted work and closes event streams.
+
+**The kernel below it** (#168) is transport-independent: queues are bounded
+and `QueueFull` is visible rather than absorbed; connection loss
+distinguishes never-sent work from work that may have executed; only
+operations with an explicit, tested v2 deduplication guarantee may replay,
+and everything else never auto-replays; generations are fenced.
+
+**One resync path** (#169): `ResyncRequired { generation, reason }` is the
+only gap and resync path for v2 clients. There is no legacy bootstrap
+fallback.
+
+| Adapter | Platform | Owner | Binding | Honest lifecycle difference |
+|---|---|---|---|---|
+| deterministic mock | all | core maintainer | in-process fixture, shipped with the seam | none; it is the reference behavior |
+| `WsWeb` | browser | web maintainer | browser WebSocket and fetch, fresh `/api/session` authentication on every attempt | connected is emitted only after protocol validation; it is the sole browser client, and React transport compatibility is not required |
+| `WsNative` | desktop | desktop maintainer | native async WebSocket through the reusable supervisor and target resolver | the resolver runs on every connection attempt, only verified loopback endpoints are dialed, tokens stay native and redacted; it does not own spawn or stop, and Dart behavior is not retained |
+| `DirectClient` | Android | mobile maintainer | typed `jeliya-core` in-process behind one bounded serialized actor | calls execute serially and one owner controls a canonical data directory; the path contains no JSON, Dart, C ABI, socket, token, or portfile; resume triggers authoritative resync **without a fabricated reconnect** |
+
+Pretending `DirectClient` reconnects is an explicit non-goal (#173). One
+fault-injected suite must prove all four expose the same view-level contract
+while retaining honest transport-specific lifecycle differences (#175). No
+such suite exists, and neither does any of the four adapters.
+
+**`PlatformServices`** (#174) keeps platform authority out of shared RSX
+components through one injectable boundary covering files, persistence,
+lifecycle, URLs, clipboard and share, navigation, and window actions. Local
+file paths and `content://` URIs are not interchangeable.
+
+## Decision 5 — one embedded artifact
+
+The web build must produce **one** reproducible, content-addressed Dioxus
+artifact, and **the exact same bytes** must be embedded in every daemon
+target (#183). Its sealed manifest must carry the renderer, source SHA,
+toolchain versions, and digest, and consumption of a legacy artifact must
+fail. **No React or renderer rollback artifact may be produced under this
+architecture.** Today the web build produces the React `ui/dist` archive that
+`jeliyad` embeds and that `v0.6.0` published; that remains the shipped
+artifact until #200.
+
+The delivery shape is fixed by #113: the artifact is embedded and served by
+the trusted local `jeliyad` path for browser use, and reused inside packaged
+desktop system WebViews. There is no hosted-origin controller, native
+companion pairing, browser-resident room peer, service worker, or
+browser-owned identity in the first release.
+
+## Decision 6 — per-platform system WebView
+
+| Platform | WebView | Required floor or policy | Issue |
+|---|---|---|---|
+| Linux | WebKitGTK | development and runtime dependencies must be pinned, the actual linked system libraries must be recorded in package evidence, and minimum glibc and WebKitGTK floors must be enforced | #187 |
+| Windows | WebView2 | supported Windows versions and the evergreen or fixed-runtime policy must be recorded; navigation, storage, and devtools policy must be set; absent, outdated, and current runtimes must all be exercised | #188 |
+| macOS | system WebView (WebKit) | no floor required yet; nested native and WebView artifacts must be signed before the outer app and DMG | #186 |
+| Android | system WebView | **none decided** — WebView version is captured as device evidence only, and no floor or evergreen policy exists | #160, #194 |
+
+Nothing in that table is pinned, recorded, enforced, or exercised today; each
+row states what its issue must deliver.
+
+The decision names Linux and Windows precisely and names macOS only as the
+system WebView. No narrower platform API is approved, and the Android row is
+an open gap, not an omission.
+
+**Windows is not yet a committed first-release target.** #188 must
+explicitly include *or formally defer* Windows, and the desktop
+qualification matrix is blocked on that answer if Windows remains in scope.
+Treating Windows as supported because `dx bundle` runs is an explicit
+non-goal (#188, #189).
+
+One release-blocking desktop matrix (#189) covers supported OS and WebView
+versions, navigation policy, daemon lifecycle, files and preferences, and
+keyboard and screen-reader behavior. Navigation, new-window, download,
+devtools, and storage policies **fail closed**. Its results, and the
+accessibility and localization evidence beside them, are described as
+**enforced evidence, not certification** (#189, #197).
+
+There is no all-platform release barrier: a missing platform-specific gate
+blocks only that platform's publication row (#199).
+
+## Decision 7 — the boundaries that must stay explicit
+
+| Boundary | Rule | Issue |
+|---|---|---|
+| artifact | one content-addressed Dioxus artifact, identical bytes in every target; legacy artifact consumption fails | #183 |
+| daemon token | stays native, never crosses into untrusted WebView script, and is redacted in logs and diagnostics | #159, #170, #172, #184 |
+| storage | one new namespaced generation per platform; legacy keys are ignored or removed, never interpreted as new state; Android state is app-private and backup-excluded | #173, #178, #185, #190 |
+| navigation | navigation, new-window, download, devtools, and storage policies fail closed in the packaged WebView | #189, #196 |
+| native capability | reaches shared components only through injected `PlatformServices`, never through a `cfg` fork in shared RSX | #174 |
+
+## Feature graphs
+
+**Browser.** The daemon serves the artifact it embeds; the browser client
+holds no Iroh dependency and no identity of its own.
+
+```
+jeliya-ui (Dioxus, wasm32) -> WsWeb -> WebSocket + /api/session
+  -> jeliyad (v2-only) -> jeliya-core -> iroh-rooms
+```
+
+**Desktop.** The packaged app renders the same artifact in the system
+WebView; native Rust keeps process and network authority.
+
+```
+packaged app -> system WebView renders jeliya-ui
+  -> native Rust handlers + PlatformServices
+  -> WsNative -> supervised jeliyad (owned or adopted) -> jeliya-core
+```
+
+**Android.** One process, no socket.
+
+```
+system WebView renders jeliya-ui -> DirectClient (bounded serial actor)
+  -> typed jeliya-core in-process
+```
+
+**Current agent.** No dual codec; the agent speaks v2 or it does not connect.
+
+```
+OpenCode agent (v2 client) -> WebSocket -> jeliyad (v2-only) -> jeliya-core
+```
+
+The cutover is tracked cross-repo as
+[kortiene/jeliya-opencode-agent#45](https://github.com/kortiene/jeliya-opencode-agent/issues/45).
+The full Rust OpenCode or Switchyard agent rewrite is out of scope, and agent
+execution does not move into `jeliyad` or the human-facing app (#156).
+
+## Measured unknowns and their spikes
+
+The decision is made; these measurements are not.
+
+| Unknown | Spike |
+|---|---|
+| Whether an embedded Dioxus web build serves and functions against a real `jeliyad` | #158 |
+| Whether native WebSocket supervision survives inside a packaged system WebView | #159 |
+| Whether AAB packaging, the DirectClient beachhead, and device UX hold on a physical device | #160 |
+| Absolute first-release bundle, startup, memory, timeline, battery, and network budgets | #198 |
+
+Two further open questions are decisions rather than measurements, and neither
+waits on a spike. #92 selects the v2 shared-file maximum in M0 so that #161 can
+specify the protocol — the 100 MiB v1 limit is a reference, and deferring the
+choice until implementation evidence arrives is an explicit non-goal there.
+#188 decides whether Windows is in first-release scope. Both are listed under
+[what this record does not decide](#what-this-record-does-not-decide).
+
+## Rejected and deferred alternatives
+
+- **WGPU and Blitz rendering.** Excluded as experimental (#156, #157, #176).
+- **A hosted origin, service worker, delegated browser controller,
+  browser-resident room peer, native companion pairing, or browser-owned
+  identity.** Excluded from the first release (#113). This is the substance
+  of the superseded proposal.
+- **Any compatibility or rollback affordance.** Migration tooling, dual
+  readers or writers, N-1 packages, canaries, observation windows, rollback
+  artifacts, and mixed-version windows are all out of scope (#156, #113).
+- **Keeping React or Flutter runnable.** They are requirements-mining
+  sources only — neither parity nor compatibility authorities — and pixel
+  identity is a non-goal (#156, #162).
+- **iOS.** Out of scope in #156, #113, and #157.
+
+**A future hosted or delegated browser architecture requires a new decision
+record, a new threat model, and a separately approved backlog** (#113,
+#157). This record does not authorize one.
+
+## What this record does not decide
+
+- **Protocol v2 itself**, or its conformance corpus — #161.
+- **The required cross-platform product behavior contract** — #162. React
+  and Flutter tests, closed issue #77, and the
+  [Room Workbench](room-workbench.md) record are requirements-mining input
+  to it, not parity or compatibility authorities.
+- **The v2 shared-file maximum** — #92.
+- **Whether Windows ships in the first release** — #188.
+- **Performance budgets** — #198.
+- **Legal, privacy, and compliance gates for public distribution** — #118.
+- **Native update channels, signing trust, and anti-rollback policy** —
+  #121.
+- **What replaces the retired cross-client design-token, localization, and
+  accessibility gates** — #177, #197. Retiring React and Flutter removes
+  working enforcement before its replacement exists; that verification loss
+  is recorded in [known gaps and roadmap](known-gaps-roadmap.md).
+
+## Implementation
+
+Every milestone carries its own exit gate. No milestone below has a closed
+issue: the program is entirely ahead of the repository.
+
+| Milestone | Exit gate |
+|---|---|
+| M0 — Architecture and platform feasibility | the clean-slate system-WebView architecture, fresh-state/reset policy, required product behavior, and web/desktop/Android feasibility evidence are recorded |
+| M1 — Typed API and protocol v2 | one Iroh-free typed API and protocol-v2 contract drive a typed core and v2-only daemon; v1 clients fail before mutation and no public JSON or compatibility facade remains |
+| M2 — Client runtime and platform adapters | bounded lifecycle-aware runtime, WsWeb, WsNative, DirectClient, PlatformServices, shared adapter tests, and the current OpenCode agent v2 cutover are complete |
+| M3 — Web replacement | Dioxus web covers the required Room Workbench and global flows, passes its Playwright/real-daemon matrix, and produces the sole reproducible embedded UI artifact |
+| M4 — Desktop lifecycle and packaging | clean-install macOS, Linux, and approved Windows Dioxus packages enforce daemon ownership/auth/shutdown, fresh storage, platform services, and system-WebView qualification |
+| M5 — Android clean-install qualification | a signed clean install creates protected fresh state, runs DirectClient, and passes physical-device lifecycle, networking, files, accessibility, ABI, and backup-exclusion gates |
+| M6 — First-release qualification | required behavior, security, accessibility, localization, absolute performance budgets, reproducible artifacts, and clean-install smoke tests pass independently per platform |
+| M7 — Clean-slate legacy removal | React, Flutter, Dart protocol, C ABI, FFI, v1 fixtures, migration code, and rollback artifacts are gone; current-only builds, packages, tests, scans, and docs pass from a clean checkout |
+
+The slices that carry this record:
+
+| Issue | Slice |
+|---|---|
+| #157 | This record, and the superseded pre-Dioxus proposal. |
+| #113 | The first-release distribution decision it records. |
+| #161 | Protocol v2 and its independently authored conformance corpus. |
+| #162 | The required cross-platform product behavior contract. |
+| #163 | The Iroh-free `jeliya-api` contract. |
+| #167 | The lifecycle-aware client seam and its deterministic mock. |
+| #174 | Injectable `PlatformServices`. |
+| #183 | The one content-addressed embedded artifact. |
+| #189 | The system-WebView security, lifecycle, and accessibility matrix. |
+
+**Nothing is retired before its replacement is qualified.** React is removed
+only after the Dioxus web release candidate passes (#200); Flutter desktop
+only after packaged Dioxus qualification (#201); Flutter Android, the Dart
+protocol, the C ABI, and `jeliya-ffi` are removed atomically only after the
+clean-install DirectClient candidate passes (#202). Repository-wide
+documentation, CI, packaging, and license consolidation follows in #203.
+
+Each slice tests against this record. Where an implementation and this
+document disagree, one of them is a bug — say which in the pull request.
