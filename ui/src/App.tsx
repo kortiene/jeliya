@@ -215,13 +215,6 @@ export default function App({ client }: { client: Client }) {
    *  `last_event_ts` projection, which survives restart. */
   const [liveActivity, setLiveActivity] = useState<LiveActivityMap>({});
 
-  /** The latest `room.list` rows, readable from the push handler (which is
-   *  registered once and must not re-subscribe on every list refresh). */
-  const roomsRef = useRef<RoomSummary[]>([]);
-  useEffect(() => {
-    roomsRef.current = rooms;
-  }, [rooms]);
-
   const [roomId, setRoomId] = useState<string | null>(null);
   const roomIdRef = useRef<string | null>(null);
   // The room we have actually opened, distinct from the one the route selects:
@@ -316,15 +309,24 @@ export default function App({ client }: { client: Client }) {
   // synced before you ever saw the room must not read as unread. seedRoomSeen
   // writes only when no mark exists, so a returning user's advanced marks — the
   // whole basis of an honest unread dot — are untouched.
+  //
+  // A row carrying NO recency comes from a daemon predating the projection, so
+  // there is nothing to seed from; its baseline comes from the first event we
+  // observed live instead (issue #154). That is resolved HERE rather than in
+  // the push handler so it cannot be lost to ordering: a room can push before
+  // the first `room.list` populates it, and this effect sees both.
   useEffect(() => {
     setLastSeen((prev) => {
       let next = prev;
       for (const room of rooms) {
-        if (room.last_event_ts != null) next = seedRoomSeen(next, room.room_id, room.last_event_ts);
+        const baseline = shouldSeedFromLiveEvent(room)
+          ? liveActivity[room.room_id]?.ts
+          : room.last_event_ts;
+        if (baseline != null) next = seedRoomSeen(next, room.room_id, baseline);
       }
       return next;
     });
-  }, [rooms]);
+  }, [rooms, liveActivity]);
 
   /** Room rows with live push activity folded in. Deliberately NOT the array
    *  the seeding effect above reads: seeding from a live event would mark a
@@ -507,14 +509,6 @@ export default function App({ client }: { client: Client }) {
         if (seen && seen.ts >= event.ts) return prev;
         return { ...prev, [room_id]: { ts: event.ts, kind: event.kind } };
       });
-      // Against a daemon that supplies no recency there is nothing for the
-      // room.list seeding effect to seed from, so this first observed event
-      // becomes the baseline instead of being claimed as unread
-      // (docs/room-attention.md, decision 3; issue #154). seedRoomSeen writes
-      // only when no mark exists, so this is inert once a baseline is set.
-      if (shouldSeedFromLiveEvent(roomsRef.current.find((r) => r.room_id === room_id))) {
-        setLastSeen((prev) => seedRoomSeen(prev, room_id, event.ts));
-      }
       if (room_id !== roomIdRef.current) return;
       // Insert by timestamp, not arrival order: a peer that reconnects after a
       // gap has its backlog validated late, so a `room.event` can carry an older

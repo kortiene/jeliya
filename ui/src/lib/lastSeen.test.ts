@@ -214,3 +214,40 @@ describe('shouldSeedFromLiveEvent (issue #154)', () => {
     expect(isRoomUnread(merged[0], seen)).toBe(true);
   });
 });
+
+describe('baseline resolution order (issue #154 review)', () => {
+  // The rule is resolved where BOTH the room.list rows and the live map are
+  // visible, so an event that arrives before the first room.list still becomes
+  // the baseline instead of being lost.
+  const seedAll = (rooms: Array<{ room_id: string; last_event_ts: number | null }>,
+                   live: LiveActivityMap, prev: LastSeen): LastSeen => {
+    let next = prev;
+    for (const room of rooms) {
+      const baseline = shouldSeedFromLiveEvent(room) ? live[room.room_id]?.ts : room.last_event_ts;
+      if (baseline != null) next = seedRoomSeen(next, room.room_id, baseline);
+    }
+    return next;
+  };
+  const row = (last_event_ts: number | null) => ({ room_id: R1, last_event_ts });
+
+  it('an event observed BEFORE the first room.list still becomes the baseline', () => {
+    // push arrives first — no rooms yet, so nothing can be seeded
+    const live: LiveActivityMap = { [R1]: { ts: 500, kind: 'message' } };
+    expect(seedAll([], live, {})).toEqual({});
+    // …then the row lands with no recency, and the earlier event seeds it
+    const seen = seedAll([row(null)], live, {});
+    expect(seen).toEqual({ [R1]: 500 });
+    expect(isRoomUnread(mergeLiveActivity([row(null)], live)[0], seen)).toBe(false);
+
+    // the NEXT event flags, rather than being absorbed as a second baseline
+    const later: LiveActivityMap = { [R1]: { ts: 900, kind: 'message' } };
+    const after = seedAll([row(null)], later, seen);
+    expect(after).toEqual({ [R1]: 500 });
+    expect(isRoomUnread(mergeLiveActivity([row(null)], later)[0], after)).toBe(true);
+  });
+
+  it('a row WITH recency always seeds from room.list, never from live activity', () => {
+    const live: LiveActivityMap = { [R1]: { ts: 900, kind: 'message' } };
+    expect(seedAll([row(100)], live, {})).toEqual({ [R1]: 100 });
+  });
+});

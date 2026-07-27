@@ -1096,17 +1096,23 @@ impl RoomSupervisor {
             // the room ordering and the unread comparison this field exists to
             // serve, and disagreeing with the mock oracles, which already pick
             // max-by-ts. `event_id` breaks ties so the answer is deterministic.
+            //
+            // A read failure PROPAGATES rather than degrading to null, matching
+            // the `departure_sets` call above. Clients read a null recency on a
+            // listed row as "this daemon predates the projection" and adjust
+            // their unread baseline accordingly (docs/room-attention.md
+            // decision 3), so a current daemon emitting null for a transient
+            // store error would be misread as a legacy one and would swallow a
+            // genuine unread. Every listed room has folded at least one event
+            // by this point, so this yields `Some` or fails loudly.
             let (last_event_ts, last_event_kind) = store
                 .room_tail(&room_id, RECENCY_SCAN)
-                .ok()
-                .and_then(|rows| {
-                    rows.iter()
-                        .filter_map(|se| {
-                            materializer::stored_event_recency(se)
-                                .map(|(ts, kind)| (ts, se.event_id, kind))
-                        })
-                        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
+                .map_err(|e| internal("could not read the room's recency", e))?
+                .iter()
+                .filter_map(|se| {
+                    materializer::stored_event_recency(se).map(|(ts, kind)| (ts, se.event_id, kind))
                 })
+                .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
                 .map_or((None, None), |(ts, _, kind)| (Some(ts), kind));
             rooms.push(json!({
                 "room_id": room_id.to_string(),

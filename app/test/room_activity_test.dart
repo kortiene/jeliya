@@ -197,4 +197,5 @@ void main() {
     await pumpSteps(tester, steps: 3);
     expect(session.isRoomUnread(_otherRoom(session)), isTrue);
   });
+
 }

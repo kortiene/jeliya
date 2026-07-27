@@ -136,11 +136,12 @@ only on this device, that advances when you view the room.
   than noisy, and it is stated so it is not later changed by accident.
 - **Where that baseline comes from (amended 2026-07-27, issue #154).** The
   daemon guarantees that **every listed room carries recency**: a room with no
-  stored events fails its own fold and is not listed at all, so `last_event_ts`
-  is non-null for every row a current daemon returns (pinned by
+  stored events fails its own fold and is not listed at all, and a failure to
+  read the projection propagates as an error rather than degrading to null, so
+  `last_event_ts` is non-null for every row a current daemon returns (pinned by
   `every_listed_room_carries_recency`). A listed row whose `last_event_ts` is
   null therefore means one specific thing — **this daemon predates the
-  projection** — and not "this room is empty".
+  projection** — and not "this room is empty" or "a read failed".
   - **Normal case.** The baseline is the row's `last_event_ts`, seeded the
     first time the room appears in a `room.list` result.
   - **No-recency daemon.** When the row carries no recency there is nothing to
