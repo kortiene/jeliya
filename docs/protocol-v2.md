@@ -50,7 +50,12 @@ how a gap becomes permanent.
 ## Layer 0 — discovery, unauthenticated
 
 `GET /api/health` serves `{ok, pid, port, version, protocol, min_protocol,
-limits}`.
+storage_generation, limits}`.
+
+`storage_generation` is served here because [Layer 1](#layer-1--the-generation-gate)
+requires the client to declare it on the upgrade, and absence is refusal. A
+client connecting for the first time has no other way to learn it, so omitting
+it from discovery would make the gate unsatisfiable rather than fail-closed.
 
 `data_dir` is **removed** from this response. It hands an absolute filesystem
 path to any unauthenticated local caller and the adoption check does not need
@@ -58,7 +63,8 @@ it. It remains in the `0600` portfile, where a caller has already proved it can
 read the data dir.
 
 The ready line, the portfile, and this endpoint carry an identical
-`{protocol, min_protocol, limits}` object, defined **once** in `jeliya-api`.
+`{protocol, min_protocol, storage_generation, limits}` object, defined **once**
+in `jeliya-api`.
 The portfile's separate `schema` field is removed: two version axes on one
 artifact is a needless second thing to disagree.
 
@@ -391,7 +397,8 @@ reply lost to a dropped connection.
 
 | Policy | Operations |
 |---|---|
-| Naturally idempotent | `subject.ensure`, `room.activate`, `room.deactivate`, `daemon.stop`, `invite.redeem` (re-redeeming from the same subject reports existing membership) |
+| Naturally idempotent | `subject.ensure`, `room.activate`, `room.deactivate`, `invite.redeem` (re-redeeming from the same subject reports existing membership) |
+| Terminal, single-effect | `daemon.stop` — the first call succeeds, a second returns `shutdown_in_progress`. This is deliberately **not** natural idempotence: once teardown is sequenced there is no state in which a caller can be told "done" truthfully, and reporting success for an operation that will not run again is the kind of comfortable lie this generation exists to remove |
 | `op_id` deduplicated | `room.create`, `room.leave`, `member.remove`, `invite.mint`, `invite.revoke`, `message.send`, `status.post`, `file.share`, `file.fetch`, `pipe.publish`, `pipe.connect`, `pipe.release`, `pipe.revoke` |
 | Unsafe to retry blindly | none — every mutating operation is one of the above |
 
@@ -399,14 +406,22 @@ A replayed `op_id` returns the **original** result and performs no second
 effect. `invite.mint` in particular MUST return the original capability, never
 a second grant.
 
-`transfer.cancel` is authorized by `(subject, op_id)`, matching the ledger's
-scope rather than the connection — otherwise a transfer started on a connection
-that has since dropped could never be cancelled, which is precisely the case
-cancellation exists for.
+`transfer.cancel` is authorized by **`(session principal, op_id)`** — the same
+key as the ledger, not `(subject, op_id)` and not the connection.
+
+The connection is wrong because a transfer whose originating connection has
+dropped could then never be cancelled, which is precisely the case cancellation
+exists for. The bare subject is wrong because a daemon has one subject, so any
+local client could cancel any other's transfer. The principal is the only scope
+that survives a reconnect without becoming daemon-global.
+
+Cancelling an `op_id` belonging to a different principal returns
+`transfer_unknown` — indistinguishable from an `op_id` that never existed, so
+the operation is not an oracle for other clients' activity.
 
 ## Errors
 
-The taxonomy is 40 codes. Every code is machine-readable, carries typed fields
+The taxonomy is 51 codes. Every code is machine-readable, carries typed fields
 rather than prose, and carries no `hint`.
 
 Selected codes whose shape is normative:
@@ -429,11 +444,30 @@ points of the six in [the shared-file size policy](shared-file-size.md):
 never reaches the daemon and is proven by a client-side case asserting zero
 bytes are sent.
 
-Every operation has at least one error code specific to it. Where the mined
-design left an operation with only `invalid_argument`, v2 adds a distinctive
-code — `subscription_unknown` for `stream.unsubscribe`, `shutdown_in_progress`
-for a second `daemon.stop` — because a conformance corpus that can only assert
-a generic code proves nothing about that operation.
+**Every operation has at least one error code specific to it.** A conformance
+corpus that can only assert a shared code proves nothing about the operation it
+is supposed to cover: `subject_absent` returned by `room.list` and by
+`fleet.list` are the same assertion twice.
+
+Authoring the corpus found nine operations still resting entirely on
+cross-cutting codes. Each therefore gains one:
+
+| Operation | Distinctive code | Raised when |
+|---|---|---|
+| `daemon.stop` | `shutdown_in_progress` | A stop is already sequenced |
+| `stream.unsubscribe` | `subscription_unknown` | No such subscription on this connection |
+| `room.list` | `room_index_unreadable` | The accepted-room index cannot be read |
+| `room.create` | `room_name_invalid` | The name fails the stated bounds |
+| `room.members` | `membership_unresolved` | The fold cannot resolve a member's standing |
+| `invite.mint` | `invitee_already_member` | The named identity already holds membership |
+| `invite.list` | `invite_index_unreadable` | The invite index cannot be read |
+| `status.history` | `status_subject_unknown` | The named agent has no status history |
+| `fleet.list` | `fleet_projection_unavailable` | The projection cannot be built |
+| `file.list` | `file_index_unreadable` | The room's file index cannot be read |
+| `transfer.cancel` | `transfer_unknown` | No such in-flight transfer for this principal |
+
+These are the taxonomy's last additions; the total is 51 codes, not the 40 the
+mined design projected.
 
 ### The non-oracle property
 

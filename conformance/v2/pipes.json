@@ -1,0 +1,3402 @@
+{
+  "domain": "pipes",
+  "note": "Hand-authored from docs/protocol-v2.md. NOT generated from any implementation. See ../README.md.",
+  "cases": [
+    {
+      "name": "pipe_publish_loopback_target_returns_publication_identity",
+      "kind": "success",
+      "operation": "pipe.publish",
+      "intent": "Proves a publication is a named, addressable room fact carrying a pipe_id, an explicit publication state, and the caller's declared target echoed as typed fields — and that the removed v1 hardcoded label (\"pipe\") and kind (\"tcp\") are absent, so reintroducing either constant fails.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            },
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            },
+            "label": "<absent>",
+            "kind": "<absent>"
+          },
+          "assert": {
+            "no_null_values": true
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_non_loopback_target_is_policy_refused",
+      "kind": "error",
+      "operation": "pipe.publish",
+      "intent": "Proves a well-formed but non-loopback target is refused by a named policy rather than by a generic argument error, catching any change that lets a member publish a route to an arbitrary internet or LAN host through the room.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "8.8.8.8",
+              "port": 80
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "policy_refused",
+            "fields": {
+              "policy": "loopback_only",
+              "target": {
+                "host": "8.8.8.8",
+                "port": 80
+              },
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          },
+          "intent_note": "the refused publication left no fact behind"
+        }
+      ],
+      "blocked_on_upstream": null,
+      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
+    },
+    {
+      "name": "pipe_publish_private_lan_target_is_policy_refused_not_accepted",
+      "kind": "error",
+      "operation": "pipe.publish",
+      "intent": "Proves the loopback policy is loopback-only and not merely 'not public', catching an implementation that widens the allowlist to RFC1918 space and thereby exposes a router or a colleague's machine to every room member.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "192.168.1.1",
+              "port": 80
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "policy_refused",
+            "fields": {
+              "policy": "loopback_only"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null,
+      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
+    },
+    {
+      "name": "pipe_publish_hostname_target_is_invalid_argument_not_policy_refused",
+      "kind": "malformed",
+      "operation": "pipe.publish",
+      "intent": "Proves a target that is not an IP literal fails codec validation before any policy evaluation, so no name resolution is ever attempted on caller-supplied text; catches a daemon that resolves \"localhost\" (or an attacker-chosen name that resolves to loopback only at check time) and then dials the resolved address.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "localhost",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "target.host"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "loopback.example.test",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "target.host"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_loopback_block_edges",
+      "kind": "boundary",
+      "operation": "pipe.publish",
+      "intent": "Exercises the exact edge of the loopback bound in both address families — the last address inside 127.0.0.0/8 and ::1 are accepted, the first address outside the block is refused — catching an implementation that tests equality against 127.0.0.1 (rejecting valid loopback) or that tests only the leading octet range loosely (accepting 128.0.0.1).",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.255.255.254",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "::1",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "128.0.0.1",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "policy_refused",
+            "fields": {
+              "policy": "loopback_only"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op4",
+            "target": {
+              "host": "126.255.255.255",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "policy_refused",
+            "fields": {
+              "policy": "loopback_only"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null,
+      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
+    },
+    {
+      "name": "pipe_publish_port_bounds",
+      "kind": "boundary",
+      "operation": "pipe.publish",
+      "intent": "Exercises the port field at its representable edge — 65535 accepted, 65536 and 0 refused as arguments — catching an implementation that silently truncates a 16-bit overflow into a different, reachable port.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 65535
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "target": {
+              "port": 65535
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 65536
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "target.port"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 0
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "target.port"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null,
+      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
+    },
+    {
+      "name": "pipe_publish_by_non_authority_member_is_insufficient_standing",
+      "kind": "authorization",
+      "operation": "pipe.publish",
+      "intent": "Proves publishing a pipe requires room authority and that the refusal names standing rather than policy or a generic argument error, catching a regression that lets any active member expose a local service to the whole room.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_b",
+        "local_tcp_service_b"
+      ],
+      "steps": [
+        {
+          "as": "B",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port_b"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "insufficient_standing",
+            "fields": {
+              "required": {
+                "state": "room_authority"
+              },
+              "actual": {
+                "state": "member"
+              },
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_null_audience_is_invalid_argument",
+      "kind": "malformed",
+      "operation": "pipe.publish",
+      "intent": "Proves an explicit JSON null is never accepted as a tagged variant and never silently means \"unscoped\", enforcing the v2 rule that no null carries meaning; catches a serde configuration that maps null onto a default audience and thereby widens a pipe intended for one named subject to the whole room.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": null
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "audience"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "scoped",
+              "subject_ids": null
+            }
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "audience.subject_ids"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "127.0.0.1",
+              "port": null
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "target.port"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_malformed_op_id_is_invalid_argument",
+      "kind": "malformed",
+      "operation": "pipe.publish",
+      "intent": "Proves the dedup ledger key is validated as bounded scalar input before any mutation, catching an implementation that admits a structured or unbounded op_id and so lets a caller grow the ledger without bound or collide keys by construction.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": {
+              "nested": "object"
+            },
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "invalid_argument",
+            "fields": {
+              "field": "op_id"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          },
+          "intent_note": "rejection happened before any publication effect"
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_replayed_op_id_returns_the_original_publication",
+      "kind": "success",
+      "operation": "pipe.publish",
+      "intent": "Proves pipe.publish is op_id-deduplicated as the retry table requires: a replay returns the original pipe_id byte-for-byte and performs no second effect, catching a daemon that mints a second publication (and a second revocable grant) for a retried request whose reply was lost.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-publish-1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "first": "$",
+            "pid": "pipe_id"
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-publish-1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "$pid"
+          },
+          "assert": {
+            "identical_to": "$first"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 1
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_op_id_ledger_survives_reconnection",
+      "kind": "success",
+      "operation": "pipe.publish",
+      "intent": "Proves the ledger outlives the connection, which is the exact case retry exists for — a reply lost to a dropped socket — catching an in-memory per-connection ledger that would let the client's reconnect-and-retry publish a duplicate pipe.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a",
+        "reconnect_control"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-publish-2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "harness": "drop_connection",
+          "as": "A"
+        },
+        {
+          "harness": "reconnect",
+          "as": "A",
+          "note": "same session principal, fresh socket, gate re-passed with v=2 and the same sg"
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-publish-2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "$pid"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 1
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_op_id_ledger_is_keyed_per_session_principal",
+      "kind": "success",
+      "operation": "pipe.publish",
+      "intent": "Proves the ledger is keyed on (session principal, op_id) and not on the subject: two principals on the same daemon using the identical op_id string each get their own publication, catching a daemon-global ledger in which the WebView, a native agent, and the CLI can collide or replay one another's mutations.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a",
+        "second_principal"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "shared-op-id",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid1": "pipe_id"
+          }
+        },
+        {
+          "as": "A2",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "shared-op-id",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port_2"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid2": "pipe_id"
+          },
+          "assert": {
+            "not_equal": [
+              "$pid1",
+              "$pid2"
+            ]
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 2
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_list_states_reachability_and_local_connection_as_two_named_facts",
+      "kind": "success",
+      "operation": "pipe.list",
+      "intent": "The core v2 pipe assertion: v1's single `connected` boolean is gone and is replaced by two separately named fields — a protocol reachability fact about the publisher and a device-local connection fact about this daemon — so a client can never again read a local runtime state as if it were reachability.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "published_by": {
+                  "subject_id": "<hex64>",
+                  "device_id": "<hex64>"
+                },
+                "audience": {
+                  "state": "room"
+                },
+                "publication": {
+                  "state": "published"
+                },
+                "reachability": {
+                  "state": "reachable",
+                  "observed_at": "<ts>"
+                },
+                "local_connection": {
+                  "state": "none"
+                },
+                "connected": "<absent>",
+                "label": "<absent>",
+                "kind": "<absent>",
+                "local_path": "<absent>"
+              }
+            ]
+          },
+          "assert": {
+            "no_null_values": true,
+            "distinct_keys": [
+              "pipes[0].reachability",
+              "pipes[0].local_connection"
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_list_local_connection_is_per_device_and_reachability_is_not",
+      "kind": "success",
+      "operation": "pipe.list",
+      "intent": "Proves the two facts have different scopes: after B connects, only B's daemon reports a local connection while A's row for the same pipe still reports none, and both report the same reachability — catching an implementation that folds the local session back into a shared field, which is precisely the v1 conflation.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "cid": "connection_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "reachability": {
+                  "state": "reachable"
+                },
+                "local_connection": {
+                  "state": "connected",
+                  "connection_id": "$cid",
+                  "local_endpoint": {
+                    "host": "<loopback_host>",
+                    "port": "<port>"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "reachability": {
+                  "state": "reachable"
+                },
+                "local_connection": {
+                  "state": "none"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_list_reachability_is_unknown_not_unreachable_when_room_is_not_live",
+      "kind": "boundary",
+      "operation": "pipe.list",
+      "intent": "Proves \"we hold no transport evidence\" is a stated third answer and never collapses into a negative one, catching an implementation that reports a healthy publisher as unreachable merely because this device has not activated the room — the room-list \"we have not asked yet is not there is nothing\" rule applied to pipes.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "room.deactivate",
+          "in": {
+            "room": "$rid"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "published"
+                },
+                "reachability": {
+                  "state": "unknown",
+                  "reason": "room_not_live"
+                },
+                "local_connection": {
+                  "state": "none"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "no_null_values": true
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_list_states_a_revoked_publication_rather_than_omitting_it",
+      "kind": "success",
+      "operation": "pipe.list",
+      "intent": "Proves a withdrawn publication remains visible with its cause, honouring the rule that v2 ships no state a client can be in whose cause it cannot see; catches an implementation that drops revoked rows and leaves a client whose connection just died with no explanation to render.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "revoked",
+                  "revoked_at": "<ts>"
+                },
+                "reachability": {
+                  "state": "unreachable",
+                  "reason": "revoked"
+                },
+                "local_connection": {
+                  "state": "none"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_list_in_a_foreign_room_is_room_not_available",
+      "kind": "error",
+      "operation": "pipe.list",
+      "intent": "Gives pipe.list its own most specific failure code and proves the read is guarded by the accepted-room index before any materialization, catching a daemon that answers an empty pipe list (a v1-style carve-out) and thereby confirms the room exists.",
+      "requires": [
+        "subject",
+        "non_member_c",
+        "foreign_room_exists"
+      ],
+      "steps": [
+        {
+          "as": "C",
+          "call": "pipe.list",
+          "in": {
+            "room": "$foreign_rid"
+          },
+          "expect_error": {
+            "code": "room_not_available",
+            "fields": {
+              "room": "$foreign_rid",
+              "hint": "<absent>"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_operations_are_not_a_membership_oracle",
+      "kind": "authorization",
+      "operation": null,
+      "intent": "The non-oracle property for every room-scoped pipe operation: a real room the caller does not belong to and a room id that has never existed produce byte-identical errors and indistinguishable timing, catching any implementation that answers room_unknown for one and a permission error for the other and so lets an outsider enumerate rooms.",
+      "requires": [
+        "subject",
+        "non_member_c",
+        "foreign_room_exists",
+        "unknown_room_id"
+      ],
+      "steps": [
+        {
+          "as": "C",
+          "call": "pipe.list",
+          "in": {
+            "room": "$foreign_rid"
+          },
+          "save_error": {
+            "e_list_real": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.list",
+          "in": {
+            "room": "$never_existed_rid"
+          },
+          "save_error": {
+            "e_list_ghost": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$foreign_rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_pub_real": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$never_existed_rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_pub_ghost": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$foreign_rid",
+            "op_id": "$op3",
+            "pipe_id": "$foreign_pid"
+          },
+          "save_error": {
+            "e_con_real": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$never_existed_rid",
+            "op_id": "$op4",
+            "pipe_id": "$foreign_pid"
+          },
+          "save_error": {
+            "e_con_ghost": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$foreign_rid",
+            "op_id": "$op5",
+            "pipe_id": "$foreign_pid"
+          },
+          "save_error": {
+            "e_rev_real": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$never_existed_rid",
+            "op_id": "$op6",
+            "pipe_id": "$foreign_pid"
+          },
+          "save_error": {
+            "e_rev_ghost": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.release",
+          "in": {
+            "room": "$foreign_rid",
+            "op_id": "$op7",
+            "connection_id": "$foreign_cid"
+          },
+          "save_error": {
+            "e_rel_real": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "C",
+          "call": "pipe.release",
+          "in": {
+            "room": "$never_existed_rid",
+            "op_id": "$op8",
+            "connection_id": "$foreign_cid"
+          },
+          "save_error": {
+            "e_rel_ghost": "$"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "check": "non_oracle",
+          "assert": {
+            "errors_identical": [
+              [
+                "$e_list_real",
+                "$e_list_ghost"
+              ],
+              [
+                "$e_pub_real",
+                "$e_pub_ghost"
+              ],
+              [
+                "$e_con_real",
+                "$e_con_ghost"
+              ],
+              [
+                "$e_rev_real",
+                "$e_rev_ghost"
+              ],
+              [
+                "$e_rel_real",
+                "$e_rel_ghost"
+              ]
+            ],
+            "timing_indistinguishable": [
+              [
+                "$e_list_real",
+                "$e_list_ghost"
+              ],
+              [
+                "$e_pub_real",
+                "$e_pub_ghost"
+              ],
+              [
+                "$e_con_real",
+                "$e_con_ghost"
+              ],
+              [
+                "$e_rev_real",
+                "$e_rev_ghost"
+              ],
+              [
+                "$e_rel_real",
+                "$e_rel_ghost"
+              ]
+            ],
+            "note": "identical fields AND indistinguishable timing; the room-scoped guard must run before the pipe-scoped one, so no ordering of checks can leak"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_id_from_another_room_does_not_confirm_its_existence",
+      "kind": "authorization",
+      "operation": "pipe.connect",
+      "intent": "Proves a pipe identifier is scoped to the room it is presented with and possession is not authorization: a real pipe_id from room X presented against room Y (which the caller is legitimately in) answers pipe_unknown exactly as a fabricated id does, catching a global pipe table lookup that would confirm a foreign pipe's existence to a member of an unrelated room.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_b",
+        "second_room_b_only",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$other_rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save_error": {
+            "e_real": "$"
+          },
+          "expect_error": {
+            "code": "pipe_unknown",
+            "fields": {
+              "pipe_id": "$pid",
+              "room": "$other_rid"
+            }
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$other_rid",
+            "op_id": "$op3",
+            "pipe_id": "$fabricated_pid"
+          },
+          "save_error": {
+            "e_ghost": "$"
+          },
+          "expect_error": {
+            "code": "pipe_unknown"
+          }
+        },
+        {
+          "check": "non_oracle",
+          "assert": {
+            "errors_identical_modulo": {
+              "pair": [
+                "$e_real",
+                "$e_ghost"
+              ],
+              "except_fields": [
+                "pipe_id"
+              ]
+            },
+            "timing_indistinguishable": [
+              [
+                "$e_real",
+                "$e_ghost"
+              ]
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_connect_returns_a_loopback_local_endpoint_and_a_connection_identity",
+      "kind": "success",
+      "operation": "pipe.connect",
+      "intent": "Proves a connection is itself a named, releasable thing — it returns a connection_id distinct from the pipe_id, and a local endpoint bound on loopback — catching a design in which release can only address the pipe, which would make one client's release tear down another client's session on the same pipe.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "cid": "connection_id"
+          },
+          "expect": {
+            "connection_id": "<connection_id>",
+            "pipe_id": "$pid",
+            "local_endpoint": {
+              "host": "<loopback_host>",
+              "port": "<port>"
+            },
+            "label": "<absent>",
+            "kind": "<absent>",
+            "local_addr": "<absent>"
+          },
+          "assert": {
+            "no_null_values": true,
+            "not_equal": [
+              "$cid",
+              "$pid"
+            ],
+            "host_is_loopback": "local_endpoint.host"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "cid2": "connection_id"
+          },
+          "assert": {
+            "not_equal": [
+              "$cid",
+              "$cid2"
+            ],
+            "note": "a distinct op_id is a distinct request and yields a second, separately addressable connection"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_connect_to_a_revoked_pipe_is_pipe_revoked",
+      "kind": "error",
+      "operation": "pipe.connect",
+      "intent": "Gives the withdrawn-publication case its own code carrying the revocation instant, catching a daemon that reports a deliberately withdrawn pipe as merely unreachable and so tells the user to wait for a peer that is never coming back.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "revoked_at": "publication.revoked_at"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "pipe_id": "$pid"
+          },
+          "expect_error": {
+            "code": "pipe_revoked",
+            "fields": {
+              "pipe_id": "$pid",
+              "revoked_at": "$revoked_at",
+              "hint": "<absent>"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_connect_to_an_unreachable_pipe_is_pipe_unreachable",
+      "kind": "error",
+      "operation": "pipe.connect",
+      "intent": "Gives the no-transport-path case its own code carrying the same typed reason pipe.list states, catching a daemon that hangs until a timeout or that reports a live-but-unreachable publication as unknown or revoked.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_b",
+        "local_tcp_service_a",
+        "peer_offline_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "harness": "take_publisher_offline",
+          "as": "A",
+          "note": "A deactivates the room / its daemon stops; B keeps the room live so B's reachability answer is evidence-backed, not unknown"
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "published"
+                },
+                "reachability": {
+                  "state": "unreachable",
+                  "reason": "provider_offline"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "expect_error": {
+            "code": "pipe_unreachable",
+            "fields": {
+              "pipe_id": "$pid",
+              "reason": "provider_offline",
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "reason_matches_list_reachability": {
+              "list_path": "pipes[0].reachability.reason"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_revoked_and_pipe_unreachable_are_never_conflated",
+      "kind": "boundary",
+      "operation": "pipe.connect",
+      "intent": "The pipes analogue of \"digest_mismatch is never returned for a size refusal\": one pipe crosses both conditions in sequence and each returns its own code, with revocation — a signed fact this device holds — taking precedence over the absence of a path, catching an implementation that reports whichever check happens to run first and so misattributes a deliberate withdrawal to a network failure.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          }
+        },
+        {
+          "harness": "await_convergence",
+          "as": "B",
+          "note": "B holds the signed revocation"
+        },
+        {
+          "harness": "take_publisher_offline",
+          "as": "A"
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "pipe_id": "$pid"
+          },
+          "expect_error": {
+            "code": "pipe_revoked",
+            "fields": {
+              "pipe_id": "$pid",
+              "revoked_at": "<ts>"
+            }
+          },
+          "assert": {
+            "code_not": "pipe_unreachable"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "revoked"
+                },
+                "reachability": {
+                  "state": "unreachable",
+                  "reason": "revoked"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "note": "reachability's reason names the withdrawal, not the missing path — the two facts stay consistent with the error code"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_connect_outside_the_pipe_audience_is_insufficient_standing",
+      "kind": "authorization",
+      "operation": "pipe.connect",
+      "intent": "Proves a pipe scoped to named subjects refuses every other member by standing rather than by pretending the pipe does not exist (it is listed to the room) — catching an implementation that ignores the audience and forwards for any member, which is a direct exposure of a local service.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "member_d",
+        "live_room_a",
+        "live_room_b",
+        "live_room_d",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "scoped",
+              "subject_ids": [
+                "$subject_d"
+              ]
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "D",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "expect": {
+            "connection_id": "<connection_id>"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "pipe_id": "$pid"
+          },
+          "expect_error": {
+            "code": "insufficient_standing",
+            "fields": {
+              "required": {
+                "state": "pipe_audience"
+              },
+              "actual": {
+                "state": "outside_audience"
+              },
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "audience": {
+                  "state": "scoped",
+                  "subject_ids": [
+                    "$subject_d"
+                  ]
+                },
+                "local_connection": {
+                  "state": "none"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "note": "the refusal is about standing, not existence: the pipe is legitimately visible to every member of the room it was published into"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_connect_replayed_op_id_returns_the_original_connection",
+      "kind": "success",
+      "operation": "pipe.connect",
+      "intent": "Proves pipe.connect is op_id-deduplicated per the retry table, so a retried connect returns the original connection_id and local endpoint instead of opening a second forwarding session that nothing holds a handle to and that release can never reach.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-connect-1",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "first": "$",
+            "cid": "connection_id",
+            "lport": "local_endpoint.port"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-connect-1",
+            "pipe_id": "$pid"
+          },
+          "expect": {
+            "connection_id": "$cid",
+            "local_endpoint": {
+              "port": "$lport"
+            }
+          },
+          "assert": {
+            "identical_to": "$first"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "local_connection": {
+                  "state": "connected",
+                  "connection_id": "$cid"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "local_connection_count": {
+              "pipe_id": "$pid",
+              "equals": 1
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_release_closes_only_the_named_local_connection",
+      "kind": "success",
+      "operation": "pipe.release",
+      "intent": "Proves release addresses one connection and not the pipe: with two live connections to the same pipe, releasing one leaves the other connected and the publication untouched, catching an implementation that keys teardown on pipe_id and so kills a sibling session.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "cid1": "connection_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "cid2": "connection_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op4",
+            "connection_id": "$cid1"
+          },
+          "expect": {
+            "connection_id": "$cid1",
+            "released": {
+              "state": "released"
+            }
+          },
+          "assert": {
+            "no_null_values": true
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "published"
+                },
+                "reachability": {
+                  "state": "reachable"
+                },
+                "local_connection": {
+                  "state": "connected",
+                  "connection_id": "$cid2"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-release-replay",
+            "connection_id": "$cid2"
+          },
+          "save": {
+            "rel2": "$"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-release-replay",
+            "connection_id": "$cid2"
+          },
+          "assert": {
+            "identical_to": "$rel2",
+            "note": "op_id replay returns the original result rather than connection_unknown"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_release_of_an_unknown_connection_is_connection_unknown",
+      "kind": "error",
+      "operation": "pipe.release",
+      "intent": "Gives pipe.release its own distinctive code — the exact analogue of subscription_unknown for stream.unsubscribe — catching an implementation that answers a generic invalid_argument, and proving a (room, connection_id) mismatch never confirms that the connection exists under another room.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_b",
+        "second_room_b_only"
+      ],
+      "steps": [
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "connection_id": "$never_issued_cid"
+          },
+          "save_error": {
+            "e_ghost": "$"
+          },
+          "expect_error": {
+            "code": "connection_unknown",
+            "fields": {
+              "connection_id": "$never_issued_cid",
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$other_rid",
+            "op_id": "$op2",
+            "connection_id": "$cid_in_rid"
+          },
+          "save_error": {
+            "e_wrong_room": "$"
+          },
+          "expect_error": {
+            "code": "connection_unknown"
+          }
+        },
+        {
+          "check": "non_oracle",
+          "assert": {
+            "errors_identical_modulo": {
+              "pair": [
+                "$e_ghost",
+                "$e_wrong_room"
+              ],
+              "except_fields": [
+                "connection_id"
+              ]
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_release_and_pipe_revoke_are_not_the_same_withdrawal",
+      "kind": "success",
+      "operation": null,
+      "intent": "The paired case proving the two operations differ in kind: release ends a device-local session and changes nothing any other member can observe (B can immediately reconnect), while revoke withdraws the publication as a room fact every member converges on (B can never reconnect) — catching an implementation that wires release to revoke and lets a consumer destroy a publisher's grant.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a",
+        "subscription_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "save": {
+            "a_before": "$"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "cid": "connection_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "connection_id": "$cid"
+          },
+          "expect": {
+            "released": {
+              "state": "released"
+            }
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "published"
+                },
+                "reachability": {
+                  "state": "reachable"
+                },
+                "local_connection": {
+                  "state": "none"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "identical_to": "$a_before",
+            "note": "release produced no room-visible change at all"
+          }
+        },
+        {
+          "as": "A",
+          "expect_no_push": {
+            "where": {
+              "pipe_id": "$pid"
+            },
+            "window_ms": 2000,
+            "note": "release is device-local and authors no room fact"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op4",
+            "pipe_id": "$pid"
+          },
+          "expect": {
+            "connection_id": "<connection_id>"
+          },
+          "save": {
+            "cid2": "connection_id"
+          },
+          "assert": {
+            "note": "nothing was withdrawn, so reconnecting succeeds"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op5",
+            "pipe_id": "$pid"
+          },
+          "expect": {
+            "pipe_id": "$pid",
+            "publication": {
+              "state": "revoked",
+              "revoked_at": "<ts>"
+            }
+          }
+        },
+        {
+          "harness": "await_convergence",
+          "as": "B"
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "revoked",
+                  "revoked_at": "<ts>"
+                },
+                "reachability": {
+                  "state": "unreachable",
+                  "reason": "revoked"
+                },
+                "local_connection": {
+                  "state": "none"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "note": "B's live connection $cid2 is gone AND B can see why — the cause of the state is readable"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op6",
+            "pipe_id": "$pid"
+          },
+          "expect_error": {
+            "code": "pipe_revoked"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op7",
+            "connection_id": "$cid2"
+          },
+          "expect_error": {
+            "code": "connection_unknown"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_release_by_a_consumer_never_withdraws_the_publication",
+      "kind": "authorization",
+      "operation": "pipe.release",
+      "intent": "The asymmetry stated as an authorization fact: a consumer may release its own connection but may not revoke the publisher's pipe, catching a permission model that treats \"party to the pipe\" as \"may withdraw the pipe\".",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.connect",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "cid": "connection_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "pipe_id": "$pid"
+          },
+          "expect_error": {
+            "code": "insufficient_standing",
+            "fields": {
+              "required": {
+                "state": "publisher_or_room_authority"
+              },
+              "actual": {
+                "state": "member"
+              }
+            }
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.release",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op4",
+            "connection_id": "$cid"
+          },
+          "expect": {
+            "released": {
+              "state": "released"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "published"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_revoke_withdraws_the_publication_as_a_converged_room_fact",
+      "kind": "success",
+      "operation": "pipe.revoke",
+      "intent": "Proves revocation is a signed room fact every member converges on rather than a local forget, and that a replayed op_id returns the original revocation instant instead of authoring a second withdrawal — catching a daemon that only stops serving locally while other members still list the pipe as published.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-revoke-1",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "first": "$",
+            "revoked_at": "publication.revoked_at"
+          },
+          "expect": {
+            "pipe_id": "$pid",
+            "publication": {
+              "state": "revoked",
+              "revoked_at": "<ts>"
+            },
+            "label": "<absent>",
+            "kind": "<absent>"
+          },
+          "assert": {
+            "no_null_values": true
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "op-revoke-1",
+            "pipe_id": "$pid"
+          },
+          "expect": {
+            "publication": {
+              "revoked_at": "$revoked_at"
+            }
+          },
+          "assert": {
+            "identical_to": "$first"
+          }
+        },
+        {
+          "harness": "await_convergence",
+          "as": "B"
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "revoked",
+                  "revoked_at": "$revoked_at"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_revoke_of_an_already_revoked_pipe_is_pipe_revoked",
+      "kind": "error",
+      "operation": "pipe.revoke",
+      "intent": "Proves a second, genuinely distinct withdrawal request is refused with the state-specific code carrying the FIRST revocation instant rather than silently succeeding or authoring a second fact, catching an implementation that lets the revoked_at a client displays move under it.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          },
+          "save": {
+            "revoked_at": "publication.revoked_at"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3_distinct",
+            "pipe_id": "$pid"
+          },
+          "expect_error": {
+            "code": "pipe_revoked",
+            "fields": {
+              "pipe_id": "$pid",
+              "revoked_at": "$revoked_at",
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "publication": {
+                  "state": "revoked",
+                  "revoked_at": "$revoked_at"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 1
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_revoke_of_an_unknown_pipe_is_pipe_unknown",
+      "kind": "error",
+      "operation": "pipe.revoke",
+      "intent": "Proves an unknown pipe identifier inside a room the caller belongs to is refused as unknown rather than as a standing failure, so a client can distinguish \"you may not\" from \"there is no such pipe\" without either answer being available to a non-member.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "pipe_id": "$fabricated_pid"
+          },
+          "expect_error": {
+            "code": "pipe_unknown",
+            "fields": {
+              "pipe_id": "$fabricated_pid",
+              "room": "$rid"
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_facts_reach_subscribers_with_strictly_increasing_room_positions",
+      "kind": "ordering",
+      "operation": null,
+      "intent": "Proves pipe publications and revocations enter the room's sequenced push stream with strictly increasing, gap-free positions and that a push is told apart from a reply by carrying t and never id — catching a fan-out that emits pipe facts on a side channel with no position, which would leave a client unable to detect that it missed a revocation.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a",
+        "subscription_b"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid1": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port_2"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid2": "pipe_id"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "pipe_id": "$pid1"
+          }
+        },
+        {
+          "as": "B",
+          "expect_push": {
+            "where": {
+              "room": "$rid",
+              "names_pipe_id": [
+                "$pid1",
+                "$pid2"
+              ]
+            },
+            "count": 3,
+            "match": {
+              "t": "<any>",
+              "room": "$rid",
+              "pos": "<pos>",
+              "id": "<absent>"
+            },
+            "save": {
+              "positions": "pos[]"
+            }
+          }
+        },
+        {
+          "check": "ordering",
+          "assert": {
+            "strictly_increasing": "$positions",
+            "contiguous_with_room_stream": true,
+            "no_gap_frame_observed": {
+              "room": "$rid"
+            },
+            "note": "positions are asserted as strictly increasing and gap-free within this room only; no ordering relative to any other room is asserted, because v2 defines none"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_pushes_stop_at_the_membership_boundary",
+      "kind": "push",
+      "operation": null,
+      "intent": "Proves the push stream is not a membership oracle for pipes: after B leaves, no further pipe fact for that room reaches B and B's own re-subscription is refused with the non-oracle code — catching a fan-out that keeps writing to a stale subscriber and leaks the publisher's continuing activity to a departed member.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a",
+        "subscription_b"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid1": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "expect_push": {
+            "where": {
+              "room": "$rid",
+              "names_pipe_id": [
+                "$pid1"
+              ]
+            },
+            "count": 1
+          }
+        },
+        {
+          "as": "B",
+          "call": "room.leave",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port_2"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid2": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "expect_no_push": {
+            "where": {
+              "room": "$rid"
+            },
+            "window_ms": 2000
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "as": "B",
+          "call": "stream.subscribe",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op4"
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_list_without_a_subject_answers_one_stated_precondition_code",
+      "kind": "handshake",
+      "operation": "pipe.list",
+      "intent": "Proves the removed pre-identity carve-out is really gone: with hello reporting subject absent, every room-scoped read answers the SAME precondition code — catching the v1 split in which one surface answered an empty result and another answered a missing-identity error for the identical precondition.",
+      "requires": [
+        "fresh_daemon_no_subject"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "hello",
+          "expect": {
+            "protocol": 2,
+            "subject": {
+              "state": "absent"
+            }
+          },
+          "note": "read from the daemon's first frame, not called"
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$any_rid"
+          },
+          "save_error": {
+            "e_pipes": "$"
+          },
+          "expect_error": {
+            "code": "subject_absent"
+          }
+        },
+        {
+          "as": "A",
+          "call": "room.members",
+          "in": {
+            "room": "$any_rid"
+          },
+          "save_error": {
+            "e_members": "$"
+          },
+          "expect_error": {
+            "code": "subject_absent"
+          }
+        },
+        {
+          "as": "A",
+          "call": "fleet.list",
+          "in": {
+            "room": "$any_rid"
+          },
+          "save_error": {
+            "e_fleet": "$"
+          },
+          "expect_error": {
+            "code": "subject_absent"
+          }
+        },
+        {
+          "check": "one_precondition_one_answer",
+          "assert": {
+            "codes_equal": [
+              "$e_pipes.code",
+              "$e_members.code",
+              "$e_fleet.code"
+            ],
+            "code_not_in": [
+              "room_not_available",
+              "invalid_argument"
+            ],
+            "no_empty_success_result": true
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "membership_presence_availability_and_pipe_reachability_are_four_distinct_answers",
+      "kind": "success",
+      "operation": null,
+      "intent": "The retained #50/#94/#79 invariant: all four facts are read in one scenario from four differently sourced operations, then perturbed one at a time so that each moves alone — catching any implementation that derives provider availability or pipe reachability from membership display state, which is exactly the defect these issues recorded.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a",
+        "shared_file_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "call": "room.members",
+          "in": {
+            "room": "$rid"
+          },
+          "save": {
+            "m0": "$"
+          },
+          "expect": {
+            "members": [
+              {
+                "subject_id": "<hex64>",
+                "role": "owner",
+                "standing": {
+                  "state": "active"
+                },
+                "presence": "<absent>",
+                "reachability": "<absent>",
+                "online": "<absent>",
+                "connected": "<absent>"
+              },
+              {
+                "subject_id": "<hex64>",
+                "role": "member",
+                "standing": {
+                  "state": "active"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "note": "FACT 1 membership: the authoritative signed answer, carrying no presence and no reachability at all"
+          }
+        },
+        {
+          "as": "B",
+          "call": "room.peers",
+          "in": {
+            "room": "$rid"
+          },
+          "save": {
+            "p0": "$"
+          },
+          "expect": {
+            "peers": [
+              {
+                "device_id": "<hex64>",
+                "link": {
+                  "state": "linked",
+                  "path": "<any>"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "note": "FACT 2 presence: observed transport facts for this live room, per device"
+          }
+        },
+        {
+          "as": "B",
+          "call": "file.list",
+          "in": {
+            "room": "$rid"
+          },
+          "save": {
+            "f0": "$"
+          },
+          "expect": {
+            "files": [
+              {
+                "file_id": "<any>",
+                "providers": [
+                  {
+                    "device_id": "<hex64>",
+                    "reachable": true
+                  }
+                ],
+                "fetchable": true,
+                "self_hosted": false,
+                "available": "<absent>",
+                "local_path": "<absent>",
+                "local_bytes": "<absent>"
+              }
+            ]
+          },
+          "assert": {
+            "note": "FACT 3 provider availability: named provider devices with evidence, not a count and not a boolean inferred from membership"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "save": {
+            "q0": "$"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "reachability": {
+                  "state": "reachable"
+                },
+                "local_connection": {
+                  "state": "none"
+                },
+                "connected": "<absent>"
+              }
+            ]
+          },
+          "assert": {
+            "note": "FACT 4 pipe reachability: a stated protocol fact, separate from the device-local connection fact"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.revoke",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "pipe_id": "$pid"
+          }
+        },
+        {
+          "harness": "await_convergence",
+          "as": "B"
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "reachability": {
+                  "state": "unreachable",
+                  "reason": "revoked"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "as": "B",
+          "call": "room.members",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "identical_to": "$m0"
+          }
+        },
+        {
+          "as": "B",
+          "call": "room.peers",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "equal_modulo": {
+              "to": "$p0",
+              "except_fields": [
+                "observed_at",
+                "last_seen"
+              ]
+            }
+          }
+        },
+        {
+          "as": "B",
+          "call": "file.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "files": [
+              {
+                "fetchable": true
+              }
+            ]
+          },
+          "assert": {
+            "note": "perturbation 1 moved reachability ALONE"
+          }
+        },
+        {
+          "harness": "take_publisher_offline",
+          "as": "A",
+          "note": "A deactivates the room; A remains an active member with an unchanged signed membership record"
+        },
+        {
+          "as": "B",
+          "call": "room.members",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "identical_to": "$m0",
+            "note": "perturbation 2: membership does not move when presence does"
+          }
+        },
+        {
+          "as": "B",
+          "call": "room.peers",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "peers": [
+              {
+                "device_id": "<hex64>",
+                "link": {
+                  "state": "unlinked",
+                  "reason": "<any>"
+                }
+              }
+            ]
+          },
+          "assert": {
+            "note": "why not, when not"
+          }
+        },
+        {
+          "as": "B",
+          "call": "file.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "files": [
+              {
+                "providers": [
+                  {
+                    "device_id": "<hex64>",
+                    "reachable": false
+                  }
+                ],
+                "fetchable": false,
+                "unfetchable_reason": "<any>"
+              }
+            ]
+          },
+          "assert": {
+            "note": "availability degrades from its own evidence — the provider's reachability — and states why"
+          }
+        },
+        {
+          "check": "four_facts",
+          "assert": {
+            "independently_sourced": [
+              "room.members",
+              "room.peers",
+              "file.list",
+              "pipe.list"
+            ],
+            "note": "no field of any one answer is computable from another: membership stayed fixed across both perturbations, reachability moved without presence, and presence moved without membership"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "a_stale_generation_teardown_does_not_rewrite_presence_or_pipe_reachability",
+      "kind": "push",
+      "operation": null,
+      "intent": "Proves the U1 requirement in the pipes domain: a peer push carrying an older connection generation and a typed offline reason, delivered after a newer link is established, must be discarded rather than allowed to overwrite newer presence — and pipe reachability, being separately sourced, must not follow it down either. Fails until ConnEvent carries the generation.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "local_tcp_service_a",
+        "subscription_b",
+        "generation_fault_injection"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "pipe_id"
+          }
+        },
+        {
+          "as": "B",
+          "expect_push": {
+            "push": "peer",
+            "match": {
+              "room": "$rid",
+              "device_id": "<hex64>",
+              "generation": "<number>",
+              "state": "online",
+              "pos": "<pos>",
+              "id": "<absent>"
+            },
+            "save": {
+              "gen_old": "generation"
+            }
+          }
+        },
+        {
+          "harness": "force_reconnect_peer_link",
+          "note": "tear down and re-establish A<->B so the daemon holds generation gen_new > gen_old"
+        },
+        {
+          "as": "B",
+          "expect_push": {
+            "push": "peer",
+            "match": {
+              "room": "$rid",
+              "state": "online",
+              "generation": "<number>"
+            },
+            "save": {
+              "gen_new": "generation"
+            }
+          },
+          "assert": {
+            "greater_than": [
+              "$gen_new",
+              "$gen_old"
+            ]
+          }
+        },
+        {
+          "harness": "inject_stale_conn_event",
+          "in": {
+            "generation": "$gen_old",
+            "state": "offline",
+            "reason": {
+              "state": "transport_closed"
+            }
+          },
+          "note": "a late teardown from the superseded connection"
+        },
+        {
+          "as": "B",
+          "call": "room.peers",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "peers": [
+              {
+                "device_id": "<hex64>",
+                "link": {
+                  "state": "linked"
+                },
+                "generation": "$gen_new"
+              }
+            ]
+          },
+          "assert": {
+            "note": "the stale teardown was discarded on generation, not applied"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": [
+              {
+                "pipe_id": "$pid",
+                "reachability": {
+                  "state": "reachable"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "as": "B",
+          "expect_no_push": {
+            "where": {
+              "push": "peer",
+              "generation": "$gen_old",
+              "after": "$gen_new"
+            },
+            "window_ms": 2000,
+            "note": "a stale-generation event is never fanned out as current"
+          }
+        },
+        {
+          "check": "typed_offline_reason",
+          "assert": {
+            "offline_reason_is_tagged_variant": true,
+            "offline_reason_not_null": true,
+            "note": "U1 also requires the reason be a typed variant, never a null or a prose string"
+          }
+        }
+      ],
+      "blocked_on_upstream": "U1"
+    }
+  ],
+  "authoring_notes": [
+    "AUTHORING PROVENANCE. Every expected value here was derived by reading docs/protocol-v2.md (85cfdaf), docs/shared-file-size.md, docs/room-attention.md, and docs/security-threat-model.md. No daemon was run and nothing was generated. crates/jeliya-core/src/engine.rs was NOT opened; v1's pipe surface is fully described in docs/PROTOCOL.md:442-445 and I read only that, to know what to avoid. Concretely avoided v1 shapes: the `pipe.expose` name, the `target: \"ip:port\"` string, `opened_by`, `authorized_peer` (with its null-or-comma-joined-list convention), `state: open|closed`, the `connected` boolean, `local_addr`, `pipe_denied`, `peer_unreachable`, `invalid_params`, the `event_id` return, and the pipe-owner-cannot-connect-to-its-own-pipe quirk (which the v2 spec does not state, so no fixture asserts it either way).",
+    "STEP VOCABULARY (extensions to the v1 harness, all language-neutral). `as` names the actor: A = room authority/publisher, B = active non-authority member, D = a second member used for audience scoping, C = a subject with no membership, A2 = a second authenticated session principal on A's daemon. `in` is the request payload. `expect` is SUBSET-matched (extra keys allowed) because this corpus fixes only what the spec forces; forbidden keys are asserted explicitly with the `<absent>` tag, which means the key MUST NOT be present at all. `expect_error.fields` is likewise subset-matched with `<absent>` available. `save_error` captures a whole error object for later comparison. `harness` steps are setup/fault-injection actions, not protocol operations. `check` steps make cross-step assertions and issue no call. `assert` keys used: no_null_values, identical_to, errors_identical, errors_identical_modulo, timing_indistinguishable, not_equal, greater_than, array_len, strictly_increasing, code_not, codes_equal, host_is_loopback, distinct_keys, equal_modulo.",
+    "TYPE TAGS. Reused from the v1 harness: `<hex64>`, `<room_id>`, `<ts>`, `<number>`. Added: `<pipe_id>` and `<connection_id>` (deliberately OPAQUE — the spec fixes no lexical form, so the harness must accept any non-empty scalar and the corpus must not pin v1's 32-hex spelling), `<port>` (integer 1..=65535), `<loopback_host>` (an IP literal inside 127.0.0.0/8 or ::1), `<pos>` (a per-room monotonic push position), `<any>` (present, type unconstrained), `<absent>` (key MUST NOT be present).",
+    "AMBIGUITY — the two named facts. The spec mandates the split of v1's `connected` into \"two separately named facts\" but does not name them. I chose `reachability` (the protocol fact about the publisher, a tagged variant reachable / unreachable{reason} / unknown{reason}) and `local_connection` (the device-local runtime fact, a tagged variant connected{connection_id, local_endpoint} / none). The names are my interpretation; the SHAPE is not — two independently valued fields with different scopes, and no `connected` key, is what the spec requires. If jeliya-api chooses other identifiers, only the two field names in these fixtures change.",
+    "AMBIGUITY — a third reachability state. I added `unknown{reason}` alongside reachable/unreachable because reporting a healthy publisher as unreachable merely because this device has not activated the room would assert a fact the daemon does not hold. This is room-attention.md decision 6 (\"we have not asked yet\" is not \"there is nothing\") applied to a protocol field, and it is a tagged variant, so it does not reintroduce a meaningful null.",
+    "AMBIGUITY — target shape. I specified `target: {host, port}` as typed fields rather than v1's `\"127.0.0.1:3000\"` string, following v2's \"typed fields rather than prose\" rule. This also creates the malformed/policy split the corpus asserts: a non-IP-literal host fails codec validation (`invalid_argument`) before any policy runs, so no caller-supplied name is ever resolved; a well-formed non-loopback address fails the policy (`policy_refused`, `policy: loopback_only`). The split is derived from the spec's bounded-parsing paragraph plus security-threat-model.md's \"only verified loopback endpoints may be dialed\", not transcribed from v1.",
+    "AMBIGUITY — loopback-only and owner/admin. The v2 record does not itself state either constraint for pipes; the task brief does, and both are consistent with the security model. I encoded them as: publish requires room authority (`insufficient_standing`, required: room_authority); revoke requires the publisher or the room authority; connect requires membership in the room plus, for a scoped pipe, being inside the named audience (`insufficient_standing`, required: pipe_audience); the target must be loopback (`policy_refused`, policy: loopback_only). The distinction I drew and used consistently: `insufficient_standing` is about the CALLER, `policy_refused` is about the REQUEST.",
+    "AMBIGUITY — new error codes. The taxonomy is 40 codes and the record names only 8 shapes plus two examples of the \"add a distinctive code rather than leave an operation on invalid_argument\" rule. I derived four pipe codes under that rule: `pipe_revoked{pipe_id, revoked_at}` (shaped after the normative `capability_revoked{revoked_at}`), `pipe_unreachable{pipe_id, reason}` (whose reason enum is the SAME one pipe.list's reachability states, which the fixtures assert), `pipe_unknown{pipe_id, room}`, and `connection_unknown{connection_id}` (the exact analogue of the record's own `subscription_unknown` for stream.unsubscribe).",
+    "GAP I COULD NOT CLOSE — pipe.list has no read-specific error code. It is a pure room-scoped read whose only failure modes are preconditions, so its most specific code is `room_not_available`, which it shares with every other room-scoped operation. That satisfies \"not a generic invalid_argument\" but not, strictly, \"its own\" code. The spec's rule that every operation has at least one code specific to it may require jeliya-api to add one (or to concede that read operations are exempt). Flagging rather than inventing one.",
+    "GAP — no served limit bounds pipes. The limits object has no max_pipes, max_pipe_connections, or equivalent, so there is no pipes-domain `resource_exhausted{resource, limit}` case that reads a served bound. My boundary cases therefore sit on the two bounds that ARE determinate: the edge of the loopback block (127.255.255.254 in / 128.0.0.1 out, plus ::1) and the 16-bit port range (65535 in / 65536 and 0 out). If a pipe or forwarding-session limit is later served, a matching at-limit / one-past pair must be added, because an unbounded number of loopback listeners is a real daemon resource.",
+    "AMBIGUITY — pipe.release addressing. Release names a `connection_id`, not a `pipe_id`, because the spec makes release a distinct operation from revoke and describes it as releasing \"a local connection\"; with two connections to one pipe, a pipe-keyed release would tear down a sibling. I also require `room` on release so the accepted-room guard runs uniformly (security-threat-model.md's authorization invariant), and a mismatched (room, connection_id) pair answers `connection_unknown` — never confirming the connection exists under another room.",
+    "AMBIGUITY — revocation visibility. I specified that a revoked publication stays listed with `publication: {state: revoked, revoked_at}` rather than disappearing, on the strength of \"v2 does not ship a state a client can be in whose cause it cannot see\": a consumer whose forwarding session just died must be able to read why. If the implementation instead drops revoked rows, the paired release/revoke case and the revoked-is-not-unreachable case both fail, which is the correct outcome — that would be a real behavioural disagreement to resolve, not a fixture bug.",
+    "AMBIGUITY — push frame naming. The record names only the `gap` and `peer` frames, so I did NOT invent a `pipe.*` push name. The ordering and boundary cases assert only what the spec fixes about ANY push — `t` present, `id` absent, a `room`, and a strictly increasing gap-free per-room `pos` — and select frames by \"names this pipe_id\". The release-vs-revoke case deliberately uses B's converged `pipe.list` as its observable rather than a push name, so it is airtight regardless of how the frame is spelled. Only the U1 case names `peer`, which the record itself names.",
+    "AMBIGUITY — the no-subject precondition code. The record removes the pre-identity carve-out (\"one precondition, two answers\") but does not spell the surviving answer. I pinned `subject_absent`, matching hello's `subject: {state: absent}` variant and v2's identity→subject renaming. The case is written so it still catches the real regression if the spelling differs: it asserts the code is IDENTICAL across pipe.list, room.members, and fleet.list, is not `room_not_available` or `invalid_argument`, and that no surface answers an empty success result.",
+    "ORDERING SEMANTICS. The ordering case asserts strict increase and contiguity WITHIN one room only, and explicitly asserts nothing about ordering relative to any other room, because the record states no cross-room ordering exists and a client must not infer one. A fixture that pinned interleaving across rooms would be asserting a fact v2 declines to provide.",
+    "op_id COVERAGE. All four mutating pipe operations are on the op_id-deduplicated list, so every one has a replay case asserting the ORIGINAL result and no second effect. Three ledger properties from the record are also covered: it survives reconnection (publish), it is keyed on (session principal, op_id) so two principals on one daemon do not collide (publish), and a malformed op_id is rejected before any effect. The record says mutating operations \"accept\" an op_id but does not say whether omitting it is an error, so no fixture asserts a missing-op_id behaviour — that is an open question for jeliya-api.",
+    "NON-ORACLE COVERAGE. All five pipe operations are room-scoped, so the dedicated non-oracle case exercises all five against a real-but-foreign room and a never-existed room and asserts byte-identical errors plus indistinguishable timing. A second case covers the pipe-level oracle the room-level one misses: a genuine pipe_id from room X presented against room Y answers `pipe_unknown` exactly as a fabricated id does, so a member of an unrelated room cannot confirm a foreign pipe exists. Both assert `hint` is absent."
+  ]
+}

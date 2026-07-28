@@ -1,0 +1,300 @@
+{
+  "corpus": "jeliya protocol v2",
+  "spec": "../../docs/protocol-v2.md",
+  "authored": "by hand, from the specification. NOT generated from any implementation.",
+  "rules": {
+    "required_per_operation": "at least one success case, and at least one error case using that operation's OWN most specific code. A cross-cutting code such as subject_absent or room_not_available does NOT satisfy the error requirement.",
+    "exemptions_fail": "a case marked blocked_on_upstream FAILS until the named upstream change lands. It is never skipped: a skipped case reads as coverage, a failing case reads as work.",
+    "quarantine": "a quarantined case asserts a payload contract the spec does not state. It does not run, and it does not count as coverage. Each names the operation whose contract must be written first."
+  },
+  "blocked_on_upstream": {
+    "U1": "ConnEvent must carry the connection generation and a typed offline reason",
+    "U2": "a progress-observing or streaming blob-fetch API",
+    "U3": "a size-distinguishable fetch outcome"
+  },
+  "totals": {
+    "cases": 310,
+    "quarantined": 11,
+    "blocked_on_upstream": 10
+  },
+  "coverage": {
+    "subject.ensure": {
+      "cases": 12,
+      "live": 12,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "daemon.stop": {
+      "cases": 4,
+      "live": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "shutdown_in_progress",
+      "satisfies_required_kinds": true
+    },
+    "room.create": {
+      "cases": 9,
+      "live": 9,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": "room_name_invalid",
+      "satisfies_required_kinds": false
+    },
+    "room.list": {
+      "cases": 6,
+      "live": 5,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": "room_index_unreadable",
+      "satisfies_required_kinds": false
+    },
+    "room.activate": {
+      "cases": 4,
+      "live": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.deactivate": {
+      "cases": 3,
+      "live": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.leave": {
+      "cases": 4,
+      "live": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.timeline": {
+      "cases": 9,
+      "live": 9,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.members": {
+      "cases": 4,
+      "live": 4,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": "membership_unresolved",
+      "satisfies_required_kinds": false
+    },
+    "room.archive": {
+      "cases": 4,
+      "live": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.peers": {
+      "cases": 6,
+      "live": 6,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "member.remove": {
+      "cases": 9,
+      "live": 9,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "invite.mint": {
+      "cases": 10,
+      "live": 10,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": "invitee_already_member",
+      "satisfies_required_kinds": false
+    },
+    "invite.list": {
+      "cases": 4,
+      "live": 4,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": "invite_index_unreadable",
+      "satisfies_required_kinds": false
+    },
+    "invite.revoke": {
+      "cases": 6,
+      "live": 6,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "invite.redeem": {
+      "cases": 11,
+      "live": 11,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "message.send": {
+      "cases": 8,
+      "live": 8,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": null,
+      "satisfies_required_kinds": false
+    },
+    "status.post": {
+      "cases": 4,
+      "live": 2,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": null,
+      "satisfies_required_kinds": false
+    },
+    "status.history": {
+      "cases": 6,
+      "live": 4,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": "status_subject_unknown",
+      "satisfies_required_kinds": false
+    },
+    "fleet.list": {
+      "cases": 3,
+      "live": 1,
+      "success": false,
+      "distinctive_error": false,
+      "distinctive_code": "fleet_projection_unavailable",
+      "satisfies_required_kinds": false
+    },
+    "file.share": {
+      "cases": 15,
+      "live": 15,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "file.list": {
+      "cases": 4,
+      "live": 4,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": "file_index_unreadable",
+      "satisfies_required_kinds": false
+    },
+    "file.fetch": {
+      "cases": 13,
+      "live": 13,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "file.read": {
+      "cases": 3,
+      "live": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "transfer.cancel": {
+      "cases": 5,
+      "live": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "transfer_unknown",
+      "satisfies_required_kinds": true
+    },
+    "pipe.publish": {
+      "cases": 12,
+      "live": 8,
+      "success": true,
+      "distinctive_error": false,
+      "distinctive_code": null,
+      "satisfies_required_kinds": false
+    },
+    "pipe.list": {
+      "cases": 6,
+      "live": 6,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "pipe.connect": {
+      "cases": 7,
+      "live": 7,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "pipe.release": {
+      "cases": 3,
+      "live": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "pipe.revoke": {
+      "cases": 3,
+      "live": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "stream.subscribe": {
+      "cases": 3,
+      "live": 3,
+      "success": false,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": false
+    },
+    "stream.unsubscribe": {
+      "cases": 2,
+      "live": 2,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "subscription_unknown",
+      "satisfies_required_kinds": true
+    },
+    "stream.resync": {
+      "cases": 5,
+      "live": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    }
+  },
+  "operations_not_yet_satisfying_required_kinds": [
+    "room.create",
+    "room.list",
+    "room.members",
+    "invite.mint",
+    "invite.list",
+    "message.send",
+    "status.post",
+    "status.history",
+    "fleet.list",
+    "file.list",
+    "pipe.publish",
+    "stream.subscribe"
+  ]
+}
