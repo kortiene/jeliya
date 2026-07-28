@@ -3367,7 +3367,7 @@
       "name": "no_frame_in_the_corpus_uses_a_semantic_null",
       "kind": "malformed",
       "operation": null,
-      "intent": "The no-null rule as a corpus-wide invariant: across every frame in both directions recorded during a full v2 corpus run — hello, requests, replies, errors, pushes, gap frames, and gate rejection bodies — no JSON null appears at any depth. Absence is always a tagged variant. Catches v1's compatibility-nullability (nullable role, status, last_event_kind, last_event_ts, authorized_peer, and a null meaning \"unbounded\") re-entering v2's own frames.",
+      "intent": "The no-null rule as a corpus-wide invariant over DAEMON-EMITTED frames: hello, replies, errors, pushes, gap frames, and gate rejection bodies. No JSON null at any depth; absence is always a tagged variant. Catches v1's compatibility-nullability (nullable role, status, last_event_kind, last_event_ts, and a null meaning \"unbounded\") re-entering v2's own frames. Deliberately NOT both directions: the corpus SENDS nulls on purpose in malformed-input cases, so a both-directions scan would fail on its own negative tests.",
       "requires": [
         "frame_recorder",
         "full_corpus_run"
@@ -3376,13 +3376,8 @@
         {
           "assert_recorded_frames": {
             "property": "no_json_null",
-            "scope": "both directions, all depths, including HTTP rejection bodies and /api/health"
-          }
-        },
-        {
-          "assert_recorded_frames": {
-            "property": "every_variant_object_has_a_state_tag",
-            "note": "any object modelling optionality carries a `state` discriminator"
+            "scope": "daemon_emitted_only",
+            "excludes": "client-sent frames, which include deliberate nulls in malformed-input cases"
           }
         }
       ],

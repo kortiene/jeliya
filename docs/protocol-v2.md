@@ -4,7 +4,7 @@ title: "Jeliya protocol v2"
 description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the three-layer handshake and generation gate, the 33 approved operations, the error taxonomy, the sequenced push stream with gap detection and authoritative resync, and the conformance corpus that binds them."
 tags: ["clean-slate", "conformance", "protocol", "security"]
 timestamp: "2026-07-28T15:26:05Z"
-status: "canonical"
+status: "draft"
 implementation_status: "planned"
 verification_status: "unverified"
 release_status: "unreleased"
@@ -13,7 +13,9 @@ audience: ["client-authors", "contributors", "maintainers"]
 
 # Jeliya protocol v2
 
-**Status: SPECIFIED 2026-07-28. Nothing in this record is built.** Protocol v2
+**Status: DRAFT 2026-07-28. Incomplete — see [What this does not yet
+specify](#what-this-does-not-yet-specify). Nothing in this record is
+built.** Protocol v2
 is the wire contract for the clean-slate client stack in the
 [Dioxus clean-slate architecture](dioxus-architecture.md). It replaces
 [protocol v1](PROTOCOL.md) outright: one generation at a time, no dual support,
@@ -29,6 +31,30 @@ Engine cutover (#165/#166) implement it.
 3 into fewer, and adds 9. It deliberately removes 20 shapes, listed in
 [What v2 removes](#what-v2-removes). Nothing here preserves a v1 field name,
 null convention, event shape, or storage shape for its own sake.
+
+## What this does not yet specify
+
+This record is `draft`, not `canonical`, and the reason is specific: **it states
+what each operation is for, not the shape of its request and reply.** Three gaps
+must close before it is a contract an independent adapter can implement.
+
+| Gap | Consequence while it is open |
+|---|---|
+| **Per-operation wire schemas** — every field, its type, requiredness, and bounds | Two adapters can each satisfy every sentence here and still be mutually incompatible. The corpus, written against the gap, is selecting an undocumented contract rather than this one |
+| **The complete error taxonomy** — every code with its typed fields and trigger | The [Errors](#errors) table is a selected subset. The corpus already relies on codes this document never names |
+| **One fixture DSL** — a normative schema for the corpus's own language | The committed fixtures use several dialects for the same concepts, so an independent harness cannot interpret them consistently — which defeats cross-adapter replay, the corpus's whole purpose |
+
+All three were found in review of the first draft, and all three are correct.
+They are tracked as **#212**, a single follow-up, because they interlock: an attempt to
+write them as five parallel sections produced **22 mutually contradictory
+definitions** — three incompatible shapes for one error, the role enum closed
+twice with different contents, three vocabularies for one `truncated` field. A
+wire contract has to be authored once, by one hand, in one vocabulary.
+
+Everything below this section is settled in substance — the operation set, the
+handshake and its gate, the removals, the push and resync model, the severity
+derivation, and the credential rules. What is missing is the field-level
+precision that turns settled substance into an implementable contract.
 
 ## What must be true before this can be implemented
 
@@ -92,6 +118,7 @@ compiled-in default.
 | `transfer_floor_bits_per_second` | The floor the transfer deadline is computed from |
 | `transfer_stall_ms` | Zero-forward-progress window before `transfer_stalled` |
 | `timeline_page_max` | Largest timeline page |
+| `idle_timeout_ms` | Inactivity after which the daemon closes with `4004`. Served because a long-lived client cannot otherwise know how often it must produce activity to stay connected |
 
 The last four exist because a bounded per-file limit is not by itself a bound
 on daemon memory. Fetch buffers roughly twice the file and upload holds one
@@ -166,11 +193,35 @@ registrable host, ignoring the port. Any other process listening on a loopback
 port is same-site, so a cookie would be readable by every local origin the user
 visits. "Loopback-scoped cookie" is not a thing that exists.
 
-The ticket-issuing endpoint is a credential boundary and MUST be gated at least
-as strongly as `/ws`: exact loopback `Origin` match, single use, short TTL,
-burned on redemption, and rate-limited. v1's `Sec-Fetch-Site` heuristic is
-removed — the code's own comment concedes a local non-browser process forges
-both headers — and Host+Origin are the boundary.
+**Ticket issuance MUST prove possession of the daemon token.** `POST
+/api/session` requires `Authorization: Bearer <token>`, exactly like `/ws`,
+and mints a short-TTL single-use ticket bound to one connection.
+
+An earlier draft of this record gated issuance on loopback `Host` and `Origin`
+alone. That is not a boundary and the record said so two paragraphs earlier
+about `Sec-Fetch-Site`: a local process forges request headers freely. Under
+that draft, **any process that could reach the loopback port could mint its own
+ticket and pass the credential gate without ever knowing the token** — a
+cross-user privilege escalation on a shared machine, since the `0600` portfile
+is exactly what a different user cannot read. Header checks are anti-CSRF, not
+authentication, and the two must not be confused.
+
+This makes the browser case explicit rather than accidental: **a page cannot
+authenticate itself.** Something that already holds the token has to obtain the
+ticket and hand it over. In a packaged shell that is the native process, which
+holds the token natively and injects a ticket into the page it controls — the
+seam [the architecture](dioxus-architecture.md) already requires.
+
+For a page served to an ordinary browser by `jeliyad` itself, no such mediator
+exists, and this record does **not** invent one:
+
+> **OPEN — browser-without-a-native-shell credential path (#113).** A browser
+> tab has no way to prove possession of a token it must never see. Candidates
+> are an operator-pasted one-time code, a token delivered in the launch URL by
+> whatever started the browser, or declaring that surface out of scope for the
+> first release. This MUST be decided by the first-release distribution
+> boundary (#113) before that path ships. Until then, only mediated clients —
+> native shells and the packaged WebView — have a specified credential path.
 
 The daemon token itself MUST NOT reach WebView script, a URL, a log, or a
 diagnostic, in any form.
@@ -513,6 +564,32 @@ U1** and its cases are `blocked_on_upstream` until that lands.
 Every mutating operation accepts an `op_id` — a client-generated unique
 identifier — and the daemon keeps a dedup ledger.
 
+### The session principal
+
+A principal is **a client's stable identity across reconnects**, and it is not
+derivable from the credential. Every native client authenticates with the same
+per-start portfile bearer token, so deriving a principal from the bearer would
+collapse the WebView, every agent, and the CLI into one scope. A browser ticket
+is single-use, so deriving it from the ticket would give a new principal on
+every reconnect — destroying exactly the replay-after-reconnect property the
+ledger exists to provide.
+
+So v2 states it explicitly: **the client declares a `client_id` on the
+upgrade** — a stable, client-generated opaque identifier it reuses across
+reconnects and persists for as long as it wants its own `op_id` scope. The
+principal is `(credential, client_id)`.
+
+- A client that omits `client_id` gets a fresh ephemeral principal per
+  connection and therefore no cross-reconnect replay. That is a legitimate
+  choice for a short-lived CLI invocation, and it is refusal of a capability
+  rather than an error.
+- `client_id` is **not** a credential and grants nothing. It only partitions a
+  namespace among clients that have already authenticated. A client that
+  reuses another's `client_id` shares its `op_id` scope, which is the same
+  trust boundary as sharing the bearer token — which those clients already do.
+- Distinct `client_id`s MUST have isolated ledgers, so one local client can
+  neither observe, replay, nor cancel another's operations.
+
 **The ledger is keyed on `(authenticated session principal, op_id)`, not on the
 subject.** A daemon has exactly one subject, so a per-subject ledger would be
 daemon-global across the WebView, native agents, and the CLI, letting one
@@ -526,7 +603,17 @@ reply lost to a dropped connection.
 | Naturally idempotent | `subject.ensure`, `room.activate`, `room.deactivate`, `invite.redeem` (re-redeeming from the same subject reports existing membership) |
 | Terminal, single-effect | `daemon.stop` — the first call succeeds, a second returns `shutdown_in_progress`. This is deliberately **not** natural idempotence: once teardown is sequenced there is no state in which a caller can be told "done" truthfully, and reporting success for an operation that will not run again is the kind of comfortable lie this generation exists to remove |
 | `op_id` deduplicated | `room.create`, `room.leave`, `member.remove`, `invite.mint`, `invite.revoke`, `message.send`, `status.post`, `file.share`, `file.fetch`, `pipe.publish`, `pipe.connect`, `pipe.release`, `pipe.revoke` |
-| Unsafe to retry blindly | none — every mutating operation is one of the above |
+| Scoped to one connection, no `op_id` | `stream.subscribe`, `stream.unsubscribe`, `stream.resync` — subscription state belongs to the connection that holds it, so a retry after a lost reply is a retry on a **new** connection with no prior subscription. Re-issuing is always safe and always correct |
+| Scoped to the principal, `op_id` names the TARGET | `transfer.cancel` — see below |
+
+`transfer.cancel`'s `op_id` field names **the transfer being cancelled**, not
+the cancel request. That is the whole point: the caller knows the transfer's
+`op_id` because it chose it, and can therefore cancel across a reconnect on
+which a cancel-request identifier would be meaningless. Cancel is naturally
+idempotent — cancelling an already-cancelled transfer reports the existing
+cancellation — so it needs no identifier of its own.
+
+Every operation marked `M` appears in exactly one row above.
 
 A replayed `op_id` returns the **original** result and performs no second
 effect. `invite.mint` in particular MUST return the original capability, never
@@ -659,12 +746,20 @@ Layout:
 
 ```
 conformance/v2/
-  manifest.json          required kinds per operation, and exemptions with reasons
-  handshake/             gate order, absence-is-refusal, close codes, rejection bodies
-  envelope/              correlation, out-of-order replies, malformed frames, bounds
-  subject/  rooms/  invites/  timeline/  files/  pipes/  streams/
-  invariants/            the four retained scenarios
+  manifest.json          required kinds per operation, coverage, exemptions with reasons
+  README.md              the independence rule, the case shape, how to add one
+  handshake.json         Layer 0/1/2, gate order, close codes, envelope, bounded parsing
+  subject-daemon.json    subject lifecycle, daemon stop
+  rooms.json             rooms, membership, the non-oracle property, archives
+  invites.json           mint / list / revoke / redeem, capability failures
+  timeline-streams.json  messaging, positions, gap detection, resync, agents
+  files.json             sharing, fetching, the size limit and its enforcement points
+  pipes.json             publish / connect / release / revoke, reachability
 ```
+
+One flat file per domain. Case `name` is a **corpus-wide unique identifier**,
+not unique-per-file: a harness indexes by it, so a collision silently drops a
+case.
 
 Required per operation: at least one success case, and at least one error case
 using **that operation's own most specific code** — a generic

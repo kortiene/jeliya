@@ -161,7 +161,7 @@
       "name": "client_renders_the_limit_message_from_the_served_integer",
       "kind": "handshake",
       "operation": "file.share",
-      "intent": "Proves the human-readable binary rendering of the limit is computed client-side from the served integer and interpolated into the localized string, so no catalog carries the number verbatim and a served change of the limit cannot make a translation lie.",
+      "intent": "Proves the human-readable limit is rendered from the SERVED integer, so no catalog carries the number verbatim and a served change cannot make a translation lie. Asserted two ways: no locale catalog contains the number, and the rendered string moves when the harness overrides the limit.",
       "requires": [
         "client_adapter",
         "served_limit_override"

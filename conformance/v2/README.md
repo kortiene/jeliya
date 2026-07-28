@@ -1,9 +1,17 @@
 # Protocol v2 conformance corpus
 
 Hand-authored, language-neutral fixtures for
-[protocol v2](../../docs/protocol-v2.md). Replayed by an independent harness
-against every adapter: the codec, the typed daemon, the Rust adapters, and the
-agent cutover.
+[protocol v2](../../docs/protocol-v2.md). Intended to be replayed by an
+independent harness against every adapter: the codec, the typed daemon, the
+Rust adapters, and the agent cutover.
+
+**Not yet replayable.** The specification is `draft` and does not state
+per-operation wire schemas, so these fixtures encode a contract the document
+does not yet contain. They also use several dialects for the same concepts —
+`assert` appears as an array, as an object, and as a predicate string with
+sibling operands — so a harness cannot interpret them consistently. Both are
+tracked as **#212**. Treat the corpus as **recorded intent**, precise
+about behaviour and not yet precise about shape.
 
 This directory is data. It contains no TypeScript, no Rust, and no test runner,
 because a corpus that only one language can replay is not a conformance corpus.

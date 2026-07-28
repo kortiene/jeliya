@@ -699,7 +699,7 @@
       "name": "subject_domain_frames_contain_no_json_null",
       "kind": "success",
       "operation": "subject.ensure",
-      "intent": "Proves the spec's absolute 'no JSON null carries meaning anywhere in v2' across the subject surface on both the absent and present paths — in hello, in success replies, and in error replies. Catches the single most likely v1 carry-over: spelling an absent subject as subject:null instead of the tagged absent variant.",
+      "intent": "Proves the spec's absolute 'no JSON null carries meaning anywhere in v2' across the subject surface on both the absent and present paths — in hello, in success replies, and in error replies. Catches the single most likely v1 carry-over: spelling an absent subject as subject:null instead of the tagged absent variant. Scoped to DAEMON-EMITTED frames only: the corpus deliberately SENDS nulls in malformed-input cases, so a both-directions scan would fail on its own negative tests.",
       "requires": [
         "fresh_daemon_no_subject",
         "two_sessions"
@@ -954,7 +954,7 @@
       "blocked_on_upstream": null
     },
     {
-      "name": "a_frame_of_exactly_max_frame_bytes_is_parsed_and_answered",
+      "name": "a_frame_of_exactly_max_frame_bytes_is_parsed_and_answered_in_subject_daemon",
       "kind": "boundary",
       "operation": "subject.ensure",
       "intent": "The at-limit half of the max_frame_bytes bound: a frame whose size equals the served limit exactly MUST be parsed and answered, not closed. Catches an off-by-one that compares with >= instead of > and rejects a legal frame.",
