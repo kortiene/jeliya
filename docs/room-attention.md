@@ -3,7 +3,7 @@ type: "Decision"
 title: "Room attention — evidence-backed recency, unread, and actionable state"
 description: "Decision record defining how Jeliya's clients derive room recency, device-local unread, and actionable attention from provable facts, and the evidence rule each displayed field must satisfy."
 tags: ["architecture", "attention", "room-list", "ux"]
-timestamp: "2026-07-27T22:58:56Z"
+timestamp: "2026-07-28T15:26:05Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -249,6 +249,14 @@ an unlisted way and can misfire on a lookalike. This is a known limitation, not
 a defect to paper over. The durable fix is a typed severity on the
 agent-status event; it remains out of scope, and this record must not be read
 as inferring attention from arbitrary prose.
+
+**Amendment 2026-07-28 (#161).** The residual above describes v1 and stays true
+of it. [Protocol v2](protocol-v2.md) resolves it, but **not** by adding the
+typed severity this paragraph anticipated: it closes the label vocabulary
+instead, so severity becomes a lookup rather than an inference and no signed
+field is needed. v2 also adds a `blocked` label, because the `review` attention
+reason had no truthful label an agent could post. Nothing here changes for the
+released v1 line.
 
 ## Decision 5 — the non-current-room data path (the identified finding)
 

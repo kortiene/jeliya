@@ -3,7 +3,7 @@ type: "Reference"
 title: "Agent orchestration contract (v1)"
 description: "Normative contract for agent liveness, task claims, fleet reads, and UI projections."
 tags: ["agents", "fleet", "orchestration", "protocol"]
-timestamp: "2026-07-19T15:15:00Z"
+timestamp: "2026-07-28T15:26:05Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -73,6 +73,16 @@ unknown labels are idle-class.
 `claiming` is deliberately idle-class: a claim is not execution. A runner that
 loses a claim posts `idle` best-effort (§2); if that status post fails, its
 latest label remains `claiming`, which still must not read as "working".
+
+**Amendment 2026-07-28 (#161).** The free-form label and the
+unknown-labels-are-idle-class rule describe v1 and stay true of it.
+[Protocol v2](protocol-v2.md) **closes** this vocabulary: a label outside the
+set is refused with `status_label_unknown` rather than silently reclassified,
+because a typo'd label reading as a truthful agent state is a defect, not a
+tolerance. v2 adds one label, `blocked`, for an agent stopped and waiting on a
+person, and derives a served `severity` from the closed set — so v2 needs no
+typed severity field on the signed event. Derived liveness in §1.2 is
+unchanged and remains normative for both generations.
 
 ### 1.2 Derived liveness (daemon side, computed at read time)
 

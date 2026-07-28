@@ -1,0 +1,266 @@
+{
+  "corpus": "jeliya protocol v2",
+  "spec": "../../docs/protocol-v2.md",
+  "authored": "by hand, from the specification. NOT generated from any implementation.",
+  "rules": {
+    "required_per_operation": "at least one success case, and at least one error case using that operation's OWN most specific code. A cross-cutting code such as subject_absent or room_not_available does NOT satisfy the error requirement.",
+    "exemptions_fail": "a case marked blocked_on_upstream FAILS until the named upstream change lands. It is never skipped: a skipped case reads as coverage, a failing case reads as work.",
+    "quarantine": "a quarantined case asserts a payload contract the spec does not state. It does not run, and it does not count as coverage. Each names the operation whose contract must be written first."
+  },
+  "blocked_on_upstream": {
+    "U1": "ConnEvent must carry the connection generation and a typed offline reason",
+    "U2": "a progress-observing or streaming blob-fetch API",
+    "U3": "a size-distinguishable fetch outcome"
+  },
+  "totals": {
+    "cases": 335,
+    "quarantined": 0,
+    "blocked_on_upstream": 10
+  },
+  "coverage": {
+    "subject.ensure": {
+      "cases": 12,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "daemon.stop": {
+      "cases": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "shutdown_in_progress",
+      "satisfies_required_kinds": true
+    },
+    "room.create": {
+      "cases": 10,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "room_name_invalid",
+      "satisfies_required_kinds": true
+    },
+    "room.list": {
+      "cases": 6,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "room_index_unreadable",
+      "satisfies_required_kinds": true
+    },
+    "room.activate": {
+      "cases": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.deactivate": {
+      "cases": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.leave": {
+      "cases": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.timeline": {
+      "cases": 9,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.members": {
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "membership_unresolved",
+      "satisfies_required_kinds": true
+    },
+    "room.archive": {
+      "cases": 4,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "room.peers": {
+      "cases": 6,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "member.remove": {
+      "cases": 9,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "invite.mint": {
+      "cases": 11,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "invitee_already_member",
+      "satisfies_required_kinds": true
+    },
+    "invite.list": {
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "invite_index_unreadable",
+      "satisfies_required_kinds": true
+    },
+    "invite.revoke": {
+      "cases": 6,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "invite.redeem": {
+      "cases": 11,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "message.send": {
+      "cases": 11,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "message_too_large",
+      "satisfies_required_kinds": true
+    },
+    "status.post": {
+      "cases": 9,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "status_label_unknown",
+      "satisfies_required_kinds": true
+    },
+    "status.history": {
+      "cases": 7,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "status_subject_unknown",
+      "satisfies_required_kinds": true
+    },
+    "fleet.list": {
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "fleet_projection_unavailable",
+      "satisfies_required_kinds": true
+    },
+    "file.share": {
+      "cases": 15,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "file.list": {
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "file_index_unreadable",
+      "satisfies_required_kinds": true
+    },
+    "file.fetch": {
+      "cases": 13,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "file.read": {
+      "cases": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "transfer.cancel": {
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "transfer_unknown",
+      "satisfies_required_kinds": true
+    },
+    "pipe.publish": {
+      "cases": 16,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "pipe_target_refused",
+      "satisfies_required_kinds": true
+    },
+    "pipe.list": {
+      "cases": 6,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "pipe.connect": {
+      "cases": 7,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "pipe.release": {
+      "cases": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "pipe.revoke": {
+      "cases": 3,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    },
+    "stream.subscribe": {
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "subscription_limit_reached",
+      "satisfies_required_kinds": true
+    },
+    "stream.unsubscribe": {
+      "cases": 2,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": "subscription_unknown",
+      "satisfies_required_kinds": true
+    },
+    "stream.resync": {
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
+      "distinctive_code": null,
+      "satisfies_required_kinds": true
+    }
+  },
+  "operations_not_yet_satisfying_required_kinds": [],
+  "severity_derivation": {
+    "note": "severity is derived from the closed label set and SERVED; no signed severity field exists",
+    "map": {
+      "online": "ok",
+      "idle": "ok",
+      "claiming": "ok",
+      "working": "ok",
+      "done": "ok",
+      "failed": "failed",
+      "blocked": "review"
+    }
+  }
+}
