@@ -3,7 +3,7 @@ type: "Decision"
 title: "Shared-file size policy for protocol v2"
 description: "Decision record retaining 104,857,600 bytes as the normative protocol-v2 maximum shared-file size, the served preflight and distinctive over-limit error it requires, its provisional resource budgets, and the falsifiers that would force a policy change."
 tags: ["clean-slate", "files", "protocol", "release", "security"]
-timestamp: "2026-07-28T11:15:06Z"
+timestamp: "2026-07-28T11:56:17Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -89,9 +89,14 @@ this record.
 
 ## Decision 2 — the limit is served, not assumed
 
-v2 MUST publish the maximum in its handshake as
-`limits.max_shared_file_bytes`, an integer. A client learns the limit before
-attempting a share and MUST NOT assume a compiled-in default.
+v2 MUST publish the maximum in its handshake as an integer, in a limits object
+the client reads before attempting a share. A client MUST NOT assume a
+compiled-in default.
+
+**The requirement is normative; the identifier is not.** #161 owns the wire
+spelling and may choose another name, but it may not omit the field. Where
+this record writes `limits.max_shared_file_bytes` it is naming the concept,
+not fixing the bytes on the wire.
 
 This is new. There is no capability or limits field in the v1 handshake today;
 the Dart client preflights against its own hard-coded copy
@@ -119,16 +124,36 @@ does today. A machine-recognizable code with structured fields replaces that.
 the fetch path surfaces as `FetchOutcome::HashMismatch`, because the upstream
 outcome enum has no size variant — which Jeliya renders as "integrity check
 FAILED … refusing to save" (`crates/jeliya-core/src/supervisor.rs:2232-2241`).
-A size refusal reported as a **integrity failure** is a false accusation
+A size refusal reported as an **integrity failure** is a false accusation
 against an honest peer. v2 MUST preflight the signed `size_bytes` before
 fetching, and MUST NOT report a size refusal as a hash mismatch.
+
+**Preflight alone does not close this.** Once a transfer is running, a peer
+that serves more bytes than it declared is refused mid-stream by the bound —
+and that refusal arrives as `HashMismatch` too, because the size rejection is
+folded into the content-lie variant. The outcome enum has five variants and
+none of them means "too large". So **Decision 4's point 6 is not observable as
+a size error today**, and v2 cannot satisfy both that point and the
+no-false-accusation rule as the transport currently stands.
+
+Closing it is an upstream change, and it is available: `iroh-rooms` is
+Jeliya's own upstream. #161 MUST specify the distinguishable outcome and
+record the upstream change it requires. Until that lands, an over-limit
+*stream* remains reportable only as a hash mismatch, and this record does not
+pretend otherwise.
 
 ## Decision 4 — enforcement points, earliest first
 
 Rejection MUST happen before expensive or partially persistent work. v2 MUST
 enforce at every layer below, and MUST NOT rely on any single one:
 
-1. **Client preflight**, against the served limit, before any copy or upload.
+1. **Client preflight**, against the served limit, before any copy or upload —
+   *where the platform reports a size*. Where it does not, the client MUST
+   instead stream through a byte-counting bound that fails at the limit. It
+   MUST NOT reject a file merely for lacking a declared size, and MUST NOT
+   copy it unbounded. An Android Storage Access Framework `content://`
+   document backed by a cloud provider may report no size at all, so this is
+   a normal path, not an edge case.
 2. **Daemon upload edge**, on declared length, before reading the body.
 3. **Daemon upload edge**, on streamed bytes, aborting mid-stream — a declared
    length is an assertion by an untrusted caller, not a fact.
@@ -202,12 +227,13 @@ observation that would invalidate it.
 | Resource | Provisional assumption at 100 MiB | Basis | Falsifier |
 |---|---|---|---|
 | Fetch memory | ~2× the file, ~200 MiB transient per in-flight fetch | The blob is collected into one buffer, then copied again by `to_vec()` at `crates/jeliya-core/src/supervisor.rs:2229` while the original is still live, before the atomic save | A measured peak materially above 2×, or any second concurrent fetch on a constrained device |
-| Upload cost | ~3× the file — one full in-memory body, one staged disk copy, one blob-store copy with a second full read for the BLAKE3 recompute | `crates/jeliyad/src/serve.rs:553` buffers the body, `:566` stages it, then core imports it in copy mode | A measured peak materially above 3×, or concurrent uploads exhausting the daemon |
+| Upload memory | ~1× the file, held whole in the daemon before anything touches disk | `crates/jeliyad/src/serve.rs:553` buffers the entire body into one growable buffer | A measured peak materially above 1×, or concurrent uploads exhausting the daemon |
+| Upload disk | ~2× the file transiently — one staged copy plus one blob-store copy, with a second full read for the BLAKE3 recompute | `crates/jeliyad/src/serve.rs:565` stages the buffered body, then core imports it in copy mode | Any amplification above 2×, or a staging copy that outlives the share |
 | Store disk | ~1× per shared file, retained indefinitely, plus ~1× transient staging | Blob store import is a copy; the staging file is removed on the normal path | Any store growth beyond one copy per distinct blob |
 | Android memory | Unbounded by any recorded figure | v2 runs core in-process with no daemon to absorb buffers; `largeHeap` bounds the Java heap and core allocates natively, so it does not apply | Any OOM or low-memory kill during a near-limit transfer on a real device |
 | Network time | Not reachable in 30 s at any observed rate; requires ~27.96 Mbit/s | Fifteen samples spanning 0.1–8.6 Mbit/s; 8 MiB runs already failed at 30 s | A size-aware budget that still fails at the limit on a healthy direct link |
 | Cancellation | None exists on the request path | No RPC method cancels, no error variant reports it, and a client disconnect cannot abort an in-flight call | Any requirement that a user abandon a transfer before it completes |
-| Cleanup | Staged uploads are reaped on both success and share failure, but not across process death | Removal precedes the outcome branch; shutdown ends in a process exit that runs no destructors, and stage names are unique per attempt, so residue is permanent | Any stranded full-size file observed after a restart |
+| Cleanup | Staged uploads are reaped on success and on share failure, but **not** when the staging write itself fails, and not across process death | Removal at `crates/jeliyad/src/serve.rs:577` precedes the outcome branch, so both share outcomes are reaped — but the staging-write early return at `:565-571` skips it, and shutdown ends in a process exit that runs no destructors. Stage names are unique per attempt, so residue is permanent | Any stranded staging file observed after a restart, whole or partial |
 
 **If any falsifier is observed, it MUST open an explicit policy-change issue.**
 It MUST NOT be resolved by quietly editing the wire limit. That rule is the
@@ -221,10 +247,10 @@ issue below owns the evidence for its own surface.
 
 | Issue | Owns |
 |---|---|
-| #161 | The normative v2 spec: the served `limits.max_shared_file_bytes` field, the distinctive over-limit error and its fields, the six enforcement points, the size-aware transfer budget, and hand-authored conformance fixtures for below-limit, exactly-at-limit, over-limit by one byte, and malformed size |
+| #161 | The normative v2 spec: the served limits field carrying the maximum **and its wire spelling**, the distinctive over-limit error and its fields, the six enforcement points, the size-aware transfer budget, the distinguishable oversized-stream outcome and the upstream change it needs, and hand-authored conformance fixtures for below-limit, exactly-at-limit, over-limit by one byte, and malformed size |
 | #181 | Web enforcement: browser preflight against the served limit, streaming upload without buffering the file in wasm, the over-limit message rendered from the served integer, and cancellation |
-| #192 | Android enforcement: SAF content-URI sizing before any copy, near-limit transfers on real hardware including a low-memory device, no-backup placement of staged and fetched files, and cancellation |
-| #198 | Resource validation: measured peak memory for upload and fetch at the limit against the ~3× and ~2× assumptions, on desktop and Android; measured transfer time against the size-aware budget |
+| #192 | Android enforcement: SAF content-URI sizing before any copy where the provider reports a size, **plus the unknown-size streaming path** for providers that report none; near-limit transfers on real hardware including a low-memory device; no-backup placement of staged and fetched files; and cancellation |
+| #198 | Resource validation, measuring **memory and disk as separate quantities**: peak memory against the ~1× upload and ~2× fetch assumptions, and peak transient disk against the ~2× upload assumption, on desktop and Android; measured transfer time against the size-aware budget |
 | #195 | Release evidence: below-limit, exactly-at-limit, over-limit, cancellation, low-disk, restart-during-transfer, direct and relayed, and hostile metadata, as executable required-behavior cases |
 
 ## Residual risks this record does not close
@@ -245,7 +271,9 @@ issue below owns the evidence for its own surface.
 ## What this record does not decide
 
 - The size-aware transfer budget's formula or constants — #161 specifies it.
-- The wire spelling of the handshake limits object or the error code — #161.
+- The wire spelling of the handshake limits field or the error code — #161.
+  This record fixes that both MUST exist and what they MUST carry, not what
+  they are called.
 - Whether the store gains quotas or retention — unowned, and worth an issue.
 - Any change to the upstream constant, which retaining the value makes
   unnecessary.
@@ -257,3 +285,25 @@ issue below owns the evidence for its own surface.
 Nothing here is implemented. The decision is normative on #161, which converts
 it into the v2 specification and its conformance corpus; enforcement follows in
 #181 and #192; validation in #198; release evidence in #195.
+
+## Citations
+
+The evidence for the number's provenance, its conflict with the product
+figure, and the throughput samples lives in the `iroh-rooms` upstream, not in
+this repository. Every link below is pinned to
+`a5d98b70d717f35d3ce60953a88e12e646f2e871`, the revision `Cargo.toml` resolves
+today, so the claims stay reproducible even after a repin. Claims about
+Jeliya's own code are cited inline next to the claim they support, as the
+[documentation profile](PROFILE.md) permits.
+
+- [`crates/iroh-rooms-core/src/event/constants.rs`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/crates/iroh-rooms-core/src/event/constants.rs) — `MAX_SHARED_FILE_BYTES = 104_857_600`, declared beside `SCHEMA_VERSION` and `WIRE_VERSION`, with the doc comment citing spec IR-0202 §5.7 / OQ-1.
+- [`specs/file-import-into-blob-store.md`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/specs/file-import-into-blob-store.md) — §5.7 "Exact value is OQ-1"; risk R4; and OQ-1 itself, "Product sign-off needed".
+- [`PRD.v0.3.md`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/PRD.v0.3.md) — §17.1 item 9, "Files up to 25 MB can be shared and fetched".
+- [`RELEASE-READINESS.md`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/RELEASE-READINESS.md) — "File-size cap divergence to confirm", recording the 100 MiB versus 25 MB gap as unresolved.
+- [`docs/audits/feature-complete-audit-2026-07-02.md`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/docs/audits/feature-complete-audit-2026-07-02.md) — decision D-4, "divergence tracked, unresolved", and the erratum that would have closed it. That erratum does not exist at this revision.
+- [`crates/spike-nat/results/results.md`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/crates/spike-nat/results/results.md) — the fifteen throughput samples, and the 8 MiB runs that failed at a 30-second budget.
+- [`crates/spike-nat/NOTES.md`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/crates/spike-nat/NOTES.md) — upstream's own caveats on those samples: 256 KiB transfers, slow-start dominated, forced worst-case, re-measure still owed.
+- [`crates/iroh-rooms-net/src/blob/fetch.rs`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/crates/iroh-rooms-net/src/blob/fetch.rs) — the five-variant `FetchOutcome`, the mid-stream size bound, and the mapping that reports an over-limit response as a hash mismatch.
+- [`crates/iroh-rooms-net/src/node.rs`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/crates/iroh-rooms-net/src/node.rs) — `fetch_file` substituting the full ceiling, and `fetch_file_sized` honouring a smaller caller value.
+- [`crates/iroh-rooms-core/src/event/content.rs`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/crates/iroh-rooms-core/src/event/content.rs) — the signed-event size rejection every peer runs.
+- [`crates/iroh-rooms-core/tests/conformance/serialization.rs`](https://github.com/kortiene/iroh-room/blob/a5d98b70d717f35d3ce60953a88e12e646f2e871/crates/iroh-rooms-core/tests/conformance/serialization.rs) — the boundary test proving a `size_bytes` of exactly `MAX_SHARED_FILE_BYTES` validates.
