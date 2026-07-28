@@ -1,0 +1,80 @@
+# Disposable feasibility spike for issue #159. NOT a workspace member: this
+# crate carries its own `[workspace]` table so the production workspace
+# (`crates/jeliya-core`, `crates/jeliyad`, `crates/jeliya-ffi`) and every CI job
+# that builds it stay untouched. Nothing here is promoted by assumption — see
+# `docs/dioxus-architecture.md`.
+#
+# Same posture as `spikes/dioxus-web` (#158): this answers one question and is
+# then thrown away. It is not the shape the real desktop shell should take.
+[package]
+name = "jeliya-spike-dioxus-desktop"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.91"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[[bin]]
+name = "jeliya-spike-dioxus-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to the 0.7 line the architecture record selects. wry/tao render in the
+# platform system WebView — webkit2gtk on Linux.
+#
+# `devtools` IS enabled, deliberately, and the reason is a dioxus-desktop 0.7.9
+# defect rather than a preference.
+#
+# `docs/dioxus-architecture.md` Decision 7 requires the WebView inspector off in
+# a packaged shell, so the first attempt here excluded the feature outright:
+# `dioxus-desktop = { default-features = false, features = ["tokio_runtime"] }`.
+# That builds in debug and **fails to compile in release**:
+#
+#     error[E0599]: no method named `open_devtools` found for reference `&WebView`
+#       --> dioxus-desktop-0.7.9/src/app.rs:145
+#     error[E0599]: no method named `close_devtools` found for reference `&WebView`
+#       --> dioxus-desktop-0.7.9/src/app.rs:147
+#
+# dioxus-desktop calls those two methods unconditionally, but wry only exposes
+# them under `debug_assertions` OR its own `devtools` feature. So with the
+# feature off, a release profile has neither — the crate cannot build. The
+# exclusion is not an available option, in this version, at all.
+#
+# The inspector is therefore off in RELEASE ONLY, and by wry's default rather
+# than by dependency exclusion: wry sets `devtools: false` under
+# `not(debug_assertions)`. A debug build of this spike HAS a working inspector.
+# That is a weaker guarantee than the architecture asks for and #187 should know
+# it before it commits to a Linux WebView policy.
+#
+# Note this changes nothing about OpenSSL: `dioxus-desktop` declares
+# `tungstenite` with `features = ["native-tls"]` NON-OPTIONALLY for every
+# non-Android target (its Cargo.toml:249-251), so `openssl-sys` is in the graph
+# whether devtools is on or off. See README "Prerequisites".
+dioxus = { version = "0.7.9", default-features = false, features = ["lib"] }
+dioxus-desktop = { version = "0.7.9", default-features = false, features = ["tokio_runtime", "devtools"] }
+
+# Native transport. `default-features = false` deliberately: every TLS feature
+# would drag in `openssl-sys` or `rustls`, and this dials loopback only, where
+# there is nothing to authenticate a certificate against.
+#
+# `./check-native-graph.sh` asserts no TLS crate is reachable THROUGH
+# tokio-tungstenite. Note the narrow scope: "no TLS anywhere in the graph" is
+# already false, because dioxus-desktop pulls tungstenite[native-tls]
+# non-optionally (see below), so only the transport subtree is checkable.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "time", "sync", "fs"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
