@@ -1,0 +1,9 @@
+# Build output. `target/` here is multi-GB and `bundle/` holds a copied
+# jeliyad; neither belongs in the repo. The root `.gitignore` anchors its
+# `/target` and `/dist/` rules to the repo root, so they do NOT cover this
+# directory — without this file `git add spikes/dioxus-desktop` stages
+# everything. Mirrors `spikes/dioxus-web/.gitignore`.
+target/
+bundle/
+evidence/
+Cargo.lock.bak
