@@ -113,8 +113,17 @@ one definition is the fix, and no client may compile the value in.
 
 ### The limits object
 
-Every field is an integer. A client MUST read them and MUST NOT assume a
-compiled-in default.
+**Thirteen fields, every one an integer.** A client MUST read them and MUST NOT
+assume a compiled-in default.
+
+The count is stated because the corpus disagrees with itself about it:
+`health_limits_object_carries_all_eleven_named_integer_fields` asserts an exact
+key set of eleven, omitting `max_subscriptions_per_connection` and
+`idle_timeout_ms` — while `close_code_4004_is_emitted_on_idle_timeout` reads
+`idle_timeout_ms` out of the very object the other case says cannot contain it.
+Both cases cannot be right. The record is right and both fixtures are wrong: the
+two omitted fields are each load-bearing, one for `subscription_limit_reached`
+and one for a client that must produce activity to stay connected.
 
 | Field | Meaning |
 |---|---|
@@ -408,6 +417,8 @@ belongs to exactly one operation.
 | `resume` | variant: `fresh`, `resumed {from_pos}` — `hello` only |
 | `gap.to` | variant: `bounded {pos}`, `open` |
 | `gap.reason` | bare enum: `backpressure`, `retention`, `subscription_lapse` |
+| `target` | `{ host, port }` — one object, never two sibling fields |
+| `audience` | variant: `room`, `subjects {subject_ids}` |
 
 Every variant in this record appears in this table. A variant whose arms are not
 enumerated here does not exist — an arm set stated only by example is how an
@@ -941,7 +952,7 @@ different fact and not a terminal one this operation authored.
 | | |
 |---|---|
 | `in` | `{ "capability": "<string>" }` |
-| `out` | `{ "room_id": "<room_id>", "subject_id": "<subject_id>", "role": "member", "standing": "active", "event_id": "<event_id>", "pos": "<uint>" }` |
+| `out` | `{ "room_id": "<room_id>", "subject_id": "<subject_id>", "role": "member", "standing": "active", "event_id": "<event_id>", "pos": "<uint>", "joined": "<bool>" }` |
 | Errors | `capability_invalid`, `capability_expired`, `capability_revoked`, `capability_redeemed` |
 
 **The only operation reachable by a non-member.** Its authorization object is
@@ -950,7 +961,11 @@ the key-bound capability itself, never an identifier — so `in` carries no
 could probe with.
 
 Naturally idempotent: re-redeeming from the same subject reports existing
-membership.
+membership, and **`joined` is how it reports it** — `true` when this call
+authored the membership, `false` when it already existed. Without that field the
+two outcomes are byte-identical, so a client could not tell a fresh join from a
+replay, which is the same defect this record removes from `subject.ensure` by
+serving `created`.
 
 ### `message.send`
 
@@ -1019,7 +1034,7 @@ contributes nothing, and its absence is indistinguishable from it not existing.
 
 | | |
 |---|---|
-| `in` | `{ "room_id": "<room_id>", "name": "<string>", "declared_bytes": "<uint>", "content_type": "<string>" }` |
+| `in` | `{ "room_id": "<room_id>", "name": "<string>", "declared_bytes": "<uint>", "declared_content_type": "<string>" }` |
 | `out` | `{ "room_id": "<room_id>", "file_id": "<file_id>", "event_id": "<event_id>", "pos": "<uint>", "bytes": "<uint>", "digest": "<string>" }` |
 | Errors | `declared_size_mismatch`, `file_too_large` |
 
@@ -1035,7 +1050,11 @@ accepted (`enforced_at: "stage_declared"`) and against the streamed total after
 corruption for a size disagreement is the false accusation
 [the size policy](shared-file-size.md) forbids.
 
-`content_type` is peer-declared and **untrusted**; see `file.read`.
+The field is `declared_content_type` on **every** operation that carries it —
+`file.share`, `file.list`, and `file.read` alike. It is peer-declared and
+untrusted at each of them, and a value that is untrusted in one place and named
+`content_type` in another is a value a client will eventually trust by accident.
+See `file.read`.
 
 ### `file.list`
 
@@ -1047,6 +1066,7 @@ corruption for a size disagreement is the false accusation
 
 ```json
 { "file_id": "<file_id>", "name": "<string>", "bytes": 4096,
+  "digest": "<string>",
   "declared_content_type": "<string>",
   "shared_by": "<subject_id>", "shared_at": "<ts>",
   "providers": [ { "subject_id": "<subject_id>", "device_id": "<device_id>", "link": { "state": "direct", "since": "<ts>" } } ],
@@ -1062,6 +1082,11 @@ removed with the rest of the filesystem paths; whether bytes are held locally is
 
 Each provider's `link` is the same per-device type `room.peers` uses. There is
 no separate per-provider reachability vocabulary.
+
+`digest` is served here, not only by `file.share`, because a client that fetches
+a file it did not share has no other way to learn the digest it must verify
+against — and `digest_mismatch` is meaningless to a client that never held an
+expected value.
 
 ### `file.fetch`
 
@@ -1098,7 +1123,7 @@ the strength of it.**
 | | |
 |---|---|
 | `in` | `{ "transfer_op_id": "<op_id>" }` |
-| `out` | `{ "transfer_op_id": "<op_id>", "cancelled": true, "transferred_bytes": "<uint>" }` |
+| `out` | `{ "transfer_op_id": "<op_id>", "cancelled": true, "transferred_bytes": "<uint>", "total": { "state": "known", "bytes": "<uint>" } }` |
 | Errors | `transfer_unknown` |
 
 **The request field is `transfer_op_id`, not `op_id`.** It names the transfer
@@ -1107,6 +1132,11 @@ survives the reconnect that would make a cancel-request identifier meaningless.
 Giving it a distinct name is what keeps one wire spelling from meaning two
 things; the envelope `op_id` on this operation is ignored like any other
 naturally-idempotent operation.
+
+`total` is the same `known {bytes}` / `unknown` variant `transfer_stalled`
+carries. A cancel that reports "4 MiB transferred" without a total reports a
+number the user cannot interpret, and the `unknown` arm exists because a
+provider that never declared a size genuinely leaves it unknown.
 
 Authorized by `(session principal, transfer_op_id)`. Cancelling a transfer
 belonging to a different principal returns `transfer_unknown`, indistinguishable
@@ -1117,15 +1147,35 @@ clients' activity.
 
 | | |
 |---|---|
-| `in` | `{ "room_id": "<room_id>", "host": "127.0.0.1", "port": 8080 }` |
-| `out` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>", "host": "<string>", "port": "<uint>", "event_id": "<event_id>", "pos": "<uint>" }` |
+| `in` | `{ "room_id": "<room_id>", "target": <target>, "audience": <audience> }` |
+| `out` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>", "target": <target>, "audience": <audience>, "event_id": "<event_id>", "pos": "<uint>" }` |
 | Errors | `pipe_target_refused`, `policy_refused` |
 
-The target MUST be loopback — IPv4 in `127.0.0.0/8` or IPv6 `::1` — and `port`
-MUST be in `1..=65535`. Anything else is `pipe_target_refused` carrying the
-rejected `target`, **not** the generic `policy_refused`, because "your target is
-not allowed" and "you may not publish in this room" are refusals a user responds
-to differently.
+`target` is one object, `{ "host": "<string>", "port": "<uint>" }`, rather than
+two sibling fields. It is one value — a client sends it, the reply echoes it, and
+`pipe_target_refused` returns it verbatim — and splitting it across two fields
+would mean the error either echoes a partial target or invents a spelling the
+request never used.
+
+`audience` is a variant naming who may connect:
+
+```json
+{ "state": "room" }
+{ "state": "subjects", "subject_ids": ["<subject_id>"] }
+```
+
+It is **required**, like every request field. A pipe is a peer-reachable tunnel,
+so who may open it is not a value to leave to a default — `room` has to be said
+out loud rather than fallen into. A caller outside the audience answers
+`pipe_unknown`, indistinguishable from no such pipe, which is what makes a
+separate audience-refusal code unnecessary and a separate `pipe_audience`
+capability actively harmful.
+
+The target MUST be loopback — IPv4 in `127.0.0.0/8` or IPv6 `::1` — and
+`target.port` MUST be in `1..=65535`. Anything else is `pipe_target_refused`
+carrying the rejected `target`, **not** the generic `policy_refused`, because
+"your target is not allowed" and "you may not publish in this room" are refusals
+a user responds to differently.
 
 A private-range address such as `192.168.1.10` is **refused**: being unroutable
 from the internet is not the same as being local, and the policy is loopback,
@@ -1155,7 +1205,7 @@ the same type `room.peers` and `file.list` use.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>" }` |
-| `out` | `{ "pipe_id": "<pipe_id>", "connection_id": "<string>", "local_port": "<uint>" }` |
+| `out` | `{ "pipe_id": "<pipe_id>", "connection_id": "<string>", "local": <target> }` |
 | Errors | `pipe_unreachable`, `pipe_unknown`, `pipe_revoked` |
 
 A caller outside the pipe's audience answers `pipe_unknown`, indistinguishable
@@ -1545,7 +1595,7 @@ bytes are sent.
 
 | Code | Fields | Raised when |
 |---|---|---|
-| `pipe_target_refused` | `target` | The target is not loopback, or the port is out of range |
+| `pipe_target_refused` | `target` | `target.host` is not loopback, or `target.port` is outside `1..=65535` |
 | `pipe_index_unreadable` | — | The room's pipe index cannot be read |
 | `pipe_unknown` | `pipe_id` | No such pipe, **or** the caller is outside its audience |
 | `pipe_unreachable` | `pipe_id`, `link` | The pipe's publisher device could not be reached |
