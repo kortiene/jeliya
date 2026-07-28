@@ -252,7 +252,7 @@ The daemon's first frame after upgrade is exactly one `hello`:
   "protocol": 2,
   "storage_generation": 1,
   "limits": { "...": "as above" },
-  "subject": { "state": "present", "subject_id": "<64-hex>", "device_id": "<64-hex>" },
+  "subject": { "state": "present", "subject_id": "<subject_id>", "device_id": "<device_id>" },
   "resume": { "state": "fresh" } }
 ```
 
@@ -327,8 +327,9 @@ merely discouraged.
   "in": { "room_id": "<room_id>", "body": "…" } }
 ```
 
-`op_id` deduplicates a **request**; it is not an argument to an operation, and
-v1's habit of mixing the two is why the rule below needed an exception.
+`op_id` deduplicates a **request**; it is not an argument to an operation.
+Keeping it out of `in` is what lets the next rule — no optional request fields —
+hold without a single exception.
 
 Because it sits in the envelope, **`op_id` is accepted on every operation and
 ignored by those that do not deduplicate** — including all three `stream.*`
@@ -379,11 +380,19 @@ they are — a caller who is not a member cannot reach step 5 at all.
 Every operation draws from these. A type defined here is never redefined in an
 operation section.
 
+**Notation.** `<name>` in any schema below means "a value of the type `name`",
+whether that type is a scalar domain or a composite. The three row types —
+`<room_row>`, `<file_row>`, and `<event>` — are defined by the JSON block that
+immediately follows their first use rather than in this table, because each
+belongs to exactly one operation.
+
 | Type | Form |
 |---|---|
 | `<room_id>` `<subject_id>` `<device_id>` `<event_id>` `<invite_id>` `<file_id>` `<pipe_id>` `<op_id>` | opaque strings, each a distinct domain |
 | `<ts>` | RFC 3339 UTC instant with a `Z` offset |
 | `<uint>` | JSON number, integral, `>= 0` |
+| `<bool>` | JSON `true` or `false` |
+| `<string>` | JSON string, bounded by the codec |
 | `role` | bare enum: `authority`, `member` |
 | `standing` | bare enum: `active`, `left`, `removed` |
 | `severity` | bare enum: `ok`, `failed`, `review` — **derived, never sent** |
@@ -395,6 +404,14 @@ operation section.
 | `truncated` | variant: `complete`, `more {cursor}` |
 | `progress` | variant: `absent`, `reported {percent}` where `percent` is `0..=100` |
 | `author` | variant: `resolved {subject_id, role, standing}`, `unresolved` |
+| `subject` | variant: `present {subject_id, device_id}`, `absent` — `hello` only |
+| `resume` | variant: `fresh`, `resumed {from_pos}` — `hello` only |
+| `gap.to` | variant: `bounded {pos}`, `open` |
+| `gap.reason` | bare enum: `backpressure`, `retention`, `subscription_lapse` |
+
+Every variant in this record appears in this table. A variant whose arms are not
+enumerated here does not exist — an arm set stated only by example is how an
+adapter author guesses, and two adapters guess differently.
 
 `role` is closed on exactly two tokens. **`agent` is not a role** — this record
 already states that member and agent are a classification, not a permission, and
@@ -590,7 +607,7 @@ than inferred from a full page.
 tallies**:
 
 ```json
-{ "agents": [ { "subject_id": "<64-hex>", "room_id": "<room_id>",
+{ "agents": [ { "subject_id": "<subject_id>", "room_id": "<room_id>",
                 "liveness": "working",
                 "latest_status": { "state": "present", "label": "working", "at": "<ts>" },
                 "last_seen": { "state": "present", "at": "<ts>" } } ] }
