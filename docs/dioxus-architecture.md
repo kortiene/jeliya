@@ -226,11 +226,13 @@ browser-owned identity in the first release.
 |---|---|---|---|
 | Linux | WebKitGTK | development and runtime dependencies must be pinned, the actual linked system libraries must be recorded in package evidence, and minimum glibc and WebKitGTK floors must be enforced | #187 |
 | Windows | WebView2 | supported Windows versions and the evergreen or fixed-runtime policy must be recorded; navigation, storage, and devtools policy must be set; absent, outdated, and current runtimes must all be exercised | #188 |
-| macOS | system WebView (WebKit) | no floor required yet; nested native and WebView artifacts must be signed before the outer app and DMG | #186 |
+| macOS | system WebView (WebKit) | **no floor decided** — a supported macOS and WebKit baseline must be chosen before qualification, not waived; nested native and WebView artifacts must be signed before the outer app and DMG | #186 |
 | Android | system WebView | **none decided** — WebView version is captured as device evidence only, and no floor or evergreen policy exists | #160, #194 |
 
 Nothing in that table is pinned, recorded, enforced, or exercised today; each
-row states what its issue must deliver.
+row states what its issue must deliver. The macOS and Android rows record open
+decisions, not permissions: neither platform may qualify by treating an absent
+floor as an absent requirement.
 
 The decision names Linux and Windows precisely and names macOS only as the
 system WebView. No narrower platform API is approved, and the Android row is

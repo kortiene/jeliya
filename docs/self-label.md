@@ -37,16 +37,25 @@ id. There is no new store, no new key, and no wire field.
   roster, and is **excluded from diagnostics** (which already redact full
   identities). Every editor states this in copy.
 
-**Amended 2026-07-27 (issue #162).** `jeliya.aliases.v1` and the Flutter
-`aliases` map in `app_prefs.json` are the retiring clients' stores, not the
-decision. The decision survives whole: one device-local alias per identity id,
-including the self id, never signed and never on the wire. Under the
-[Dioxus clean-slate architecture](dioxus-architecture.md) the replacement
-stack writes that alias in a new namespaced storage generation through its
-injected platform services and implements no reader for either legacy store,
-so the automatic-migration clause above describes the retiring clients only —
-a returning user on the new stack starts with no label and sees "You" until
-they set one. Both legacy stores keep working in the clients that ship today.
+**Amended 2026-07-27 (issue #162).** What survives is the product decision:
+one device-local alias per identity id, including the self id, resolved as
+`alias(selfId) ?? "You"`, never signed and never on the wire. **Two clauses
+above are superseded for the replacement stack** and bind the retiring clients
+only:
+
+- *"It reuses the existing device-local alias store … There is no new store, no
+  new key"* — under the
+  [Dioxus clean-slate architecture](dioxus-architecture.md) the replacement
+  writes the alias in a new namespaced storage generation through its injected
+  platform services, and implements no reader for `jeliya.aliases.v1` or
+  `app_prefs.json`.
+- *"Migration is automatic"* — there is no migration. A returning user on the
+  replacement starts with no label and sees "You" until they set one.
+
+Everything else on this page — resolution order, validation, the rendering
+sites, the identity-id rule, and the privacy invariant — carries forward
+unchanged. Both legacy stores keep working in the clients that ship today, and
+the clauses above stay normative for them until those clients are retired.
 
 ## Validation (shared by both clients)
 

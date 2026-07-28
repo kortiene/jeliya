@@ -17,6 +17,20 @@ audience: ["contributors", "maintainers", "product"]
 > it is explicitly marked **Verified current behavior**. It is not a security
 > guarantee for a marketplace listing or a hosted provider.
 
+**Amended 2026-07-27 (issue #157).** This proposal predates the
+[Dioxus clean-slate architecture](dioxus-architecture.md) and **must not be
+executed as written**. Its delivery plan targets the retiring stack — the
+change map lands work in `ui/src`, `app/lib/src`, and
+`dart/jeliya_protocol`, and its verification tests React and Flutter — and its
+RPCs are expressed in the protocol-v1 envelope, whose operations the new
+generation does not preserve. The marketplace itself remains a deferred
+product decision, not a cancelled one, so the proposal is retained rather than
+deprecated: the trust model, the catalog-is-not-room-state rule, the
+provisioning state machine, and the honesty constraints are the parts worth
+keeping. Its client integration points and wire shapes must be re-derived
+against the clean-slate stack and the protocol generation #161 specifies
+before any of this is scheduled, and that re-derivation is its own decision.
+
 ## Executive recommendation
 
 Ship a **hosted-agent-only MVP**, with the marketplace catalog and installation
