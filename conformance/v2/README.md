@@ -5,14 +5,6 @@ Hand-authored, language-neutral fixtures for
 independent harness against every adapter: the codec, the typed daemon, the
 Rust adapters, and the agent cutover.
 
-**Not yet replayable.** The specification is `draft` and does not state
-per-operation wire schemas, so these fixtures encode a contract the document
-does not yet contain. They also use several dialects for the same concepts —
-`assert` appears as an array, as an object, and as a predicate string with
-sibling operands — so a harness cannot interpret them consistently. Both are
-tracked as **#212**. Treat the corpus as **recorded intent**, precise
-about behaviour and not yet precise about shape.
-
 This directory is data. It contains no TypeScript, no Rust, and no test runner,
 because a corpus that only one language can replay is not a conformance corpus.
 
@@ -29,41 +21,40 @@ conformance corpus is for. #161 states it as an acceptance criterion.
 
 The v1 surface was consulted **only** to know what to avoid transcribing.
 
-## Status
+## Status — not yet replayable
 
-`manifest.json` is the machine-checkable answer, and today it says:
+The specification is now complete: it states every request and reply shape, the
+whole 60-code taxonomy, and the DSL below. **The fixtures have not yet been
+normalized to that DSL**, and until they are, this corpus cannot be replayed and
+must not be cited as evidence for any adapter.
 
 | | |
 |---|---|
-| Cases | 332 |
-| Operations satisfying the required kinds | **33 of 33** |
-| Quarantined | 0 |
+| Cases | 335 |
+| Cases conforming to the DSL below | **0** |
+| Distinct step verbs in use | 178, against a closed set of 8 |
+| Cases carrying at least one off-DSL step | 332 of 335 |
+| Cases asserting a field or code the specification does not define | 51 |
 | Blocked on upstream | 10 |
 
-Every operation has a success case and an error case using **its own most
-specific code**. A shared code does not satisfy the rule, because
-`subject_absent` asserted against `room.list` and against `fleet.list` is the
-same assertion twice.
+Normalization is tracked as **#213**. It is deliberately a separate change from
+the specification work (#212): deciding whether a fixture is wrong requires the
+schema it is wrong against, so the schemas had to land first.
 
 **Ten cases are blocked on upstream work** (U1, U2, U3 in the spec). They
 **fail**; they do not skip. A skipped case reads as coverage and quietly
 becomes permanent. A failing case reads as work.
 
-### How the quarantine was cleared
+### What normalization must not do
 
-An earlier round quarantined eleven cases for asserting payload contracts the
-specification did not state — they had fallen back on v1 shapes (`points`,
-`rooms_total`, a nullable `progress`). That was a finding about the
-*specification*: an operation described only as "read the agent fleet
-projection" cannot be conformance-tested, and cannot be implemented either.
+The corpus's value rests entirely on the independence rule, and the fastest way
+to normalize 335 fixtures would destroy it. A fixture rewritten by pattern
+substitution is no longer a transcription of something independently known to be
+right — it is a transcription of whatever the substitution produced.
 
-The fix was to write the missing contracts, not to bless the v1 shapes. Twelve
-superseded cases were **deleted** rather than un-quarantined, and replacements
-were authored against the new contracts.
-
-One decision remains open and is recorded in the specification: whether typed
-status severity lives on the signed event or in the daemon projection. It is a
-wire change, and the corpus must not freeze before it is settled.
+Each case is therefore re-derived from the specification by hand, and a case
+whose intent no longer names a breaking change it would catch is **deleted**
+rather than mechanically translated.
 
 ## Layout
 
@@ -78,27 +69,249 @@ files.json           sharing, fetching, the size limit and its enforcement point
 pipes.json           publish / connect / release / revoke, reachability as fact
 ```
 
-## Case shape
+One flat file per domain. Case `name` is a **corpus-wide unique identifier**,
+not unique-per-file: a harness indexes by it, so a collision silently drops a
+case.
+
+---
+
+# The fixture DSL
+
+Normative. A harness implements exactly this, and a fixture that uses anything
+not defined here is invalid rather than interestingly extended.
+
+The design constraint is that it must lose no assertion the corpus currently
+expresses while replacing 178 ad-hoc verbs and three `assert` dialects — string,
+object, and array — with one language. Every construct below exists because some
+committed fixture needs it.
+
+## The case object
 
 ```json
 {
-  "name": "snake_case_unique",
-  "kind": "success|error|malformed|boundary|push|ordering|authorization|handshake",
-  "operation": "room.create",
-  "intent": "what this proves, and what breaking change it would catch",
-  "requires": ["subject", "live_room"],
-  "steps": [{ "call": "room.create", "in": {}, "expect": {} }],
-  "blocked_on_upstream": null,
-  "quarantined": null
+  "name": "room_list_reports_standing_and_capabilities_from_local_evidence",
+  "kind": "success",
+  "operation": "room.list",
+  "intent": "Proves room.list answers from local evidence with zero network activity, catching any change that makes the room list depend on liveness.",
+  "requires": ["subject", "room:live", "observe:network"],
+  "steps": [ … ],
+  "blocked_on_upstream": "U1"
 }
 ```
 
-Dynamic values are asserted as type tags (`<hex64>`, `<room_id>`, `<ts>`,
-`<uint>`), never as literals, so a fixture pins a shape without pinning a clock
-or a random identifier. This convention is inherited from the v1 corpus.
+| Key | Required | Value |
+|---|---|---|
+| `name` | yes | `snake_case`, corpus-wide unique |
+| `kind` | yes | one of the eight below |
+| `operation` | yes | one of the 33 operation names, or `null` |
+| `intent` | yes | prose naming the breaking change this case would catch |
+| `requires` | yes | array of preconditions, closed vocabulary below |
+| `steps` | yes | non-empty array |
+| `blocked_on_upstream` | no | `"U1"`, `"U2"`, or `"U3"` |
+
+`kind` is closed: `success`, `error`, `malformed`, `boundary`, `authorization`,
+`handshake`, `push`, `ordering`.
+
+**`operation: null` is legal and means the case is not about one operation** —
+gate behaviour, envelope framing, cross-room ordering. 103 of the 335 committed
+cases are in this class, and the manifest's coverage table counts only the
+attributed ones, which is why its rows sum to 232 rather than 335. A case may
+not use `null` merely because attributing it is inconvenient.
 
 `intent` is required and is not decoration: a case whose intent cannot name the
 breaking change it would catch is not worth running.
+
+## Steps
+
+A step has **exactly one verb**. The verb set is closed at eight.
+
+| Verb | Value | Meaning |
+|---|---|---|
+| `call` | operation name | Invoke an operation on the current session |
+| `http` | `{method, path}` | An unauthenticated Layer 0 request |
+| `upgrade` | `{query, headers}` | A Layer 1 `/ws` upgrade attempt |
+| `send` | raw frame value | Write bytes that may not be a valid frame |
+| `await` | `{frame}` or `{push}` | Wait for a server-initiated frame |
+| `control` | `{…}` | Drive the harness, not the daemon |
+| `save` | `{var: path}` | Capture values into variables |
+| `assert` | array of assertions | Everything else |
+
+Any step may additionally carry:
+
+| Key | Meaning |
+|---|---|
+| `in` | the request body, for `call` |
+| `op_id` | the envelope `op_id`, for `call` — **never inside `in`** |
+| `expect` | the reply matcher |
+| `note` | prose for a human; a harness ignores it |
+
+`note` is the only annotation key. The committed corpus also uses `why`,
+`comment`, `intent_note`, and `meaning` for the same thing.
+
+## `expect` — one reply matcher
+
+`expect` is a single form discriminated by `ok`, exactly as the wire is:
+
+```json
+{ "expect": { "ok": true,  "out": { "room_id": "<room_id>", "live": true } } }
+{ "expect": { "ok": false, "err": { "code": "room_not_available" } } }
+```
+
+**Matching is a subset match by default.** Keys named in `out` or `err` must be
+present and equal; keys not named are not constrained. This is what makes a
+fixture robust against fields added later without making it vacuous.
+
+To pin a key set exactly, use the `exact_keys` assertion. To require a key be
+**absent**, use `absent`. Silence in `expect` means "not asserted", never
+"asserted absent" — the distinction is load-bearing, and conflating the two is
+how a fixture starts passing against an implementation that leaks a field.
+
+An `expect` on a `call` step replaces all thirteen of the corpus's `expect_*`
+verbs: `expect_error`, `expect_subset`, `expect_frame`, `expect_status`,
+`expect_body`, `expect_hello`, `expect_upgrade`, `expect_absent`,
+`expect_one_of`, `expect_identical_to`, `expect_no_null`, `expect_all`, and
+`expect_each_subset`.
+
+## `assert` — one assertion form, two families
+
+`assert` is **always an array of objects**. It is never a bare string and never a
+single object; the committed corpus uses all three, which is the single largest
+source of the dialect problem.
+
+### Value assertions
+
+```json
+{ "path": "out.rooms[*].role", "op": "member_of", "value": ["authority", "member"] }
+```
+
+`path` is a dotted path rooted at `out`, `err`, `frame`, or a `$variable`.
+`[*]` is a wildcard over an array: the assertion must hold for **every** element.
+This is what lets one predicate replace the corpus's `every_row_has_fields`,
+`every_row_has_non_null`, `every_push_has_non_null`, `all_eq`, `every_has_key`,
+and `every_row_has_value`.
+
+`op` is closed at fourteen:
+
+| `op` | `value` | Holds when |
+|---|---|---|
+| `eq` | any | Deep equality. `value` may be `"$var"` |
+| `ne` | any | Deep inequality |
+| `lt` `lte` `gt` `gte` | number | Numeric comparison |
+| `member_of` | array | The value is one of these |
+| `type` | type tag | The value inhabits that domain |
+| `present` | — | The path resolves |
+| `absent` | — | The path does not resolve |
+| `exact_keys` | array | The object's key set is exactly this |
+| `len` | `{op, value}` | The array/string length satisfies a nested comparison |
+| `unique` | — | All values at a wildcard path are distinct |
+| `increasing` | — | Strictly increasing |
+| `contiguous` | — | Strictly increasing by exactly 1 |
+| `no_nulls` | — | No JSON `null` anywhere in the subtree |
+
+`no_nulls` deserves its own predicate rather than being a convention because
+[the specification's no-null rule](../../docs/protocol-v2.md#bounded-parsing) is
+normative for every frame, and a corpus that cannot assert it cannot test it.
+
+These fourteen replace the corpus's `eq`, `equals`, `equal_modulo`, `all_eq`,
+`same_value_as`, `codes_equal`, `identical_to`, `errors_identical`, `ne`, `neq`,
+`not_equal`, `not_equals`, `distinct_from`, `len`, `len_eq`, `array_len`,
+`byte_len`, `len_lte`, `len_gte`, `no_null`, `no_nulls_deep`, `no_null_values`,
+`absent_key`, `no_keys`, `present_key`, `greater_than`, `strictly_increasing`,
+`monotonic_non_decreasing`, `pos_strictly_increasing`, and
+`contiguous_increasing`.
+
+### Observation assertions
+
+Some cases assert facts about the daemon's *behaviour*, not about a value in a
+reply. Those are a separate family, because no path names them:
+
+```json
+{ "observe": "no_network_activity", "scope": "step" }
+```
+
+`observe` is closed at nine:
+
+| `observe` | Holds when |
+|---|---|
+| `no_network_activity` | No packet left the host during `scope` |
+| `no_durable_mutation` | No byte of the data dir changed during `scope` |
+| `no_event_authored` | No room event was written during `scope` |
+| `bytes_streamed` | Bytes sent satisfies a nested comparison |
+| `connection_open` | The session is still open |
+| `close_code` | The connection closed with a given code |
+| `push_count` | Pushes received satisfies a nested comparison |
+| `no_push` | No push arrived for a named room |
+| `timing_indistinguishable` | Two named steps are not separable by latency |
+
+`scope` is `step`, `case`, or a named step range. It is required on the first
+three and forbidden on the rest.
+
+`timing_indistinguishable` exists because
+[the non-oracle property](../../docs/protocol-v2.md#the-non-oracle-property)
+requires indistinguishable *timing*, not merely an identical code. A corpus that
+asserts only the code proves half the property.
+
+## Variables
+
+```json
+{ "call": "room.create", "in": { "name": "Build" }, "save": { "r": "out.room_id" } }
+{ "call": "room.timeline", "in": { "room_id": "$r", "…": "…" } }
+```
+
+`save` maps variable names to paths. A `$name` reference resolves to the captured
+value anywhere a literal is legal. Variables are scoped to the case.
+
+This replaces `save`, `save_out`, and `save_error`, which differed only in which
+root they read from — now expressed as the path's root.
+
+## Type tags
+
+A dynamic value is asserted as a **type tag** rather than a literal, so a fixture
+pins a shape without pinning a clock or a random identifier.
+
+**A tag names a value domain, not an encoding.**
+
+`<room_id>` `<subject_id>` `<device_id>` `<event_id>` `<invite_id>` `<file_id>`
+`<pipe_id>` `<op_id>` `<ts>` `<uint>` `<bool>` `<string>`
+
+- **`<hex64>` is not a tag.** It names an encoding shared by four distinct
+  domains, so asserting it where `<device_id>` belongs would pass against a
+  subject id. The corpus uses it 
+  in exactly that ambiguous way today.
+- `<u64>`, `<number>`, and `<int>` all collapse into `<uint>`.
+- **`<variant>` and `<array>` are not tags.** `{"state": "<variant>"}` asserts
+  that a discriminant exists without asserting which arms are legal — it asserts
+  nothing at all. Every such site becomes an explicit token set via `member_of`.
+- A new tag is minted only when a value's domain is not already named, and it
+  must be added to this table in the same change.
+
+## `requires`
+
+A closed vocabulary of preconditions the harness must establish. The committed
+corpus uses **133 flat tokens**, many of them synonyms (`daemon`,
+`authority_daemon`, `member_daemon`, `fresh_daemon`, `disposable_daemon`), which
+no harness can implement as a closed set.
+
+The replacement is a `namespace:argument` form. Namespaces are closed at nine:
+
+| Namespace | Arguments | Establishes |
+|---|---|---|
+| `subject` | `self`, `none`, `second`, `outsider` | Local cryptographic subjects |
+| `daemon` | `self`, `second`, `fresh`, `restartable` | Daemon processes |
+| `room` | `plain`, `live`, `quiescent`, `left`, `removed`, `foreign`, `with_history` | A room in a named state |
+| `member` | `b`, `c`, `agent`, `non_agent` | Additional members of the current room |
+| `link` | `up`, `down`, `relay`, `slow` | Transport conditions between daemons |
+| `resource` | `tcp_service`, `large_file`, `shared_file`, `fetched_file` | Fixtures the case operates on |
+| `observe` | `network`, `store`, `frames`, `timing`, `process` | Observation capabilities |
+| `control` | `clock`, `limits`, `reconnect`, `concurrency` | Harness controls |
+| `fault` | a taxonomy code, e.g. `room_index_unreadable` | Fault injection |
+
+A bare `subject` is shorthand for `subject:self`; a bare `daemon` for
+`daemon:self`. Nothing else may be bare.
+
+`fault:` takes **a code from the taxonomy**, so a fault a fixture wants to inject
+that names no code is a signal the taxonomy is incomplete — which is how
+`room_index_unreadable` and its four siblings were found in the first place.
 
 ## Adding a case
 
@@ -108,3 +321,5 @@ breaking change it would catch is not worth running.
 3. Prefer a case that would fail against a plausible wrong implementation. The
    repository's own precedent is to verify this by deliberately breaking the
    implementation and confirming the case goes red.
+4. Give it an `intent` that names the breaking change. If you cannot, the case is
+   not worth running.
