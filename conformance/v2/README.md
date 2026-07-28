@@ -128,7 +128,7 @@ A step has **exactly one verb**. The verb set is closed at eight.
 | Verb | Value | Meaning |
 |---|---|---|
 | `call` | operation name | Invoke an operation on the current session |
-| `http` | `{method, path}` | An unauthenticated Layer 0 request |
+| `http` | `{method, path, headers, body}` | A Layer 0 or `/api/session` request |
 | `upgrade` | `{query, headers}` | A Layer 1 `/ws` upgrade attempt |
 | `send` | raw frame value | Write bytes that may not be a valid frame |
 | `await` | `{frame}` or `{push}` | Wait for a server-initiated frame |
@@ -142,11 +142,32 @@ Any step may additionally carry:
 |---|---|
 | `in` | the request body, for `call` |
 | `op_id` | the envelope `op_id`, for `call` — **never inside `in`** |
+| `on` | which session this step runs on |
 | `expect` | the reply matcher |
 | `note` | prose for a human; a harness ignores it |
 
 `note` is the only annotation key. The committed corpus also uses `why`,
 `comment`, `intent_note`, and `meaning` for the same thing.
+
+### `on` — which session
+
+`on` names a session established by `requires`, defaulting to `subject:self`'s
+primary connection when omitted:
+
+```json
+{ "call": "room.create", "on": "subject:self",   "in": { "name": "Build" } }
+{ "call": "room.timeline", "on": "subject:second", "in": { "…": "…" } }
+{ "call": "room.list",   "on": "subject:self#2", "in": {} }
+```
+
+**Nothing else selects an actor**, and without this key roughly a third of the
+corpus is inexpressible. The committed fixtures spell the same idea four ways —
+`as` (504 uses, 25 distinct actor labels), `conn`, `session`, and `client` — and
+the cases that need it are not marginal: the non-oracle property needs a
+non-member, `op_ids_do_not_collide_across_session_principals` needs two
+principals on one daemon, and every reconnect case needs two connections for one
+subject. `#2` names a second connection for the same principal, which is what
+distinguishes a per-connection scope from a per-principal one.
 
 ## `expect` — one reply matcher
 
@@ -156,6 +177,17 @@ Any step may additionally carry:
 { "expect": { "ok": true,  "out": { "room_id": "<room_id>", "live": true } } }
 { "expect": { "ok": false, "err": { "code": "room_not_available" } } }
 ```
+
+For `http` and `upgrade` steps the matcher instead carries `status`, `headers`,
+and `body`:
+
+```json
+{ "expect": { "status": 426, "body": { "code": "protocol_unsupported" } } }
+```
+
+The record makes the refusal statuses normative — `426`, `401`, `403` — and
+requires that `POST /api/session` prove possession of the daemon token. Neither
+is assertable without a status and a header slot, so both exist.
 
 **Matching is a subset match by default.** Keys named in `out` or `err` must be
 present and equal; keys not named are not constrained. This is what makes a
@@ -190,7 +222,7 @@ This is what lets one predicate replace the corpus's `every_row_has_fields`,
 `every_row_has_non_null`, `every_push_has_non_null`, `all_eq`, `every_has_key`,
 and `every_row_has_value`.
 
-`op` is closed at fourteen:
+`op` is closed at nineteen:
 
 | `op` | `value` | Holds when |
 |---|---|---|
@@ -205,8 +237,25 @@ and `every_row_has_value`.
 | `len` | `{op, value}` | The array/string length satisfies a nested comparison |
 | `unique` | — | All values at a wildcard path are distinct |
 | `increasing` | — | Strictly increasing |
+| `non_decreasing` | — | Increasing or equal — **not** the same as `increasing` |
 | `contiguous` | — | Strictly increasing by exactly 1 |
 | `no_nulls` | — | No JSON `null` anywhere in the subtree |
+| `byte_len` | `{op, value}` | Length **in bytes**, for the size-boundary cases |
+| `eq_except` | `{path, keys}` | Deep equality with another path, ignoring named keys |
+
+`eq_except` exists for **the non-oracle property**, which is the corpus's
+flagship assertion and which `eq` alone cannot express: two refusals must be
+identical *except* for the envelope `id` that correlates them. Without it, every
+non-oracle case degrades into asserting the codes match, which proves half the
+property.
+
+`byte_len` is separate from `len` because the size limits are byte limits and
+`max_message_body_bytes` is not a character count. Collapsing them would make
+every multi-byte boundary case silently wrong.
+
+`non_decreasing` is separate from `increasing` because `transferred_bytes` on
+successive progress frames may legitimately repeat, and asserting strict
+increase there would fail a correct implementation.
 
 `no_nulls` deserves its own predicate rather than being a convention because
 [the specification's no-null rule](../../docs/protocol-v2.md#bounded-parsing) is
@@ -227,24 +276,32 @@ reply. Those are a separate family, because no path names them:
 
 ```json
 { "observe": "no_network_activity", "scope": "step" }
+{ "observe": "close_code",  "value": 4004 }
+{ "observe": "push_count",  "value": { "op": "eq", "value": 3 }, "room_id": "$r" }
+{ "observe": "timing_indistinguishable", "between": ["step:3", "step:5"] }
 ```
 
-`observe` is closed at nine:
+`observe` is closed at ten. Each row states the keys it takes, because an
+observation with no slot for its argument cannot be written down:
 
-| `observe` | Holds when |
-|---|---|
-| `no_network_activity` | No packet left the host during `scope` |
-| `no_durable_mutation` | No byte of the data dir changed during `scope` |
-| `no_event_authored` | No room event was written during `scope` |
-| `bytes_streamed` | Bytes sent satisfies a nested comparison |
-| `connection_open` | The session is still open |
-| `close_code` | The connection closed with a given code |
-| `push_count` | Pushes received satisfies a nested comparison |
-| `no_push` | No push arrived for a named room |
-| `timing_indistinguishable` | Two named steps are not separable by latency |
+| `observe` | Additional keys | Holds when |
+|---|---|---|
+| `no_network_activity` | `scope` | No packet left the host during `scope` |
+| `no_durable_mutation` | `scope` | No byte of the data dir changed during `scope` |
+| `no_event_authored` | `scope` | No room event was written during `scope` |
+| `bytes_streamed` | `value` | Bytes sent satisfies a nested comparison |
+| `connection_open` | `on` | That session is still open |
+| `close_code` | `value`, `on` | That connection closed with this code |
+| `push_count` | `value`, `room_id` | Pushes received for a room satisfies a comparison |
+| `no_push` | `room_id`, `scope` | No push arrived for that room |
+| `timing_indistinguishable` | `between` | Two named steps are not separable by latency |
+| `process_exited` | `value` | The daemon process exited with this status |
 
-`scope` is `step`, `case`, or a named step range. It is required on the first
-three and forbidden on the rest.
+`scope` is `step`, `case`, or `step:<n>..step:<m>`.
+
+Steps are addressable as `step:<n>`, one-indexed within the case. That is what
+makes `timing_indistinguishable` writable at all — it is a claim about a *pair*
+of steps, and the non-oracle property is not provable without it.
 
 `timing_indistinguishable` exists because
 [the non-oracle property](../../docs/protocol-v2.md#the-non-oracle-property)
@@ -263,6 +320,29 @@ value anywhere a literal is legal. Variables are scoped to the case.
 
 This replaces `save`, `save_out`, and `save_error`, which differed only in which
 root they read from — now expressed as the path's root.
+
+### Computed values
+
+A boundary case must say "exactly the served limit" and "one past it" without
+compiling either number in — that is the whole point of serving limits. So a
+value may also be a single-key computed node:
+
+| Node | Meaning |
+|---|---|
+| `{"$add": ["$max", 1]}` | Arithmetic on captured values |
+| `{"$sub": ["$max", 1]}` | |
+| `{"$bytes_of_len": "$max"}` | A string of exactly that many bytes |
+| `{"$concat": ["a", "$b"]}` | Concatenation |
+| `{"$unknown": "<room_id>"}` | A well-formed value of that domain naming nothing that exists |
+
+Without these, **every case that probes a served limit would have to hard-code
+the limit**, which is precisely the failure the record's served-limits object
+exists to prevent — and the corpus already embeds thirteen ad-hoc operators to
+avoid it.
+
+`{"$unknown": …}` is separate from a literal because the non-oracle cases need a
+value that is syntactically valid and semantically absent, and a fixture cannot
+know a real identifier that does not exist.
 
 ## Type tags
 

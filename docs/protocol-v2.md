@@ -373,9 +373,17 @@ of its steps are security properties rather than conveniences.
 3. **Dedup ledger** — a replayed `op_id` returns the original result, and no
    later step runs
 4. **Room index** → `room_not_available`
-5. **Lifecycle** → `membership_ended`
+5. **Standing** → `membership_ended`, unless the operation is defined over a
+   former membership. Exactly two are: `room.archive` and `room.list`
 6. **Role** → `insufficient_standing`
 7. **Operation semantics** → the operation's own codes
+
+The step 5 exception is not a convenience. `room.archive` exists *to* open a
+room the caller has left, so a pipeline that refused it on standing would make
+the operation unreachable in every state it is defined for, and `room.list`
+must enumerate left rooms or a client could never find one to archive. Stating
+the exception in the pipeline rather than only in the operation's own section is
+the difference between a rule with a carve-out and a rule that is quietly false.
 
 Structure comes first because no rule can be applied to a value that has not
 been decoded. Putting format and bounds in step 1 does **not** weaken
@@ -837,19 +845,25 @@ wrote rather than a bare acknowledgement.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "direction": "forward", "limit": "<uint>" }` |
-| `out` | `{ "room_id": "<room_id>", "events": [ <event> ], "next_pos": "<uint>", "truncated": <truncated> }` |
+| `out` | `{ "room_id": "<room_id>", "events": [ <event> ], "truncated": <truncated> }` |
 | Errors | `cursor_unknown` |
 
 `direction` is a bare enum: `forward`, `backward`. `limit` is `1..=timeline_page_max`;
 outside that it is `invalid_argument` with `reason: {"state": "bound"}`, refused
 rather than clamped.
 
-**`next_pos` is the position of the last event returned, or `from_pos` when
-`events` is empty.** Positions are exclusive on the low side, so a client
-resends `next_pos` to get what follows. An earlier worked example showed a
-single event at position 58 with `next_pos: 59`, which under an exclusive cursor
-skips exactly one event at every page boundary — the example was wrong, not the
-rule.
+**Continuation is `truncated`, and only `truncated`.** When the reply is
+`{"state": "more", "cursor": …}` the caller resends that cursor; when it is
+`{"state": "complete"}` there is nothing further and no cursor exists to
+misuse.
+
+An earlier draft returned a sibling `next_pos` alongside `truncated`, and the
+two disagreed: the worked example paired a single event at position 58 with
+`next_pos: 59`, which under an exclusive cursor skips exactly one event at every
+page boundary. The off-by-one was the symptom; **two continuation mechanisms in
+one reply was the defect**, because a client may follow either and they need not
+agree. `stream.resync` keeps an explicit position because recovery is defined
+over positions rather than pages, and it is the only place one appears.
 
 Reads committed history identically whether or not the room is live. A caller
 whose standing is `left` or `removed` gets `membership_ended` and uses
@@ -872,7 +886,7 @@ conflating them is the confusion (#50/#94) this generation exists to end.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "direction": "forward", "limit": "<uint>" }` |
-| `out` | `{ "room_id": "<room_id>", "standing": "left", "events": [ <event> ], "next_pos": "<uint>", "truncated": <truncated> }` |
+| `out` | `{ "room_id": "<room_id>", "standing": "left", "events": [ <event> ], "truncated": <truncated> }` |
 | Errors | `room_still_active` |
 
 Normatively **zero network activity and zero durable mutation**. Defined only
@@ -932,7 +946,7 @@ grant.
 
 | | |
 |---|---|
-| `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "limit": "<uint>" }` |
+| `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "direction": "forward", "limit": "<uint>" }` |
 | `out` | `{ "room_id": "<room_id>", "invites": [ { "invite_id": "<invite_id>", "subject_id": "<subject_id>", "role": "member", "expires_at": "<ts>", "redeemability": "outstanding" } ], "truncated": <truncated> }` |
 | Errors | `invite_index_unreadable` |
 
@@ -1016,7 +1030,7 @@ agent are a classification, not a permission.
 
 | | |
 |---|---|
-| `in` | `{ "room_id": "<room_id>", "subject_id": "<subject_id>", "cursor": <cursor>, "limit": "<uint>" }` |
+| `in` | `{ "room_id": "<room_id>", "subject_id": "<subject_id>", "cursor": <cursor>, "direction": "forward", "limit": "<uint>" }` |
 | `out` | `{ "room_id": "<room_id>", "subject_id": "<subject_id>", "entries": [ { "at": "<ts>", "label": "working", "severity": "ok", "progress": <progress> } ], "truncated": <truncated> }` |
 | Errors | `status_subject_unknown` |
 
@@ -1076,7 +1090,7 @@ See `file.read`.
 
 | | |
 |---|---|
-| `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "limit": "<uint>" }` |
+| `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "direction": "forward", "limit": "<uint>" }` |
 | `out` | `{ "room_id": "<room_id>", "files": [ <file_row> ], "truncated": <truncated> }` |
 | Errors | `file_index_unreadable` |
 
@@ -1110,7 +1124,7 @@ expected value.
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "file_id": "<file_id>" }` |
 | `out` | `{ "room_id": "<room_id>", "file_id": "<file_id>", "bytes": "<uint>", "digest": "<string>", "provider": { "subject_id": "<subject_id>", "device_id": "<device_id>" } }` |
-| Errors | `provider_unreachable`, `file_unknown`, `file_too_large`, `digest_mismatch`, `transfer_stalled` |
+| Errors | `provider_unreachable`, `file_unknown`, `file_too_large`, `digest_mismatch`, `transfer_stalled`, `room_not_live` |
 
 **No `save_dir`.** v1's destination path is removed; the daemon holds the bytes
 and `file.read` streams them out.
@@ -1211,7 +1225,7 @@ removed.
 
 | | |
 |---|---|
-| `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "limit": "<uint>" }` |
+| `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "direction": "forward", "limit": "<uint>" }` |
 | `out` | `{ "room_id": "<room_id>", "pipes": [ { "pipe_id": "<pipe_id>", "published_by": "<subject_id>", "device_id": "<device_id>", "published_at": "<ts>", "link": <link>, "connected": "<bool>" } ], "truncated": <truncated> }` |
 | Errors | `pipe_index_unreadable` |
 
@@ -1228,7 +1242,7 @@ the same type `room.peers` and `file.list` use.
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>" }` |
 | `out` | `{ "pipe_id": "<pipe_id>", "connection_id": "<string>", "local": <target> }` |
-| Errors | `pipe_unreachable`, `pipe_unknown`, `pipe_revoked` |
+| Errors | `pipe_unreachable`, `pipe_unknown`, `pipe_revoked`, `room_not_live` |
 
 A caller outside the pipe's audience answers `pipe_unknown`, indistinguishable
 from no such pipe. Requires liveness.
@@ -1268,6 +1282,14 @@ not an error. Scoped to the connection that holds it. Exceeding
 `max_subscriptions_per_connection` is `subscription_limit_reached`, never a
 silent drop.
 
+`from` and `from_pos` are deliberately different types and are not two spellings
+of one thing. `from` is a **cursor** — what the caller asks for, including
+`{"state": "start"}`, which names no position because the caller does not yet
+know one. `from_pos` is the concrete position that cursor **resolved to**, which
+the caller needs in order to detect the first gap. A reply that merely echoed
+the cursor would leave a client that sent `start` still unable to say where its
+stream begins.
+
 ### `stream.unsubscribe`
 
 | | |
@@ -1289,8 +1311,12 @@ the daemon returns either the events since it, or `resync_required` naming a
 position to discard back to and re-read from. Resync is not best-effort and is
 not "call `room.activate` again", which is what v1 clients did.
 
-`next_pos` follows the same rule as `room.timeline`: the position of the last
-event returned, or `from_pos` when `events` is empty.
+`from_pos` is a position rather than a cursor because recovery is defined over
+positions: the client already holds one and is naming it. `next_pos` is the
+position of the last event returned, or `from_pos` itself when `events` is
+empty. Positions are exclusive on the low side, so the client resends `next_pos`
+to get what follows — and because this reply has exactly one continuation
+mechanism, there is no second value it can disagree with.
 
 ## Pushes, ordering, gap detection, and resync
 
@@ -1597,10 +1623,18 @@ fixing its code.
 | `capability_redeemed` | `redeemed_at` | The capability has already been converted into membership |
 | `role_not_grantable` | `requested` | `invite.mint` named a role this record does not permit minting |
 
-**`capability_invalid`, `capability_expired`, `capability_revoked`, and
-`capability_redeemed` are redemption-side codes.** They answer the *redeemer*,
-telling them why they cannot join. An authority repeating its own withdrawal is
-not their audience — see [Idempotency](#idempotency-and-retry).
+**`capability_invalid`, `capability_expired`, and `capability_revoked` are
+redemption-side codes.** They answer the *redeemer*, telling them why they cannot
+join. An authority repeating its own withdrawal is not their audience — see
+[Idempotency](#idempotency-and-retry).
+
+`capability_redeemed` is the exception, and it faces **both** ways. To a
+redeemer it means "you already used this". To an authority calling
+`invite.revoke` it means "there is nothing left to withdraw — this became a
+membership, and `member.remove` is the operation that ends one". Those are the
+same fact answered to two audiences, not two codes sharing a name, which is why
+it is `invite.revoke`'s distinctive code without contradicting the paragraph
+above.
 
 `capability_invalid` carries no fields on purpose. It is the answer for a forged
 capability, a capability for a room that does not exist, and a capability naming
