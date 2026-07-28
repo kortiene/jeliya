@@ -26,6 +26,7 @@ CI rules for every page in this wiki.
 
 - [Dioxus clean-slate architecture](dioxus-architecture.md) - Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, its protocol and storage generation, the single embedded artifact, and the retirement of React, Flutter, the Dart protocol, and the C ABI. Decided and not yet built.
 - [Daemon protocol](PROTOCOL.md) - Normative transport-neutral contract between `jeliya-core` and every Jeliya client, and the contract every released daemon speaks.
+- [Shared-file size policy](shared-file-size.md) - Decision record retaining 104,857,600 bytes as the protocol-v2 maximum shared-file size, the served preflight and distinctive over-limit error it requires, and the provisional resource budgets and falsifiers that bound it.
 - [Room Workbench](room-workbench.md) - Decision record for the global-versus-room hierarchy, canonical routes, responsive shells, and status vocabulary.
 - [Room attention](room-attention.md) - Decision record for evidence-backed room recency, device-local unread, and actionable attention, and the evidence rule each displayed field must satisfy.
 - [Device-local self label](self-label.md) - Decision record for the editable, device-local self display name reusing the alias store keyed by the self identity id, its fallback, validation, migration, and privacy rules.
