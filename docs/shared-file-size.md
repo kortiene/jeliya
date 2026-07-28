@@ -185,7 +185,7 @@ specify and #198's to validate.
 
 The first-release limit stays bounded and whole-blob. Chunked, resumable, and
 range-requested transfer is **not** first-release work and is designed
-separately under its own issue.
+separately under #209.
 
 This is not a deferral of the size decision. It is the reason the size
 decision can be conservative: there is no resume today, so a failed transfer
