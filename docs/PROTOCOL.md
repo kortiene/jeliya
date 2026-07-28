@@ -3,7 +3,7 @@ type: "Reference"
 title: "Jeliya daemon protocol (v1)"
 description: "Normative transport-neutral contract between jeliya-core and every web, Flutter, FFI, script, and test client."
 tags: ["architecture", "daemon", "ffi", "protocol", "websocket"]
-timestamp: "2026-07-12T19:25:00Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -227,6 +227,22 @@ A client MUST handle these cross-cutting codes on every relevant call; the
 inline notes only add codes that are *specific* to a method.
 
 ## Protocol version & forward compatibility
+
+**Amended 2026-07-27 (issue #157).** Protocol v1 as specified on this page is
+the contract every released `v0.6.x` daemon speaks, and it remains that
+contract until protocol v2 exists. The clean-slate decision adds no v1 work
+and cancels none; whether a further v1 field lands is decided where it always
+was, not here. Protocol v2 is owned by #161, which is open — no v2
+specification exists yet, here or anywhere. When written it may retain,
+rename, combine, or remove operations deliberately, and it preserves no v1
+field, event, null, or storage shape, including the extension points reserved
+below. Under the
+[Dioxus clean-slate architecture](dioxus-architecture.md) decision the v2
+daemon must be v2-only and must reject unsupported clients during the
+handshake, **before dispatch and before any mutation executes**; no v1 client
+crosses that boundary. Nothing else on this page is amended by that decision:
+the rules below remain the contract a v1 daemon speaks and a v1 client must
+honor.
 
 The wire contract is versioned by a single **major** integer,
 `protocol` (currently `1`). It is surfaced three ways — `daemon.status.protocol`,

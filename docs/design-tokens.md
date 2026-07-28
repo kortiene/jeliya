@@ -3,7 +3,7 @@ type: "Reference"
 title: "Cross-client design tokens"
 description: "Mapping from every Jeliya design-token concept to its React custom property and its Flutter getter, with the shared fixture and the two gates that enforce it."
 tags: ["design", "design-system", "tokens", "accessibility", "cross-client"]
-timestamp: "2026-07-18T12:00:00Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -23,6 +23,17 @@ correct against the other while both contradicted the design record.
 This page is the mapping that keeps them honest. [The design
 system](../DESIGN.md) stays normative for *why* a token exists; this page says
 *where* it lives on each side.
+
+**Amended 2026-07-27 (issue #157).** Both sides of that mapping belong to the
+retiring stack. The
+[Dioxus clean-slate architecture](dioxus-architecture.md) decides that one
+Rust client stack replaces React and Flutter, which leaves this page's parity
+half — and the two gates that enforce it — without a second client to check.
+Nothing is built and neither gate has been removed, so everything below still
+holds and still runs today. What replaces the enforcement is undecided and
+recorded in
+[known gaps and roadmap](known-gaps-roadmap.md#verification-the-retirement-removes);
+the shared fixture is the half that carries forward.
 
 ## Source of truth and gates
 

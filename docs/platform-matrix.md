@@ -2,8 +2,8 @@
 type: "Status Report"
 title: "Platform matrix"
 description: "Implementation, verification, packaging, and release status for every Jeliya runtime and target platform."
-tags: ["packaging", "platforms", "release", "verification"]
-timestamp: "2026-07-19T21:49:56Z"
+tags: ["dioxus", "packaging", "platforms", "release", "verification"]
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -20,6 +20,22 @@ exact-revision, loopback, and hosted qualification pass, but signed
 direct/relay reruns are pending. The retained
 2026-07-16 runs certify released v0.6.0 source `55024a4...` + `71fbb500...`
 only. A source build or passing test is not a release.
+
+**Amended 2026-07-27 (issue #157).** The client rows below describe the React
+web UI embedded from `ui/dist` and the Flutter macOS, Linux, and Android
+applications. A decision recorded that day requires replacing both with one
+clean-slate typed Rust client stack rendered by Dioxus 0.7 in the platform's
+system WebView — see
+[Dioxus clean-slate architecture](dioxus-architecture.md). That decision is
+entirely ahead of this tree: no Dioxus code exists, the daemon and the React
+archive it embeds continue to ship, and the Flutter applications remain the
+only native clients. Nothing here is removed before its replacement is
+qualified — React under #200, Flutter desktop under #201, Flutter Android with
+the Dart protocol package, the C ABI, and `jeliya-ffi` atomically under #202,
+and repository-wide documentation, CI, packaging, and license
+consolidation under #203. The targets that decision selects are recorded
+separately under [Decided Dioxus targets](#decided-dioxus-targets); every one
+of them is planned only.
 
 ## Daemon and embedded web UI
 
@@ -61,6 +77,40 @@ local-remediation evidence only. See
 | iOS app | no scaffold or engine build | none | none | excluded |
 | Agent runner and fleet launcher | JavaScript scripts exist | agent E2E pass; fleet stability 5/5; Linux orphan/zombie cleanup verified remotely | source only | no separate artifact |
 | Dart protocol package | source package exists | candidate unit, replay, and integration gates pass locally and on public `main` run `29704754961` | not published separately | source only |
+
+## Decided Dioxus targets
+
+**Nothing in this section is built, qualified, or published.** Every row
+states a target the
+[Dioxus clean-slate architecture](dioxus-architecture.md) decision selects
+and the floor or policy that decision requires. None carries an
+implementation, an evidence run, or an artifact, and none may be read as
+extending the certified v0.6.0 rows above.
+
+| Target | Runtime and binding | Decided floor or policy | Status |
+|---|---|---|---|
+| Dioxus web artifact | one reproducible, content-addressed web build, embedded as the exact same bytes in every daemon target and served for browser use by the trusted local `jeliyad` path | consumption of a legacy artifact fails; no React or renderer rollback artifact is produced; no hosted origin, service worker, or browser-owned identity in the first release | planned, unverified, unreleased (#183, #113) |
+| macOS | system WebView (WebKit) | **no floor decided** — a supported macOS and WebKit baseline must be chosen before qualification, not waived; nested native and WebView artifacts must be signed before the outer app and DMG | planned, unverified, unreleased (#186) |
+| Linux | WebKitGTK | minimum glibc and WebKitGTK floors to be enforced, build and runtime dependencies pinned, and the actual linked system libraries recorded in package evidence | planned, unverified, unreleased (#187) |
+| Windows | WebView2 | **not yet a committed target** — #188 must explicitly include *or formally defer* Windows, and the supported Windows versions plus the evergreen or fixed-runtime policy are recorded only there | scope undecided; planned, unverified, unreleased (#188) |
+| Android | system WebView, with `DirectClient` running `jeliya-core` in process — no socket, token, or portfile on that path | **none decided** — the WebView version is captured as device evidence only, and no floor or evergreen policy exists | planned, unverified, unreleased; open gap (#160, #194) |
+
+Treating Windows as a supported target because a bundle command runs is an
+explicit non-goal, and the desktop qualification matrix is blocked on #188
+while Windows scope stays open. The macOS row names the system WebView and no
+narrower platform API. The Android row is an open gap, not an omission.
+
+Results from the desktop system-WebView matrix (#189) and the accessibility
+and localization gates beside it are **enforced evidence, not certification**
+(#189, #197). They are not schema 2 certifying manifests and do not carry the
+guarantees the released v0.6.0 runs above carry.
+
+**There is no all-platform release barrier.** A missing platform-specific gate
+blocks only that platform's publication row (#199); it does not withhold the
+other rows.
+
+iOS remains out of scope in that decision exactly as the iOS row above records
+it, and no iOS target is added here.
 
 ## Network claims by runtime
 

@@ -3,7 +3,7 @@ type: "Decision"
 title: "Room attention — evidence-backed recency, unread, and actionable state"
 description: "Decision record defining how Jeliya's clients derive room recency, device-local unread, and actionable attention from provable facts, and the evidence rule each displayed field must satisfy."
 tags: ["architecture", "attention", "room-list", "ux"]
-timestamp: "2026-07-27T09:20:00Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -19,6 +19,16 @@ every one of those is a claim. This record defines the data model and the
 projection rules that let the room list carry recency, unread, and actionable
 attention *without ever asserting a fact Jeliya cannot prove*: no delivery, no
 read receipt, no fabricated progress, no invented presence.
+
+**Amended 2026-07-27 (issue #162).** The evidence taxonomy, the recency and
+unread definitions, the closed attention set, and the per-affordance evidence
+rule remain the product contract, and they are requirements-mining input to
+the clean-slate cross-platform behavior contract required by the
+[Dioxus clean-slate architecture](dioxus-architecture.md). This record is no
+longer a parity or a compatibility authority: nothing in the clean-slate
+stack must reproduce a React or Flutter rendering to be correct. The
+client-specific mechanics named below — the two hand-ported mocks and the two
+device-local storage backends — describe the retiring stack.
 
 It is the companion contract to [the Room Workbench record](room-workbench.md):
 that document decided the room-list surface and the status vocabulary
@@ -162,7 +172,13 @@ only on this device, that advances when you view the room.
   (`jeliya.lastSeen`, `{ [room_id]: ts }`), Flutter `PrefsStore` (the same
   atomic JSON file that already holds `lastRoom`, aliases, and drafts). This
   mirrors the existing device-local `jeliya.lastRoom` / `prefs.lastRoomId`
-  precedent exactly.
+  precedent exactly. **Amended 2026-07-27 (issue #162).** `jeliya.lastSeen`
+  and the Flutter `PrefsStore` are the retiring clients' mechanics, not the
+  decision. The persisted fact survives: one device-local last-seen timestamp
+  per room, advanced on view, surviving restart, never on the wire. Under the
+  [Dioxus clean-slate architecture](dioxus-architecture.md) the clean-slate
+  stack writes it in a new namespaced storage generation through its injected
+  platform services, and implements no reader for either legacy key.
 - **Cross-device divergence is correct.** Last-seen is per device by design;
   the same identity on a phone and a laptop will show different unread. Syncing
   last-seen would re-introduce the read-receipt this record refuses to invent,
@@ -334,6 +350,31 @@ comparable. Because the two mocks are duplicated rather than shared, the five
 cases doubled across two languages are a real drift risk; the conformance
 vectors are the guard, and a shared fixture manifest is a reasonable later
 consolidation.
+
+**Amended 2026-07-27 (issue #162).** The two-client parity premise of this
+section is no longer the target architecture. The
+[Dioxus clean-slate architecture](dioxus-architecture.md) decides that one
+Rust client stack replaces React, Flutter, and the Dart protocol package, so
+the premise does not carry forward past that replacement. Nothing in that
+record is built: both clients ship, both mocks exist, and the conformance
+harness named above still runs and still binds them to one envelope shape. It
+stays in force until its replacement is qualified, and this section is
+rewritten in the same change that removes it. The five cases above remain
+outstanding coverage against the clients that ship, exactly as this section
+already requires.
+
+The five fixture cases survive as required coverage. The equivalent guarantee
+becomes the single fault-injected adapter contract suite required by that
+record: the deterministic mock, `WsWeb`, `WsNative`, and `DirectClient` must
+expose the same view-level contract, while keeping their honest
+transport-specific lifecycle differences rather than being forced to look
+alike (#175).
+
+What carries forward unchanged is the part that was never about two clients:
+the per-affordance evidence rule of decision 6, and the rule this record
+opens with — every displayed field names its evidence, and no field is
+rendered whose evidence the client does not hold. That rule binds the
+clean-slate stack exactly as written.
 
 ## Truthful states on the room-list surface
 

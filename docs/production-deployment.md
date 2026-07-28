@@ -1,17 +1,40 @@
 ---
 type: "Architecture"
 title: "Production deployment architecture"
-description: "Repository-grounded assessment, target architecture, security boundaries, infrastructure plan, and phased gates for deploying Jeliya at app.jeliya.ai."
-tags: ["architecture", "deployment", "production", "security", "pwa", "iroh"]
-timestamp: "2026-07-19T21:49:56Z"
-status: "proposal"
-implementation_status: "planned"
+description: "Superseded pre-Dioxus proposal for a capability-aware hybrid deployment of Jeliya at app.jeliya.ai, retained for history after the clean-slate architecture decision replaced it."
+tags: ["architecture", "deployment", "production", "security", "pwa", "iroh", "superseded"]
+timestamp: "2026-07-27T22:58:56Z"
+status: "deprecated"
+implementation_status: "not-applicable"
 verification_status: "partial"
 release_status: "unreleased"
 audience: ["contributors", "maintainers", "operators", "product", "release-engineers", "security-reviewers"]
 ---
 
 # Production deployment architecture
+
+**Superseded 2026-07-27 (issues #113, #157).** This proposal is not the
+active architecture and was never accepted. The first-release distribution
+decision selected a different target: one clean-slate typed Rust client stack
+rendered by Dioxus in the platform's system WebView, shipping a single
+content-addressed artifact embedded in the local daemon. Read
+[Dioxus clean-slate architecture](dioxus-architecture.md) instead.
+
+Everything this page proposes that the decision explicitly excluded from the
+first release — the hosted `app.jeliya.ai` origin, the installable PWA and its
+service worker, the signed local companion and its pairing protocol, the
+browser-resident Wasm room peer, and browser-owned identity — is out of scope.
+A future hosted or delegated browser architecture requires a new decision
+record, a new threat model, and a separately approved backlog. Nothing below
+authorizes one.
+
+The page is retained for history and for the adversarial findings recorded
+against it in the
+[production deployment architecture review](production-deployment-review.md).
+Its repository observations are dated to 2026-07-19 and describe the retiring
+React and Flutter stack.
+
+The original framing follows, unchanged.
 
 This document is the decision-ready plan for making Jeliya safely usable from
 `https://app.jeliya.ai` while preserving its local-first, peer-to-peer,

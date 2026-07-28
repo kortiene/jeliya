@@ -3,7 +3,7 @@ type: "Decision"
 title: "Device-local self label — a friendly name for you, never signed"
 description: "Decision record defining how Jeliya gives the local user an editable, device-local display label reusing the alias store keyed by the self identity id, its fallback, validation, migration, and privacy rules, and where self is rendered consistently across both clients."
 tags: ["ux", "identity", "naming", "privacy"]
-timestamp: "2026-07-18T12:00:00Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -36,6 +36,26 @@ id. There is no new store, no new key, and no wire field.
   lives only on this device, is never sent, never appears in a signed event or
   roster, and is **excluded from diagnostics** (which already redact full
   identities). Every editor states this in copy.
+
+**Amended 2026-07-27 (issue #162).** What survives is the product decision:
+one device-local alias per identity id, including the self id, resolved as
+`alias(selfId) ?? "You"`, never signed and never on the wire. **Two clauses
+above are superseded for the replacement stack** and bind the retiring clients
+only:
+
+- *"It reuses the existing device-local alias store … There is no new store, no
+  new key"* — under the
+  [Dioxus clean-slate architecture](dioxus-architecture.md) the replacement
+  writes the alias in a new namespaced storage generation through its injected
+  platform services, and implements no reader for `jeliya.aliases.v1` or
+  `app_prefs.json`.
+- *"Migration is automatic"* — there is no migration. A returning user on the
+  replacement starts with no label and sees "You" until they set one.
+
+Everything else on this page — resolution order, validation, the rendering
+sites, the identity-id rule, and the privacy invariant — carries forward
+unchanged. Both legacy stores keep working in the clients that ship today, and
+the clauses above stay normative for them until those clients are retired.
 
 ## Validation (shared by both clients)
 

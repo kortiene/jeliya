@@ -1,9 +1,9 @@
 ---
 type: "Architecture"
 title: "Security and threat model"
-description: "Trust boundaries, assets, threats, controls, and residual risks for the v0.6.1 Jeliya candidate."
+description: "Trust boundaries, assets, threats, controls, and residual risks for the v0.6.1 Jeliya candidate, plus the boundaries the decided Dioxus clean-slate architecture introduces, moves, or removes."
 tags: ["authorization", "privacy", "security", "threat-model"]
-timestamp: "2026-07-19T21:49:56Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -56,6 +56,17 @@ requirements, not release administration.
 
 ## Trust boundaries
 
+**Amended 2026-07-27 (issue #157).** Every row below describes the current
+`v0.6.1` candidate as it exists in the tree today: React in `ui/`, Flutter in
+`app/`, the Dart protocol package, `jeliya-ffi`, and protocol v1. The
+[Dioxus clean-slate architecture](dioxus-architecture.md) decision changes the
+boundary set — it adds a system-WebView rendering boundary, routes native
+capability through one injected services boundary, defines a new storage
+generation, and slates the C ABI bridge for removal. That decision is not
+built, so it removes, weakens, or supersedes nothing in this table; the
+boundaries it introduces or moves are recorded separately in
+[decided boundaries not yet built](#decided-boundaries-not-yet-built).
+
 | Boundary | Trusted side | Untrusted side | Required control |
 |---|---|---|---|
 | Browser or desktop client to loopback daemon | local authorized client holding the per-start token | other local processes, hostile web origins, DNS rebinding | loopback bind, host validation, bearer token, origin restrictions, bounded inputs |
@@ -71,6 +82,66 @@ Android currently relies on app-private no-backup storage and explicit backup
 rules. It does **not** wrap the identity with Android Keystore. Keystore-backed
 wrapping remains defense in depth; documentation must not describe it as an
 implemented control.
+
+## Decided boundaries not yet built
+
+**Decided 2026-07-27 (issue #157). Nothing in this section is built, and none
+of it has been security reviewed.** The
+[Dioxus clean-slate architecture](dioxus-architecture.md) record selects one
+typed Rust client stack rendered by Dioxus in the platform's system WebView,
+one client seam with four adapters, one injected platform boundary, one
+embedded artifact, and one new protocol and storage generation. Every boundary
+below is therefore a requirement on unwritten code: no Dioxus code exists in
+the tree, every issue named here is open, and the review that must establish
+what these boundaries contain and exclude is #196. This section carries no
+evidence and certifies nothing.
+
+| Boundary | Trusted side | Untrusted side | Required control |
+|---|---|---|---|
+| System WebView rendering to native Rust | native process, network, and file authority, and the typed state and actions it hands to components | the rendered document, script executing in the system WebView, navigation targets, downloads, and devtools | navigation, new-window, download, devtools, and storage policies must fail closed in the packaged WebView; RSX components must receive typed state and actions only |
+| Native capability to shared components | injected `PlatformServices` implementations for files, persistence, lifecycle, URLs, clipboard and share, navigation, and window actions | shared RSX components and anything executing in the WebView | platform authority must reach shared components only through the injected boundary, never through a platform business-logic `cfg` fork in shared code; local file paths and `content://` URIs must not be treated as interchangeable |
+| Daemon token custody | the native transport that holds the per-start daemon token | WebView script, page storage, logs, and diagnostics | no daemon token may cross into untrusted WebView script; tokens must stay native and redacted, and only verified loopback endpoints may be dialed |
+| Embedded artifact origin and content | one reproducible content-addressed artifact with a sealed manifest, served by the trusted local `jeliyad` path or embedded in a packaged target | any other origin, any cached or legacy artifact, any renderer rollback bundle | the same artifact bytes must ship in every daemon target, and consumption of a legacy artifact must fail; the first release admits no hosted origin, service worker, browser-resident room peer, or browser-owned identity |
+| Storage generation | one new namespaced generation per platform, opened only by a current client | legacy keys, the legacy `app_prefs.json`, and unverified old data directories | legacy keys must be ignored or explicitly removed and never interpreted as new state; no unverified directory may be deleted automatically; the reset path must be shown to the user rather than taken on their behalf; Android state must remain app-private and backup-excluded |
+
+**No sandbox claim.** This model does not claim that the system WebView
+sandboxes native Rust. Asserting that is an explicit non-goal of the pending
+security review, which must establish what the rendering boundary does and
+does not contain (#196). Until that review lands, the system WebView must be
+treated as an unreviewed addition to the client's trusted computing base, not
+as a containment control.
+
+**The WebView patch surface differs per platform, and one platform has no
+policy.** Linux must enforce recorded WebKitGTK and glibc floors and record
+the actual linked system libraries in package evidence (#187). Windows must
+record supported versions and an evergreen or fixed-runtime policy and
+exercise absent, outdated, and current runtimes — but Windows is not yet a
+committed first-release target, and #188 must explicitly include *or formally
+defer* it (#188, #189). macOS is named only as the system WebView (WebKit) and
+records no separate floor yet (#186). **Android has no decided WebView floor
+or evergreen policy**: the WebView version is captured as device evidence
+only. That is an open security gap, not a settled position (#160, #194).
+
+**The boundary being removed.** The C ABI and the in-process `jeliya-ffi`
+bridge that the Flutter client uses through `dart/jeliya_protocol` are slated
+for removal — quarantined from the active build under #166 and deleted under
+#202, atomically with Flutter Android and the Dart protocol package, and only
+after the clean-install DirectClient candidate passes. **That bridge is still
+present in the tree and still in scope today.** It remains a live trust
+boundary, the Android storage and backup row above continues to describe the
+shipping Flutter application, and neither may be dropped from this model until
+#202 closes. The decided Android replacement must run typed `jeliya-core`
+in-process behind one bounded serialized actor, with no socket, token, or
+portfile in that path; if it is built as decided, it retires a local
+authentication surface on that platform rather than reusing it (#173).
+
+**What the platform gates would prove.** The desktop system-WebView matrix
+(#189) and the accessibility and localization evidence beside it (#197) are
+recorded as enforced evidence, not certification. A missing platform-specific
+gate blocks only that platform's publication row; there is no all-platform
+release barrier (#199). Nothing above may be cited as verification for the
+current candidate, and a future hosted or delegated browser architecture would
+require a new decision record and a new threat model (#113, #157).
 
 ## Primary threats and current status
 

@@ -3,7 +3,7 @@ type: "Runbook"
 title: "Accessibility release checklist"
 description: "The screen-reader and keyboard behaviours automated checks cannot prove, verified by hand before a release."
 tags: ["accessibility", "release", "qa", "manual"]
-timestamp: "2026-07-18T13:30:00Z"
+timestamp: "2026-07-27T22:58:56Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "verified"
@@ -29,6 +29,19 @@ before a release. Record the pass in the release notes with the reader and
 version used; a checklist nobody can tell was run is not evidence.
 
 ## What CI already covers — do not re-verify by hand
+
+**Amended 2026-07-27 (issue #157).** Every suite listed below belongs to the
+retiring React and Flutter stack. The
+[Dioxus clean-slate architecture](dioxus-architecture.md) record decides that
+both clients are replaced by one Rust client stack; nothing in that record is
+built and no suite named here has been removed, so this table stays valid only
+while that stack still ships. When a surface moves to the new client, its
+automated coverage must be re-established before the matching manual row may
+be skipped again — until then that row is verified by hand. No enforcement may
+lapse before its replacement is qualified, and what replaces the retired
+cross-client design-token, localization, and accessibility gates is not yet
+decided. New accessibility results are described as enforced evidence, not
+certification.
 
 | Enforced by | Covers |
 |---|---|
@@ -96,8 +109,15 @@ version used; a checklist nobody can tell was run is not evidence.
 
 ## Known gaps
 
-- The web client is English-only until issue #74 lands, so the bilingual
-  checks above apply to the Flutter app for now.
+- **Amended 2026-07-27 (issue #157).** Issue #74 landed on 2026-07-18: the
+  web client ships `ui/src/l10n/en.ts` and `fr.ts` under
+  `scripts/check-ui-i18n.mjs`, so the bilingual checks apply to both clients
+  today, not to the Flutter app alone. Both catalogs and both localization
+  gates retire with the clients they test. The
+  [Dioxus clean-slate architecture](dioxus-architecture.md) record decides
+  that one Rust client stack replaces both, so the bilingual checks must be
+  re-homed on the replacement surface before either client's row may be
+  dropped; neither that surface nor its localization gate exists yet.
 - `ui-e2e` is not currently in the repository's required status checks, so the
   accessibility gate runs on every pull request but does not yet BLOCK a merge.
   Adding it is a branch-protection change, outside any pull request's diff.
