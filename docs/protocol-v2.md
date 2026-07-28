@@ -361,6 +361,20 @@ choice, not a daemon default — a default is a second place the contract can
 disagree with itself, and a client that did not choose a page size cannot
 reason about the page it got.
 
+**The six paging operations are `room.timeline`, `room.archive`,
+`status.history`, `invite.list`, `file.list`, and `pipe.list`.** All six take the
+same three fields with the same meanings and bounds: `cursor` is
+[`<cursor>`](#shared-value-types), `direction` is a bare enum of `forward` and
+`backward`, and `limit` is an integer in `1..=timeline_page_max`. A `limit`
+outside that range is `invalid_argument` with `reason: {"state": "bound"}` —
+**refused, never silently clamped**, and never `resource_exhausted`.
+
+Stating the bound once, here, is deliberate. An earlier draft stated it under
+two operations and left the other four to inherit it by implication, which is
+the same drift as stating a rule and then writing schemas that violate it.
+`timeline_page_max` governs all six despite its name, because one served page
+bound is easier to reason about than six.
+
 ### Validation order
 
 Every operation validates in this order, and the order is normative because two
@@ -471,6 +485,29 @@ role** — v1 returned `member` for a sender the membership fold could not
 resolve. A flat `sender_role` cannot express an unresolvable author without a
 null or an invention, and both are forbidden, so the unresolvable case gets an
 arm of its own and carries no attribution at all.
+
+**`kind` is closed at ten, and each arm fixes its `content`.** An event whose
+`kind` a client does not recognise is not rendered and not counted; it is never
+guessed at.
+
+| `kind` | `content` | Authored by |
+|---|---|---|
+| `room_created` | `{ name }` | `room.create` |
+| `message` | `{ body }` | `message.send` |
+| `agent_status` | `{ label, progress }` | `status.post` |
+| `member_joined` | `{ subject_id, role }` | `invite.redeem` |
+| `member_left` | `{ subject_id }` | `room.leave` |
+| `member_removed` | `{ subject_id, by }` | `member.remove` |
+| `invite_revoked` | `{ invite_id }` | `invite.revoke` |
+| `file_shared` | `{ file_id, name, bytes, digest }` | `file.share` |
+| `pipe_published` | `{ pipe_id, target, audience }` | `pipe.publish` |
+| `pipe_revoked` | `{ pipe_id }` | `pipe.revoke` |
+
+Every operation that returns an `event_id` appears in the right-hand column, and
+every kind is authored by exactly one operation. `agent_status.content` carries
+**no `severity`**: severity is derived and served on the projection, never
+written into signed content, which is what makes a new label a value change
+rather than an `iroh-rooms` schema change.
 
 ## The 33 operations
 
@@ -760,12 +797,24 @@ second call answers `shutdown_in_progress` rather than a comfortable `true`.
 | | |
 |---|---|
 | `in` | `{ "name": "<string>" }` |
-| `out` | `{ "room_id": "<room_id>", "name": "<string>", "role": "authority", "standing": "active", "created_at": "<ts>" }` |
+| `out` | `{ "room_id": "<room_id>", "name": "<string>", "role": "authority", "standing": "active", "event_id": "<event_id>", "pos": "<uint>", "created_at": "<ts>" }` |
 | Errors | `room_name_invalid` |
 
 Works with no network. The caller is the room's authority, so `role` is
 constant — it is served rather than assumed because a client that infers it is
 a client that will get it wrong for a room it did not create.
+
+`name` is `1..=128` bytes after trimming surrounding whitespace, and must
+contain at least one non-whitespace character. Outside that it is
+`room_name_invalid`, whose `reason` is the same closed variant
+`invalid_argument` uses — a `bound` arm for length, a `format` arm for a name
+that is only whitespace. The bounds are stated here because a code defined
+against unstated bounds is a code no two implementations agree on.
+
+It returns `event_id` and `pos` like every other event-authoring operation.
+Room creation is a committed `room_created` event, and `pos` is what anchors the
+room's position space at its origin — a client that could not learn it would
+have to guess where the timeline starts.
 
 ### `room.list`
 
@@ -848,9 +897,8 @@ wrote rather than a bare acknowledgement.
 | `out` | `{ "room_id": "<room_id>", "events": [ <event> ], "truncated": <truncated> }` |
 | Errors | `cursor_unknown` |
 
-`direction` is a bare enum: `forward`, `backward`. `limit` is `1..=timeline_page_max`;
-outside that it is `invalid_argument` with `reason: {"state": "bound"}`, refused
-rather than clamped.
+`cursor`, `direction`, and `limit` behave as
+[stated for all six paging operations](#there-are-no-optional-request-fields).
 
 **Continuation is `truncated`, and only `truncated`.** When the reply is
 `{"state": "more", "cursor": …}` the caller resends that cursor; when it is
@@ -1405,6 +1453,15 @@ upgrade** — a stable, client-generated opaque identifier it reuses across
 reconnects and persists for as long as it wants its own `op_id` scope. The
 principal is `(credential, client_id)`.
 
+It travels as a query parameter on the upgrade, `GET
+/ws?v=2&sg=<storage-generation>&cid=<client_id>`, for the same reason `v` and
+`sg` do: a browser `WebSocket` constructor controls only the URL and the
+subprotocol list. It is bounded by the codec like any other string, and unlike
+`v` and `sg` its **absence is not refusal** — an omitted `cid` yields a fresh
+ephemeral principal, which is the documented choice a short-lived CLI makes.
+`cid` is not a credential and is never compared in constant time; putting it in
+the URL is safe precisely because it grants nothing.
+
 - A client that omits `client_id` gets a fresh ephemeral principal per
   connection and therefore no cross-reconnect replay. That is a legitimate
   choice for a short-lived CLI invocation, and it is refusal of a capability
@@ -1582,6 +1639,26 @@ capability tokens. The error is only reachable by an active member — a
 non-member gets `room_not_available` and a former member gets `membership_ended`
 — so the only thing that can be lacking is role. That makes the field set total
 without a second vocabulary and without disclosing a capability set.
+
+**Four operations require `role: "authority"`. Every other operation is open to
+any active member.**
+
+| Requires `authority` | Why |
+|---|---|
+| `member.remove` | Ending someone else's membership is the room's decision, not a peer's |
+| `invite.mint` | Admitting a new member is the same decision taken in advance |
+| `invite.revoke` | Withdrawing a grant belongs to whoever could make it |
+| `invite.list` | The invite index is the authority's own record of what it issued; enumerating it to any member would disclose who has been invited and not yet joined |
+
+Stating this as one list rather than per-operation is deliberate. Step 6 of
+[validation order](#validation-order) is normative for all 33 operations, so a
+reader who found the rule stated only under `member.remove` would reasonably
+conclude the other 32 never raise it — which is how a permission gets
+implemented as open by accident.
+
+`pipe.revoke` is **not** on this list. It is restricted to the pipe's publisher,
+which is a narrower relation than role and answers `pipe_not_publisher`; an
+authority who did not publish a pipe cannot revoke it either.
 
 `room_not_available` **echoes the `room_id` the caller sent**. The non-oracle
 guarantee is equality of the response across both causes, not fieldlessness; a

@@ -131,7 +131,7 @@ A step has **exactly one verb**. The verb set is closed at eight.
 | `http` | `{method, path, headers, body}` | A Layer 0 or `/api/session` request |
 | `upgrade` | `{query, headers}` | A Layer 1 `/ws` upgrade attempt |
 | `send` | raw frame value | Write bytes that may not be a valid frame |
-| `await` | `{frame}` or `{push}` | Wait for a server-initiated frame |
+| `await` | `{push}`, `{frame}`, or `{reply}` | Wait for a specific frame, by type or by correlating `id` |
 | `control` | `{…}` | Drive the harness, not the daemon |
 | `save` | `{var: path}` | Capture values into variables |
 | `assert` | array of assertions | Everything else |
@@ -198,11 +198,21 @@ To pin a key set exactly, use the `exact_keys` assertion. To require a key be
 "asserted absent" — the distinction is load-bearing, and conflating the two is
 how a fixture starts passing against an implementation that leaks a field.
 
-An `expect` on a `call` step replaces all thirteen of the corpus's `expect_*`
-verbs: `expect_error`, `expect_subset`, `expect_frame`, `expect_status`,
-`expect_body`, `expect_hello`, `expect_upgrade`, `expect_absent`,
-`expect_one_of`, `expect_identical_to`, `expect_no_null`, `expect_all`, and
-`expect_each_subset`.
+`expect` replaces **all 42 `expect_*` verbs** the corpus currently uses. They
+divide three ways, and the division is the point — a flat list of replacements
+would hide that a third of them are not reply matchers at all:
+
+| Corpus verbs | Become |
+|---|---|
+| `expect_error`, `expect_subset`, `expect_ok`, `expect_envelope`, `expect_body`, `expect_body_shape`, `expect_final_body`, `expect_hello`, `expect_hello_subset`, `expect_status`, `expect_content_type`, `expect_upgrade`, `expect_upgrade_error` | `expect`, directly |
+| `expect_absent`, `expect_no_null`, `expect_identical_to`, `expect_one_of`, `expect_any_of`, `expect_all`, `expect_each_subset`, `expect_every_element`, `expect_across`, `expect_at_least_one_error`, `expect_all_replies`, `expect_hello_assert`, `expect_rendering` | an `assert` predicate — they are assertions wearing an `expect_` prefix |
+| `expect_frame`, `expect_push`, `expect_no_push`, `expect_frame_order`, `expect_each_frame`, `expect_close`, `expect_no_further_frames_of_type`, `expect_transport`, `expect_process`, `expect_connect_failure`, `expect_timing_indistinguishable`, `expect_reply_for_id`, `expect_reply_for_id_2`, `expect_error_for_id`, `expect_no_reply_for_id` | `await` or an `observe` assertion — they are about frames and processes, not about one reply |
+
+`expect_reply_for_id` and its three siblings deserve their own note: they exist
+because **replies may arrive out of order**, which the record makes normative.
+A harness that could only match replies in request order would silently pass an
+implementation that violated it. `await {reply: "$id"}` is how a case names the
+reply it means.
 
 ## `assert` — one assertion form, two families
 
