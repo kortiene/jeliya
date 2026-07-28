@@ -1,0 +1,8 @@
+target/
+dist/
+test-results/
+playwright-report/
+# Symlinked to ui/node_modules so the spike can borrow the repo's Playwright
+# rather than installing a second copy. Not committed: it points into a tree
+# that retires under #200.
+node_modules

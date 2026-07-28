@@ -1,0 +1,6 @@
+{
+  "name": "jeliya-spike-dioxus-web-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:e2e": "playwright test" }
+}
