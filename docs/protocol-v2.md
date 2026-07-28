@@ -113,7 +113,7 @@ one definition is the fix, and no client may compile the value in.
 
 ### The limits object
 
-**Thirteen fields, every one an integer.** A client MUST read them and MUST NOT
+**Sixteen fields, every one an integer.** A client MUST read them and MUST NOT
 assume a compiled-in default.
 
 The count is stated because the corpus disagrees with itself about it:
@@ -140,6 +140,9 @@ and one for a client that must produce activity to stay connected.
 | `transfer_stall_ms` | Zero-forward-progress window before `transfer_stalled` |
 | `timeline_page_max` | Largest timeline page |
 | `idle_timeout_ms` | Inactivity after which the daemon closes with `4004`. Served because a long-lived client cannot otherwise know how often it must produce activity to stay connected |
+| `pairing_code_ttl_ms` | Lifetime a pairing code is granted when issued. It is the **policy** value, not the remaining validity of any outstanding code — Layer 0 is unauthenticated, so it deliberately discloses nothing about whether a code is outstanding. A page uses it to say how long a *freshly printed* code lasts; the daemon prints the absolute expiry alongside the code, and a stale submission is answered by `pairing_code_invalid` with `reason: {"state": "expired"}` |
+| `pairing_code_max_attempts` | Failed submissions against **one outstanding code** before that code is voided. Counted per code, never per connection |
+| `browser_session_ttl_ms` | Lifetime of a browser session credential minted by a pairing code |
 
 The last four exist because a bounded per-file limit is not by itself a bound
 on daemon memory. Fetch buffers roughly twice the file and upload holds one
@@ -250,18 +253,109 @@ holds the token natively and injects a ticket into the page it controls — the
 seam [the architecture](dioxus-architecture.md) already requires.
 
 For a page served to an ordinary browser by `jeliyad` itself, no such mediator
-exists, and this record does **not** invent one:
+exists. **[The first-release distribution decision](first-release-distribution.md)
+(#113) settles that case with an operator-pasted pairing code**, and the
+mechanism is specified here because it is a credential path:
 
-> **OPEN — browser-without-a-native-shell credential path (#113).** A browser
-> tab has no way to prove possession of a token it must never see. Candidates
-> are an operator-pasted one-time code, a token delivered in the launch URL by
-> whatever started the browser, or declaring that surface out of scope for the
-> first release. This MUST be decided by the first-release distribution
-> boundary (#113) before that path ships. Until then, only mediated clients —
-> native shells and the packaged WebView — have a specified credential path.
+**A pairing code mints a browser session; the session mints tickets.** The code
+is spent once, and the session is what survives a reload or a dropped socket.
+
+1. The daemon prints a **pairing code** to the terminal that started it — short,
+   single-use, and valid for `pairing_code_ttl_ms`.
+2. The operator opens the served page and pastes the code.
+3. The page exchanges it at `POST /api/session` for a **browser session
+   credential** and a first connect ticket.
+4. The daemon burns the code. For the session's lifetime the page draws each
+   further ticket from `POST /api/session/ticket`, presenting the session
+   credential.
+
+#### The two requests
+
+Both carry `Content-Type: application/json`, and both are refused unless `Host`
+is loopback.
+
+```http
+POST /api/session
+{ "pairing_code": "<string>" }
+
+200 { "session": "<string>", "expires_at": "<ts>", "ticket": "<string>" }
+401 { "code": "pairing_code_invalid", "reason": { "state": "expired" } }
+```
+
+```http
+POST /api/session/ticket
+Authorization: Bearer <session>
+
+200 { "ticket": "<string>" }
+401 { "code": "session_expired" }
+```
+
+A **native** client skips both: it holds the daemon token and presents it to
+`POST /api/session` as `Authorization: Bearer <token>`, receiving a ticket
+directly. The pairing code is a substitute for the token *only* on the shape
+that has no other way to prove possession, and it is carried in the JSON body
+rather than an `Authorization` header precisely so the two credential kinds
+cannot be confused by a server reading one header.
+
+`pairing_code_invalid.reason` is a closed variant: `unknown`, `expired`,
+`spent`, `voided`. It is one code with a typed reason rather than four codes,
+because an operator needs to know whether to retype or to ask for a new code,
+and an attacker who reaches any of these arms already knows what they guessed.
+
+#### Bounding the guess
+
+The code has a small alphabet and its endpoint is reachable by every local
+process, so **the attempt budget is bound to the code, not to the connection.**
+`pairing_code_max_attempts` failed submissions against one outstanding code
+**void that code**, whoever submitted them and however many connections they
+opened.
+
+Binding the budget per connection would be no bound at all: a hostile local
+process opens a fresh HTTP connection per guess and resets the counter, which
+against a short code is simply an offline search performed online. The budget
+MUST NOT reset on a new connection, a new session, or a reconnect, and a
+conformance case MUST prove it by exhausting the budget across distinct
+connections.
+
+The code is also compared in constant time, and a voided code is
+indistinguishable from an unknown one.
+
+#### Why the session is not a second identity
+
+The session credential authenticates **one browser tab to one daemon**, for
+`browser_session_ttl_ms`. It is held in memory or `sessionStorage`, so it dies
+with the tab; it is not persisted, not synced, and not an identity. The
+[distribution boundary](first-release-distribution.md) keeps browser-owned
+identity out of the first release, and this does not reintroduce it — no key
+material is created, and the session grants exactly what the operator already
+granted by pasting the code.
+
+Without it the browser path would not survive its own first reload: the ticket
+is single-use by design, and every WebSocket connection needs a fresh one, so a
+page refresh would strand the operator until the daemon was restarted.
+
+**The launch-URL alternative was considered and rejected on measured evidence.**
+Having whatever started the browser mint a ticket and pass it as `?ct=` in the
+launch URL is the frictionless option, and it is unsafe: on Linux
+`/proc/<pid>/cmdline` is mode `-r--r--r--` by default and `hidepid` is not set,
+so **every local user can read another process's full argument vector**. A
+ticket in a browser's argv is therefore readable by a user who cannot read the
+`0600` portfile — reintroducing precisely the cross-user escalation the
+paragraph above rejects. A terminal's contents carry no such exposure.
+
+Browser history is the same objection in a second place: `replaceState` cannot
+retract a URL already committed to a profile, and session restore may replay it.
+
+**A browser reaching the page with no pairing code is not an error.** It is
+served the same artifact and shown how to obtain a code. The first release
+specifies no way for such a page to authenticate itself unaided, and inventing
+one would mean trusting a request header, which this record has already
+established is anti-CSRF rather than authentication.
 
 The daemon token itself MUST NOT reach WebView script, a URL, a log, or a
-diagnostic, in any form.
+diagnostic, in any form. **A pairing code is not the token**: it is spent once,
+within seconds, and what it yields is a tab-scoped session that expires — never
+the credential that could mint another code.
 
 ## Layer 2 — `hello`
 
@@ -1574,7 +1668,7 @@ repeating its own withdrawal is not their audience.
 
 ## Errors
 
-**The taxonomy is 60 codes.** Every code is machine-readable, carries typed
+**The taxonomy is 62 codes.** Every code is machine-readable, carries typed
 fields rather than prose, and carries no `hint`. The tables below are the whole
 of it — a code not listed here does not exist, and an implementation MUST NOT
 mint one.
@@ -1610,7 +1704,7 @@ and the gate runs before any frame is parsed — inventing an `id` there, or mak
 it nullable, would put a meaningless key in the one place a client is most likely
 to be writing its first parser against.
 
-### Gate and transport — 7
+### Gate and transport — 9
 
 Returned as a JSON body on a refused upgrade, or as the application close code
 [the gate section](#rejections-are-machine-readable) tabulates.
@@ -1624,6 +1718,8 @@ Returned as a JSON body on a refused upgrade, or as the application close code
 | `not_ready` | — | The daemon is not yet serving, or its subject store cannot be read |
 | `frame_too_large` | `limit_bytes` | A frame exceeds `max_frame_bytes`; the connection closes `4005` unparsed |
 | `idle_timeout` | `idle_ms` | No activity within `idle_timeout_ms`; the connection closes `4004` |
+| `pairing_code_invalid` | `reason` (variant: `unknown`, `expired`, `spent`, `voided`) | A pairing code was submitted that is not currently redeemable |
+| `session_expired` | — | A browser session credential is past `browser_session_ttl_ms` or was revoked |
 
 `not_ready` is also the answer when the subject store exists but cannot be read.
 A `hello` cannot carry an error code, and a `hello` degraded into a third

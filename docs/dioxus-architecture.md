@@ -214,11 +214,14 @@ architecture.** Today the web build produces the React `ui/dist` archive that
 `jeliyad` embeds and that `v0.6.0` published; that remains the shipped
 artifact until #200.
 
-The delivery shape is fixed by #113: the artifact is embedded and served by
-the trusted local `jeliyad` path for browser use, and reused inside packaged
-desktop system WebViews. There is no hosted-origin controller, native
-companion pairing, browser-resident room peer, service worker, or
-browser-owned identity in the first release.
+The delivery shape is fixed by
+[the first-release distribution boundary](first-release-distribution.md)
+(#113): the artifact is embedded and served by the trusted local `jeliyad` path
+for browser use, and reused inside packaged desktop system WebViews. There is no
+hosted-origin controller, native companion pairing, browser-resident room peer,
+service worker, or browser-owned identity in the first release. That record also
+settles how a browser with no native mediator authenticates — an operator-pasted
+pairing code, never a ticket in the launch URL.
 
 ## Decision 6 — per-platform system WebView
 
