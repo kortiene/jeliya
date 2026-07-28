@@ -31,7 +31,7 @@ rollout. That proposal was never accepted; it and
 | Surface | How it is delivered | Who holds the daemon token | In the first release |
 |---|---|---|---|
 | Packaged desktop | The same artifact bytes, embedded in the app, rendered in the system WebView | the native process | **yes** |
-| Ordinary browser | The same artifact bytes, served by the local `jeliyad` over loopback | the daemon; the page holds only a redeemed ticket | **yes**, via a pairing code |
+| Ordinary browser | The same artifact bytes, served by the local `jeliyad` over loopback | the daemon; the page holds only a tab-scoped session and the tickets it draws | **yes**, via a pairing code |
 | Hosted origin (`app.jeliya.ai`) | — | — | **no** |
 | Native companion pairing | — | — | **no** |
 | Browser-resident room peer | — | — | **no** |
@@ -67,8 +67,8 @@ restating it.
 | Boundary | Trusted side | Untrusted side | Control |
 |---|---|---|---|
 | Artifact origin | one content-addressed artifact, identical bytes in every target, served by the local `jeliyad` or embedded in a packaged app | any other origin, any cached or legacy artifact, any renderer rollback bundle | exact-digest match; consumption of a legacy artifact **fails closed** |
-| Daemon token custody | the native process, and the `0600` portfile | WebView script, page storage, a URL, argv, logs, diagnostics | the token never leaves native memory; a browser receives only a redeemed single-use ticket |
-| Pairing code | the terminal that started the daemon, and the operator reading it | every other local process and every other user | short TTL, single use, constant-time comparison, bounded attempts |
+| Daemon token custody | the native process, and the `0600` portfile | WebView script, page storage, a URL, argv, logs, diagnostics | the token never leaves native memory; a browser receives only a tab-scoped session credential and the single-use tickets it draws |
+| Pairing code | the terminal that started the daemon, and the operator reading it | every other local process and every other user | short TTL, single use, constant-time comparison, and an attempt budget bound **per code** so reconnecting cannot reset it |
 | Storage | one namespaced protocol-v2 generation, owned by the daemon | legacy keys, `app_prefs.json`, unverified old directories, browser storage | the browser stores **nothing** that survives the tab; no unverified directory is deleted automatically |
 | Navigation | the artifact's own routes | any external URL, any new window, any download, devtools in release | navigation, new-window, download, and devtools policies fail closed in the packaged WebView (#196) |
 | Native capability | injected `PlatformServices` | shared components and anything executing in the WebView | platform authority reaches components only through the injected boundary; a browser gets the boundary's **web** implementation, not a native one |
@@ -87,10 +87,18 @@ does exactly that. For an ordinary browser there is no such mediator, so the
 operator becomes one.
 
 **The daemon prints a pairing code; the operator pastes it into the page.** The
-page exchanges it at `POST /api/session` for the same short-TTL single-use ticket
-a native mediator would have obtained. The daemon burns the code on redemption.
+page exchanges it at `POST /api/session` for a tab-scoped **session credential**
+and a first connect ticket; the daemon burns the code, and the page draws each
+later ticket from the session.
 [Protocol v2](protocol-v2.md#the-credential-never-travels-in-a-url-and-never-in-script)
-specifies the exchange.
+specifies both requests and their rejections.
+
+The session exists because a connect ticket is single-use and every WebSocket
+connection needs a fresh one — so a code that yielded only a ticket would strand
+the operator at the first page reload, with no way to obtain another short of
+restarting the daemon. It lives in `sessionStorage`, dies with the tab, holds no
+key material, and is not an identity: the browser still stores nothing that
+outlives the tab, which is the property this record actually requires.
 
 ### Why not put a ticket in the launch URL
 
@@ -112,11 +120,16 @@ retract a URL already committed to a profile, and session restore may replay it.
 A terminal carries neither exposure.
 
 The pairing code is not free of risk: it is a bearer secret with a small
-alphabet, so it is rate-limited and attempt-bounded, and a local page on another
-port could ask the operator to paste it. That is the residual risk of every
-pairing flow, it requires the operator to act against an instruction they were
-just given, and it is strictly smaller than handing the same secret to every
-process on the machine.
+alphabet, and a local page on another port could ask the operator to paste it.
+That is the residual risk of every pairing flow, it requires the operator to act
+against an instruction they were just given, and it is strictly smaller than
+handing the same secret to every process on the machine.
+
+**The guessing budget is bound to the code, not to the connection.** A hostile
+local process can open a fresh connection per attempt, so a per-connection limit
+is no limit at all — it turns a short code into an offline search performed
+online. `pairing_code_max_attempts` failures void the code regardless of who
+submitted them or across how many connections.
 
 ## The embedded artifact
 
