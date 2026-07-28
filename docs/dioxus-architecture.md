@@ -3,7 +3,7 @@ type: "Decision"
 title: "Dioxus clean-slate architecture"
 description: "Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, the protocol and storage generation it defines, the single embedded web artifact every daemon target ships, and the retirement of React, Flutter, the Dart protocol package, and the C ABI."
 tags: ["architecture", "clean-slate", "dioxus", "protocol", "release"]
-timestamp: "2026-07-27T22:58:56Z"
+timestamp: "2026-07-28T02:20:00Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -305,12 +305,37 @@ execution does not move into `jeliyad` or the human-facing app (#156).
 
 The decision is made; these measurements are not.
 
-| Unknown | Spike |
-|---|---|
-| Whether an embedded Dioxus web build serves and functions against a real `jeliyad` | #158 |
-| Whether native WebSocket supervision survives inside a packaged system WebView | #159 |
-| Whether AAB packaging, the DirectClient beachhead, and device UX hold on a physical device | #160 |
-| Absolute first-release bundle, startup, memory, timeline, battery, and network budgets | #198 |
+| Unknown | Spike | State |
+|---|---|---|
+| Whether an embedded Dioxus web build serves and functions against a real `jeliyad` | #158 | **measured 2026-07-28 — it does**; see below |
+| Whether native WebSocket supervision survives inside a packaged system WebView | #159 | not measured |
+| Whether AAB packaging, the DirectClient beachhead, and device UX hold on a physical device | #160 | not measured |
+| Absolute first-release bundle, startup, memory, timeline, battery, and network budgets | #198 | not measured |
+
+**What #158 established.** A throwaway Dioxus 0.7.9 slice bootstrapped, listed
+and opened a room, sent a message, and rendered the daemon's own `room.event`
+push against a real supervised `jeliyad` on a fresh data dir — from a
+development directory and from assets compiled into the daemon by `embed-ui`.
+Its `wasm32-unknown-unknown` graph resolved 124 crates with no Iroh, no
+`jeliya-core`, and no native transport, so Decision 3's browser rule is
+achievable rather than merely intended. `ui/src/styles.css` drove the rendered
+markup **byte-identical**, which says the design system's CSS survives the
+renderer swap; it says nothing about what enforces the tokens once that file
+retires (#177).
+
+The spike is disposable and none of it is promoted: it speaks protocol v1
+because that is what exists, its wire structs must not be lifted into
+`jeliya-api`, and it implements no reconnect, no backoff, and no queueing —
+those are #168's semantics and inventing them in a spike would be exactly the
+assumption this record refuses. Its measurements are one machine, one debug
+daemon, and no `wasm-opt`; they inform #198 and do not constrain it. Evidence
+and caveats: `spikes/dioxus-web/README.md`.
+
+One finding belongs to other issues rather than to this record: the daemon
+serves embedded assets with no content encoding, ignoring `Accept-Encoding`.
+That costs nothing on loopback and is a real input to #183 and #113 wherever
+the same artifact travels further, since compressing this spike's wasm alone
+removed 61% of it.
 
 Two further open questions are decisions rather than measurements, and neither
 waits on a spike. #92 selects the v2 shared-file maximum in M0 so that #161 can

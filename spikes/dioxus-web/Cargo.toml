@@ -1,0 +1,41 @@
+# Disposable feasibility spike for issue #158. NOT a workspace member: this
+# crate carries its own `[workspace]` table so the production workspace
+# (`crates/jeliya-core`, `crates/jeliyad`, `crates/jeliya-ffi`) and every CI job
+# that builds it stay untouched. Nothing here is promoted by assumption — see
+# `docs/dioxus-architecture.md`.
+[package]
+name = "jeliya-spike-dioxus-web"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.91"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+# Underscored so the cargo artifact, the wasm-bindgen module, and the import in
+# index.html all agree on one name.
+[[bin]]
+name = "jeliya_spike_dioxus_web"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to the 0.7 line the architecture record selects.
+dioxus = { version = "0.7.9", features = ["web"] }
+
+# Browser transport only. Nothing in this graph may reach jeliya-core or Iroh:
+# that is acceptance criterion 1, and `scripts/check-wasm-graph.sh` enforces it.
+gloo-net = { version = "0.6", default-features = false, features = ["websocket", "http", "json"] }
+futures = "0.3"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

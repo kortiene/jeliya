@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Jeliya — Dioxus spike (#158)</title>
+    <!-- Verbatim copy of ui/src/styles.css. The spike does not edit it: whether
+         the existing design system drives Dioxus-rendered markup unchanged is
+         one of the questions this spike answers. -->
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="main"></div>
+    <script type="module">
+      import init from './jeliya_spike_dioxus_web.js';
+      init({ module_or_path: './jeliya_spike_dioxus_web_bg.wasm' });
+    </script>
+  </body>
+</html>
