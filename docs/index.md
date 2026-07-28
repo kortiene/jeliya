@@ -25,6 +25,7 @@ CI rules for every page in this wiki.
 ## Architecture and protocols
 
 - [Dioxus clean-slate architecture](dioxus-architecture.md) - Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, its protocol and storage generation, the single embedded artifact, and the retirement of React, Flutter, the Dart protocol, and the C ABI. Decided and not yet built.
+- [First-release distribution boundary](first-release-distribution.md) - Decision record for how the first release is delivered: one content-addressed artifact served by the local daemon and embedded in packaged desktop targets, the trust boundary each surface sits on, the operator-pasted pairing code that authenticates an ordinary browser, and the hosted-origin work deferred behind a new decision. Decided and not yet built.
 - [Daemon protocol](PROTOCOL.md) - Normative transport-neutral contract between `jeliya-core` and every Jeliya client, and the contract every released daemon speaks.
 - [Protocol v2](protocol-v2.md) - Draft clean-slate contract for the Dioxus client stack: the three-layer handshake and generation gate, the 33 approved operations, the sequenced push stream with gap detection and authoritative resync, and the conformance corpus. Substance settled; per-operation wire schemas, the complete error taxonomy, and the fixture DSL are still open.
 - [Shared-file size policy](shared-file-size.md) - Decision record retaining 104,857,600 bytes as the protocol-v2 maximum shared-file size, the served preflight and distinctive over-limit error it requires, and the provisional resource budgets and falsifiers that bound it.
@@ -49,7 +50,7 @@ The proposal below is superseded by
 [Dioxus clean-slate architecture](dioxus-architecture.md). Its review is
 retained as a valid, dated evidence record about the revision it examined.
 
-- [Production deployment architecture](production-deployment.md) - Superseded pre-Dioxus proposal for a hosted PWA and native companion at app.jeliya.ai; never accepted, replaced under #113 by the [Dioxus clean-slate architecture](dioxus-architecture.md), and excluded from the first release.
+- [Production deployment architecture](production-deployment.md) - Superseded pre-Dioxus proposal for a hosted PWA and native companion at app.jeliya.ai; never accepted, replaced under #113 by the [Dioxus clean-slate architecture](dioxus-architecture.md) and the [first-release distribution boundary](first-release-distribution.md), and excluded from the first release.
 - [Production deployment architecture review](production-deployment-review.md) - Adversarially verified findings against that proposal, bound to the revision it reviewed at `043bd1e`.
 
 ## Operations and release evidence

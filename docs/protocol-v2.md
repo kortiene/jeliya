@@ -113,7 +113,7 @@ one definition is the fix, and no client may compile the value in.
 
 ### The limits object
 
-**Thirteen fields, every one an integer.** A client MUST read them and MUST NOT
+**Fifteen fields, every one an integer.** A client MUST read them and MUST NOT
 assume a compiled-in default.
 
 The count is stated because the corpus disagrees with itself about it:
@@ -140,6 +140,8 @@ and one for a client that must produce activity to stay connected.
 | `transfer_stall_ms` | Zero-forward-progress window before `transfer_stalled` |
 | `timeline_page_max` | Largest timeline page |
 | `idle_timeout_ms` | Inactivity after which the daemon closes with `4004`. Served because a long-lived client cannot otherwise know how often it must produce activity to stay connected |
+| `pairing_code_ttl_ms` | Lifetime of a browser pairing code. Served so the page can tell the operator how long they have rather than guessing |
+| `pairing_code_max_attempts` | Failed pairing-code submissions a connection may make before it is refused |
 
 The last four exist because a bounded per-file limit is not by itself a bound
 on daemon memory. Fetch buffers roughly twice the file and upload holds one
@@ -250,18 +252,45 @@ holds the token natively and injects a ticket into the page it controls — the
 seam [the architecture](dioxus-architecture.md) already requires.
 
 For a page served to an ordinary browser by `jeliyad` itself, no such mediator
-exists, and this record does **not** invent one:
+exists. **[The first-release distribution decision](first-release-distribution.md)
+(#113) settles that case with an operator-pasted pairing code**, and the
+mechanism is specified here because it is a credential path:
 
-> **OPEN — browser-without-a-native-shell credential path (#113).** A browser
-> tab has no way to prove possession of a token it must never see. Candidates
-> are an operator-pasted one-time code, a token delivered in the launch URL by
-> whatever started the browser, or declaring that surface out of scope for the
-> first release. This MUST be decided by the first-release distribution
-> boundary (#113) before that path ships. Until then, only mediated clients —
-> native shells and the packaged WebView — have a specified credential path.
+1. The daemon prints a **pairing code** to the terminal that started it — short,
+   single-use, and valid for `pairing_code_ttl_ms`.
+2. The operator opens the served page and pastes the code.
+3. The page sends it to `POST /api/session`, which — **for this shape only** —
+   accepts a valid unspent pairing code *in place of* the bearer token, and
+   returns the same short-TTL single-use ticket a native mediator would have
+   obtained.
+4. The daemon burns the code on redemption, exactly as it burns the ticket.
+
+The code is compared in constant time, is rate-limited per connection, and is
+refused after `pairing_code_max_attempts` failures, because it is a bearer
+secret with a small alphabet and an online-guessing surface the token does not
+have.
+
+**The launch-URL alternative was considered and rejected on measured evidence.**
+Having whatever started the browser mint a ticket and pass it as `?ct=` in the
+launch URL is the frictionless option, and it is unsafe: on Linux
+`/proc/<pid>/cmdline` is mode `-r--r--r--` by default and `hidepid` is not set,
+so **every local user can read another process's full argument vector**. A
+ticket in a browser's argv is therefore readable by a user who cannot read the
+`0600` portfile — reintroducing precisely the cross-user escalation the
+paragraph above rejects. A terminal's contents carry no such exposure.
+
+Browser history is the same objection in a second place: `replaceState` cannot
+retract a URL already committed to a profile, and session restore may replay it.
+
+**A browser reaching the page with no pairing code is not an error.** It is
+served the same artifact and shown how to obtain a code. The first release
+specifies no way for such a page to authenticate itself unaided, and inventing
+one would mean trusting a request header, which this record has already
+established is anti-CSRF rather than authentication.
 
 The daemon token itself MUST NOT reach WebView script, a URL, a log, or a
-diagnostic, in any form.
+diagnostic, in any form. **A pairing code is not the token**: it grants one
+ticket, once, within seconds, and grants nothing after it is spent.
 
 ## Layer 2 — `hello`
 
