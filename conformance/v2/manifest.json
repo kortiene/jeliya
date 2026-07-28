@@ -32,13 +32,12 @@
     }
   },
   "codes_without_a_case": {
-    "note": "real codes in the taxonomy that no fixture yet exercises. A gap in the corpus, not in the specification. Authoring them is #213.",
+    "note": "real codes in the taxonomy that no fixture yet exercises. A gap in the corpus, not in the specification. Authoring them is #213. idle_timeout is deliberately absent from this list: close_code_4004_is_emitted_on_idle_timeout already covers it via close code 4004, the protocol's transport representation of that code, so listing it would send #213 to duplicate a test rather than retranscribe one.",
     "codes": [
       "authority_cannot_be_removed",
       "capability_redeemed",
       "cursor_unknown",
       "declared_size_mismatch",
-      "idle_timeout",
       "malformed_frame",
       "pipe_index_unreadable",
       "pipe_not_publisher",

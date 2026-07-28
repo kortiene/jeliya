@@ -123,7 +123,7 @@ breaking change it would catch is not worth running.
 
 ## Steps
 
-A step has **exactly one verb**. The verb set is closed at eight.
+A step has **exactly one verb**. The verb set is closed at seven.
 
 | Verb | Value | Meaning |
 |---|---|---|
@@ -132,8 +132,7 @@ A step has **exactly one verb**. The verb set is closed at eight.
 | `upgrade` | `{query, headers}` | A Layer 1 `/ws` upgrade attempt |
 | `send` | raw frame value | Write bytes that may not be a valid frame |
 | `await` | `{push}`, `{frame}`, or `{reply}` | Wait for a specific frame, by type or by correlating `id` |
-| `control` | `{…}` | Drive the harness, not the daemon |
-| `save` | `{var: path}` | Capture values into variables |
+| `control` | `{do, …}` | Drive the harness, not the daemon |
 | `assert` | array of assertions | Everything else |
 
 Any step may additionally carry:
@@ -144,10 +143,46 @@ Any step may additionally carry:
 | `op_id` | the envelope `op_id`, for `call` — **never inside `in`** |
 | `on` | which session this step runs on |
 | `expect` | the reply matcher |
+| `save` | capture values from this step's result into variables |
 | `note` | prose for a human; a harness ignores it |
+
+`save` is an **auxiliary key, not a verb**. It always captures from the step it
+sits on, so making it a verb would force every capture into a second step with
+nothing to capture from.
 
 `note` is the only annotation key. The committed corpus also uses `why`,
 `comment`, `intent_note`, and `meaning` for the same thing.
+
+### `control` — driving the harness
+
+`control` is discriminated by `do`, closed at nine. It is the one verb that does
+not touch the daemon's protocol surface, so leaving it as an open object would
+have let every harness invent its own dialect — which is what the committed
+corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
+`trigger`) split cleanly by authoring file.
+
+| `do` | Keys | Effect |
+|---|---|---|
+| `advance_clock` | `ms` | Move the harness clock forward |
+| `idle` | `ms` | Wait without producing activity |
+| `disconnect` | `on` | Drop a session's transport without a close frame |
+| `reconnect` | `on` | Re-establish it, same principal |
+| `inject_fault` | `fault` | Force a named fault condition |
+| `set_limit` | `limit`, `value` | Override a served limit for this case |
+| `stop_daemon` | `daemon` | Terminate a daemon process |
+| `start_transfers` | `count` | Begin N concurrent transfers |
+| `pause_link` | `between` | Suspend transport between two daemons |
+
+`inject_fault`'s `fault` is a **taxonomy code**, so a fault a case wants that
+names no code is a signal the taxonomy is incomplete — that is how
+`room_index_unreadable` and its four siblings were found. Two conditions are
+deliberately not codes and are named directly: `backpressure` and
+`subscription_lapse`, which are the two `gap.reason` arms a harness must be able
+to force in order to test gap detection at all.
+
+`set_limit` exists because several boundary cases need a limit small enough to
+reach — `max_connections` and `max_subscriptions_per_connection` cannot be
+exercised against production values in a test.
 
 ### `on` — which session
 
@@ -325,8 +360,9 @@ asserts only the code proves half the property.
 { "call": "room.timeline", "in": { "room_id": "$r", "…": "…" } }
 ```
 
-`save` maps variable names to paths. A `$name` reference resolves to the captured
-value anywhere a literal is legal. Variables are scoped to the case.
+`save` maps variable names to paths and rides on the step that produces them. A
+`$name` reference resolves to the captured value anywhere a literal is legal.
+Variables are scoped to the case.
 
 This replaces `save`, `save_out`, and `save_error`, which differed only in which
 root they read from — now expressed as the path's root.

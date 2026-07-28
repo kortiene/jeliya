@@ -167,6 +167,16 @@ Checks run in this fixed order:
 4. `sg` MUST be present and MUST equal the daemon's storage generation, else
    `storage_generation_mismatch`. **Absence is refusal.**
 5. Credential, else `unauthenticated`, compared in constant time.
+6. Connection capacity, else `resource_exhausted` with `resource:
+   "max_connections"`, returned as `503`.
+
+Capacity is checked **last, after the credential**, and the ordering is a
+security decision rather than an implementation detail. Checking it earlier
+would let an unauthenticated caller learn how many connections the daemon is
+holding, turning a capacity limit into a cheap occupancy oracle — and a caller
+that cannot authenticate has no business learning anything about load. It is
+also the only gate refusal that is a transient condition rather than a verdict
+about the caller, which is why it takes `503` rather than a `4xx`.
 
 Step 3's absence rule is load-bearing: a v1 client sends no `v` at all, so a
 missing generation that defaulted to current would admit every legacy client
@@ -179,10 +189,11 @@ generation is refused before it can write.
 
 ### Rejections are machine-readable
 
-A refused upgrade returns the v2 error envelope as a JSON body with a matching
-status: `426` for `protocol_unsupported` and `storage_generation_mismatch`,
-`401` for `unauthenticated`, `403` for `forbidden_origin`. v1's plain-text
-bodies are removed; one error format, everywhere.
+A refused upgrade returns [the bare `err` object](#the-error-object) as a JSON
+body with a matching status: `426` for `protocol_unsupported` and
+`storage_generation_mismatch`, `401` for `unauthenticated`, `403` for
+`forbidden_origin`, and `503` for `resource_exhausted`. v1's plain-text bodies
+are removed; one error format, everywhere.
 
 A rejection after the upgrade closes with a defined application close code:
 
@@ -379,6 +390,28 @@ bound is easier to reason about than six.
 
 Every operation validates in this order, and the order is normative because two
 of its steps are security properties rather than conveniences.
+
+**A stage runs only where its precondition is meaningful**, and which stages
+those are is decidable from the operation's own schema rather than by
+convention:
+
+| Stage | Runs for |
+|---|---|
+| 1 structural decode | every operation |
+| 2 subject | every operation **except `subject.ensure`**, which exists to create one |
+| 3 dedup | the operations in the `op_id` deduplicated row of [Idempotency](#idempotency-and-retry) |
+| 4 room index | every operation whose `in` carries `room_id` |
+| 5 standing | as step 4, minus `room.archive` and `room.list` |
+| 6 role | the four operations that [require `authority`](#room-and-membership--8) |
+| 7 semantics | every operation |
+
+Two consequences are worth stating rather than deriving. `subject.ensure` skips
+step 2, or it could never succeed on a fresh daemon. **`invite.redeem` skips
+steps 4, 5, and 6** — its `in` carries no `room_id`, because it is the only
+operation a non-member can reach and an identifier there would be exactly the
+probe [the non-oracle property](#the-non-oracle-property) forbids. It resolves
+its room from the capability inside step 7, and every capability failure is one
+of the four fieldless redemption-side codes.
 
 1. **Structural decode** — does the frame decode into this operation's request
    type, with every required key present, correctly typed, correctly formatted,
@@ -923,7 +956,7 @@ whose standing is `left` or `removed` gets `membership_ended` and uses
 |---|---|
 | `in` | `{ "room_id": "<room_id>" }` |
 | `out` | `{ "room_id": "<room_id>", "members": [ { "subject_id": "<subject_id>", "role": "member", "standing": "active", "joined_at": "<ts>" } ] }` |
-| Errors | `membership_unresolved`, `member_unknown` |
+| Errors | `membership_unresolved` |
 
 The authoritative signed answer to who belongs, in what capacity and standing.
 Carries **no** presence and **no** reachability — those are `room.peers`, and
@@ -1017,7 +1050,7 @@ The capability itself is **never** returned by `invite.list` — only
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "invite_id": "<invite_id>" }` |
-| `out` | `{ "invite_id": "<invite_id>", "event_id": "<event_id>", "pos": "<uint>", "revoked_at": "<ts>" }` |
+| `out` | `{ "room_id": "<room_id>", "invite_id": "<invite_id>", "event_id": "<event_id>", "pos": "<uint>", "revoked_at": "<ts>" }` |
 | Errors | `capability_redeemed`, `invite_unknown` |
 
 **Re-revoking an already-revoked capability succeeds**, returning the original
@@ -1186,7 +1219,7 @@ fact, one place. Requires liveness.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "file_id": "<file_id>" }` |
-| `out` | `{ "file_id": "<file_id>", "bytes": "<uint>", "declared_content_type": "<string>" }`, then the bytes streamed |
+| `out` | `{ "room_id": "<room_id>", "file_id": "<file_id>", "bytes": "<uint>", "declared_content_type": "<string>" }`, then the bytes streamed |
 | Errors | `file_not_fetched`, `file_unknown` |
 
 Streams bytes rather than serving them over HTTP. v1's never-render-inline
@@ -1289,7 +1322,7 @@ the same type `room.peers` and `file.list` use.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>" }` |
-| `out` | `{ "pipe_id": "<pipe_id>", "connection_id": "<string>", "local": <target> }` |
+| `out` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>", "connection_id": "<string>", "local": <target> }` |
 | Errors | `pipe_unreachable`, `pipe_unknown`, `pipe_revoked`, `room_not_live` |
 
 A caller outside the pipe's audience answers `pipe_unknown`, indistinguishable
@@ -1311,7 +1344,7 @@ pipe.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>" }` |
-| `out` | `{ "pipe_id": "<pipe_id>", "event_id": "<event_id>", "pos": "<uint>", "revoked_at": "<ts>" }` |
+| `out` | `{ "room_id": "<room_id>", "pipe_id": "<pipe_id>", "event_id": "<event_id>", "pos": "<uint>", "revoked_at": "<ts>" }` |
 | Errors | `pipe_not_publisher`, `pipe_unknown` |
 
 Withdraws a published pipe as a signed fact. Re-revoking succeeds and returns
@@ -1564,6 +1597,19 @@ is counted, and the group subtotals sum to the total.
 `code` is always present. Every other key is fixed by the code, per the tables
 below — an error carries exactly the fields its row names, no more and no fewer.
 
+**A refused upgrade has no `id` to correlate**, so it carries the `err` object
+alone, as the whole HTTP body:
+
+```json
+{ "code": "storage_generation_mismatch", "daemon": 2, "client": { "state": "declared", "sg": 1 } }
+```
+
+The two shapes are deliberately different rather than one shape with an optional
+`id`. An `id` is meaningful only for a frame that answers a request carrying one,
+and the gate runs before any frame is parsed — inventing an `id` there, or making
+it nullable, would put a meaningless key in the one place a client is most likely
+to be writing its first parser against.
+
 ### Gate and transport — 7
 
 Returned as a JSON body on a refused upgrade, or as the application close code
@@ -1742,6 +1788,14 @@ non-member can reach, so it is the one place a membership oracle could be built.
 | `transfer_unknown` | `transfer_op_id` | No such in-flight transfer for this principal |
 | `transfer_stalled` | `transferred_bytes`, `total` (`<byte_total>`) | No forward progress within the stall window |
 
+`provider_unreachable.providers` is an array of **the provider rows that were
+attempted**, each identical in shape to a `file.list` row's provider —
+`{ subject_id, device_id, link }`. It is the attempted set rather than the
+candidate set, and it carries the same `link` type as everywhere else, so a
+client can say *why* each one failed instead of only that the fetch did. An
+error whose typed field has no stated element shape is prose wearing a
+schema's clothes.
+
 `file_too_large.enforced_at` names one of the **five daemon-side** enforcement
 points of the six in [the shared-file size policy](shared-file-size.md):
 `stage_declared`, `stage_stream`, `authoring`, `fetch_preflight`,
@@ -1834,13 +1888,19 @@ it.
 | `cursor_invalid` | → `cursor_unknown` for a pruned position, or `invalid_argument` with `reason: {"state": "format"}` for a malformed one. The single corpus code conflated the two |
 | `<the case's code>` | Not a code at all — an unsubstituted placeholder left in a fixture |
 
-Eleven codes in the tables above have no corpus case yet:
+Ten codes in the tables above have no corpus case yet:
 `authority_cannot_be_removed`, `capability_redeemed`, `cursor_unknown`,
-`declared_size_mismatch`, `idle_timeout`, `malformed_frame`,
-`pipe_index_unreadable`, `pipe_not_publisher`, `room_still_active`,
-`subject_store_unwritable`, and `transport_unavailable`. They are real codes
-with no coverage, which is a corpus gap rather than a specification gap, and
-they are named in the manifest so the gap cannot read as coverage.
+`declared_size_mismatch`, `malformed_frame`, `pipe_index_unreadable`,
+`pipe_not_publisher`, `room_still_active`, `subject_store_unwritable`, and
+`transport_unavailable`. They are real codes with no coverage, which is a corpus
+gap rather than a specification gap, and they are named in the manifest so the
+gap cannot read as coverage.
+
+`idle_timeout` is deliberately **not** on that list, though it has no fixture
+naming it directly. `close_code_4004_is_emitted_on_idle_timeout` already covers
+it through close code `4004`, which is that code's transport representation —
+and a coverage list that ignored the transport form would send the corpus work
+to duplicate an existing case rather than retranscribe it.
 
 ### The non-oracle property
 
