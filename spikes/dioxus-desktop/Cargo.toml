@@ -57,8 +57,12 @@ dioxus-desktop = { version = "0.7.9", default-features = false, features = ["tok
 
 # Native transport. `default-features = false` deliberately: every TLS feature
 # would drag in `openssl-sys` or `rustls`, and this dials loopback only, where
-# there is nothing to authenticate a certificate against. If this graph ever
-# grows a TLS backend, that is a bug — `./check-native-graph.sh` enforces it.
+# there is nothing to authenticate a certificate against.
+#
+# `./check-native-graph.sh` asserts no TLS crate is reachable THROUGH
+# tokio-tungstenite. Note the narrow scope: "no TLS anywhere in the graph" is
+# already false, because dioxus-desktop pulls tungstenite[native-tls]
+# non-optionally (see below), so only the transport subtree is checkable.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "time", "sync"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

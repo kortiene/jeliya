@@ -159,12 +159,21 @@ installs `libgtk-3-dev` but **not** webkit2gtk, so CI could not build this today
 
 ## Running it
 
+This crate is excluded from the root workspace, so the working directory
+matters — the daemon build is root-scoped and everything else is not:
+
 ```sh
-cargo build -p jeliyad          # from the repo root
+# from the repository root
+cargo build -p jeliyad
+
+cd spikes/dioxus-desktop
 cargo test --test supervision   # headless ownership + teardown proof
+./check-native-graph.sh         # no TLS backend under the transport
 ./evidence.sh                   # end-to-end against the built binary
 ./build.sh release              # the packaged layout
 ```
+
+`evidence.sh` needs a display; it honours `DISPLAY` and defaults to `:1`.
 
 ## What this does not prove
 

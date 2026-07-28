@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 #[path = "../src/supervisor.rs"]
 mod supervisor;
 
-use supervisor::{resolve_jeliyad, start_or_adopt};
+use supervisor::{resolve_jeliyad, start_or_adopt, Teardown};
 
 fn data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -56,7 +56,11 @@ async fn a_spawned_daemon_is_owned_and_its_portfile_agrees_with_its_announcement
     assert!(sidecar.ws_url().starts_with("ws://127.0.0.1:"), "loopback only");
 
     let pid = sidecar.portfile.pid;
-    assert!(sidecar.shutdown().await.expect("shutdown"), "owned shutdown acts");
+    assert_eq!(
+        sidecar.shutdown().await.expect("shutdown"),
+        Teardown::Graceful,
+        "an owned daemon must exit gracefully on stdin EOF, not be SIGKILLed"
+    );
 
     for _ in 0..50 {
         if !alive(pid) {
@@ -92,8 +96,9 @@ async fn an_adopted_daemon_outlives_the_shell_that_adopted_it() {
     assert_eq!(guest.portfile.port, owner.portfile.port);
 
     // The guest leaves. The daemon must not notice.
-    assert!(
-        !guest.shutdown().await.expect("guest shutdown"),
+    assert_eq!(
+        guest.shutdown().await.expect("guest shutdown"),
+        Teardown::LeftRunning,
         "adopted shutdown must be a no-op"
     );
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -107,7 +112,10 @@ async fn an_adopted_daemon_outlives_the_shell_that_adopted_it() {
     );
 
     // Now the actual owner leaves, and it may take the daemon with it.
-    assert!(owner.shutdown().await.expect("owner shutdown"));
+    assert_eq!(
+        owner.shutdown().await.expect("owner shutdown"),
+        Teardown::Graceful
+    );
     for _ in 0..50 {
         if !alive(daemon_pid) {
             break;

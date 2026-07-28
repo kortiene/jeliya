@@ -123,11 +123,13 @@ impl Sidecar {
 
     /// Stop an owned daemon and wait for it; leave an adopted one alone.
     ///
-    /// Returns whether this call actually stopped anything, so the caller can
-    /// assert the adopted case really is a no-op.
-    pub async fn shutdown(mut self) -> std::io::Result<bool> {
+    /// Returns WHICH teardown happened. A bool cannot distinguish a graceful
+    /// exit from a SIGKILL after the graceful path timed out, and those differ
+    /// in a way that matters: a forced exit runs no cleanup, so `daemon.json`
+    /// can survive it and the next start will read a stale portfile.
+    pub async fn shutdown(mut self) -> std::io::Result<Teardown> {
         match &mut self.ownership {
-            Ownership::Adopted => Ok(false),
+            Ownership::Adopted => Ok(Teardown::LeftRunning),
             Ownership::Owned { child, stdin } => {
                 // Closing stdin is the documented `--supervised` signal, and it
                 // is graceful: the daemon removes its portfile on the way out.
@@ -137,17 +139,37 @@ impl Sidecar {
                 match tokio::time::timeout(std::time::Duration::from_secs(15), child.wait()).await {
                     Ok(status) => {
                         status?;
+                        Ok(Teardown::Graceful)
                     }
                     Err(_) => {
-                        // The graceful path did not finish in time. A spike
-                        // says so rather than pretending teardown was clean.
                         child.kill().await?;
                         child.wait().await?;
+                        Ok(Teardown::Forced)
                     }
                 }
-                Ok(true)
             }
         }
+    }
+}
+
+/// What a [`Sidecar::shutdown`] actually did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Teardown {
+    /// Adopted daemon: nothing was done, deliberately.
+    LeftRunning,
+    /// Owned daemon: stdin EOF, and it exited within the budget. The daemon
+    /// removed its own portfile.
+    Graceful,
+    /// Owned daemon: the graceful path timed out and it was SIGKILLed. No
+    /// cleanup ran, so a stale `daemon.json` may remain.
+    Forced,
+}
+
+impl Teardown {
+    /// Whether this call ended a daemon at all.
+    #[must_use]
+    pub fn stopped_something(self) -> bool {
+        !matches!(self, Self::LeftRunning)
     }
 }
 
@@ -181,13 +203,23 @@ pub fn resolve_jeliyad() -> Result<PathBuf, Error> {
         }
     }
 
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("target/debug/jeliyad");
-    if repo.is_file() {
-        return Ok(repo);
+    // DEBUG BUILDS ONLY, matching `app/README.md` step 3. A release shell that
+    // has lost its bundled sidecar must fail closed rather than silently pick
+    // up whatever stale daemon happens to be in `target/debug` — that pairs a
+    // release UI with a development daemon whose protocol generation may match
+    // by accident. The spike has no generation check that would catch it.
+    #[cfg(debug_assertions)]
+    {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/debug/jeliyad");
+        if repo.is_file() {
+            return Ok(repo);
+        }
+        tried.push(repo.display().to_string());
     }
-    tried.push(repo.display().to_string());
+    #[cfg(not(debug_assertions))]
+    tried.push("(the target/debug fallback is debug-only)".to_string());
 
     Err(Error::NoBinary(tried.join(", ")))
 }
@@ -230,6 +262,23 @@ pub async fn start_or_adopt(binary: &Path, data_dir: &Path) -> Result<Sidecar, E
         .map_err(Error::Spawn)?;
 
     let stdin = child.stdin.take();
+
+    // Drain stderr forever, or the daemon eventually DEADLOCKS inside logging.
+    // `jeliyad` installs a synchronous stderr tracing layer for its whole life
+    // (crates/jeliyad/src/lifecycle.rs init_tracing), so a long-running daemon
+    // keeps writing warnings; once the OS pipe buffer fills and nobody reads,
+    // the write blocks and the daemon stops serving. Piping stderr without
+    // reading it is strictly worse than not piping it at all.
+    //
+    // Discarding is acceptable here precisely because it is not the only copy:
+    // the same tracing setup also writes a rolling file under `<data_dir>/logs`.
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+    }
+
     let stdout = child
         .stdout
         .take()

@@ -22,8 +22,18 @@ dom="$work/dom.html"
 probe="$work/probe.json"
 fail=0
 
-cleanup() { [[ -n "${DAEMON_PID:-}" ]] && kill "$DAEMON_PID" 2>/dev/null; rm -rf "$work"; }
-trap cleanup EXIT
+cleanup() {
+  # Both children, on EVERY exit path. An early failure (no portfile, an
+  # interrupt) used to leave `sleep 600` holding the unlinked FIFO open for ten
+  # minutes, so repeated failed runs accumulated orphans.
+  [[ -n "${DAEMON_PID:-}"  ]] && kill "$DAEMON_PID"  2>/dev/null
+  [[ -n "${KEEPALIVE:-}"   ]] && kill "$KEEPALIVE"   2>/dev/null
+  [[ -n "${DAEMON_PID:-}"  ]] && wait "$DAEMON_PID"  2>/dev/null
+  [[ -n "${KEEPALIVE:-}"   ]] && wait "$KEEPALIVE"   2>/dev/null
+  rm -rf "$work"
+  return 0
+}
+trap cleanup EXIT INT TERM
 
 check() { # check <name> <condition-result>
   if [[ "$2" == "0" ]]; then echo "  PASS  $1"; else echo "  FAIL  $1"; fail=1; fi
@@ -92,7 +102,6 @@ sleep 1
 kill -0 "$DAEMON_PID" 2>/dev/null; check "the adopted daemon is still alive" $?
 [[ -f "$data/daemon.json" ]]; check "its portfile is intact" $?
 
-kill $KEEPALIVE 2>/dev/null
 echo
 if [[ $fail == 0 ]]; then echo "ALL EVIDENCE PASSED"; else echo "EVIDENCE FAILED"; fi
 exit $fail

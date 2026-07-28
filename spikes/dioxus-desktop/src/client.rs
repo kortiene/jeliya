@@ -47,6 +47,14 @@ impl std::fmt::Display for ClientError {
 /// clean-slate program is one generation at a time.
 pub const SPEAKS_PROTOCOL: u32 = 1;
 
+/// Deadline for one request/response round trip.
+///
+/// Without this a daemon that accepts the socket and then stalls leaves the
+/// shell on "Starting jeliyad…" forever, and hangs the headless tests too —
+/// `evidence.sh`'s external `timeout` protects neither. A bounded call turns
+/// that into a visible `Phase::Failed`.
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 #[derive(Debug, Deserialize)]
 struct Reply {
     id: u64,
@@ -114,6 +122,17 @@ impl Connection {
     /// is not the reply we are waiting for. A real client would route those to
     /// a subscriber; a spike only has to not deadlock on them.
     pub async fn call(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
+        tokio::time::timeout(CALL_TIMEOUT, self.call_unbounded(method, params))
+            .await
+            .unwrap_or_else(|_| {
+                Err(ClientError::Protocol(format!(
+                    "{method} did not answer within {}s",
+                    CALL_TIMEOUT.as_secs()
+                )))
+            })
+    }
+
+    async fn call_unbounded(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
         let id = self.next_id;
         self.next_id += 1;
 
