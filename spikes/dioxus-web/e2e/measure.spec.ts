@@ -31,12 +31,15 @@ test('record bootstrap and interaction timings', async ({ page }) => {
   // room.list, room.create, room.list).
   const readyAt = await page.evaluate(() => performance.now());
 
-  // Send-to-rendered-push, measured in the page.
+  // Send-to-rendered-push, measured in the page. Scoped to a unique body
+  // rather than to the whole list: the fixture gives one daemon per Playwright
+  // invocation, so this room may already hold another spec's messages.
+  const body = `measurement ${Date.now()}`;
   const t0 = await page.evaluate(() => performance.now());
   await page.locator('.room-select').first().click();
-  await page.locator('#composer-input').fill('measurement');
+  await page.locator('#composer-input').fill(body);
   await page.locator('#spike-send').click();
-  await expect(page.locator('.msg-bubble')).toHaveText(['measurement']);
+  await expect(page.locator('.msg-bubble').filter({ hasText: body })).toHaveCount(1);
   const t1 = await page.evaluate(() => performance.now());
 
   const report = {

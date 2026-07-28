@@ -197,7 +197,15 @@ fn App() -> Element {
             }
         },
         Phase::Ready => rsx! {
-            div { class: "app", id: "spike-app",
+            // The reused stylesheet is a one-pane-at-a-time shell below
+            // 899.98px: `.app .sidebar` and `.app .center` are `display: none`
+            // there, and only a root pane state reveals one. A root of plain
+            // `app` renders a blank screen on any compact viewport — including
+            // a phone system WebView, which is a target platform. React sets
+            // `app pane-${pane}`; so does this.
+            div {
+                class: if current.read().is_some() { "app pane-room" } else { "app pane-rooms" },
+                id: "spike-app",
                 nav { class: "sidebar",
                     for room in rooms().into_iter() {
                         {
@@ -249,9 +257,13 @@ fn App() -> Element {
                         }
                         div { class: "composer",
                             div { class: "composer-bar",
-                                input {
+                                // A `textarea`, because the stylesheet styles
+                                // the editor as `.composer-bar textarea` and
+                                // has no rule for a class on an `input`. React
+                                // renders a textarea for the same reason.
+                                textarea {
                                     id: "composer-input",
-                                    class: "composer-input",
+                                    rows: "1",
                                     value: "{draft}",
                                     placeholder: "Message",
                                     oninput: move |e| draft.set(e.value()),

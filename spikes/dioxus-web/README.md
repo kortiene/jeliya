@@ -15,28 +15,50 @@ wasm-bindgen 0.2.126, rustc 1.97.1, aarch64 Linux, Chromium via Playwright
 | # | Criterion | Result |
 |---|---|---|
 | 1 | WASM feature graph contains no native core/Iroh dependency | **pass** — 124 crates resolve for `wasm32-unknown-unknown`; no `iroh`, `jeliya-core`, `jeliyad`, `jeliya-ffi`, `quinn`, `rustls`, or `hickory`. Enforced by `./check-wasm-graph.sh`, not by inspection |
-| 2 | Development and `embed-ui` builds serve the Dioxus slice | **pass** — both. The dev path is `--ui-dir dist`; the embedded path runs a `--features embed-ui` daemon with **no** `--ui-dir` and serves the spike's own `index.html` and its 541,853-byte wasm from bytes compiled into the binary |
-| 3 | Bootstrap, room list/open, send, and push receive pass against real `jeliyad` | **pass** — one Playwright scenario, green on both serving paths, against a supervised daemon on a fresh temp data dir |
+| 2 | Development and `embed-ui` builds serve the Dioxus slice | **pass** — both. The dev path is `--ui-dir dist`; the embedded path runs a `--features embed-ui` daemon with **no** `--ui-dir` and serves the spike's own `index.html` and its 542,111-byte wasm from bytes compiled into the binary |
+| 3 | Bootstrap, room list/open, send, and push receive pass against real `jeliyad` | **pass** — Playwright scenarios at desktop and both compact viewports, green on both serving paths, against a supervised daemon on a fresh temp data dir |
 | 4 | CSS reuse and bundle/runtime measurements are recorded | **pass** — below |
 | 5 | Results update the ADR without promoting spike code by assumption | done — see `docs/dioxus-architecture.md` |
 
 ## CSS reuse
 
 `ui/src/styles.css` is copied into `dist` **byte-identical** (`cmp` clean, zero
-edits), and the RSX emits the React client's own class names. All 23 classes the
-slice uses resolve to rules in that file: `.app`, `.sidebar`, `.room-item`,
-`.room-select`, `.room-info`, `.room-name-line`, `.room-name`, `.center`,
-`.center-empty`, `.center-empty-title`, `.timeline`, `.msg-row`, `.msg-col`,
-`.msg-bubble`, `.composer`, `.composer-bar`, `.composer-send`, `.boot-screen`,
-`.boot-target`, `.error-note`, `.error-title`, `.error-code`, `.mono`.
+edits), and the RSX emits the React client's own markup. All 25 classes the
+slice uses resolve to rules in that file — `.app`, `.pane-rooms`, `.pane-room`,
+`.sidebar`, `.room-item`, `.room-select`, `.room-info`, `.room-name-line`,
+`.room-name`, `.center`, `.center-empty`, `.center-empty-title`, `.timeline`,
+`.msg-row`, `.msg-col`, `.msg-bubble`, `.composer`, `.composer-bar`,
+`.composer-send`, `.boot-screen`, `.boot-target`, `.error-note`, `.error-title`,
+`.error-code`, `.mono` — plus the descendant rule `.composer-bar textarea`.
 
-The scenario asserts a computed `background-color` on `.msg-bubble` rather than
-the presence of a class, so an unstyled render fails the test.
+Assertions target computed style rather than the presence of a class, so an
+unstyled render fails: `.msg-bubble` must have a non-transparent background, and
+the composer must be a `TEXTAREA` computing `resize: none` (a browser-default
+textarea is `resize: both`). Both were verified to fail against a deliberately
+reverted build, so they are regression tests rather than decoration.
 
-This says the design system's **CSS** survives a renderer swap. It does not say
-the design-token *gates* survive: `scripts/check-design-tokens.mjs` reads
-`ui/src/styles.css`, and what enforces the tokens after that file retires is
-undecided (#177).
+**Two corrections found in review**, both of which had made the reuse claim
+broader than the evidence:
+
+- The composer was an `input` carrying a `.composer-input` class **that has no
+  rule in the stylesheet**. The editor is styled as `.composer-bar textarea`,
+  which is why React renders a textarea. The composer was therefore browser
+  default, not reused, and the original "23 classes resolve" count did not
+  include the class the markup actually emitted.
+- The root was always `class="app"`. Below 899.98px the stylesheet is a
+  one-pane-at-a-time shell — `.app .sidebar` and `.app .center` are
+  `display: none`, revealed only by a root pane state — so **every compact
+  viewport rendered a blank screen**, including a phone system WebView. React
+  sets `app pane-${pane}`; the slice now does too. `e2e/compact.spec.ts` asserts
+  it at 390×844 and 320×568, and fails at both against the reverted build.
+
+The lesson is about the test matrix, not the CSS: a desktop-only suite could not
+see either defect. The repo's own `ui-e2e` runs four viewports for this reason.
+
+This says the design system's **CSS** survives a renderer swap, on desktop and
+compact. It does not say the design-token *gates* survive:
+`scripts/check-design-tokens.mjs` reads `ui/src/styles.css`, and what enforces
+the tokens after that file retires is undecided (#177).
 
 ## Bundle
 
@@ -48,11 +70,11 @@ takes 15–30% off the wasm. Do not quote these as budgets; #198 sets budgets.
 
 | Artifact | Raw | gzip -9 |
 |---|---|---|
-| `jeliya_spike_dioxus_web_bg.wasm` | 541,853 B (529 KiB) | 211,493 B (207 KiB) |
+| `jeliya_spike_dioxus_web_bg.wasm` | 542,111 B (529 KiB) | 211,557 B (207 KiB) |
 | `jeliya_spike_dioxus_web.js` | 83,570 B | 12,352 B |
 | `styles.css` (verbatim, unminified) | 95,524 B | 23,539 B |
 | dioxus JS snippets (7 files) | 25,971 B | — |
-| **dist total** | **747,626 B (730 KiB)** | — |
+| **dist total** | **747,884 B (730 KiB)** | — |
 
 For scale, not as a verdict: the current React build ships
 `assets/index-*.js` at 343,980 B and `assets/index-*.css` at 53,699 B, both
@@ -75,7 +97,7 @@ instantiate plus seven daemon round trips (`/api/session`, socket open,
 ## Findings worth carrying forward
 
 **The daemon serves embedded assets uncompressed.** A request with
-`Accept-Encoding: gzip, br` gets `content-length: 541853` and no
+`Accept-Encoding: gzip, br` gets `content-length: 542111` and no
 `content-encoding`. On loopback that costs nothing. It matters to #183 and #113
 if the same artifact is ever delivered over a network, and to #198's bundle
 budget: gzip -9 alone takes this wasm from 529 KiB to 207 KiB, a 61% reduction

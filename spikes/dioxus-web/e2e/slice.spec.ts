@@ -74,5 +74,14 @@ test('the Dioxus slice boots, opens a room, sends, and renders the live push', a
     .evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(bubbleBg).not.toBe('rgba(0, 0, 0, 0)');
 
+  // The composer is styled through `.composer-bar textarea`, not through a
+  // class, so the markup has to be a textarea for the rule to bind. A browser
+  // default textarea is `resize: both`; the stylesheet sets `resize: none`.
+  // This assertion fails if the slice reverts to an `input` or drops the class
+  // the rule descends from.
+  await expect(composer).toHaveJSProperty('tagName', 'TEXTAREA');
+  const composerResize = await composer.evaluate((el) => getComputedStyle(el).resize);
+  expect(composerResize).toBe('none');
+
   expect(consoleErrors, `console errors: ${consoleErrors.join(' | ')}`).toEqual([]);
 });
