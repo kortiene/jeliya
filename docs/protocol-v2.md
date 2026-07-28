@@ -419,6 +419,12 @@ belongs to exactly one operation.
 | `gap.reason` | bare enum: `backpressure`, `retention`, `subscription_lapse` |
 | `target` | `{ host, port }` — one object, never two sibling fields |
 | `audience` | variant: `room`, `subjects {subject_ids}` |
+| `redeemability` | bare enum: `outstanding`, `expired`, `revoked`, `redeemed` |
+| `last_event` | variant: `present {at, kind}`, `absent` |
+| `last_seen` | variant: `present {at}`, `absent` |
+| `latest_status` | variant: `present {label, at}`, `absent` |
+| `byte_total` | variant: `known {bytes}`, `unknown` |
+| `outcome` | variant: `cancelled`, `already_cancelled` — `transfer.cancel` only |
 
 Every variant in this record appears in this table. A variant whose arms are not
 enumerated here does not exist — an arm set stated only by example is how an
@@ -907,7 +913,7 @@ alike.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "subject_id": "<subject_id>", "role": "member", "expires_at": "<ts>" }` |
-| `out` | `{ "invite_id": "<invite_id>", "room_id": "<room_id>", "subject_id": "<subject_id>", "role": "member", "expires_at": "<ts>", "capability": "<string>", "redeemable": "<bool>" }` |
+| `out` | `{ "invite_id": "<invite_id>", "room_id": "<room_id>", "subject_id": "<subject_id>", "role": "member", "expires_at": "<ts>", "capability": "<string>", "redeemability": "outstanding" }` |
 | Errors | `invitee_already_member`, `role_not_grantable` |
 
 Mints one **key-bound** capability exactly one named identity can redeem;
@@ -927,11 +933,21 @@ grant.
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "cursor": <cursor>, "limit": "<uint>" }` |
-| `out` | `{ "room_id": "<room_id>", "invites": [ { "invite_id": "<invite_id>", "subject_id": "<subject_id>", "role": "member", "expires_at": "<ts>", "state": "outstanding" } ], "truncated": <truncated> }` |
+| `out` | `{ "room_id": "<room_id>", "invites": [ { "invite_id": "<invite_id>", "subject_id": "<subject_id>", "role": "member", "expires_at": "<ts>", "redeemability": "outstanding" } ], "truncated": <truncated> }` |
 | Errors | `invite_index_unreadable` |
 
-An invite row's `state` is a bare enum: `outstanding`, `expired`, `revoked`,
-`redeemed`. The capability itself is **never** returned by `invite.list` — only
+`redeemability` is the **same** bare enum `invite.mint` returns:
+`outstanding`, `expired`, `revoked`, `redeemed`. One vocabulary answers "can
+this be redeemed, and if not why not" in both places, which a boolean cannot —
+a `redeemable: false` that will not say whether the capability expired, was
+withdrawn, or was already used forces the client to guess between three
+different things to tell the user.
+
+It is **not** called `state`. `state` is the discriminant *inside* a tagged
+variant, and using it as an ordinary field name is how a reader stops being able
+to tell a variant from a record at a glance.
+
+The capability itself is **never** returned by `invite.list` — only
 `invite.mint` ever serves it, and only once.
 
 ### `invite.revoke`
@@ -1123,7 +1139,7 @@ the strength of it.**
 | | |
 |---|---|
 | `in` | `{ "transfer_op_id": "<op_id>" }` |
-| `out` | `{ "transfer_op_id": "<op_id>", "cancelled": true, "transferred_bytes": "<uint>", "total": { "state": "known", "bytes": "<uint>" } }` |
+| `out` | `{ "transfer_op_id": "<op_id>", "outcome": { "state": "cancelled" }, "transferred_bytes": "<uint>", "total": { "state": "known", "bytes": "<uint>" } }` |
 | Errors | `transfer_unknown` |
 
 **The request field is `transfer_op_id`, not `op_id`.** It names the transfer
@@ -1133,10 +1149,16 @@ Giving it a distinct name is what keeps one wire spelling from meaning two
 things; the envelope `op_id` on this operation is ignored like any other
 naturally-idempotent operation.
 
-`total` is the same `known {bytes}` / `unknown` variant `transfer_stalled`
-carries. A cancel that reports "4 MiB transferred" without a total reports a
-number the user cannot interpret, and the `unknown` arm exists because a
-provider that never declared a size genuinely leaves it unknown.
+`outcome` is a variant closed on `cancelled` and `already_cancelled`, not a
+`cancelled: true` boolean. Cancel is naturally idempotent, and an operation
+whose idempotence a caller cannot observe reports a replay as a fresh effect —
+the same reason `subject.ensure` serves `created` and `invite.redeem` serves
+`joined`.
+
+`total` is `<byte_total>`, the same variant `transfer_stalled` carries. A cancel
+that reports "4 MiB transferred" without a total reports a number the user
+cannot interpret, and the `unknown` arm exists because a provider that never
+declared a size genuinely leaves it unknown.
 
 Authorized by `(session principal, transfer_op_id)`. Cancelling a transfer
 belonging to a different principal returns `transfer_unknown`, indistinguishable
@@ -1271,6 +1293,31 @@ not "call `room.activate` again", which is what v1 clients did.
 event returned, or `from_pos` when `events` is empty.
 
 ## Pushes, ordering, gap detection, and resync
+
+### The push frames
+
+`t` is closed at four. A frame type not listed here does not exist — the same
+rule the [shared value types](#shared-value-types) apply to every variant, and
+for the same reason: the committed corpus contains two mutually incompatible
+spellings of the event push, `t: "event"` and `t: "room.event"`, because neither
+was ever written down.
+
+| `t` | Payload | Emitted when |
+|---|---|---|
+| `event` | `room_id`, and the [committed event](#the-committed-event) inline | A room event commits |
+| `gap` | `room_id`, `from_pos`, `to`, `reason` | A position discontinuity is detected or forced |
+| `peer` | `room_id`, `subject_id`, `device_id`, `link`, `generation` | A peer's link changes. **Depends on U1** |
+| `transfer` | `transfer_op_id`, `transferred_bytes`, `total` | A transfer makes progress. **Depends on U2** |
+
+A push carries `t` and never `id`; a reply carries `id` and never `t`. That is
+the whole of how the two are told apart, so a frame carrying both, or neither, is
+`malformed_frame`.
+
+`peer.generation` is the connection generation U1 must supply, and it is what
+makes a stale teardown discardable from the frame alone rather than by
+inference. `transfer` frames go **only to the principal that started the
+transfer** — a progress frame is otherwise an oracle for another client's
+activity, exactly as `transfer.cancel` would be without its principal guard.
 
 **Every push carries a per-room monotonic position.** v1 had no sequence number
 and no cursor — only wall-clock timestamps — so a client could not tell that it
@@ -1582,7 +1629,7 @@ non-member can reach, so it is the one place a membership oracle could be built.
 | `declared_size_mismatch` | `declared_bytes`, `observed_bytes` | `file.share`'s streamed bytes did not match its declared size |
 | `provider_unreachable` | `file_id`, `providers` | No provider holding the file could be reached |
 | `transfer_unknown` | `transfer_op_id` | No such in-flight transfer for this principal |
-| `transfer_stalled` | `transferred_bytes`, `total` (variant: `known {bytes}` / `unknown`) | No forward progress within the stall window |
+| `transfer_stalled` | `transferred_bytes`, `total` (`<byte_total>`) | No forward progress within the stall window |
 
 `file_too_large.enforced_at` names one of the **five daemon-side** enforcement
 points of the six in [the shared-file size policy](shared-file-size.md):
