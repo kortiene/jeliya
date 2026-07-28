@@ -6297,6 +6297,270 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "severity_is_derived_from_the_closed_label_set_for_every_label",
+      "kind": "success",
+      "operation": "status.history",
+      "intent": "Pins the whole severity table in one case: each of the seven closed labels is posted and read back with the severity the spec derives for it. Catches any drift between the label set and the mapping, and catches a daemon that re-introduces substring matching -- the v1 defect this replaces, where a real failure phrased unusually was missed and a lookalike misfired.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "repeat": {
+            "over": [
+              [
+                "online",
+                "ok"
+              ],
+              [
+                "idle",
+                "ok"
+              ],
+              [
+                "claiming",
+                "ok"
+              ],
+              [
+                "working",
+                "ok"
+              ],
+              [
+                "done",
+                "ok"
+              ],
+              [
+                "failed",
+                "failed"
+              ],
+              [
+                "blocked",
+                "review"
+              ]
+            ],
+            "call": "status.post",
+            "conn": "c1",
+            "in": {
+              "room": "$rid",
+              "label": "$item[0]",
+              "progress": {
+                "state": "absent"
+              },
+              "op_id": "$op[$i]"
+            }
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              7
+            ]
+          }
+        },
+        {
+          "assert": {
+            "pairs": [
+              [
+                "$h.entries[0]",
+                {
+                  "label": "online",
+                  "severity": "ok"
+                }
+              ],
+              [
+                "$h.entries[1]",
+                {
+                  "label": "idle",
+                  "severity": "ok"
+                }
+              ],
+              [
+                "$h.entries[2]",
+                {
+                  "label": "claiming",
+                  "severity": "ok"
+                }
+              ],
+              [
+                "$h.entries[3]",
+                {
+                  "label": "working",
+                  "severity": "ok"
+                }
+              ],
+              [
+                "$h.entries[4]",
+                {
+                  "label": "done",
+                  "severity": "ok"
+                }
+              ],
+              [
+                "$h.entries[5]",
+                {
+                  "label": "failed",
+                  "severity": "failed"
+                }
+              ],
+              [
+                "$h.entries[6]",
+                {
+                  "label": "blocked",
+                  "severity": "review"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "comment": "Severity is SERVED, never re-derived by a client, so it must be present on every entry."
+        },
+        {
+          "assert": {
+            "every_has_key": [
+              "$h.entries",
+              "severity"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$h"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "blocked_is_a_real_label_and_is_the_only_one_carrying_review_severity",
+      "kind": "success",
+      "operation": "status.post",
+      "intent": "The label v2 adds. Before it, an agent stopped and waiting on a person had nothing truthful to post -- the attention model needed a 'review' reason with no label behind it, so agents misused 'failed'. Asserts blocked is accepted, derives severity 'review', and that no other label in the closed set produces 'review'. Catches a v2 that ships the review attention reason with no way for an agent to cause it honestly.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "blocked",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_blocked"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].severity",
+              "review"
+            ]
+          }
+        },
+        {
+          "comment": "Exclusivity: no other closed label yields review."
+        },
+        {
+          "assert": {
+            "none_of_severity": [
+              [
+                "online",
+                "idle",
+                "claiming",
+                "working",
+                "done",
+                "failed"
+              ],
+              "review"
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "an_unknown_label_is_refused_not_silently_reclassified_as_idle",
+      "kind": "error",
+      "operation": "status.post",
+      "intent": "The exact v1 behaviour v2 removes: v1 treats any unrecognised label as idle-class, so a typo'd label reads as a truthful agent state and an agent in trouble looks idle. v2 refuses it by name. Asserts status_label_unknown and that NO entry was committed -- a refused post must not land as a mystery entry the projection then has to classify.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "wrking",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_typo"
+          },
+          "expect_error": {
+            "code": "status_label_unknown"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_error"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "expect_error": {
+            "code": "status_subject_unknown"
+          }
+        },
+        {
+          "comment": "Nothing was committed, so the subject still has no history at all."
+        }
+      ],
+      "blocked_on_upstream": null
     }
   ],
   "authoring_notes": [

@@ -3,7 +3,7 @@ type: "Reference"
 title: "Jeliya protocol v2"
 description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the three-layer handshake and generation gate, the 33 approved operations, the error taxonomy, the sequenced push stream with gap detection and authoritative resync, and the conformance corpus that binds them."
 tags: ["clean-slate", "conformance", "protocol", "security"]
-timestamp: "2026-07-28T14:21:24Z"
+timestamp: "2026-07-28T15:26:05Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -301,13 +301,56 @@ and an operation that cannot be conformance-tested cannot be implemented
 either.
 
 [Agent orchestration](agent-orchestration.md) remains the normative source for
-the **status-label vocabulary** and for **derived liveness**, whose four values
-are `online-idle`, `working`, `offline`, and `stale`. Liveness is derived at
-read time from peer connection state and the agent's most recent event; it is
-**never stored** and never computed client-side. v2 carries that contract
-unchanged and restates none of it.
+**derived liveness**, whose four values are `online-idle`, `working`,
+`offline`, and `stale`. Liveness is derived at read time from peer connection
+state and the agent's most recent event; it is **never stored** and never
+computed client-side. v2 carries that contract unchanged.
 
-What v2 does change is the shape.
+#### The label vocabulary is closed, and severity is derived from it
+
+In v1 the label is **free-form, up to 64 bytes**. That is why
+[room attention](room-attention.md) records an "untyped-label residual":
+attention has to classify tone by matching wire words, an allowlist that "can
+miss a real failure phrased in an unlisted way and can misfire on a lookalike".
+That record names a typed severity on the agent-status event as the durable
+fix.
+
+**v2 fixes it a different way: by closing the vocabulary.** Once the set of
+labels is fixed, severity is a lookup rather than an inference, and the failure
+mode disappears at its root.
+
+| Label | Severity | Meaning |
+|---|---|---|
+| `online` | `ok` | Announced, not executing |
+| `idle` | `ok` | Not executing, ready |
+| `claiming` | `ok` | In claim arbitration. Deliberately not `working` — a claim is not execution |
+| `working` | `ok` | Executing |
+| `done` | `ok` | Task succeeded |
+| `failed` | `failed` | Task failed |
+| `blocked` | `review` | Stopped, and needs a person: a decision, a credential, an approval, or an ambiguous instruction |
+
+Any other label is `status_label_unknown`. **v2 does not silently reclassify an
+unrecognised label**, which is what v1 does by treating unknown labels as
+idle-class — a typo'd label reading as a truthful agent state.
+
+`blocked` is new. The attention model needs four reasons — `failed`, `stale`,
+`offline`, and `review` — and the first three already fall out of the
+vocabulary and derived liveness. `review` had no label, so agents had nothing
+truthful to post when stopped and waiting on a human.
+
+**There is no severity field anywhere**, on the signed event or in a payload.
+Severity is served as a derived value, and a client MUST NOT re-derive it. Two
+reasons this beats a signed severity field:
+
+- a new permitted label *value* costs nothing on the wire, whereas a new
+  *field* in signed event content is an `iroh-rooms` schema change every peer
+  must validate — a fourth upstream dependency for a problem a closed
+  vocabulary already solves;
+- an agent choosing from a fixed set cannot assert a severity that contradicts
+  its own label. A self-asserted severity field can, and a buggy or hostile
+  agent would be believed.
+
+What v2 changes about the payloads themselves:
 
 **`status.post`** takes a `label` from the closed vocabulary and a `progress`
 that is a tagged variant:
@@ -324,9 +367,14 @@ integer in `0..=100` inclusive; anything else is `invalid_argument`.
 chronological order:
 
 ```json
-{ "entries": [ { "at": "<ts>", "label": "working", "progress": { "state": "absent" } } ],
+{ "entries": [ { "at": "<ts>", "label": "working",
+                 "severity": "ok",
+                 "progress": { "state": "absent" } } ],
   "truncated": { "state": "complete" } }
 ```
+
+`severity` is the derived value from the table above, served so no client
+re-derives it.
 
 The daemon MUST NOT interpolate, smooth, or fabricate a point. A chart drawn
 from this plots actual events or it plots a lie. Paging obeys
@@ -659,10 +707,7 @@ manifest names every exemption with its reason and its unblocking issue.
 - Room-authority transfer. The creator is permanently the sole authority and
   cannot leave, so a room can never be wound down. Retained for the first
   release and **recorded as a product gap**, not a design intent.
-- Whether typed status severity lives on the signed event or in the daemon
-  projection. [Room attention](room-attention.md) names it as the durable fix
-  for classifying tone by English substring matching. It is a wire change and
-  MUST be decided before the corpus freezes.
+- How a client renders a severity. v2 states the derivation, not the display.
 - Anything about v1. It keeps its behavior until it is retired.
 
 ## Citations

@@ -13,7 +13,7 @@
     "U3": "a size-distinguishable fetch outcome"
   },
   "totals": {
-    "cases": 332,
+    "cases": 335,
     "quarantined": 0,
     "blocked_on_upstream": 10
   },
@@ -250,5 +250,17 @@
       "satisfies_required_kinds": true
     }
   },
-  "operations_not_yet_satisfying_required_kinds": []
+  "operations_not_yet_satisfying_required_kinds": [],
+  "severity_derivation": {
+    "note": "severity is derived from the closed label set and SERVED; no signed severity field exists",
+    "map": {
+      "online": "ok",
+      "idle": "ok",
+      "claiming": "ok",
+      "working": "ok",
+      "done": "ok",
+      "failed": "failed",
+      "blocked": "review"
+    }
+  }
 }
