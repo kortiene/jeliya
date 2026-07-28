@@ -766,188 +766,6 @@
       "blocked_on_upstream": null
     },
     {
-      "name": "status_post_progress_exactly_100_is_accepted_and_101_is_refused",
-      "kind": "boundary",
-      "operation": "status.post",
-      "intent": "Pins both edges of the reported-progress percent, using status.post's own specific code with typed integer fields; catches an unbounded percent (v1 fed a progress bar straight from the wire) and catches a clamp-instead-of-refuse, which would make a peer's out-of-range claim indistinguishable from an honest 100.",
-      "requires": [
-        "subject",
-        "live_room"
-      ],
-      "steps": [
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "done",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "reported",
-              "percent": 100
-            },
-            "op_id": "$op_p100"
-          },
-          "expect": {
-            "event_id": "<hex64>",
-            "pos": "<pos>"
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "done",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "reported",
-              "percent": 101
-            },
-            "op_id": "$op_p101"
-          },
-          "expect_error": {
-            "code": "status_progress_out_of_range",
-            "fields": {
-              "reported": 101,
-              "min": 0,
-              "max": 100
-            }
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "done",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "reported",
-              "percent": -1
-            },
-            "op_id": "$op_pneg"
-          },
-          "expect_error": {
-            "code": "status_progress_out_of_range",
-            "fields": {
-              "reported": -1,
-              "min": 0,
-              "max": 100
-            }
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
-      "name": "status_post_progress_absent_is_a_tagged_variant_and_null_is_refused",
-      "kind": "malformed",
-      "operation": "status.post",
-      "intent": "v1 carried progress as a nullable number and a null meant \"no progress\"; v2 forbids that. Asserts the absent form is the tagged variant, that a literal null is invalid_argument rather than a synonym for absent, and that the absent variant round-trips through status.history and the push without ever becoming 0. Catches a client-visible \"0%\" fabricated from an absent progress.",
-      "requires": [
-        "subject",
-        "live_room"
-      ],
-      "steps": [
-        {
-          "call": "stream.subscribe",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op_sub"
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "online",
-            "message": {
-              "state": "absent"
-            },
-            "progress": null,
-            "op_id": "$op_null"
-          },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
-              "field": "progress",
-              "reason": "null_not_permitted"
-            }
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "online",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "absent"
-            },
-            "op_id": "$op_abs"
-          },
-          "save": {
-            "seid": "event_id",
-            "sp": "pos"
-          }
-        },
-        {
-          "await_push": {
-            "t": "event",
-            "conn": "c1",
-            "within_ms": 3000,
-            "match": {
-              "room": "$rid",
-              "pos": "$sp",
-              "event": {
-                "event_id": "$seid",
-                "progress": {
-                  "state": "absent"
-                },
-                "message": {
-                  "state": "absent"
-                }
-              }
-            },
-            "save": {
-              "frame": "$"
-            }
-          }
-        },
-        {
-          "assert": {
-            "no_nulls": "$frame"
-          }
-        },
-        {
-          "assert": {
-            "ne": [
-              "$frame.event.progress",
-              {
-                "state": "reported",
-                "percent": 0
-              }
-            ]
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
       "name": "status_post_by_a_non_active_member_is_insufficient_standing",
       "kind": "authorization",
       "operation": "status.post",
@@ -1001,144 +819,6 @@
         }
       ],
       "blocked_on_upstream": null
-    },
-    {
-      "name": "status_history_returns_only_real_posted_events_with_increasing_positions",
-      "kind": "success",
-      "operation": "status.history",
-      "intent": "Proves the read is a projection of actual events and nothing else: three posts produce exactly three points, in position order, with strictly increasing positions and the exact labels posted; nothing is interpolated, smoothed, or carried forward. Catches a daemon that synthesises intermediate progress points for a sparkline or that reorders by wall clock rather than position.",
-      "requires": [
-        "subject",
-        "live_room"
-      ],
-      "steps": [
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "online",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "absent"
-            },
-            "op_id": "$o1"
-          },
-          "save": {
-            "p1": "pos",
-            "e1": "event_id"
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "working",
-            "message": {
-              "state": "present",
-              "text": "step 1"
-            },
-            "progress": {
-              "state": "reported",
-              "percent": 10
-            },
-            "op_id": "$o2"
-          },
-          "save": {
-            "p2": "pos",
-            "e2": "event_id"
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "done",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "reported",
-              "percent": 100
-            },
-            "op_id": "$o3"
-          },
-          "save": {
-            "p3": "pos",
-            "e3": "event_id"
-          }
-        },
-        {
-          "call": "status.history",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "subject_id": "$self_sid",
-            "limit": 100
-          },
-          "save": {
-            "pts": "points"
-          }
-        },
-        {
-          "assert": {
-            "len": [
-              "$pts",
-              3
-            ]
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              [
-                "$pts[0].event_id",
-                "$pts[1].event_id",
-                "$pts[2].event_id"
-              ],
-              [
-                "$e1",
-                "$e2",
-                "$e3"
-              ]
-            ]
-          }
-        },
-        {
-          "assert": {
-            "strictly_increasing": [
-              "$pts[*].pos"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              [
-                "$pts[0].label",
-                "$pts[1].label",
-                "$pts[2].label"
-              ],
-              [
-                "online",
-                "working",
-                "done"
-              ]
-            ]
-          }
-        },
-        {
-          "assert": {
-            "no_nulls": "$pts"
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
     },
     {
       "name": "status_history_positions_equal_the_positions_delivered_on_the_push_stream",
@@ -1257,77 +937,6 @@
       "blocked_on_upstream": null
     },
     {
-      "name": "status_history_carries_a_typed_severity_not_english_prose",
-      "kind": "success",
-      "operation": "status.history",
-      "intent": "The attention taxonomy classifies failed/blocked/awaiting-review work; doing that by substring-matching a free-form English label is the residual defect that record names, and protocol-v2 states the severity question MUST be decided before the corpus freezes. This case asserts only what is true under either resolution (severity on the signed event, or in the daemon projection): the read carries a value from a closed enum, so no client ever matches prose. Catches a v2 that ships the v1 label-only shape.",
-      "requires": [
-        "subject",
-        "live_room"
-      ],
-      "steps": [
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "failed",
-            "message": {
-              "state": "present",
-              "text": "build broke"
-            },
-            "progress": {
-              "state": "absent"
-            },
-            "op_id": "$o1"
-          },
-          "save": {
-            "eid": "event_id"
-          }
-        },
-        {
-          "call": "status.history",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "subject_id": "$self_sid",
-            "limit": 10
-          },
-          "save": {
-            "pts": "points"
-          }
-        },
-        {
-          "assert": {
-            "member_of": [
-              "$pts[-1].severity",
-              [
-                "ok",
-                "working",
-                "failed",
-                "blocked",
-                "awaiting_review"
-              ]
-            ]
-          }
-        },
-        {
-          "assert": {
-            "not_derived_from_substring": {
-              "field": "$pts[-1].severity",
-              "of": "$pts[-1].label"
-            }
-          }
-        },
-        {
-          "assert": {
-            "no_nulls": "$pts"
-          }
-        }
-      ],
-      "blocked_on_upstream": null
-    },
-    {
       "name": "status_history_page_of_exactly_timeline_page_max_is_accepted",
       "kind": "boundary",
       "operation": "status.history",
@@ -1435,190 +1044,6 @@
       "blocked_on_upstream": null
     },
     {
-      "name": "status_history_with_no_posts_is_an_empty_list_not_an_error_and_not_null",
-      "kind": "success",
-      "operation": "status.history",
-      "intent": "Distinguishes \"the daemon answered and there is nothing\" from \"we have not asked\" and from \"that subject is unknown\": a member who has never posted yields an empty points array, never null and never an error. Also keeps the read from becoming a membership oracle for a subject id the caller supplies. Catches a daemon that errors on a silent member and a client that renders a settled empty state from a null.",
-      "requires": [
-        "subject",
-        "live_room",
-        "member_nonagent"
-      ],
-      "steps": [
-        {
-          "call": "status.history",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "subject_id": "$member_sid",
-            "limit": 100
-          },
-          "expect": {
-            "points": []
-          }
-        },
-        {
-          "assert": {
-            "no_nulls": "$last_result"
-          }
-        },
-        {
-          "call": "status.history",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "subject_id": "0000000000000000000000000000000000000000000000000000000000000000",
-            "limit": 100
-          },
-          "expect": {
-            "points": []
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
-      "name": "fleet_list_projection_uses_tagged_variants_and_carries_no_nulls",
-      "kind": "success",
-      "operation": "fleet.list",
-      "intent": "The fleet projection is where v1 concentrated its nullability — a null latest, a null progress, a null last_seen, a null room name — and v2 forbids every one. Asserts each is a tagged variant, that the four liveness states are the closed set, that the count invariants hold, and that a role is resolved rather than defaulted. Catches a v2 that transcribes the v1 FleetAgent shape.",
-      "requires": [
-        "subject",
-        "live_room",
-        "member_agent"
-      ],
-      "steps": [
-        {
-          "call": "fleet.list",
-          "conn": "c1",
-          "in": {},
-          "save": {
-            "f": "$"
-          },
-          "expect": {
-            "total": "<number>",
-            "active": "<number>",
-            "working": "<number>",
-            "rooms_total": "<number>",
-            "rooms_covered": "<number>",
-            "agents": [
-              {
-                "subject_id": "<hex64>",
-                "liveness": "<enum>",
-                "rooms": [
-                  {
-                    "room": "<room_id>",
-                    "name": "<tagged>"
-                  }
-                ],
-                "latest": "<tagged>",
-                "last_seen": "<tagged>"
-              }
-            ]
-          }
-        },
-        {
-          "assert": {
-            "no_nulls": "$f"
-          }
-        },
-        {
-          "assert": {
-            "lte": [
-              "$f.working",
-              "$f.active"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "lte": [
-              "$f.active",
-              "$f.total"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "lte": [
-              "$f.rooms_covered",
-              "$f.rooms_total"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "member_of": [
-              "$f.agents[0].liveness",
-              [
-                "online-idle",
-                "working",
-                "offline",
-                "stale"
-              ]
-            ]
-          }
-        },
-        {
-          "assert": {
-            "member_of": [
-              "$f.agents[0].latest.state",
-              [
-                "posted",
-                "never"
-              ]
-            ]
-          }
-        },
-        {
-          "assert": {
-            "member_of": [
-              "$f.agents[0].last_seen.state",
-              [
-                "observed",
-                "never"
-              ]
-            ]
-          }
-        },
-        {
-          "assert": {
-            "member_of": [
-              "$f.agents[0].rooms[0].name.state",
-              [
-                "named",
-                "unnamed"
-              ]
-            ]
-          }
-        },
-        {
-          "assert": {
-            "implies": {
-              "if": {
-                "eq": [
-                  "$f.agents[0].latest.state",
-                  "posted"
-                ]
-              },
-              "then": {
-                "member_of": [
-                  "$f.agents[0].latest.progress.state",
-                  [
-                    "reported",
-                    "absent"
-                  ]
-                ]
-              }
-            }
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
       "name": "fleet_list_without_a_subject_gives_the_same_answer_as_room_list",
       "kind": "error",
       "operation": "fleet.list",
@@ -1682,87 +1107,6 @@
         }
       ],
       "blocked_on_upstream": null
-    },
-    {
-      "name": "fleet_list_is_scoped_to_authorized_rooms_and_is_not_a_membership_oracle",
-      "kind": "authorization",
-      "operation": "fleet.list",
-      "intent": "fleet.list is the one timeline-domain read that is not room-scoped, so its non-oracle obligation is scope rather than a code: a room the caller is not a member of must not appear in any agent's rooms array and must not move rooms_total, rooms_covered, or any agent count. Catches a projection built by scanning every locally-known store instead of the caller's authorized set.",
-      "requires": [
-        "subject",
-        "live_room",
-        "second_subject",
-        "foreign_room"
-      ],
-      "steps": [
-        {
-          "call": "fleet.list",
-          "conn": "cX",
-          "as": "second_subject",
-          "in": {},
-          "save": {
-            "before": "$"
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$foreign_rid",
-            "label": "working",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "absent"
-            },
-            "op_id": "$o1"
-          }
-        },
-        {
-          "call": "fleet.list",
-          "conn": "cX",
-          "as": "second_subject",
-          "in": {},
-          "save": {
-            "after": "$"
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              "$after.rooms_total",
-              "$before.rooms_total"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              "$after.rooms_covered",
-              "$before.rooms_covered"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              "$after.total",
-              "$before.total"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "not_contains": {
-              "in": "$after.agents[*].rooms[*].room",
-              "value": "$foreign_rid"
-            }
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
     },
     {
       "name": "stream_subscribe_is_required_before_any_push_is_delivered",
@@ -4413,6 +3757,2546 @@
         }
       ],
       "blocked_on_upstream": "U1"
+    },
+    {
+      "name": "status_post_reported_progress_commits_the_tagged_percent_intact",
+      "kind": "success",
+      "operation": "status.post",
+      "intent": "Pins the spec's literal status.post input contract: a label from the closed vocabulary plus progress as the tagged reported variant carrying an integer percent. The commit is proved by reading it back through status.history, whose entry shape the spec fixes, so the case asserts only shapes the specification states. Catches a v2 that transcribes v1's bare `progress: 40` number, or that stores the tagged variant and re-serves it flattened, or that loses the percent on the round trip.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 40
+            },
+            "op_id": "$op_working"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              1
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].label",
+              "working"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].progress",
+              {
+                "state": "reported",
+                "percent": 40
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "integer": "$h.entries[0].progress.percent"
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$h.entries[0]",
+              "at"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$h"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_post_absent_progress_is_the_tagged_variant_and_never_becomes_zero",
+      "kind": "success",
+      "operation": "status.post",
+      "intent": "The spec's second literal example: a post that reports no progress carries `{\"state\":\"absent\"}`, not a null and not an implied zero. Asserts the absent variant survives the round trip through status.history unchanged and is never equal to a reported zero. Catches the client-visible defect where an agent that has reported no progress renders as a 0% bar indistinguishable from an agent that genuinely reported 0.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "claiming",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_claiming"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              1
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].label",
+              "claiming"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].progress",
+              {
+                "state": "absent"
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "ne": [
+              "$h.entries[0].progress",
+              {
+                "state": "reported",
+                "percent": 0
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$h.entries[0].progress",
+              "percent"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$h"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_post_progress_percent_0_and_100_are_both_accepted",
+      "kind": "boundary",
+      "operation": "status.post",
+      "intent": "`percent` is an integer in `0..=100` INCLUSIVE, so both edges are legal values and not off-by-one refusals. Both posts are read back to prove the edge values are stored as posted rather than clamped inward or coerced. Catches an exclusive-bound validator, and catches a 0 dropped as falsy into the absent variant — the classic JavaScript-shaped bug this tagged variant exists to make impossible.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 0
+            },
+            "op_id": "$op_p0"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "done",
+            "progress": {
+              "state": "reported",
+              "percent": 100
+            },
+            "op_id": "$op_p100"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              2
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].progress",
+              {
+                "state": "reported",
+                "percent": 0
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[1].progress",
+              {
+                "state": "reported",
+                "percent": 100
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "ne": [
+              "$h.entries[0].progress",
+              {
+                "state": "absent"
+              }
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_post_progress_percent_101_and_negative_1_are_invalid_argument",
+      "kind": "boundary",
+      "operation": "status.post",
+      "intent": "The outer edges of the inclusive `0..=100` range. The spec states the refusal code for this case verbatim — `anything else is invalid_argument` — so the case asserts that code and no other. Both refusals are followed by a history read proving no partial event was committed. Catches a clamp-instead-of-refuse, which would make a peer's out-of-range claim indistinguishable from an honest 100, and catches an unbounded percent fed straight into a progress bar.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 101
+            },
+            "op_id": "$op_p101"
+          },
+          "expect_error": {
+            "code": "invalid_argument"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": -1
+            },
+            "op_id": "$op_pneg1"
+          },
+          "expect_error": {
+            "code": "invalid_argument"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_error"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "expect_error": {
+            "code": "status_subject_unknown"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_post_label_outside_the_closed_vocabulary_is_status_label_unknown",
+      "kind": "error",
+      "operation": "status.post",
+      "intent": "status.post's own distinctive code. v2 closes the label vocabulary that v1 left free-form, so a label outside it is refused by name rather than accepted and silently reclassified. Asserts the specific code — a generic invalid_argument does not satisfy the corpus rule — and that a legal label from the same vocabulary still succeeds on the same connection, so the refusal is about the value and not about the operation being broken. Catches an implementation that keeps v1's free-form label field and classifies anything unrecognised as idle-class, which lets a typo'd label read as a truthful agent state.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "definitely-not-a-status-label",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_bad_label"
+          },
+          "expect_error": {
+            "code": "status_label_unknown"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_error"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_empty_label"
+          },
+          "expect_error": {
+            "code": "status_label_unknown"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_good_label"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              1
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].label",
+              "working"
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_post_is_open_to_any_active_member_not_only_role_agent_identities",
+      "kind": "authorization",
+      "operation": "status.post",
+      "intent": "v2's stated resolution of a disagreement v1 had across three surfaces: `status.post` stays open to ANY active member, because member and agent are a classification, not a permission. A member holding role `member` posts with the same input and gets the same outcome as a role-agent member, and both posts read back identically through status.history. Catches any implementation that reinstates a role-agent gate on authoring, and catches one that accepts the post but files a non-agent's status somewhere a status read cannot see.",
+      "requires": [
+        "subject",
+        "live_room",
+        "member_nonagent",
+        "member_agent"
+      ],
+      "steps": [
+        {
+          "call": "room.members",
+          "conn": "cM",
+          "as": "member_nonagent",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "members": [
+              {
+                "subject_id": "$member_sid",
+                "role": "member",
+                "standing": "active"
+              }
+            ]
+          },
+          "match": "contains"
+        },
+        {
+          "call": "status.post",
+          "conn": "cM",
+          "as": "member_nonagent",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 40
+            },
+            "op_id": "$op_nonagent"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "cAg",
+          "as": "member_agent",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 40
+            },
+            "op_id": "$op_agent"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "cM",
+          "as": "member_nonagent",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$member_sid",
+            "limit": 10
+          },
+          "save": {
+            "hm": "$"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "cAg",
+          "as": "member_agent",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$agent_sid",
+            "limit": 10
+          },
+          "save": {
+            "ha": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$hm.entries",
+              1
+            ]
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$ha.entries",
+              1
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$hm.entries[0].label",
+              "$ha.entries[0].label"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$hm.entries[0].progress",
+              "$ha.entries[0].progress"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "same_keys": [
+              "$hm.entries[0]",
+              "$ha.entries[0]"
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_post_rejects_a_literal_json_null_for_progress",
+      "kind": "malformed",
+      "operation": "status.post",
+      "intent": "The no-null rule at its sharpest point. v1 carried `progress: null` to mean \"no progress\"; v2 states that shape is forbidden and that absence is expressed as a tagged variant. Asserts a literal null is refused rather than accepted as a synonym for the absent variant, that the refusal itself carries no null and no hint, and that the tagged absent form posted immediately afterwards succeeds — so the refusal is about the null, not about the field being unsupported. Catches a permissive deserializer that maps null onto Option::None and quietly restores v1's compatibility-nullability under a v2 wire label.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": null,
+            "op_id": "$op_null_progress"
+          },
+          "expect_error": {
+            "code": "invalid_argument"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_error"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_tagged_absent"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 10
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              1
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.entries[0].progress",
+              {
+                "state": "absent"
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$h"
+          }
+        },
+        {
+          "assert": {
+            "connection_open": "c1"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_history_returns_entries_in_chronological_order_with_truncated_as_a_tagged_variant",
+      "kind": "success",
+      "operation": "status.history",
+      "intent": "The spec's literal status.history output contract: an `entries` array whose members carry `at`, `label` and `progress`, plus a `truncated` tagged variant — not v1's `points`. Asserts the top-level key set is exactly the two the spec names, that the entries appear in the order they were posted with non-decreasing `at`, and that `truncated` is a tagged object rather than a boolean or a null. Catches the single largest v1 transcription risk on this operation (`points`), a boolean `truncated`, and a read that orders by insertion into a map rather than chronologically.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "claiming",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$o1"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 10
+            },
+            "op_id": "$o2"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "done",
+            "progress": {
+              "state": "reported",
+              "percent": 100
+            },
+            "op_id": "$o3"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 100
+          },
+          "save": {
+            "h": "$"
+          },
+          "expect": {
+            "entries": "<array>",
+            "truncated": "<tagged>"
+          }
+        },
+        {
+          "assert": {
+            "same_keys": [
+              "$h",
+              [
+                "entries",
+                "truncated"
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$h",
+              "points"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              3
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              [
+                "$h.entries[0].label",
+                "$h.entries[1].label",
+                "$h.entries[2].label"
+              ],
+              [
+                "claiming",
+                "working",
+                "done"
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              [
+                "$h.entries[0].progress",
+                "$h.entries[1].progress",
+                "$h.entries[2].progress"
+              ],
+              [
+                {
+                  "state": "absent"
+                },
+                {
+                  "state": "reported",
+                  "percent": 10
+                },
+                {
+                  "state": "reported",
+                  "percent": 100
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$h.entries[0]",
+              "at"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "lte": [
+              "$h.entries[0].at",
+              "$h.entries[1].at"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "lte": [
+              "$h.entries[1].at",
+              "$h.entries[2].at"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$h.truncated",
+              "state"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.truncated",
+              {
+                "state": "complete"
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$h"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_history_does_not_interpolate_three_posts_yield_exactly_three_entries",
+      "kind": "success",
+      "operation": "status.history",
+      "intent": "The spec's prohibition stated as a check: the daemon MUST NOT interpolate, smooth, or fabricate a point, because a chart drawn from this plots actual events or it plots a lie. Three posts whose percents jump 0 then 100 with a long-lived intermediate gap yield exactly three entries and exactly the three posted percents — no midpoint, no carried-forward sample, no per-second fill. Catches a daemon that resamples status onto a fixed grid to make a sparkline look smooth, and catches one that repeats the last known value to cover a silent interval.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "claiming",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$o1"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 0
+            },
+            "op_id": "$o2"
+          }
+        },
+        {
+          "harness": "advance_wall_clock",
+          "by_ms": 5000
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "done",
+            "progress": {
+              "state": "reported",
+              "percent": 100
+            },
+            "op_id": "$o3"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 100
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              3
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              [
+                "$h.entries[0].progress",
+                "$h.entries[1].progress",
+                "$h.entries[2].progress"
+              ],
+              [
+                {
+                  "state": "absent"
+                },
+                {
+                  "state": "reported",
+                  "percent": 0
+                },
+                {
+                  "state": "reported",
+                  "percent": 100
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "all_distinct": [
+              "$h.entries[*].at"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.truncated",
+              {
+                "state": "complete"
+              }
+            ]
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 100
+          },
+          "save": {
+            "h2": "$"
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h2",
+              "$h"
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_history_for_a_subject_with_no_status_history_is_status_subject_unknown",
+      "kind": "error",
+      "operation": "status.history",
+      "intent": "status.history's own distinctive code, raised exactly when the spec says: the named agent has no status history. Asserts the code rather than a fabricated empty success, and asserts the same code for a well-formed subject id nobody holds, so a caller cannot use this read to learn which subject ids exist. Then a single post by that member makes the same call succeed, proving the code tracks the absence of history and not a permanent classification. Catches an implementation that answers `{entries: []}` for an unknown subject — which conflates \"nothing has happened\" with \"there is no such history\" and quietly turns the read into a subject-existence oracle.",
+      "requires": [
+        "subject",
+        "live_room",
+        "member_nonagent"
+      ],
+      "steps": [
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$member_sid",
+            "limit": 100
+          },
+          "save": {
+            "errA": "$err"
+          },
+          "expect_error": {
+            "code": "status_subject_unknown"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_error"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "0000000000000000000000000000000000000000000000000000000000000000",
+            "limit": 100
+          },
+          "save": {
+            "errB": "$err"
+          },
+          "expect_error": {
+            "code": "status_subject_unknown"
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$errA",
+              "$errB"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "timing_indistinguishable": {
+              "arms": [
+                "$errA",
+                "$errB"
+              ],
+              "samples": 50,
+              "median_delta_lte_ms": 5
+            }
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "cM",
+          "as": "member_nonagent",
+          "in": {
+            "room": "$rid",
+            "label": "online",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_first"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$member_sid",
+            "limit": 100
+          },
+          "save": {
+            "h": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$h.entries",
+              1
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h.truncated",
+              {
+                "state": "complete"
+              }
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "status_history_page_is_bounded_by_timeline_page_max_and_truncation_is_stated_not_inferred",
+      "kind": "boundary",
+      "operation": "status.history",
+      "intent": "Two halves of one spec sentence. First, paging obeys the SERVED `timeline_page_max` read from hello rather than a compiled-in cap, and a page never exceeds it. Second, truncation is always stated as a tagged variant rather than inferred from a full page: a request for exactly as many entries as exist returns a full page whose `truncated` still says `complete`, and a request one short returns a short page whose `truncated` says something other than `complete`. Catches the classic client heuristic `entries.length === limit ? more : done`, which is wrong in exactly the full-and-complete case this pins, and catches a hardcoded page cap disagreeing with the served limit.",
+      "requires": [
+        "subject",
+        "live_room",
+        "limits"
+      ],
+      "steps": [
+        {
+          "read": "hello.limits",
+          "conn": "c1",
+          "save": {
+            "page_max": "timeline_page_max"
+          },
+          "expect": {
+            "timeline_page_max": "<uint>"
+          }
+        },
+        {
+          "assert": {
+            "integer": "$page_max"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "claiming",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$o1"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 50
+            },
+            "op_id": "$o2"
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "label": "done",
+            "progress": {
+              "state": "reported",
+              "percent": 100
+            },
+            "op_id": "$o3"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 3
+          },
+          "save": {
+            "full": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$full.entries",
+              3
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$full.truncated",
+              {
+                "state": "complete"
+              }
+            ]
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": 2
+          },
+          "save": {
+            "short": "$"
+          }
+        },
+        {
+          "assert": {
+            "len": [
+              "$short.entries",
+              2
+            ]
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$short.truncated",
+              "state"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "ne": [
+              "$short.truncated.state",
+              "complete"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$short.truncated"
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$self_sid",
+            "limit": "$page_max"
+          },
+          "save": {
+            "maxpage": "$"
+          }
+        },
+        {
+          "assert": {
+            "len_lte": [
+              "$maxpage.entries",
+              "$page_max"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$maxpage.truncated",
+              {
+                "state": "complete"
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "connection_open": "c1"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "fleet_list_serves_agents_with_derived_liveness_and_no_tallies",
+      "kind": "success",
+      "operation": "fleet.list",
+      "intent": "The spec's literal fleet.list contract, and the one field-level regression it names outright: v1 served `active`, `working`, `total`, `rooms_total` and `rooms_covered` alongside the list, and v2 serves the facts, not the tallies, because a served tally is a second thing that can disagree with what it summarizes. Asserts the response key set is exactly `agents`, names all five removed tallies as absent so the failure message identifies the regression, pins the per-agent row as a flat (subject_id, room_id) fact rather than v1's nested rooms array, and checks `liveness` is one of exactly four values with `latest_status` and `last_seen` as tagged variants carrying no nulls. Catches a v2 that transcribes the v1 FleetAgent shape wholesale.",
+      "requires": [
+        "subject",
+        "live_room",
+        "member_agent"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "cAg",
+          "as": "member_agent",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 40
+            },
+            "op_id": "$op_seed"
+          }
+        },
+        {
+          "call": "fleet.list",
+          "conn": "c1",
+          "in": {},
+          "save": {
+            "f": "$"
+          },
+          "expect": {
+            "agents": [
+              {
+                "subject_id": "<hex64>",
+                "room_id": "<room_id>",
+                "liveness": "<enum>",
+                "latest_status": "<tagged>",
+                "last_seen": "<tagged>"
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "same_keys": [
+              "$f",
+              [
+                "agents"
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$f",
+              "active"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$f",
+              "working"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$f",
+              "total"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$f",
+              "rooms_total"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$f",
+              "rooms_covered"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$f.agents[0]",
+              "rooms"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$f.agents[0]",
+              "room_id"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "member_of": [
+              "$f.agents[0].liveness",
+              [
+                "online-idle",
+                "working",
+                "offline",
+                "stale"
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$f.agents[0].latest_status",
+              "state"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$f.agents[0].last_seen",
+              "state"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "implies": {
+              "if": {
+                "eq": [
+                  "$f.agents[0].latest_status.state",
+                  "present"
+                ]
+              },
+              "then": {
+                "present_key": [
+                  "$f.agents[0].latest_status",
+                  "label"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "assert": {
+            "implies": {
+              "if": {
+                "ne": [
+                  "$f.agents[0].latest_status.state",
+                  "present"
+                ]
+              },
+              "then": {
+                "absent_key": [
+                  "$f.agents[0].latest_status",
+                  "label"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "assert": {
+            "implies": {
+              "if": {
+                "ne": [
+                  "$f.agents[0].last_seen.state",
+                  "present"
+                ]
+              },
+              "then": {
+                "absent_key": [
+                  "$f.agents[0].last_seen",
+                  "at"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$f"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "fleet_list_liveness_is_server_derived_at_read_time_and_never_stored",
+      "kind": "success",
+      "operation": "fleet.list",
+      "intent": "The spec says liveness is derived at read time, is never stored, and is never computed client-side, and it delegates the derivation RULES to agent-orchestration.md — so this case asserts only the part v2 owns. It observes two reads with no intervening status event: the served `liveness` changes when the underlying peer connection state changes, while `latest_status` and the agent's status history are byte-identical across both reads. That is only possible if the value is computed at read time and served by the daemon. Catches a stored liveness column that goes stale until the next post, and catches a daemon that omits the field and expects each client to derive it — which is how four clients end up with four different answers.",
+      "requires": [
+        "subject",
+        "live_room",
+        "member_agent"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "cAg",
+          "as": "member_agent",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 40
+            },
+            "op_id": "$op_seed"
+          }
+        },
+        {
+          "call": "fleet.list",
+          "conn": "c1",
+          "in": {},
+          "save": {
+            "f1": "$"
+          }
+        },
+        {
+          "assert": {
+            "present_key": [
+              "$f1.agents[0]",
+              "liveness"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "member_of": [
+              "$f1.agents[0].liveness",
+              [
+                "online-idle",
+                "working",
+                "offline",
+                "stale"
+              ]
+            ]
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$agent_sid",
+            "limit": 100
+          },
+          "save": {
+            "h1": "$"
+          }
+        },
+        {
+          "harness": "drop_peer_connection",
+          "subject": "member_agent",
+          "room": "$rid"
+        },
+        {
+          "call": "fleet.list",
+          "conn": "c1",
+          "in": {},
+          "save": {
+            "f2": "$"
+          }
+        },
+        {
+          "assert": {
+            "member_of": [
+              "$f2.agents[0].liveness",
+              [
+                "online-idle",
+                "working",
+                "offline",
+                "stale"
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "ne": [
+              "$f2.agents[0].liveness",
+              "$f1.agents[0].liveness"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$f2.agents[0].latest_status",
+              "$f1.agents[0].latest_status"
+            ]
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "subject_id": "$agent_sid",
+            "limit": 100
+          },
+          "save": {
+            "h2": "$"
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$h2",
+              "$h1"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$f2"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "fleet_list_projection_failure_is_fleet_projection_unavailable_not_an_empty_success",
+      "kind": "error",
+      "operation": "fleet.list",
+      "intent": "fleet.list's own distinctive code, raised exactly when the spec says: the projection cannot be built. The corpus rule is one error case using the operation's OWN most specific code, and a shared code such as subject_absent asserted here and against room.list is the same assertion twice. Asserts an error frame with no `out`, no `hint` and no nulls — specifically NOT `{agents: []}`, because an empty success is a confident lie that renders as \"the fleet is idle\" when the truth is \"we cannot tell\". Then repairs the projection and asserts the same call succeeds, so the code marks a recoverable condition rather than a permanent one.",
+      "requires": [
+        "subject",
+        "live_room",
+        "member_agent"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "conn": "cAg",
+          "as": "member_agent",
+          "in": {
+            "room": "$rid",
+            "label": "working",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "$op_seed"
+          }
+        },
+        {
+          "harness": "make_fleet_projection_unbuildable"
+        },
+        {
+          "call": "fleet.list",
+          "conn": "c1",
+          "in": {},
+          "expect_error": {
+            "code": "fleet_projection_unavailable"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_reply",
+              "out"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_error"
+          }
+        },
+        {
+          "assert": {
+            "ne": [
+              "$last_reply.err.code",
+              "subject_absent"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "connection_open": "c1"
+          }
+        },
+        {
+          "harness": "repair_fleet_projection"
+        },
+        {
+          "call": "fleet.list",
+          "conn": "c1",
+          "in": {},
+          "save": {
+            "f": "$"
+          }
+        },
+        {
+          "assert": {
+            "same_keys": [
+              "$f",
+              [
+                "agents"
+              ]
+            ]
+          }
+        },
+        {
+          "assert": {
+            "member_of": [
+              "$f.agents[0].liveness",
+              [
+                "online-idle",
+                "working",
+                "offline",
+                "stale"
+              ]
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "fleet_list_omits_rooms_the_caller_cannot_see_indistinguishably_from_absent",
+      "kind": "authorization",
+      "operation": "fleet.list",
+      "intent": "fleet.list is scoped to the caller's authorized room set and MUST NOT be a membership oracle: a room the caller cannot see contributes nothing, and its absence is indistinguishable from it not existing. This is checked against a control rather than by inspection, which is the only way to prove indistinguishability — the caller's response while a foreign room exists and hosts a busy agent must equal, field for field, the response taken before that room existed, with indistinguishable timing. Also asserts the foreign room_id appears in no agent row. Catches a projection built by scanning every locally-known store instead of the caller's authorized set, which is precisely the shape that leaks the existence of rooms and their agents; the removal of the tallies matters here too, since a moving `rooms_total` would have leaked the same fact without ever naming the room.",
+      "requires": [
+        "subject",
+        "second_subject",
+        "live_room",
+        "foreign_room"
+      ],
+      "steps": [
+        {
+          "call": "fleet.list",
+          "conn": "cX",
+          "as": "second_subject",
+          "in": {},
+          "save": {
+            "control": "$"
+          }
+        },
+        {
+          "assert": {
+            "same_keys": [
+              "$control",
+              [
+                "agents"
+              ]
+            ]
+          }
+        },
+        {
+          "call": "status.post",
+          "conn": "c1",
+          "in": {
+            "room": "$foreign_rid",
+            "label": "working",
+            "progress": {
+              "state": "reported",
+              "percent": 40
+            },
+            "op_id": "$op_foreign"
+          }
+        },
+        {
+          "call": "fleet.list",
+          "conn": "cX",
+          "as": "second_subject",
+          "in": {},
+          "save": {
+            "after": "$"
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$after",
+              "$control"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "not_contains": {
+              "in": "$after.agents[*].room_id",
+              "value": "$foreign_rid"
+            }
+          }
+        },
+        {
+          "assert": {
+            "not_contains": {
+              "in": "$after.agents[*].subject_id",
+              "value": "$self_sid"
+            }
+          }
+        },
+        {
+          "assert": {
+            "timing_indistinguishable": {
+              "arms": [
+                "$control",
+                "$after"
+              ],
+              "samples": 50,
+              "median_delta_lte_ms": 5
+            }
+          }
+        },
+        {
+          "call": "status.history",
+          "conn": "cX",
+          "as": "second_subject",
+          "in": {
+            "room": "$foreign_rid",
+            "subject_id": "$self_sid",
+            "limit": 100
+          },
+          "expect_error": {
+            "code": "room_not_available"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "message_send_past_the_served_body_limit_is_message_too_large_with_two_typed_integers",
+      "kind": "error",
+      "operation": "message.send",
+      "intent": "Gives message.send its own error-kind case, and pins the two fields the spec names on the code: declared_bytes and limit_bytes, both integers. Asserts declared_bytes is the ACTUAL byte length the client sent and limit_bytes is exactly the served max_message_body_bytes -- catches a daemon that reports the limit in both fields (so a client cannot tell the user how far over they are), that reports a character count, that reports a string, or that carries the numbers only inside a prose message. Also catches the v1 regression this taxonomy exists to prevent: one generic argument error for every rejection, leaving a client to match an English substring to decide whether to offer 'shorten your message'. The refusal must be an application error on an open connection -- not a 4005 frame close -- so the body is sized strictly between max_message_body_bytes and max_frame_bytes, and nothing may commit or be pushed.",
+      "requires": [
+        "subject",
+        "live_room",
+        "limits"
+      ],
+      "steps": [
+        {
+          "read": "hello.limits",
+          "conn": "c1",
+          "save": {
+            "body_max": "max_message_body_bytes",
+            "frame_max": "max_frame_bytes"
+          },
+          "expect": {
+            "max_message_body_bytes": "<uint>",
+            "max_frame_bytes": "<uint>"
+          }
+        },
+        {
+          "assert": {
+            "all_integers": [
+              "$body_max",
+              "$frame_max"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "lt": [
+              "$body_max",
+              "$frame_max"
+            ]
+          }
+        },
+        {
+          "call": "stream.subscribe",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "op_id": "$o_sub"
+          },
+          "save": {
+            "head": "head_pos"
+          }
+        },
+        {
+          "call": "room.timeline",
+          "conn": "c1",
+          "in": {
+            "room_id": "$rid"
+          },
+          "save_out": "timeline_before"
+        },
+        {
+          "call": "message.send",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "body": {
+              "$utf8_of_len": {
+                "bytes": {
+                  "$strictly_between": [
+                    "$body_max",
+                    "$frame_max"
+                  ]
+                },
+                "must_include": [
+                  "2-byte",
+                  "3-byte",
+                  "4-byte"
+                ]
+              }
+            },
+            "op_id": "$o_big"
+          },
+          "note": "strictly over the body limit and strictly under the frame limit, so the daemon must answer with an error envelope rather than close the connection",
+          "save": {
+            "err": "$err"
+          },
+          "expect_error": {
+            "code": "message_too_large",
+            "fields": {
+              "declared_bytes": "<uint>",
+              "limit_bytes": "<uint>"
+            }
+          }
+        },
+        {
+          "assert": {
+            "all_integers": [
+              "$err.fields.declared_bytes",
+              "$err.fields.limit_bytes"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$err.fields.limit_bytes",
+              "$body_max"
+            ],
+            "note": "the limit reported back is the limit that was served, not a compiled-in constant"
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$err.fields.declared_bytes",
+              {
+                "$byte_len": "$last_sent.body"
+              }
+            ],
+            "note": "the size reported is the size sent, measured in bytes"
+          }
+        },
+        {
+          "assert": {
+            "gt": [
+              "$err.fields.declared_bytes",
+              "$err.fields.limit_bytes"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "neq": [
+              "$err.fields.declared_bytes",
+              "$err.fields.limit_bytes"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$err",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$err"
+          }
+        },
+        {
+          "assert": {
+            "connection_open": "c1"
+          }
+        },
+        {
+          "assert": {
+            "no_close_frame": {
+              "conn": "c1",
+              "code": 4005
+            }
+          }
+        },
+        {
+          "call": "room.timeline",
+          "conn": "c1",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect_identical_to": "timeline_before",
+          "note": "a refused message is not a truncated message: nothing committed"
+        },
+        {
+          "assert": {
+            "push_count": {
+              "conn": "c1",
+              "match": {
+                "t": "event",
+                "room": "$rid"
+              },
+              "eq": 0
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "message_body_at_the_served_limit_commits_unmodified",
+      "kind": "boundary",
+      "operation": "message.send",
+      "intent": "The inclusive half of the max_message_body_bytes edge, read from the SERVED handshake value and never hardcoded. A body whose UTF-8 encoding is exactly the served limit, containing 2-, 3- and 4-byte codepoints, must be accepted AND must come back out of the timeline byte-identical. Catches an implementation that compares with >= instead of > (making the documented maximum unreachable, so the served number is a lie), that counts characters or UTF-16 units instead of bytes (which refuses a legitimate message in any non-ASCII language while accepting an over-limit ASCII one), and -- the part the existing at-limit fixture does not cover -- that accepts the send and then silently truncates the stored body to fit, so the author and every reader see different text with no error anywhere.",
+      "requires": [
+        "subject",
+        "live_room",
+        "limits"
+      ],
+      "steps": [
+        {
+          "read": "hello.limits",
+          "conn": "c1",
+          "save": {
+            "body_max": "max_message_body_bytes",
+            "frame_max": "max_frame_bytes"
+          },
+          "expect": {
+            "max_message_body_bytes": "<uint>",
+            "max_frame_bytes": "<uint>"
+          }
+        },
+        {
+          "assert": {
+            "all_integers": [
+              "$body_max",
+              "$frame_max"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "lt": [
+              "$body_max",
+              "$frame_max"
+            ],
+            "note": "if this fails the at-limit body is unsendable and the accepted maximum is unreachable"
+          }
+        },
+        {
+          "call": "stream.subscribe",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "op_id": "$o_sub"
+          }
+        },
+        {
+          "call": "message.send",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "body": {
+              "$utf8_of_len": {
+                "bytes": "$body_max",
+                "must_include": [
+                  "2-byte",
+                  "3-byte",
+                  "4-byte"
+                ]
+              }
+            },
+            "op_id": "$o_at_limit"
+          },
+          "save": {
+            "eid": "event_id",
+            "p_at": "pos"
+          },
+          "expect": {
+            "room": "<room_id>",
+            "event_id": "<hex64>",
+            "pos": "<uint>"
+          },
+          "no_nulls": true
+        },
+        {
+          "assert": {
+            "byte_len": [
+              "$last_sent.body",
+              "$body_max"
+            ],
+            "note": "the harness proves it actually sent the edge, in bytes"
+          }
+        },
+        {
+          "assert": {
+            "connection_open": "c1"
+          }
+        },
+        {
+          "await_push": {
+            "t": "event",
+            "conn": "c1",
+            "within_ms": 3000,
+            "match": {
+              "room": "$rid",
+              "pos": "$p_at",
+              "event": {
+                "event_id": "$eid"
+              }
+            },
+            "save": {
+              "pushed": "$"
+            }
+          }
+        },
+        {
+          "assert": {
+            "byte_len": [
+              "$pushed.event.body",
+              "$body_max"
+            ],
+            "note": "the pushed body is the whole body, not a truncation"
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              "$pushed.event.body",
+              "$last_sent.body"
+            ]
+          }
+        },
+        {
+          "call": "room.timeline",
+          "conn": "c1",
+          "in": {
+            "room_id": "$rid"
+          },
+          "assert": [
+            {
+              "event_body_eq": {
+                "path": "out.events",
+                "event_id": "$eid",
+                "value": "$last_sent.body"
+              }
+            },
+            {
+              "event_body_byte_len": {
+                "path": "out.events",
+                "event_id": "$eid",
+                "value": "$body_max"
+              }
+            }
+          ],
+          "note": "committed history round-trips the at-limit body unmodified"
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "message_body_one_byte_past_the_served_limit_is_refused_and_nothing_commits",
+      "kind": "boundary",
+      "operation": "message.send",
+      "intent": "The exclusive half of the same edge, and the reason the pair must be one contiguous scenario: the at-limit send in step 5 succeeds and the send one byte larger in step 7 is refused with message_too_large, so an off-by-one in either direction is caught by the same run. The over-by-one body is built by appending ONE byte to the accepted body, not by regenerating it, so the two differ by exactly one byte and nothing else. declared_bytes must be limit+1 and limit_bytes must be the served value -- both read from the handshake, never compiled in. Catches >= versus >, a limit rounded to a friendly number before comparison, a body silently truncated to the limit and accepted, and any refusal that commits the event anyway or fans a push out for it.",
+      "requires": [
+        "subject",
+        "live_room",
+        "limits"
+      ],
+      "steps": [
+        {
+          "read": "hello.limits",
+          "conn": "c1",
+          "save": {
+            "body_max": "max_message_body_bytes",
+            "frame_max": "max_frame_bytes"
+          },
+          "expect": {
+            "max_message_body_bytes": "<uint>",
+            "max_frame_bytes": "<uint>"
+          }
+        },
+        {
+          "assert": {
+            "all_integers": [
+              "$body_max",
+              "$frame_max"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "lt": [
+              {
+                "$add": [
+                  "$body_max",
+                  1
+                ]
+              },
+              "$frame_max"
+            ],
+            "note": "the over-by-one frame still fits, so a 4005 close would be a different bug and not this bound"
+          }
+        },
+        {
+          "call": "stream.subscribe",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "op_id": "$o_sub"
+          }
+        },
+        {
+          "call": "message.send",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "body": {
+              "$utf8_of_len": {
+                "bytes": "$body_max",
+                "save_as": "edge_body",
+                "must_include": [
+                  "2-byte",
+                  "3-byte",
+                  "4-byte"
+                ]
+              }
+            },
+            "op_id": "$o_at_limit"
+          },
+          "save": {
+            "eid_at": "event_id",
+            "p_at": "pos"
+          },
+          "expect": {
+            "event_id": "<hex64>",
+            "pos": "<uint>"
+          },
+          "note": "the accepted edge, established in the same run so the pair cannot drift apart"
+        },
+        {
+          "call": "room.timeline",
+          "conn": "c1",
+          "in": {
+            "room_id": "$rid"
+          },
+          "save_out": "timeline_after_at_limit"
+        },
+        {
+          "call": "message.send",
+          "conn": "c1",
+          "in": {
+            "room": "$rid",
+            "body": {
+              "$append_bytes": {
+                "to": "$edge_body",
+                "bytes": 1
+              }
+            },
+            "op_id": "$o_over_by_one"
+          },
+          "save": {
+            "err": "$err"
+          },
+          "expect_error": {
+            "code": "message_too_large",
+            "fields": {
+              "declared_bytes": {
+                "$add": [
+                  "$body_max",
+                  1
+                ]
+              },
+              "limit_bytes": "$body_max"
+            }
+          },
+          "forbid_codes": [
+            "invalid_argument",
+            "frame_too_large",
+            "resource_exhausted"
+          ]
+        },
+        {
+          "assert": {
+            "byte_len": [
+              "$last_sent.body",
+              {
+                "$add": [
+                  "$body_max",
+                  1
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "all_integers": [
+              "$err.fields.declared_bytes",
+              "$err.fields.limit_bytes"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "eq": [
+              {
+                "$sub": [
+                  "$err.fields.declared_bytes",
+                  "$err.fields.limit_bytes"
+                ]
+              },
+              1
+            ],
+            "note": "exactly one byte over, reported as exactly one byte over"
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$err",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$err"
+          }
+        },
+        {
+          "assert": {
+            "connection_open": "c1"
+          }
+        },
+        {
+          "assert": {
+            "no_close_frame": {
+              "conn": "c1",
+              "code": 4005
+            }
+          }
+        },
+        {
+          "call": "room.timeline",
+          "conn": "c1",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect_identical_to": "timeline_after_at_limit",
+          "note": "the refused send committed nothing, and did not commit a truncated body either"
+        },
+        {
+          "assert": {
+            "push_count": {
+              "conn": "c1",
+              "match": {
+                "t": "event",
+                "room": "$rid",
+                "after_pos": "$p_at"
+              },
+              "eq": 0
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "stream_subscribe_past_the_served_subscription_limit_is_refused_by_name",
+      "kind": "error",
+      "operation": "stream.subscribe",
+      "intent": "stream.subscribe's own distinctive code. Subscribing is naturally idempotent, so a repeat is NOT an error and cannot be the distinctive case; the bound that can be hit is the number of concurrent subscriptions one connection holds. Asserts subscription_limit_reached naming the limit it hit, and — on the same connection — that an existing subscription keeps delivering. Catches an implementation that silently drops a subscription past the bound, which would look to a client exactly like a room that has gone quiet.",
+      "requires": [
+        "subject",
+        "configurable_limits"
+      ],
+      "steps": [
+        {
+          "comment": "The bound is served, never assumed. Read it before provoking it."
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          "save": {
+            "cap": "limits.max_subscriptions_per_connection"
+          }
+        },
+        {
+          "comment": "Fill exactly to the served bound; every one of these must succeed."
+        },
+        {
+          "repeat": {
+            "times": "$cap",
+            "call": "stream.subscribe",
+            "conn": "c1",
+            "in": {
+              "room": "$rooms[$i]"
+            }
+          }
+        },
+        {
+          "call": "stream.subscribe",
+          "conn": "c1",
+          "in": {
+            "room": "$one_more_room"
+          },
+          "expect_error": {
+            "code": "subscription_limit_reached",
+            "fields": {
+              "limit": "$cap"
+            }
+          }
+        },
+        {
+          "assert": {
+            "absent_key": [
+              "$last_error",
+              "hint"
+            ]
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_error"
+          }
+        },
+        {
+          "comment": "The refusal must not disturb what is already subscribed."
+        },
+        {
+          "call": "message.send",
+          "conn": "c2",
+          "in": {
+            "room": "$rooms[0]",
+            "body": "still live",
+            "op_id": "$op1"
+          }
+        },
+        {
+          "expect_frame": {
+            "conn": "c1",
+            "t": "event",
+            "room": "$rooms[0]"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "stream_subscribe_to_a_room_the_caller_is_in_succeeds_and_is_idempotent",
+      "kind": "success",
+      "operation": "stream.subscribe",
+      "intent": "The plain positive control for stream.subscribe, and the spec's idempotence claim in one case: a member subscribes, the call succeeds, and a second identical subscribe ALSO succeeds rather than erroring. Catches an implementation that treats a repeat as a conflict -- which would break every reconnect path, since a client that cannot tell whether its subscription survived must be free to re-issue it.",
+      "requires": [
+        "subject",
+        "live_room"
+      ],
+      "steps": [
+        {
+          "call": "stream.subscribe",
+          "conn": "c1",
+          "in": {
+            "room": "$rid"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "comment": "Idempotent: the spec classes stream.subscribe as naturally idempotent."
+        },
+        {
+          "call": "stream.subscribe",
+          "conn": "c1",
+          "in": {
+            "room": "$rid"
+          }
+        },
+        {
+          "assert": {
+            "no_nulls": "$last_result"
+          }
+        },
+        {
+          "comment": "And exactly one delivery, not two -- idempotent means no duplicate stream."
+        },
+        {
+          "call": "message.send",
+          "conn": "c2",
+          "in": {
+            "room": "$rid",
+            "body": "once",
+            "op_id": "$op1"
+          }
+        },
+        {
+          "expect_frame": {
+            "conn": "c1",
+            "t": "event",
+            "room": "$rid"
+          }
+        },
+        {
+          "assert": {
+            "no_further_frame_within_ms": [
+              "c1",
+              500
+            ]
+          }
+        }
+      ],
+      "blocked_on_upstream": null
     }
   ],
   "authoring_notes": [

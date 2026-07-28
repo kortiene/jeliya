@@ -21,38 +21,41 @@ conformance corpus is for. #161 states it as an acceptance criterion.
 
 The v1 surface was consulted **only** to know what to avoid transcribing.
 
-## Status — this corpus does not yet freeze
+## Status
 
 `manifest.json` is the machine-checkable answer, and today it says:
 
 | | |
 |---|---|
-| Cases | 310 |
-| Operations satisfying the required kinds | **21 of 33** |
-| Quarantined | 11 |
+| Cases | 332 |
+| Operations satisfying the required kinds | **33 of 33** |
+| Quarantined | 0 |
 | Blocked on upstream | 10 |
 
-Three things are deliberately visible rather than hidden.
-
-**Twelve operations do not yet have a distinctive error case.** The rule is one
-success case plus one error case using *that operation's own most specific
-code*; a shared code such as `subject_absent` does not satisfy it, because
+Every operation has a success case and an error case using **its own most
+specific code**. A shared code does not satisfy the rule, because
 `subject_absent` asserted against `room.list` and against `fleet.list` is the
-same assertion twice. The specification now assigns a distinctive code to each
-of those operations — the cases that use them still need writing.
-
-**Eleven cases are quarantined.** Each asserts a payload contract the
-specification does not state. They were caught by an independence audit, and
-they are a finding about the *specification*, not about the fixtures: an
-operation described only as "read the agent fleet projection" cannot be
-conformance-tested, and cannot be implemented either. `fleet.list`,
-`status.history`, `status.post`, and the pipe publish-target policy each need a
-payload contract written before their cases can be trusted. A quarantined case
-does not run and does not count as coverage.
+same assertion twice.
 
 **Ten cases are blocked on upstream work** (U1, U2, U3 in the spec). They
 **fail**; they do not skip. A skipped case reads as coverage and quietly
 becomes permanent. A failing case reads as work.
+
+### How the quarantine was cleared
+
+An earlier round quarantined eleven cases for asserting payload contracts the
+specification did not state — they had fallen back on v1 shapes (`points`,
+`rooms_total`, a nullable `progress`). That was a finding about the
+*specification*: an operation described only as "read the agent fleet
+projection" cannot be conformance-tested, and cannot be implemented either.
+
+The fix was to write the missing contracts, not to bless the v1 shapes. Twelve
+superseded cases were **deleted** rather than un-quarantined, and replacements
+were authored against the new contracts.
+
+One decision remains open and is recorded in the specification: whether typed
+status severity lives on the signed event or in the daemon projection. It is a
+wire change, and the corpus must not freeze before it is settled.
 
 ## Layout
 

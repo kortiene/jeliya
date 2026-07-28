@@ -501,43 +501,6 @@
       ]
     },
     {
-      "name": "room_list_carries_no_compatibility_nullability",
-      "kind": "boundary",
-      "operation": "room.list",
-      "intent": "Proves every row carries role, lifecycle, member_count and recency as present typed values rather than nullable compatibility fields, catching a daemon that reintroduces a null meaning 'an older daemon would omit this' under a single-generation protocol.",
-      "requires": [
-        "subject",
-        "room",
-        "quiescent_room"
-      ],
-      "steps": [
-        {
-          "call": "room.list",
-          "expect_no_null": true,
-          "assert": [
-            {
-              "no_null_anywhere": {
-                "path": "out"
-              }
-            },
-            {
-              "every_row_has_non_null": {
-                "path": "out.rooms",
-                "fields": [
-                  "role",
-                  "lifecycle",
-                  "member_count",
-                  "last_event_ts",
-                  "capabilities"
-                ]
-              }
-            }
-          ]
-        }
-      ],
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
       "name": "room_list_omits_rooms_the_subject_does_not_belong_to",
       "kind": "authorization",
       "operation": "room.list",
@@ -3873,6 +3836,363 @@
           ]
         }
       ]
+    },
+    {
+      "name": "room_create_rejects_an_out_of_bounds_name_with_room_name_invalid",
+      "kind": "error",
+      "operation": "room.create",
+      "intent": "Gives room.create the error case the corpus rule requires, using room.create's OWN code rather than the generic invalid_argument its two existing malformed cases already assert. Probes the two edges no plausible name bound can admit -- the empty string, and a name whose UTF-8 encoding is half of the served max_frame_bytes -- and asserts both are refused as room_name_invalid with no room and no genesis event authored. Catches (a) a daemon that enforces no name bound at all, so a client can write an unbounded string into a signed genesis event that every member must then store and render; (b) a daemon that collapses a name-bound refusal into invalid_argument, which a client cannot distinguish from a missing field and therefore cannot present as 'that name will not work, pick another'; (c) a daemon that silently coerces a bad name (trims, truncates, or substitutes a default) so the room's signed name differs from the one the user typed. The spec assigns this code but states no numeric bound and serves none in the limits object, so this case deliberately pins no number -- see notes.",
+      "requires": [
+        "subject",
+        "quiescent_room",
+        "limits"
+      ],
+      "steps": [
+        {
+          "read": "hello.limits",
+          "save": {
+            "frame_max": "max_frame_bytes"
+          },
+          "expect": {
+            "max_frame_bytes": "<uint>"
+          }
+        },
+        {
+          "call": "room.list",
+          "save_out": "rooms_before"
+        },
+        {
+          "call": "room.create",
+          "in": {
+            "name": "",
+            "op_id": "$op_id_new"
+          },
+          "expect_error": {
+            "code": "room_name_invalid",
+            "fields_subset": {}
+          },
+          "forbid_codes": [
+            "invalid_argument",
+            "subject_absent",
+            "insufficient_standing"
+          ],
+          "assert": [
+            {
+              "no_durable_mutation": {
+                "scope": "step"
+              }
+            },
+            {
+              "absent_key": {
+                "path": "err",
+                "key": "hint"
+              }
+            },
+            {
+              "no_null": {
+                "path": "err"
+              }
+            },
+            {
+              "error_fields_are_typed_not_prose": {
+                "path": "err.fields"
+              }
+            }
+          ]
+        },
+        {
+          "call": "room.create",
+          "in": {
+            "name": {
+              "$utf8_of_len": {
+                "bytes": {
+                  "$div": [
+                    "$frame_max",
+                    2
+                  ]
+                },
+                "must_include": [
+                  "2-byte",
+                  "3-byte",
+                  "4-byte"
+                ]
+              }
+            },
+            "op_id": "$op_id_new"
+          },
+          "note": "half the largest frame the daemon accepts: guaranteed to reach dispatch rather than trip the 4005 close, and guaranteed to exceed any bound a room name could plausibly have",
+          "expect_error": {
+            "code": "room_name_invalid",
+            "fields_subset": {}
+          },
+          "forbid_codes": [
+            "invalid_argument",
+            "frame_too_large"
+          ],
+          "assert": [
+            {
+              "no_durable_mutation": {
+                "scope": "step"
+              }
+            },
+            {
+              "connection_open": {
+                "scope": "step"
+              }
+            },
+            {
+              "absent_key": {
+                "path": "err",
+                "key": "hint"
+              }
+            }
+          ]
+        },
+        {
+          "call": "room.list",
+          "expect_identical_to": "rooms_before",
+          "note": "neither refusal left a room, a genesis event, or a half-created room behind"
+        },
+        {
+          "call": "room.create",
+          "in": {
+            "name": "Conformance Name Bound",
+            "op_id": "$op_id_new"
+          },
+          "expect_subset": {
+            "room_id": "<room_id>",
+            "name": "Conformance Name Bound"
+          },
+          "expect_no_null": true,
+          "note": "an ordinary name still works, so the refusals above are a bound and not a broken operation"
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "room_list_reports_an_unreadable_room_index_rather_than_an_empty_list",
+      "kind": "error",
+      "operation": "room.list",
+      "intent": "Gives room.list its own code. With a subject present and a room known to exist, the accepted-room index is made unreadable and room.list must answer room_index_unreadable -- never ok with rooms: []. Catches the single most damaging failure mode this operation has: 'I cannot read your rooms' rendered as 'you have no rooms', which a user responds to by re-creating rooms they already own and by concluding their history is gone. It also catches conflation in the other direction -- answering subject_absent (the subject is present and this is not that precondition) or room_not_available (a local storage fault reported as a membership fact). The final step proves the refusal was a read failure and not data loss: with the fault cleared, the same room lists again unchanged.",
+      "requires": [
+        "subject",
+        "room",
+        "fault_injection",
+        "fault_injection.room_index_unreadable"
+      ],
+      "steps": [
+        {
+          "call": "room.list",
+          "save_out": "rooms_healthy",
+          "assert": [
+            {
+              "count_where_eq": {
+                "path": "out.rooms",
+                "field": "room_id",
+                "bag": "rid",
+                "value": 1
+              }
+            }
+          ],
+          "note": "baseline: the index is readable and names the room"
+        },
+        {
+          "control": "fault_inject",
+          "fault": "room_index_unreadable",
+          "note": "the accepted-room index is made unreadable at the storage layer -- an I/O error or a permission denial on read, NOT a truncation or a delete. Nothing is mutated: the bytes are intact and only the read path fails, which is exactly the state in which answering 'you have no rooms' is a lie."
+        },
+        {
+          "call": "room.list",
+          "expect_error": {
+            "code": "room_index_unreadable",
+            "fields_subset": {}
+          },
+          "forbid_codes": [
+            "subject_absent",
+            "room_not_available",
+            "invalid_argument",
+            "insufficient_standing"
+          ],
+          "assert": [
+            {
+              "not_returned": {
+                "shape": {
+                  "ok": true,
+                  "out": {
+                    "rooms": []
+                  }
+                },
+                "why": "an empty success is indistinguishable from a subject that genuinely owns nothing"
+              }
+            },
+            {
+              "not_returned": {
+                "shape": {
+                  "ok": true
+                },
+                "why": "a partial list is also refused: this operation reads from local evidence and has no partial answer"
+              }
+            },
+            {
+              "absent_key": {
+                "path": "err",
+                "key": "hint"
+              }
+            },
+            {
+              "no_null": {
+                "path": "err"
+              }
+            },
+            {
+              "no_durable_mutation": {
+                "scope": "step"
+              }
+            }
+          ]
+        },
+        {
+          "control": "fault_clear",
+          "fault": "room_index_unreadable"
+        },
+        {
+          "call": "room.list",
+          "expect_identical_to": "rooms_healthy",
+          "note": "the room was never lost; the daemon simply could not read it, and said so"
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "room_members_refuses_rather_than_fabricating_an_unresolvable_standing",
+      "kind": "error",
+      "operation": "room.members",
+      "intent": "Gives room.members its own code and pins the spec's hardest membership rule: room.members is THE authoritative signed answer to who belongs and in what standing, so when the fold cannot resolve one member it must say membership_unresolved rather than serve a list. Catches the exact regression v2 removes by name -- v1's fabricated default role, which returned 'member' for a subject the fold could not resolve -- and catches the subtler variants: defaulting standing to active, silently dropping the unresolvable member so the list looks complete and shorter, or emitting a null role. Attribution a UI uses to decide how much to trust a person must not be invented, and a member list missing a member is a worse lie than an error. The contrast step is load-bearing: room.timeline over the SAME room still succeeds and reports that author as an explicit unresolved variant, so this case also catches an over-correction in which one unresolvable event makes the whole room unreadable.",
+      "requires": [
+        "authority",
+        "member_b",
+        "room",
+        "room_with_unresolvable_member_standing",
+        "fault_injection",
+        "fault_injection.unresolvable_member_standing"
+      ],
+      "steps": [
+        {
+          "call": "room.members",
+          "in": {
+            "room_id": "$rid"
+          },
+          "save_out": "members_healthy",
+          "expect_subset": {
+            "room_id": "<room_id>",
+            "members": [
+              {
+                "subject_id": "<hex64>",
+                "role": "<variant>",
+                "standing": {
+                  "state": "<variant>"
+                }
+              }
+            ]
+          },
+          "expect_no_null": true,
+          "note": "baseline: both members resolve"
+        },
+        {
+          "control": "fault_inject",
+          "fault": "unresolvable_member_standing",
+          "subject": "$sb",
+          "note": "member B's standing is made unresolvable in the membership fold -- the signed event that would establish it is present but does not resolve (an unknown signer, or a reference the closure cannot follow). B is NOT removed and NOT made inactive: those are resolvable answers, and the point of this case is the state in which the daemon does not know."
+        },
+        {
+          "call": "room.members",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect_error": {
+            "code": "membership_unresolved",
+            "fields_subset": {}
+          },
+          "forbid_codes": [
+            "room_not_available",
+            "invalid_argument",
+            "insufficient_standing",
+            "subject_absent"
+          ],
+          "assert": [
+            {
+              "not_returned": {
+                "shape": {
+                  "ok": true
+                },
+                "why": "there is no partially authoritative answer; a list served here would be presented to a user as signed truth"
+              }
+            },
+            {
+              "no_fabricated_role": {
+                "path": "out.members",
+                "forbidden_default": "member"
+              }
+            },
+            {
+              "no_fabricated_standing": {
+                "path": "out.members",
+                "forbidden_defaults": [
+                  "active",
+                  {
+                    "state": "active"
+                  }
+                ]
+              }
+            },
+            {
+              "absent_key": {
+                "path": "err",
+                "key": "hint"
+              }
+            },
+            {
+              "no_null": {
+                "path": "err"
+              }
+            },
+            {
+              "no_durable_mutation": {
+                "scope": "step"
+              }
+            }
+          ]
+        },
+        {
+          "call": "room.timeline",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect_no_null": true,
+          "assert": [
+            {
+              "no_fabricated_role": {
+                "path": "out.events",
+                "forbidden_default": "member"
+              }
+            }
+          ],
+          "note": "deliberate contrast with the step above: timeline states an unresolved attribution per event and keeps serving history, while members -- the authoritative answer -- refuses. Two operations, two correct behaviours, neither of them a fabricated role."
+        },
+        {
+          "control": "fault_clear",
+          "fault": "unresolvable_member_standing"
+        },
+        {
+          "call": "room.members",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect_identical_to": "members_healthy",
+          "note": "the refusal changed no membership state"
+        }
+      ],
+      "blocked_on_upstream": null
     }
   ],
   "authoring_notes": [

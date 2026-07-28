@@ -54,94 +54,6 @@
       "blocked_on_upstream": null
     },
     {
-      "name": "pipe_publish_non_loopback_target_is_policy_refused",
-      "kind": "error",
-      "operation": "pipe.publish",
-      "intent": "Proves a well-formed but non-loopback target is refused by a named policy rather than by a generic argument error, catching any change that lets a member publish a route to an arbitrary internet or LAN host through the room.",
-      "requires": [
-        "subject",
-        "room_authority_a",
-        "live_room_a"
-      ],
-      "steps": [
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op1",
-            "target": {
-              "host": "8.8.8.8",
-              "port": 80
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect_error": {
-            "code": "policy_refused",
-            "fields": {
-              "policy": "loopback_only",
-              "target": {
-                "host": "8.8.8.8",
-                "port": 80
-              },
-              "hint": "<absent>"
-            }
-          }
-        },
-        {
-          "as": "A",
-          "call": "pipe.list",
-          "in": {
-            "room": "$rid"
-          },
-          "expect": {
-            "pipes": []
-          },
-          "intent_note": "the refused publication left no fact behind"
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
-      "name": "pipe_publish_private_lan_target_is_policy_refused_not_accepted",
-      "kind": "error",
-      "operation": "pipe.publish",
-      "intent": "Proves the loopback policy is loopback-only and not merely 'not public', catching an implementation that widens the allowlist to RFC1918 space and thereby exposes a router or a colleague's machine to every room member.",
-      "requires": [
-        "subject",
-        "room_authority_a",
-        "live_room_a"
-      ],
-      "steps": [
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op1",
-            "target": {
-              "host": "192.168.1.1",
-              "port": 80
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect_error": {
-            "code": "policy_refused",
-            "fields": {
-              "policy": "loopback_only"
-            }
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
       "name": "pipe_publish_hostname_target_is_invalid_argument_not_policy_refused",
       "kind": "malformed",
       "operation": "pipe.publish",
@@ -196,183 +108,6 @@
         }
       ],
       "blocked_on_upstream": null
-    },
-    {
-      "name": "pipe_publish_loopback_block_edges",
-      "kind": "boundary",
-      "operation": "pipe.publish",
-      "intent": "Exercises the exact edge of the loopback bound in both address families — the last address inside 127.0.0.0/8 and ::1 are accepted, the first address outside the block is refused — catching an implementation that tests equality against 127.0.0.1 (rejecting valid loopback) or that tests only the leading octet range loosely (accepting 128.0.0.1).",
-      "requires": [
-        "subject",
-        "room_authority_a",
-        "live_room_a"
-      ],
-      "steps": [
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op1",
-            "target": {
-              "host": "127.255.255.254",
-              "port": 3000
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect": {
-            "pipe_id": "<pipe_id>",
-            "publication": {
-              "state": "published"
-            }
-          }
-        },
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op2",
-            "target": {
-              "host": "::1",
-              "port": 3000
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect": {
-            "pipe_id": "<pipe_id>",
-            "publication": {
-              "state": "published"
-            }
-          }
-        },
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op3",
-            "target": {
-              "host": "128.0.0.1",
-              "port": 3000
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect_error": {
-            "code": "policy_refused",
-            "fields": {
-              "policy": "loopback_only"
-            }
-          }
-        },
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op4",
-            "target": {
-              "host": "126.255.255.255",
-              "port": 3000
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect_error": {
-            "code": "policy_refused",
-            "fields": {
-              "policy": "loopback_only"
-            }
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
-    },
-    {
-      "name": "pipe_publish_port_bounds",
-      "kind": "boundary",
-      "operation": "pipe.publish",
-      "intent": "Exercises the port field at its representable edge — 65535 accepted, 65536 and 0 refused as arguments — catching an implementation that silently truncates a 16-bit overflow into a different, reachable port.",
-      "requires": [
-        "subject",
-        "room_authority_a",
-        "live_room_a"
-      ],
-      "steps": [
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op1",
-            "target": {
-              "host": "127.0.0.1",
-              "port": 65535
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect": {
-            "pipe_id": "<pipe_id>",
-            "target": {
-              "port": 65535
-            }
-          }
-        },
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op2",
-            "target": {
-              "host": "127.0.0.1",
-              "port": 65536
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
-              "field": "target.port"
-            }
-          }
-        },
-        {
-          "as": "A",
-          "call": "pipe.publish",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op3",
-            "target": {
-              "host": "127.0.0.1",
-              "port": 0
-            },
-            "audience": {
-              "state": "room"
-            }
-          },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
-              "field": "target.port"
-            }
-          }
-        }
-      ],
-      "blocked_on_upstream": null,
-      "quarantined": "asserts a payload contract docs/protocol-v2.md does not state; the operation needs a payload contract before this case can be trusted"
     },
     {
       "name": "pipe_publish_by_non_authority_member_is_insufficient_standing",
@@ -3378,6 +3113,910 @@
         }
       ],
       "blocked_on_upstream": "U1"
+    },
+    {
+      "name": "pipe_publish_accepts_both_stated_loopback_forms",
+      "kind": "success",
+      "operation": "pipe.publish",
+      "intent": "Proves the publish-target policy admits BOTH forms the spec names — an IPv4 address in 127.0.0.0/8 and the IPv6 address ::1 — in one case, so an implementation that validates only one address family (the common shape: a v4-only octet check that refuses every IPv6 literal, or a v6-only is_loopback() that never sees a v4 target) fails here rather than silently narrowing a stated policy to half of it. Also fixes that a policy-conforming target yields an ordinary publication with no extra ceremony.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a",
+        "local_tcp_service_a",
+        "local_tcp_service_a_v6"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid4": "pipe_id"
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            },
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            }
+          },
+          "assert": {
+            "no_null_values": true
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "::1",
+              "port": "$svc_port_v6"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid6": "pipe_id"
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            },
+            "target": {
+              "host": "::1",
+              "port": "$svc_port_v6"
+            }
+          },
+          "assert": {
+            "no_null_values": true,
+            "not_equal": [
+              "$pid4",
+              "$pid6"
+            ]
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 2
+            },
+            "note": "both stated loopback forms produced a real, listed publication"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_loopback_block_edges_ipv4",
+      "kind": "boundary",
+      "operation": "pipe.publish",
+      "intent": "Exercises the exact edge of 127.0.0.0/8 in both directions: the block's first usable address and its last host address are accepted, and the addresses immediately below and above the block are refused. Catches the two ways this check is habitually written wrong — equality against 127.0.0.1 (which refuses a legitimate 127.x target) and a loose or off-by-one leading-octet range (which admits 126.x or 128.x, turning a room member into a proxy onto an arbitrary internet host). Each refusal must be pipe_target_refused carrying the address that was actually rejected.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "127.255.255.254",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            }
+          },
+          "intent_note": "the last host address inside the block is inside the block"
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "126.255.255.255",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_below": "$"
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "126.255.255.255",
+                "port": 3000
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "policy_refused"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op4",
+            "target": {
+              "host": "128.0.0.0",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_above": "$"
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "128.0.0.0",
+                "port": 3000
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "policy_refused"
+          }
+        },
+        {
+          "check": "rejected_target_is_the_one_sent",
+          "assert": {
+            "not_equal": [
+              "$e_below.target.host",
+              "$e_above.target.host"
+            ],
+            "note": "each refusal echoes ITS OWN rejected target; an implementation that returns a constant or a sanitised placeholder fails here"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 2
+            },
+            "note": "only the two in-block publications exist; neither refusal left a fact behind"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_ipv6_loopback_is_exactly_the_one_stated_address",
+      "kind": "boundary",
+      "operation": "pipe.publish",
+      "intent": "The spec's IPv6 allowance is exactly one address, ::1 — not a prefix, not a family. This walks the neighbours: ::1 accepted, while ::, ::2, a link-local address, and an IPv4-mapped private address are each refused. Catches an implementation that pattern-matches a leading '::' (admitting the unspecified address, which many stacks bind as 'all interfaces'), and catches the mapped-address bypass in which ::ffff:192.168.1.10 is unwrapped to a v4 address, checked against nothing useful, and then dialled onto the LAN.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "::1",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "::",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "::",
+                "port": 3000
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "policy_refused"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "::2",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "::2",
+                "port": 3000
+              },
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op4",
+            "target": {
+              "host": "fe80::1",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "fe80::1",
+                "port": 3000
+              },
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op5",
+            "target": {
+              "host": "::ffff:192.168.1.10",
+              "port": 3000
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "::ffff:192.168.1.10",
+                "port": 3000
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "policy_refused",
+            "note": "an IPv4-mapped private address is not ::1 and is not inside 127.0.0.0/8, so it is outside the stated allowance by both halves of the rule"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 1
+            }
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_private_range_target_is_refused_not_accepted",
+      "kind": "error",
+      "operation": "pipe.publish",
+      "intent": "Proves the policy is loopback, not 'probably safe': two RFC1918 addresses are refused with the same distinctive code as a public address. This is the case the specification calls out by name — being unroutable from the internet is not the same as being local — and it catches the single most likely well-meaning regression, an implementation that widens the allowlist to private space and thereby exposes the publisher's router, NAS, or a colleague's machine to every member of the room.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "192.168.1.10",
+              "port": 8080
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_192": "$"
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "192.168.1.10",
+                "port": 8080
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "policy_refused"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "10.0.0.5",
+              "port": 22
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_10": "$"
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "10.0.0.5",
+                "port": 22
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "policy_refused"
+          }
+        },
+        {
+          "check": "rejected_target_is_the_one_sent",
+          "assert": {
+            "not_equal": [
+              "$e_192.target",
+              "$e_10.target"
+            ],
+            "note": "the two refusals carry two different targets; a constant or elided target field fails here"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          },
+          "intent_note": "neither refused publication left a fact behind"
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_public_target_is_refused",
+      "kind": "error",
+      "operation": "pipe.publish",
+      "intent": "Proves the plainly dangerous case is refused by the pipe-specific code and not by a generic argument error: a globally routable address, in either family, is not a permissible pipe target. Catches an implementation that validates only the port, or that treats a syntactically valid IP as sufficient, either of which turns any room member into an open proxy through the publisher's host.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "203.0.113.9",
+              "port": 80
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "203.0.113.9",
+                "port": 80
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "invalid_argument"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "8.8.8.8",
+              "port": 443
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "8.8.8.8",
+                "port": 443
+              },
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "2001:db8::1",
+              "port": 443
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "2001:db8::1",
+                "port": 443
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "note": "a public IPv6 address is refused by the same rule that admits only ::1"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_publish_port_bounds_one_and_65535_accepted_zero_refused",
+      "kind": "boundary",
+      "operation": "pipe.publish",
+      "intent": "Exercises the stated port range 1..=65535 at both ends and one past the low end: 1 and 65535 are accepted against a loopback host, and 0 is refused. Catches an implementation that accepts 0 and lets the operating system choose a port at dial time (publishing a pipe to a target nobody named), and catches one that rejects the range ends by using an exclusive comparison. The refusal must be the pipe-specific code, because the spec assigns pipe_target_refused to an out-of-range port as well as to a non-loopback host — the port is part of the target, not a separate argument-shape problem.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "live_room_a"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 1
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            },
+            "target": {
+              "host": "127.0.0.1",
+              "port": 1
+            }
+          },
+          "intent_note": "publish validates the policy, not the presence of a listener: the spec states no liveness precondition on the target, so no service is bound here"
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 65535
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect": {
+            "pipe_id": "<pipe_id>",
+            "publication": {
+              "state": "published"
+            },
+            "target": {
+              "host": "127.0.0.1",
+              "port": 65535
+            }
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op3",
+            "target": {
+              "host": "127.0.0.1",
+              "port": 0
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "127.0.0.1",
+                "port": 0
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "policy_refused",
+            "note": "the host is impeccable; only the port is out of range, and it is still the target that is refused"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "assert": {
+            "array_len": {
+              "path": "pipes",
+              "equals": 2
+            },
+            "note": "port 0 left no publication"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_target_refusal_is_local_and_no_peer_learns_of_the_attempt",
+      "kind": "error",
+      "operation": "pipe.publish",
+      "intent": "Proves the spec's statement that the refusal is a local policy decision made before publication: it costs no network round trip and reveals nothing to peers. With the room live and a peer linked, a refused publish produces zero network activity and zero durable mutation on the publisher, no push reaches the peer, and the peer's converged pipe list stays empty. Catches an implementation that authors the publication first and validates on dial (leaking the attempted target, and the fact of it, to every member), and catches one whose refusal is derived from a peer round trip and therefore fails differently, or hangs, when the room is offline.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "linked_peers",
+        "network_observation",
+        "store_observation"
+      ],
+      "steps": [
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "save": {
+            "b_before": "$"
+          },
+          "expect": {
+            "pipes": []
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "192.168.1.10",
+              "port": 8080
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "192.168.1.10",
+                "port": 8080
+              },
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "no_network_activity": {
+              "scope": "step"
+            },
+            "no_durable_mutation": {
+              "scope": "step"
+            },
+            "code_not": "policy_refused",
+            "note": "the decision is reached entirely from the request and local policy"
+          }
+        },
+        {
+          "as": "B",
+          "expect_no_push": {
+            "where": {
+              "room": "$rid"
+            },
+            "window_ms": 2000,
+            "note": "the refused target is never announced to the room in any frame"
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          },
+          "assert": {
+            "identical_to": "$b_before",
+            "note": "the peer's view is byte-identical to before the attempt: no publication, no revoked tombstone, no trace of the rejected address"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          },
+          "assert": {
+            "note": "and no publisher-local record either — the refusal precedes publication, it does not undo one"
+          }
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_target_refused_is_not_the_standing_refusal",
+      "kind": "error",
+      "operation": "pipe.publish",
+      "intent": "Proves the two refusals a user must respond to differently are two codes: 'your target is not allowed' (pipe_target_refused, about the request, carrying the rejected target) and 'you may not publish here' (insufficient_standing, about the caller, naming standing). Both are produced in one case from the same room so they cannot be reconciled by inspection of separate runs. Catches a daemon that folds both into the generic policy_refused — the exact collapse the spec's taxonomy note forbids — which would leave a client unable to decide between 'fix the address' and 'ask the room authority'.",
+      "requires": [
+        "subject",
+        "room_authority_a",
+        "member_b",
+        "live_room_a",
+        "live_room_b",
+        "local_tcp_service_b"
+      ],
+      "steps": [
+        {
+          "as": "A",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op1",
+            "target": {
+              "host": "192.168.1.10",
+              "port": 8080
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_target": "$"
+          },
+          "expect_error": {
+            "code": "pipe_target_refused",
+            "fields": {
+              "target": {
+                "host": "192.168.1.10",
+                "port": 8080
+              },
+              "hint": "<absent>"
+            }
+          }
+        },
+        {
+          "as": "B",
+          "call": "pipe.publish",
+          "in": {
+            "room": "$rid",
+            "op_id": "$op2",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port_b"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save_error": {
+            "e_standing": "$"
+          },
+          "expect_error": {
+            "code": "insufficient_standing",
+            "fields": {
+              "hint": "<absent>"
+            }
+          },
+          "assert": {
+            "code_not": "pipe_target_refused",
+            "note": "an impeccable loopback target refused for a reason that has nothing to do with the target"
+          }
+        },
+        {
+          "check": "two_refusals_stay_two",
+          "assert": {
+            "not_equal": [
+              "$e_target.code",
+              "$e_standing.code"
+            ],
+            "codes_equal": false,
+            "code_not": "policy_refused",
+            "note": "neither refusal is policy_refused, and the target-refusal names a target while the standing-refusal names standing; a client can branch on the code alone"
+          }
+        },
+        {
+          "as": "A",
+          "call": "pipe.list",
+          "in": {
+            "room": "$rid"
+          },
+          "expect": {
+            "pipes": []
+          },
+          "intent_note": "neither refusal published anything"
+        }
+      ],
+      "blocked_on_upstream": null
     }
   ],
   "authoring_notes": [

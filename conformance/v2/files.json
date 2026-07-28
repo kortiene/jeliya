@@ -2982,6 +2982,102 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "file_list_reports_an_unreadable_file_index_rather_than_an_empty_list",
+      "kind": "error",
+      "operation": "file.list",
+      "intent": "Gives file.list its own code, distinct from the room_not_available case the corpus already has. With a known shared file in an available room, the room's file index is made unreadable and the call must answer file_index_unreadable. Catches a daemon that returns files: [] on a read failure, which is uniquely costly here: the user concludes the file was never shared and re-shares it, paying a second transfer of up to max_shared_file_bytes, and the room gains a duplicate signed share event that every member stores forever. It also catches the code substitution that would be worst for diagnosis -- answering room_not_available, which tells a member in good standing that they have lost access to the room when in fact only a local index read failed, sending them to rejoin instead of to restart. fetchable is specified as an evidence-backed fact, and 'I could not read the evidence' is not the same fact as 'there is no file'.",
+      "requires": [
+        "subject",
+        "live_room",
+        "shared_file_a",
+        "fault_injection",
+        "fault_injection.file_index_unreadable"
+      ],
+      "steps": [
+        {
+          "call": "file.list",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "files": [
+              {
+                "file_id": "<file_id>",
+                "digest": "<hex64>",
+                "size_bytes": "<uint>",
+                "fetchable": "<boolean>",
+                "self_hosted": "<boolean>"
+              }
+            ]
+          },
+          "assert": "no_nulls",
+          "scope": "result",
+          "note": "baseline: the index is readable and names the shared file"
+        },
+        {
+          "control": "fault_inject",
+          "fault": "file_index_unreadable",
+          "room": "$rid",
+          "note": "the room's file index read path fails -- I/O error or permission denial. The share event and the local blob are untouched; only the read fails."
+        },
+        {
+          "call": "file.list",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect_error": {
+            "code": "file_index_unreadable",
+            "fields": {}
+          },
+          "forbid_codes": [
+            "room_not_available",
+            "invalid_argument",
+            "subject_absent",
+            "resource_exhausted"
+          ]
+        },
+        {
+          "assert": "not_returned",
+          "shape": {
+            "files": []
+          },
+          "why": "an empty success is read as 'nothing has been shared here' and costs a duplicate 100 MiB transfer"
+        },
+        {
+          "assert": "error_has_no_fields",
+          "fields": [
+            "hint",
+            "available",
+            "providers_count"
+          ]
+        },
+        {
+          "assert": "no_nulls",
+          "scope": "error"
+        },
+        {
+          "control": "fault_clear",
+          "fault": "file_index_unreadable"
+        },
+        {
+          "call": "file.list",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "files": [
+              {
+                "file_id": "<file_id>",
+                "digest": "<hex64>"
+              }
+            ]
+          },
+          "note": "the file was there the whole time; the refusal was honest about not being able to see it"
+        }
+      ],
+      "blocked_on_upstream": null
     }
   ],
   "authoring_notes": [

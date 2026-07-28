@@ -2801,6 +2801,263 @@
           }
         }
       ]
+    },
+    {
+      "name": "mint_for_an_identity_that_already_joined_is_invitee_already_member",
+      "kind": "error",
+      "operation": "invite.mint",
+      "intent": "Gives invite.mint its own code on the case that actually happens in the product: an authority forgets who is already in the room, or an invite link is re-sent, and a second capability is minted for an identity that has already redeemed one and is an active member. That must be invitee_already_member, not a silent success. Catches a daemon that mints the redundant grant, which is a real security defect and not merely noise -- a live unrevoked capability for an existing member survives member.remove, so the removed member can walk straight back in, and the authority never knew the credential existed because they believed the mint was a no-op. It also catches the two wrong codes: insufficient_standing (the caller IS the authority) and invalid_argument (the input is well-formed; the room's state is what refuses it). The last two steps pin the ordering the idempotency section requires: the dedup ledger is consulted BEFORE this precondition, so replaying the original mint's op_id after the invitee joined still returns the ORIGINAL capability rather than this error -- otherwise a reply lost to a dropped connection turns a successful mint into a permanent failure on retry.",
+      "requires": [
+        "authority_daemon",
+        "invitee_daemon",
+        "invitee_subject",
+        "room",
+        "live_room",
+        "loopback_transport"
+      ],
+      "steps": [
+        {
+          "call": "invite.mint",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid",
+            "subject_id": "$sb",
+            "role": "member",
+            "ttl_ms": 3600000,
+            "op_id": "already-member-mint-1"
+          },
+          "save": {
+            "inv1": "invite_id",
+            "cap1": "capability"
+          },
+          "save_out": "first_mint",
+          "expect": {
+            "invite_id": "<invite_id>",
+            "capability": "<capability>",
+            "role": "member",
+            "expires_at": "<ts>",
+            "redeemability": {
+              "state": "redeemable"
+            }
+          }
+        },
+        {
+          "call": "invite.redeem",
+          "as": "invitee",
+          "in": {
+            "capability": "$cap1",
+            "op_id": "already-member-redeem-1"
+          },
+          "expect": {
+            "room_id": "$rid",
+            "created": true,
+            "role": "member"
+          }
+        },
+        {
+          "call": "room.members",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "members": {
+              "contains_one": {
+                "subject_id": "$sb",
+                "role": "member",
+                "standing": "active"
+              }
+            }
+          },
+          "note": "precondition established from the authoritative surface, not from the redeem reply"
+        },
+        {
+          "call": "invite.mint",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid",
+            "subject_id": "$sb",
+            "role": "member",
+            "ttl_ms": 3600000,
+            "op_id": "already-member-mint-2"
+          },
+          "note": "a FRESH op_id, so the dedup ledger cannot answer and the precondition must",
+          "expect_error": {
+            "code": "invitee_already_member",
+            "absent_fields": [
+              "hint",
+              "capability"
+            ]
+          },
+          "forbid_codes": [
+            "insufficient_standing",
+            "invalid_argument",
+            "room_not_available",
+            "op_id_conflict"
+          ],
+          "must_not": [
+            "ok"
+          ],
+          "assert": {
+            "no_nulls": "$last_error",
+            "note": "the refusal must carry no capability of any kind: a minted-then-errored grant is the worst of both"
+          }
+        },
+        {
+          "call": "invite.list",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "invites": {
+              "len": 1,
+              "contains_one": {
+                "invite_id": "$inv1",
+                "subject_id": "$sb"
+              }
+            }
+          },
+          "note": "exactly one invite ever existed for this identity; the refused mint left no second grant outstanding"
+        },
+        {
+          "call": "invite.mint",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid",
+            "subject_id": "$sb",
+            "role": "member",
+            "ttl_ms": 3600000,
+            "op_id": "already-member-mint-1"
+          },
+          "note": "the ORIGINAL op_id, replayed after the invitee joined: the ledger answers first",
+          "expect_identical_to": "first_mint",
+          "must_not_error": [
+            "invitee_already_member"
+          ]
+        },
+        {
+          "call": "invite.list",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "invites": {
+              "len": 1
+            }
+          },
+          "note": "the replay performed no second effect either"
+        }
+      ],
+      "blocked_on_upstream": null
+    },
+    {
+      "name": "invite_list_reports_an_unreadable_invite_index_rather_than_an_empty_list",
+      "kind": "error",
+      "operation": "invite.list",
+      "intent": "Gives invite.list its own code, and separates the two answers an authority must never confuse: 'nothing is outstanding' and 'I cannot tell you what is outstanding'. With one redeemable invite known to exist, the invite index is made unreadable and the call must answer invite_index_unreadable. Catches a daemon that swallows the read failure and returns invites: [] -- which is precisely the answer that makes invite.revoke unreachable, because an authority who sees an empty list has no invite_id to revoke and concludes there is nothing to withdraw while a live capability into their room stays redeemable. The corpus already asserts that a room with no invites answers an empty array, so without this case those two states are indistinguishable to the harness as well as to the user. Also forbids room_not_available: the caller is the room's authority, and reporting a local storage fault as a membership fact would send them to the wrong recovery entirely.",
+      "requires": [
+        "authority_daemon",
+        "invitee_subject",
+        "room",
+        "fault_injection",
+        "fault_injection.invite_index_unreadable"
+      ],
+      "steps": [
+        {
+          "call": "invite.mint",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid",
+            "subject_id": "$sb",
+            "role": "member",
+            "ttl_ms": 3600000,
+            "op_id": "invite-index-1"
+          },
+          "save": {
+            "inv1": "invite_id"
+          }
+        },
+        {
+          "call": "invite.list",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "invites": {
+              "len": 1,
+              "contains_one": {
+                "invite_id": "$inv1",
+                "redeemability": {
+                  "state": "redeemable"
+                }
+              }
+            }
+          },
+          "note": "baseline: one live, redeemable capability exists and is visible"
+        },
+        {
+          "control": "fault_inject",
+          "fault": "invite_index_unreadable",
+          "room": "$rid",
+          "note": "the invite index read path fails -- I/O error or permission denial. The invites themselves are untouched and still redeemable, which is what makes the empty-list answer dangerous rather than merely wrong."
+        },
+        {
+          "call": "invite.list",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect_error": {
+            "code": "invite_index_unreadable",
+            "absent_fields": [
+              "hint"
+            ]
+          },
+          "forbid_codes": [
+            "room_not_available",
+            "insufficient_standing",
+            "invalid_argument",
+            "subject_absent"
+          ],
+          "must_not": [
+            "ok"
+          ],
+          "assert": {
+            "not_returned": {
+              "invites": []
+            },
+            "no_nulls": "$last_error",
+            "note": "an empty array here would be read by an authority as 'nothing outstanding' while a redeemable capability is live"
+          }
+        },
+        {
+          "control": "fault_clear",
+          "fault": "invite_index_unreadable"
+        },
+        {
+          "call": "invite.list",
+          "as": "authority",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "invites": {
+              "len": 1,
+              "contains_one": {
+                "invite_id": "$inv1",
+                "redeemability": {
+                  "state": "redeemable"
+                }
+              }
+            }
+          },
+          "note": "the capability was never lost, and the refusal revoked nothing"
+        }
+      ],
+      "blocked_on_upstream": null
     }
   ],
   "authoring_notes": [

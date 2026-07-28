@@ -84,6 +84,7 @@ compiled-in default.
 | `max_message_body_bytes` | Largest message body accepted |
 | `max_frame_bytes` | Largest single wire frame accepted before the connection is closed |
 | `max_inflight_requests` | Requests one connection may have outstanding |
+| `max_subscriptions_per_connection` | Room subscriptions one connection may hold. Exceeding it is `subscription_limit_reached`, never a silent drop |
 | `max_connections` | Connections one daemon accepts |
 | `max_concurrent_transfers` | File transfers in flight across the daemon |
 | `max_transfer_bytes_inflight` | Total transfer bytes the daemon will hold at once |
@@ -292,6 +293,65 @@ authorization object is the key-bound capability itself, never an identifier.
 classification, not a permission — v1's three surfaces disagreed on this, and
 v2 states one answer.
 
+#### Payload contracts
+
+A one-line description is not a contract. These three operations are specified
+here because authoring the corpus proved they could not otherwise be tested —
+and an operation that cannot be conformance-tested cannot be implemented
+either.
+
+[Agent orchestration](agent-orchestration.md) remains the normative source for
+the **status-label vocabulary** and for **derived liveness**, whose four values
+are `online-idle`, `working`, `offline`, and `stale`. Liveness is derived at
+read time from peer connection state and the agent's most recent event; it is
+**never stored** and never computed client-side. v2 carries that contract
+unchanged and restates none of it.
+
+What v2 does change is the shape.
+
+**`status.post`** takes a `label` from the closed vocabulary and a `progress`
+that is a tagged variant:
+
+```json
+{ "label": "working", "progress": { "state": "reported", "percent": 40 } }
+{ "label": "claiming", "progress": { "state": "absent" } }
+```
+
+v1 carried `progress: null`, which v2's no-null rule forbids. `percent` is an
+integer in `0..=100` inclusive; anything else is `invalid_argument`.
+
+**`status.history`** returns `entries`, one per real posted event, in
+chronological order:
+
+```json
+{ "entries": [ { "at": "<ts>", "label": "working", "progress": { "state": "absent" } } ],
+  "truncated": { "state": "complete" } }
+```
+
+The daemon MUST NOT interpolate, smooth, or fabricate a point. A chart drawn
+from this plots actual events or it plots a lie. Paging obeys
+`timeline_page_max`, and truncation is always stated as a tagged variant rather
+than inferred from a full page.
+
+**`fleet.list`** returns the agents with their derived liveness, and **no
+tallies**:
+
+```json
+{ "agents": [ { "subject_id": "<64-hex>", "room_id": "<room_id>",
+                "liveness": "working",
+                "latest_status": { "state": "present", "label": "working", "at": "<ts>" },
+                "last_seen": { "state": "present", "at": "<ts>" } } ] }
+```
+
+v1 served `active`, `working`, `total`, `rooms_total`, and `rooms_covered`
+alongside the list. Those are derivable from the list itself, and a served
+tally is a second thing that can disagree with the facts it summarizes. **v2
+serves the facts, not the tallies.**
+
+Scope is the caller's authorized room set. `fleet.list` MUST NOT be a
+membership oracle: a room the caller cannot see contributes nothing, and its
+absence is indistinguishable from it not existing.
+
 ### Files
 
 | Operation | | Purpose |
@@ -334,11 +394,29 @@ was named as if it were reachability while being a purely local runtime fact.
 **Pipe reachability is a protocol fact** (#50/#94/#79). The hardcoded `label`
 (always `"pipe"`) and `kind` (always `"tcp"`) are removed.
 
+#### The publish-target policy
+
+`pipe.publish` names a local TCP target. The target MUST be loopback — an IPv4
+address in `127.0.0.0/8` or IPv6 `::1` — and the port MUST be in `1..=65535`.
+Anything else is `pipe_target_refused`, carrying the rejected target — **not**
+the generic `policy_refused`, so a client can tell "your target is not allowed"
+from "you may not publish in this room". A user responds to those differently.
+
+This is stated normatively because the boundary is not obvious and getting it
+wrong is severe: a pipe is a peer-reachable tunnel to whatever it names, so a
+non-loopback target turns a room member into a proxy onto the publisher's LAN.
+A private-range address such as `192.168.1.10` is **refused**, not accepted —
+being unroutable from the internet is not the same as being local, and the
+policy is loopback, not "probably safe".
+
+The refusal is a local policy decision made before publication, so it costs no
+network round trip and reveals nothing to peers.
+
 ### Stream
 
 | Operation | | Purpose |
 |---|---|---|
-| `stream.subscribe` | M | Subscribe to a room's push stream |
+| `stream.subscribe` | M | Subscribe to a room's push stream. **Naturally idempotent** — subscribing twice does not duplicate delivery and is not an error |
 | `stream.unsubscribe` | M | Unsubscribe |
 | `stream.resync` | M | Authoritative resync from a position |
 
@@ -421,7 +499,7 @@ the operation is not an oracle for other clients' activity.
 
 ## Errors
 
-The taxonomy is 51 codes. Every code is machine-readable, carries typed fields
+The taxonomy is 55 codes. Every code is machine-readable, carries typed fields
 rather than prose, and carries no `hint`.
 
 Selected codes whose shape is normative:
@@ -465,9 +543,18 @@ cross-cutting codes. Each therefore gains one:
 | `fleet.list` | `fleet_projection_unavailable` | The projection cannot be built |
 | `file.list` | `file_index_unreadable` | The room's file index cannot be read |
 | `transfer.cancel` | `transfer_unknown` | No such in-flight transfer for this principal |
+| `message.send` | `message_too_large` | The body exceeds `max_message_body_bytes`, carrying `declared_bytes` and `limit_bytes` |
+| `status.post` | `status_label_unknown` | The label is outside the closed vocabulary |
+| `pipe.publish` | `pipe_target_refused` | The target is not loopback, or the port is out of range, carrying the rejected target |
+| `stream.subscribe` | `subscription_limit_reached` | This connection holds the maximum number of subscriptions |
 
-These are the taxonomy's last additions; the total is 51 codes, not the 40 the
+These are the taxonomy's last additions; the total is 55 codes, not the 40 the
 mined design projected.
+
+`pipe_target_refused` replaces the generic `policy_refused` for the
+publish-target case specifically, so a client can tell "your target is not
+allowed" from "you are not permitted to publish here" — two refusals a user
+must respond to differently.
 
 ### The non-oracle property
 

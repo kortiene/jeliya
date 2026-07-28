@@ -13,14 +13,13 @@
     "U3": "a size-distinguishable fetch outcome"
   },
   "totals": {
-    "cases": 310,
-    "quarantined": 11,
+    "cases": 332,
+    "quarantined": 0,
     "blocked_on_upstream": 10
   },
   "coverage": {
     "subject.ensure": {
       "cases": 12,
-      "live": 12,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -28,31 +27,27 @@
     },
     "daemon.stop": {
       "cases": 4,
-      "live": 4,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": "shutdown_in_progress",
       "satisfies_required_kinds": true
     },
     "room.create": {
-      "cases": 9,
-      "live": 9,
+      "cases": 10,
       "success": true,
-      "distinctive_error": false,
+      "distinctive_error": true,
       "distinctive_code": "room_name_invalid",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "room.list": {
       "cases": 6,
-      "live": 5,
       "success": true,
-      "distinctive_error": false,
+      "distinctive_error": true,
       "distinctive_code": "room_index_unreadable",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "room.activate": {
       "cases": 4,
-      "live": 4,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -60,7 +55,6 @@
     },
     "room.deactivate": {
       "cases": 3,
-      "live": 3,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -68,7 +62,6 @@
     },
     "room.leave": {
       "cases": 4,
-      "live": 4,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -76,23 +69,20 @@
     },
     "room.timeline": {
       "cases": 9,
-      "live": 9,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
       "satisfies_required_kinds": true
     },
     "room.members": {
-      "cases": 4,
-      "live": 4,
+      "cases": 5,
       "success": true,
-      "distinctive_error": false,
+      "distinctive_error": true,
       "distinctive_code": "membership_unresolved",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "room.archive": {
       "cases": 4,
-      "live": 4,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -100,7 +90,6 @@
     },
     "room.peers": {
       "cases": 6,
-      "live": 6,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -108,31 +97,27 @@
     },
     "member.remove": {
       "cases": 9,
-      "live": 9,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
       "satisfies_required_kinds": true
     },
     "invite.mint": {
-      "cases": 10,
-      "live": 10,
+      "cases": 11,
       "success": true,
-      "distinctive_error": false,
+      "distinctive_error": true,
       "distinctive_code": "invitee_already_member",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "invite.list": {
-      "cases": 4,
-      "live": 4,
+      "cases": 5,
       "success": true,
-      "distinctive_error": false,
+      "distinctive_error": true,
       "distinctive_code": "invite_index_unreadable",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "invite.revoke": {
       "cases": 6,
-      "live": 6,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -140,63 +125,55 @@
     },
     "invite.redeem": {
       "cases": 11,
-      "live": 11,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
       "satisfies_required_kinds": true
     },
     "message.send": {
-      "cases": 8,
-      "live": 8,
+      "cases": 11,
       "success": true,
-      "distinctive_error": false,
-      "distinctive_code": null,
-      "satisfies_required_kinds": false
+      "distinctive_error": true,
+      "distinctive_code": "message_too_large",
+      "satisfies_required_kinds": true
     },
     "status.post": {
-      "cases": 4,
-      "live": 2,
+      "cases": 9,
       "success": true,
-      "distinctive_error": false,
-      "distinctive_code": null,
-      "satisfies_required_kinds": false
+      "distinctive_error": true,
+      "distinctive_code": "status_label_unknown",
+      "satisfies_required_kinds": true
     },
     "status.history": {
-      "cases": 6,
-      "live": 4,
+      "cases": 7,
       "success": true,
-      "distinctive_error": false,
+      "distinctive_error": true,
       "distinctive_code": "status_subject_unknown",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "fleet.list": {
-      "cases": 3,
-      "live": 1,
-      "success": false,
-      "distinctive_error": false,
+      "cases": 5,
+      "success": true,
+      "distinctive_error": true,
       "distinctive_code": "fleet_projection_unavailable",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "file.share": {
       "cases": 15,
-      "live": 15,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
       "satisfies_required_kinds": true
     },
     "file.list": {
-      "cases": 4,
-      "live": 4,
+      "cases": 5,
       "success": true,
-      "distinctive_error": false,
+      "distinctive_error": true,
       "distinctive_code": "file_index_unreadable",
-      "satisfies_required_kinds": false
+      "satisfies_required_kinds": true
     },
     "file.fetch": {
       "cases": 13,
-      "live": 13,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -204,7 +181,6 @@
     },
     "file.read": {
       "cases": 3,
-      "live": 3,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -212,23 +188,20 @@
     },
     "transfer.cancel": {
       "cases": 5,
-      "live": 5,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": "transfer_unknown",
       "satisfies_required_kinds": true
     },
     "pipe.publish": {
-      "cases": 12,
-      "live": 8,
+      "cases": 16,
       "success": true,
-      "distinctive_error": false,
-      "distinctive_code": null,
-      "satisfies_required_kinds": false
+      "distinctive_error": true,
+      "distinctive_code": "pipe_target_refused",
+      "satisfies_required_kinds": true
     },
     "pipe.list": {
       "cases": 6,
-      "live": 6,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -236,7 +209,6 @@
     },
     "pipe.connect": {
       "cases": 7,
-      "live": 7,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -244,7 +216,6 @@
     },
     "pipe.release": {
       "cases": 3,
-      "live": 3,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
@@ -252,23 +223,20 @@
     },
     "pipe.revoke": {
       "cases": 3,
-      "live": 3,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
       "satisfies_required_kinds": true
     },
     "stream.subscribe": {
-      "cases": 3,
-      "live": 3,
-      "success": false,
+      "cases": 5,
+      "success": true,
       "distinctive_error": true,
-      "distinctive_code": null,
-      "satisfies_required_kinds": false
+      "distinctive_code": "subscription_limit_reached",
+      "satisfies_required_kinds": true
     },
     "stream.unsubscribe": {
       "cases": 2,
-      "live": 2,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": "subscription_unknown",
@@ -276,25 +244,11 @@
     },
     "stream.resync": {
       "cases": 5,
-      "live": 5,
       "success": true,
       "distinctive_error": true,
       "distinctive_code": null,
       "satisfies_required_kinds": true
     }
   },
-  "operations_not_yet_satisfying_required_kinds": [
-    "room.create",
-    "room.list",
-    "room.members",
-    "invite.mint",
-    "invite.list",
-    "message.send",
-    "status.post",
-    "status.history",
-    "fleet.list",
-    "file.list",
-    "pipe.publish",
-    "stream.subscribe"
-  ]
+  "operations_not_yet_satisfying_required_kinds": []
 }
