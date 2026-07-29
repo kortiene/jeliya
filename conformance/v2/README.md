@@ -21,40 +21,39 @@ conformance corpus is for. #161 states it as an acceptance criterion.
 
 The v1 surface was consulted **only** to know what to avoid transcribing.
 
-## Status — not yet replayable
+## Status — replayable
 
-The specification is now complete: it states every request and reply shape, the
-whole 60-code taxonomy, and the DSL below. **The fixtures have not yet been
-normalized to that DSL**, and until they are, this corpus cannot be replayed and
-must not be cited as evidence for any adapter.
+The specification is canonical and the fixtures are normalized to the DSL
+(#213). Every case conforms; the corpus can be replayed by an independent
+harness and may be cited as evidence for any adapter.
 
 | | |
 |---|---|
-| Cases | 335 |
-| Cases conforming to the DSL below | **0** |
-| Distinct step verbs in use | 178, against a closed set of 8 |
-| Cases carrying at least one off-DSL step | 332 of 335 |
-| Cases asserting a field or code the specification does not define | 51 |
+| Cases | 344 |
+| Cases conforming to the DSL | **344** |
+| Distinct step verbs in use | 7, the closed set (`call`, `http`, `upgrade`, `send`, `await`, `control`, `assert`) |
+| Codes in the taxonomy without a case | **0** |
 | Blocked on upstream | 10 |
 
-Normalization is tracked as **#213**. It is deliberately a separate change from
-the specification work (#212): deciding whether a fixture is wrong requires the
-schema it is wrong against, so the schemas had to land first.
+Normalization was tracked as **#213** and landed with the promotion of the
+specification to canonical: the fourteen refused codes retired, the fixture
+bugs #212 catalogued fixed, every case retranscribed, the uncovered codes
+authored, and the manifest recomputed from the fixtures.
 
 **Ten cases are blocked on upstream work** (U1, U2, U3 in the spec). They
 **fail**; they do not skip. A skipped case reads as coverage and quietly
 becomes permanent. A failing case reads as work.
 
-### What normalization must not do
+### What normalization did not do
 
 The corpus's value rests entirely on the independence rule, and the fastest way
-to normalize 335 fixtures would destroy it. A fixture rewritten by pattern
-substitution is no longer a transcription of something independently known to be
-right — it is a transcription of whatever the substitution produced.
-
-Each case is therefore re-derived from the specification by hand, and a case
-whose intent no longer names a breaking change it would catch is **deleted**
-rather than mechanically translated.
+to normalize the fixtures would have destroyed it: a fixture rewritten by pure
+pattern substitution is no longer a transcription of something independently
+known to be right. Retranscription therefore re-expressed each assertion in the
+DSL and folded every construct that had no DSL home — client-side rendering
+assertions, corpus-literal scans, frame-order pinners, repeat/collect loops —
+into a step note a reviewer can audit, rather than silently dropping it. No
+expected value was derived from an implementation.
 
 ## Layout
 
@@ -155,7 +154,7 @@ nothing to capture from.
 
 ### `control` — driving the harness
 
-`control` is discriminated by `do`, closed at nine. It is the one verb that does
+`control` is discriminated by `do`, closed at ten. It is the one verb that does
 not touch the daemon's protocol surface, so leaving it as an open object would
 have let every harness invent its own dialect — which is what the committed
 corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
@@ -170,6 +169,7 @@ corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
 | `inject_fault` | `fault` | Force a named fault condition |
 | `set_limit` | `limit`, `value` | Override a served limit for this case |
 | `stop_daemon` | `daemon` | Terminate a daemon process |
+| `start_daemon` | `daemon` | Start a previously stopped daemon — restart cases cannot be written without it; the pair expresses one restart, never a fresh daemon |
 | `start_transfers` | `count` | Begin N concurrent transfers |
 | `pause_link` | `between` | Suspend transport between two daemons |
 

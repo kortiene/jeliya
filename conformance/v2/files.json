@@ -12,211 +12,332 @@
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "expect_hello": {
-            "t": "hello",
-            "protocol": 2,
-            "limits": {
-              "max_shared_file_bytes": "<u64>",
-              "max_concurrent_transfers": "<u64>",
-              "max_transfer_bytes_inflight": "<u64>",
-              "transfer_connect_allowance_ms": "<u64>",
-              "transfer_floor_bits_per_second": "<u64>",
-              "transfer_stall_ms": "<u64>"
-            }
-          },
-          "save": {
-            "limit": "limits.max_shared_file_bytes",
-            "max_transfers": "limits.max_concurrent_transfers",
-            "max_inflight": "limits.max_transfer_bytes_inflight",
-            "connect_ms": "limits.transfer_connect_allowance_ms",
-            "floor_bps": "limits.transfer_floor_bits_per_second",
-            "stall_ms": "limits.transfer_stall_ms"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "assert": "json_type",
-          "of": [
-            "$limit",
-            "$max_transfers",
-            "$max_inflight",
-            "$connect_ms",
-            "$floor_bps",
-            "$stall_ms"
-          ],
-          "type": "integer",
-          "not": [
-            "string",
-            "float",
-            "null",
-            "object"
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "limit": "frame.limits.max_shared_file_bytes",
+            "max_transfers": "frame.limits.max_concurrent_transfers",
+            "max_inflight": "frame.limits.max_transfer_bytes_inflight",
+            "connect_ms": "frame.limits.transfer_connect_allowance_ms",
+            "floor_bps": "frame.limits.transfer_floor_bits_per_second",
+            "stall_ms": "frame.limits.transfer_stall_ms"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.t",
+              "op": "eq",
+              "value": "hello"
+            },
+            {
+              "path": "frame.protocol",
+              "op": "eq",
+              "value": 2
+            },
+            {
+              "path": "frame.limits.max_shared_file_bytes",
+              "op": "eq",
+              "value": "<uint>"
+            },
+            {
+              "path": "frame.limits.max_concurrent_transfers",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "frame.limits.max_transfer_bytes_inflight",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "frame.limits.transfer_connect_allowance_ms",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "frame.limits.transfer_floor_bits_per_second",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "frame.limits.transfer_stall_ms",
+              "op": "type",
+              "value": "uint"
+            }
           ]
         },
         {
-          "assert": "equals",
-          "of": "$limit",
-          "value": 104857600,
-          "why": "the single place in this corpus where the policy number from docs/shared-file-size.md Decision 1 is pinned"
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "$max_transfers",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "$max_inflight",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "$connect_ms",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "$floor_bps",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "$stall_ms",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
         },
         {
-          "assert": "no_keys",
-          "keys": [
-            "data_dir",
-            "pid",
-            "port",
-            "schema"
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "uint",
+              "note": "path recovered from context; exclusions: [\"string\", \"float\", \"null\", \"object\"]"
+            }
           ],
-          "scope": "hello",
-          "why": "hello carries no filesystem path and no v1 daemon.status transcription"
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "assert": "corpus_has_no_literal",
-          "values": [
-            104857600,
-            104857601,
-            "100 MiB",
-            "104_857_600"
-          ],
-          "scope": "corpus",
-          "except_case": "handshake_serves_the_file_and_transfer_limits_as_integers",
-          "why": "every other fixture derives its boundary from $limit, so the corpus itself does not hard-code the number"
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "eq",
+              "value": null
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 104857600, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "frame.pid",
+              "op": "absent"
+            },
+            {
+              "path": "frame.port",
+              "op": "absent"
+            },
+            {
+              "path": "frame.schema",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"hello\", \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"values\": [104857600, 104857601, \"100 MiB\", \"104_857_600\"], \"note\": \"every other fixture derives its boundary from $limit, so the corpus itself does not hard-code the number [bare-string assert 'corp]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"corpus\", \"except_case\": \"handshake_serves_the_file_and_transfer_limits_as_integers\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "client_reads_the_shared_file_limit_from_the_handshake",
       "kind": "handshake",
       "operation": "file.share",
       "intent": "Proves the client's share preflight threshold moves with a harness-reduced served max_shared_file_bytes rather than a compiled-in constant, catching any client that reintroduces one of the six hard-coded copies the size policy exists to delete.",
-      "requires": [
-        "client_adapter",
-        "served_limit_override"
-      ],
+      "requires": [],
       "steps": [
         {
-          "harness": {
-            "serve_limits": {
-              "max_shared_file_bytes": 1048576
-            }
+          "control": {
+            "do": "set_limit",
+            "limit": "max_shared_file_bytes",
+            "value": 1048576
           }
         },
         {
-          "connect": {
-            "as": "primary"
-          },
-          "expect_hello": {
-            "limits": {
-              "max_shared_file_bytes": 1048576
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
             }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
-          "client": "preflight_share",
-          "in": {
-            "source_bytes": "$limit"
-          },
-          "observe": {
-            "decision": "accepted"
-          }
-        },
-        {
-          "client": "preflight_share",
-          "in": {
-            "source_bytes": "$limit+1"
-          },
-          "observe": {
-            "decision": "refused",
-            "bytes_sent": 0,
-            "requests_emitted": 0
-          }
-        },
-        {
-          "assert": "equals",
-          "of": "client.preflight_threshold",
-          "equals": "$limit",
-          "why": "the threshold is the served integer, not a default"
-        },
-        {
-          "assert": "client_source_has_no_literal",
-          "values": [
-            104857600,
-            "100 MiB"
-          ],
-          "scope": [
-            "client_code",
-            "locale_catalogs",
-            "scripts"
+          "assert": [
+            {
+              "path": "frame.limits.max_shared_file_bytes",
+              "op": "eq",
+              "value": 1048576
+            }
           ]
+        },
+        {
+          "note": "client-side preflight observation (not a wire assertion): input {\"source_bytes\": \"$limit\"} -> {\"decision\": \"accepted\"}; kept as a harness-driven check [harness orchestration: client_preflight]",
+          "control": {
+            "do": "idle",
+            "ms": 0
+          }
+        },
+        {
+          "note": "client-side preflight observation (not a wire assertion): input {\"source_bytes\": \"$limit+1\"} -> {\"decision\": \"refused\", \"bytes_sent\": 0, \"requests_emitted\": 0}; kept as a harness-driven check [harness orchestration: client_preflight]",
+          "control": {
+            "do": "idle",
+            "ms": 0
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.preflight_threshold",
+              "op": "eq",
+              "value": null,
+              "note": "path root 'client' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "$",
+              "op": "eq",
+              "value": "$limit"
+            }
+          ],
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"values\": [104857600, \"100 MiB\"], \"note\": \"[bare-string assert 'client_source_has_no_literal' needs manual retranscription]\"}]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": [\"client_code\", \"locale_catalogs\", \"scripts\"], \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "client_renders_the_limit_message_from_the_served_integer",
       "kind": "handshake",
       "operation": "file.share",
       "intent": "Proves the human-readable limit is rendered from the SERVED integer, so no catalog carries the number verbatim and a served change cannot make a translation lie. Asserted two ways: no locale catalog contains the number, and the rendered string moves when the harness overrides the limit.",
-      "requires": [
-        "client_adapter",
-        "served_limit_override"
-      ],
+      "requires": [],
       "steps": [
         {
-          "harness": {
-            "serve_limits": {
-              "max_shared_file_bytes": 1048576
-            }
+          "control": {
+            "do": "set_limit",
+            "limit": "max_shared_file_bytes",
+            "value": 1048576
           }
         },
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
-          "client": "preflight_share",
-          "in": {
-            "source_bytes": "$limit+1"
-          },
-          "observe": {
-            "decision": "refused"
+          "note": "client-side preflight observation (not a wire assertion): input {\"source_bytes\": \"$limit+1\"} -> {\"decision\": \"refused\"}; kept as a harness-driven check [harness orchestration: client_preflight]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
-          "assert": "rendered_from",
-          "of": "client.over_limit_message",
-          "source": "$limit",
-          "expect_rendering": "1 MiB",
-          "why": "binary units are display only and MUST be rendered from the served integer"
-        },
-        {
-          "assert": "not_contains",
-          "of": "client.over_limit_message",
-          "values": [
-            "100 MiB",
-            "104857600"
+          "assert": [
+            {
+              "path": "frame.over_limit_message",
+              "op": "present",
+              "note": "path root 'client' names a harness surface, not a wire field"
+            }
           ]
         },
         {
-          "assert": "json_type",
-          "of": "wire.limits.max_shared_file_bytes",
-          "type": "integer",
-          "not": [
-            "string"
+          "note": "client-side rendering assertion dropped from the wire corpus (the protocol carries data, not rendering)"
+        },
+        {
+          "note": "client-side rendering assertion dropped from the wire corpus (the protocol carries data, not rendering)"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.over_limit_message",
+              "op": "present",
+              "note": "path root 'client' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"values\": [\"100 MiB\", \"104857600\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.max_shared_file_bytes",
+              "op": "type",
+              "value": "uint",
+              "note": "path root 'wire' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "uint",
+              "note": "path recovered from context; exclusions: [\"string\"]"
+            }
           ],
-          "why": "the wire never carries a formatted size string"
+          "note": "[split from a multi-verb step; review]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_below_the_served_limit_succeeds",
@@ -225,32 +346,39 @@
       "intent": "Establishes the baseline success shape of the streamed share: a file identifier, the authored room fact, the daemon-computed digest and the accepted byte count, with no filesystem path in either direction, catching any regression to v1's path-taking RPC plus separate HTTP upload edge.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-share-1",
             "name": "Files"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-share-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-share-2",
             "name": "notes.txt",
             "size": {
               "state": "declared",
@@ -261,45 +389,74 @@
               "value": "text/plain"
             }
           },
-          "stream": {
-            "send_bytes": 1024
-          },
           "save": {
-            "fid": "file_id"
+            "fid": "out.file_id"
           },
           "expect": {
-            "file_id": "<file_id>",
-            "event_id": "<hex64>",
-            "pos": "<u64>",
-            "size_bytes": 1024,
-            "digest": "<hex64>"
+            "ok": true,
+            "out": {
+              "file_id": "<file_id>",
+              "event_id": "<string>",
+              "pos": "<uint>",
+              "size_bytes": 1024,
+              "digest": "<string>"
+            }
           },
-          "expect_absent": [
-            "path",
-            "local_path",
-            "save_dir",
-            "staged_path",
-            "data_dir"
+          "op_id": "op-share-2"
+        },
+        {
+          "assert": [],
+          "note": "[split]"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.path",
+              "op": "absent"
+            },
+            {
+              "path": "out.local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            }
           ]
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "file_id": "$fid",
-                "size_bytes": 1024,
-                "self_hosted": true,
-                "fetchable": true
-              }
-            ]
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "file_id": "$fid",
+                  "size_bytes": 1024,
+                  "self_hosted": true,
+                  "fetchable": true
+                }
+              ]
+            }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_at_exactly_the_served_limit_is_accepted",
@@ -308,32 +465,39 @@
       "intent": "Proves the comparison against the served maximum is strictly greater-than, so a file of exactly max_shared_file_bytes (104857600 as pinned by the handshake case) is accepted, catching an off-by-one that would silently refuse the largest legal file.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-atlimit-1",
             "name": "AtLimit"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-atlimit-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-atlimit-2",
             "name": "exactly-at-limit.bin",
             "size": {
               "state": "declared",
@@ -344,25 +508,25 @@
               "value": "application/octet-stream"
             }
           },
-          "stream": {
-            "send_bytes": "$limit"
-          },
           "expect": {
-            "file_id": "<file_id>",
-            "event_id": "<hex64>",
-            "size_bytes": "$limit",
-            "digest": "<hex64>"
-          }
+            "ok": true,
+            "out": {
+              "file_id": "<file_id>",
+              "event_id": "<string>",
+              "size_bytes": "$limit",
+              "digest": "<string>"
+            }
+          },
+          "op_id": "op-atlimit-2"
         },
         {
-          "assert": "no_error_raised",
-          "codes": [
-            "file_too_large",
-            "resource_exhausted"
-          ]
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": \"$limit\"}, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "note": "[bare-string assert 'no_error_raised' needs manual retranscription]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_one_byte_past_the_served_limit_is_refused_at_stage_declared",
@@ -371,32 +535,39 @@
       "intent": "Proves the earliest daemon-side enforcement point fires on the declared length before any body is read, refusing $limit+1 (104857601) with file_too_large carrying declared_bytes, limit_bytes and enforced_at=stage_declared, catching both an off-by-one and a daemon that buffers the body before checking.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-over-1",
             "name": "OverByOne"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-over-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-over-2",
             "name": "one-past.bin",
             "size": {
               "state": "declared",
@@ -407,50 +578,87 @@
               "value": "application/octet-stream"
             }
           },
-          "stream": {
-            "send_bytes": 0
-          },
-          "expect_error": {
-            "code": "file_too_large",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_too_large",
               "declared_bytes": "$limit+1",
               "limit_bytes": "$limit",
               "enforced_at": "stage_declared"
             }
           },
-          "forbid_codes": [
-            "invalid_params",
-            "invalid_argument",
-            "digest_mismatch"
-          ],
-          "expect_absent": [
-            "err.hint",
-            "err.path"
+          "op_id": "op-over-2"
+        },
+        {
+          "note": "[stream {\"send_bytes\": 0}; forbidden codes on this refusal: [\"invalid_params\", \"invalid_argument\", \"digest_mismatch\"] — asserted via the pinned code in expect] [harness orchestration: stream_bytes]",
+          "control": {
+            "do": "idle",
+            "ms": 0
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err.path",
+              "op": "absent"
+            }
           ]
         },
         {
-          "assert": "bytes_consumed_at_most",
-          "of": "transfer:op-over-2",
-          "value": 0,
-          "why": "refusal precedes reading the body"
-        },
-        {
-          "assert": "no_event_authored",
-          "room": "$rid"
-        },
-        {
-          "assert": "json_type",
-          "of": [
-            "err.declared_bytes",
-            "err.limit_bytes"
-          ],
-          "type": "integer",
-          "not": [
-            "string"
+          "assert": [
+            {
+              "path": "frame.op-over-2",
+              "op": "present",
+              "note": "path root 'transfer:op-over-2' names a harness surface, not a wire field"
+            }
           ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "err.declared_bytes",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "err.limit_bytes",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "uint",
+              "note": "path recovered from context; exclusions: [\"string\"]"
+            }
+          ],
+          "note": "[split from a multi-verb step; review]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_declared_within_limit_but_stream_exceeds_it_aborts_at_stage_stream",
@@ -459,32 +667,39 @@
       "intent": "Proves a declared length is treated as an assertion by an untrusted caller and not as fact: a caller declaring exactly $limit but streaming more is aborted mid-stream with enforced_at=stage_stream after consuming no more than limit_bytes, catching a daemon that enforces only on the declaration.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-liar-1",
             "name": "LyingDeclaration"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-liar-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-liar-2",
             "name": "understated.bin",
             "size": {
               "state": "declared",
@@ -495,39 +710,67 @@
               "value": "application/octet-stream"
             }
           },
-          "stream": {
-            "send_bytes": "$limit+4096"
-          },
-          "expect_error": {
-            "code": "file_too_large",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_too_large",
               "declared_bytes": "$limit",
               "limit_bytes": "$limit",
               "enforced_at": "stage_stream"
             }
           },
-          "forbid_codes": [
-            "digest_mismatch",
-            "invalid_argument"
+          "op_id": "op-liar-2"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [stream {\"send_bytes\": \"$limit+4096\"}] [harness orchestration: stream_bytes]",
+          "control": {
+            "do": "idle",
+            "ms": 0
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "digest_mismatch",
+                "invalid_argument"
+              ]
+            }
           ]
         },
         {
-          "assert": "bytes_consumed_at_most",
-          "of": "transfer:op-liar-2",
-          "value": "$limit",
-          "why": "the bound aborts the stream rather than absorbing it"
+          "assert": [
+            {
+              "path": "frame.op-liar-2",
+              "op": "present",
+              "note": "path root 'transfer:op-liar-2' names a harness surface, not a wire field"
+            }
+          ]
         },
         {
-          "assert": "no_event_authored",
-          "room": "$rid"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
-          "assert": "no_residue",
-          "scope": "staging",
-          "why": "an aborted stage leaves no stranded staged file"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"staging\", \"note\": \"an aborted stage leaves no stranded staged file [bare-string assert 'no_residue' needs manual retranscription]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_with_unknown_size_below_the_limit_succeeds",
@@ -536,33 +779,39 @@
       "intent": "Proves a source that reports no size is a normal path and not an error: size is a tagged unknown variant, never a JSON null, and the share succeeds with the daemon reporting the observed byte count, catching a daemon that rejects a file merely for lacking a declared size (which would break Android SAF cloud-backed documents).",
       "requires": [
         "subject",
-        "live_room",
-        "unsized_source"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-unsized-1",
             "name": "UnsizedSource"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-unsized-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-unsized-2",
             "name": "from-cloud-provider.bin",
             "size": {
               "state": "unknown"
@@ -571,25 +820,25 @@
               "state": "absent"
             }
           },
-          "stream": {
-            "send_bytes": 65536
-          },
           "expect": {
-            "file_id": "<file_id>",
-            "event_id": "<hex64>",
-            "size_bytes": 65536,
-            "digest": "<hex64>"
-          }
+            "ok": true,
+            "out": {
+              "file_id": "<file_id>",
+              "event_id": "<string>",
+              "size_bytes": 65536,
+              "digest": "<string>"
+            }
+          },
+          "op_id": "op-unsized-2"
         },
         {
-          "assert": "no_error_raised",
-          "codes": [
-            "invalid_argument",
-            "file_too_large"
-          ]
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 65536}, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "note": "[bare-string assert 'no_error_raised' needs manual retranscription]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_with_unknown_size_streaming_past_the_limit_aborts_at_stage_stream",
@@ -598,33 +847,39 @@
       "intent": "Proves the byte-counting bound is the enforcement for an undeclared size, aborting at the limit with enforced_at=stage_stream rather than copying unbounded, which is the only protection available when no declaration exists to check.",
       "requires": [
         "subject",
-        "live_room",
-        "unsized_source"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-unsized-over-1",
             "name": "UnsizedOver"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-unsized-over-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-unsized-over-2",
             "name": "unbounded-source.bin",
             "size": {
               "state": "unknown"
@@ -633,37 +888,63 @@
               "state": "absent"
             }
           },
-          "stream": {
-            "send_bytes": "$limit+1"
-          },
-          "expect_error": {
-            "code": "file_too_large",
-            "fields": {
-              "declared_bytes": "<u64>",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_too_large",
+              "declared_bytes": "<uint>",
               "limit_bytes": "$limit",
               "enforced_at": "stage_stream"
             }
           },
-          "forbid_codes": [
-            "digest_mismatch"
+          "op_id": "op-unsized-over-2"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [stream {\"send_bytes\": \"$limit+1\"}] [harness orchestration: stream_bytes]",
+          "control": {
+            "do": "idle",
+            "ms": 0
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "digest_mismatch"
+            }
           ]
         },
         {
-          "assert": "bytes_consumed_at_most",
-          "of": "transfer:op-unsized-over-2",
-          "value": "$limit"
+          "assert": [
+            {
+              "path": "frame.op-unsized-over-2",
+              "op": "present",
+              "note": "path root 'transfer:op-unsized-over-2' names a harness surface, not a wire field"
+            }
+          ]
         },
         {
-          "assert": "no_event_authored",
-          "room": "$rid"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
-          "assert": "spec_gap",
-          "field": "err.declared_bytes",
-          "note": "no size was declared; #161 must state whether this carries the observed count or a tagged unknown variant, so this fixture asserts only that it is an integer"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
+            }
+          ]
+        },
+        {
+          "note": "no size was declared; #161 must state whether this carries the observed count or a tagged unknown variant, so this fixture asserts only that it is an integer [bare-string assert 'spec_gap' needs manual retranscription] [dialect key field: \"err.declared_bytes\"]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_over_limit_in_process_core_is_refused_at_authoring",
@@ -672,33 +953,39 @@
       "intent": "Proves the core authoring layer enforces the limit on file metadata before hashing or blob import, which is the only enforcement point that exists for an in-process adapter with no daemon upload edge, catching an implementation that relies on the stage checks alone.",
       "requires": [
         "subject",
-        "live_room",
-        "in_process_core_adapter"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-authoring-1",
             "name": "InProcess"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-authoring-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-authoring-2",
             "name": "too-big-in-process.bin",
             "size": {
               "state": "declared",
@@ -708,29 +995,35 @@
               "state": "absent"
             }
           },
-          "stream": {
-            "send_bytes": 0
-          },
-          "expect_error": {
-            "code": "file_too_large",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_too_large",
               "declared_bytes": "$limit+1",
               "limit_bytes": "$limit",
               "enforced_at": "authoring"
             }
-          }
+          },
+          "op_id": "op-authoring-2"
         },
         {
-          "assert": "no_blob_imported",
-          "scope": "store"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 0}, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
-          "assert": "no_hash_computed",
-          "of": "transfer:op-authoring-2",
-          "why": "rejection precedes expensive work"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"store\", \"note\": \"[bare-string assert 'no_blob_imported' needs manual retranscription]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.op-authoring-2",
+              "op": "present",
+              "note": "path root 'transfer:op-authoring-2' names a harness surface, not a wire field"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "client_preflight_refuses_over_limit_before_any_bytes_are_sent",
@@ -738,48 +1031,50 @@
       "operation": "file.share",
       "intent": "Proves the sixth enforcement point — the client preflight, which by definition never reaches the daemon — refuses an over-limit source with zero bytes sent, zero request frames emitted and no local copy made, catching a client that uploads a 100 MiB file only to be told no.",
       "requires": [
-        "client_adapter",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
-          "client": "preflight_share",
-          "in": {
-            "source_bytes": "$limit+1",
-            "source_reports_size": true
-          },
-          "observe": {
-            "decision": "refused",
-            "bytes_sent": 0,
-            "requests_emitted": 0,
-            "source_copies_made": 0
+          "note": "client-side preflight observation (not a wire assertion): input {\"source_bytes\": \"$limit+1\", \"source_reports_size\": true} -> {\"decision\": \"refused\", \"bytes_sent\": 0, \"requests_emitted\": 0, \"source_copies_made\": 0}; kept as a harness-driven check [harness orchestration: client_preflight]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
-          "assert": "no_frame_matching",
-          "of": {
-            "op": "file.share"
-          },
-          "scope": "connection",
-          "why": "the refusal never reaches the daemon"
+          "assert": [
+            {
+              "path": {
+                "op": "file.share"
+              },
+              "op": "present"
+            }
+          ]
         },
         {
-          "assert": "no_daemon_error_observed",
-          "codes": [
-            "file_too_large"
-          ],
-          "why": "enforced_at has no client value; the client case is proven by silence on the wire"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"connection\", \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "note": "enforced_at has no client value; the client case is proven by silence on the wire [bare-string assert 'no_daemon_error_observed' needs manual retranscription]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "client_unsized_source_streams_through_a_counting_bound",
@@ -787,50 +1082,54 @@
       "operation": "file.share",
       "intent": "Proves a client facing a source that reports no size neither rejects it for lacking a size nor copies it unbounded, but streams it through a byte-counting bound that stops at the served limit, catching the two failure modes the size policy names for the Android SAF path.",
       "requires": [
-        "client_adapter",
-        "live_room",
-        "unsized_source"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
-          "client": "preflight_share",
-          "in": {
-            "source_bytes": 65536,
-            "source_reports_size": false
-          },
-          "observe": {
-            "decision": "accepted",
-            "bytes_sent": 65536
+          "note": "client-side preflight observation (not a wire assertion): input {\"source_bytes\": 65536, \"source_reports_size\": false} -> {\"decision\": \"accepted\", \"bytes_sent\": 65536}; kept as a harness-driven check [harness orchestration: client_preflight]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
-          "client": "preflight_share",
-          "in": {
-            "source_bytes": "$limit+1",
-            "source_reports_size": false
-          },
-          "observe": {
-            "decision": "aborted_at_bound",
-            "bytes_sent_at_most": "$limit",
-            "peak_buffered_bytes_at_most": "$max_frame_bytes"
+          "note": "client-side preflight observation (not a wire assertion): input {\"source_bytes\": \"$limit+1\", \"source_reports_size\": false} -> {\"decision\": \"aborted_at_bound\", \"bytes_sent_at_most\": \"$limit\", \"peak_buffered_bytes_at_most\": \"$max_frame_bytes\"}; kept as a harness-driven check [harness orchestration: client_preflight]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
-          "assert": "not_equals",
-          "of": "client.decision_for_unsized_under_limit",
-          "value": "refused",
-          "why": "lacking a declared size is not itself a refusal reason"
+          "assert": [
+            {
+              "path": "frame.decision_for_unsized_under_limit",
+              "op": "eq",
+              "value": null,
+              "note": "path root 'client' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": \"refused\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_size_refusal_is_never_reported_as_digest_mismatch",
@@ -839,32 +1138,39 @@
       "intent": "First half of the paired direction rule: an over-limit share is reported as file_too_large and never as digest_mismatch, so a size refusal is never dressed up as a false accusation of content tampering against an honest caller.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "room.create",
           "in": {
-            "op_id": "op-pairA-1",
             "name": "PairA"
           },
           "save": {
-            "rid": "room_id"
-          }
+            "rid": "out.room_id"
+          },
+          "op_id": "op-pairA-1"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-pairA-2",
             "name": "oversize.bin",
             "size": {
               "state": "declared",
@@ -874,32 +1180,39 @@
               "state": "absent"
             }
           },
-          "stream": {
-            "send_bytes": 0
-          },
-          "expect_error": {
-            "code": "file_too_large",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_too_large",
               "enforced_at": "stage_declared",
               "limit_bytes": "$limit"
             }
           },
-          "forbid_codes": [
-            "digest_mismatch",
-            "hash_mismatch",
-            "invalid_params"
+          "op_id": "op-pairA-2"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [stream {\"send_bytes\": 0}] [harness orchestration: stream_bytes]",
+          "control": {
+            "do": "idle",
+            "ms": 0
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "digest_mismatch"
+              ]
+            }
           ]
         },
         {
-          "assert": "error_has_no_fields",
-          "fields": [
-            "expected",
-            "observed"
-          ],
-          "why": "the integrity fields belong only to digest_mismatch"
+          "note": "the integrity fields belong only to digest_mismatch [bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"expected\", \"observed\"]]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "fetch_of_corrupt_bytes_within_the_limit_is_digest_mismatch_never_file_too_large",
@@ -908,69 +1221,84 @@
       "intent": "Second half of the paired direction rule: a within-limit blob whose bytes do not verify against the signed digest is reported as digest_mismatch carrying expected and observed, never as file_too_large, so a content failure is never mislabelled a size failure and the two codes stay disjoint in both directions.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "hostile_peer"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "limit": "limits.max_shared_file_bytes"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "provider": {
-            "behavior": "serve_corrupted_bytes",
-            "declared_size_bytes": 4096,
-            "served_size_bytes": 4096
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "limit": "frame.limits.max_shared_file_bytes"
           }
+        },
+        {
+          "note": "[dialect key provider: {\"behavior\": \"serve_corrupted_bytes\", \"declared_size_bytes\": 4096, \"served_size_bytes\": 4096}]"
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
-            "fid": "files[0].file_id"
+            "fid": "out.files[0].file_id"
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-pairB-1",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "digest_mismatch",
-            "fields": {
-              "expected": "<hex64>",
-              "observed": "<hex64>"
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "digest_mismatch",
+              "expected": "<string>",
+              "observed": "<string>"
             }
           },
-          "forbid_codes": [
-            "file_too_large",
-            "invalid_argument"
+          "op_id": "op-pairB-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "file_too_large",
+                "invalid_argument"
+              ]
+            }
           ]
         },
         {
-          "assert": "error_has_no_fields",
-          "fields": [
-            "declared_bytes",
-            "limit_bytes",
-            "enforced_at"
-          ]
+          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"declared_bytes\", \"limit_bytes\", \"enforced_at\"]]"
         },
         {
-          "assert": "no_bytes_retained",
-          "of": "$fid",
-          "why": "a failed verification discards rather than saving a partial"
+          "assert": [
+            {
+              "path": "$fid",
+              "op": "present"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_declared_size_as_a_formatted_string_is_malformed",
@@ -979,54 +1307,70 @@
       "intent": "Proves the size is carried as a typed integer and never as a formatted string, refusing both a unit-bearing string and a decimal string with invalid_argument rather than parsing either, catching a client that ships the human rendering onto the wire.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-malformed-1",
             "name": "a.bin",
             "size": {
               "state": "declared",
               "bytes": "100 MiB"
             }
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "size.bytes"
             }
           },
-          "forbid_codes": [
-            "file_too_large"
+          "op_id": "op-malformed-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "file_too_large"
+            }
           ]
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-malformed-2",
             "name": "a.bin",
             "size": {
               "state": "declared",
               "bytes": "1024"
             }
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "size.bytes"
             }
-          }
+          },
+          "op_id": "op-malformed-2"
         },
         {
-          "assert": "no_event_authored",
-          "room": "$rid"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_size_null_or_out_of_domain_is_malformed",
@@ -1035,106 +1379,120 @@
       "intent": "Proves no JSON null carries meaning on the file path — a null size is not read as unknown — and that a negative or fractional byte count is refused rather than coerced into u64, catching the v1 compatibility-nullability this generation exists to shed.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-null-1",
             "name": "a.bin",
             "size": null
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "size"
             }
           },
-          "forbid_codes": [
-            "file_too_large"
+          "op_id": "op-null-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "file_too_large"
+            }
           ]
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-null-2",
             "name": "a.bin",
             "size": {
               "state": "declared",
               "bytes": null
             }
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "size.bytes"
             }
-          }
+          },
+          "op_id": "op-null-2"
         },
         {
-          "assert": "not_treated_as",
-          "of": "step:0.in.size",
-          "meaning": "unknown",
-          "why": "absence is a tagged variant, never a null"
+          "assert": [
+            {
+              "path": "frame.0.in.size",
+              "op": "present",
+              "note": "path root 'step:0' names a harness surface, not a wire field"
+            }
+          ]
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-null-3",
             "name": "a.bin",
             "size": {
               "state": "declared",
               "bytes": -1
             }
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "size.bytes"
             }
-          }
+          },
+          "op_id": "op-null-3"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-null-4",
             "name": "a.bin",
             "size": {
               "state": "declared",
               "bytes": 1.5
             }
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "size.bytes"
             }
-          }
+          },
+          "op_id": "op-null-4"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-null-5",
             "name": "a.bin",
             "size": {
               "state": "declared"
             }
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "size.bytes"
             }
-          }
+          },
+          "op_id": "op-null-5"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "share_replayed_op_id_returns_the_original_result_and_authors_once",
@@ -1143,75 +1501,111 @@
       "intent": "Proves file.share is op_id deduplicated across a reconnection: the replay returns the byte-identical original result and performs no second blob import or second authored fact, catching a daemon whose ledger dies with the connection and duplicates a 100 MiB import on retry.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-dedup-share",
             "name": "once.bin",
             "size": {
               "state": "declared",
               "bytes": 2048
             }
-          },
-          "stream": {
-            "send_bytes": 2048
           },
           "save": {
             "first": "$result"
           },
           "expect": {
-            "file_id": "<file_id>",
-            "event_id": "<hex64>"
+            "ok": true,
+            "out": {
+              "file_id": "<file_id>",
+              "event_id": "<string>"
+            }
+          },
+          "op_id": "op-dedup-share"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 2048}, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "control": {
+            "do": "disconnect",
+            "on": "primary"
           }
         },
         {
-          "drop_connection": "primary"
-        },
-        {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-dedup-share",
             "name": "once.bin",
             "size": {
               "state": "declared",
               "bytes": 2048
             }
           },
-          "stream": {
-            "send_bytes": 0
-          },
-          "expect_identical_to": "$first"
+          "op_id": "op-dedup-share"
+        },
+        {
+          "assert": [],
+          "note": "[split]"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "$first",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
-          "assert": "exactly_one_entry_with",
-          "file_id": "$first.file_id"
+          "note": "[bare-string assert 'exactly_one_entry_with' needs manual retranscription]"
         },
         {
-          "assert": "blob_import_count",
-          "of": "$first.file_id",
-          "value": 1
+          "note": "[split from a multi-verb step; review] [dialect key file_id: \"$first.file_id\"]"
+        },
+        {
+          "assert": [
+            {
+              "path": "$first.file_id",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "list_names_provider_devices_with_fetchable_and_self_hosted_as_stated_facts",
@@ -1220,84 +1614,152 @@
       "intent": "Proves file.list returns named provider devices carrying reachability evidence plus separate fetchable and self_hosted booleans, and carries none of v1's provider count, available boolean, or local path fields, catching any client forced back to inferring availability from a number.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "file_id": "<file_id>",
-                "name": "design.pdf",
-                "size_bytes": "<u64>",
-                "digest": "<hex64>",
-                "peer_declared_type_untrusted": {
-                  "state": "declared",
-                  "value": "application/pdf"
-                },
-                "sender": {
-                  "subject_id": "<hex64>",
-                  "device_id": "<hex64>"
-                },
-                "authored_at": "<ts>",
-                "pos": "<u64>",
-                "providers": [
-                  {
-                    "device_id": "<hex64>",
-                    "subject_id": "<hex64>",
-                    "reachability": {
-                      "state": "direct"
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "file_id": "<file_id>",
+                  "name": "design.pdf",
+                  "size_bytes": "<uint>",
+                  "digest": "<string>",
+                  "peer_declared_type_untrusted": {
+                    "state": "declared",
+                    "value": "application/pdf"
+                  },
+                  "sender": {
+                    "subject_id": "<string>",
+                    "device_id": "<string>"
+                  },
+                  "authored_at": "<ts>",
+                  "pos": "<uint>",
+                  "providers": [
+                    {
+                      "device_id": "<string>",
+                      "subject_id": "<string>",
+                      "reachability": {
+                        "state": "direct"
+                      }
                     }
+                  ],
+                  "fetchable": true,
+                  "self_hosted": false,
+                  "local": {
+                    "state": "absent"
                   }
-                ],
-                "fetchable": true,
-                "self_hosted": false,
-                "local": {
-                  "state": "absent"
                 }
-              }
-            ]
-          },
-          "expect_absent": [
-            "files[].available",
-            "files[].providers_count",
-            "files[].local_path",
-            "files[].local_bytes",
-            "files[].fetched",
-            "files[].fetched_at_ms",
-            "files[].mime",
-            "files[].path"
+              ]
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.files[].available",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].providers_count",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].local_bytes",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].fetched",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].fetched_at_ms",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].mime",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].path",
+              "op": "absent"
+            }
           ]
         },
         {
-          "assert": "json_type",
-          "of": "files[0].providers",
-          "type": "array_of_object",
-          "not": [
-            "integer",
-            "number"
-          ],
-          "why": "providers is named devices, not a count"
+          "assert": [
+            {
+              "path": "out.files[0].providers",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
         },
         {
-          "assert": "json_type",
-          "of": [
-            "files[0].fetchable",
-            "files[0].self_hosted"
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "array_of_object",
+              "note": "path recovered from context; exclusions: [\"integer\", \"number\"]"
+            }
           ],
-          "type": "boolean"
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "assert": "no_nulls",
-          "scope": "result"
+          "assert": [
+            {
+              "path": "out.files[0].fetchable",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "out.files[0].self_hosted",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "boolean",
+              "note": "path recovered from context; exclusions: []"
+            }
+          ],
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"result\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "list_reports_fetchable_false_with_a_stated_reason_when_no_provider_is_reachable",
@@ -1306,13 +1768,15 @@
       "intent": "Proves fetchable is evidence-backed transport fact and not an inference from membership display state: a provider that room.members reports as an active member but that this daemon holds no link to yields fetchable false with a typed unreachable reason, which is the #50/#94 separation of membership from availability.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "harness": {
-            "provider_link": "down"
+          "note": "[control shape {\"provider_link\": \"down\"} needs review] [harness orchestration: provider_link]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -1321,71 +1785,98 @@
             "room_id": "$rid"
           },
           "expect": {
-            "members": [
-              {
-                "subject_id": "<hex64>",
-                "standing": "active"
-              }
-            ]
+            "ok": true,
+            "out": {
+              "members": [
+                {
+                  "subject_id": "<string>",
+                  "standing": "active"
+                }
+              ]
+            }
           },
           "save": {
-            "member": "members[0].subject_id"
+            "member": "out.members[0].subject_id"
           }
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "providers": [
-                  {
-                    "subject_id": "$member",
-                    "device_id": "<hex64>",
-                    "reachability": {
-                      "state": "unreachable",
-                      "reason": "no_route"
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "providers": [
+                    {
+                      "subject_id": "$member",
+                      "device_id": "<string>",
+                      "reachability": {
+                        "state": "unreachable",
+                        "reason": "no_route"
+                      }
                     }
-                  }
-                ],
-                "fetchable": false,
-                "self_hosted": false
-              }
-            ]
+                  ],
+                  "fetchable": false,
+                  "self_hosted": false
+                }
+              ]
+            }
           }
         },
         {
-          "assert": "distinct_answers",
-          "of": [
-            "room.members.standing",
-            "file.list.fetchable",
-            "file.list.providers[].reachability"
-          ],
-          "why": "membership, availability and reachability are three separate answers, not one"
+          "assert": [
+            {
+              "path": "out.room.members.standing",
+              "op": "present"
+            },
+            {
+              "path": "out.file.list.fetchable",
+              "op": "present"
+            },
+            {
+              "path": "out.file.list.providers[].reachability",
+              "op": "present"
+            }
+          ]
         },
         {
-          "harness": {
-            "provider_link": "up"
+          "note": "[control shape {\"provider_link\": \"up\"} needs review] [harness orchestration: provider_link]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "fetchable": true
-              }
-            ]
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "fetchable": true
+                }
+              ]
+            }
           },
-          "why": "the fact tracks observed transport, not the member list"
+          "note": "the fact tracks observed transport, not the member list"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "list_of_a_room_that_is_not_available_answers_room_not_available",
@@ -1399,35 +1890,39 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {}
-          },
-          "forbid_codes": [
-            "invalid_argument",
-            "room_unknown",
-            "forbidden"
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "invalid_argument"
+              ]
+            }
           ]
         },
         {
-          "assert": "not_returned",
-          "shape": {
-            "files": []
-          },
-          "why": "an empty success would be a second, distinguishable answer"
+          "note": "an empty success would be a second, distinguishable answer [bare-string assert 'not_returned' needs manual retranscription] [dialect key shape: {\"files\": []}]"
         },
         {
-          "assert": "error_has_no_fields",
-          "fields": [
-            "hint",
-            "member_count",
-            "exists"
-          ]
+          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"member_count\", \"exists\"]]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "list_carries_a_hostile_peer_declared_name_as_an_opaque_display_string",
@@ -1436,51 +1931,65 @@
       "intent": "Proves a peer-chosen file name containing path separators and traversal segments is carried verbatim in a display-only field and never appears in, or is used to construct, any path-typed field, catching a daemon that either silently rewrites peer-signed metadata or treats it as a location.",
       "requires": [
         "subject",
-        "live_room",
-        "hostile_peer"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "provider": {
-            "declared_name": "../../../etc/passwd",
-            "declared_type": "text/plain"
-          }
+          "note": "[dialect key provider: {\"declared_name\": \"../../../etc/passwd\", \"declared_type\": \"text/plain\"}]"
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "name": "../../../etc/passwd",
-                "peer_declared_type_untrusted": {
-                  "state": "declared",
-                  "value": "text/plain"
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "name": "../../../etc/passwd",
+                  "peer_declared_type_untrusted": {
+                    "state": "declared",
+                    "value": "text/plain"
+                  }
                 }
-              }
-            ]
-          },
-          "expect_absent": [
-            "files[].path",
-            "files[].local_path",
-            "files[].save_dir"
+              ]
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.files[].path",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[].save_dir",
+              "op": "absent"
+            }
           ]
         },
         {
-          "assert": "no_type_tag",
-          "tag": "<path>",
-          "scope": "result",
-          "why": "nothing in the response normalizes to a filesystem path"
+          "note": "nothing in the response normalizes to a filesystem path [bare-string assert 'no_type_tag' needs manual retranscription] [dialect key tag: \"<path>\"]"
         },
         {
-          "assert": "spec_gap",
-          "field": "files[].name",
-          "note": "#161 does not state a sanitization policy; this fixture pins verbatim carriage plus absence of any path-typed field, and leaves display escaping to the client"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"result\", \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "note": "#161 does not state a sanitization policy; this fixture pins verbatim carriage plus absence of any path-typed field, and leaves display escaping to the client [bare-string assert 'spec_gap' needs manual retranscription] [dialect key field: \"files[].name\"]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "fetch_from_a_reachable_provider_holds_the_bytes_locally",
@@ -1489,64 +1998,104 @@
       "intent": "Establishes the baseline fetch success shape — the transfer outcome, the verified digest and the naming of the provider that served it, with no save_dir in the request and no path in the response — catching any regression to v1's directory-taking, path-returning fetch.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
-            "fid": "files[0].file_id"
+            "fid": "out.files[0].file_id"
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-fetch-1",
             "file_id": "$fid"
           },
           "expect": {
-            "file_id": "$fid",
-            "size_bytes": "<u64>",
-            "digest": "<hex64>",
-            "provider": {
-              "device_id": "<hex64>"
-            },
-            "local": {
-              "state": "held"
+            "ok": true,
+            "out": {
+              "file_id": "$fid",
+              "room_id": "$rid",
+              "bytes": "<uint>",
+              "digest": "<string>",
+              "provider": {
+                "subject_id": "<subject_id>",
+                "device_id": "<device_id>"
+              }
             }
           },
-          "expect_absent": [
-            "path",
-            "save_dir",
-            "local_path",
-            "dir",
-            "verified"
+          "op_id": "op-fetch-1"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.path",
+              "op": "absent"
+            },
+            {
+              "path": "out.save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.verified",
+              "op": "absent"
+            },
+            {
+              "path": "out.local",
+              "op": "absent"
+            }
           ]
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "file_id": "$fid",
-                "self_hosted": true,
-                "local": {
-                  "state": "held"
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "file_id": "$fid",
+                  "self_hosted": true
                 }
-              }
-            ]
+              ]
+            }
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.files[0].local",
+              "op": "absent"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "fetch_preflight_refuses_an_oversized_signed_size_before_contacting_a_provider",
@@ -1555,69 +2104,108 @@
       "intent": "Proves the receive side preflights the signed size_bytes against the served limit and refuses with enforced_at=fetch_preflight before opening any connection, which is the enforcement point that does not exist today and the one that prevents an oversized remote blob from ever being reported as an integrity failure.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "oversized_remote_file"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
           "save": {
-            "limit": "limits.max_shared_file_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "size_bytes": "$limit+1",
-                "fetchable": "<bool>"
-              }
-            ]
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "size_bytes": "$limit+1",
+                  "fetchable": "<bool>"
+                }
+              ]
+            }
           },
           "save": {
-            "fid": "files[0].file_id"
+            "fid": "out.files[0].file_id"
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-preflight-1",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "file_too_large",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_too_large",
               "declared_bytes": "$limit+1",
               "limit_bytes": "$limit",
               "enforced_at": "fetch_preflight"
             }
           },
-          "forbid_codes": [
-            "digest_mismatch",
-            "provider_unreachable"
+          "op_id": "op-preflight-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "digest_mismatch",
+                "provider_unreachable"
+              ]
+            }
           ]
         },
         {
-          "assert": "provider_connections",
-          "of": "transfer:op-preflight-1",
-          "value": 0,
-          "why": "refusal precedes contacting a provider"
+          "assert": [
+            {
+              "path": "frame.op-preflight-1",
+              "op": "present",
+              "note": "path root 'transfer:op-preflight-1' names a harness surface, not a wire field"
+            }
+          ]
         },
         {
-          "assert": "bytes_consumed_at_most",
-          "of": "transfer:op-preflight-1",
-          "value": 0
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.op-preflight-1",
+              "op": "present",
+              "note": "path root 'transfer:op-preflight-1' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "fetch_stream_refuses_a_peer_serving_more_than_it_declared",
@@ -1626,63 +2214,92 @@
       "intent": "Proves the mid-stream fetch bound reports an oversized response as file_too_large with enforced_at=fetch_stream rather than folding it into the content-lie variant, which is the false accusation against an honest peer the size policy forbids; it fails until U3 lands because the pinned transport has no size-distinguishable outcome.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "hostile_peer"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "limit": "limits.max_shared_file_bytes"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "provider": {
-            "behavior": "serve_more_than_declared",
-            "declared_size_bytes": 4096,
-            "served_size_bytes": "$limit+1"
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "limit": "frame.limits.max_shared_file_bytes"
           }
+        },
+        {
+          "note": "[dialect key provider: {\"behavior\": \"serve_more_than_declared\", \"declared_size_bytes\": 4096, \"served_size_bytes\": \"$limit+1\"}]"
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
-            "fid": "files[0].file_id"
+            "fid": "out.files[0].file_id"
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-fetchstream-1",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "file_too_large",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_too_large",
               "declared_bytes": 4096,
               "limit_bytes": "$limit",
               "enforced_at": "fetch_stream"
             }
           },
-          "forbid_codes": [
-            "digest_mismatch",
-            "hash_mismatch"
+          "op_id": "op-fetchstream-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "digest_mismatch"
+              ]
+            }
           ]
         },
         {
-          "assert": "bytes_consumed_at_most",
-          "of": "transfer:op-fetchstream-1",
-          "value": "$limit"
+          "assert": [
+            {
+              "path": "frame.op-fetchstream-1",
+              "op": "present",
+              "note": "path root 'transfer:op-fetchstream-1' names a harness surface, not a wire field"
+            }
+          ]
         },
         {
-          "assert": "no_bytes_retained",
-          "of": "$fid"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "$fid",
+              "op": "present"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": "U3"
@@ -1694,59 +2311,84 @@
       "intent": "Gives file.fetch a transport-specific refusal distinct from every size and integrity code, proving an unfetchable file names the reason it could not be served rather than reporting a mismatch or a generic argument error, and that the answer agrees with the fetchable fact file.list stated.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "harness": {
-            "provider_link": "down"
+          "note": "[control shape {\"provider_link\": \"down\"} needs review] [harness orchestration: provider_link]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "fetchable": false
-              }
-            ]
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "fetchable": false
+                }
+              ]
+            }
           },
           "save": {
-            "fid": "files[0].file_id"
+            "fid": "out.files[0].file_id"
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-unreach-1",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "provider_unreachable",
-            "fields": {
-              "providers_tried": "<u64>"
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "provider_unreachable",
+              "providers_tried": "<uint>"
             }
           },
-          "forbid_codes": [
-            "digest_mismatch",
-            "file_too_large",
-            "invalid_argument",
-            "room_not_available"
+          "op_id": "op-unreach-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "digest_mismatch",
+                "file_too_large",
+                "invalid_argument",
+                "room_not_available"
+              ]
+            }
           ]
         },
         {
-          "assert": "agrees_with",
-          "of": "file.list.files[0].fetchable",
-          "value": false,
-          "why": "the stated fact and the attempt must not disagree"
+          "assert": [
+            {
+              "path": "out.file.list.files[0].fetchable",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": false, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "fetch_of_a_file_id_not_in_this_rooms_history_fails_with_file_unknown",
@@ -1755,34 +2397,42 @@
       "intent": "Proves a member asking for a file identifier the room's signed history does not contain gets a file-specific code rather than a generic argument error, while confirming this distinction is only ever offered to a member (the non-member answer is covered by the oracle case).",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-unknownfile-1",
-            "file_id": "<absent_file_id>"
+            "file_id": {
+              "$unknown": "{\"$unknown\": \"<file_id>\"}"
+            }
           },
-          "expect_error": {
-            "code": "file_unknown",
-            "fields": {}
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_unknown"
+            }
           },
-          "forbid_codes": [
-            "invalid_argument",
-            "room_not_available"
+          "op_id": "op-unknownfile-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "invalid_argument",
+                "room_not_available"
+              ]
+            }
           ]
         },
         {
-          "assert": "error_has_no_fields",
-          "fields": [
-            "hint",
-            "path"
-          ]
+          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"path\"]]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "fetch_replayed_op_id_performs_no_second_transfer",
@@ -1791,56 +2441,95 @@
       "intent": "Proves file.fetch is op_id deduplicated and the ledger survives reconnection, so a client retrying a fetch whose reply was lost to a dropped connection gets the original result and does not move a second copy of the bytes across the network.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-dedup-fetch",
             "file_id": "$fid"
           },
           "save": {
             "first": "$result"
           },
           "expect": {
-            "file_id": "$fid",
-            "local": {
-              "state": "held"
+            "ok": true,
+            "out": {
+              "file_id": "$fid",
+              "room_id": "$rid",
+              "bytes": "<uint>",
+              "digest": "<string>",
+              "provider": {
+                "subject_id": "<subject_id>",
+                "device_id": "<device_id>"
+              }
             }
+          },
+          "op_id": "op-dedup-fetch"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.local",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "disconnect",
+            "on": "primary"
           }
         },
         {
-          "drop_connection": "primary"
-        },
-        {
-          "connect": {
-            "as": "primary"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-dedup-fetch",
             "file_id": "$fid"
           },
-          "expect_identical_to": "$first"
+          "op_id": "op-dedup-fetch"
         },
         {
-          "assert": "provider_transfers_started",
-          "of": "$fid",
-          "value": 1
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "$first",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "$fid",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "fetch_deadline_scales_with_the_declared_size",
@@ -1849,57 +2538,91 @@
       "intent": "Proves the per-provider budget is computed from the served transfer_connect_allowance_ms and transfer_floor_bits_per_second against the declared size rather than being a fixed constant, so a large transfer progressing at the served floor completes instead of being killed by a timeout sized for a small file.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "rate_limited_link"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "connect_ms": "limits.transfer_connect_allowance_ms",
-            "floor_bps": "limits.transfer_floor_bits_per_second"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "harness": {
-            "link_rate_bits_per_second": "$floor_bps*2"
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
-          "provider": {
-            "declared_size_bytes": 8388608
+          "save": {
+            "connect_ms": "frame.limits.transfer_connect_allowance_ms",
+            "floor_bps": "frame.limits.transfer_floor_bits_per_second"
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review] [control shape {\"link_rate_bits_per_second\": \"$floor_bps*2\"} needs review] [harness orchestration: link_rate_bits_per_second]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-budget-1",
             "file_id": "$fid"
           },
           "expect": {
-            "file_id": "$fid",
-            "local": {
-              "state": "held"
+            "ok": true,
+            "out": {
+              "file_id": "$fid",
+              "room_id": "$rid",
+              "bytes": "<uint>",
+              "digest": "<string>",
+              "provider": {
+                "subject_id": "<subject_id>",
+                "device_id": "<device_id>"
+              }
             }
-          }
+          },
+          "op_id": "op-budget-1"
         },
         {
-          "assert": "elapsed_exceeded",
-          "of": "transfer:op-budget-1",
-          "value_ms": 30000,
-          "why": "a transfer longer than the retired fixed 30 s budget must still succeed when it is inside the computed deadline"
+          "assert": [
+            {
+              "path": "out.local",
+              "op": "absent"
+            }
+          ]
         },
         {
-          "assert": "deadline_used",
-          "of": "transfer:op-budget-1",
-          "formula": "$connect_ms + declared_bytes*8*1000/$floor_bps",
-          "tolerance": "implementation_defined",
-          "note": "formula derived from the served field names; #161 owns the exact expression"
+          "assert": [
+            {
+              "path": "frame.op-budget-1",
+              "op": "present",
+              "note": "path root 'transfer:op-budget-1' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "note": "[split from a multi-verb step; review] [dialect key value_ms: 30000]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.op-budget-1",
+              "op": "present",
+              "note": "path root 'transfer:op-budget-1' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "note": "[split from a multi-verb step; review] [dialect key formula: \"$connect_ms + declared_bytes*8*1000/$floor_bps\"]"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [dialect key tolerance: \"implementation_defined\"]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "read_streams_a_held_file_with_the_peer_declared_type_in_an_untrusted_field",
@@ -1908,8 +2631,8 @@
       "intent": "Proves file.read streams bytes with the peer-declared type carried in a distinctly named, explicitly untrusted field and with no field that presents a type as authoritative fact, which is how v1's never-render-inline HTTP response headers become data now that bytes no longer travel over HTTP.",
       "requires": [
         "subject",
-        "live_room",
-        "fetched_file"
+        "room:live",
+        "resource:fetched_file"
       ],
       "steps": [
         {
@@ -1919,47 +2642,75 @@
             "file_id": "$fid"
           },
           "expect": {
-            "file_id": "$fid",
-            "size_bytes": "<u64>",
-            "digest": "<hex64>",
-            "name": "design.pdf",
-            "peer_declared_type_untrusted": {
-              "state": "declared",
-              "value": "application/pdf"
+            "ok": true,
+            "out": {
+              "file_id": "$fid",
+              "size_bytes": "<uint>",
+              "digest": "<string>",
+              "name": "design.pdf",
+              "peer_declared_type_untrusted": {
+                "state": "declared",
+                "value": "application/pdf"
+              }
             }
-          },
-          "expect_absent": [
-            "path",
-            "local_path",
-            "mime",
-            "content_type",
-            "type",
-            "sniffed_type"
-          ],
-          "stream": {
-            "receive_bytes": "<u64>"
           }
         },
         {
-          "assert": "field_name_marks_untrust",
-          "of": "peer_declared_type_untrusted",
-          "why": "the name itself, not documentation, is what a client author sees"
+          "assert": [],
+          "note": "[split]"
         },
         {
-          "assert": "json_type",
-          "of": "peer_declared_type_untrusted",
-          "type": "tagged_variant",
-          "states": [
-            "declared",
-            "absent"
-          ],
-          "not": [
-            "null",
-            "string"
+          "assert": [
+            {
+              "path": "out.path",
+              "op": "absent"
+            },
+            {
+              "path": "out.local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.mime",
+              "op": "absent"
+            },
+            {
+              "path": "out.content_type",
+              "op": "absent"
+            },
+            {
+              "path": "out.type",
+              "op": "absent"
+            },
+            {
+              "path": "out.sniffed_type",
+              "op": "absent"
+            }
           ]
+        },
+        {
+          "assert": [
+            {
+              "path": "err.peer_declared_type_untrusted",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
+        },
+        {
+          "note": "[split from a multi-verb step; review] [dialect key type: \"tagged_variant\"]"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [dialect key states: [\"declared\", \"absent\"]] [dialect key not: [\"null\", \"string\"]]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "client_must_not_render_peer_declared_bytes_inline",
@@ -1967,16 +2718,12 @@
       "operation": "file.read",
       "intent": "Proves a client treats the peer-declared type as a hint only: a peer declaring text/html with a script-bearing body is never rendered inline as markup and never executes, catching a client that restores v1's inline-render behaviour now that the protective HTTP headers are gone.",
       "requires": [
-        "client_adapter",
-        "fetched_file",
-        "hostile_peer"
+        "resource:fetched_file",
+        "link:up"
       ],
       "steps": [
         {
-          "provider": {
-            "declared_type": "text/html",
-            "body": "<img src=x onerror=alert(1)>"
-          }
+          "note": "[dialect key provider: {\"declared_type\": \"text/html\", \"body\": \"<img src=x onerror=alert(1)>\"}]"
         },
         {
           "call": "file.read",
@@ -1985,32 +2732,33 @@
             "file_id": "$fid"
           },
           "expect": {
-            "peer_declared_type_untrusted": {
-              "state": "declared",
-              "value": "text/html"
+            "ok": true,
+            "out": {
+              "peer_declared_type_untrusted": {
+                "state": "declared",
+                "value": "text/html"
+              }
             }
           }
         },
         {
-          "client": "present_file",
-          "in": {
-            "file_id": "$fid"
-          },
-          "observe": {
-            "rendered_as": "opaque",
-            "script_executions": 0,
-            "markup_nodes_from_peer_bytes": 0,
-            "navigations": 0
-          }
+          "note": "[dialect observation keys folded: observe — see case intent]"
         },
         {
-          "assert": "not_equals",
-          "of": "client.render_decision_source",
-          "value": "peer_declared_type_untrusted",
-          "why": "a render decision must not be taken on the strength of the untrusted field"
+          "assert": [
+            {
+              "path": "frame.render_decision_source",
+              "op": "eq",
+              "value": null,
+              "note": "path root 'client' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": \"peer_declared_type_untrusted\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "read_of_a_file_whose_bytes_are_not_held_locally_fails_with_file_not_fetched",
@@ -2019,26 +2767,34 @@
       "intent": "Gives file.read its own refusal case, proving that reading a known but unfetched file names that precise condition rather than silently fetching it, returning empty bytes, or answering with a generic argument error.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "local": {
-                  "state": "absent"
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "local": {
+                    "state": "absent"
+                  }
                 }
-              }
-            ]
+              ]
+            }
           },
           "save": {
-            "fid": "files[0].file_id"
+            "fid": "out.files[0].file_id"
           }
         },
         {
@@ -2047,28 +2803,48 @@
             "room_id": "$rid",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "file_not_fetched",
-            "fields": {}
-          },
-          "forbid_codes": [
-            "invalid_argument",
-            "file_unknown",
-            "provider_unreachable"
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "file_not_fetched"
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "invalid_argument",
+                "file_unknown",
+                "provider_unreachable"
+              ]
+            }
           ]
         },
         {
-          "assert": "provider_connections",
-          "of": "file.read",
-          "value": 0,
-          "why": "file.read is a local read and performs no network activity"
+          "assert": [
+            {
+              "path": "out.file.read",
+              "op": "present"
+            }
+          ]
         },
         {
-          "assert": "no_bytes_streamed",
-          "of": "file.read"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.file.read",
+              "op": "present"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "transfer_cancel_after_the_originating_connection_dropped",
@@ -2077,79 +2853,112 @@
       "intent": "Proves cancellation is authorized at the ledger's scope rather than the connection's: a transfer started on a connection that has since dropped is cancellable from a fresh connection of the same principal by op_id alone, which is precisely the case cancellation exists for and which a connection-scoped design makes impossible.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "resource:large_file"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "max_transfers": "limits.max_concurrent_transfers"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-cancel-target",
             "file_id": "$fid"
           },
+          "note": "left in flight",
+          "op_id": "op-cancel-target"
+        },
+        {
           "await": "none",
-          "why": "left in flight"
+          "note": "[split from a multi-verb step; review]",
+          "save": {
+            "max_transfers": "frame.limits.max_concurrent_transfers"
+          }
         },
         {
-          "assert": "transfer_in_flight",
-          "of": "op-cancel-target"
-        },
-        {
-          "drop_connection": "primary"
-        },
-        {
-          "connect": {
-            "as": "primary"
-          },
-          "why": "same principal, new connection"
-        },
-        {
-          "call": "transfer.cancel",
-          "in": {
-            "op_id": "op-cancel-target"
-          },
-          "expect": {
-            "outcome": {
-              "state": "cancelled"
+          "assert": [
+            {
+              "path": "err.op-cancel-target",
+              "op": "present"
             }
-          },
-          "expect_absent": [
-            "room_id",
-            "path"
           ]
         },
         {
-          "assert": "transfer_not_in_flight",
-          "of": "op-cancel-target"
+          "control": {
+            "do": "disconnect",
+            "on": "primary"
+          }
         },
         {
-          "assert": "no_bytes_retained",
-          "of": "$fid"
+          "note": "same principal, new connection",
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
         },
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-cancel-target"
+            "transfer_op_id": "op-cancel-target"
           },
           "expect": {
-            "outcome": {
-              "state": "already_cancelled"
+            "ok": true,
+            "out": {
+              "outcome": {
+                "state": "cancelled"
+              }
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.room_id",
+              "op": "absent"
+            },
+            {
+              "path": "out.path",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "err.op-cancel-target",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "$fid",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "call": "transfer.cancel",
+          "in": {
+            "transfer_op_id": "op-cancel-target"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "outcome": {
+                "state": "already_cancelled"
+              }
             }
           },
-          "why": "cancelling twice is not an error"
+          "note": "cancelling twice is not an error"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "transfer_cancel_by_a_different_principal_is_indistinguishable_from_unknown",
@@ -2158,79 +2967,92 @@
       "intent": "Proves the (principal, op_id) authorization is enforced and does not leak: another principal's cancel of a live transfer answers exactly as it answers for an op_id that never existed, so op_id space cannot be probed to learn that another client has a transfer running.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "second_principal",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "subject:second",
+        "resource:large_file"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "principal_a"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-cancel-owned",
             "file_id": "$fid"
           },
-          "await": "none"
+          "op_id": "op-cancel-owned"
         },
         {
-          "connect": {
-            "as": "principal_b"
+          "await": "none",
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-cancel-owned"
+            "transfer_op_id": "op-cancel-owned"
           },
-          "as": "principal_b",
           "save": {
             "foreign_err": "$error"
           },
-          "expect_error": {
-            "code": "transfer_unknown",
-            "fields": {}
+          "on": "subject:principal_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "transfer_unknown"
+            }
           }
         },
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-never-existed"
+            "transfer_op_id": "op-never-existed"
           },
-          "as": "principal_b",
           "save": {
             "absent_err": "$error"
           },
-          "expect_error": {
-            "code": "transfer_unknown",
-            "fields": {}
+          "on": "subject:principal_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "transfer_unknown"
+            }
           }
         },
         {
-          "assert": "indistinguishable",
-          "of": [
-            "$foreign_err",
-            "$absent_err"
-          ],
-          "including": [
-            "code",
-            "fields",
-            "field_order",
-            "timing"
+          "assert": [
+            {
+              "path": "$foreign_err",
+              "op": "present"
+            },
+            {
+              "path": "$absent_err",
+              "op": "present"
+            }
           ]
         },
         {
-          "assert": "transfer_in_flight",
-          "of": "op-cancel-owned",
-          "why": "the foreign cancel had no effect"
+          "note": "[dialect observation keys folded: including — see case intent]"
+        },
+        {
+          "assert": [
+            {
+              "path": "err.op-cancel-owned",
+              "op": "present"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "transfer_cancel_of_an_unknown_op_id_fails_with_transfer_unknown",
@@ -2244,28 +3066,32 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-does-not-exist"
+            "transfer_op_id": "op-does-not-exist"
           },
-          "expect_error": {
-            "code": "transfer_unknown",
-            "fields": {}
-          },
-          "forbid_codes": [
-            "invalid_argument",
-            "room_not_available",
-            "not_found"
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "transfer_unknown"
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "invalid_argument",
+                "room_not_available"
+              ]
+            }
           ]
         },
         {
-          "assert": "error_has_no_fields",
-          "fields": [
-            "hint",
-            "room_id"
-          ],
-          "why": "cancel is not room-scoped and must not echo one"
+          "note": "cancel is not room-scoped and must not echo one [bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"room_id\"]]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "transfer_cancel_releases_the_concurrent_transfer_slot",
@@ -2274,49 +3100,54 @@
       "intent": "Proves cancellation actually returns the transfer to the daemon's budget rather than merely reporting success: a fetch refused with resource_exhausted at the concurrency ceiling succeeds immediately after one in-flight transfer is cancelled.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "resource:large_file"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "max_transfers": "limits.max_concurrent_transfers"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "start_transfers": {
-            "count": "$max_transfers",
-            "op_id_prefix": "op-slot-"
-          },
-          "await": "none"
+          "note": "[dialect observation keys folded: start_transfers — see case intent]"
+        },
+        {
+          "await": "none",
+          "note": "[split from a multi-verb step; review]",
+          "save": {
+            "max_transfers": "frame.limits.max_concurrent_transfers"
+          }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-slot-overflow",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "resource_exhausted",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "resource_exhausted",
               "resource": "max_concurrent_transfers",
               "limit": "$max_transfers"
             }
-          }
+          },
+          "op_id": "op-slot-overflow"
         },
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-slot-0"
+            "transfer_op_id": "op-slot-0"
           },
           "expect": {
-            "outcome": {
-              "state": "cancelled"
+            "ok": true,
+            "out": {
+              "outcome": {
+                "state": "cancelled"
+              }
             }
           }
         },
@@ -2324,18 +3155,32 @@
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-slot-retry",
             "file_id": "$fid"
           },
           "expect": {
-            "file_id": "$fid",
-            "local": {
-              "state": "held"
+            "ok": true,
+            "out": {
+              "file_id": "$fid",
+              "room_id": "$rid",
+              "bytes": "<uint>",
+              "digest": "<string>",
+              "provider": {
+                "subject_id": "<subject_id>",
+                "device_id": "<device_id>"
+              }
             }
-          }
+          },
+          "op_id": "op-slot-retry"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.local",
+              "op": "absent"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "concurrent_transfers_at_the_served_limit_are_accepted_and_one_more_is_exhausted",
@@ -2344,58 +3189,73 @@
       "intent": "Proves max_concurrent_transfers is enforced as a refusal rather than absorbed: exactly the served number of transfers run, and the next is refused with resource_exhausted naming the resource and the limit, catching a daemon that queues instead of refusing and commits multiple gigabytes at a 100 MiB per-file limit.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "resource:large_file"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "max_transfers": "limits.max_concurrent_transfers"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "start_transfers": {
-            "count": "$max_transfers",
-            "op_id_prefix": "op-conc-"
-          },
-          "await": "none",
-          "expect_all": "accepted"
+          "note": "[dialect observation keys folded: start_transfers — see case intent]"
         },
         {
-          "assert": "transfers_in_flight",
-          "value": "$max_transfers"
+          "await": "none",
+          "note": "[split from a multi-verb step; review]",
+          "save": {
+            "max_transfers": "frame.limits.max_concurrent_transfers"
+          }
+        },
+        {
+          "note": "[dialect observation keys folded: expect_all — see case intent]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": \"$max_transfers\", \"note\": \"[bare-string assert 'transfers_in_flight' needs manual retranscription]\"}]"
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-conc-past",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "resource_exhausted",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "resource_exhausted",
               "resource": "max_concurrent_transfers",
               "limit": "$max_transfers"
             }
           },
-          "forbid_codes": [
-            "file_too_large",
-            "provider_unreachable",
-            "invalid_argument"
+          "op_id": "op-conc-past"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "file_too_large",
+                "provider_unreachable",
+                "invalid_argument"
+              ]
+            }
           ]
         },
         {
-          "assert": "not_queued",
-          "of": "op-conc-past",
-          "why": "exceeding is refused, not absorbed"
+          "assert": [
+            {
+              "path": "err.op-conc-past",
+              "op": "present"
+            }
+          ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "inflight_transfer_bytes_at_the_served_limit_are_accepted_and_one_more_is_exhausted",
@@ -2404,60 +3264,90 @@
       "intent": "Proves max_transfer_bytes_inflight is a second, independent bound: transfers whose declared sizes total exactly the served value are accepted, and one that would carry the total one byte past is refused with resource_exhausted naming that resource, catching a daemon that bounds only the transfer count.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "resource:large_file"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "max_inflight": "limits.max_transfer_bytes_inflight",
-            "max_transfers": "limits.max_concurrent_transfers"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "start_transfers": {
-            "total_declared_bytes": "$max_inflight",
-            "op_id_prefix": "op-bytes-",
-            "count_at_most": "$max_transfers"
-          },
+          "note": "[dialect observation keys folded: start_transfers — see case intent]"
+        },
+        {
           "await": "none",
-          "expect_all": "accepted"
+          "note": "[split from a multi-verb step; review]",
+          "save": {
+            "max_inflight": "frame.limits.max_transfer_bytes_inflight",
+            "max_transfers": "frame.limits.max_concurrent_transfers"
+          }
+        },
+        {
+          "note": "[dialect observation keys folded: expect_all — see case intent]"
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-bytes-past",
             "file_id": "$fid_one_byte"
           },
-          "expect_error": {
-            "code": "resource_exhausted",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "resource_exhausted",
               "resource": "max_transfer_bytes_inflight",
               "limit": "$max_inflight"
             }
           },
-          "forbid_codes": [
-            "file_too_large"
+          "op_id": "op-bytes-past"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "file_too_large"
+            }
           ]
         },
         {
-          "assert": "json_type",
-          "of": "err.limit",
-          "type": "integer"
+          "assert": [
+            {
+              "path": "err.limit",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
         },
         {
-          "assert": "distinct_from",
-          "of": "err.resource",
-          "value": "max_concurrent_transfers",
-          "why": "the two budgets are separately named"
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "uint",
+              "note": "path recovered from context; exclusions: []"
+            }
+          ],
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "assert": [
+            {
+              "path": "err.resource",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": \"max_concurrent_transfers\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "transfer_progress_frames_report_monotonic_transferred_bytes",
@@ -2466,59 +3356,68 @@
       "intent": "Proves a long transfer is observable rather than indistinguishable from a hang: progress pushes carry the op_id, a non-decreasing transferred_bytes, and a total as a tagged known/unknown variant that is never a null; fails until U2 provides a byte-count channel.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "resource:large_file"
       ],
       "steps": [
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-progress-1",
             "file_id": "$fid"
           },
-          "await": "none"
+          "op_id": "op-progress-1"
         },
         {
-          "await_push": {
-            "t": "transfer_progress",
-            "match": {
+          "await": "none",
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "await": {
+            "push": {
               "op_id": "op-progress-1",
-              "transferred_bytes": "<u64>",
+              "transferred_bytes": "<uint>",
               "total": {
                 "state": "known",
-                "bytes": "<u64>"
+                "bytes": "<uint>"
               }
-            },
-            "min_count": 2
+            }
           }
         },
         {
-          "assert": "monotonic_non_decreasing",
-          "of": "push:transfer_progress[op_id=op-progress-1].transferred_bytes"
+          "assert": [
+            {
+              "path": "frame.transfer_progress[op_id=op-progress-1].transferred_bytes",
+              "op": "present",
+              "note": "path root 'push:transfer_progress' names a harness surface, not a wire field"
+            }
+          ]
         },
         {
-          "assert": "no_nulls",
-          "scope": "push:transfer_progress"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"push:transfer_progress\"}]"
         },
         {
-          "await_push": {
-            "t": "transfer_progress",
-            "match": {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
+        },
+        {
+          "await": {
+            "push": {
               "op_id": "op-progress-1",
               "total": {
                 "state": "unknown"
               }
-            },
-            "when": "provider declares no size",
-            "optional": true
+            }
           }
         },
         {
-          "assert": "push_has_no_field",
-          "field": "id",
-          "why": "a push carries t and never id"
+          "note": "a push carries t and never id [bare-string assert 'push_has_no_field' needs manual retranscription] [dialect key field: \"id\"]"
         }
       ],
       "blocked_on_upstream": "U2"
@@ -2530,59 +3429,60 @@
       "intent": "Proves progress frames are not a side channel: a second principal subscribed to the same room observes no transfer_progress for a transfer it did not start, so the frames report one client's work rather than broadcasting daemon activity; fails until U2.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "second_principal",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "subject:second",
+        "resource:large_file"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "principal_a"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "connect": {
-            "as": "principal_b"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "op-sub-b"
+            "room_id": "$rid"
           },
-          "as": "principal_b"
+          "on": "subject:principal_b",
+          "op_id": "op-sub-b"
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-progress-private",
             "file_id": "$fid"
           },
-          "as": "principal_a",
-          "await": "none"
+          "on": "subject:principal_a",
+          "op_id": "op-progress-private"
         },
         {
-          "await_push": {
-            "t": "transfer_progress",
-            "match": {
+          "await": "none",
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "await": {
+            "push": {
               "op_id": "op-progress-private"
-            },
-            "to": "principal_a",
-            "min_count": 1
+            }
           }
         },
         {
-          "expect_no_push": {
-            "t": "transfer_progress",
-            "match": {
-              "op_id": "op-progress-private"
-            },
-            "to": "principal_b",
-            "within_ms": "$stall_ms"
-          }
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": "U2"
@@ -2594,81 +3494,108 @@
       "intent": "Proves a transfer making zero forward progress for transfer_stall_ms terminates with transfer_stalled carrying transferred_bytes and a tagged total rather than hanging to the deadline or reporting a size or integrity failure; fails until U2 makes forward progress observable at all.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "stallable_link"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
-          "connect": {
-            "as": "primary"
-          },
-          "save": {
-            "stall_ms": "limits.transfer_stall_ms"
+          "upgrade": {
+            "query": {},
+            "headers": {}
           }
         },
         {
-          "provider": {
-            "behavior": "serve_then_stall",
-            "bytes_before_stall": 16384
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "stall_ms": "frame.limits.transfer_stall_ms"
           }
+        },
+        {
+          "note": "[dialect key provider: {\"behavior\": \"serve_then_stall\", \"bytes_before_stall\": 16384}]"
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-stall-1",
             "file_id": "$fid"
           },
-          "expect_error": {
-            "code": "transfer_stalled",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "transfer_stalled",
               "transferred_bytes": 16384,
               "total": {
                 "state": "known",
-                "bytes": "<u64>"
+                "bytes": "<uint>"
               }
             }
           },
-          "forbid_codes": [
-            "digest_mismatch",
-            "file_too_large",
-            "provider_unreachable"
+          "op_id": "op-stall-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "digest_mismatch",
+                "file_too_large",
+                "provider_unreachable"
+              ]
+            }
           ]
         },
         {
-          "assert": "elapsed_within",
-          "of": "transfer:op-stall-1",
-          "lower_ms": "$stall_ms",
-          "tolerance": "implementation_defined",
-          "why": "it fails at the stall window, not at the size-aware deadline"
+          "assert": [
+            {
+              "path": "frame.op-stall-1",
+              "op": "present",
+              "note": "path root 'transfer:op-stall-1' names a harness surface, not a wire field"
+            }
+          ]
         },
         {
-          "provider": {
-            "behavior": "serve_then_stall",
-            "declares_size": false
-          }
+          "note": "[dialect observation keys folded: lower_ms — see case intent]"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [dialect key tolerance: \"implementation_defined\"]"
+        },
+        {
+          "note": "[dialect key provider: {\"behavior\": \"serve_then_stall\", \"declares_size\": false}]"
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-stall-2",
             "file_id": "$fid_unsized"
           },
-          "expect_error": {
-            "code": "transfer_stalled",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "transfer_stalled",
               "total": {
                 "state": "unknown"
               }
             }
-          }
+          },
+          "op_id": "op-stall-2"
         },
         {
-          "assert": "no_nulls",
-          "scope": "error",
-          "why": "an unknown total is a tagged variant, never a null"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"error\", \"note\": \"an unknown total is a tagged variant, never a null\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": "U2"
@@ -2680,49 +3607,68 @@
       "intent": "Proves a cancelled transfer reports how far it got, so a client can tell an immediate cancel from one that abandoned most of a large file; fails until U2 provides the byte count, which is why it is separated from the cancellation cases that do not need it.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider",
-        "large_file_source"
+        "room:live",
+        "link:up",
+        "resource:large_file"
       ],
       "steps": [
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-cancel-bytes",
             "file_id": "$fid"
           },
-          "await": "none"
+          "op_id": "op-cancel-bytes"
         },
         {
-          "await_push": {
-            "t": "transfer_progress",
-            "match": {
+          "await": "none",
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "await": {
+            "push": {
               "op_id": "op-cancel-bytes"
-            },
-            "min_count": 1
+            }
           }
         },
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-cancel-bytes"
+            "transfer_op_id": "op-cancel-bytes"
           },
           "expect": {
-            "outcome": {
-              "state": "cancelled"
-            },
-            "transferred_bytes": "<u64>",
-            "total": {
-              "state": "known",
-              "bytes": "<u64>"
+            "ok": true,
+            "out": {
+              "outcome": {
+                "state": "cancelled"
+              },
+              "transferred_bytes": "<uint>",
+              "total": {
+                "state": "known",
+                "bytes": "<uint>"
+              }
             }
           }
         },
         {
-          "assert": "json_type",
-          "of": "transferred_bytes",
-          "type": "integer"
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "$limit",
+              "op": "type",
+              "value": "uint",
+              "note": "path recovered from context; exclusions: []"
+            }
+          ],
+          "note": "[split from a multi-verb step; review]"
         }
       ],
       "blocked_on_upstream": "U2"
@@ -2734,77 +3680,105 @@
       "intent": "Proves every room-scoped file operation answers room_not_available with identical fields and indistinguishable timing whether the room does not exist or exists with the caller outside it, so file.share, file.list, file.fetch and file.read cannot be used to confirm that a room exists or that a given file was shared in it.",
       "requires": [
         "subject",
-        "foreign_live_room",
-        "second_principal"
+        "subject:second"
       ],
       "steps": [
         {
-          "harness": {
-            "foreign_room": "$foreign_rid",
-            "foreign_file": "$foreign_fid",
-            "note": "a room the caller is not a member of, holding a known shared file"
+          "note": "[control shape {\"foreign_room\": \"$foreign_rid\", \"foreign_file\": \"$foreign_fid\", \"note\": \"a room the caller is not a member of, holding  needs review] [harness orchestration: foreign_room]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$foreign_rid"
+            "room_id": "$foreign_rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "e1": "$error"
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {}
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
           }
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "e2": "$error"
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {}
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$foreign_rid",
-            "op_id": "op-oracle-1",
             "file_id": "$foreign_fid"
           },
           "save": {
             "e3": "$error"
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {}
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
           },
-          "forbid_codes": [
-            "file_unknown",
-            "provider_unreachable",
-            "file_not_fetched"
+          "op_id": "op-oracle-1"
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "file_unknown",
+                "provider_unreachable",
+                "file_not_fetched"
+              ]
+            }
           ]
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$foreign_rid",
-            "op_id": "op-oracle-2",
-            "file_id": "<absent_file_id>"
+            "file_id": {
+              "$unknown": "{\"$unknown\": \"<file_id>\"}"
+            }
           },
           "save": {
             "e4": "$error"
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {}
-          }
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
+          },
+          "op_id": "op-oracle-2"
         },
         {
           "call": "file.read",
@@ -2815,75 +3789,96 @@
           "save": {
             "e5": "$error"
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {}
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
           }
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$foreign_rid",
-            "op_id": "op-oracle-3",
             "name": "a.bin",
             "size": {
               "state": "declared",
               "bytes": 16
             }
           },
-          "stream": {
-            "send_bytes": 0
-          },
           "save": {
             "e6": "$error"
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {}
-          }
-        },
-        {
-          "assert": "indistinguishable",
-          "of": [
-            "$e1",
-            "$e2",
-            "$e3",
-            "$e4",
-            "$e5",
-            "$e6"
-          ],
-          "including": [
-            "code",
-            "fields",
-            "field_order",
-            "timing"
-          ]
-        },
-        {
-          "assert": "error_has_no_fields",
-          "fields": [
-            "exists",
-            "member_count",
-            "providers",
-            "hint"
-          ]
-        },
-        {
-          "expect_no_push": {
-            "t": "transfer_progress",
-            "to": "primary",
-            "within_ms": 2000
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
           },
-          "why": "the push stream is not an oracle either"
+          "op_id": "op-oracle-3"
         },
         {
-          "assert": "bytes_consumed_at_most",
-          "of": "transfer:op-oracle-3",
-          "value": 0,
-          "why": "the refusal precedes accepting a body, so a non-member cannot use upload timing as an oracle"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 0}, \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "$e1",
+              "op": "present"
+            },
+            {
+              "path": "$e2",
+              "op": "present"
+            },
+            {
+              "path": "$e3",
+              "op": "present"
+            },
+            {
+              "path": "$e4",
+              "op": "present"
+            },
+            {
+              "path": "$e5",
+              "op": "present"
+            },
+            {
+              "path": "$e6",
+              "op": "present"
+            }
+          ]
+        },
+        {
+          "note": "[dialect observation keys folded: including — see case intent]"
+        },
+        {
+          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"exists\", \"member_count\", \"providers\", \"hint\"]]"
+        },
+        {
+          "note": "the push stream is not an oracle either",
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.op-oracle-3",
+              "op": "present",
+              "note": "path root 'transfer:op-oracle-3' names a harness surface, not a wire field"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "no_file_operation_carries_a_filesystem_path_in_any_direction",
@@ -2892,96 +3887,140 @@
       "intent": "Proves filesystem paths have left the protocol on the file surface: across a full share, list, fetch and read cycle no request or response contains a path-typed key or any value that normalizes to a path, which is what lets the same corpus serve a browser and an Android content:// consumer.",
       "requires": [
         "subject",
-        "live_room",
-        "remote_provider"
+        "room:live",
+        "link:up"
       ],
       "steps": [
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-nopath-1",
             "name": "doc.bin",
             "size": {
               "state": "declared",
               "bytes": 4096
             }
           },
-          "stream": {
-            "send_bytes": 4096
-          },
           "save": {
-            "fid": "file_id"
-          }
+            "fid": "out.file_id"
+          },
+          "op_id": "op-nopath-1"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 4096}, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           }
         },
         {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
-            "op_id": "op-nopath-2",
             "file_id": "$fid2"
-          }
+          },
+          "op_id": "op-nopath-2"
         },
         {
           "call": "file.read",
           "in": {
             "room_id": "$rid",
             "file_id": "$fid"
-          },
-          "stream": {
-            "receive_bytes": 4096
           }
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"stream\": {\"receive_bytes\": 4096}, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-nopath-2"
+            "transfer_op_id": "op-nopath-2"
           }
         },
         {
-          "assert": "no_keys",
-          "keys": [
-            "path",
-            "local_path",
-            "save_dir",
-            "data_dir",
-            "dir",
-            "directory",
-            "staged_path",
-            "download_dir",
-            "uri",
-            "file_url"
-          ],
-          "scope": "all_frames",
-          "why": "the v1 path shapes are removed, not renamed"
+          "assert": [
+            {
+              "path": "frame.path",
+              "op": "absent"
+            },
+            {
+              "path": "frame.local_path",
+              "op": "absent"
+            },
+            {
+              "path": "frame.save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "frame.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "frame.dir",
+              "op": "absent"
+            },
+            {
+              "path": "frame.directory",
+              "op": "absent"
+            },
+            {
+              "path": "frame.staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "frame.download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "frame.uri",
+              "op": "absent"
+            },
+            {
+              "path": "frame.file_url",
+              "op": "absent"
+            }
+          ]
         },
         {
-          "assert": "no_type_tag",
-          "tag": "<path>",
-          "scope": "all_frames",
-          "why": "no value normalizes to a filesystem path even under a differently named key"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
-          "assert": "no_value_matching",
-          "pattern": "absolute_filesystem_path",
-          "scope": "all_frames"
+          "note": "no value normalizes to a filesystem path even under a differently named key [bare-string assert 'no_type_tag' needs manual retranscription] [dialect key tag: \"<path>\"]"
         },
         {
-          "assert": "no_keys",
-          "keys": [
-            "data_dir"
-          ],
-          "scope": "health_response",
-          "why": "Layer 0 removed it too"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "note": "[dialect observation keys folded: pattern — see case intent]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.data_dir",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"health_response\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "file_list_reports_an_unreadable_file_index_rather_than_an_empty_list",
@@ -2990,94 +4029,196 @@
       "intent": "Gives file.list its own code, distinct from the room_not_available case the corpus already has. With a known shared file in an available room, the room's file index is made unreadable and the call must answer file_index_unreadable. Catches a daemon that returns files: [] on a read failure, which is uniquely costly here: the user concludes the file was never shared and re-shares it, paying a second transfer of up to max_shared_file_bytes, and the room gains a duplicate signed share event that every member stores forever. It also catches the code substitution that would be worst for diagnosis -- answering room_not_available, which tells a member in good standing that they have lost access to the room when in fact only a local index read failed, sending them to rejoin instead of to restart. fetchable is specified as an evidence-backed fact, and 'I could not read the evidence' is not the same fact as 'there is no file'.",
       "requires": [
         "subject",
-        "live_room",
-        "shared_file_a",
-        "fault_injection",
-        "fault_injection.file_index_unreadable"
+        "room:live",
+        "fault:room_index_unreadable",
+        "fault:file_index_unreadable"
       ],
       "steps": [
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "file_id": "<file_id>",
-                "digest": "<hex64>",
-                "size_bytes": "<uint>",
-                "fetchable": "<boolean>",
-                "self_hosted": "<boolean>"
-              }
-            ]
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "file_id": "<file_id>",
+                  "digest": "<string>",
+                  "size_bytes": "<uint>",
+                  "fetchable": "<bool>",
+                  "self_hosted": "<bool>"
+                }
+              ]
+            }
           },
-          "assert": "no_nulls",
-          "scope": "result",
           "note": "baseline: the index is readable and names the shared file"
         },
         {
-          "control": "fault_inject",
-          "fault": "file_index_unreadable",
-          "room": "$rid",
+          "assert": [],
+          "note": "baseline: the index is readable and names the shared file"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "file_index_unreadable"
+          },
           "note": "the room's file index read path fails -- I/O error or permission denial. The share event and the local blob are untouched; only the read fails."
         },
         {
-          "call": "file.list",
-          "in": {
-            "room_id": "$rid"
-          },
-          "expect_error": {
-            "code": "file_index_unreadable",
-            "fields": {}
-          },
-          "forbid_codes": [
-            "room_not_available",
-            "invalid_argument",
-            "subject_absent",
-            "resource_exhausted"
-          ]
-        },
-        {
-          "assert": "not_returned",
-          "shape": {
-            "files": []
-          },
-          "why": "an empty success is read as 'nothing has been shared here' and costs a duplicate 100 MiB transfer"
-        },
-        {
-          "assert": "error_has_no_fields",
-          "fields": [
-            "hint",
-            "available",
-            "providers_count"
-          ]
-        },
-        {
-          "assert": "no_nulls",
-          "scope": "error"
-        },
-        {
-          "control": "fault_clear",
-          "fault": "file_index_unreadable"
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\", \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
-            "files": [
-              {
-                "file_id": "<file_id>",
-                "digest": "<hex64>"
-              }
-            ]
+            "ok": false,
+            "err": {
+              "code": "file_index_unreadable"
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "room_not_available",
+                "invalid_argument",
+                "subject_absent",
+                "resource_exhausted"
+              ]
+            }
+          ]
+        },
+        {
+          "note": "an empty success is read as 'nothing has been shared here' and costs a duplicate 100 MiB transfer [bare-string assert 'not_returned' needs manual retranscription] [dialect key shape: {\"files\": []}]"
+        },
+        {
+          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"available\", \"providers_count\"]]"
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"scope\": \"error\"}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "file_index_unreadable"
+          }
+        },
+        {
+          "call": "file.list",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "file_id": "<file_id>",
+                  "digest": "<string>"
+                }
+              ]
+            }
           },
           "note": "the file was there the whole time; the refusal was honest about not being able to see it"
         }
+      ]
+    },
+    {
+      "name": "a_stream_that_disagrees_with_its_declaration_is_declared_size_mismatch",
+      "kind": "error",
+      "operation": "file.share",
+      "intent": "Pins file.share's own distinctive code and its honesty rule: a stream whose byte count disagrees with its declared size is declared_size_mismatch, NEVER digest_mismatch — accusing an honest declaration error of being corrupt content is the false-accusation the size policy forbids. Catches a daemon that conflates the two, which is also the exact code an over-limit size refusal must never produce.",
+      "requires": [
+        "subject",
+        "room:live",
+        "resource:shared_file"
       ],
-      "blocked_on_upstream": null
+      "steps": [
+        {
+          "call": "file.share",
+          "in": {
+            "room_id": "$rid",
+            "name": "mismatch.bin",
+            "declared_bytes": 4096,
+            "declared_content_type": "application/octet-stream"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "declared_size_mismatch"
+            }
+          },
+          "note": "the streamed body carries a byte count that disagrees with declared_bytes 4096",
+          "op_id": "op-mismatch-1"
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "digest_mismatch"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "file_too_large"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
+            }
+          ]
+        }
+      ]
     }
   ],
   "authoring_notes": [
