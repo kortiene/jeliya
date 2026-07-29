@@ -10,72 +10,80 @@ use jeliya_api::*;
 /// the record's `M` column. This is the pairing #163 exists to make: a
 /// request cannot be held without knowing its output type and wire name.
 #[test]
-fn operation_paths_and_mutability() {
+fn operation_paths() {
+    // PATH assertions are runtime because they read a string.
     assert_eq!(<SubjectEnsure as Operation>::PATH, "subject.ensure");
-    assert!(<SubjectEnsure as Operation>::MUTATING);
+    assert_eq!(<DaemonStop as Operation>::PATH, "daemon.stop");
     assert_eq!(<RoomCreate as Operation>::PATH, "room.create");
-    assert!(<RoomCreate as Operation>::MUTATING);
     assert_eq!(<RoomList as Operation>::PATH, "room.list");
-    assert!(!<RoomList as Operation>::MUTATING);
     assert_eq!(<RoomActivate as Operation>::PATH, "room.activate");
-    assert!(<RoomActivate as Operation>::MUTATING);
     assert_eq!(<RoomDeactivate as Operation>::PATH, "room.deactivate");
-    assert!(<RoomDeactivate as Operation>::MUTATING);
     assert_eq!(<RoomLeave as Operation>::PATH, "room.leave");
-    assert!(<RoomLeave as Operation>::MUTATING);
     assert_eq!(<RoomTimeline as Operation>::PATH, "room.timeline");
-    assert!(!<RoomTimeline as Operation>::MUTATING);
     assert_eq!(<RoomMembers as Operation>::PATH, "room.members");
-    assert!(!<RoomMembers as Operation>::MUTATING);
     assert_eq!(<RoomArchive as Operation>::PATH, "room.archive");
-    assert!(!<RoomArchive as Operation>::MUTATING);
     assert_eq!(<RoomPeers as Operation>::PATH, "room.peers");
-    assert!(!<RoomPeers as Operation>::MUTATING);
     assert_eq!(<MemberRemove as Operation>::PATH, "member.remove");
-    assert!(<MemberRemove as Operation>::MUTATING);
     assert_eq!(<InviteMint as Operation>::PATH, "invite.mint");
-    assert!(<InviteMint as Operation>::MUTATING);
     assert_eq!(<InviteList as Operation>::PATH, "invite.list");
-    assert!(!<InviteList as Operation>::MUTATING);
     assert_eq!(<InviteRevoke as Operation>::PATH, "invite.revoke");
-    assert!(<InviteRevoke as Operation>::MUTATING);
     assert_eq!(<InviteRedeem as Operation>::PATH, "invite.redeem");
-    assert!(<InviteRedeem as Operation>::MUTATING);
     assert_eq!(<MessageSend as Operation>::PATH, "message.send");
-    assert!(<MessageSend as Operation>::MUTATING);
     assert_eq!(<StatusPost as Operation>::PATH, "status.post");
-    assert!(<StatusPost as Operation>::MUTATING);
     assert_eq!(<StatusHistory as Operation>::PATH, "status.history");
-    assert!(!<StatusHistory as Operation>::MUTATING);
     assert_eq!(<FleetList as Operation>::PATH, "fleet.list");
-    assert!(!<FleetList as Operation>::MUTATING);
     assert_eq!(<FileShare as Operation>::PATH, "file.share");
-    assert!(<FileShare as Operation>::MUTATING);
     assert_eq!(<FileList as Operation>::PATH, "file.list");
-    assert!(!<FileList as Operation>::MUTATING);
     assert_eq!(<FileFetch as Operation>::PATH, "file.fetch");
-    assert!(<FileFetch as Operation>::MUTATING);
     assert_eq!(<FileRead as Operation>::PATH, "file.read");
-    assert!(!<FileRead as Operation>::MUTATING);
     assert_eq!(<TransferCancel as Operation>::PATH, "transfer.cancel");
-    assert!(<TransferCancel as Operation>::MUTATING);
     assert_eq!(<PipePublish as Operation>::PATH, "pipe.publish");
-    assert!(<PipePublish as Operation>::MUTATING);
     assert_eq!(<PipeList as Operation>::PATH, "pipe.list");
-    assert!(!<PipeList as Operation>::MUTATING);
     assert_eq!(<PipeConnect as Operation>::PATH, "pipe.connect");
-    assert!(<PipeConnect as Operation>::MUTATING);
     assert_eq!(<PipeRelease as Operation>::PATH, "pipe.release");
-    assert!(<PipeRelease as Operation>::MUTATING);
     assert_eq!(<PipeRevoke as Operation>::PATH, "pipe.revoke");
-    assert!(<PipeRevoke as Operation>::MUTATING);
     assert_eq!(<StreamSubscribe as Operation>::PATH, "stream.subscribe");
-    assert!(<StreamSubscribe as Operation>::MUTATING);
     assert_eq!(<StreamUnsubscribe as Operation>::PATH, "stream.unsubscribe");
-    assert!(<StreamUnsubscribe as Operation>::MUTATING);
     assert_eq!(<StreamResync as Operation>::PATH, "stream.resync");
-    assert!(<StreamResync as Operation>::MUTATING);
 }
+
+// MUTATING is a compile-time contract: these assertions live in a const
+// block, so a wrong flag fails compilation, not just the test run.
+const _: () = {
+    assert!(<SubjectEnsure as Operation>::MUTATING);
+    assert!(<DaemonStop as Operation>::MUTATING);
+    assert!(<RoomCreate as Operation>::MUTATING);
+    assert!(!<RoomList as Operation>::MUTATING);
+    assert!(<RoomActivate as Operation>::MUTATING);
+    assert!(<RoomDeactivate as Operation>::MUTATING);
+    assert!(<RoomLeave as Operation>::MUTATING);
+    assert!(!<RoomTimeline as Operation>::MUTATING);
+    assert!(!<RoomMembers as Operation>::MUTATING);
+    assert!(!<RoomArchive as Operation>::MUTATING);
+    assert!(!<RoomPeers as Operation>::MUTATING);
+    assert!(<MemberRemove as Operation>::MUTATING);
+    assert!(<InviteMint as Operation>::MUTATING);
+    assert!(!<InviteList as Operation>::MUTATING);
+    assert!(<InviteRevoke as Operation>::MUTATING);
+    assert!(<InviteRedeem as Operation>::MUTATING);
+    assert!(<MessageSend as Operation>::MUTATING);
+    assert!(<StatusPost as Operation>::MUTATING);
+    assert!(!<StatusHistory as Operation>::MUTATING);
+    assert!(!<FleetList as Operation>::MUTATING);
+    assert!(<FileShare as Operation>::MUTATING);
+    assert!(!<FileList as Operation>::MUTATING);
+    assert!(<FileFetch as Operation>::MUTATING);
+    assert!(!<FileRead as Operation>::MUTATING);
+    assert!(<TransferCancel as Operation>::MUTATING);
+    assert!(<PipePublish as Operation>::MUTATING);
+    assert!(!<PipeList as Operation>::MUTATING);
+    assert!(<PipeConnect as Operation>::MUTATING);
+    assert!(<PipeRelease as Operation>::MUTATING);
+    assert!(<PipeRevoke as Operation>::MUTATING);
+    assert!(<StreamSubscribe as Operation>::MUTATING);
+    assert!(<StreamUnsubscribe as Operation>::MUTATING);
+    assert!(<StreamResync as Operation>::MUTATING);
+};
 
 /// There are exactly 33 operations. Counted by hand here as a guard against
 /// a silent addition.
