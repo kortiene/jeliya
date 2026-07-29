@@ -21,6 +21,15 @@ pub struct GateParams {
     pub credential: Option<String>,
     /// Whether the daemon is at connection capacity.
     pub at_capacity: bool,
+    /// The served `max_connections` limit, returned in the capacity
+    /// refusal's typed `limit` field — a refusal that reports a limit it
+    /// does not have is a false limit on the wire.
+    pub max_connections: u64,
+    /// The `cid` query parameter, if present. **Absence is not refusal** —
+    /// an omitted `cid` yields a fresh ephemeral principal, the documented
+    /// choice a short-lived CLI makes. `cid` is not a credential and is
+    /// never compared in constant time.
+    pub cid: Option<String>,
     /// The daemon's storage generation.
     pub daemon_sg: u64,
     /// The expected credential, compared in constant time.
@@ -30,10 +39,22 @@ pub struct GateParams {
 /// The gate's verdict.
 #[derive(Debug)]
 pub enum GateDecision {
-    /// The upgrade proceeds.
-    Admit,
+    /// The upgrade proceeds, yielding the authenticated session principal.
+    Admit(SessionPrincipal),
     /// The upgrade is refused with a bare error body and an HTTP status.
     Refuse(GateRejection),
+}
+
+/// The authenticated session principal: `(credential, client_id)`. It keys
+/// the dedup ledger and transfer-cancellation isolation. Distinct
+/// `client_id`s have isolated ledgers; reusing another's shares its
+/// `op_id` scope, which is the same relationship as sharing a device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPrincipal {
+    /// The authenticated credential identity.
+    pub credential: String,
+    /// The declared `client_id`, or `None` for a fresh ephemeral principal.
+    pub client_id: Option<String>,
 }
 
 /// Runs the six checks in the record's fixed order: (1) loopback `Host`,
@@ -103,30 +124,46 @@ pub fn gate(params: &GateParams) -> Result<GateDecision, CodecError> {
         return Ok(GateDecision::Refuse(GateRejection {
             body: ApiError::ResourceExhausted {
                 resource: "max_connections".into(),
-                limit: 0, // the served value is filled by the daemon, which owns it
+                limit: params.max_connections,
             },
             status: 503,
         }));
     }
-    Ok(GateDecision::Admit)
+    Ok(GateDecision::Admit(SessionPrincipal {
+        credential: params.expected_credential.clone(),
+        client_id: params.cid.clone(),
+    }))
 }
 
 /// A constant-time byte comparison. The credential is a shared secret, so
-/// the comparison never short-circuits on a mismatch.
+/// the comparison never short-circuits — and it must not leak the expected
+/// length either: a length check that returns before doing byte work lets a
+/// loopback attacker recover the expected length by timing candidate
+/// lengths. The length is folded into the accumulator instead, and the
+/// comparison always traverses the longer input.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
+    let max_len = a.len().max(b.len());
+    let mut diff = (a.len() ^ b.len()) as u8;
+    for i in 0..max_len {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
         diff |= x ^ y;
     }
     diff == 0
 }
 
-/// `Host` is loopback when its host part is a loopback literal or `localhost`.
+/// `Host` is loopback when its host part is a loopback literal or
+/// `localhost`. An IPv6 literal is bracketed (`[::1]:8080`), so the port is
+/// stripped after the closing bracket, not by splitting on the first colon —
+/// splitting an IPv6 authority on `:` yields `[`, which is not a host.
 fn is_loopback_authority(host: &str) -> bool {
-    let host_part = host.split(':').next().unwrap_or(host);
+    let host_part = if let Some(bracket_end) = host.find(']') {
+        // [::1] or [::1]:port
+        &host[..=bracket_end]
+    } else {
+        // 127.0.0.1[:port], localhost[:port], or ::1
+        host.split(':').next().unwrap_or(host)
+    };
     matches!(host_part, "127.0.0.1" | "localhost" | "[::1]" | "::1")
 }
 
@@ -155,6 +192,8 @@ mod tests {
             sg: Some(1),
             credential: Some("tok".into()),
             at_capacity: false,
+            max_connections: 64,
+            cid: None,
             daemon_sg: 1,
             expected_credential: "tok".into(),
         }
@@ -162,7 +201,7 @@ mod tests {
 
     #[test]
     fn admits_a_valid_upgrade() {
-        assert!(matches!(gate(&base()).unwrap(), GateDecision::Admit));
+        assert!(matches!(gate(&base()).unwrap(), GateDecision::Admit(_)));
     }
 
     #[test]

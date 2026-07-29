@@ -143,7 +143,10 @@ fn unknown_operation_is_refused() {
     let err = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap_err();
     assert!(matches!(
         err,
-        jeliya_codec::CodecError::Malformed(ApiError::UnknownOperation { .. })
+        jeliya_codec::CodecError::Malformed {
+            error: ApiError::UnknownOperation { .. },
+            ..
+        }
     ));
 }
 
@@ -158,9 +161,12 @@ fn status_post_free_text_is_unrecognised_field() {
     });
     let err = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap_err();
     match err {
-        jeliya_codec::CodecError::Malformed(ApiError::InvalidArgument { field, reason }) => {
+        jeliya_codec::CodecError::Malformed {
+            error: ApiError::InvalidArgument { field, reason },
+            ..
+        } => {
             assert_eq!(reason, InvalidReason::UnrecognisedField);
-            assert_eq!(field, "message");
+            assert_eq!(field, "in.message");
         }
         other => panic!("wrong refusal: {other:?}"),
     }
@@ -184,17 +190,30 @@ fn recoverable_id_gets_a_correlated_error() {
         &default_bounds(),
     )
     .unwrap_err();
-    assert!(matches!(err, jeliya_codec::CodecError::Malformed(_)));
+    assert!(matches!(err, jeliya_codec::CodecError::Malformed { .. }));
 }
 
 /// A frame carrying `t` is a push; pushes do not flow client-to-daemon.
+/// A push with no usable id takes the unrecoverable-id close, because
+/// there is no id to correlate a reply to.
 #[test]
 fn an_inbound_push_is_malformed() {
     let frame = serde_json::json!({"t": "gap", "room_id": "r1", "from_pos": 41, "to": {"state": "bounded", "pos": 57}, "reason": "backpressure"});
     let err = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap_err();
+    assert!(matches!(err, jeliya_codec::CodecError::UnrecoverableId(_)));
+}
+
+/// A push carrying a usable id is a correlated malformed reply.
+#[test]
+fn an_inbound_push_with_id_is_a_correlated_malformed() {
+    let frame = serde_json::json!({"id": 7, "t": "gap", "room_id": "r1", "from_pos": 41, "to": {"state": "bounded", "pos": 57}, "reason": "backpressure"});
+    let err = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap_err();
     assert!(matches!(
         err,
-        jeliya_codec::CodecError::Malformed(ApiError::MalformedFrame)
+        jeliya_codec::CodecError::Malformed {
+            id: 7,
+            error: ApiError::MalformedFrame
+        }
     ));
 }
 
@@ -230,7 +249,10 @@ fn excessive_depth_is_bounded() {
     let err = decode(&serde_json::to_vec(&deep).unwrap(), &bounds).unwrap_err();
     assert!(matches!(
         err,
-        jeliya_codec::CodecError::Malformed(ApiError::InvalidArgument { .. })
+        jeliya_codec::CodecError::Malformed {
+            error: ApiError::InvalidArgument { .. },
+            ..
+        }
     ));
 }
 
@@ -247,7 +269,10 @@ fn excessive_array_length_is_bounded() {
     let err = decode(&serde_json::to_vec(&frame).unwrap(), &bounds).unwrap_err();
     assert!(matches!(
         err,
-        jeliya_codec::CodecError::Malformed(ApiError::InvalidArgument { .. })
+        jeliya_codec::CodecError::Malformed {
+            error: ApiError::InvalidArgument { .. },
+            ..
+        }
     ));
 }
 
@@ -262,7 +287,10 @@ fn an_overlong_op_name_is_bounded() {
     let err = decode(&serde_json::to_vec(&frame).unwrap(), &bounds).unwrap_err();
     assert!(matches!(
         err,
-        jeliya_codec::CodecError::Malformed(ApiError::InvalidArgument { .. })
+        jeliya_codec::CodecError::Malformed {
+            error: ApiError::InvalidArgument { .. },
+            ..
+        }
     ));
 }
 
@@ -328,4 +356,71 @@ fn null_carries_no_meaning() {
     // RoomList is {} — serde_json maps null to a unit struct only if declared
     // as such. Our struct is a braced empty struct; null should fail.
     assert!(result.is_err());
+}
+
+/// A malformed frame carries its recovered id so the transport can build
+/// the correlated reply without reparsing outside the codec.
+#[test]
+fn malformed_frames_carry_the_recovered_id() {
+    let frame = serde_json::json!({"id": 77, "op": "room.explode", "in": {}});
+    let err = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap_err();
+    match err {
+        jeliya_codec::CodecError::Malformed { id, .. } => assert_eq!(id, 77),
+        other => panic!("expected Malformed with id: {other:?}"),
+    }
+}
+
+/// An explicit null op_id is refused: omission is the only way the
+/// envelope's one optional field is absent.
+#[test]
+fn a_null_op_id_is_refused() {
+    let frame =
+        serde_json::json!({"id": 1, "op": "room.create", "op_id": null, "in": {"name": "Build"}});
+    let err = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap_err();
+    assert!(matches!(
+        err,
+        jeliya_codec::CodecError::Malformed {
+            error: ApiError::InvalidArgument { .. },
+            ..
+        }
+    ));
+}
+
+/// A non-unsigned-integer id is no correlation identifier — it takes the
+/// unrecoverable-id close, not the correlated-reply path.
+#[test]
+fn a_non_uint_id_closes() {
+    for bad in [
+        serde_json::json!({"id": null, "op": "room.list", "in": {}}),
+        serde_json::json!({"id": "42", "op": "room.list", "in": {}}),
+        serde_json::json!({"id": -1, "op": "room.list", "in": {}}),
+        serde_json::json!({"id": 1.5, "op": "room.list", "in": {}}),
+    ] {
+        let err = decode(&serde_json::to_vec(&bad).unwrap(), &default_bounds()).unwrap_err();
+        assert!(
+            matches!(err, jeliya_codec::CodecError::UnrecoverableId(_)),
+            "id {:?} should close",
+            bad["id"]
+        );
+    }
+}
+
+/// A wrong JSON type in a request field maps to the `type {expected}`
+/// reason, not `format`.
+#[test]
+fn a_wrong_type_maps_to_the_type_reason() {
+    let frame = serde_json::json!({"id": 1, "op": "room.create", "in": {"name": 3}});
+    let err = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap_err();
+    match err {
+        jeliya_codec::CodecError::Malformed {
+            error: ApiError::InvalidArgument { reason, .. },
+            ..
+        } => {
+            assert!(
+                matches!(reason, InvalidReason::Type { .. }),
+                "expected Type reason, got {reason:?}"
+            );
+        }
+        other => panic!("expected InvalidArgument: {other:?}"),
+    }
 }

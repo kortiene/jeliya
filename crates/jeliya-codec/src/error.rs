@@ -22,9 +22,16 @@ pub enum CodecError {
     UnrecoverableId(String),
 
     /// The frame decodes far enough to carry an `id`, so it gets a
-    /// correlated error reply instead of a close. Carries the reply to send.
-    #[error("malformed frame: {0:?}")]
-    Malformed(ApiError),
+    /// correlated error reply instead of a close — and the transport needs
+    /// that id to build the `{id, ok:false, err}` reply without reparsing
+    /// JSON outside the codec. Carries the recovered id and the error.
+    #[error("malformed frame (id {id}): {error:?}")]
+    Malformed {
+        /// The recovered request id, for the correlated reply.
+        id: u64,
+        /// The typed error to reply with.
+        error: ApiError,
+    },
 
     /// The upgrade failed the generation gate. Carries the bare error body
     /// to return with the matching HTTP status.

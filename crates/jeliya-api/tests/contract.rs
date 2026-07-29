@@ -431,3 +431,73 @@ fn invite_list_never_serves_the_capability() {
     let json = serde_json::to_string(&row).unwrap();
     assert!(!json.contains("capability"));
 }
+
+/// The hello frame carries `t: "hello"` as its discriminator.
+#[test]
+fn hello_carries_t_discriminator() {
+    let h = Hello {
+        protocol: 2,
+        storage_generation: 1,
+        limits: Limits {
+            max_shared_file_bytes: 104857600,
+            max_message_body_bytes: 1,
+            max_frame_bytes: 1,
+            max_inflight_requests: 1,
+            max_subscriptions_per_connection: 1,
+            max_connections: 1,
+            max_concurrent_transfers: 1,
+            max_transfer_bytes_inflight: 1,
+            transfer_connect_allowance_ms: 1,
+            transfer_floor_bits_per_second: 1,
+            transfer_stall_ms: 1,
+            timeline_page_max: 1,
+            idle_timeout_ms: 1,
+            pairing_code_ttl_ms: 1,
+            pairing_code_max_attempts: 1,
+            browser_session_ttl_ms: 1,
+        },
+        subject: SubjectState::Absent,
+        resume: Resume::Fresh,
+    };
+    let json = serde_json::to_string(&h).unwrap();
+    assert!(json.contains("\"t\":\"hello\""));
+    assert!(json.contains("\"protocol\":2"));
+}
+
+/// A progress percent outside 0..=100 is refused at deserialization.
+#[test]
+fn progress_percent_is_bounded() {
+    assert!(serde_json::from_str::<Progress>("{\"state\":\"reported\",\"percent\":40}").is_ok());
+    assert!(serde_json::from_str::<Progress>("{\"state\":\"reported\",\"percent\":101}").is_err());
+}
+
+/// A timestamp with a numeric offset is refused; the wire form is Z only.
+#[test]
+fn timestamp_requires_z_offset() {
+    assert!(serde_json::from_str::<Timestamp>("\"2026-01-01T00:00:00Z\"").is_ok());
+    assert!(serde_json::from_str::<Timestamp>("\"2026-01-01T01:00:00+01:00\"").is_err());
+}
+
+/// An undefined key inside a tagged request variant is refused.
+#[test]
+fn tagged_variants_deny_unknown_fields() {
+    assert!(serde_json::from_str::<Progress>(
+        "{\"state\":\"reported\",\"percent\":40,\"bogus\":1}"
+    )
+    .is_err());
+}
+
+/// An event kind/content combination that does not belong is unrepresentable.
+#[test]
+fn event_kind_and_content_are_coupled() {
+    // a message kind with room_created content fails
+    assert!(serde_json::from_str::<EventKindContent>(
+        "{\"kind\":\"message\",\"content\":{\"name\":\"Build\"}}"
+    )
+    .is_err());
+    // the right combination parses
+    let ok = serde_json::from_str::<EventKindContent>(
+        "{\"kind\":\"message\",\"content\":{\"body\":\"hello\"}}",
+    );
+    assert!(ok.is_ok());
+}

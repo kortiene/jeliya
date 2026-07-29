@@ -34,7 +34,8 @@ impl<T: Operation + std::fmt::Debug + Send + 'static> ErasedInput for T {
 
 macro_rules! route_op {
     ($op:expr, $ty:ty, $input:expr) => {{
-        let decoded: $ty = serde_json::from_value($input).map_err(|e| invalid_arg(e))?;
+        let decoded: $ty =
+            serde_json::from_value($input.clone()).map_err(|e| invalid_arg(e, $op, &$input))?;
         Call {
             op: <$ty as Operation>::PATH,
             mutating: <$ty as Operation>::MUTATING,
@@ -94,20 +95,53 @@ pub fn route(op: &str, input: serde_json::Value) -> Result<Call, ApiError> {
 /// anything else structural is `invalid_argument` with the field serde
 /// named, because serde cannot always tell the two apart and the record's
 /// reason arms are what the client branches on.
-fn invalid_arg(e: serde_json::Error) -> ApiError {
+fn invalid_arg(e: serde_json::Error, op: &str, input: &serde_json::Value) -> ApiError {
     let msg = e.to_string();
-    let (field, reason) = if let Some(f) = extract_field(&msg, "unknown field `", "`") {
-        (f, InvalidReason::UnrecognisedField)
-    } else if let Some(f) = extract_field(&msg, "missing field `", "`") {
-        (f, InvalidReason::Missing)
-    } else {
-        ("in".to_string(), InvalidReason::Format)
-    };
-    ApiError::InvalidArgument { field, reason }
+
+    // status.post's label is a closed vocabulary; an unrecognized label is
+    // the operation's distinctive code, carrying the raw label.
+    if op == "status.post" && msg.contains("unknown variant") {
+        if let Some(label) = input.get("label").and_then(|l| l.as_str()) {
+            return ApiError::StatusLabelUnknown {
+                label: label.to_string(),
+            };
+        }
+    }
+
+    if let Some(f) = extract_field(&msg, "unknown field `", "`") {
+        return ApiError::InvalidArgument {
+            field: format!("in.{f}"),
+            reason: InvalidReason::UnrecognisedField,
+        };
+    }
+    if let Some(f) = extract_field(&msg, "missing field `", "`") {
+        return ApiError::InvalidArgument {
+            field: format!("in.{f}"),
+            reason: InvalidReason::Missing,
+        };
+    }
+    // A wrong JSON type: serde's "invalid type: X, expected Y" carries both.
+    if let Some(expected) = extract_field(&msg, "expected ", "") {
+        let expected = expected
+            .trim_start_matches(|c: char| !c.is_alphabetic())
+            .trim_end_matches(|c: char| !c.is_alphabetic())
+            .to_string();
+        return ApiError::InvalidArgument {
+            field: "in".to_string(),
+            reason: InvalidReason::Type { expected },
+        };
+    }
+    ApiError::InvalidArgument {
+        field: "in".to_string(),
+        reason: InvalidReason::Format,
+    }
 }
 
 fn extract_field(msg: &str, prefix: &str, suffix: &str) -> Option<String> {
     let start = msg.find(prefix)? + prefix.len();
+    if suffix.is_empty() {
+        return Some(msg[start..].to_string());
+    }
     let end = msg[start..].find(suffix)? + start;
     Some(msg[start..end].to_string())
 }
@@ -159,7 +193,7 @@ mod tests {
         match err {
             ApiError::InvalidArgument { field, reason } => {
                 assert_eq!(reason, InvalidReason::UnrecognisedField);
-                assert_eq!(field, "message");
+                assert_eq!(field, "in.message");
             }
             other => panic!("wrong error: {other:?}"),
         }

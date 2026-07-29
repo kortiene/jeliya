@@ -49,7 +49,7 @@ fn malformed_frames_fail_boundedly() {
             Err(
                 CodecError::FrameTooLarge { .. }
                 | CodecError::UnrecoverableId(_)
-                | CodecError::Malformed(_)
+                | CodecError::Malformed { .. }
                 | CodecError::GateRefused(_),
             ) => {}
             Ok(_) => panic!(
@@ -126,7 +126,9 @@ fn the_byte_ceiling_is_a_hard_boundary() {
 }
 
 /// An `in` carrying an out-of-vocabulary enum value is refused at
-// deserialization — closed vocabularies reject, never absorb.
+// deserialization — closed vocabularies reject, never absorb. For
+// status.post's label the refusal is the operation's own
+// `status_label_unknown`, not a generic structural error.
 #[test]
 fn out_of_vocabulary_values_are_refused() {
     let bounds = CodecBounds::default();
@@ -137,6 +139,9 @@ fn out_of_vocabulary_values_are_refused() {
     let err = decode(&serde_json::to_vec(&frame).unwrap(), &bounds).unwrap_err();
     assert!(matches!(
         err,
-        CodecError::Malformed(ApiError::InvalidArgument { .. })
+        CodecError::Malformed {
+            error: ApiError::StatusLabelUnknown { .. },
+            ..
+        }
     ));
 }

@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 pub enum Frame {
     /// A request: an envelope carrying a typed operation input.
     Request(Request),
-    /// A push from the client is not a thing in v2 — pushes flow
-    /// daemon-to-client. An inbound frame with `t` is malformed.
+    /// An inbound frame that is not a request: it has no place in v2's
+    /// client-to-daemon direction and is malformed. Carries the error.
     Malformed(ApiError),
 }
 
@@ -81,8 +81,11 @@ pub fn push_to_bytes(push: &Push) -> Vec<u8> {
 /// are `unrecognised_field` at routing.
 #[derive(Debug, Deserialize)]
 struct RawEnvelope {
-    id: serde_json::Value,
     op: String,
+    // Three states are load-bearing: the key omitted (None) is the only way
+    // `op_id` is absent; an explicit JSON null is forbidden everywhere in v2
+    // and must not silently become None. serde maps both to None by default,
+    // so presence is checked on the raw map before this struct is used.
     #[serde(default)]
     op_id: Option<OpId>,
     #[serde(rename = "in")]
@@ -97,43 +100,77 @@ pub(crate) fn decode_frame(bytes: &[u8], bounds: &CodecBounds) -> Result<Frame, 
     let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
         // If we cannot parse at all, try to recover an id for correlation.
         match recover_id(bytes) {
-            Some(_) => CodecError::Malformed(ApiError::MalformedFrame),
+            Some(id) => CodecError::Malformed {
+                id,
+                error: ApiError::MalformedFrame,
+            },
             None => CodecError::UnrecoverableId(e.to_string()),
         }
     })?;
 
-    check_bounds(&value, bounds, 0)?;
+    // An `id` that is present but not a usable unsigned integer is no
+    // correlation identifier at all — a null, string, negative, or float id
+    // cannot be echoed, so the frame takes the unrecoverable-id close, not
+    // the correlated-reply path.
+    let value_ref = &value;
+    let raw_id = value_ref.get("id");
+    let id: u64 = match raw_id {
+        Some(v) => v.as_u64().ok_or_else(|| {
+            CodecError::UnrecoverableId("frame id is not a usable unsigned integer".into())
+        })?,
+        None => {
+            return Err(CodecError::UnrecoverableId("frame carries no id".into()));
+        }
+    };
 
-    // A frame with `t` is a push; pushes do not flow client-to-daemon.
+    // A frame with `t` is a push; pushes do not flow client-to-daemon. Its
+    // id is already known usable, so this is the correlated path.
     if value.get("t").is_some() {
-        return Err(CodecError::Malformed(ApiError::MalformedFrame));
+        return Err(CodecError::Malformed {
+            id,
+            error: ApiError::MalformedFrame,
+        });
     }
 
-    // A frame with both id and t, or neither, is malformed.
-    let has_id = value.get("id").is_some();
-    if !has_id {
-        return Err(CodecError::UnrecoverableId("frame carries no id".into()));
+    // An explicit JSON null op_id is forbidden: omission is the only way the
+    // envelope's one optional field is absent, and a null must not silently
+    // become None and change the request's deduplication semantics.
+    if let Some(op_id_value) = value.get("op_id") {
+        if op_id_value.is_null() {
+            return Err(CodecError::Malformed {
+                id,
+                error: ApiError::InvalidArgument {
+                    field: "op_id".into(),
+                    reason: jeliya_api::InvalidReason::Type {
+                        expected: "string".into(),
+                    },
+                },
+            });
+        }
     }
 
-    let env: RawEnvelope = serde_json::from_value(value)
-        .map_err(|_| CodecError::Malformed(ApiError::MalformedFrame))?;
+    check_bounds(value_ref, bounds, 0).map_err(|error| CodecError::Malformed { id, error })?;
 
-    let id = env
-        .id
-        .as_u64()
-        .ok_or(CodecError::Malformed(ApiError::MalformedFrame))?;
+    let env: RawEnvelope = serde_json::from_value(value).map_err(|_| CodecError::Malformed {
+        id,
+        error: ApiError::MalformedFrame,
+    })?;
 
     if env.op.len() > bounds.max_op_len {
-        return Err(CodecError::Malformed(ApiError::InvalidArgument {
-            field: "op".into(),
-            reason: jeliya_api::InvalidReason::Bound {
-                min: 1,
-                max: bounds.max_op_len as u64,
+        return Err(CodecError::Malformed {
+            id,
+            error: ApiError::InvalidArgument {
+                field: "op".into(),
+                reason: jeliya_api::InvalidReason::Bound {
+                    min: 1,
+                    max: bounds.max_op_len as u64,
+                },
             },
-        }));
+        });
     }
 
-    let call = routing::route(&env.op, env.input).map_err(CodecError::Malformed)?;
+    let call =
+        routing::route(&env.op, env.input).map_err(|error| CodecError::Malformed { id, error })?;
 
     Ok(Frame::Request(Request {
         id,
@@ -161,26 +198,26 @@ fn check_bounds(
     value: &serde_json::Value,
     bounds: &CodecBounds,
     depth: usize,
-) -> Result<(), CodecError> {
+) -> Result<(), ApiError> {
     if depth > bounds.max_depth {
-        return Err(CodecError::Malformed(ApiError::InvalidArgument {
+        return Err(ApiError::InvalidArgument {
             field: "$".into(),
             reason: jeliya_api::InvalidReason::Bound {
                 min: 0,
                 max: bounds.max_depth as u64,
             },
-        }));
+        });
     }
     match value {
         serde_json::Value::Array(arr) => {
             if arr.len() > bounds.max_array_len {
-                return Err(CodecError::Malformed(ApiError::InvalidArgument {
+                return Err(ApiError::InvalidArgument {
                     field: "$".into(),
                     reason: jeliya_api::InvalidReason::Bound {
                         min: 0,
                         max: bounds.max_array_len as u64,
                     },
-                }));
+                });
             }
             for v in arr {
                 check_bounds(v, bounds, depth + 1)?;

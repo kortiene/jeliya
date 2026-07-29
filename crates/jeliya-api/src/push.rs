@@ -6,10 +6,21 @@
 //! localization is the client's job).
 
 use crate::ids::*;
-use crate::ops::ProviderRef;
 use crate::shared::*;
 use crate::types::Event;
 use serde::{Deserialize, Serialize};
+
+/// An attempted provider, carrying the same per-device link evidence
+/// `file.list` serves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttemptedProvider {
+    /// The provider's subject.
+    pub subject_id: SubjectId,
+    /// The provider's device.
+    pub device_id: DeviceId,
+    /// The link the attempt was made over, or why it was not connected.
+    pub link: Link,
+}
 
 // ---------------------------------------------------------------------------
 // Pushes — `t` is closed at four
@@ -477,8 +488,11 @@ pub enum ApiError {
     ProviderUnreachable {
         /// The file.
         file_id: FileId,
-        /// The provider rows that were tried.
-        providers: Vec<ProviderRef>,
+        /// The **attempted** provider rows, each `{subject_id, device_id,
+        /// link}` — the same per-device link evidence `file.list` carries,
+        /// so a client can say *why* each attempt failed, not only that the
+        /// fetch did.
+        providers: Vec<AttemptedProvider>,
     },
     /// Content did not verify. **Never returned for a size refusal.**
     DigestMismatch {
@@ -603,7 +617,9 @@ pub enum PairingCodeInvalidReason {
     Voided,
 }
 
-/// Which size-enforcement point fired.
+/// Which size-enforcement point fired. The record names **five daemon-side**
+/// points of the six in the shared-file size policy; the sixth is the
+/// client preflight, which by definition never reaches the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnforcedAt {
@@ -611,6 +627,13 @@ pub enum EnforcedAt {
     StageDeclared,
     /// The streamed total exceeded the declaration after the fact.
     StageStream,
+    /// An in-process authoring check rejected the share.
+    Authoring,
+    /// A fetch preflight refused the signed size before contacting a
+    /// provider.
+    FetchPreflight,
+    /// A fetch stream was aborted when the bytes exceeded the declaration.
+    FetchStream,
 }
 
 /// The closed `invalid_argument.reason` variant.
@@ -659,9 +682,11 @@ pub struct VersionInfo {
     pub limits: Limits,
 }
 
-/// The `hello` frame — the daemon's first frame after upgrade, exactly one.
-/// Carries no `pid`, no `port`, and no `data_dir`.
+/// The `hello` frame — the daemon's first frame after upgrade, exactly one,
+/// carrying `t: "hello"` as its discriminator. Carries no `pid`, no `port`,
+/// and no `data_dir`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "t", rename = "hello")]
 pub struct Hello {
     /// The protocol generation (always 2).
     pub protocol: u64,
