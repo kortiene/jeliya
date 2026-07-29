@@ -485,9 +485,13 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
                 if let Ok(ws) = websocket.await {
                     // Count the live connection for the `max_connections`
                     // gate; decrement on any exit path.
-                    state.connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .connections
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     serve_ws(ws, state.clone(), principal).await;
-                    state.connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .connections
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 }
             });
             response
@@ -904,9 +908,10 @@ pub async fn serve_ws<S>(
     // record's "no global broadcast" rule). Shared with the spawned request
     // tasks behind a mutex (only ever held for a map op, never across an
     // engine await).
-    let subscriptions = std::sync::Arc::new(tokio::sync::Mutex::new(
-        std::collections::HashMap::<String, u64>::new(),
-    ));
+    let subscriptions = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        u64,
+    >::new()));
     // The last position actually delivered to this connection per room, so a
     // backpressure lag can name a real resync point for each subscribed room.
     let mut last_delivered: std::collections::HashMap<String, u64> =
@@ -1237,7 +1242,10 @@ async fn handle_stream_resync(
 
 /// Authorize that the caller can see the room, returning `room_not_available`
 /// when it cannot. A `room.members` read enforces the access boundary.
-async fn authorize_room(state: &AppState, room_id: &jeliya_api::RoomId) -> Result<(), jeliya_api::ApiError> {
+async fn authorize_room(
+    state: &AppState,
+    room_id: &jeliya_api::RoomId,
+) -> Result<(), jeliya_api::ApiError> {
     let call = jeliya_core::typed::TypedCall::RoomMembers(jeliya_api::RoomMembers {
         room_id: room_id.clone(),
     });
@@ -1272,11 +1280,7 @@ async fn room_head_pos(
 }
 
 /// Encode a typed output as a reply frame and send it.
-async fn send_typed<O>(
-    out_tx: &tokio::sync::mpsc::Sender<Message>,
-    id: u64,
-    out: &O,
-) -> bool
+async fn send_typed<O>(out_tx: &tokio::sync::mpsc::Sender<Message>, id: u64, out: &O) -> bool
 where
     O: serde::Serialize,
 {
@@ -1286,7 +1290,8 @@ where
         out: serde_json::to_value(out).ok(),
         err: None,
     };
-    out_tx.send(Message::Binary(reply.to_bytes().into()))
+    out_tx
+        .send(Message::Binary(reply.to_bytes().into()))
         .await
         .is_ok()
 }
@@ -1303,7 +1308,8 @@ async fn send_api_err(
         out: None,
         err: Some(err),
     };
-    out_tx.send(Message::Binary(reply.to_bytes().into()))
+    out_tx
+        .send(Message::Binary(reply.to_bytes().into()))
         .await
         .is_ok()
 }

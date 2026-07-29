@@ -377,8 +377,8 @@ impl<'a> TypedSupervisor<'a> {
                 .map(proj::role)
                 .unwrap_or(Role::Member);
             let store = self.sup.open_store().map_err(core_to_api)?;
-            let (removed_ids, left_ids) = crate::supervisor::departure_sets(&store, &room_id)
-                .map_err(core_to_api)?;
+            let (removed_ids, left_ids) =
+                crate::supervisor::departure_sets(&store, &room_id).map_err(core_to_api)?;
             let standing = self_member.map(|m| {
                 proj::standing(
                     removed_ids.contains(&m.identity)
@@ -499,8 +499,8 @@ impl<'a> TypedSupervisor<'a> {
     ) -> Result<(), ApiError> {
         let self_key = self.sup.local_identity_key().map_err(core_to_api)?;
         let store = self.sup.open_store().map_err(core_to_api)?;
-        let (removed_ids, left_ids) = crate::supervisor::departure_sets(&store, room_id)
-            .map_err(core_to_api)?;
+        let (removed_ids, left_ids) =
+            crate::supervisor::departure_sets(&store, room_id).map_err(core_to_api)?;
         let standing = snapshot.member(&self_key).map_or(Standing::Active, |m| {
             proj::standing(
                 removed_ids.contains(&m.identity)
@@ -561,7 +561,8 @@ impl<'a> TypedSupervisor<'a> {
             ));
         }
         let events = self.committed_events(&room_id, &snapshot)?;
-        let (page, truncated) = page_events(events, Window::resolve(&req.page).map_err(api_to_core)?);
+        let (page, truncated) =
+            page_events(events, Window::resolve(&req.page).map_err(api_to_core)?);
         Ok(RoomArchiveOut {
             room_id: req.room_id.clone(),
             standing,
