@@ -1758,9 +1758,7 @@
               "path": "err.code",
               "op": "ne",
               "value": [
-                "identity_missing",
-                "invalid_argument",
-                "invalid_params"
+                "invalid_argument"
               ]
             }
           ],
@@ -2120,8 +2118,7 @@
               "op": "ne",
               "value": [
                 "room_not_available",
-                "invalid_argument",
-                "invalid_params"
+                "invalid_argument"
               ]
             }
           ],

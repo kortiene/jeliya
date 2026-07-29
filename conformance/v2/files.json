@@ -1135,9 +1135,7 @@
               "path": "err.code",
               "op": "ne",
               "value": [
-                "digest_mismatch",
-                "hash_mismatch",
-                "invalid_params"
+                "digest_mismatch"
               ]
             }
           ]
@@ -1845,9 +1843,7 @@
               "path": "err.code",
               "op": "ne",
               "value": [
-                "invalid_argument",
-                "room_unknown",
-                "forbidden"
+                "invalid_argument"
               ]
             }
           ]
@@ -2203,8 +2199,7 @@
               "path": "err.code",
               "op": "ne",
               "value": [
-                "digest_mismatch",
-                "hash_mismatch"
+                "digest_mismatch"
               ]
             }
           ]
@@ -3016,8 +3011,7 @@
               "op": "ne",
               "value": [
                 "invalid_argument",
-                "room_not_available",
-                "not_found"
+                "room_not_available"
               ]
             }
           ]
