@@ -1,0 +1,15 @@
+[package]
+name = "jeliya-api"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Clean-slate typed API for Jeliya protocol v2: requests with compile-time-paired outputs, pushes, errors, and view models for every approved operation. No Iroh, no WebSocket, no Dioxus, no serde_json::Value in public types."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+time = { version = "0.3", features = ["serde", "macros"] }
+
+[dev-dependencies]
+serde_json = "1"
