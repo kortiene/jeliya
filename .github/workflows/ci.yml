@@ -276,7 +276,9 @@ jobs:
       # from its own tags until then.
 
   rust-runtime:
-    name: Rust + protocol-v2 conformance
+    # The job name is a required status check in the main-branch protection
+    # rule, so it must not be renamed without updating that rule.
+    name: Rust + Dart + smoke + E2E + protocol conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
