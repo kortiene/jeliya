@@ -27,7 +27,9 @@ pub mod fleet;
 pub mod identity;
 pub mod localstate;
 pub mod materializer;
+pub mod projection;
 pub mod supervisor;
+pub mod typed;
 
 pub use engine::{Engine, EngineConfig, PROTOCOL_VERSION};
 pub use error::{CoreError, CoreResult, ErrorKind};

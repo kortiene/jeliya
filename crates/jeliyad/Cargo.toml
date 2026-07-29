@@ -23,6 +23,11 @@ relay-only-test = ["jeliya-core/relay-only-test"]
 
 [dependencies]
 jeliya-core = { path = "../jeliya-core" }
+# The protocol-v2 codec (#164): the only JSON in the protocol. jeliyad's `/ws`
+# is v2-only through it — the generation gate, bounded envelopes, and
+# exhaustive routing live here, never in the daemon.
+jeliya-codec = { path = "../jeliya-codec" }
+jeliya-api = { path = "../jeliya-api" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tokio-tungstenite = "0.26"

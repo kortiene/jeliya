@@ -1,0 +1,13 @@
+{
+  "name": "jeliya-v2-conformance-harness",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Replay harness for the protocol-v2 conformance corpus against a live jeliyad. Not published.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

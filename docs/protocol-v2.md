@@ -5,7 +5,7 @@ description: "Normative clean-slate contract between the typed Rust core and eve
 tags: ["clean-slate", "conformance", "protocol", "security"]
 timestamp: "2026-07-28T15:26:05Z"
 status: "canonical"
-implementation_status: "planned"
+implementation_status: "partial"
 verification_status: "unverified"
 release_status: "unreleased"
 audience: ["client-authors", "contributors", "maintainers"]
@@ -14,15 +14,22 @@ audience: ["client-authors", "contributors", "maintainers"]
 # Jeliya protocol v2
 
 **Status: CANONICAL 2026-07-29. The contract is complete and its corpus is
-normalized to it (#213). Nothing in this record is built.** Protocol v2
+normalized to it (#213). The typed core and v2-only daemon are implemented
+(#165/#166); the client runtime and platform adapters are not.** Protocol v2
 is the wire contract for the clean-slate client stack in the
 [Dioxus clean-slate architecture](dioxus-architecture.md). It replaces
 [protocol v1](PROTOCOL.md) outright: one generation at a time, no dual support,
 no migration, no rollback artifact.
 
-Read every statement below as a requirement on unwritten code. The released
-`v0.6.x` line speaks v1 and keeps doing so until it is retired. This document
-satisfies #161; the typed `jeliya-api` crate (#163), the codec (#164), and the
+The released `v0.6.x` line speaks v1 and keeps doing so until it is retired.
+The typed `jeliya-api` crate (#163), the codec (#164), the typed core
+projections and v2-only `jeliyad` (#165/#166) implement this record's daemon
+half: `jeliyad` is v2-only, refuses a v1 client `426 protocol_unsupported` at
+the pre-upgrade generation gate, and serves typed operations and pushes with
+no public JSON or compatibility facade. A v2 conformance-corpus replay harness
+against the live daemon is a follow-up; the corpus is today validated
+shape-wise by `scripts/check-v2-corpus.mjs`. This document satisfies #161; the
+typed `jeliya-api` crate (#163), the codec (#164), and the
 Engine cutover (#165/#166) implement it.
 
 **v1 is inventory, not authority.** Its 24 methods were mined for the

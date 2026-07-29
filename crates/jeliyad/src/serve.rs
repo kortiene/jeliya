@@ -141,10 +141,28 @@ async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Res
         return preflight(&req);
     }
     if path == "/api/session" {
-        if req.method() != Method::GET {
-            return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        // v2's ticket issuance: `POST /api/session` proves possession of the
+        // daemon token (`Authorization: Bearer <token>`) and returns a
+        // short-TTL, single-use connect ticket the client redeems once as
+        // `?ct=` — never the long-lived bearer itself, which must not be
+        // placed in a URL. The pairing-code browser flow
+        // (`POST /api/session` with a `pairing_code` body) and
+        // `/api/session/ticket` are a documented follow-up to #166; the v1
+        // browser GET handshake is retained meanwhile for the served UI.
+        match *req.method() {
+            Method::POST => {
+                if !token_ok(&req, &state) {
+                    return unauthorized(local_origin(&req));
+                }
+                let (ticket, expires_at) = mint_connect_ticket(&state);
+                return json_response(
+                    StatusCode::OK,
+                    json!({ "ticket": ticket, "expires_at": expires_at }),
+                );
+            }
+            Method::GET => return session(&req, &state),
+            _ => return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
         }
-        return session(&req, &state);
     }
     if path == "/api/files/share" {
         if req.method() != Method::POST {
@@ -172,11 +190,15 @@ async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Res
     serve_static(&path, &ui)
 }
 
-/// Liveness + identity for the supervision contract (docs/PROTOCOL.md): a
-/// parent deciding whether to adopt a running daemon checks that the process
-/// answering the advertised port is the portfile's pid on the same data dir.
-/// Deliberately unauthenticated (loopback Host only) and secret-free.
+/// Liveness + the v2 discovery object (docs/protocol-v2.md Layer 0): a parent
+/// deciding whether to adopt a running daemon checks the answering process's
+/// `pid` and `port`, and a v2 client reads the `storage_generation` it must
+/// present at the upgrade gate. `data_dir` is removed — an unauthenticated
+/// endpoint must not leak an absolute filesystem path, and the adoption check
+/// needs only pid/port. Deliberately unauthenticated (loopback Host only) and
+/// secret-free.
 fn health(state: &AppState) -> Response<Full<Bytes>> {
+    let info = version_info(state);
     json_response(
         StatusCode::OK,
         json!({
@@ -184,10 +206,52 @@ fn health(state: &AppState) -> Response<Full<Bytes>> {
             "pid": std::process::id(),
             "port": state.port,
             "version": env!("CARGO_PKG_VERSION"),
-            "protocol": crate::PROTOCOL_VERSION,
-            "data_dir": state.data_dir.display().to_string(),
+            "protocol": info.protocol,
+            "min_protocol": info.min_protocol,
+            "storage_generation": info.storage_generation,
+            "limits": info.limits,
         }),
     )
+}
+
+/// The shared `{protocol, min_protocol, storage_generation, limits}` object —
+/// Layer 0 health, the ready line, and the portfile carry an identical one so
+/// the three producers can never drift apart.
+pub(crate) fn version_info(state: &AppState) -> jeliya_api::VersionInfo {
+    jeliya_api::VersionInfo {
+        protocol: jeliya_core::engine::PROTOCOL_VERSION,
+        min_protocol: jeliya_core::engine::MIN_PROTOCOL_VERSION,
+        storage_generation: jeliya_core::engine::STORAGE_GENERATION,
+        limits: state.engine.limits(),
+    }
+}
+
+/// The connect-ticket TTL (matches the served `browser_session_ttl_ms` policy
+/// bound for a fresh ticket).
+const CONNECT_TICKET_TTL_MS: u64 = 60_000;
+
+/// Mint a single-use connect ticket and record its expiry. The ticket is a
+/// fresh 256-bit opaque value, never derived from the daemon token.
+fn mint_connect_ticket(state: &AppState) -> (String, u64) {
+    let mut bytes = [0u8; 32];
+    let _ = getrandom::fill(&mut bytes);
+    let ticket = hex::encode(bytes);
+    let expires_at = jeliya_core::now_ms() + CONNECT_TICKET_TTL_MS;
+    let mut tickets = state.connect_tickets.lock().expect("tickets poisoned");
+    // Bound the outstanding set by dropping expired entries on each mint.
+    tickets.retain(|_, exp| *exp > jeliya_core::now_ms());
+    tickets.insert(ticket.clone(), expires_at);
+    (ticket, expires_at)
+}
+
+/// Redeem a connect ticket, burning it. Returns `true` iff the ticket was
+/// outstanding, unexpired, and is now consumed.
+fn redeem_connect_ticket(state: &AppState, ticket: &str) -> bool {
+    let mut tickets = state.connect_tickets.lock().expect("tickets poisoned");
+    match tickets.remove(ticket) {
+        Some(exp) => exp > jeliya_core::now_ms(),
+        None => false,
+    }
 }
 
 /// Hand the WS auth token to the browser UI. Two browser shapes reach here:
@@ -347,32 +411,68 @@ fn apply_cors(
     response
 }
 
-/// The WebSocket handshake gate: a remote-`Origin` page is refused (cross-site
-/// WebSocket hijacking), and every client — browser or native — must present
-/// the per-start auth token (`?token=` or `Authorization: Bearer`). The
-/// browser UI gets its token from `/api/session`; native clients read the
-/// portfile.
+/// The WebSocket handshake: the protocol-v2 generation gate runs **before**
+/// any upgrade, frame parse, or dispatch — the only point provably before
+/// mutation. A remote `Origin` is refused (cross-site WebSocket hijacking);
+/// `v` must name the supported generation and `sg` the storage generation; a
+/// per-start credential authenticates the connection. A v1 client (no `v`)
+/// is refused `426 protocol_unsupported` here, never reaching the engine.
 fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Bytes>> {
-    // Cross-Site WebSocket Hijacking guard: reject any request whose `Origin`
-    // is a real remote site. Non-browser clients send no `Origin` (allowed
-    // past this gate; the token gate below still applies); the same-origin
-    // served UI sends a loopback `Origin` (allowed).
-    if let Some(origin) = req.headers().get(ORIGIN) {
-        let allowed = origin.to_str().map(is_local_origin).unwrap_or(false);
-        if !allowed {
+    let headers = req.headers();
+    let host = headers
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let origin = headers
+        .get(ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let query = parse_query(req.uri().query().unwrap_or(""));
+    let v = query.get("v").and_then(|s| s.parse::<u64>().ok());
+    let sg = query.get("sg").and_then(|s| s.parse::<u64>().ok());
+    let cid = query.get("cid").cloned();
+    // The credential is the daemon bearer (`?token=` / `Authorization:
+    // Bearer`) OR a single-use connect ticket (`?ct=`), which is burned on
+    // redemption. Both map to the same authenticated principal.
+    let credential = match query.get("ct") {
+        Some(ct) if !ct.is_empty() => {
+            if redeem_connect_ticket(&state, ct) {
+                Some(state.auth_token.as_str().to_owned())
+            } else {
+                None // a spent/unknown/expired ticket is not a credential
+            }
+        }
+        _ => presented_token(req),
+    };
+
+    let max_connections = state.engine.limits().max_connections;
+    let live = state.connections.load(std::sync::atomic::Ordering::Relaxed);
+    let decision = jeliya_codec::gate(&jeliya_codec::GateParams {
+        host,
+        origin,
+        v,
+        sg,
+        credential,
+        at_capacity: live >= max_connections,
+        max_connections,
+        cid,
+        daemon_sg: jeliya_core::engine::STORAGE_GENERATION,
+        expected_credential: state.auth_token.as_str().to_owned(),
+    });
+    let principal = match decision {
+        Ok(jeliya_codec::GateDecision::Admit(p)) => p,
+        Ok(jeliya_codec::GateDecision::Refuse(rejection)) => {
+            return gate_refusal(rejection);
+        }
+        Err(err) => {
             return text(
-                StatusCode::FORBIDDEN,
-                "forbidden: cross-origin WebSocket connections are refused",
+                StatusCode::BAD_REQUEST,
+                Box::leak(format!("gate error: {err}").into_boxed_str()),
             );
         }
-    }
-    if !token_ok(req, &state) {
-        return text(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized: connect with ?token=<auth_token>; the browser UI gets one \
-             from /api/session, native clients read daemon.json in the data dir",
-        );
-    }
+    };
+
     if !hyper_tungstenite::is_upgrade_request(&*req) {
         return text(
             StatusCode::BAD_REQUEST,
@@ -383,13 +483,34 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
         Ok((response, websocket)) => {
             tokio::spawn(async move {
                 if let Ok(ws) = websocket.await {
-                    serve_ws(ws, state).await;
+                    // Count the live connection for the `max_connections`
+                    // gate; decrement on any exit path.
+                    state
+                        .connections
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    serve_ws(ws, state.clone(), principal).await;
+                    state
+                        .connections
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 }
             });
             response
         }
         Err(_) => text(StatusCode::BAD_REQUEST, "malformed websocket upgrade"),
     }
+}
+
+/// The pre-upgrade gate refusal: the codec's bare error body plus its HTTP
+/// status (403/401/426/503). No JSON envelope — the upgrade never happened.
+fn gate_refusal(rejection: jeliya_codec::GateRejection) -> Response<Full<Bytes>> {
+    let status = StatusCode::from_u16(rejection.status).unwrap_or(StatusCode::FORBIDDEN);
+    let body = serde_json::to_string(&rejection.body)
+        .unwrap_or_else(|_| "{\"code\":\"forbidden_origin\"}".to_owned());
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Full::new(Bytes::from(body)))
+        .expect("gate refusal is well-formed")
 }
 
 /// Serve a verified local file copy by `(room_id, file_id)`. The browser never
@@ -747,47 +868,563 @@ fn serve_static(path: &str, ui: &UiSource) -> Response<Full<Bytes>> {
     text(StatusCode::NOT_FOUND, "not found")
 }
 
-/// One WebSocket client: JSON text frames dispatched to the engine's
-/// `handle_frame`, interleaved with broadcast pushes. Generic over the
-/// upgraded stream type so the exact same loop drives the hyper-upgraded
-/// socket.
-pub async fn serve_ws<S>(ws: WebSocketStream<S>, state: AppState)
-where
-    S: AsyncRead + AsyncWrite + Unpin,
+/// One v2 WebSocket connection. The daemon's first frame is exactly one
+/// `hello`; thereafter each inbound text frame is decoded by the codec into a
+/// typed call, executed by the engine, and its typed reply encoded back —
+/// interleaved with typed pushes. A frame over the limit closes `4005`; a
+/// frame whose `id` cannot be recovered closes `4007`; any other malformed
+/// frame gets a correlated error reply so one bad request never strands the
+/// others in flight. A lagged push receiver is told to resync (the one
+/// resync path), never silently continued.
+pub async fn serve_ws<S>(
+    ws: WebSocketStream<S>,
+    state: AppState,
+    _principal: jeliya_codec::SessionPrincipal,
+) where
+    // `Send + 'static` so the single-writer task and the spawned request tasks
+    // can own the socket and engine handles across threads.
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (mut sink, mut messages) = ws.split();
     let mut push_rx = state.engine.subscribe_pushes();
+    let bounds = jeliya_codec::CodecBounds::default();
+
+    // All outbound frames flow through ONE writer task over an mpsc channel,
+    // so a slow request's execution never head-of-line blocks a push, a ping,
+    // or another request's reply. Replies may complete out of order — the
+    // record allows that and the client correlates by `id`.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(256);
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            if sink.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // This connection's room subscriptions: `stream.subscribe` adds a room
+    // with the position the client's stream begins at; `stream.unsubscribe`
+    // removes it; pushes are gated on it (no push before subscribe, per the
+    // record's "no global broadcast" rule). Shared with the spawned request
+    // tasks behind a mutex (only ever held for a map op, never across an
+    // engine await).
+    let subscriptions = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+        String,
+        u64,
+    >::new()));
+    // The last position actually delivered to this connection per room, so a
+    // backpressure lag can name a real resync point for each subscribed room.
+    let mut last_delivered: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+
+    // The `hello` frame: exactly one, first, carrying the generation, the
+    // storage generation, the served limits, and the local subject. An
+    // unreadable subject store is `not_ready` — refuse the connection rather
+    // than inviting `subject.ensure` against state that cannot be served.
+    let subject = match state.engine.subject_state() {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = out_tx
+                .send(Message::Close(Some(
+                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4003.into(),
+                        reason: "not_ready".into(),
+                    },
+                )))
+                .await;
+            writer.abort();
+            return;
+        }
+    };
+    let hello = jeliya_api::Hello {
+        protocol: jeliya_core::engine::PROTOCOL_VERSION,
+        storage_generation: jeliya_core::engine::STORAGE_GENERATION,
+        limits: state.engine.limits(),
+        subject,
+        resume: jeliya_api::Resume::Fresh,
+    };
+    match serde_json::to_vec(&hello) {
+        Ok(bytes) => {
+            if out_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                writer.abort();
+                return;
+            }
+        }
+        Err(_) => {
+            writer.abort();
+            return;
+        }
+    }
+
+    // Track in-flight request tasks so the loop never serializes on a slow
+    // operation; a finished task's result is reaped without blocking.
+    let mut inflight: tokio::task::JoinSet<bool> = tokio::task::JoinSet::new();
+
+    // The served idle timeout: a connection with no inbound activity for
+    // `idle_timeout_ms` is closed with 4004. Reset on any inbound frame.
+    let idle_ms = state.engine.limits().idle_timeout_ms;
+    let idle_deadline = tokio::time::sleep(tokio::time::Duration::from_millis(idle_ms));
+    tokio::pin!(idle_deadline);
 
     loop {
         tokio::select! {
             msg = messages.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    let reply = state.engine.handle_frame(text.as_str()).await;
-                    if sink.send(Message::text(reply)).await.is_err() {
+                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
+                    if !dispatch_inbound(text.as_bytes(), &state, &bounds, &subscriptions, &out_tx, &mut inflight).await {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Binary(bytes))) => {
+                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
+                    if !dispatch_inbound(&bytes, &state, &bounds, &subscriptions, &out_tx, &mut inflight).await {
                         break;
                     }
                 }
                 Some(Ok(Message::Ping(payload))) => {
-                    if sink.send(Message::Pong(payload)).await.is_err() {
+                    if out_tx.send(Message::Pong(payload)).await.is_err() {
                         break;
                     }
                 }
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                Some(Ok(_)) => {} // binary/pong frames: ignored
+                Some(Ok(_)) => {} // pong frames: ignored
             },
+            () = &mut idle_deadline => {
+                // No inbound activity for the served idle window: close 4004.
+                let _ = out_tx
+                    .send(Message::Close(Some(
+                        tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                            code: 4004.into(),
+                            reason: "idle_timeout".into(),
+                        },
+                    )))
+                    .await;
+                break;
+            }
             push = push_rx.recv() => match push {
-                Ok(frame) => {
-                    if sink.send(Message::text(frame)).await.is_err() {
-                        break;
+                Ok(push) => {
+                    // Gate delivery on this connection's subscriptions: a push
+                    // for a room the connection has not subscribed to is not
+                    // delivered (the record's no-global-broadcast rule), and a
+                    // push is never a membership oracle.
+                    let room = push_room_id(&push).map(str::to_owned);
+                    let subscribed = {
+                        let subs = subscriptions.lock().await;
+                        room.as_ref().map(|r| subs.contains_key(r)).unwrap_or(false)
+                    };
+                    if subscribed {
+                        // Track the last-delivered position per room so a later
+                        // lag can name a real resync point for that room.
+                        if let (Some(r), Some(pos)) = (room.as_ref(), push_pos(&push)) {
+                            last_delivered.insert(r.clone(), pos);
+                        }
+                        let bytes = jeliya_codec::push_to_bytes(&push);
+                        if out_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
                     }
                 }
-                // A lagged subscriber just misses pushes; the request/response
-                // surface (room.timeline / peers.status) re-syncs it.
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                // A lagged receiver fell behind the push fan-out. v2 never
+                // silently continues: emit an explicit gap for EACH subscribed
+                // room from its last-delivered position, so the client can
+                // resync each affected room rather than getting one unusable
+                // global frame.
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let rooms: Vec<String> = {
+                        let subs = subscriptions.lock().await;
+                        subs.keys().cloned().collect()
+                    };
+                    for room in rooms {
+                        let from_pos = last_delivered.get(&room).copied().unwrap_or(0);
+                        let gap = jeliya_api::Push::Gap {
+                            room_id: jeliya_api::RoomId::new(room),
+                            from_pos,
+                            to: jeliya_api::GapTo::Open,
+                            reason: jeliya_api::GapReason::Backpressure,
+                        };
+                        let bytes = jeliya_codec::push_to_bytes(&gap);
+                        if out_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
+            // Reap finished request tasks without blocking the loop.
+            Some(_) = inflight.join_next() => {}
         }
     }
+
+    // Teardown: stop accepting new work, drain in-flight replies, then drop
+    // the writer task.
+    inflight.abort_all();
+    drop(out_tx);
+    let _ = writer.await;
+}
+
+/// The room a push is scoped to, for subscription gating. `transfer` frames
+/// are principal-scoped (not room-gated) and `gap` may name no room yet.
+fn push_room_id(push: &jeliya_api::Push) -> Option<&str> {
+    match push {
+        jeliya_api::Push::Event { room_id, .. } => Some(room_id.as_str()),
+        jeliya_api::Push::Gap { room_id, .. } => Some(room_id.as_str()),
+        jeliya_api::Push::Peer { room_id, .. } => Some(room_id.as_str()),
+        jeliya_api::Push::Transfer { .. } => None,
+    }
+}
+
+/// The position an event push carries (for last-delivered tracking). Peer,
+/// gap, and transfer pushes carry no event position.
+fn push_pos(push: &jeliya_api::Push) -> Option<u64> {
+    match push {
+        jeliya_api::Push::Event { event, .. } => Some(event.pos),
+        _ => None,
+    }
+}
+
+/// The served `max_subscriptions_per_connection`.
+const MAX_SUBSCRIPTIONS: u64 = 64;
+
+/// `stream.subscribe` — add the room to this connection's subscription set.
+/// Naturally idempotent; exceeding the served limit is
+/// `subscription_limit_reached`, never a silent drop.
+async fn handle_stream_subscribe(
+    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    state: &AppState,
+    request: &jeliya_codec::Request,
+    subscriptions: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
+) -> bool {
+    // Extract owned values up front so no `&Request` (non-Sync) is held
+    // across an await.
+    let id = request.id;
+    let req = match request
+        .call
+        .input_any()
+        .downcast_ref::<jeliya_api::StreamSubscribe>()
+    {
+        Some(r) => r.clone(),
+        None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
+    };
+    let room_key = req.room_id.to_string();
+    let mut subs = subscriptions.lock().await;
+    if !subs.contains_key(&room_key) && subs.len() as u64 >= MAX_SUBSCRIPTIONS {
+        return send_api_err(
+            out_tx,
+            id,
+            jeliya_api::ApiError::SubscriptionLimitReached {
+                limit: MAX_SUBSCRIPTIONS,
+            },
+        )
+        .await;
+    }
+    // Authorize the room before recording any subscription: an unknown,
+    // malformed, or inaccessible room is `room_not_available`, never a dormant
+    // subscription that later springs to life.
+    let from_pos = match &req.from {
+        jeliya_api::Cursor::Start => match room_head_pos(state, &req.room_id).await {
+            Ok(pos) => pos,
+            Err(err) => return send_api_err(out_tx, id, err).await,
+        },
+        jeliya_api::Cursor::At { pos } => {
+            // An explicit position still requires the room to be visible.
+            match authorize_room(state, &req.room_id).await {
+                Ok(()) => *pos,
+                Err(err) => return send_api_err(out_tx, id, err).await,
+            }
+        }
+    };
+    subs.insert(room_key, from_pos);
+    send_typed(
+        out_tx,
+        id,
+        &jeliya_api::StreamSubscribeOut {
+            room_id: req.room_id,
+            from_pos,
+        },
+    )
+    .await
+}
+
+/// `stream.unsubscribe` — remove the room from this connection's set.
+async fn handle_stream_unsubscribe(
+    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    request: &jeliya_codec::Request,
+    subscriptions: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
+) -> bool {
+    let id = request.id;
+    let req = match request
+        .call
+        .input_any()
+        .downcast_ref::<jeliya_api::StreamUnsubscribe>()
+    {
+        Some(r) => r.clone(),
+        None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
+    };
+    let mut subs = subscriptions.lock().await;
+    if subs.remove(&req.room_id.to_string()).is_none() {
+        return send_api_err(
+            out_tx,
+            id,
+            jeliya_api::ApiError::SubscriptionUnknown {
+                room_id: req.room_id.clone(),
+            },
+        )
+        .await;
+    }
+    send_typed(
+        out_tx,
+        id,
+        &jeliya_api::StreamUnsubscribeOut {
+            room_id: req.room_id,
+            unsubscribed: true,
+        },
+    )
+    .await
+}
+
+/// `stream.resync` — the authoritative recovery: events since `from_pos`, or
+/// `resync_required` naming a position to discard back to.
+async fn handle_stream_resync(
+    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    state: &AppState,
+    request: &jeliya_codec::Request,
+) -> bool {
+    let id = request.id;
+    let req = match request
+        .call
+        .input_any()
+        .downcast_ref::<jeliya_api::StreamResync>()
+    {
+        Some(r) => r.clone(),
+        None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
+    };
+    // Read the committed events after from_pos via the engine's typed
+    // timeline, starting the page AT from_pos (positions are exclusive on the
+    // low side, so `at {pos: from_pos + 1}` reads strictly after it) rather
+    // than reading the head and filtering — a room longer than one page must
+    // not hide its tail.
+    let call = jeliya_core::typed::TypedCall::RoomTimeline(jeliya_api::RoomTimeline {
+        room_id: req.room_id.clone(),
+        page: jeliya_api::Page {
+            cursor: jeliya_api::Cursor::At {
+                pos: req.from_pos.saturating_add(1),
+            },
+            direction: jeliya_api::Direction::Forward,
+            limit: 1024,
+        },
+    });
+    let executed = state.engine.execute(call).await;
+    let events: Vec<jeliya_api::Event> = match executed.reply {
+        Ok(jeliya_core::typed::TypedReply::RoomTimeline(out)) => out.events,
+        Ok(_) => Vec::new(),
+        Err(err) => return send_api_err(out_tx, id, err).await,
+    };
+    let next_pos = events.last().map(|e| e.pos).unwrap_or(req.from_pos);
+    let truncated = if events.len() >= 1024 {
+        jeliya_api::Truncated::More {
+            cursor: jeliya_api::Cursor::At { pos: next_pos },
+        }
+    } else {
+        jeliya_api::Truncated::Complete
+    };
+    send_typed(
+        out_tx,
+        request.id,
+        &jeliya_api::StreamResyncOut {
+            room_id: req.room_id.clone(),
+            events,
+            next_pos,
+            truncated,
+        },
+    )
+    .await
+}
+
+/// Authorize that the caller can see the room, returning `room_not_available`
+/// when it cannot. A `room.members` read enforces the access boundary.
+async fn authorize_room(
+    state: &AppState,
+    room_id: &jeliya_api::RoomId,
+) -> Result<(), jeliya_api::ApiError> {
+    let call = jeliya_core::typed::TypedCall::RoomMembers(jeliya_api::RoomMembers {
+        room_id: room_id.clone(),
+    });
+    match state.engine.execute(call).await.reply {
+        Ok(_) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// The room's current head position (the next position a `start` cursor
+/// resolves to), or the access error if the room is not visible.
+async fn room_head_pos(
+    state: &AppState,
+    room_id: &jeliya_api::RoomId,
+) -> Result<u64, jeliya_api::ApiError> {
+    authorize_room(state, room_id).await?;
+    let call = jeliya_core::typed::TypedCall::RoomTimeline(jeliya_api::RoomTimeline {
+        room_id: room_id.clone(),
+        page: jeliya_api::Page {
+            cursor: jeliya_api::Cursor::Start,
+            direction: jeliya_api::Direction::Backward,
+            limit: 1,
+        },
+    });
+    match state.engine.execute(call).await.reply {
+        Ok(jeliya_core::typed::TypedReply::RoomTimeline(out)) => {
+            Ok(out.events.last().map(|e| e.pos + 1).unwrap_or(0))
+        }
+        Ok(_) => Ok(0),
+        Err(err) => Err(err),
+    }
+}
+
+/// Encode a typed output as a reply frame and send it.
+async fn send_typed<O>(out_tx: &tokio::sync::mpsc::Sender<Message>, id: u64, out: &O) -> bool
+where
+    O: serde::Serialize,
+{
+    let reply = jeliya_codec::Reply {
+        id,
+        ok: true,
+        out: serde_json::to_value(out).ok(),
+        err: None,
+    };
+    out_tx
+        .send(Message::Binary(reply.to_bytes().into()))
+        .await
+        .is_ok()
+}
+
+/// Encode a typed API error as a reply frame and send it.
+async fn send_api_err(
+    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    id: u64,
+    err: jeliya_api::ApiError,
+) -> bool {
+    let reply = jeliya_codec::Reply {
+        id,
+        ok: false,
+        out: None,
+        err: Some(err),
+    };
+    out_tx
+        .send(Message::Binary(reply.to_bytes().into()))
+        .await
+        .is_ok()
+}
+
+/// Decode one inbound frame and route it. Connection-terminating frames (over
+/// the limit → `4005`, unrecoverable id → `4007`) are decided synchronously;
+/// well-formed requests are executed on a spawned task so a slow operation
+/// never head-of-line blocks the push fan-out or other requests. Returns
+/// `false` when the connection must close.
+async fn dispatch_inbound(
+    bytes: &[u8],
+    state: &AppState,
+    bounds: &jeliya_codec::CodecBounds,
+    subscriptions: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    inflight: &mut tokio::task::JoinSet<bool>,
+) -> bool {
+    use jeliya_codec::CodecError;
+    let frame = match jeliya_codec::decode(bytes, bounds) {
+        Ok(frame) => frame,
+        Err(CodecError::FrameTooLarge { .. }) => {
+            let _ = out_tx
+                .send(Message::Close(Some(
+                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4005.into(),
+                        reason: "frame_too_large".into(),
+                    },
+                )))
+                .await;
+            return false;
+        }
+        Err(CodecError::UnrecoverableId(_)) => {
+            let _ = out_tx
+                .send(Message::Close(Some(
+                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4007.into(),
+                        reason: "malformed_frame".into(),
+                    },
+                )))
+                .await;
+            return false;
+        }
+        Err(CodecError::Malformed { id, error }) => {
+            let reply = jeliya_codec::Reply::from_result::<jeliya_api::RoomList>(id, Err(error));
+            return out_tx
+                .send(Message::Binary(reply.to_bytes().into()))
+                .await
+                .is_ok();
+        }
+        Err(CodecError::GateRefused(_)) => {
+            return false;
+        }
+    };
+
+    let jeliya_codec::Frame::Request(request) = frame else {
+        // An inbound non-request frame has no place client-to-daemon.
+        return true;
+    };
+
+    // The three stream operations are connection-scoped: they read and mutate
+    // THIS connection's subscription set, never the supervisor. They are fast
+    // (map ops plus one engine read), so run them inline.
+    match request.call.op {
+        "stream.subscribe" => {
+            return handle_stream_subscribe(out_tx, state, &request, subscriptions).await;
+        }
+        "stream.unsubscribe" => {
+            return handle_stream_unsubscribe(out_tx, &request, subscriptions).await;
+        }
+        "stream.resync" => {
+            return handle_stream_resync(out_tx, state, &request).await;
+        }
+        _ => {}
+    }
+
+    let Some(call) = jeliya_core::typed::resolve_call(request.call.op, request.call.input_any())
+    else {
+        let reply = jeliya_codec::Reply::from_result::<jeliya_api::RoomList>(
+            request.id,
+            Err(jeliya_api::ApiError::MalformedFrame),
+        );
+        return out_tx
+            .send(Message::Binary(reply.to_bytes().into()))
+            .await
+            .is_ok();
+    };
+
+    // Execute on a spawned task so a slow op (file.fetch, pipe.connect) does
+    // not block the loop. `daemon.stop` is sequenced by the engine; its reply
+    // is flushed by the writer before teardown.
+    let id = request.id;
+    let engine = state.engine.clone();
+    let out_tx = out_tx.clone();
+    inflight.spawn(async move {
+        let executed = engine.execute(call).await;
+        let reply = match executed.reply {
+            Ok(out) => jeliya_codec::Reply {
+                id,
+                ok: true,
+                out: serde_json::to_value(out).ok(),
+                err: None,
+            },
+            Err(err) => jeliya_codec::Reply {
+                id,
+                ok: false,
+                out: None,
+                err: Some(err),
+            },
+        };
+        out_tx
+            .send(Message::Binary(reply.to_bytes().into()))
+            .await
+            .is_ok()
+    });
+    true
 }
 
 /// Reject path traversal and produce a clean relative asset key.

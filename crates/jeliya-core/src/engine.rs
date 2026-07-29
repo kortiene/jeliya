@@ -1,115 +1,103 @@
-//! The transport-free engine facade: protocol dispatch (one JSON request
-//! frame in, exactly one JSON response frame out, with the envelope and error
-//! codes from `docs/PROTOCOL.md`) plus the push fan-out, moved verbatim from
-//! the `jeliyad` daemon so every transport — the WebSocket daemon, the mobile
-//! FFI shim — drives the same implementation and the golden conformance
-//! corpus holds for all of them by construction.
+//! The transport-free typed engine: one typed operation in, its typed output
+//! out, plus the typed push fan-out, moved to the protocol-v2 surface (#166).
+//! Every transport — the WebSocket daemon, an in-process host — drives this
+//! same typed implementation, so the protocol-v2 contract holds for all of
+//! them by construction.
 //!
-//! The engine owns everything below the transport line: the 24-method
-//! dispatch table, the request/response envelope, and the room-event /
-//! peers-changed push broadcast. Everything transport-specific (sockets,
-//! auth tokens, portfiles, process lifecycle) stays with the host, which
-//! supplies its facts through [`EngineConfig`].
+//! The engine owns everything below the transport line and nothing wire-side:
+//! it never sees JSON, a frame, or a method string. The codec (#164) decodes a
+//! request into a typed [`Call`]; the engine resolves it into a
+//! [`crate::typed::TypedCall`] and executes it against the supervisor; the
+//! codec encodes the typed reply. The generation gate, the envelope, and all
+//! JSON live in the codec and the host — never here.
+//!
+//! v2-only by construction: there is no v1 dispatch table and no compatibility
+//! facade. A legacy client is refused at the codec's generation gate, before
+//! any frame is parsed or any dispatch occurs.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde_json::{json, Value};
+use jeliya_api::{ApiError, Event, PeerRow, Push, RoomId, SubjectState};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::error::{CoreError, CoreResult, ErrorKind};
-use crate::{identity, supervisor::RoomSupervisor};
+use crate::error::{CoreResult, ErrorKind};
+use crate::supervisor::RoomSupervisor;
+use crate::typed::{self, TypedCall, TypedReply};
 
-/// Major version of the protocol spoken over any transport
-/// (`docs/PROTOCOL.md`). Part of the supervision contract: an app adopts a
-/// running daemon only when this matches what it was built against; on
-/// mismatch it must not spawn a second daemon on the same data dir, but stop
-/// the old one and respawn. `jeliyad` re-exports this const so its portfile,
-/// `ready` line, `/api/health`, and `daemon.status` can never drift apart.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// The protocol generation this engine serves. One generation at a time, no
+/// dual support: v2's generation. Part of the supervision contract — an app
+/// adopts a running daemon only when this matches what it was built against.
+pub const PROTOCOL_VERSION: u64 = 2;
 
-/// The engine tick for the reconcile safety net + peer-change drain (~300ms
-/// per the protocol build notes). Since issue #83 live `room.event` pushes
-/// arrive immediately via each room's `room_events` pump, so this tick is no
-/// longer the latency path — only the reconcile that a lossy broadcast cannot
-/// let drift.
+/// The minimum supported protocol generation. v2 supports exactly one.
+pub const MIN_PROTOCOL_VERSION: u64 = 2;
+
+/// The storage generation. Bumped for the clean-slate v2 state: a v1 data dir
+/// is never read as v2 state.
+pub const STORAGE_GENERATION: u64 = 2;
+
+/// The engine tick for the reconcile safety net + peer-change drain (~300ms).
+/// Live `Push::Event` frames arrive immediately via each room's `room_events`
+/// pump, so this tick is no longer the latency path — only the reconcile that
+/// a lossy broadcast cannot let drift.
 const PUSH_TICK: Duration = Duration::from_millis(300);
 
-/// Every public RPC that accepts a room id must cross the same default-deny
-/// preflight before method-specific validation or data access. `room.join` is
-/// intentionally absent: its authorization object is the key-bound ticket,
-/// and the caller is not a room member until redemption succeeds.
-fn requires_room_access_preflight(method: &str) -> bool {
-    matches!(
-        method,
-        "room.open"
-            | "room.close"
-            | "room.leave"
-            | "room.timeline"
-            | "room.members"
-            | "invite.create"
-            | "message.send"
-            | "status.post"
-            | "file.share"
-            | "file.list"
-            | "file.fetch"
-            | "pipe.expose"
-            | "pipe.list"
-            | "pipe.connect"
-            | "pipe.close"
-            | "agent.history"
-            | "peers.status"
-    )
-}
-
-/// This crate's own version, for hosts that report the engine's version in
-/// `daemon.status` (the FFI shim); `jeliyad` passes its own crate version.
+/// This crate's own version, for hosts that report the engine's version.
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Host-supplied facts the dispatch table cannot know on its own.
+/// Host-supplied facts the engine cannot know on its own.
 pub struct EngineConfig {
-    /// `daemon.status` `port`. `jeliyad` passes the actually bound port; an
-    /// in-process host passes `0` — unambiguous "no listener", since a bound
-    /// daemon can never truthfully report 0.
+    /// The actually bound port (`0` for an in-process host — unambiguous "no
+    /// listener", since a bound daemon can never truthfully report 0).
     pub port: u16,
-    /// `daemon.status` `version`. `jeliyad` passes its own crate version
-    /// (byte-identical output); an in-process host passes [`CORE_VERSION`].
+    /// The version string the host reports (`jeliyad` passes its own crate
+    /// version; an in-process host passes [`CORE_VERSION`]).
     pub version: String,
-    /// `daemon.shutdown` target; the string is the human-readable reason.
-    /// The 150ms reply-first beat lives in the dispatch arm. `jeliyad` passes
-    /// its process-shutdown channel; an in-process host passes a sender whose
-    /// receiver performs real engine teardown ({shutting_down:true} must
-    /// always be followed by actual teardown).
+    /// `daemon.stop` target; the string is the human-readable reason. The
+    /// reply-first beat lives in the stop arm. `jeliyad` passes its
+    /// process-shutdown channel; an in-process host passes a sender whose
+    /// receiver performs real engine teardown.
     pub shutdown_tx: mpsc::Sender<String>,
 }
 
-/// The engine: an [`RoomSupervisor`] plus the dispatch table and the push
-/// fan-out channel. Cheap to share (`Arc`); no engine-wide lock — the
-/// supervisor guards its own maps internally, never across an `.await`.
+/// The engine: a [`RoomSupervisor`] plus the typed push fan-out channel.
+/// Cheap to share (`Arc`); no engine-wide lock — the supervisor guards its
+/// own maps internally, never across an `.await`.
 pub struct Engine {
     supervisor: Arc<RoomSupervisor>,
-    /// Pre-serialized push frames (`{"push":…,"data":…}`), serialized once at
-    /// the send site; every subscriber forwards them verbatim. Capacity 1024;
-    /// a lagged subscriber just misses pushes and re-syncs via
-    /// request/response.
-    push_tx: broadcast::Sender<String>,
+    /// Typed push frames, broadcast once at the send site; every subscriber
+    /// forwards them to its connection. Capacity 1024; a lagged subscriber
+    /// misses pushes and re-syncs via `stream.resync` (the one resync path).
+    push_tx: broadcast::Sender<Push>,
     config: EngineConfig,
+    /// Set once a `daemon.stop` has been accepted: a second stop is
+    /// `shutdown_in_progress`, never a comfortable repeat `stopping: true`.
+    stopping: Arc<AtomicBool>,
+}
+
+/// The result of executing one typed call: the reply to encode, plus the
+/// server-side effect the host must honor after the reply is flushed.
+pub struct Executed {
+    /// The typed reply.
+    pub reply: Result<TypedReply, ApiError>,
+    /// When the call was `daemon.stop`, the host flushes the reply and then
+    /// initiates teardown. The engine sequences the signal; the host owns the
+    /// actual process/in-process shutdown.
+    pub stop_after_reply: bool,
 }
 
 impl Engine {
-    /// Create an engine owning a fresh supervisor over `data_dir`
-    /// (created if missing, then canonicalized so `daemon.status` paths and
-    /// cross-process identity checks compare like with like regardless of how
-    /// the caller spelled the path — mirrors `jeliyad` startup). Synchronous;
-    /// the engine never creates a runtime, it assumes an ambient one for its
-    /// spawned work.
+    /// Create an engine owning a fresh supervisor over `data_dir` (created if
+    /// missing, then canonicalized). Synchronous; the engine never creates a
+    /// runtime, it assumes an ambient one for its spawned work.
     pub fn new(data_dir: PathBuf, loopback: bool, config: EngineConfig) -> CoreResult<Arc<Self>> {
-        identity::ensure_dir(&data_dir)?;
+        crate::identity::ensure_dir(&data_dir)?;
         let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
         let supervisor = Arc::new(RoomSupervisor::new(data_dir, loopback)?);
         Ok(Self::with_supervisor(supervisor, config))
@@ -125,6 +113,7 @@ impl Engine {
             supervisor,
             push_tx,
             config,
+            stopping: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -140,208 +129,75 @@ impl Engine {
         self.supervisor.data_dir()
     }
 
-    /// Handle one raw text frame; always returns a serialized response
-    /// envelope (`{id, ok:true, result}` or `{id, ok:false, error}`).
-    pub async fn handle_frame(&self, raw: &str) -> String {
-        let parsed: Result<Value, _> = serde_json::from_str(raw);
-        let (id, method, params) = match parsed {
-            Ok(Value::Object(mut obj)) => {
-                let id = obj.remove("id").unwrap_or(Value::Null);
-                let method = obj.get("method").and_then(Value::as_str).map(str::to_owned);
-                let params = obj.remove("params").unwrap_or_else(|| json!({}));
-                match method {
-                    Some(method) => (id, method, params),
-                    None => {
-                        return envelope_err(
-                            id,
-                            &CoreError::invalid("request must carry a string \"method\""),
-                        )
-                    }
-                }
-            }
-            _ => {
-                return envelope_err(
-                    Value::Null,
-                    &CoreError::invalid("request must be a JSON object {id, method, params}"),
-                )
-            }
-        };
-
-        match self.dispatch(&method, params).await {
-            Ok(result) => json!({ "id": id, "ok": true, "result": result }).to_string(),
-            Err(err) => envelope_err(id, &err),
-        }
-    }
-
-    /// The envelope-free seam: one protocol method in, its `result` object
-    /// (or a protocol-coded error) out.
-    pub async fn dispatch(&self, method: &str, raw_params: Value) -> CoreResult<Value> {
-        // The supervisor is a plain `Arc` — no engine-wide lock is taken here, so a
-        // slow request (a `file.fetch` against an offline provider, a `pipe.connect`
-        // busy-wait) runs on its own without head-of-line blocking any other client
-        // or the push loop. The supervisor guards its own session map internally,
-        // only for the span of a map lookup, never across a network await.
-        let sup = &self.supervisor;
-        if requires_room_access_preflight(method) {
-            // Preserve the normal schema error for a missing/non-string field;
-            // when a syntactically valid room id is present, deny it before
-            // method-specific checks can reveal whether foreign rows exist.
-            if let Some(room_id) = raw_params.get("room_id").and_then(Value::as_str) {
-                sup.require_public_room_access(room_id).await?;
-            }
-        }
-        match method {
-            // ---- Daemon & identity -------------------------------------------
-            "daemon.status" => Ok(daemon_status(sup, &self.config)),
-            "daemon.shutdown" => {
-                // Reply first, then die: the shutdown signal is delayed a beat so
-                // this response flushes to the requesting client before teardown.
-                let tx = self.config.shutdown_tx.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                    let _ = tx.send("daemon.shutdown RPC".to_owned()).await;
-                });
-                Ok(json!({ "shutting_down": true }))
-            }
-            "identity.create" => {
-                let profile = identity::create(self.data_dir())?;
-                Ok(json!({
-                    "identity_id": profile.identity_id,
-                    "device_id": profile.device_id,
-                }))
-            }
-
-            // ---- Rooms --------------------------------------------------------
-            "room.create" => {
-                let p: CreateRoomParams = params(raw_params)?;
-                let room_id = sup.create_room(&p.name)?;
-                Ok(json!({ "room_id": room_id }))
-            }
-            "room.list" => Ok(json!({ "rooms": sup.list_rooms().await? })),
-            "room.open" => {
-                let p: OpenRoomParams = params(raw_params)?;
-                sup.open_room(&p.room_id, p.peers.as_deref().unwrap_or(&[]))
-                    .await
-            }
-            "room.close" => {
-                let p: RoomIdParams = params(raw_params)?;
-                sup.close_room(&p.room_id).await?;
-                Ok(json!({}))
-            }
-            "room.leave" => {
-                let p: RoomIdParams = params(raw_params)?;
-                let event_id = sup.leave_room(&p.room_id).await?;
-                Ok(json!({ "event_id": event_id }))
-            }
-            "room.timeline" => {
-                let p: TimelineParams = params(raw_params)?;
-                Ok(json!({ "events": sup.timeline(&p.room_id, p.limit).await? }))
-            }
-            "room.members" => {
-                let p: RoomIdParams = params(raw_params)?;
-                Ok(json!({ "members": sup.members(&p.room_id).await? }))
-            }
-            "invite.create" => {
-                let p: InviteParams = params(raw_params)?;
-                let expiry = expiry_spec(p.expiry)?;
-                let ticket = sup
-                    .create_invite(&p.room_id, &p.identity_id, &p.role, expiry.as_deref())
-                    .await?;
-                Ok(json!({ "ticket": ticket }))
-            }
-            "room.join" => {
-                let p: JoinParams = params(raw_params)?;
-                let room_id = sup
-                    .join_room(
-                        &p.ticket,
-                        p.name.as_deref(),
-                        p.peers.as_deref().unwrap_or(&[]),
-                    )
-                    .await?;
-                Ok(json!({ "room_id": room_id }))
-            }
-
-            // ---- Messages & agent status ---------------------------------------
-            "message.send" => {
-                let p: SendParams = params(raw_params)?;
-                let event_id = sup.send_message(&p.room_id, &p.body).await?;
-                Ok(json!({ "event_id": event_id }))
-            }
-            "status.post" => {
-                let p: StatusPostParams = params(raw_params)?;
-                let event_id = sup
-                    .post_status(
-                        &p.room_id,
-                        &p.label,
-                        p.message.as_deref(),
-                        p.progress,
-                        p.artifacts.as_deref().unwrap_or(&[]),
-                    )
-                    .await?;
-                Ok(json!({ "event_id": event_id }))
-            }
-
-            // ---- Files ----------------------------------------------------------
-            "file.share" => {
-                let p: FileShareParams = params(raw_params)?;
-                sup.share_file(&p.room_id, &p.path, p.name.as_deref(), p.mime.as_deref())
-                    .await
-            }
-            "file.list" => {
-                let p: RoomIdParams = params(raw_params)?;
-                Ok(json!({ "files": sup.list_files(&p.room_id).await? }))
-            }
-            "file.fetch" => {
-                let p: FileFetchParams = params(raw_params)?;
-                sup.fetch_file(&p.room_id, &p.file_id, p.save_dir.as_deref())
-                    .await
-            }
-
-            // ---- Pipes ----------------------------------------------------------
-            "pipe.expose" => {
-                let p: PipeExposeParams = params(raw_params)?;
-                sup.pipe_expose(&p.room_id, &p.target, &p.peer_identity)
-                    .await
-            }
-            "pipe.list" => {
-                let p: RoomIdParams = params(raw_params)?;
-                Ok(json!({ "pipes": sup.pipe_list(&p.room_id).await? }))
-            }
-            "pipe.connect" => {
-                let p: PipeIdParams = params(raw_params)?;
-                let local_addr = sup.pipe_connect(&p.room_id, &p.pipe_id).await?;
-                Ok(json!({ "local_addr": local_addr }))
-            }
-            "pipe.close" => {
-                let p: PipeIdParams = params(raw_params)?;
-                sup.pipe_close(&p.room_id, &p.pipe_id).await
-            }
-
-            // ---- Agents (fleet reads) --------------------------------------------
-            "agents.fleet" => sup.agents_fleet().await,
-            "agent.history" => {
-                let p: AgentHistoryParams = params(raw_params)?;
-                sup.agent_history(&p.room_id, &p.identity_id, p.limit).await
-            }
-
-            // ---- Peers ----------------------------------------------------------
-            "peers.status" => {
-                let p: RoomIdParams = params(raw_params)?;
-                Ok(json!({ "peers": sup.peers_status(&p.room_id).await? }))
-            }
-
-            other => Err(CoreError::invalid(format!("unknown method {other:?}"))
-                .with_hint("see docs/PROTOCOL.md for the method list")),
-        }
-    }
-
-    /// Subscribe to the push fan-out: pre-serialized `{"push":"room.event",…}`
-    /// / `{"push":"peers.changed",…}` frames, forwarded verbatim by every
-    /// transport. A lagged subscriber misses frames (never re-sent) and
-    /// re-syncs via the request/response surface.
+    /// The host's configured port (from [`EngineConfig`]).
     #[must_use]
-    pub fn subscribe_pushes(&self) -> broadcast::Receiver<String> {
+    pub fn port(&self) -> u16 {
+        self.config.port
+    }
+
+    /// The host's configured version string.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.config.version
+    }
+
+    /// The served limits, surfaced in the `hello` frame and `VersionInfo`.
+    #[must_use]
+    pub fn limits(&self) -> jeliya_api::Limits {
+        typed::limits()
+    }
+
+    /// The `hello` `subject` fact: present with ids, its stated absence, or
+    /// `not_ready` when the subject store cannot be read (the connection must
+    /// be refused rather than invited to run `subject.ensure` against
+    /// unreadable existing state).
+    pub fn subject_state(&self) -> Result<SubjectState, ApiError> {
+        typed::TypedSupervisor::new(&self.supervisor).subject_state()
+    }
+
+    /// Execute one typed call. This is the engine's only dispatch surface:
+    /// total by construction (the codec's router already refused any `op`
+    /// outside the 33, so the [`TypedCall`] always maps to exactly one output).
+    pub async fn execute(&self, call: TypedCall) -> Executed {
+        let stop_after_reply = matches!(call, TypedCall::DaemonStop(_));
+        if stop_after_reply {
+            // Exactly one teardown: a second `daemon.stop` is
+            // `shutdown_in_progress`, never a comfortable repeat
+            // `stopping: true`. The check-and-set is atomic so two concurrent
+            // stops on two sessions cannot both sequence a shutdown.
+            if self.stopping.swap(true, Ordering::SeqCst) {
+                return Executed {
+                    reply: Err(ApiError::ShutdownInProgress),
+                    stop_after_reply: false,
+                };
+            }
+            // Reply first, then die: the shutdown signal is delayed a beat so
+            // the reply flushes to the requesting client before teardown.
+            let tx = self.config.shutdown_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let _ = tx.send("daemon.stop".to_owned()).await;
+            });
+        }
+        let reply = typed::dispatch(&self.supervisor, call).await;
+        Executed {
+            reply,
+            stop_after_reply,
+        }
+    }
+
+    /// Subscribe to the typed push fan-out. A lagged subscriber misses frames
+    /// (never re-sent) and is told to resync; `Closed` ends the connection.
+    #[must_use]
+    pub fn subscribe_pushes(&self) -> broadcast::Receiver<Push> {
         self.push_tx.subscribe()
+    }
+
+    /// Publish one typed push to every subscriber. The push loop calls this;
+    /// hosts never construct pushes themselves.
+    fn emit(&self, push: Push) {
+        // No subscribers is fine — pushes are fan-out, not delivery-guaranteed.
+        let _ = self.push_tx.send(push);
     }
 
     /// Spawn the push fan-out (per-room pump tasks + the reconcile ticker +
@@ -352,9 +208,8 @@ impl Engine {
     /// join-bootstrap `accept_joins` window — invites stall without it.
     ///
     /// Dropping the returned handle DETACHES the loop (it runs for the
-    /// engine's life — `jeliyad`'s run-forever behavior); only
-    /// [`PushLoopHandle::stop`] cancels the ticker, after which the pumps die
-    /// on `RoomNotOpen` as rooms close.
+    /// engine's life); only [`PushLoopHandle::stop`] cancels the ticker, after
+    /// which the pumps die on `RoomNotOpen` as rooms close.
     pub fn start_push_loop(self: &Arc<Self>) -> PushLoopHandle {
         let (cancel, cancel_rx) = watch::channel(false);
         let task = tokio::spawn(push_loop(self.clone(), cancel_rx));
@@ -365,12 +220,7 @@ impl Engine {
     /// Bounded: a room whose teardown hangs must not turn shutdown into a
     /// zombie, so after 10s the caller proceeds anyway and it is noted.
     ///
-    /// Returns whether EVERY room closed cleanly. On `false`, the unclosed
-    /// rooms never ran `Node::shutdown` — the only thing that releases a
-    /// room's exclusive on-disk blob lock — so their stores may stay locked
-    /// until the OS process exits. `jeliyad` exits right after, so the OS
-    /// reaps them; an in-process host outlives this call and must report the
-    /// unclean close instead of claiming success.
+    /// Returns whether EVERY room closed cleanly.
     pub async fn close_all_rooms(&self) -> bool {
         let close_all = async {
             let mut clean = true;
@@ -420,23 +270,16 @@ async fn cancelled(rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// Drive the room-event push fan-out (issue #83).
-///
-/// Each open room gets a dedicated pump task that awaits its node's
-/// `room_events` broadcast and pushes each new validated event as `room.event`
-/// the moment it commits (sub-second latency, no hot tail poll). This ticker
-/// (~300ms) supervises those pumps, runs the reconcile safety net
-/// (`poll_new_events`, which a lossy broadcast cannot let drift and which keeps
-/// the join-bootstrap window tied to live state), and drains each session's
-/// `conn_events` broadcast to push `peers.changed` with truthful direct/relay
-/// path info on any transition. The pump and the reconcile share the
-/// supervisor's per-room `seen` set, so every event is pushed exactly once.
+/// Drive the typed push fan-out. Each open room gets a dedicated pump task
+/// that awaits its node's `room_events` broadcast and pushes each newly
+/// committed event as `Push::Event` the moment it commits (sub-second
+/// latency). This ticker supervises those pumps, runs the reconcile safety
+/// net (`poll_new_events`, which a lossy broadcast cannot let drift), and
+/// drains each session's `conn_events` broadcast to push `Push::Peer` on any
+/// transition.
 async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
     let mut ticker = tokio::time::interval(PUSH_TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Rooms with a live per-room `room_events` pump task. Shared with the pumps
-    // so a pump deregisters itself on exit (room.close), letting a later re-open
-    // re-spawn a fresh pump.
     let pumped: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     loop {
         tokio::select! {
@@ -446,6 +289,7 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
         let sup = &engine.supervisor;
         for room_id in sup.open_room_ids() {
             let room_str = room_id.to_string();
+            let api_room = RoomId::new(room_str.clone());
 
             // Ensure a live push pump for this room.
             let fresh = pumped
@@ -456,35 +300,24 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
                 let engine = engine.clone();
                 let pumped = pumped.clone();
                 let key = room_str.clone();
-                // The pump watches the same cancel signal as the ticker: it
-                // normally dies on `RoomNotOpen` as its room closes, but a
-                // room whose close hangs or fails would otherwise park the
-                // pump forever, pinning the whole Engine through this task's
-                // `Arc` — fatal for an in-process host, which has no process
-                // exit to reap it. (A DROPPED handle still detaches: the
-                // closed watch channel parks `cancelled` forever.)
+                let api_room = api_room.clone();
                 let mut cancel_rx = cancel_rx.clone();
                 tokio::spawn(async move {
                     loop {
                         let received = tokio::select! {
-                            events = engine.supervisor.recv_room_events(&room_id) => events,
+                            events = recv_typed_events(&engine, &room_id) => events,
                             () = cancelled(&mut cancel_rx) => break,
                         };
                         match received {
                             Ok(events) => {
                                 for event in events {
-                                    let frame = json!({
-                                        "push": "room.event",
-                                        "data": { "room_id": key, "event": event },
+                                    engine.emit(Push::Event {
+                                        room_id: api_room.clone(),
+                                        event,
                                     });
-                                    let _ = engine.push_tx.send(frame.to_string());
                                 }
                             }
-                            // The room closed: stop pumping and deregister so a
-                            // later re-open re-spawns a fresh pump.
                             Err(err) if err.kind == ErrorKind::RoomNotOpen => break,
-                            // A transient read error: the reconcile poll still
-                            // covers pushes; back off briefly, then keep pumping.
                             Err(err) => {
                                 warn!("room-event pump error for {key}: {err}");
                                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -497,172 +330,61 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
 
             // Reconcile safety net: re-scan the tail so a lagged/dropped
             // broadcast event is still pushed exactly once (shared `seen`).
-            match sup.poll_new_events(&room_id).await {
+            match poll_typed_events(&engine, &room_id).await {
                 Ok(events) => {
                     for event in events {
-                        let frame = json!({
-                            "push": "room.event",
-                            "data": { "room_id": room_str, "event": event },
+                        engine.emit(Push::Event {
+                            room_id: api_room.clone(),
+                            event,
                         });
-                        let _ = engine.push_tx.send(frame.to_string());
                     }
                 }
                 Err(err) => warn!("push reconcile failed for {room_str}: {err}"),
             }
             if sup.drain_conn_changes(&room_id) {
-                if let Ok(peers) = sup.peers_status(&room_str).await {
-                    let frame = json!({
-                        "push": "peers.changed",
-                        "data": { "room_id": room_str, "peers": peers },
+                for peer in typed_peer_rows(&engine, &room_id).await {
+                    engine.emit(Push::Peer {
+                        room_id: api_room.clone(),
+                        subject_id: peer.subject_id,
+                        device_id: peer.device_id,
+                        link: peer.link,
+                        generation: 0,
                     });
-                    let _ = engine.push_tx.send(frame.to_string());
                 }
             }
         }
     }
 }
 
-fn envelope_err(id: Value, err: &CoreError) -> String {
-    json!({
-        "id": id,
-        "ok": false,
-        "error": {
-            "code": err.kind.code(),
-            "message": err.message,
-            "hint": err.hint,
-        },
-    })
-    .to_string()
+/// The next batch of newly committed events for one room (the primary,
+/// sub-second push path), deduped against the session's `seen` set so each is
+/// pushed exactly once.
+async fn recv_typed_events(
+    engine: &Engine,
+    room_id: &iroh_rooms::room::RoomId,
+) -> CoreResult<Vec<Event>> {
+    engine.supervisor.recv_room_events_typed(room_id).await
 }
 
-// ---------------------------------------------------------------------------
-// Params shapes
-// ---------------------------------------------------------------------------
-
-fn params<T: for<'de> Deserialize<'de>>(value: Value) -> CoreResult<T> {
-    serde_json::from_value(value).map_err(|e| CoreError::invalid(format!("invalid params: {e}")))
+/// The reconcile poll: the room's not-yet-pushed events, typed, sharing the
+/// same `seen` dedup as the primary path.
+async fn poll_typed_events(
+    engine: &Engine,
+    room_id: &iroh_rooms::room::RoomId,
+) -> CoreResult<Vec<Event>> {
+    engine.supervisor.poll_new_events_typed(room_id).await
 }
 
-#[derive(Deserialize)]
-struct RoomIdParams {
-    room_id: String,
-}
-
-#[derive(Deserialize)]
-struct CreateRoomParams {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct OpenRoomParams {
-    room_id: String,
-    /// Optional dial hints (`"<endpoint_id>@<ip:port>"`) merged into the
-    /// room's persisted hint set — loopback mode has no discovery.
-    peers: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-struct TimelineParams {
-    room_id: String,
-    limit: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct InviteParams {
-    room_id: String,
-    identity_id: String,
-    role: String,
-    expiry: Option<Value>,
-}
-
-#[derive(Deserialize)]
-struct JoinParams {
-    ticket: String,
-    name: Option<String>,
-    peers: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-struct SendParams {
-    room_id: String,
-    body: String,
-}
-
-#[derive(Deserialize)]
-struct StatusPostParams {
-    room_id: String,
-    label: String,
-    message: Option<String>,
-    progress: Option<u64>,
-    artifacts: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-struct FileShareParams {
-    room_id: String,
-    path: String,
-    name: Option<String>,
-    mime: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct FileFetchParams {
-    room_id: String,
-    file_id: String,
-    save_dir: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct AgentHistoryParams {
-    room_id: String,
-    identity_id: String,
-    limit: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct PipeExposeParams {
-    room_id: String,
-    target: String,
-    peer_identity: String,
-}
-
-#[derive(Deserialize)]
-struct PipeIdParams {
-    room_id: String,
-    pipe_id: String,
-}
-
-/// Accept `"24h"` / `"3600"` (string spec) or a bare number of seconds.
-fn expiry_spec(value: Option<Value>) -> CoreResult<Option<String>> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s)),
-        Some(Value::Number(n)) => n
-            .as_u64()
-            .map(|secs| Some(format!("{secs}s")))
-            .ok_or_else(|| CoreError::invalid("expiry must be a positive integer of seconds")),
-        Some(other) => Err(CoreError::invalid(format!(
-            "expiry must be a string like \"24h\" or a number of seconds, got {other}"
-        ))),
+/// The per-device link rows for one room, for the peer-change drain.
+async fn typed_peer_rows(engine: &Engine, room_id: &iroh_rooms::room::RoomId) -> Vec<PeerRow> {
+    let typed = typed::TypedSupervisor::new(&engine.supervisor);
+    let req = jeliya_api::RoomPeers {
+        room_id: RoomId::new(room_id.to_string()),
+    };
+    match typed.room_peers(&req).await {
+        Ok(out) => out.peers,
+        Err(_) => Vec::new(),
     }
-}
-
-fn daemon_status(sup: &RoomSupervisor, config: &EngineConfig) -> Value {
-    let identity = identity::load_profile(sup.data_dir())
-        .ok()
-        .flatten()
-        .map(|p| json!({ "identity_id": p.identity_id, "device_id": p.device_id }));
-    json!({
-        "version": config.version,
-        "protocol": PROTOCOL_VERSION,
-        "pid": std::process::id(),
-        "port": config.port,
-        "data_dir": sup.data_dir().display().to_string(),
-        "mode": sup.mode(),
-        "identity": identity,
-        "endpoint": sup.status_endpoint(),
-        "rooms_open": sup.open_rooms(),
-    })
 }
 
 #[cfg(test)]
@@ -684,92 +406,145 @@ mod tests {
         .expect("engine over a temp dir")
     }
 
-    fn parse(frame: &str) -> Value {
-        serde_json::from_str(frame).expect("response envelope is JSON")
+    #[tokio::test]
+    async fn engine_serves_protocol_v2() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = test_engine(&dir);
+        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(MIN_PROTOCOL_VERSION, 2);
+        assert_eq!(STORAGE_GENERATION, 2);
+        let _ = engine;
     }
 
     #[tokio::test]
-    async fn non_object_frame_errors_with_null_id() {
+    async fn room_list_before_identity_is_subject_absent() {
         let dir = TempDir::new().expect("tempdir");
         let engine = test_engine(&dir);
-        for raw in ["[1,2,3]", "\"hello\"", "not json at all"] {
-            let reply = parse(&engine.handle_frame(raw).await);
-            assert_eq!(reply["id"], Value::Null, "frame {raw:?}");
-            assert_eq!(reply["ok"], json!(false), "frame {raw:?}");
-            assert_eq!(
-                reply["error"]["code"],
-                json!("invalid_params"),
-                "frame {raw:?}"
-            );
-        }
+        // Validation-order step 2: with no subject, `room.list` is
+        // `subject_absent` — never an empty list (the step-5 carve-out that
+        // lets `room.list` enumerate left rooms does not reach step 2).
+        let executed = engine
+            .execute(TypedCall::RoomList(jeliya_api::RoomList {}))
+            .await;
+        let err = executed.reply.unwrap_err();
+        assert!(matches!(err, ApiError::SubjectAbsent), "got {err:?}");
     }
 
     #[tokio::test]
-    async fn missing_method_echoes_the_id() {
+    async fn subject_ensure_is_idempotent() {
         let dir = TempDir::new().expect("tempdir");
         let engine = test_engine(&dir);
-        let reply = parse(&engine.handle_frame(r#"{"id":42,"params":{}}"#).await);
-        assert_eq!(reply["id"], json!(42));
-        assert_eq!(reply["ok"], json!(false));
-        assert_eq!(reply["error"]["code"], json!("invalid_params"));
-    }
-
-    #[tokio::test]
-    async fn unknown_method_carries_the_protocol_hint() {
-        let dir = TempDir::new().expect("tempdir");
-        let engine = test_engine(&dir);
-        let reply = parse(&engine.handle_frame(r#"{"id":1,"method":"no.such"}"#).await);
-        assert_eq!(reply["ok"], json!(false));
-        assert_eq!(reply["error"]["code"], json!("invalid_params"));
-        assert_eq!(
-            reply["error"]["hint"],
-            json!("see docs/PROTOCOL.md for the method list")
-        );
-    }
-
-    #[tokio::test]
-    async fn daemon_status_reports_port_zero_truthfully() {
-        let dir = TempDir::new().expect("tempdir");
-        let engine = test_engine(&dir);
-        let status = engine
-            .dispatch("daemon.status", json!({}))
+        let first = engine
+            .execute(TypedCall::SubjectEnsure(jeliya_api::SubjectEnsure {}))
             .await
-            .expect("daemon.status succeeds");
-        assert_eq!(status["port"], json!(0));
-        assert_eq!(status["protocol"], json!(PROTOCOL_VERSION));
-        assert_eq!(status["pid"], json!(std::process::id()));
-        assert_eq!(status["version"], json!(CORE_VERSION));
-        assert_eq!(status["mode"], json!("loopback"));
-        assert_eq!(
-            status["data_dir"],
-            json!(engine.data_dir().display().to_string())
-        );
-        // No identity was created and no room is open.
-        assert_eq!(status["identity"], Value::Null);
-        assert_eq!(status["endpoint"], Value::Null);
-        assert_eq!(status["rooms_open"], json!([]));
+            .reply
+            .expect("subject.ensure succeeds");
+        let TypedReply::SubjectEnsure(first) = first else {
+            panic!("wrong reply");
+        };
+        assert!(first.created);
+        let second = engine
+            .execute(TypedCall::SubjectEnsure(jeliya_api::SubjectEnsure {}))
+            .await
+            .reply
+            .expect("subject.ensure is idempotent");
+        let TypedReply::SubjectEnsure(second) = second else {
+            panic!("wrong reply");
+        };
+        assert!(!second.created);
+        assert_eq!(first.subject_id, second.subject_id);
     }
 
     #[tokio::test]
-    async fn room_list_before_identity_is_empty_for_protocol_v1() {
+    async fn typed_message_send_round_trips_and_pushes() {
         let dir = TempDir::new().expect("tempdir");
         let engine = test_engine(&dir);
-
-        let result = engine
-            .dispatch("room.list", json!({}))
+        use jeliya_api::*;
+        // Subject + room.
+        engine
+            .execute(TypedCall::SubjectEnsure(SubjectEnsure {}))
             .await
-            .expect("protocol v1 preserves an empty pre-identity room list");
-        assert_eq!(result, json!({ "rooms": [] }));
-
-        // Even a pre-existing/corrupt store must not become an existence
-        // oracle before identity creation; the empty onboarding result is
-        // decided before any room rows are opened.
-        std::fs::write(dir.path().join(crate::supervisor::DB_FILE), b"not sqlite")
-            .expect("seed a store-shaped pre-identity fixture");
-        let result = engine
-            .dispatch("room.list", json!({}))
+            .reply
+            .expect("subject.ensure");
+        let created = engine
+            .execute(TypedCall::RoomCreate(RoomCreate {
+                name: "push room".into(),
+            }))
             .await
-            .expect("pre-identity room.list must not inspect the store");
-        assert_eq!(result, json!({ "rooms": [] }));
+            .reply
+            .expect("room.create");
+        let TypedReply::RoomCreate(created) = created else {
+            panic!("wrong reply");
+        };
+        let room_id = created.room_id.clone();
+
+        // Activate the room, then subscribe to typed pushes before sending.
+        engine
+            .execute(TypedCall::RoomActivate(RoomActivate {
+                room_id: room_id.clone(),
+            }))
+            .await
+            .reply
+            .expect("room.activate");
+        let _push_loop = engine.clone().start_push_loop();
+        let mut pushes = engine.subscribe_pushes();
+
+        let sent = engine
+            .execute(TypedCall::MessageSend(MessageSend {
+                room_id: room_id.clone(),
+                body: "hello typed push".into(),
+            }))
+            .await
+            .reply
+            .expect("message.send");
+        let TypedReply::MessageSend(sent) = sent else {
+            panic!("wrong reply");
+        };
+        assert!(sent.pos > 0, "a message commits at a positive position");
+
+        // The committed event lands on the typed push fan-out as Push::Event.
+        let push = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match pushes.recv().await {
+                    Ok(Push::Event { room_id: r, event })
+                        if r == room_id && event.kind.kind() == EventKind::Message =>
+                    {
+                        break event
+                    }
+                    Ok(_) => continue,
+                    Err(e) => panic!("push recv failed: {e}"),
+                }
+            }
+        })
+        .await
+        .expect("a typed Push::Event arrives within 10s");
+        let EventKindContent::Message { body } = push.kind else {
+            panic!("wrong kind");
+        };
+        assert_eq!(body, "hello typed push");
+
+        // The timeline serves the same committed event, typed, at pos >= 1.
+        let page = Page {
+            cursor: Cursor::Start,
+            direction: Direction::Forward,
+            limit: 50,
+        };
+        let timeline = engine
+            .execute(TypedCall::RoomTimeline(RoomTimeline {
+                room_id: room_id.clone(),
+                page,
+            }))
+            .await
+            .reply
+            .expect("room.timeline");
+        let TypedReply::RoomTimeline(timeline) = timeline else {
+            panic!("wrong reply");
+        };
+        assert_eq!(timeline.events.len(), 2); // room_created + message
+        assert_eq!(timeline.events[0].kind.kind(), EventKind::RoomCreated);
+        assert_eq!(timeline.events[0].pos, 0);
+        assert_eq!(timeline.events[1].kind.kind(), EventKind::Message);
+
+        engine.close_all_rooms().await;
     }
 }

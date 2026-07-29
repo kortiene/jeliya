@@ -158,7 +158,7 @@ pub struct LocalFile {
 /// one node freely; the mutable session bits sit behind their own small
 /// std mutexes.
 pub struct RoomSession {
-    node: Node,
+    pub(crate) node: Node,
     conn_rx: StdMutex<broadcast::Receiver<ConnEvent>>,
     /// The node's live `room.event` push stream (issue #83): every event the
     /// engine ingests (own or remote) is broadcast here the moment it commits,
@@ -294,7 +294,7 @@ impl RoomSupervisor {
     // Shared plumbing
     // ------------------------------------------------------------------
 
-    fn db_path(&self) -> PathBuf {
+    pub(crate) fn db_path(&self) -> PathBuf {
         self.data_dir.join(DB_FILE)
     }
 
@@ -308,7 +308,7 @@ impl RoomSupervisor {
         self.data_dir.join(BLOBS_DIR).join(hex_part)
     }
 
-    fn open_store(&self) -> CoreResult<EventStore> {
+    pub(crate) fn open_store(&self) -> CoreResult<EventStore> {
         // Open with an explicit 5s SQLITE_BUSY timeout: the daemon opens several
         // writer connections on one shared WAL `rooms.db` (one per open room's
         // `SyncEngine`, plus transient create_room / create_invite inserts), and
@@ -436,13 +436,13 @@ impl RoomSupervisor {
         Ok(())
     }
 
-    fn secrets(&self) -> CoreResult<SecretKeys> {
+    pub(crate) fn secrets(&self) -> CoreResult<SecretKeys> {
         SecretKeys::load(&self.data_dir)
     }
 
     /// A cloned handle to an open room's session (an `Arc`), or `RoomNotOpen`.
     /// The map lock is released before the caller does any network work.
-    fn session(&self, room_id: &RoomId) -> CoreResult<Arc<RoomSession>> {
+    pub(crate) fn session(&self, room_id: &RoomId) -> CoreResult<Arc<RoomSession>> {
         self.sessions().get(room_id).cloned().ok_or_else(|| {
             CoreError::new(
                 ErrorKind::RoomNotOpen,
@@ -452,12 +452,12 @@ impl RoomSupervisor {
     }
 
     /// A cloned handle to an open room's session, if any.
-    fn session_opt(&self, room_id: &RoomId) -> Option<Arc<RoomSession>> {
+    pub(crate) fn session_opt(&self, room_id: &RoomId) -> Option<Arc<RoomSession>> {
         self.sessions().get(room_id).cloned()
     }
 
     /// Whether a room currently has an open session.
-    fn is_open(&self, room_id: &RoomId) -> bool {
+    pub(crate) fn is_open(&self, room_id: &RoomId) -> bool {
         self.sessions().contains_key(room_id)
     }
 
@@ -526,7 +526,7 @@ impl RoomSupervisor {
     /// Never takes an `&EventStore` argument: an async fn captures its
     /// parameters for the whole future, and `&EventStore` is `!Send`, so the
     /// closed path opens its own short-lived read handle (WAL allows many).
-    async fn snapshot_for(&self, room_id: &RoomId) -> CoreResult<MembershipSnapshot> {
+    pub(crate) async fn snapshot_for(&self, room_id: &RoomId) -> CoreResult<MembershipSnapshot> {
         if let Some(session) = self.session_opt(room_id) {
             return session
                 .node
@@ -569,7 +569,7 @@ impl RoomSupervisor {
     /// Read authorization deliberately uses the public profile rather than
     /// loading signing seeds. A read path must never need secret key material,
     /// and a missing identity defaults to denial.
-    fn local_identity_key(&self) -> CoreResult<IdentityKey> {
+    pub(crate) fn local_identity_key(&self) -> CoreResult<IdentityKey> {
         let profile = crate::identity::load_profile(&self.data_dir)?.ok_or_else(|| {
             CoreError::new(
                 ErrorKind::IdentityMissing,
@@ -591,7 +591,7 @@ impl RoomSupervisor {
     /// invited-only subject does not and cannot read room content before its
     /// join is accepted. An identity absent from the membership fold gets the
     /// same `room_unknown` result as an id with no stored rows.
-    fn require_local_room_access(
+    pub(crate) fn require_local_room_access(
         snapshot: &MembershipSnapshot,
         self_id: &IdentityKey,
     ) -> CoreResult<()> {
@@ -629,23 +629,15 @@ impl RoomSupervisor {
     }
 
     /// Cached/live snapshot plus the shared read-authorization guard.
-    async fn readable_snapshot(&self, room_id: &RoomId) -> CoreResult<MembershipSnapshot> {
+    pub(crate) async fn readable_snapshot(
+        &self,
+        room_id: &RoomId,
+    ) -> CoreResult<MembershipSnapshot> {
         self.require_locally_known_room(room_id)?;
         let self_id = self.local_identity_key()?;
         let snapshot = self.snapshot_for(room_id).await?;
         Self::require_local_room_access(&snapshot, &self_id)?;
         Ok(snapshot)
-    }
-
-    /// Central public-RPC preflight for every method carrying a `room_id`.
-    ///
-    /// Read methods repeat this check immediately before their data access as
-    /// defense in depth. The engine-level preflight also covers mutations so
-    /// their error variants cannot become an existence oracle for a foreign
-    /// room that happens to have rows in the shared local store.
-    pub(crate) async fn require_public_room_access(&self, room_id_str: &str) -> CoreResult<()> {
-        let room_id = parse_room_id(room_id_str)?;
-        self.readable_snapshot(&room_id).await.map(|_| ())
     }
 
     /// The cached closed-room snapshot iff its fingerprint still matches the
@@ -2402,6 +2394,68 @@ impl RoomSupervisor {
         }))
     }
 
+    /// `pipe.publish` (v2): expose a loopback target to a set of authorized
+    /// peers — every active member for `audience: room`, or an explicit
+    /// subject list. Returns the pipe id and the authored event id.
+    pub(crate) async fn pipe_expose_multi(
+        &self,
+        room_id: &RoomId,
+        target: SocketAddr,
+        target_hint: &str,
+        allowed: &[IdentityKey],
+    ) -> CoreResult<([u8; SHORT_ID_LEN], String)> {
+        if !is_loopback_target(&target) {
+            return Err(CoreError::new(
+                ErrorKind::PipeDenied,
+                format!("refusing to expose non-loopback target {target}"),
+            ));
+        }
+        if allowed.is_empty() {
+            return Err(CoreError::invalid(
+                "pipe.publish needs a non-empty audience",
+            ));
+        }
+        let session = self.session(room_id)?;
+        let secret = self.secrets()?;
+        let self_id = secret.identity.identity_key();
+        let snapshot = session
+            .node
+            .snapshot()
+            .await
+            .map_err(|e| internal("could not read the membership snapshot", e))?;
+        if !snapshot.is_active(&self_id) {
+            return Err(CoreError::new(
+                ErrorKind::NotAMember,
+                format!("this identity ({self_id}) is not an active member of room {room_id}"),
+            ));
+        }
+        let room_device = self.authoring_device_key(&snapshot, &secret, room_id);
+        let pipe_id = session
+            .node
+            .pipe_expose(
+                &secret.identity,
+                &room_device,
+                room_id,
+                target,
+                "pipe",
+                target_hint,
+                allowed,
+                None,
+                now_ms(),
+            )
+            .await
+            .map_err(|e| {
+                CoreError::new(
+                    ErrorKind::PipeDenied,
+                    format!("could not expose the pipe: {e:#}"),
+                )
+            })?;
+        let event_id = self
+            .find_pipe_event(room_id, EventType::PipeOpened, pipe_id)
+            .await?;
+        Ok((pipe_id, event_id))
+    }
+
     /// `pipe.list`: the room's pipes from the local log, with open/closed
     /// state and whether this daemon currently forwards or serves them.
     pub async fn pipe_list(&self, room_id_str: &str) -> CoreResult<Vec<Value>> {
@@ -2723,6 +2777,39 @@ impl RoomSupervisor {
         Ok(out)
     }
 
+    /// The typed-v2 reconcile poll: identical to [`Self::poll_new_events`] but
+    /// materializes committed events as typed `jeliya-api` [`Event`]s.
+    pub(crate) async fn poll_new_events_typed(
+        &self,
+        room_id: &RoomId,
+    ) -> CoreResult<Vec<jeliya_api::Event>> {
+        let session = self.session(room_id)?;
+        let rows = session
+            .node
+            .room_tail(u32::MAX)
+            .await
+            .map_err(|e| internal("could not read the timeline", e))?;
+        let snapshot = session
+            .node
+            .snapshot()
+            .await
+            .map_err(|e| internal("could not read the membership snapshot", e))?;
+        session.accept_joins.store(
+            session.is_owner && any_pending_invite(&snapshot),
+            Ordering::Relaxed,
+        );
+        let mut seen = session.seen.lock().expect("seen poisoned");
+        let mut out = Vec::new();
+        for se in &rows {
+            if seen.insert(se.event_id) {
+                if let Some(v) = crate::projection::materialize(se, &snapshot) {
+                    out.push(v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Primary push path (issue #83): await the next batch of live room events
     /// from the node's `room_events` broadcast, materialized for the daemon to
     /// fan out as `room.event` with sub-second latency.
@@ -2806,6 +2893,69 @@ impl RoomSupervisor {
         for se in &batch {
             if seen.insert(se.event_id) {
                 if let Some(v) = materializer::materialize(se, &snapshot) {
+                    out.push(v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The typed-v2 primary push path: identical to [`Self::recv_room_events`]
+    /// (same broadcast, same lag recovery, same `seen` dedup) but materializes
+    /// committed events as typed `jeliya-api` [`Event`]s.
+    pub(crate) async fn recv_room_events_typed(
+        &self,
+        room_id: &RoomId,
+    ) -> CoreResult<Vec<jeliya_api::Event>> {
+        let room_rx = self.session(room_id)?.room_rx.clone();
+
+        let mut lagged;
+        let mut batch: Vec<StoredEvent> = Vec::new();
+        {
+            let mut rx = room_rx.lock().await;
+            match rx.recv().await {
+                Ok(ev) => {
+                    lagged = false;
+                    batch.push(ev);
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => lagged = true,
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(CoreError::new(
+                        ErrorKind::RoomNotOpen,
+                        format!("room {room_id} closed"),
+                    ));
+                }
+            }
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => batch.push(ev),
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => lagged = true,
+                    Err(broadcast::error::TryRecvError::Empty)
+                    | Err(broadcast::error::TryRecvError::Closed) => break,
+                }
+            }
+        }
+
+        let session = self.session(room_id)?;
+        let snapshot = session
+            .node
+            .snapshot()
+            .await
+            .map_err(|e| internal("could not read the membership snapshot", e))?;
+        if lagged {
+            let rows = session
+                .node
+                .room_tail(u32::MAX)
+                .await
+                .map_err(|e| internal("could not read the timeline", e))?;
+            batch = rows;
+        }
+
+        let mut seen = session.seen.lock().expect("seen poisoned");
+        let mut out = Vec::new();
+        for se in &batch {
+            if seen.insert(se.event_id) {
+                if let Some(v) = crate::projection::materialize(se, &snapshot) {
                     out.push(v);
                 }
             }
@@ -3180,7 +3330,7 @@ fn parse_pipe_id(s: &str) -> CoreResult<[u8; SHORT_ID_LEN]> {
 
 /// Convert a core `DeviceKey` (`device_id`) into an iroh `EndpointId` — the
 /// same raw 32 bytes (the CLI's `endpoint_id_of`).
-fn endpoint_id_of(dev: DeviceKey) -> CoreResult<EndpointId> {
+pub(crate) fn endpoint_id_of(dev: DeviceKey) -> CoreResult<EndpointId> {
     EndpointId::from_bytes(dev.as_bytes())
         .map_err(|e| CoreError::internal(format!("invalid device id: {e}")))
 }
@@ -3242,7 +3392,7 @@ fn validate_room_name(name: &str) -> CoreResult<()> {
 }
 
 /// The room's genesis `room_name` from the local log, if present.
-fn genesis_name(store: &EventStore, room_id: &RoomId) -> Option<String> {
+pub(crate) fn genesis_name(store: &EventStore, room_id: &RoomId) -> Option<String> {
     let genesis = store.by_type(room_id, EventType::RoomCreated).ok()?;
     let stored = genesis.into_iter().next()?;
     let event = SignedEvent::decode(&stored.wire.signed).ok()?;
@@ -3254,7 +3404,7 @@ fn genesis_name(store: &EventStore, room_id: &RoomId) -> Option<String> {
 
 /// Log-derived departure sets (`member.removed` subjects, `member.left`
 /// subjects) backing the display-status refinement.
-fn departure_sets(
+pub(crate) fn departure_sets(
     store: &EventStore,
     room_id: &RoomId,
 ) -> CoreResult<(BTreeSet<IdentityKey>, BTreeSet<IdentityKey>)> {
@@ -3508,7 +3658,6 @@ mod tests {
     use iroh_rooms::events::{validate_wire_bytes, ValidationContext, WireEvent};
     use iroh_rooms::identity::{DeviceBinding, SigningKey};
     use iroh_rooms::room::{RoomId, RoomInviteTicket};
-    use serde_json::json;
     use tempfile::tempdir;
 
     /// Persist an event authored elsewhere directly into the supervisor's
@@ -4967,74 +5116,120 @@ mod tests {
         );
         let state_path = dir.path().join(crate::localstate::STATE_FILE);
         let state_before = std::fs::read(&state_path).unwrap();
-        let cases = [
+        // The typed v2 dispatch boundary: every room-scoped operation on the
+        // foreign room must answer the non-oracle `room_not_available`, never
+        // disclosing that the room is present in the shared store.
+        use jeliya_api::RoomId as ApiRoomId;
+        use jeliya_api::{
+            ApiError, Cursor, Direction, FileFetch, FileId, FileList, MessageSend, Page,
+            PipeConnect, PipeId, PipeList, Progress, RoomActivate, RoomDeactivate, RoomLeave,
+            RoomList, RoomMembers, RoomPeers, RoomTimeline, StatusHistory, StatusLabel, StatusPost,
+            SubjectId,
+        };
+        let _ = RoomList {};
+        let froom = ApiRoomId::new(room_id.clone());
+        let page = Page {
+            cursor: Cursor::Start,
+            direction: Direction::Forward,
+            limit: 50,
+        };
+        let cases: Vec<(&str, crate::typed::TypedCall)> = vec![
             (
-                "room.open",
-                json!({
-                    "room_id": room_id,
-                    "peers": [format!("{}@127.0.0.1:9", "ab".repeat(32))],
+                "room.activate",
+                crate::typed::TypedCall::RoomActivate(RoomActivate {
+                    room_id: froom.clone(),
                 }),
             ),
-            ("room.close", json!({ "room_id": room_id })),
-            ("room.leave", json!({ "room_id": room_id })),
-            ("room.timeline", json!({ "room_id": room_id })),
-            ("room.members", json!({ "room_id": room_id })),
             (
-                "invite.create",
-                json!({
-                    "room_id": room_id,
-                    "identity_id": foreign_agent.identity_key().to_string(),
-                    "role": "member",
+                "room.deactivate",
+                crate::typed::TypedCall::RoomDeactivate(RoomDeactivate {
+                    room_id: froom.clone(),
+                }),
+            ),
+            (
+                "room.leave",
+                crate::typed::TypedCall::RoomLeave(RoomLeave {
+                    room_id: froom.clone(),
+                }),
+            ),
+            (
+                "room.timeline",
+                crate::typed::TypedCall::RoomTimeline(RoomTimeline {
+                    room_id: froom.clone(),
+                    page: page.clone(),
+                }),
+            ),
+            (
+                "room.members",
+                crate::typed::TypedCall::RoomMembers(RoomMembers {
+                    room_id: froom.clone(),
+                }),
+            ),
+            (
+                "room.peers",
+                crate::typed::TypedCall::RoomPeers(RoomPeers {
+                    room_id: froom.clone(),
                 }),
             ),
             (
                 "message.send",
-                json!({ "room_id": room_id, "body": "denied" }),
+                crate::typed::TypedCall::MessageSend(MessageSend {
+                    room_id: froom.clone(),
+                    body: "denied".into(),
+                }),
             ),
             (
                 "status.post",
-                json!({ "room_id": room_id, "label": "denied" }),
+                crate::typed::TypedCall::StatusPost(StatusPost {
+                    room_id: froom.clone(),
+                    label: StatusLabel::Working,
+                    progress: Progress::Absent,
+                }),
             ),
             (
-                "file.share",
-                json!({ "room_id": room_id, "path": foreign_payload }),
+                "file.list",
+                crate::typed::TypedCall::FileList(FileList {
+                    room_id: froom.clone(),
+                    page: page.clone(),
+                }),
             ),
-            ("file.list", json!({ "room_id": room_id })),
             (
                 "file.fetch",
-                json!({ "room_id": room_id, "file_id": foreign_file_id }),
-            ),
-            (
-                "pipe.expose",
-                json!({
-                    "room_id": room_id,
-                    "target": "127.0.0.1:9",
-                    "peer_identity": foreign_agent.identity_key().to_string(),
+                crate::typed::TypedCall::FileFetch(FileFetch {
+                    room_id: froom.clone(),
+                    file_id: FileId::new(foreign_file_id.clone()),
                 }),
             ),
-            ("pipe.list", json!({ "room_id": room_id })),
+            (
+                "pipe.list",
+                crate::typed::TypedCall::PipeList(PipeList {
+                    room_id: froom.clone(),
+                    page: page.clone(),
+                }),
+            ),
             (
                 "pipe.connect",
-                json!({ "room_id": room_id, "pipe_id": foreign_pipe_id }),
-            ),
-            (
-                "pipe.close",
-                json!({ "room_id": room_id, "pipe_id": foreign_pipe_id }),
-            ),
-            (
-                "agent.history",
-                json!({
-                    "room_id": room_id,
-                    "identity_id": foreign_agent.identity_key().to_string(),
+                crate::typed::TypedCall::PipeConnect(PipeConnect {
+                    room_id: froom.clone(),
+                    pipe_id: PipeId::new(foreign_pipe_id.clone()),
                 }),
             ),
-            ("peers.status", json!({ "room_id": room_id })),
+            (
+                "status.history",
+                crate::typed::TypedCall::StatusHistory(StatusHistory {
+                    room_id: froom.clone(),
+                    subject_id: SubjectId::new(foreign_agent.identity_key().to_string()),
+                    page: page.clone(),
+                }),
+            ),
         ];
-        for (method, params) in cases {
-            let err = engine.dispatch(method, params).await.unwrap_err();
-            assert_eq!(
-                err.kind,
-                ErrorKind::RoomUnknown,
+        for (method, call) in cases {
+            let err = engine.execute(call).await.reply.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ApiError::RoomNotAvailable { .. } | ApiError::RoomNotLive { .. }
+                ),
                 "{method} must not disclose a stored foreign room: {err:?}"
             );
         }
