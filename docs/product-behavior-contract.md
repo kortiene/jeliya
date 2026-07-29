@@ -51,10 +51,10 @@ product contract, in implementation-neutral language.
 2. **Green is earned.** A healthy/live affordance marks a real, verified
    fact — a live session, a connected peer — never a projection, a
    decoration, or a fallback.
-3. **Failures are failures.** Errors surface the daemon's real error code and
-   hint (`unavailable`, `unauthorized`, `hash_mismatch`) plus a way forward —
-   never a silent partial result, a blank panel, or a fabricated "up to
-   date".
+3. **Failures are failures.** Errors surface the daemon's real error code
+   (for example `transport_unavailable`, `unauthorized`, `digest_mismatch`)
+   translated into friendly copy, plus a way forward — never a silent
+   partial result, a blank panel, or a fabricated "up to date".
 4. **Every displayed field names its evidence.** No badge, count, completion,
    progress, availability, or read state is inferred without a documented
    evidence rule, and no field is rendered whose evidence the client does not
@@ -131,8 +131,9 @@ Rules:
 6. A route naming an unreachable room resolves to a **recoverable state**,
    never an error page or a blank panel: room not on this device (Rooms as
    the way out); signed `left`/`removed` fact shown plainly; a failed open
-   surfaces the real error code and hint with Retry and Rooms; a still-
-   booting session shows the route's loading state — never an empty timeline.
+   surfaces the daemon's real error code, translated, with Retry and Rooms;
+   a still-booting session shows the route's loading state — never an empty
+   timeline.
 
 **Changed surface (recorded under Intentional changes):** the legacy
 `?tab=members|agents|files|pipes` query affordance and the legacy persistence
@@ -191,12 +192,15 @@ platform.
   onboarding holding a room they created or joined, not a dashboard. Rooms
   is the landing destination for a returning user with no explicit route.
 - **The fresh-state/reset policy has a user-facing half.** When the stack
-  meets old-generation state — a legacy storage generation, an
-  unverified data directory — it **fails closed and shows an actionable
-  reset path**; it never deletes, migrates, or reinterprets unverified
-  state on the user's behalf. The reset path is shown, not taken
-  (#156's clean-slate policy; the Android beachhead fails closed on an
-  unverified directory, spike #160).
+  meets old-generation state, it fails closed and never interprets it as
+  new state. Two cases, distinguished exactly as the architecture record
+  distinguishes them: a **known legacy preference key** (a browser key or
+  `app_prefs.json`) is ignored or explicitly removed — removal of a known,
+  enumerated legacy key needs no confirmation; an **unverified old data
+  directory** is never deleted, migrated, or reinterpreted automatically —
+  the stack shows an actionable reset path and does not take it on the
+  user's behalf (#156's clean-slate policy; the Android beachhead fails
+  closed on an unverified directory, spike #160).
 - **Daemon bootstrap facts are structured, not composed copy**: boot
   stages surface as typed facts the UI narrates, and a failed bootstrap
   surfaces the real failure with a way forward — retry, diagnostics, or
@@ -205,17 +209,21 @@ platform.
 ## Status vocabulary and truthful states
 
 **Every status label names exactly one fact, and that fact is one the daemon
-proves.** These six vocabularies are retained as the product contract; they
-may never share a word:
+proves.** These six vocabularies are retained as the product contract. The
+rule is that the *facts* stay distinct: no label may name two different
+facts on the same surface, and the table below is the authority on which
+word belongs to which fact. Words may recur across rows — **Open**/**Closed**
+for a room session and for a pipe are different facts rendered on different
+surfaces — but within any one surface a word means one provable thing:
 
 | Fact | Vocabulary |
 |---|---|
 | **Room session** (this daemon has a live session) | **Open** / **Closed** |
-| **Signed membership** (this identity's roster status) | **Member** / **Left** / **Removed** |
-| **Roster** (a member's signed status and role) | **Member** / **Invited** / **Left** / **Removed**, **Unknown** for an unrecognized status; roles **Owner** / **Member** / **Agent** |
+| **Signed membership** (this identity's standing in the room) | **Member** / **Left** / **Removed** |
+| **Roster** (a member's signed standing and role) | Standings **Member** / **Left** / **Removed**, **Unknown** for an unrecognized standing; roles **Authority** / **Member**. Agent-ness is a derived classification (a member that has authored a status event), never a role; outstanding invitations are a separate fact from `invite.list`, never a roster standing |
 | **Peer reachability** (an observed transport path) | **Direct** / **Relay** / **Connected** / **Connecting** / **Offline**; in aggregate **No peers connected** |
 | **Agent liveness** | **Working** / **Online** / **Stale** / **Offline**; the fleet filter spanning the first two is **Live** |
-| **Pipe connection** (a local forwarding session) | **Connected** (exposed, forwarding) / **Open** (exposed, nothing connected) / **Closed** |
+| **Pipe** (a listed pipe's local connection and its publisher's reachability — two separately named facts in v2) | **Connected** (this device holds a local connection) / **Open** (published, nothing connected locally); publisher reachability rendered from the pipe's `link` (**Direct** / **Relay** / unavailable with its stated reason). A revoked pipe is absent from the list, never rendered as **Closed** |
 
 Retired words, retained: **"Active"** is retired as a display label on every
 surface; **"Alone in this room"** is retired (absence of an observed
@@ -232,9 +240,9 @@ room list itself:
 |---|---|
 | **Empty** | The daemon answered, and the answer was zero. Never shown before the answer arrives. |
 | **Loading** | Asked, no answer yet. Distinct from empty on every surface. |
-| **Offline** | No daemon connection. Reads as *unknown*, not as zero; last-known data is labelled stale, not presented as current. |
+| **Offline** | The active adapter cannot serve authoritative data: no daemon connection on web and desktop, or the in-process engine not ready on Android (`DirectClient`). Reads as *unknown*, not as zero; last-known data is labelled stale, not presented as current. |
 | **Stale** | Data whose freshness cannot be vouched for. Labelled, never silently aged. |
-| **Failed** | The daemon's real error code and hint, plus a way forward. Never a silent partial result. |
+| **Failed** | The daemon's real error code, translated, plus a way forward. Never a silent partial result. |
 | **Unauthorized** | The room is not this identity's to open. Says so; does not render an empty room. |
 
 ## Retained product invariants
@@ -259,21 +267,34 @@ applies: a departed room states the signed fact and does not open.
 The [Room attention](room-attention.md) data model is retained as product
 contract, re-expressed against the v2 stack:
 
-- **Recency** is the `created_at` of a room's newest signed event, read as a
-  daemon projection. Never the wall clock, never the render time.
-- **Unread** is `lastEventTs(r) > deviceLastSeen[r]`, both held locally. The
-  last-seen mark is one device-local timestamp per room, advanced on view,
-  surviving restart, never on the wire, initialized to the room's recency
-  when the room first appears on this device. **Unread never implies anyone
-  read or received anything**, and copy and accessible labels must never say
-  or imply "seen", "delivered", or "they read it".
+- **Recency** is the `at` of a room's newest signed event, served by the
+  daemon as the `last_event` variant on each `room.list` row. Never the wall
+  clock, never the render time. **A room with no events reports
+  `last_event: {state: "absent"}`** — a stated fact, not a missing field —
+  and renders an honest "no activity yet": no recency, no unread dot, no
+  attention.
+- **Unread** is defined for a room whose `last_event` is `present`:
+  `lastEvent.at(r) > deviceLastSeen[r]`, both held locally. A room whose
+  `last_event` is `absent` has no recency to compare and starts with no
+  baseline: the first event observed for it establishes the baseline — it
+  is the starting point, not unread — and every later event flags normally.
+  The last-seen mark is one device-local timestamp per room, advanced on
+  view, surviving restart (on platforms that persist preferences), never on
+  the wire, initialized to the room's recency when the room first appears
+  on this device with events. **Unread never implies anyone read or
+  received anything**, and copy and accessible labels must never say or
+  imply "seen", "delivered", or "they read it".
 - **The room list shows a dot, never a count.** A count may appear only on a
   surface holding the individual events after the last-seen mark.
-- **Attention is a closed set**: failed work, blocked work, review requested
-  (all signed-event attention over the documented label vocabulary — in v2 a
-  closed vocabulary, so severity is a lookup, not an inference), and action
-  failed (device-local runtime failure). Nothing else is attention; widening
-  the set is a decision with its own record.
+- **Attention is a closed set, expressed in v2's closed status vocabulary**:
+  **failed work** (derived severity `failed`), **needs a person** (the
+  `blocked` label, whose derived severity is `review` — one reason covering
+  a decision, a credential, an approval, or an ambiguous instruction; v2
+  cannot and does not split these), and **action failed** (a device-local
+  runtime failure this device observed). `stale` and `offline` are liveness
+  facts, not attention reasons. Severity is served derived — a client never
+  re-derives it and never infers it from prose. Nothing else is attention;
+  widening the set is a decision with its own record.
 - **Cross-device divergence is correct.** Unread, pin/archive, and the self
   label are device-local by design; syncing them would manufacture a read
   receipt and is a non-goal.
@@ -296,9 +317,10 @@ fresh state:
 
 - **One device-local alias per identity id, including the self id.** Display
   of self resolves to `alias(selfId) ?? "You"`; the fallback is the localized
-  "You", never the raw hex id. Peers resolve `alias(id) ?? suggestion ??
-  shortId(id)`, where a suggestion is a daemon-provided display hint — never
-  signed, never authoritative.
+  "You", never the raw identifier. Peers resolve `alias(id) ?? shortId(id)`.
+  No v2 field supplies display-name suggestions — the retiring clients'
+  suggestion stage was mock-fixture data, never daemon-served, and it does
+  not carry forward.
 - **Local only, never signed.** The label lives only on this device, is never
   sent, never appears in a signed event or roster, and is excluded from
   diagnostics. Every editor states this in copy.
@@ -312,6 +334,8 @@ fresh state:
   marker are orthogonal to the label.
 - **The cryptographic identity id stays secondary but reachable**: shortened
   by default, fully copyable, described as the unrecoverable P2P identity.
+  Identifiers are opaque strings — the UI never assumes a hexadecimal or any
+  other representation when truncating, validating, or accepting them.
 - **Invitation identity inputs start empty** with an example/help state,
   never pre-seeded with the user's own id.
 - **First run** offers an optional device-label field alongside the created
@@ -326,9 +350,11 @@ and sees "You" until they set one.
 Retained from the Room Workbench record:
 
 - **`room_id` is identity; `name` is a label.** The name carries no
-  uniqueness guarantee; two rooms may share a name.
-- Homonymous rooms — including two rooms both rendering the untitled
-  placeholder — show the short-id disambiguator wherever they are listed.
+  uniqueness guarantee; two rooms may share a name. In v2 a name is always
+  present (`room.create` requires a non-whitespace name), so the homonym
+  case is real name collisions, not missing names.
+- Homonymous rooms show the short-id disambiguator wherever they are
+  listed.
 - **Destructive and sensitive actions always repeat the disambiguator**,
   homonym or not.
 - Creating a room whose name collides locally **warns and proceeds**.
@@ -341,20 +367,37 @@ new namespaced storage generation, written through injected platform
 services. No legacy key is read, and nothing from the retiring stack is
 imported.
 
-| Preference | Scope | Rule |
-|---|---|---|
-| Last open room | device-local | Restored once per launch, only from the bare root; always loses to an explicit route. |
-| Last-seen marks | device-local, per room | One timestamp per room; advanced on view; survives restart; never on the wire. |
-| Pin/archive room flags | device-local | Copy says "on this device"; never dressed as shared state. |
-| Aliases (incl. self label) | device-local | Per identity id; never signed; excluded from diagnostics. |
-| Per-room composer drafts | device-local, per room | Restored across restart; never sent; clearing a room's draft affects that room only. |
-| Text locale | device-local | Unset follows the platform's preferred languages, falling back to English; applies live. |
-| Formatting locale | device-local | Independent of the text locale from day one; unset follows the platform locale, falling back to the resolved text locale; applies live. |
+**Persistence is a platform property, not a given.** The
+[first-release distribution boundary](first-release-distribution.md) places
+browser storage on the untrusted side and rules that the ordinary browser
+stores **nothing that survives the tab**. The rows below therefore split by
+surface: on packaged desktop and Android they persist across restart; on an
+ordinary browser tab they are session state — held in memory, gone with the
+tab, never written to persistent browser storage. A packaged desktop
+WebView persists them through the desktop store (#185). A browser reload is
+therefore a fresh session: no restored room, no drafts, no unread dots —
+and the UI must never pretend otherwise.
 
-The namespaces these live in are not named here: #178 fixes the browser key
-namespace, #185 the desktop preferences store and its version key, and #173
-the Android data directory. Each must be a name no retiring client ever
-wrote.
+| Preference | Persists on | Rule |
+|---|---|---|
+| Last open room | desktop, Android | Restored once per launch, only from the bare root; always loses to an explicit route. |
+| Last-seen marks | desktop, Android | One timestamp per room; advanced on view; survives restart; never on the wire. |
+| Pin/archive room flags | desktop, Android | Copy says "on this device"; never dressed as shared state. |
+| Aliases (incl. self label) | desktop, Android | Per identity id; never signed; excluded from diagnostics. |
+| Per-room composer drafts | desktop, Android | Restored across restart; never sent; clearing a room's draft affects that room only. |
+| Text locale | desktop, Android | Unset follows the platform's preferred languages, falling back to English; applies live. |
+| Formatting locale | desktop, Android | Independent of the text locale from day one; unset follows the platform locale, falling back to the resolved text locale; applies live. |
+
+On the ordinary-browser surface every row above is still *implemented* — it
+simply lives and dies with the tab. Session-scoped browser state holds no
+credential material: the tab-scoped session credential and its tickets are
+the only browser-held secrets, and they too die with the tab
+([first-release distribution boundary](first-release-distribution.md)).
+
+The namespaces the persisting platforms use are not named here: #178 fixes
+the packaged-shell WebView key namespace, #185 the desktop preferences
+store and its version key, and #173 the Android data directory. Each must
+be a name no retiring client ever wrote.
 
 ## PlatformServices
 
@@ -384,14 +427,15 @@ with the clients they serve, and their replacement is #177's:
 
 - **French ships at desktop launch**, full-catalog in one release.
 - **Text locale ≠ formatting locale** from day one.
-- **Daemon/CLI output stays English**; the UI maps `{code, message, hint}` to
-  translated copy client-side, and raw daemon text appears only in the
-  collapsed technical-details disclosure, the Settings diagnostics card, and
-  the diagnostics report.
+- **Daemon/CLI output stays English**; the UI derives translated copy from
+  each v2 error `code` and its code-specific typed fields — v2 errors carry
+  no prose and no `hint`, so there is no daemon text to map, and none may be
+  fabricated. Raw daemon output appears only in the collapsed
+  technical-details disclosure, the Settings diagnostics card, and the
+  diagnostics report.
 - Tier 1 nouns translate (Rooms → Salons, Files → Fichiers, People →
-  Personnes, Activity → Activité); Tier 2 wire tokens (`direct`, `relay`,
-  `unavailable`, `unauthorized`, `hash_mismatch`, `daemon`, `jeliyad`,
-  `pipe`) never translate.
+  Personnes, Activity → Activité); Tier 2 wire tokens (for example `direct`,
+  `relay`, `digest_mismatch`, `daemon`, `jeliyad`, `pipe`) never translate.
 - French typography follows the glossary's decisions (U+202F before `; ! ?`,
   U+00A0 before `:`, U+2019 apostrophe, sentence case, vouvoiement).
 - No sentence assembly in component trees; no wire values as display text;
@@ -448,7 +492,7 @@ underlying mechanisms.
 
 | Behavior | Web | Desktop | Android |
 |---|---|---|---|
-| **Transport and session** | Browser WebSocket with fresh `/api/session` authentication on every attempt; connected only after protocol validation; holds no Iroh dependency and no node identity of its own — the daemon is the room peer | Native WebSocket through the supervisor and resolver on every connection attempt; only verified loopback endpoints dialed; the daemon token stays native, never crosses into WebView script, and is redacted in logs and diagnostics | `DirectClient`: typed `jeliya-core` in process — no socket, token, or portfile; calls execute serially; resume triggers authoritative resync without a fabricated reconnect |
+| **Transport and session** | Browser WebSocket; the operator-pasted pairing code is exchanged **once** at `POST /api/session` for a tab-scoped session credential, and every connect and reconnect draws a fresh single-use ticket from `POST /api/session/ticket`; connected only after protocol validation; holds no Iroh dependency and no node identity of its own — the daemon is the room peer | Native WebSocket through the supervisor and resolver on every connection attempt; only verified loopback endpoints dialed; the daemon token stays native, never crosses into WebView script, and is redacted in logs and diagnostics | `DirectClient`: typed `jeliya-core` in process — no socket, token, or portfile; calls execute serially; resume triggers authoritative resync without a fabricated reconnect |
 | **Daemon relationship** | Served and authenticated by the trusted local `jeliyad` path per the [first-release distribution boundary](first-release-distribution.md) | The packaged app supervises or adopts a real `jeliyad`: owned versus adopted shutdown is enforced, and an adopted daemon outlives the shell | None — the engine runs in process |
 | **Files** | Browser download for fetched files | Native file dialogs and export through `PlatformServices` | Storage Access Framework pickers, fetched-file export, share sheet, clipboard, and safe external actions (#192) |
 | **Navigation and lifecycle** | Deep links resolve as URL paths served by the daemon | Clean-install packages enforce daemon ownership/auth/shutdown, fresh storage, and platform services (#184–#187) | Compact shell; IME; predictive Back; rotation; foreground/background lifecycle with truthful resume (#193); protected fresh state with backup exclusion (#190) |
@@ -469,7 +513,7 @@ with rationale. Each is a change of behavior, not an omission.
 | 1 | **One client stack, not two.** Every two-client parity premise in the source records is dropped; the equivalence guarantee becomes the single fault-injected adapter contract suite (#175). | The [Dioxus clean-slate architecture](dioxus-architecture.md) replaces React and Flutter with one Rust client stack; parity gates between retiring clients cannot bind a stack that has one client. |
 | 2 | **No legacy persistence, no migration.** The legacy `?tab=` URL affordance, all seven legacy browser storage key families, and the Flutter `app_prefs.json` store have no reader and no migration. Preferences persist within the new app only. | The clean-slate policy of #156: old data fails closed with an actionable reset path; silently reinterpreting old state is an explicit non-goal. |
 | 3 | **Departed rooms open as read-only archives** — a widening of the Room Workbench record, which chose to state the signed fact without opening the room because no truthful archive surface existed. | #91 designs that surface: typed capabilities that suppress every live action, no live networking, the signed departure fact stated permanently. The invariant is retained from the pre-Dioxus reports; the widening is owned in detail by #91. |
-| 4 | **The unread-baseline rule for a no-recency daemon is dropped.** In v2 every listed room carries recency — a room with no stored events fails its own fold and is not listed — so there is no no-recency daemon to baseline against. The "first live event establishes the baseline" clause of the Room attention record describes a v1 mixed-version case. | Protocol v2 is the only generation the clean-slate stack speaks; there is no older daemon to interoperate with. |
+| 4 | **The v1 null-recency case is gone; v2's `absent` variant is a stated fact.** A v1 row could omit the projection (an older daemon), which is why the Room attention record carried a compatibility rule and a mixed-version baseline rule. In v2 every listed room carries `last_event` as a tagged variant — `present {at, kind}` or `absent` — and the contract handles both arms deliberately: `absent` renders "no activity yet" with no dot, and its baseline starts at the first observed event. | There is no older daemon for the clean-slate stack to interoperate with, so the v1 compatibility case cannot occur; the v2 `absent` arm is a reachable, valid state that must render truthfully rather than be suppressed. |
 | 5 | **Attention severity is a lookup, not an allowlist inference.** Protocol v2 closes the agent-status label vocabulary and adds a `blocked` label, resolving the untyped-label residual the Room attention record carried. | Recorded as the #161 amendment to that record; severity becomes a property of the closed vocabulary rather than a prose match. |
 | 6 | **French typography, status vocabulary, and destination names carry forward; the catalogs and gates that enforced them do not.** Their replacement is #177's, and no enforcement may lapse before its replacement is qualified. | Recorded in [known gaps and roadmap](known-gaps-roadmap.md) as the verification the retirement removes. |
 | 7 | **The device-local preference set is fixed by this contract** (seven rows in the preferences table). Additions are a contract change, not an implementation detail. | The legacy review finding that the retiring web client grew unlisted storage keys is answered by fixing the set as contract. |
