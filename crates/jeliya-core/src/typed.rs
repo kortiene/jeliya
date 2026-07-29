@@ -95,12 +95,21 @@ struct Window {
 }
 
 impl Window {
-    fn resolve(page: &Page) -> CoreResult<Self> {
+    fn resolve(page: &Page) -> Result<Self, ApiError> {
         let from = match &page.cursor {
             Cursor::Start => None,
             Cursor::At { pos } => Some(*pos),
         };
-        let limit = usize::try_from(page.limit.max(1)).unwrap_or(usize::MAX);
+        // The record requires `limit` in `1..=timeline_page_max`, refused —
+        // never clamped and never defaulted.
+        let max = limits().timeline_page_max;
+        if page.limit == 0 || page.limit > max {
+            return Err(ApiError::InvalidArgument {
+                field: "in.limit".into(),
+                reason: InvalidReason::Bound { min: 1, max },
+            });
+        }
+        let limit = usize::try_from(page.limit).unwrap_or(usize::MAX);
         let forward = matches!(page.direction, Direction::Forward);
         Ok(Self {
             from,
@@ -112,37 +121,88 @@ impl Window {
 
 /// Apply a [`Window`] to a position-ordered list of committed events,
 /// returning the page plus the one continuation mechanism.
+///
+/// **Forward** reads newer-from-cursor: the first `limit` events at or after
+/// `from`, and a `more` cursor naming the next unread position. **Backward**
+/// reads older-from-cursor: the newest `limit` events strictly before `from`
+/// (or the newest `limit` overall for a `start` cursor), served in
+/// first-encountered (ascending) order, with the continuation cursor naming
+/// the position the *oldest* returned event sits at, so the next backward
+/// page reads strictly below it — no omission and no duplication.
 fn page_events(events: Vec<Event>, window: Window) -> (Vec<Event>, Truncated) {
-    // `events` is ascending by pos (the store's canonical order). Select the
-    // window, then order by direction.
-    let filtered: Vec<Event> = events
-        .into_iter()
-        .filter(|e| window.from.is_none_or(|f| e.pos >= f))
-        .collect();
-    let mut page: Vec<Event> = if window.forward {
-        filtered
+    if window.forward {
+        let filtered: Vec<Event> = events
             .into_iter()
-            .take(window.limit.saturating_add(1))
-            .collect()
-    } else {
-        // Backward: take the newest `limit+1`, then reverse to ascending so the
-        // page is always served in first-encountered (ascending) order.
-        let mut v: Vec<Event> = filtered
+            .filter(|e| window.from.is_none_or(|f| e.pos >= f))
+            .collect();
+        let mut page: Vec<Event> = filtered
             .into_iter()
-            .rev()
             .take(window.limit.saturating_add(1))
             .collect();
-        v.reverse();
-        v
-    };
-    let truncated = if page.len() > window.limit {
-        page.truncate(window.limit);
-        let next = page.last().map(|e| e.pos + 1);
-        proj::truncated(next)
+        let truncated = if page.len() > window.limit {
+            page.truncate(window.limit);
+            proj::truncated(page.last().map(|e| e.pos + 1))
+        } else {
+            Truncated::Complete
+        };
+        (page, truncated)
     } else {
-        Truncated::Complete
-    };
-    (page, truncated)
+        // Backward: candidates are strictly below `from` (or all of them for a
+        // start cursor), newest first for selection.
+        let mut candidates: Vec<Event> = events
+            .into_iter()
+            .filter(|e| window.from.is_none_or(|f| e.pos < f))
+            .collect();
+        candidates.reverse(); // newest first
+        let mut page: Vec<Event> = candidates
+            .into_iter()
+            .take(window.limit.saturating_add(1))
+            .collect();
+        let truncated = if page.len() > window.limit {
+            // Drop the extra (oldest) probe event, then continue from the
+            // oldest KEPT event so the next page reads strictly below it.
+            page.truncate(window.limit);
+            proj::truncated(page.last().map(|e| e.pos))
+        } else {
+            Truncated::Complete
+        };
+        page.reverse(); // serve in first-encountered (ascending) order
+        (page, truncated)
+    }
+}
+
+/// Apply a [`Window`] to an index-addressed list (status history, file list,
+/// pipe list), honoring direction and returning the one continuation
+/// mechanism. These lists are position-by-index, not by committed `pos`, so
+/// the cursor is an index. Forward reads `limit` rows from `cursor`; backward
+/// reads the `limit` rows ending just before `cursor` (or the newest `limit`
+/// for a start cursor), served in forward (ascending-index) order, with the
+/// continuation cursor naming the index the next backward page reads below.
+fn page_indexed<T: Clone>(items: Vec<T>, window: Window) -> (Vec<T>, Truncated) {
+    let total = items.len();
+    if window.forward {
+        let start = window.from.map_or(0, |f| (f as usize).min(total));
+        let end = (start + window.limit).min(total);
+        let page: Vec<T> = items[start..end].to_vec();
+        let truncated = if end < total {
+            proj::truncated(Some(end as u64))
+        } else {
+            Truncated::Complete
+        };
+        (page, truncated)
+    } else {
+        // Backward: the newest `limit` rows strictly before `from` (or the
+        // newest `limit` overall for a start cursor).
+        let end = window.from.map_or(total, |f| (f as usize).min(total));
+        let start = end.saturating_sub(window.limit);
+        let page: Vec<T> = items[start..end].to_vec();
+        let truncated = if start > 0 {
+            proj::truncated(Some(start as u64))
+        } else {
+            Truncated::Complete
+        };
+        (page, truncated)
+    }
 }
 
 /// The typed projection facade. Cheap to construct; borrows the supervisor.
@@ -391,16 +451,54 @@ impl<'a> TypedSupervisor<'a> {
     }
 
     /// `room.timeline` — read committed history identically whether or not
-    /// the room is live.
-    pub async fn room_timeline(&self, req: &RoomTimeline) -> CoreResult<RoomTimelineOut> {
-        let room_id = Self::parse_room(&req.room_id)?;
-        let snapshot = self.sup.readable_snapshot(&room_id).await?;
-        let events = self.committed_events(&room_id, &snapshot)?;
+    /// the room is live. A left or removed caller is `membership_ended` — only
+    /// `room.archive` and `room.list` are defined over a former membership.
+    pub async fn room_timeline(&self, req: &RoomTimeline) -> Result<RoomTimelineOut, ApiError> {
+        let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        let snapshot = self
+            .sup
+            .readable_snapshot(&room_id)
+            .await
+            .map_err(|e| core_to_api_room(e, &req.room_id))?;
+        self.require_active_standing(&req.room_id, &room_id, &snapshot)?;
+        let events = self
+            .committed_events(&room_id, &snapshot)
+            .map_err(|e| core_to_api_room(e, &req.room_id))?;
         let (page, truncated) = page_events(events, Window::resolve(&req.page)?);
         Ok(RoomTimelineOut {
             room_id: req.room_id.clone(),
             events: page,
             truncated,
+        })
+    }
+
+    /// Validation-order step 5: the caller's standing must be `active`. A
+    /// `left` or `removed` standing is `membership_ended` carrying the ended
+    /// standing, for the operations defined over a live membership
+    /// (everything except `room.archive` and `room.list`).
+    fn require_active_standing(
+        &self,
+        api_room_id: &RoomId,
+        room_id: &IrohRoomId,
+        snapshot: &iroh_rooms::room::MembershipSnapshot,
+    ) -> Result<(), ApiError> {
+        let self_key = self.sup.local_identity_key().map_err(core_to_api)?;
+        let store = self.sup.open_store().map_err(core_to_api)?;
+        let (removed_ids, left_ids) = crate::supervisor::departure_sets(&store, room_id)
+            .map_err(core_to_api)?;
+        let standing = snapshot.member(&self_key).map_or(Standing::Active, |m| {
+            proj::standing(
+                removed_ids.contains(&m.identity)
+                    || matches!(m.status, iroh_rooms::room::Status::Removed),
+                left_ids.contains(&m.identity),
+            )
+        });
+        if standing == Standing::Active {
+            return Ok(());
+        }
+        Err(ApiError::MembershipEnded {
+            room_id: api_room_id.clone(),
+            standing,
         })
     }
 
@@ -448,7 +546,7 @@ impl<'a> TypedSupervisor<'a> {
             ));
         }
         let events = self.committed_events(&room_id, &snapshot)?;
-        let (page, truncated) = page_events(events, Window::resolve(&req.page)?);
+        let (page, truncated) = page_events(events, Window::resolve(&req.page).map_err(api_to_core)?);
         Ok(RoomArchiveOut {
             room_id: req.room_id.clone(),
             standing,
@@ -665,19 +763,8 @@ impl<'a> TypedSupervisor<'a> {
             });
         }
         // Paging over the chronological entries.
-        let window = Window::resolve(&req.page)?;
-        let total = entries.len();
-        let start = match &req.page.cursor {
-            Cursor::Start => 0,
-            Cursor::At { pos } => (*pos as usize).min(total),
-        };
-        let end = (start + window.limit).min(total);
-        let page: Vec<StatusEntry> = entries[start..end].to_vec();
-        let truncated = if end < total {
-            proj::truncated(Some(end as u64))
-        } else {
-            Truncated::Complete
-        };
+        let window = Window::resolve(&req.page).map_err(api_to_core)?;
+        let (page, truncated) = page_indexed(entries, window);
         Ok(StatusHistoryOut {
             room_id: req.room_id.clone(),
             subject_id: req.subject_id.clone(),
@@ -868,19 +955,8 @@ impl<'a> TypedSupervisor<'a> {
             });
         }
         // Paging over the file rows (position = index within the file index).
-        let window = Window::resolve(&req.page)?;
-        let total = files.len();
-        let start = match &req.page.cursor {
-            Cursor::Start => 0,
-            Cursor::At { pos } => (*pos as usize).min(total),
-        };
-        let end = (start + window.limit).min(total);
-        let page: Vec<FileRow> = files[start..end].to_vec();
-        let truncated = if end < total {
-            proj::truncated(Some(end as u64))
-        } else {
-            Truncated::Complete
-        };
+        let window = Window::resolve(&req.page).map_err(api_to_core)?;
+        let (page, truncated) = page_indexed(files, window);
         Ok(FileListOut {
             room_id: req.room_id.clone(),
             files: page,
@@ -983,7 +1059,11 @@ impl<'a> TypedSupervisor<'a> {
         let target_addr = target_addr.expect("parsed above");
 
         // Resolve the audience to a concrete authorized-subject set.
-        let snapshot = self.sup.readable_snapshot(&room_id).await.map_err(core_to_api)?;
+        let snapshot = self
+            .sup
+            .readable_snapshot(&room_id)
+            .await
+            .map_err(core_to_api)?;
         let allowed: Vec<iroh_rooms::identity::IdentityKey> = match &req.audience {
             Audience::Room => snapshot.active_members().map(|m| m.identity).collect(),
             Audience::Subjects { subject_ids } => subject_ids
@@ -1069,19 +1149,8 @@ impl<'a> TypedSupervisor<'a> {
         }
         pipes.sort_by_key(|(pos, _)| *pos);
         let all: Vec<PipeRow> = pipes.into_iter().map(|(_, p)| p).collect();
-        let window = Window::resolve(&req.page)?;
-        let total = all.len();
-        let start = match &req.page.cursor {
-            Cursor::Start => 0,
-            Cursor::At { pos } => (*pos as usize).min(total),
-        };
-        let end = (start + window.limit).min(total);
-        let page: Vec<PipeRow> = all[start..end].to_vec();
-        let truncated = if end < total {
-            proj::truncated(Some(end as u64))
-        } else {
-            Truncated::Complete
-        };
+        let window = Window::resolve(&req.page).map_err(api_to_core)?;
+        let (page, truncated) = page_indexed(all, window);
         Ok(PipeListOut {
             room_id: req.room_id.clone(),
             pipes: page,
@@ -1468,57 +1537,53 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .room_activate(&r)
             .await
             .map(TypedReply::RoomActivate)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::RoomDeactivate(r) => t
             .room_deactivate(&r)
             .await
             .map(TypedReply::RoomDeactivate)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::RoomLeave(r) => t
             .room_leave(&r)
             .await
             .map(TypedReply::RoomLeave)
-            .map_err(core_to_api),
-        TypedCall::RoomTimeline(r) => t
-            .room_timeline(&r)
-            .await
-            .map(TypedReply::RoomTimeline)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
+        TypedCall::RoomTimeline(r) => t.room_timeline(&r).await.map(TypedReply::RoomTimeline),
         TypedCall::RoomMembers(r) => t
             .room_members(&r)
             .await
             .map(TypedReply::RoomMembers)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::RoomArchive(r) => t
             .room_archive(&r)
             .await
             .map(TypedReply::RoomArchive)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::RoomPeers(r) => t
             .room_peers(&r)
             .await
             .map(TypedReply::RoomPeers)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::MemberRemove(r) => t
             .member_remove(&r)
             .await
             .map(TypedReply::MemberRemove)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::InviteMint(r) => t
             .invite_mint(&r)
             .await
             .map(TypedReply::InviteMint)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::InviteList(r) => t
             .invite_list(&r)
             .await
             .map(TypedReply::InviteList)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::InviteRevoke(r) => t
             .invite_revoke(&r)
             .await
             .map(TypedReply::InviteRevoke)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::InviteRedeem(r) => t
             .invite_redeem(&r)
             .await
@@ -1528,17 +1593,17 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .message_send(&r)
             .await
             .map(TypedReply::MessageSend)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::StatusPost(r) => t
             .status_post(&r)
             .await
             .map(TypedReply::StatusPost)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::StatusHistory(r) => t
             .status_history(&r)
             .await
             .map(TypedReply::StatusHistory)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::FleetList(_) => t
             .fleet_list()
             .await
@@ -1548,22 +1613,22 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .file_share(&r)
             .await
             .map(TypedReply::FileShare)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::FileList(r) => t
             .file_list(&r)
             .await
             .map(TypedReply::FileList)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::FileFetch(r) => t
             .file_fetch(&r)
             .await
             .map(TypedReply::FileFetch)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::FileRead(r) => t
             .file_read(&r)
             .await
             .map(TypedReply::FileRead)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::TransferCancel(r) => t
             .transfer_cancel(&r)
             .await
@@ -1574,12 +1639,12 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .pipe_list(&r)
             .await
             .map(TypedReply::PipeList)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::PipeConnect(r) => t
             .pipe_connect(&r)
             .await
             .map(TypedReply::PipeConnect)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::PipeRelease(r) => t
             .pipe_release(&r)
             .await
@@ -1589,7 +1654,7 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .pipe_revoke(&r)
             .await
             .map(TypedReply::PipeRevoke)
-            .map_err(core_to_api),
+            .map_err(|e| core_to_api_room(e, &r.room_id)),
         // Stream operations are connection-scoped; the engine handles them
         // against the connection's subscription set, not the supervisor.
         TypedCall::StreamSubscribe(_)
@@ -1791,18 +1856,38 @@ pub enum TypedReply {
     PipeRevoke(PipeRevokeOut),
 }
 
-/// Map a core error onto the typed v2 taxonomy at the engine boundary.
+/// Map a typed [`ApiError`] back onto a core error, for the typed-read paths
+/// that still surface `CoreResult` internally.
+fn api_to_core(err: ApiError) -> CoreError {
+    match err {
+        ApiError::InvalidArgument { .. } => {
+            CoreError::new(ErrorKind::InvalidParams, "invalid paging argument")
+        }
+        _ => CoreError::internal("typed projection error"),
+    }
+}
+
+/// Map a core error onto the typed v2 taxonomy at the engine boundary. A
+/// room-scoped error carries the identifier the operation named, never an
+/// empty placeholder — the typed error schema fixes the field and a client
+/// branches on it.
 fn core_to_api(err: CoreError) -> ApiError {
+    core_to_api_ctx(err, None)
+}
+
+/// [`core_to_api`] with the room the operation named, for room-scoped errors.
+fn core_to_api_room(err: CoreError, room_id: &RoomId) -> ApiError {
+    core_to_api_ctx(err, Some(room_id.clone()))
+}
+
+fn core_to_api_ctx(err: CoreError, room_id: Option<RoomId>) -> ApiError {
+    let rid = || room_id.clone().unwrap_or_else(|| RoomId::new(""));
     match err.kind {
         ErrorKind::IdentityMissing => ApiError::SubjectAbsent,
         ErrorKind::RoomUnknown | ErrorKind::NotAMember | ErrorKind::FileUnauthorized => {
-            ApiError::RoomNotAvailable {
-                room_id: RoomId::new(""),
-            }
+            ApiError::RoomNotAvailable { room_id: rid() }
         }
-        ErrorKind::RoomNotOpen => ApiError::RoomNotLive {
-            room_id: RoomId::new(""),
-        },
+        ErrorKind::RoomNotOpen => ApiError::RoomNotLive { room_id: rid() },
         ErrorKind::BadTicket => ApiError::CapabilityInvalid,
         ErrorKind::TicketExpired => ApiError::CapabilityExpired {
             expired_at: proj_epoch(),
@@ -1815,9 +1900,7 @@ fn core_to_api(err: CoreError) -> ApiError {
             expected: String::new(),
             observed: String::new(),
         },
-        ErrorKind::PipeDenied => ApiError::PolicyRefused {
-            room_id: RoomId::new(""),
-        },
+        ErrorKind::PipeDenied => ApiError::PolicyRefused { room_id: rid() },
         ErrorKind::PeerUnreachable => ApiError::PipeUnreachable {
             pipe_id: PipeId::new(""),
             link: Link::NotConnected {

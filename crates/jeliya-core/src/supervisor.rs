@@ -2411,7 +2411,9 @@ impl RoomSupervisor {
             ));
         }
         if allowed.is_empty() {
-            return Err(CoreError::invalid("pipe.publish needs a non-empty audience"));
+            return Err(CoreError::invalid(
+                "pipe.publish needs a non-empty audience",
+            ));
         }
         let session = self.session(room_id)?;
         let secret = self.secrets()?;

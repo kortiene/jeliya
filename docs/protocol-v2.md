@@ -5,7 +5,7 @@ description: "Normative clean-slate contract between the typed Rust core and eve
 tags: ["clean-slate", "conformance", "protocol", "security"]
 timestamp: "2026-07-28T15:26:05Z"
 status: "canonical"
-implementation_status: "in_progress"
+implementation_status: "partial"
 verification_status: "unverified"
 release_status: "unreleased"
 audience: ["client-authors", "contributors", "maintainers"]
