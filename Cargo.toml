@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/jeliya-core", "crates/jeliyad", "crates/jeliya-ffi", "crates/jeliya-api"]
+members = ["crates/jeliya-core", "crates/jeliyad", "crates/jeliya-ffi", "crates/jeliya-api", "crates/jeliya-codec"]
 resolver = "2"
 
 [workspace.package]
