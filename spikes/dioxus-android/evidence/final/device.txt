@@ -1,0 +1,16 @@
+serial_suffix=Q9WV
+serial_sha256=51040f239e9c43b4718fa4403f9e9f9910574d512128157bed5a4e076c04d58d
+manufacturer=motorola
+model=moto g play - 2023
+device=maui
+sku=XT2271-5
+android=13
+api=33
+security_patch=2025-11-01
+abi_list=armeabi-v7a,armeabi
+fingerprint=motorola/maui_retail/maui:13/T3SGS33.165-46-3-1-26/e816a-2cfe96:user/release-keys
+hardware=mt6765
+qemu=0
+webview=com.google.android.webview 150.0.7871.181
+navigation_mode=0
+talkback_package=package:com.google.android.marvin.talkback

@@ -1,0 +1,3 @@
+Running incremental backup for 1 requested packages.
+Package dev.jeliya.spike160 with result: Backup is not allowed
+Backup finished with result: Success

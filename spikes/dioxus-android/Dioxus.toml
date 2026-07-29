@@ -1,0 +1,28 @@
+#:schema https://raw.githubusercontent.com/DioxusLabs/dioxus/v0.7.9/packages/cli/schema.json
+
+[application]
+name = "Jeliya Android spike"
+public_dir = ""
+android_manifest = "android/AndroidManifest.xml"
+android_main_activity = "android/MainActivity.kt"
+# Dioxus 0.7.9 unfortunately uses this older application key for the NDK
+# linker API, while [android].min_sdk controls Gradle. Keep them identical.
+android_min_sdk_version = 26
+
+[bundle]
+identifier = "dev.jeliya.spike160"
+publisher = "Jeliya contributors"
+
+# Signing credentials deliberately do not live in this file. build.sh generates
+# a gitignored `.android/signing.properties` and patches dx's generated Gradle
+# project to consume it. This avoids committing even throwaway passwords.
+
+[android]
+identifier = "dev.jeliya.spike160"
+min_sdk = 26
+target_sdk = 35
+compile_sdk = 35
+lib_name = "jeliya_spike_160"
+
+[android.application]
+supports_rtl = true

@@ -1,0 +1,5 @@
+D CoreBackPreview: startBackNavigation currentTask=Task{c05a3b3 #1936 type=standard A=10146:dev.jeliya.spike160}, topRunningActivity=ActivityRecord{5db887d u0 dev.jeliya.spike160/dev.dioxus.main.MainActivity} t1936}, callbackInfo=OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@dc81a17, mPriority=0}, currentFocus=Window{c1691ed u0 dev.jeliya.spike160/dev.dioxus.main.MainActivity}
+D ShellBackPreview: Received backNavigationInfo:BackNavigationInfo{mType=TYPE_CALLBACK (4), mDepartingAnimationTarget=null, mScreenshotSurface=null, mTaskWindowConfiguration= null, mScreenshotBuffer=null, mOnBackNavigationDone=<registered>, mOnBackInvokedCallback=<registered>}
+D ShellBackPreview: onGestureFinished() mTriggerBack == true
+D CoreBackPreview: onBackNavigationDone backType=4, task=null, prevActivity=null
+I RustStdoutStderr: SPIKE160_BACK count=1
