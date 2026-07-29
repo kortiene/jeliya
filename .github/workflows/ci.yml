@@ -319,7 +319,7 @@ jobs:
           )
 
   rust-runtime:
-    name: Rust + Dart + smoke + E2E + protocol conformance
+    name: Rust + protocol-v2 conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -344,16 +344,6 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - name: Setup Dart
-        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
-        with:
-          sdk: '3.11.3'
-
-      # jeliya-ffi's build.rs compiles dart_api_dl.c. Every workspace build
-      # therefore receives the standalone SDK include directory explicitly.
-      - name: Export Dart SDK headers
-        run: echo "DART_SDK_INCLUDE=$(dirname "$(command -v dart)")/../include" >> "$GITHUB_ENV"
-
       - name: Rust format
         run: cargo fmt --all --check
 
@@ -367,65 +357,26 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked -p jeliyad
-          cargo build --locked -p jeliya-ffi
           test -x target/debug/jeliyad
-          test -s target/debug/libjeliya_ffi.so
           command -v lsof >/dev/null
 
-      # Step order matters: the deterministic checks below run BEFORE the
-      # network evidence harness at the end of this job. A step that fails
-      # skips every later step, so putting the slowest and least deterministic
-      # check first meant one flake hid every result after it. Keep new
-      # deterministic steps above the harness.
-      - name: Dart protocol (analysis + daemon and FFI conformance)
-        working-directory: dart/jeliya_protocol
-        run: |
-          set -euo pipefail
-          test -x ../../target/debug/jeliyad
-          test -s ../../target/debug/libjeliya_ffi.so
-          dart pub get
-          dart analyze
-          dart test
+      # The v1-coupled live suites (Dart protocol + FFI conformance, the
+      # TypeScript v1 conformance oracle, and the Node v1 E2E scripts) drove the
+      # retired v1 JSON protocol. The protocol-v2 cutover (#166) removes v1 with
+      # no compatibility facade, so those suites no longer run against the
+      # current daemon — they are retired atomically under #202/#203 and are
+      # gated off here rather than left red. The v2 conformance corpus
+      # (conformance/v2) is validated shape-wise by scripts/check-v2-corpus.mjs;
+      # a v2 daemon replay harness is a follow-up to #166.
+      - name: Protocol-v2 conformance corpus shape validation
+        run: node scripts/check-v2-corpus.mjs
 
-      - name: TypeScript conformance against the real daemon
-        working-directory: ui
-        env:
-          JELIYA_REQUIRE_DAEMON: '1'
-        run: |
-          set -euo pipefail
-          test -x ../target/debug/jeliyad
-          npm ci
-          npm run test:conformance
-
-      - name: Daemon smoke test
-        run: node scripts/smoke.mjs target/debug/jeliyad
-
-      - name: Sidecar contract
-        run: node scripts/sidecar-check.mjs target/debug/jeliyad
-
-      - name: Two-peer loopback E2E
-        run: node scripts/e2e.mjs --mode loopback
-
-      - name: Agent and fleet port-ownership safety
-        run: node --test scripts/e2e-port-safety.test.mjs
-
-      - name: Agent authorization E2E
-        run: node scripts/agent-e2e.mjs
-
-      - name: Fleet orchestration E2E
-        run: node scripts/fleet-e2e.mjs --trials 5
-
-      # Last on purpose: this is the slowest step in the job and the only one
-      # that has flaked on unrelated changes (it waits up to 120s for a third
-      # loopback peer to settle a direct path). It consumes nothing the steps
-      # above produce and uses a port none of them touch, so running it last
-      # costs nothing and stops a flake here from skipping real results.
-      - name: Network evidence harness safety and loopback qualification
-        run: |
-          set -euo pipefail
-          test -x target/debug/jeliyad
-          node --test scripts/realnet-evidence.test.mjs
-          node scripts/realnet-evidence.mjs --local-dryrun --with-third
+      # The network evidence harness (scripts/realnet-*.mjs) drove the retired
+      # v1 WS protocol (`room.create`, `invite.create`, `message.send` over v1
+      # frames). It is gated off with the other v1 live suites under #166 and
+      # re-established on the v2 surface in a follow-up; the deterministic Rust
+      # loopback/multi-room/late-join network tests in jeliya-core continue to
+      # carry the live-network evidence in the meantime.
 
   msrv:
     name: MSRV 1.91.0
@@ -444,14 +395,6 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.2
         with:
           key: msrv-1.91.0
-
-      - name: Setup Dart
-        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.2
-        with:
-          sdk: '3.11.3'
-
-      - name: Export Dart SDK headers
-        run: echo "DART_SDK_INCLUDE=$(dirname "$(command -v dart)")/../include" >> "$GITHUB_ENV"
 
       - name: Verify exact compiler and workspace
         run: |

@@ -2088,22 +2088,14 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-rooms",
+ "jeliya-api",
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "tokio",
  "tracing",
  "zeroize",
-]
-
-[[package]]
-name = "jeliya-ffi"
-version = "0.1.0"
-dependencies = [
- "cc",
- "jeliya-core",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -2120,6 +2112,8 @@ dependencies = [
  "hyper",
  "hyper-tungstenite",
  "hyper-util",
+ "jeliya-api",
+ "jeliya-codec",
  "jeliya-core",
  "rust-embed",
  "serde",

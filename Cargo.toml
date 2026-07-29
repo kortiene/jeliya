@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/jeliya-core", "crates/jeliyad", "crates/jeliya-ffi", "crates/jeliya-api", "crates/jeliya-codec"]
+# `jeliya-ffi` is quarantined out of the active build under #166: it consumes
+# the retired v1 string seam (`Engine::handle_frame`) and is removed from the
+# workspace so `cargo build`/`cargo test`/`clippy --workspace` no longer build
+# or test it. It is deleted outright under #202 once the Android DirectClient
+# candidate passes. The crate stays on disk (excluded, not a member) so the
+# retirement slice owns the removal atomically.
+members = ["crates/jeliya-core", "crates/jeliyad", "crates/jeliya-api", "crates/jeliya-codec"]
+exclude = ["crates/jeliya-ffi"]
 resolver = "2"
 
 [workspace.package]

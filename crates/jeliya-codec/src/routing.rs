@@ -18,6 +18,16 @@ pub struct Call {
     pub input: Box<dyn ErasedInput>,
 }
 
+impl Call {
+    /// The decoded input as `&dyn Any` for the engine's total downcast. The
+    /// router guarantees the concrete type matches `op`, so the engine's
+    /// downcast cannot fail on a frame the router accepted.
+    #[must_use]
+    pub fn input_any(&self) -> &dyn std::any::Any {
+        self.input.as_any()
+    }
+}
+
 /// A type-erased operation input. The engine downcasts by `op`, which is
 /// total: every `op` the router accepts maps to exactly one concrete type,
 /// so the downcast cannot fail.

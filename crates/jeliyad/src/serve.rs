@@ -347,32 +347,54 @@ fn apply_cors(
     response
 }
 
-/// The WebSocket handshake gate: a remote-`Origin` page is refused (cross-site
-/// WebSocket hijacking), and every client — browser or native — must present
-/// the per-start auth token (`?token=` or `Authorization: Bearer`). The
-/// browser UI gets its token from `/api/session`; native clients read the
-/// portfile.
+/// The WebSocket handshake: the protocol-v2 generation gate runs **before**
+/// any upgrade, frame parse, or dispatch — the only point provably before
+/// mutation. A remote `Origin` is refused (cross-site WebSocket hijacking);
+/// `v` must name the supported generation and `sg` the storage generation; a
+/// per-start credential authenticates the connection. A v1 client (no `v`)
+/// is refused `426 protocol_unsupported` here, never reaching the engine.
 fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Bytes>> {
-    // Cross-Site WebSocket Hijacking guard: reject any request whose `Origin`
-    // is a real remote site. Non-browser clients send no `Origin` (allowed
-    // past this gate; the token gate below still applies); the same-origin
-    // served UI sends a loopback `Origin` (allowed).
-    if let Some(origin) = req.headers().get(ORIGIN) {
-        let allowed = origin.to_str().map(is_local_origin).unwrap_or(false);
-        if !allowed {
+    let headers = req.headers();
+    let host = headers
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let origin = headers
+        .get(ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let query = parse_query(req.uri().query().unwrap_or(""));
+    let v = query.get("v").and_then(|s| s.parse::<u64>().ok());
+    let sg = query.get("sg").and_then(|s| s.parse::<u64>().ok());
+    let cid = query.get("cid").cloned();
+    let credential = presented_token(req);
+
+    let decision = jeliya_codec::gate(&jeliya_codec::GateParams {
+        host,
+        origin,
+        v,
+        sg,
+        credential,
+        at_capacity: false,
+        max_connections: 64,
+        cid,
+        daemon_sg: jeliya_core::engine::STORAGE_GENERATION,
+        expected_credential: state.auth_token.as_str().to_owned(),
+    });
+    let principal = match decision {
+        Ok(jeliya_codec::GateDecision::Admit(p)) => p,
+        Ok(jeliya_codec::GateDecision::Refuse(rejection)) => {
+            return gate_refusal(rejection);
+        }
+        Err(err) => {
             return text(
-                StatusCode::FORBIDDEN,
-                "forbidden: cross-origin WebSocket connections are refused",
+                StatusCode::BAD_REQUEST,
+                Box::leak(format!("gate error: {err}").into_boxed_str()),
             );
         }
-    }
-    if !token_ok(req, &state) {
-        return text(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized: connect with ?token=<auth_token>; the browser UI gets one \
-             from /api/session, native clients read daemon.json in the data dir",
-        );
-    }
+    };
+
     if !hyper_tungstenite::is_upgrade_request(&*req) {
         return text(
             StatusCode::BAD_REQUEST,
@@ -383,13 +405,26 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
         Ok((response, websocket)) => {
             tokio::spawn(async move {
                 if let Ok(ws) = websocket.await {
-                    serve_ws(ws, state).await;
+                    serve_ws(ws, state, principal).await;
                 }
             });
             response
         }
         Err(_) => text(StatusCode::BAD_REQUEST, "malformed websocket upgrade"),
     }
+}
+
+/// The pre-upgrade gate refusal: the codec's bare error body plus its HTTP
+/// status (403/401/426/503). No JSON envelope — the upgrade never happened.
+fn gate_refusal(rejection: jeliya_codec::GateRejection) -> Response<Full<Bytes>> {
+    let status = StatusCode::from_u16(rejection.status).unwrap_or(StatusCode::FORBIDDEN);
+    let body = serde_json::to_string(&rejection.body)
+        .unwrap_or_else(|_| "{\"code\":\"forbidden_origin\"}".to_owned());
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Full::new(Bytes::from(body)))
+        .expect("gate refusal is well-formed")
 }
 
 /// Serve a verified local file copy by `(room_id, file_id)`. The browser never
@@ -747,23 +782,53 @@ fn serve_static(path: &str, ui: &UiSource) -> Response<Full<Bytes>> {
     text(StatusCode::NOT_FOUND, "not found")
 }
 
-/// One WebSocket client: JSON text frames dispatched to the engine's
-/// `handle_frame`, interleaved with broadcast pushes. Generic over the
-/// upgraded stream type so the exact same loop drives the hyper-upgraded
-/// socket.
-pub async fn serve_ws<S>(ws: WebSocketStream<S>, state: AppState)
-where
+/// One v2 WebSocket connection. The daemon's first frame is exactly one
+/// `hello`; thereafter each inbound text frame is decoded by the codec into a
+/// typed call, executed by the engine, and its typed reply encoded back —
+/// interleaved with typed pushes. A frame over the limit closes `4005`; a
+/// frame whose `id` cannot be recovered closes `4007`; any other malformed
+/// frame gets a correlated error reply so one bad request never strands the
+/// others in flight. A lagged push receiver is told to resync (the one
+/// resync path), never silently continued.
+pub async fn serve_ws<S>(
+    ws: WebSocketStream<S>,
+    state: AppState,
+    _principal: jeliya_codec::SessionPrincipal,
+) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (mut sink, mut messages) = ws.split();
     let mut push_rx = state.engine.subscribe_pushes();
+    let bounds = jeliya_codec::CodecBounds::default();
+
+    // The `hello` frame: exactly one, first, carrying the generation, the
+    // storage generation, the served limits, and the local subject.
+    let hello = jeliya_api::Hello {
+        protocol: jeliya_core::engine::PROTOCOL_VERSION,
+        storage_generation: jeliya_core::engine::STORAGE_GENERATION,
+        limits: state.engine.limits(),
+        subject: state.engine.subject_state(),
+        resume: jeliya_api::Resume::Fresh,
+    };
+    match serde_json::to_vec(&hello) {
+        Ok(bytes) => {
+            if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                return;
+            }
+        }
+        Err(_) => return,
+    }
 
     loop {
         tokio::select! {
             msg = messages.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    let reply = state.engine.handle_frame(text.as_str()).await;
-                    if sink.send(Message::text(reply)).await.is_err() {
+                    if !handle_frame(&mut sink, &state, text.as_bytes(), &bounds).await {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Binary(bytes))) => {
+                    if !handle_frame(&mut sink, &state, &bytes, &bounds).await {
                         break;
                     }
                 }
@@ -773,21 +838,133 @@ where
                     }
                 }
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                Some(Ok(_)) => {} // binary/pong frames: ignored
+                Some(Ok(_)) => {} // pong frames: ignored
             },
             push = push_rx.recv() => match push {
-                Ok(frame) => {
-                    if sink.send(Message::text(frame)).await.is_err() {
+                Ok(push) => {
+                    let bytes = jeliya_codec::push_to_bytes(&push);
+                    if sink.send(Message::Binary(bytes.into())).await.is_err() {
                         break;
                     }
                 }
-                // A lagged subscriber just misses pushes; the request/response
-                // surface (room.timeline / peers.status) re-syncs it.
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                // A lagged receiver fell behind the push fan-out. v2 never
+                // silently continues: send an explicit gap push naming the
+                // backpressure so the client resyncs from its last position.
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let gap = jeliya_api::Push::Gap {
+                        room_id: jeliya_api::RoomId::new(""),
+                        from_pos: 0,
+                        to: jeliya_api::GapTo::Open,
+                        reason: jeliya_api::GapReason::Backpressure,
+                    };
+                    let bytes = jeliya_codec::push_to_bytes(&gap);
+                    if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
         }
     }
+}
+
+/// Decode one frame, execute it, and encode the reply. Returns `false` when
+/// the connection must close (a frame over the limit → `4005`, an
+/// unrecoverable `id` → `4007`); `true` to continue serving.
+async fn handle_frame<S>(
+    sink: &mut futures_util::stream::SplitSink<WebSocketStream<S>, Message>,
+    state: &AppState,
+    bytes: &[u8],
+    bounds: &jeliya_codec::CodecBounds,
+) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use jeliya_codec::CodecError;
+    let frame = match jeliya_codec::decode(bytes, bounds) {
+        Ok(frame) => frame,
+        Err(CodecError::FrameTooLarge { .. }) => {
+            // Over-limit frame: close 4005 unparsed.
+            let _ = sink
+                .send(Message::Close(Some(
+                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4005.into(),
+                        reason: "frame_too_large".into(),
+                    },
+                )))
+                .await;
+            return false;
+        }
+        Err(CodecError::UnrecoverableId(_)) => {
+            // No usable correlation id: close 4007.
+            let _ = sink
+                .send(Message::Close(Some(
+                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4007.into(),
+                        reason: "malformed_frame".into(),
+                    },
+                )))
+                .await;
+            return false;
+        }
+        Err(CodecError::Malformed { id, error }) => {
+            // A correlatable malformed frame: send the typed error reply so
+            // one bad request never strands the others in flight.
+            let reply = jeliya_codec::Reply::from_result::<jeliya_api::RoomList>(id, Err(error));
+            return sink
+                .send(Message::Binary(reply.to_bytes().into()))
+                .await
+                .is_ok();
+        }
+        Err(CodecError::GateRefused(_)) => {
+            // The gate runs pre-upgrade; a post-upgrade gate refusal is a
+            // protocol violation and ends the connection.
+            return false;
+        }
+    };
+
+    let jeliya_codec::Frame::Request(request) = frame else {
+        // An inbound non-request frame (a push, or both/neither id/t) has no
+        // place client-to-daemon: correlated malformed reply.
+        return true;
+    };
+
+    let Some(call) = jeliya_core::typed::resolve_call(request.call.op, request.call.input_any())
+    else {
+        // The codec routed this op but the input did not downcast — a codec
+        // bug, surfaced as malformed rather than a panic.
+        let reply = jeliya_codec::Reply::from_result::<jeliya_api::RoomList>(
+            request.id,
+            Err(jeliya_api::ApiError::MalformedFrame),
+        );
+        return sink
+            .send(Message::Binary(reply.to_bytes().into()))
+            .await
+            .is_ok();
+    };
+
+    let executed = state.engine.execute(call).await;
+    let reply = match executed.reply {
+        Ok(out) => jeliya_codec::Reply {
+            id: request.id,
+            ok: true,
+            out: serde_json::to_value(out).ok(),
+            err: None,
+        },
+        Err(err) => jeliya_codec::Reply {
+            id: request.id,
+            ok: false,
+            out: None,
+            err: Some(err),
+        },
+    };
+    let sent = sink
+        .send(Message::Binary(reply.to_bytes().into()))
+        .await
+        .is_ok();
+    // A `daemon.stop` reply must flush before the host tears down; the engine
+    // already sequenced the delayed signal.
+    sent
 }
 
 /// Reject path traversal and produce a clean relative asset key.

@@ -30,6 +30,12 @@ iroh = "=1.0.1"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The clean-slate typed protocol-v2 API (#163). Core converts internal/Iroh
+# structures to these types at the materializer/supervisor boundary; no
+# `serde_json::Value` escapes the protocol-facing projections.
+jeliya-api = { path = "../jeliya-api" }
+# RFC 3339 `Timestamp` conversion (signed `created_at` ms -> wire `<ts>`).
+time = { version = "0.3", features = ["serde", "serde-well-known", "macros"] }
 hex = "0.4"
 # KDF mode only (`Hasher::new_derive_key`), for the room-scoped device keys in
 # `supervisor::derive_room_device`. Same version the pinned iroh-rooms already

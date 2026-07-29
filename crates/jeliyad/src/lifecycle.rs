@@ -38,7 +38,7 @@ pub struct Portfile {
     pub http: String,
     pub ws: String,
     pub version: String,
-    pub protocol: u32,
+    pub protocol: u64,
     pub data_dir: String,
     pub auth_token: String,
     pub started_at_ms: u64,
