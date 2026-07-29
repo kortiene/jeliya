@@ -33,13 +33,13 @@ const FILES = [
 ];
 
 function parseArgs(argv) {
-  const args = { binary: null, filter: null, file: null, caseName: null, verbose: false, jobs: 1 };
+  const args = { binary: null, filter: null, file: null, caseNames: [], verbose: false, jobs: 1 };
   const rest = [...argv];
   while (rest.length) {
     const a = rest.shift();
     if (a === '--filter') args.filter = rest.shift();
     else if (a === '--file') args.file = rest.shift();
-    else if (a === '--case') args.caseName = rest.shift();
+    else if (a === '--case') args.caseNames.push(rest.shift());
     else if (a === '--verbose') args.verbose = true;
     else if (a === '--jobs') args.jobs = Number(rest.shift()) || 1;
     else if (!args.binary) args.binary = a;
@@ -65,7 +65,10 @@ async function main() {
     process.exit(2);
   }
   let cases = loadCases(args.file);
-  if (args.caseName) cases = cases.filter((c) => c.name === args.caseName);
+  if (args.caseNames.length) {
+    const wanted = new Set(args.caseNames);
+    cases = cases.filter((c) => wanted.has(c.name));
+  }
   else if (args.filter) cases = cases.filter((c) => c.name.includes(args.filter));
 
   const runner = new Runner(args.binary, { verbose: args.verbose });

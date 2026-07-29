@@ -6,6 +6,8 @@
 // assertion. Blocked-on-upstream cases are expected to FAIL — a passing one
 // is reported as a surprise, not silently promoted.
 
+import { readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { startDaemon } from './daemon.mjs';
 import { Session } from './session.mjs';
 import { AssertContext, AssertFailure, evalAssert, subsetMatch } from './assert.mjs';
@@ -54,21 +56,27 @@ export class Runner {
    * Run one case. Returns { outcome, name, reason }.
    */
   async runCase(fixture) {
-    // A hard watchdog so no case can hang the whole run: a case that exceeds
-    // the budget is failed as an error and its daemons reaped.
+    // A hard watchdog so no case can hang the whole run. The state (sessions,
+    // daemons, timers, temp dirs) lives in an abort controller the watchdog
+    // fires, so a timed-out case is actually cancelled and cleaned up rather
+    // than left running to contaminate later cases.
     const budgetMs = 90_000 * this.timeoutScale;
-    return Promise.race([
-      this.#runCaseInner(fixture),
-      new Promise((resolve) =>
-        setTimeout(
-          () => resolve({ outcome: Outcome.ERROR, name: fixture.name, reason: `case watchdog timeout (${budgetMs}ms)` }),
-          budgetMs,
-        ),
-      ),
-    ]);
+    const handle = { cleanup: null };
+    const timeout = new Promise((resolve) => {
+      const t = setTimeout(async () => {
+        if (handle.cleanup) await handle.cleanup();
+        resolve({
+          outcome: Outcome.ERROR,
+          name: fixture.name,
+          reason: `case watchdog timeout (${budgetMs}ms)`,
+        });
+      }, budgetMs);
+      if (t.unref) t.unref();
+    });
+    return Promise.race([this.#runCaseInner(fixture, handle), timeout]);
   }
 
-  async #runCaseInner(fixture) {
+  async #runCaseInner(fixture, handle) {
     const name = fixture.name;
     const daemons = [];
     const sessions = new Map();
@@ -87,6 +95,8 @@ export class Runner {
         try { c(); } catch { /* ignore */ }
       }
     };
+    // Register cleanup so the watchdog can cancel and reap this case.
+    if (handle) handle.cleanup = cleanup;
 
     try {
       // Pre-seed the well-known variables a fresh case can reference.
@@ -107,13 +117,23 @@ export class Runner {
       const ctx = new AssertContext({
         vars,
         sessions,
-        observe: async (a) => this.#evalObserve(a, { sessions, vars, ctxState, name }),
+        observe: async (a) => this.#evalObserve(a, { sessions, vars, ctxState, name, daemons }),
       });
+
+      // Snapshot observable daemon state at case start (and re-snapshot after
+      // each step) so no_event_authored / no_durable_mutation compare a real
+      // before/after delta instead of passing unconditionally.
+      ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
+      ctxState.dirSnapshot = this.#dirStateSignature(daemons);
 
       // Execute the steps.
       for (let i = 0; i < fixture.steps.length; i++) {
         const step = fixture.steps[i];
         await this.#runStep(step, i, { daemons, sessions, vars, ctx, ctxState, name });
+        // A `step`-scoped observation compares against the state just before
+        // this step; refresh the baseline after each step completes.
+        ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
+        ctxState.dirSnapshot = this.#dirStateSignature(daemons);
       }
 
       // A case that ran all steps without a failing assertion passes.
@@ -130,7 +150,15 @@ export class Runner {
           ? err.message
           : `${err.name || 'Error'}: ${err.message}`;
       if (fixture.blocked_on_upstream) {
-        return { outcome: Outcome.BLOCKED_FAIL, name, reason };
+        // Only a genuine assertion failure counts as the EXPECTED blocked
+        // failure. A setup error, an unsupported control verb, a missing
+        // dependency, or a runner bug is not the upstream-dependent assertion
+        // failing — it is the case never reaching that assertion — so it is
+        // an ERROR, not a green BLOCKED_FAIL.
+        if (err instanceof AssertFailure) {
+          return { outcome: Outcome.BLOCKED_FAIL, name, reason };
+        }
+        return { outcome: Outcome.ERROR, name, reason: `blocked case errored before the upstream assertion: ${reason}` };
       }
       const isAssertion = err instanceof AssertFailure;
       return { outcome: isAssertion ? Outcome.FAIL : Outcome.ERROR, name, reason };
@@ -443,7 +471,7 @@ export class Runner {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) params.set(k, String(v));
     const url = `${daemon.wsBase}?${params.toString()}`;
-    const WebSocket = (await import('../../../ui/node_modules/ws/index.js')).default;
+    const WebSocket = (await import('ws')).default;
     return new Promise((resolve) => {
       const ws = new WebSocket(url, {
         headers: { Host: `127.0.0.1:${daemon.port}`, ...headers },
@@ -495,16 +523,47 @@ export class Runner {
     });
   }
 
-  /** Match an upgrade/http `expect` (status/headers/body). */
+  /** Match an upgrade/http `expect` (status/headers/body). The corpus writes
+   * body fields at the top level beside the reserved `status`/`headers`/`body`
+   * keys (e.g. the health fixture's `protocol`, `min_protocol`, `limits`), so
+   * every non-reserved key is matched against the response body, `headers`
+   * against the response headers, and `body` against the whole body. */
   #matchUpgradeExpect(expect, result, vars) {
     if (expect.status !== undefined && result.status !== expect.status) {
       throw new AssertFailure(
         `expected status ${expect.status}, got ${result.status} (body ${JSON.stringify(result.body)})`,
       );
     }
+    if (expect.headers !== undefined) {
+      const got = result.headers || {};
+      const want = Object.fromEntries(
+        Object.entries(expect.headers).map(([k, v]) => [k.toLowerCase(), v]),
+      );
+      const gotLower = Object.fromEntries(Object.entries(got).map(([k, v]) => [k.toLowerCase(), v]));
+      if (!subsetMatch(want, gotLower, vars)) {
+        throw new AssertFailure(
+          `expected headers ${JSON.stringify(want)}, got ${JSON.stringify(gotLower)}`,
+        );
+      }
+    }
+    // Whole-body matcher when the corpus nests one under `body`.
     if (expect.body !== undefined && !subsetMatch(expect.body, result.body, vars)) {
       throw new AssertFailure(
         `expected body ${JSON.stringify(expect.body)}, got ${JSON.stringify(result.body)}`,
+      );
+    }
+    // Top-level body fields (everything except the reserved keys). For an
+    // http/Layer-0 response the body IS the result object, so the corpus's
+    // `out: {...}` wrapper is matched against the body itself (the spec's flat
+    // shape — the fields the corpus nests under `out` live at the body's top
+    // level), and the remaining top-level keys match the body too.
+    const { out, ...rest } = Object.fromEntries(
+      Object.entries(expect).filter(([k]) => !['status', 'headers', 'body'].includes(k)),
+    );
+    const matcher = { ...(out && typeof out === 'object' ? out : {}), ...rest };
+    if (Object.keys(matcher).length && !subsetMatch(matcher, result.body, vars)) {
+      throw new AssertFailure(
+        `expected body fields ${JSON.stringify({ out, ...rest })}, got ${JSON.stringify(result.body)}`,
       );
     }
   }
@@ -746,20 +805,89 @@ export class Runner {
     });
   }
 
+  /** The total committed event positions across the case's room(s), read via
+   * any subscribed session's timeline head — the observable signal for
+   * no_event_authored. Returns null when no room exists yet. */
+  async #roomEventTotal(vars, sessions) {
+    const rid = vars.rid;
+    if (!rid) return null;
+    // Read the room head through the first available session.
+    const s = sessions.values().next().value;
+    if (!s) return null;
+    try {
+      const r = await s.call('room.timeline', {
+        room_id: rid,
+        cursor: { state: 'start' },
+        direction: 'backward',
+        limit: 1,
+      });
+      const last = r.out?.events?.[r.out.events.length - 1];
+      return last ? last.pos + 1 : 0;
+    } catch {
+      return null;
+    }
+  }
+
+  /** A signature of the data dir's contents (file count + total bytes +
+   * newest mtime), the observable signal for no_durable_mutation. */
+  #dirStateSignature(daemons) {
+    try {
+      const walk = (dir) => {
+        let files = 0, bytes = 0, newest = 0;
+        let entries = [];
+        try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return { files, bytes, newest }; }
+        for (const e of entries) {
+          const p = join(dir, e.name);
+          if (e.isDirectory()) {
+            const sub = walk(p);
+            files += sub.files; bytes += sub.bytes; newest = Math.max(newest, sub.newest);
+          } else {
+            try { const st = statSync(p); files++; bytes += st.size; newest = Math.max(newest, st.mtimeMs); } catch { /* ignore */ }
+          }
+        }
+        return { files, bytes, newest };
+      };
+      return JSON.stringify(walk(this.__pd().dataDir));
+    } catch {
+      return null;
+    }
+  }
+
   /** Evaluate an `observe` assertion against recorded behaviour. */
-  async #evalObserve(a, { sessions, vars, ctxState, name }) {
+  async #evalObserve(a, { sessions, vars, ctxState, name, daemons }) {
     this.__pdCurrent = (vars.__case || {}).primary;
     const obs = a.observe;
     switch (obs) {
-      case 'no_network_activity':
-      case 'no_durable_mutation':
-      case 'no_event_authored':
-        // These carry `note: UNMAPPED ...` placeholders in the committed
-        // corpus; the runner treats them as non-blocking observations because
-        // it does not instrument the daemon's packet/store counters. They are
-        // recorded, not asserted — a future daemon-side counter turns them
-        // into real assertions.
+      case 'no_event_authored': {
+        // Real check: the room's committed event total must not have grown
+        // since the baseline snapshot (case start for `case` scope, the prior
+        // step for `step` scope).
+        if (ctxState.eventSnapshot === null || ctxState.eventSnapshot === undefined) return;
+        const now = await this.#roomEventTotal(vars, sessions);
+        if (now !== null && now > ctxState.eventSnapshot) {
+          throw new AssertFailure(
+            `no_event_authored violated: room events grew ${ctxState.eventSnapshot} -> ${now}`,
+          );
+        }
         return;
+      }
+      case 'no_durable_mutation': {
+        // Real check: the data dir's content signature must be unchanged.
+        const before = ctxState.dirSnapshot;
+        if (before === null || before === undefined) return;
+        const now = this.#dirStateSignature(daemons);
+        if (now !== null && now !== before) {
+          throw new AssertFailure(`no_durable_mutation violated: data dir changed`);
+        }
+        return;
+      }
+      case 'no_network_activity':
+        // Not instrumentable from user space without packet capture; an
+        // honest limitation, not a silent pass — fail loudly so the case is
+        // visible as unobserved rather than falsely green.
+        throw new AssertFailure(
+          'no_network_activity is not instrumentable by this harness (no packet capture)',
+        );
       case 'connection_open': {
         const label = a.on || 'subject:self';
         // `on: "none"` asserts the daemon is unreachable (connection refused)

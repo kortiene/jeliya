@@ -7,7 +7,7 @@
 // correlated by envelope `id`, and because replies may arrive out of order,
 // each in-flight request has its own waiter.
 
-import WebSocket from '../../../ui/node_modules/ws/index.js';
+import WebSocket from 'ws';
 
 /** Serialize a value, splicing any `{__rawJson}` subtrees in verbatim. */
 function serializeWithRaw(value) {
@@ -44,6 +44,8 @@ export class Session {
     this.closeCode = null;
     this.lastHello = null;
     this.open = false;
+    // How many received pushes have been consumed by `await push` steps.
+    this.pushCursor = 0;
   }
 
   /** Connect and wait for the hello frame. `query` is the v/sg/token map. */
@@ -166,10 +168,15 @@ export class Session {
     this.ws.send(serializeWithRaw(value));
   }
 
-  /** Wait for a frame matching `predicate` (already-received frames count). */
+  /** Wait for a frame matching `predicate`. Replies (correlated by id) and the
+   * hello may be re-scanned from history, but a PUSH is consumed once — two
+   * sequential `await push` steps must see distinct pushes, or a fixture
+   * needing two deliveries could be satisfied by one. */
   awaitFrame(predicate, timeoutMs = 10_000) {
-    // Re-scan history first so a frame that arrived before the await counts.
+    // Re-scan replies/hello in history (a frame that arrived before the await
+    // counts), but start push scanning from the consumed cursor.
     for (const f of this.frames) {
+      if (f.t !== undefined && f.t !== 'hello') continue; // pushes handled below
       let m = false;
       try {
         m = predicate(f);
@@ -178,21 +185,39 @@ export class Session {
       }
       if (m) return Promise.resolve(f);
     }
-    for (const f of this.pushes) {
+    for (let i = this.pushCursor; i < this.pushes.length; i++) {
+      const f = this.pushes[i];
       let m = false;
       try {
         m = predicate(f);
       } catch {
         m = false;
       }
-      if (m) return Promise.resolve(f);
+      if (m) {
+        this.pushCursor = i + 1; // consume this push
+        return Promise.resolve(f);
+      }
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error(`await frame timed out on ${this.label}`)),
         timeoutMs,
       );
-      this.frameWaiters.push({ predicate, resolve, reject, timer });
+      this.frameWaiters.push({
+        predicate: (f) => {
+          // Newly arriving pushes are matched (and consumed on match); replies
+          // and hello are matched without consuming.
+          if (f.t !== undefined && f.t !== 'hello') {
+            const isPush = predicate(f);
+            if (isPush) this.pushCursor = this.pushes.length;
+            return isPush;
+          }
+          return predicate(f);
+        },
+        resolve,
+        reject,
+        timer,
+      });
     });
   }
 
