@@ -2197,6 +2197,111 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "subject_ensure_reports_subject_store_unwritable_and_creates_nothing",
+      "kind": "error",
+      "operation": "subject.ensure",
+      "intent": "Pins subject.ensure's own distinctive code: a store that cannot be written is subject_store_unwritable, never a silent success and never a fabricated subject held only in memory — a subject that survives only until restart is exactly the identity loss 'establish exactly once' forbids. Catches a daemon that answers created:true against a read-only data dir.",
+      "requires": [
+        "daemon:fresh",
+        "subject:none",
+        "fault:subject_store_unwritable"
+      ],
+      "steps": [
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "subject_store_unwritable"
+          },
+          "note": "the subject store is present but not writable (read-only data dir)"
+        },
+        {
+          "call": "subject.ensure",
+          "in": {
+            "op_id": "op-unwritable-1"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_store_unwritable"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "subject_absent"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "observe": "no_durable_mutation",
+              "scope": "case"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a_frame_with_no_recoverable_id_closes_4007_malformed_frame",
+      "kind": "malformed",
+      "operation": null,
+      "intent": "Pins the 4007 row: a frame that is not JSON, or that decodes to no envelope with a usable id, closes the connection with 4007 (malformed_frame) — there is nothing to correlate a reply to. A frame that decodes far enough to carry an id instead gets a correlated error reply, so one bad request never punishes the other requests in flight on the connection.",
+      "requires": [
+        "subject",
+        "daemon"
+      ],
+      "steps": [
+        {
+          "send": "this is not json{",
+          "note": "unparseable: no envelope, no id to correlate"
+        },
+        {
+          "assert": [
+            {
+              "observe": "close_code",
+              "value": 4007
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
+          }
+        },
+        {
+          "send": {
+            "id": 77,
+            "op": "room.list",
+            "in": "not-an-object"
+          },
+          "note": "decodes far enough to carry id 77, so it must get a correlated error reply, not a close"
+        },
+        {
+          "await": {
+            "reply": "77"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "eq",
+              "value": "invalid_argument"
+            },
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
+        }
+      ]
     }
   ],
   "authoring_notes": [

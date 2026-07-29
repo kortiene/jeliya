@@ -5249,6 +5249,160 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "removing_the_rooms_only_authority_is_authority_cannot_be_removed",
+      "kind": "error",
+      "operation": "member.remove",
+      "intent": "Pins member.remove's own distinctive code: removing an authority is authority_cannot_be_removed, never member_unknown (the subject IS a member) and never insufficient_standing (the caller's standing is not the problem — the target's role is). Catches a daemon that lets the last authority be removed, orphaning the room.",
+      "requires": [
+        "subject",
+        "room:live",
+        "member:b"
+      ],
+      "steps": [
+        {
+          "call": "member.remove",
+          "in": {
+            "room_id": "$rid",
+            "subject_id": "$self_sid"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "authority_cannot_be_removed",
+              "room_id": "$rid",
+              "subject_id": "$self_sid"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "member_unknown"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "insufficient_standing"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "archive_of_a_room_the_caller_still_belongs_to_is_room_still_active",
+      "kind": "error",
+      "operation": "room.archive",
+      "intent": "Pins room.archive's own distinctive code: archiving an active room is room_still_active, because the archive surface exists only for departed rooms and opening one with live capabilities would lie about what the member may still do. Catches a daemon that serves the archive to an active member, which is the room.archive side of the departed-room boundary #91 fixes.",
+      "requires": [
+        "subject",
+        "room:live"
+      ],
+      "steps": [
+        {
+          "call": "room.archive",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_still_active"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "membership_ended"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "activate_reports_transport_unavailable_when_the_room_cannot_go_live",
+      "kind": "error",
+      "operation": "room.activate",
+      "intent": "Pins room.activate's own distinctive code: a room that cannot be brought live is transport_unavailable carrying the room_id, never a fabricated live:true and never the membership refusal — the caller IS a member; the network is what failed. Catches a daemon that reports a live room while no transport exists, which is the fake-state failure the status vocabulary exists to prevent.",
+      "requires": [
+        "subject",
+        "room:plain",
+        "fault:transport_unavailable"
+      ],
+      "steps": [
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "transport_unavailable"
+          },
+          "note": "no transport path exists for this room (engine cannot start a session)"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "transport_unavailable",
+              "room_id": "$rid"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "room_not_available"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "membership_ended"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "call": "room.list",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "$rid",
+                  "live": false
+                }
+              ]
+            }
+          },
+          "note": "the room still reads Closed, never a fabricated live state"
+        }
+      ]
     }
   ],
   "authoring_notes": [

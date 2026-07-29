@@ -7049,6 +7049,52 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "status_post_carrying_a_free_text_message_is_unrecognised_field",
+      "kind": "error",
+      "operation": "status.post",
+      "intent": "Pins v2's removal of the free-text field: a status.post carrying `message` — or any other key the operation does not define — is invalid_argument with field in.message and reason unrecognised_field, never silently accepted and never stripped. Catches a daemon that reintroduces the v1 free-text status, which is the prose-status defect the closed label vocabulary exists to end.",
+      "requires": [
+        "subject",
+        "room:live"
+      ],
+      "steps": [
+        {
+          "call": "status.post",
+          "in": {
+            "room_id": "$rid",
+            "label": "working",
+            "message": "free text",
+            "progress": {
+              "state": "absent"
+            },
+            "op_id": "op-freetext-1"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
+              "field": "in.message",
+              "reason": {
+                "state": "unrecognised_field"
+              }
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
+            }
+          ]
+        }
+      ]
     }
   ],
   "authoring_notes": [

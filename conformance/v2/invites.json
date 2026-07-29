@@ -3869,6 +3869,86 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "revoking_a_capability_already_redeemed_is_capability_redeemed",
+      "kind": "error",
+      "operation": "invite.revoke",
+      "intent": "Pins invite.revoke's own distinctive code: a capability that has already been redeemed cannot be revoked — the membership it created is a signed fact withdrawal cannot touch — so the answer is capability_redeemed, never invite_unknown (the invite exists) and never capability_revoked (that is a different terminal state). Catches a daemon that reports success while leaving the member in the room, which is the silent-failure shape this record forbids.",
+      "requires": [
+        "subject",
+        "room:live",
+        "member:b"
+      ],
+      "steps": [
+        {
+          "call": "invite.mint",
+          "in": {
+            "room_id": "$rid",
+            "subject_id": "$sb",
+            "role": "member",
+            "ttl_ms": 3600000,
+            "op_id": "op-redeemed-mint"
+          },
+          "save": {
+            "cap": "out.capability",
+            "iid": "out.invite_id"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "invite_id": "<invite_id>",
+              "capability": "<string>"
+            }
+          }
+        },
+        {
+          "call": "invite.redeem",
+          "on": "subject:second",
+          "in": {
+            "capability": "$cap"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "$rid",
+              "standing": "active"
+            }
+          }
+        },
+        {
+          "call": "invite.revoke",
+          "in": {
+            "room_id": "$rid",
+            "invite_id": "$iid"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "capability_redeemed",
+              "invite_id": "$iid"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "invite_unknown"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "capability_revoked"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        }
+      ]
     }
   ],
   "authoring_notes": [

@@ -4100,6 +4100,62 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "a_stream_that_disagrees_with_its_declaration_is_declared_size_mismatch",
+      "kind": "error",
+      "operation": "file.share",
+      "intent": "Pins file.share's own distinctive code and its honesty rule: a stream whose byte count disagrees with its declared size is declared_size_mismatch, NEVER digest_mismatch — accusing an honest declaration error of being corrupt content is the false-accusation the size policy forbids. Catches a daemon that conflates the two, which is also the exact code an over-limit size refusal must never produce.",
+      "requires": [
+        "subject",
+        "room:live",
+        "resource:shared_file"
+      ],
+      "steps": [
+        {
+          "call": "file.share",
+          "in": {
+            "room_id": "$rid",
+            "op_id": "op-mismatch-1",
+            "name": "mismatch.bin",
+            "declared_bytes": 4096,
+            "declared_content_type": "application/octet-stream"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "declared_size_mismatch"
+            }
+          },
+          "note": "the streamed body carries a byte count that disagrees with declared_bytes 4096"
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "digest_mismatch"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "file_too_large"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
+            }
+          ]
+        }
+      ]
     }
   ],
   "authoring_notes": [

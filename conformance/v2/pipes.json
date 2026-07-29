@@ -5178,6 +5178,141 @@
         }
       ],
       "blocked_on_upstream": null
+    },
+    {
+      "name": "pipe_list_reports_an_unreadable_pipe_index_rather_than_an_empty_list",
+      "kind": "error",
+      "operation": "pipe.list",
+      "intent": "Pins pipe.list's own distinctive code: a pipe index that cannot be read is pipe_index_unreadable, not an empty list and not a silent partial result — an unreadable index is a fact about the store, and reporting zero pipes would be the lie the truthful-states rule exists to catch.",
+      "requires": [
+        "subject",
+        "room:live",
+        "fault:pipe_index_unreadable"
+      ],
+      "steps": [
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "pipe_index_unreadable"
+          }
+        },
+        {
+          "call": "pipe.list",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "pipe_index_unreadable"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "room_not_available"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "revoking_a_pipe_you_did_not_publish_is_pipe_not_publisher",
+      "kind": "error",
+      "operation": "pipe.revoke",
+      "intent": "Pins pipe.revoke's own distinctive code: withdrawing a pipe is the publisher's act, so a non-publisher is pipe_not_publisher, never pipe_unknown (the pipe exists and the caller may see it) and never insufficient_standing (standing is not what refuses this — ownership is). Catches a daemon that lets any member withdraw another member's tunnel, which is a real authorization defect and not merely a wrong label.",
+      "requires": [
+        "subject",
+        "room:live",
+        "member:b",
+        "resource:tcp_service"
+      ],
+      "steps": [
+        {
+          "call": "pipe.publish",
+          "in": {
+            "room_id": "$rid",
+            "op_id": "op-np-1",
+            "target": {
+              "host": "127.0.0.1",
+              "port": "$svc_port"
+            },
+            "audience": {
+              "state": "room"
+            }
+          },
+          "save": {
+            "pid": "out.pipe_id"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "pipe_id": "<pipe_id>"
+            }
+          }
+        },
+        {
+          "call": "pipe.revoke",
+          "on": "subject:second",
+          "in": {
+            "room_id": "$rid",
+            "pipe_id": "$pid"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "pipe_not_publisher"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "pipe_unknown"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "call": "pipe.list",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "pipes": [
+                {
+                  "pipe_id": "$pid"
+                }
+              ]
+            }
+          },
+          "note": "the pipe survives: the refusal mutated nothing"
+        }
+      ]
     }
   ],
   "authoring_notes": [
