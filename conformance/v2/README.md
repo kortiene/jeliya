@@ -155,7 +155,7 @@ nothing to capture from.
 
 ### `control` — driving the harness
 
-`control` is discriminated by `do`, closed at nine. It is the one verb that does
+`control` is discriminated by `do`, closed at ten. It is the one verb that does
 not touch the daemon's protocol surface, so leaving it as an open object would
 have let every harness invent its own dialect — which is what the committed
 corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
@@ -170,6 +170,7 @@ corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
 | `inject_fault` | `fault` | Force a named fault condition |
 | `set_limit` | `limit`, `value` | Override a served limit for this case |
 | `stop_daemon` | `daemon` | Terminate a daemon process |
+| `start_daemon` | `daemon` | Start a previously stopped daemon — restart cases cannot be written without it; the pair expresses one restart, never a fresh daemon |
 | `start_transfers` | `count` | Begin N concurrent transfers |
 | `pause_link` | `between` | Suspend transport between two daemons |
 

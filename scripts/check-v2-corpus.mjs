@@ -21,7 +21,7 @@ const AUX_KEYS = new Set(["in", "op_id", "on", "expect", "save", "note"]);
 const KINDS = new Set(["success", "error", "malformed", "boundary", "authorization", "handshake", "push", "ordering"]);
 const CONTROL_DO = new Set([
   "advance_clock", "idle", "disconnect", "reconnect", "inject_fault",
-  "set_limit", "stop_daemon", "start_transfers", "pause_link",
+  "set_limit", "stop_daemon", "start_daemon", "start_transfers", "pause_link",
 ]);
 const ASSERT_OPS = new Set([
   "eq", "ne", "lt", "lte", "gt", "gte", "member_of", "type", "present",

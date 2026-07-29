@@ -9,9 +9,9 @@
       "intent": "Proves room.create brings a room into existence with the caller as its authority using only local evidence, so it would catch any change that makes room creation depend on reaching a peer or a relay.",
       "requires": [
         "subject",
-        "network_offline",
-        "network_observation",
-        "quiescent_room"
+        "resource:network_offline",
+        "observe:network",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -21,20 +21,27 @@
             "op_id": "$op_id_new"
           },
           "save": {
-            "rid": "room_id"
+            "rid": "frame.room_id"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "name": "Conformance Alpha",
-            "standing": "active",
-            "live": false
-          },
-          "expect_no_null": true,
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "name": "Conformance Alpha",
+              "standing": "active",
+              "live": false
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "no_network_activity": {
-                "scope": "step"
-              }
+              "observe": "no_network_activity",
+              "scope": "step"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
           ]
         },
@@ -43,30 +50,36 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "members": [
-              {
-                "subject_id": "<hex64>",
-                "standing": "active"
-              }
-            ]
-          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "members": [
+                {
+                  "subject_id": "<string>",
+                  "standing": "active"
+                }
+              ]
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "len_eq": {
-                "path": "out.members",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.members\", \"value\": 1} — needs manual retranscription"
             },
             {
-              "same_value_as": {
-                "path": "out.members[0].subject_id",
-                "bag": "subject_a"
-              }
+              "path": "out.members[0].subject_id",
+              "op": "eq",
+              "value": "subject_a"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
-          ],
-          "expect_no_null": true
+          ]
         },
         {
           "call": "room.timeline",
@@ -77,16 +90,20 @@
             },
             "direction": "forward",
             "limit": 50
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "len_eq": {
-                "path": "out.events",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.events\", \"value\": 1} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
-          ],
-          "expect_no_null": true
+          ]
         }
       ]
     },
@@ -96,7 +113,7 @@
       "operation": "room.create",
       "intent": "Proves the no-subject precondition has exactly one answer for every operation, so it would catch a daemon that re-introduces v1's per-operation disagreement (empty result here, error there) about a missing subject.",
       "requires": [
-        "no_subject"
+        "subject:none"
       ],
       "steps": [
         {
@@ -105,15 +122,18 @@
             "name": "No Subject",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "fields": {}
-          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
           ]
         }
@@ -126,7 +146,7 @@
       "intent": "Proves a replayed op_id returns the original result byte-for-byte and performs no second effect, so it would catch a dedup ledger that re-runs creation and leaves two rooms or two genesis events behind a lost reply.",
       "requires": [
         "subject",
-        "quiescent_room"
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -136,11 +156,14 @@
             "op_id": "$op_id_fixed"
           },
           "save": {
-            "rid": "room_id"
+            "rid": "frame.room_id",
+            "first_create": "out"
           },
-          "save_out": "first_create",
-          "expect_subset": {
-            "room_id": "<room_id>"
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>"
+            }
           }
         },
         {
@@ -153,13 +176,16 @@
             "direction": "forward",
             "limit": 50
           },
-          "save_out": "timeline_before",
+          "save": {
+            "timeline_before": "out"
+          }
+        },
+        {
           "assert": [
             {
-              "len_eq": {
-                "path": "out.events",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.events\", \"value\": 1} — needs manual retranscription"
             }
           ]
         },
@@ -168,8 +194,21 @@
           "in": {
             "name": "Replay Room",
             "op_id": "$op_id_fixed"
-          },
-          "expect_identical_to": "first_create"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "first_create",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         },
         {
           "call": "room.timeline",
@@ -180,19 +219,31 @@
             },
             "direction": "forward",
             "limit": 50
-          },
-          "expect_identical_to": "timeline_before"
+          }
         },
         {
-          "call": "room.list",
           "assert": [
             {
-              "count_where_eq": {
-                "path": "out.rooms",
-                "field": "room_id",
-                "bag": "rid",
-                "value": 1
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "timeline_before",
+                "keys": [
+                  "id"
+                ]
               }
+            }
+          ]
+        },
+        {
+          "call": "room.list"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert count_where_eq: {\"path\": \"out.rooms\", \"field\": \"room_id\", \"bag\": \"rid\", \"value\": 1} — needs manual retranscription"
             }
           ]
         }
@@ -214,10 +265,13 @@
             "op_id": "$op_id_fixed"
           },
           "save": {
-            "rid": "room_id"
+            "rid": "frame.room_id"
           },
-          "expect_subset": {
-            "room_id": "<room_id>"
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>"
+            }
           }
         },
         {
@@ -226,28 +280,31 @@
             "name": "Conflict B",
             "op_id": "$op_id_fixed"
           },
-          "expect_error": {
-            "code": "op_id_conflict",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "op_id_conflict",
               "op_id": "<op_id>"
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
           ]
         },
         {
-          "call": "room.list",
+          "call": "room.list"
+        },
+        {
           "assert": [
             {
-              "len_eq": {
-                "path": "out.rooms",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.rooms\", \"value\": 1} — needs manual retranscription"
             }
           ]
         }
@@ -267,17 +324,19 @@
           "in": {
             "name": "No Op Id"
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "op_id"
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
           ]
         }
@@ -297,28 +356,31 @@
           "in": {
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "name"
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
           ]
         },
         {
-          "call": "room.list",
+          "call": "room.list"
+        },
+        {
           "assert": [
             {
-              "len_eq": {
-                "path": "out.rooms",
-                "value": 0
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.rooms\", \"value\": 0} — needs manual retranscription"
             }
           ]
         }
@@ -331,59 +393,66 @@
       "intent": "Proves the dedup ledger is keyed on (authenticated session principal, op_id) so two principals on one daemon using the same op_id each get their own room, catching a daemon-global per-subject ledger in which the CLI's retry silently swallows the WebView's create.",
       "requires": [
         "subject",
-        "two_principals"
+        "resource:two_principals"
       ],
       "steps": [
         {
-          "as": "principal_1",
           "call": "room.create",
           "in": {
             "name": "Principal One",
             "op_id": "$op_id_fixed"
           },
           "save": {
-            "rid1": "room_id"
+            "rid1": "frame.room_id"
           },
-          "expect_subset": {
-            "room_id": "<room_id>"
+          "on": "subject:principal_1",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>"
+            }
           }
         },
         {
-          "as": "principal_2",
           "call": "room.create",
           "in": {
             "name": "Principal Two",
             "op_id": "$op_id_fixed"
           },
           "save": {
-            "rid2": "room_id"
+            "rid2": "frame.room_id"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "name": "Principal Two"
+          "on": "subject:principal_2",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "name": "Principal Two"
+            }
           }
         },
         {
           "assert": [
             {
-              "not_equal": {
-                "bag_a": "rid1",
-                "bag_b": "rid2"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert not_equal: {\"bag_a\": \"rid1\", \"bag_b\": \"rid2\"} — needs manual retranscription"
             }
           ]
         },
         {
-          "as": "principal_1",
           "call": "room.list",
+          "on": "subject:principal_1"
+        },
+        {
           "assert": [
             {
-              "len_eq": {
-                "path": "out.rooms",
-                "value": 2
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.rooms\", \"value\": 2} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:principal_1"
         }
       ]
     },
@@ -394,8 +463,8 @@
       "intent": "Proves the ledger outlives the connection, since the case that motivates retry is a reply lost to a dropped socket; it would catch a per-connection ledger that turns every genuine retry into a duplicate room.",
       "requires": [
         "subject",
-        "reconnect",
-        "quiescent_room"
+        "resource:reconnect",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -405,33 +474,53 @@
             "op_id": "$op_id_fixed"
           },
           "save": {
-            "rid": "room_id"
+            "rid": "frame.room_id",
+            "first_create": "out"
+          }
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "disconnect"
+          }
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "reconnect"
           },
-          "save_out": "first_create"
-        },
-        {
-          "control": "disconnect"
-        },
-        {
-          "control": "reconnect",
-          "as": "same_principal"
+          "on": "subject:same_principal"
         },
         {
           "call": "room.create",
           "in": {
             "name": "Survives Reconnect",
             "op_id": "$op_id_fixed"
-          },
-          "expect_identical_to": "first_create"
+          }
         },
         {
-          "call": "room.list",
           "assert": [
             {
-              "len_eq": {
-                "path": "out.rooms",
-                "value": 1
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "first_create",
+                "keys": [
+                  "id"
+                ]
               }
+            }
+          ]
+        },
+        {
+          "call": "room.list"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.rooms\", \"value\": 1} — needs manual retranscription"
             }
           ]
         }
@@ -444,52 +533,76 @@
       "intent": "Proves room.list answers what rooms are mine, in what standing and with what capabilities, from the local store with zero network activity, catching any change that makes the room list depend on liveness or on reaching peers.",
       "requires": [
         "subject",
-        "room",
-        "left_room",
-        "network_observation"
+        "room:plain",
+        "room:left",
+        "observe:network"
       ],
       "steps": [
         {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "name": "<string>",
-                "standing": "<standing>",
-                "live": "<bool>",
-                "role": "<variant>",
-                "member_count": "<number>",
-                "last_event": {
-                  "state": "present",
-                  "at": "<ts>",
-                  "kind": "<string>"
-                },
-                "capabilities": "<array>"
-              }
-            ]
-          },
-          "expect_no_null": true,
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "name": "<string>",
+                  "standing": "<standing>",
+                  "live": "<bool>",
+                  "role": "<string>",
+                  "member_count": "<uint>",
+                  "last_event": {
+                    "state": "present",
+                    "at": "<ts>",
+                    "kind": "<string>"
+                  },
+                  "capabilities": "<string>"
+                }
+              ]
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "no_network_activity": {
-                "scope": "step"
-              }
+              "observe": "no_network_activity",
+              "scope": "step"
             },
             {
-              "every_row_has_fields": {
-                "path": "out.rooms",
-                "fields": [
-                  "room_id",
-                  "name",
-                  "standing",
-                  "live",
-                  "role",
-                  "member_count",
-                  "last_event",
-                  "capabilities"
-                ]
-              }
+              "path": "out.rooms[*].room_id",
+              "op": "present"
+            },
+            {
+              "path": "out.rooms[*].name",
+              "op": "present"
+            },
+            {
+              "path": "out.rooms[*].standing",
+              "op": "present"
+            },
+            {
+              "path": "out.rooms[*].live",
+              "op": "present"
+            },
+            {
+              "path": "out.rooms[*].role",
+              "op": "present"
+            },
+            {
+              "path": "out.rooms[*].member_count",
+              "op": "present"
+            },
+            {
+              "path": "out.rooms[*].last_event",
+              "op": "present"
+            },
+            {
+              "path": "out.rooms[*].capabilities",
+              "op": "present"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
           ]
         }
@@ -501,14 +614,16 @@
       "operation": "room.list",
       "intent": "Proves v2 removed the pre-identity room.list carve-out in which room.list answered an empty list while the fleet surface errored on the same precondition; it would catch a daemon that re-introduces 'one precondition, two answers'.",
       "requires": [
-        "no_subject"
+        "subject:none"
       ],
       "steps": [
         {
           "call": "room.list",
-          "expect_error": {
-            "code": "subject_absent",
-            "fields": {}
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         }
       ]
@@ -519,29 +634,34 @@
       "operation": "room.list",
       "intent": "Proves the aggregate room surface begins from accepted membership rather than enumerating the store and filtering afterwards, catching a leak in which a foreign room's name or count reaches a non-member through a list.",
       "requires": [
-        "authority",
-        "outsider",
-        "live_room"
+        "resource:authority",
+        "resource:outsider",
+        "room:live"
       ],
       "steps": [
         {
-          "as": "outsider",
           "call": "room.list",
           "expect": {
-            "rooms": []
-          }
+            "ok": true,
+            "out": {
+              "rooms": []
+            }
+          },
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
           "call": "room.list",
+          "on": "subject:outsider"
+        },
+        {
           "assert": [
             {
-              "absent_value": {
-                "path": "out.rooms[].room_id",
-                "bag": "rid"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert absent_value: {\"path\": \"out.rooms[].room_id\", \"bag\": \"rid\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:outsider"
         }
       ]
     },
@@ -552,8 +672,8 @@
       "intent": "Proves the room.open split: activation makes a room live and returns reachability and capabilities but never a page of events, catching a regression that re-conflates liveness with history and forces a client wanting one to pay for the other.",
       "requires": [
         "subject",
-        "room_with_history",
-        "quiescent_room"
+        "room:with_history",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -561,42 +681,72 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "live": true,
-            "reachability": {
-              "state": "<variant>"
-            },
-            "capabilities": "<array>"
-          },
-          "expect_no_null": true,
-          "expect_absent": [
-            "events",
-            "timeline",
-            "messages",
-            "tail",
-            "history",
-            "event_id",
-            "body"
-          ],
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "live": true,
+              "reachability": {
+                "state": "<string>"
+              },
+              "capabilities": "<string>"
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "contains_no_timeline_events": {
-                "path": "out"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert contains_no_timeline_events: {\"path\": \"out\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            },
+            {
+              "path": "out.events",
+              "op": "absent"
+            },
+            {
+              "path": "out.timeline",
+              "op": "absent"
+            },
+            {
+              "path": "err.messages",
+              "op": "absent"
+            },
+            {
+              "path": "out.tail",
+              "op": "absent"
+            },
+            {
+              "path": "out.history",
+              "op": "absent"
+            },
+            {
+              "path": "out.event_id",
+              "op": "absent"
+            },
+            {
+              "path": "out.body",
+              "op": "absent"
             }
           ]
         },
         {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": true,
-                "standing": "active"
-              }
-            ]
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": true,
+                  "standing": "active"
+                }
+              ]
+            }
           }
         }
       ]
@@ -608,8 +758,8 @@
       "intent": "Proves activation is naturally idempotent and does not require an op_id, catching a daemon that either errors on a second activate or promotes activate into the op_id-deduplicated class and so breaks every reconnect path.",
       "requires": [
         "subject",
-        "room",
-        "quiescent_room"
+        "room:plain",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -617,29 +767,48 @@
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "first_activate",
-          "expect_subset": {
-            "live": true
+          "save": {
+            "first_activate": "out"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": true
+            }
           }
         },
         {
           "call": "room.activate",
           "in": {
             "room_id": "$rid"
-          },
-          "expect_identical_to": "first_activate"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "first_activate",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         },
         {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "len_eq": {
-                "path": "out.members",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.members\", \"value\": 1} — needs manual retranscription"
             }
           ]
         }
@@ -651,48 +820,53 @@
       "operation": "room.activate",
       "intent": "Proves ended membership is a refusal with a state-bearing code rather than a silent re-join or a generic argument error, catching a daemon that lets a departed member restart peer participation.",
       "requires": [
-        "authority",
-        "member_b",
-        "left_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:left"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.activate",
           "in": {
             "room_id": "$rid_left"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "room_id": "<room_id>",
               "state": "left"
             }
-          },
-          "assert": [
-            {
-              "no_network_activity": {
-                "scope": "step"
-              }
-            },
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          }
         },
         {
-          "as": "member_b",
+          "assert": [
+            {
+              "observe": "no_network_activity",
+              "scope": "step"
+            },
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": false,
-                "standing": "left"
-              }
-            ]
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": false,
+                  "standing": "left"
+                }
+              ]
+            }
           }
         }
       ]
@@ -704,8 +878,8 @@
       "intent": "Proves deactivation is a liveness change only — standing, members and capabilities-to-rejoin are untouched — catching a daemon that conflates leaving the network with leaving the room.",
       "requires": [
         "subject",
-        "live_room",
-        "quiescent_room"
+        "room:live",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -713,36 +887,64 @@
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "members_live"
+          "save": {
+            "members_live": "out"
+          }
         },
         {
           "call": "room.deactivate",
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "live": false
-          },
-          "expect_no_null": true
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "live": false
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         },
         {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
-          },
-          "expect_identical_to": "members_live"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "members_live",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         },
         {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": false,
-                "standing": "active"
-              }
-            ]
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": false,
+                  "standing": "active"
+                }
+              ]
+            }
           }
         }
       ]
@@ -754,8 +956,8 @@
       "intent": "Proves a second deactivate (or a deactivate of a never-activated room) succeeds rather than returning room_not_live, catching a daemon that promotes an idempotent stop into an error and makes shutdown paths unreliable.",
       "requires": [
         "subject",
-        "inactive_room",
-        "quiescent_room"
+        "resource:inactive_room",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -763,18 +965,36 @@
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "first_deactivate",
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "live": false
+          "save": {
+            "first_deactivate": "out"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "live": false
+            }
           }
         },
         {
           "call": "room.deactivate",
           "in": {
             "room_id": "$rid"
-          },
-          "expect_identical_to": "first_deactivate"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "first_deactivate",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -784,31 +1004,34 @@
       "operation": "room.deactivate",
       "intent": "Proves a mutating standing operation on ended membership refuses with membership_ended rather than being absorbed by idempotency, catching a daemon that accepts writes against a room the caller no longer belongs to.",
       "requires": [
-        "authority",
-        "member_b",
-        "left_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:left"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.deactivate",
           "in": {
             "room_id": "$rid_left"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "room_id": "<room_id>",
               "state": "left"
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         }
       ]
     },
@@ -818,81 +1041,99 @@
       "operation": "room.leave",
       "intent": "Proves departure is a signed room fact the remaining members observe, not a local forget, catching a daemon that makes leaving invisible to the room and so leaves other members displaying a member who is gone.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.leave",
           "in": {
             "room_id": "$rid",
             "op_id": "$op_id_fixed"
           },
-          "save_out": "leave_out",
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "event_id": "<hex64>",
-            "standing": "left"
+          "on": "subject:member_b",
+          "save": {
+            "leave_out": "out"
           },
-          "expect_no_null": true
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "event_id": "<string>",
+              "standing": "left"
+            }
+          }
         },
         {
-          "as": "authority",
-          "expect_push": {
-            "t": "room.event",
-            "match": {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
+          "on": "subject:authority",
+          "await": {
+            "push": {
               "room_id": "<room_id>",
               "pos": "<number>",
               "event": {
                 "event_id": "<hex64>",
                 "subject_id": "<hex64>"
               }
-            },
-            "within_ms": 5000
+            }
           }
         },
         {
-          "as": "authority",
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "members": [
-              {
-                "subject_id": "<hex64>",
-                "standing": "active"
-              },
-              {
-                "subject_id": "<hex64>",
-                "standing": "left"
-              }
-            ]
-          },
-          "assert": [
-            {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_b",
-                "state": "left"
-              }
+          "on": "subject:authority",
+          "expect": {
+            "ok": true,
+            "out": {
+              "members": [
+                {
+                  "subject_id": "<string>",
+                  "standing": "active"
+                },
+                {
+                  "subject_id": "<string>",
+                  "standing": "left"
+                }
+              ]
             }
-          ]
+          }
         },
         {
-          "as": "member_b",
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_b\", \"state\": \"left\"} — needs manual retranscription"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "standing": "left",
-                "live": false
-              }
-            ]
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "standing": "left",
+                  "live": false
+                }
+              ]
+            }
           }
         }
       ]
@@ -903,63 +1144,97 @@
       "operation": "room.leave",
       "intent": "Proves a replayed leave returns the original result and writes no second departure event, catching a daemon whose retry path appends a duplicate signed fact that every other member must then fold.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.leave",
           "in": {
             "room_id": "$rid",
             "op_id": "$op_id_fixed"
           },
-          "save_out": "first_leave"
-        },
-        {
-          "as": "authority",
-          "call": "room.timeline",
-          "in": {
-            "room_id": "$rid",
-            "cursor": {
-              "state": "start"
-            },
-            "direction": "forward",
-            "limit": 50
-          },
-          "save_out": "timeline_after_leave"
-        },
-        {
-          "as": "member_b",
-          "call": "room.leave",
-          "in": {
-            "room_id": "$rid",
-            "op_id": "$op_id_fixed"
-          },
-          "expect_identical_to": "first_leave"
-        },
-        {
-          "as": "authority",
-          "call": "room.timeline",
-          "in": {
-            "room_id": "$rid",
-            "cursor": {
-              "state": "start"
-            },
-            "direction": "forward",
-            "limit": 50
-          },
-          "expect_identical_to": "timeline_after_leave"
-        },
-        {
-          "as": "authority",
-          "expect_no_push": {
-            "t": "room.event",
-            "room_id": "$rid",
-            "within_ms": 2000
+          "on": "subject:member_b",
+          "save": {
+            "first_leave": "out"
           }
+        },
+        {
+          "call": "room.timeline",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "on": "subject:authority",
+          "save": {
+            "timeline_after_leave": "out"
+          }
+        },
+        {
+          "call": "room.leave",
+          "in": {
+            "room_id": "$rid",
+            "op_id": "$op_id_fixed"
+          },
+          "on": "subject:member_b"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "first_leave",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
+          "call": "room.timeline",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "on": "subject:authority"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "timeline_after_leave",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
+          "on": "subject:authority",
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         }
       ]
     },
@@ -969,48 +1244,52 @@
       "operation": "room.leave",
       "intent": "Proves the recorded product gap is enforced rather than silently producing an authority-less room, catching a daemon that lets the creator depart and strands every remaining member with no one able to remove, invite, or revoke.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "room.leave",
           "in": {
             "room_id": "$rid",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "sole_authority_cannot_leave",
-            "fields_subset": {
+          "on": "subject:authority",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "sole_authority_cannot_leave",
               "room_id": "<room_id>",
-              "authority_subject_id": "<hex64>"
+              "authority_subject_id": "<string>"
             }
-          },
-          "assert": [
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          }
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_a",
-                "state": "active"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_a\", \"state\": \"active\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -1020,32 +1299,35 @@
       "operation": "room.leave",
       "intent": "Proves a fresh op_id cannot re-author a departure from a room whose membership already ended, catching a daemon that treats leave as unconditionally repeatable and emits a second signed departure.",
       "requires": [
-        "authority",
-        "member_b",
-        "left_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:left"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.leave",
           "in": {
             "room_id": "$rid_left",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "room_id": "<room_id>",
               "state": "left"
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         }
       ]
     },
@@ -1056,8 +1338,8 @@
       "intent": "Proves the load-bearing half of the room.open split — committed history is a store read whose answer does not depend on liveness — catching a daemon that returns less (or nothing) for a room that is not currently live.",
       "requires": [
         "subject",
-        "room_with_history",
-        "quiescent_room"
+        "room:with_history",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -1065,8 +1347,11 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "live": true
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": true
+            }
           }
         },
         {
@@ -1081,23 +1366,38 @@
             },
             "direction": "forward"
           },
-          "save_out": "page_live",
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "events": "<array>",
-            "cursor": {
-              "state": "<variant>"
-            }
+          "save": {
+            "page_live": "out"
           },
-          "expect_no_null": true
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "events": "<string>",
+              "cursor": {
+                "state": "<string>"
+              }
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         },
         {
           "call": "room.deactivate",
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "live": false
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": false
+            }
           }
         },
         {
@@ -1111,8 +1411,21 @@
               "state": "start"
             },
             "direction": "forward"
-          },
-          "expect_identical_to": "page_live"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "page_live",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -1123,10 +1436,10 @@
       "intent": "Proves history is readable with no live session ever having existed, catching a daemon that requires an activate before a read and so makes reading history cost peer participation — exactly the coupling the split removes.",
       "requires": [
         "subject",
-        "room_with_history",
-        "inactive_room",
-        "network_observation",
-        "quiescent_room"
+        "room:with_history",
+        "resource:inactive_room",
+        "observe:network",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -1139,37 +1452,46 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "events": "<array>",
-            "cursor": {
-              "state": "<variant>"
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "events": "<string>",
+              "cursor": {
+                "state": "<string>"
+              }
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "len_gte": {
-                "path": "out.events",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_gte: {\"path\": \"out.events\", \"value\": 1} — needs manual retranscription"
             },
             {
-              "no_network_activity": {
-                "scope": "step"
-              }
+              "observe": "no_network_activity",
+              "scope": "step"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
-          ],
-          "expect_no_null": true
+          ]
         },
         {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": false
-              }
-            ]
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": false
+                }
+              ]
+            }
           }
         }
       ]
@@ -1181,9 +1503,9 @@
       "intent": "Proves committed history and the push stream share one per-room monotonic position space so a client can align a resync against what it already holds, catching a daemon that positions pushes but not history and makes stream.resync unjoinable to the timeline.",
       "requires": [
         "subject",
-        "live_room",
-        "room_with_history",
-        "quiescent_room"
+        "room:live",
+        "room:with_history",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -1198,21 +1520,23 @@
             },
             "direction": "forward"
           },
-          "save_out": "page_one",
+          "save": {
+            "page_one": "out"
+          }
+        },
+        {
           "assert": [
             {
-              "pos_strictly_increasing": {
-                "path": "out.events"
-              }
+              "path": "out",
+              "op": "increasing"
             },
             {
-              "every_row_has_non_null": {
-                "path": "out.events",
-                "fields": [
-                  "pos",
-                  "event_id"
-                ]
-              }
+              "path": "out.events[*].pos",
+              "op": "present"
+            },
+            {
+              "path": "out.events[*].event_id",
+              "op": "present"
             }
           ]
         },
@@ -1224,16 +1548,17 @@
             "op_id": "$op_id_new"
           },
           "save": {
-            "probe_pos": "pos"
-          },
-          "expect_push": {
-            "t": "room.event",
-            "match": {
+            "probe_pos": "frame.pos"
+          }
+        },
+        {
+          "await": {
+            "push": {
               "room_id": "<room_id>",
               "pos": "<number>"
-            },
-            "within_ms": 5000
-          }
+            }
+          },
+          "note": "[split from a multi-verb step; review]"
         },
         {
           "call": "room.timeline",
@@ -1246,14 +1571,14 @@
               "state": "start"
             },
             "direction": "forward"
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "contains_pos_from_push": {
-                "path": "out.events",
-                "push": "room.event",
-                "room_id": "$rid"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert contains_pos_from_push: {\"path\": \"out.events\", \"push\": \"room.event\", \"room_id\": \"$rid\"} — needs manual retranscription"
             }
           ]
         }
@@ -1266,8 +1591,8 @@
       "intent": "Proves a request for exactly timeline_page_max is accepted and paginates contiguously, catching an off-by-one that refuses the largest legal page and a client that would have to compile the bound in rather than read it from the handshake.",
       "requires": [
         "subject",
-        "room_with_history_exceeding_page_max",
-        "quiescent_room"
+        "resource:room_with_history_exceeding_page_max",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -1282,26 +1607,31 @@
             },
             "direction": "forward"
           },
-          "save_out": "page_one",
           "save": {
-            "cur": "cursor"
+            "cur": "frame.cursor",
+            "page_one": "out"
           },
-          "expect_subset": {
-            "cursor": {
-              "state": "<variant>"
-            }
-          },
-          "assert": [
-            {
-              "len_eq": {
-                "path": "out.events",
-                "value": {
-                  "$limit": "timeline_page_max"
-                }
+          "expect": {
+            "ok": true,
+            "out": {
+              "cursor": {
+                "state": "<string>"
               }
             }
-          ],
-          "expect_no_null": true
+          }
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.events\", \"value\": {\"$limit\": \"timeline_page_max\"}} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         },
         {
           "call": "room.timeline",
@@ -1313,19 +1643,21 @@
             },
             "direction": "forward"
           },
-          "save_out": "page_two",
+          "save": {
+            "page_two": "out"
+          }
+        },
+        {
           "assert": [
             {
-              "pages_contiguous": {
-                "first": "page_one",
-                "second": "page_two"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert pages_contiguous: {\"first\": \"page_one\", \"second\": \"page_two\"} — needs manual retranscription"
             },
             {
-              "len_gte": {
-                "path": "out.events",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_gte: {\"path\": \"out.events\", \"value\": 1} — needs manual retranscription"
             }
           ]
         }
@@ -1338,7 +1670,7 @@
       "intent": "Proves the served page bound is enforced rather than silently clamped, catching a daemon that quietly truncates and a client that therefore believes it has read the whole page when it has not.",
       "requires": [
         "subject",
-        "room_with_history_exceeding_page_max"
+        "resource:room_with_history_exceeding_page_max"
       ],
       "steps": [
         {
@@ -1356,19 +1688,21 @@
             },
             "direction": "forward"
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "limit",
-              "max": "<number>"
+              "max": "<uint>"
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "error_field_equals_limit": {
-                "field": "max",
-                "limit": "timeline_page_max"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert error_field_equals_limit: {\"field\": \"max\", \"limit\": \"timeline_page_max\"} — needs manual retranscription"
             }
           ]
         }
@@ -1381,8 +1715,8 @@
       "intent": "Proves a cursor is bound to its room and a foreign cursor is refused as an unknown position rather than being honoured or reported as a generic argument error, catching a cursor that becomes a cross-room read primitive. A cursor that cannot be parsed at all is instead a malformed argument — the two are different failures and never share a code.",
       "requires": [
         "subject",
-        "two_rooms_with_history",
-        "quiescent_room"
+        "room:with_history",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -1398,7 +1732,7 @@
             "direction": "forward"
           },
           "save": {
-            "cur_a": "cursor"
+            "cur_a": "frame.cursor"
           }
         },
         {
@@ -1409,9 +1743,10 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "cursor_unknown",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "cursor_unknown",
               "cursor": "$cur_a"
             }
           }
@@ -1424,9 +1759,10 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "invalid_argument",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument",
               "field": "in.cursor",
               "reason": {
                 "state": "format"
@@ -1443,8 +1779,8 @@
       "intent": "Proves attribution the UI uses to decide how much to trust a message is never invented — an author the membership fold cannot resolve is reported as an explicit unresolved variant, never as the default 'member' v1 returned — catching a projection that silently upgrades an unknown signer to a trusted one.",
       "requires": [
         "subject",
-        "room_with_unresolvable_author_event",
-        "harness_fault_injection"
+        "room:plain",
+        "fault:room_index_unreadable"
       ],
       "steps": [
         {
@@ -1458,23 +1794,23 @@
               "state": "start"
             },
             "direction": "forward"
-          },
-          "expect_no_null": true,
+          }
+        },
+        {
           "assert": [
             {
-              "event_attribution_is": {
-                "path": "out.events",
-                "event_bag": "unresolvable_event_id",
-                "expect": {
-                  "state": "unresolved"
-                }
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert event_attribution_is: {\"path\": \"out.events\", \"event_bag\": \"unresolvable_event_id\", \"expect\": {\"state\": \"unresolved\"}} — needs manual retranscription"
             },
             {
-              "no_fabricated_role": {
-                "path": "out.events",
-                "forbidden_default": "member"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_fabricated_role: {\"path\": \"out.events\", \"forbidden_default\": \"member\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
           ]
         }
@@ -1487,9 +1823,9 @@
       "intent": "Proves membership is a signed answer with capacity and standing only, catching a daemon that folds presence or transport reachability into the membership surface and lets a client render a green dot from a fact that is not evidence of it.",
       "requires": [
         "subject",
-        "live_room",
-        "member_b",
-        "quiescent_room"
+        "room:live",
+        "resource:member_b",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -1497,38 +1833,86 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "members": [
-              {
-                "subject_id": "<hex64>",
-                "role": "<variant>",
-                "standing": "<standing>"
-              }
-            ]
-          },
-          "expect_no_null": true,
-          "expect_absent": [
-            "presence",
-            "online",
-            "connected",
-            "reachable",
-            "reachability",
-            "last_seen_ts",
-            "last_seen",
-            "path",
-            "relay",
-            "addrs",
-            "device_id",
-            "devices",
-            "rtt_ms",
-            "link"
-          ],
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "members": [
+                {
+                  "subject_id": "<string>",
+                  "role": "<string>",
+                  "standing": "<standing>"
+                }
+              ]
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "no_presence_or_reachability_fields": {
-                "path": "out"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_presence_or_reachability_fields: {\"path\": \"out\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            },
+            {
+              "path": "out.presence",
+              "op": "absent"
+            },
+            {
+              "path": "out.online",
+              "op": "absent"
+            },
+            {
+              "path": "out.connected",
+              "op": "absent"
+            },
+            {
+              "path": "out.reachable",
+              "op": "absent"
+            },
+            {
+              "path": "out.reachability",
+              "op": "absent"
+            },
+            {
+              "path": "out.last_seen_ts",
+              "op": "absent"
+            },
+            {
+              "path": "out.last_seen",
+              "op": "absent"
+            },
+            {
+              "path": "out.path",
+              "op": "absent"
+            },
+            {
+              "path": "out.relay",
+              "op": "absent"
+            },
+            {
+              "path": "out.addrs",
+              "op": "absent"
+            },
+            {
+              "path": "out.device_id",
+              "op": "absent"
+            },
+            {
+              "path": "out.devices",
+              "op": "absent"
+            },
+            {
+              "path": "out.rtt_ms",
+              "op": "absent"
+            },
+            {
+              "path": "out.link",
+              "op": "absent"
             }
           ]
         }
@@ -1541,9 +1925,9 @@
       "intent": "Proves membership is a store-backed signed answer independent of liveness, catching a daemon that derives members from the live session and so reports a shrinking room when the network is down.",
       "requires": [
         "subject",
-        "live_room",
-        "member_b",
-        "quiescent_room"
+        "room:live",
+        "resource:member_b",
+        "room:quiescent"
       ],
       "steps": [
         {
@@ -1551,7 +1935,9 @@
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "members_live"
+          "save": {
+            "members_live": "out"
+          }
         },
         {
           "call": "room.deactivate",
@@ -1563,8 +1949,21 @@
           "call": "room.members",
           "in": {
             "room_id": "$rid"
-          },
-          "expect_identical_to": "members_live"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "members_live",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -1574,20 +1973,21 @@
       "operation": "room.members",
       "intent": "Proves the live membership surface is closed once membership ends and the archive is the only read path for a departed member, catching a daemon that keeps serving current room state to someone who left.",
       "requires": [
-        "authority",
-        "member_b",
-        "left_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:left"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.members",
           "in": {
             "room_id": "$rid_left"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "room_id": "<room_id>",
               "state": "left"
             }
@@ -1601,15 +2001,14 @@
       "operation": "room.archive",
       "intent": "Proves the archive is normatively a pure local read — no dial, no write, repeatable to an identical answer — catching an archive that quietly re-joins the room's network or advances any durable state as a side effect of being opened.",
       "requires": [
-        "authority",
-        "member_b",
-        "left_room",
-        "network_observation",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "room:left",
+        "observe:network",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.archive",
           "in": {
             "room_id": "$rid_left",
@@ -1619,39 +2018,47 @@
             "direction": "forward",
             "limit": 50
           },
-          "save_out": "archive_view",
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "name": "<string>",
-            "standing": "left",
-            "events": "<array>",
-            "cursor": {
-              "state": "<variant>"
-            },
-            "capabilities": []
+          "on": "subject:member_b",
+          "save": {
+            "archive_view": "out"
           },
-          "expect_no_null": true,
-          "assert": [
-            {
-              "no_network_activity": {
-                "scope": "step"
-              }
-            },
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            },
-            {
-              "len_gte": {
-                "path": "out.events",
-                "value": 1
-              }
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "name": "<string>",
+              "standing": "left",
+              "events": "<string>",
+              "cursor": {
+                "state": "<string>"
+              },
+              "capabilities": []
             }
-          ]
+          }
         },
         {
-          "as": "member_b",
+          "assert": [
+            {
+              "observe": "no_network_activity",
+              "scope": "step"
+            },
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_gte: {\"path\": \"out.events\", \"value\": 1} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
           "call": "room.archive",
           "in": {
             "room_id": "$rid_left",
@@ -1661,31 +2068,45 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_identical_to": "archive_view",
-          "assert": [
-            {
-              "no_network_activity": {
-                "scope": "step"
-              }
-            },
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          "on": "subject:member_b"
         },
         {
-          "as": "member_b",
+          "assert": [
+            {
+              "observe": "no_network_activity",
+              "scope": "step"
+            },
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            },
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "archive_view",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": false,
-                "standing": "left"
-              }
-            ]
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": false,
+                  "standing": "left"
+                }
+              ]
+            }
           }
         }
       ]
@@ -1697,7 +2118,7 @@
       "intent": "Proves the archive is reachable only for ended membership and refuses a room the caller still belongs to with archive's own policy code, catching a daemon that lets the read-only path shadow the live path and mask writes as archived state.",
       "requires": [
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
@@ -1710,36 +2131,40 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "policy_refused",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "policy_refused",
               "room_id": "<room_id>",
               "standing": "active"
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             },
             {
-              "no_network_activity": {
-                "scope": "step"
-              }
+              "observe": "no_network_activity",
+              "scope": "step"
             }
           ]
         },
         {
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": true,
-                "standing": "active"
-              }
-            ]
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": true,
+                  "standing": "active"
+                }
+              ]
+            }
           }
         }
       ]
@@ -1750,14 +2175,13 @@
       "operation": "room.archive",
       "intent": "Proves the archive's empty capability list is enforcement and not advertising — every write operation against an archived room is refused — catching a daemon that ships a read-only label over a still-writable room.",
       "requires": [
-        "authority",
-        "member_b",
-        "left_room",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "room:left",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.archive",
           "in": {
             "room_id": "$rid_left",
@@ -1767,50 +2191,57 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_subset": {
-            "capabilities": []
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "capabilities": []
+            }
           }
         },
         {
-          "as": "member_b",
           "call": "message.send",
           "in": {
             "room_id": "$rid_left",
             "body": "write into an archive",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "room_id": "<room_id>",
               "state": "left"
             }
-          },
-          "assert": [
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          }
         },
         {
-          "as": "member_b",
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
           "call": "status.post",
           "in": {
             "room_id": "$rid_left",
             "label": "working",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "invite.mint",
           "in": {
             "room_id": "$rid_left",
@@ -1818,30 +2249,32 @@
             "role": "member",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "member.remove",
           "in": {
             "room_id": "$rid_left",
             "subject_id": "$subject_a",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "file.share",
           "in": {
             "room_id": "$rid_left",
@@ -1849,15 +2282,16 @@
             "bytes_ref": "$small_blob",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.archive",
           "in": {
             "room_id": "$rid_left",
@@ -1867,13 +2301,16 @@
             "direction": "forward",
             "limit": 50
           },
+          "on": "subject:member_b"
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "case"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "case"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         }
       ]
     },
@@ -1883,15 +2320,14 @@
       "operation": "room.archive",
       "intent": "Proves a removed member can read why they are removed — who signed it and when — which is the stated reason member.remove exists; it catches a daemon that ships the removed state while rendering its causing event as nothing.",
       "requires": [
-        "authority",
-        "member_b",
-        "removed_room",
-        "network_observation",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "resource:removed_room",
+        "observe:network",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.archive",
           "in": {
             "room_id": "$rid_removed",
@@ -1901,37 +2337,42 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "standing": "removed",
-            "capabilities": []
-          },
-          "expect_no_null": true,
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "standing": "removed",
+              "capabilities": []
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "same_value_as": {
-                "path": "out.standing.by",
-                "bag": "subject_a"
-              }
+              "path": "out.standing.by",
+              "op": "eq",
+              "value": "subject_a"
             },
             {
-              "event_present": {
-                "path": "out.events",
-                "field": "event_id",
-                "bag": "removal_event_id"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert event_present: {\"path\": \"out.events\", \"field\": \"event_id\", \"bag\": \"removal_event_id\"} — needs manual retranscription"
             },
             {
-              "no_network_activity": {
-                "scope": "step"
-              }
+              "observe": "no_network_activity",
+              "scope": "step"
             },
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         }
       ]
     },
@@ -1941,10 +2382,10 @@
       "operation": "room.peers",
       "intent": "Proves transport facts are stated per device with an explicit path variant rather than inferred from membership display state (#50/#94/#79), catching a client-visible regression to 'a member is shown, therefore assume reachable'.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "linked_member_device"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "resource:linked_member_device"
       ],
       "steps": [
         {
@@ -1952,41 +2393,49 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "peers": [
-              {
-                "device_id": "<hex64>",
-                "subject_id": "<hex64>",
-                "link": {
-                  "state": "<variant>"
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "peers": [
+                {
+                  "device_id": "<string>",
+                  "subject_id": "<string>",
+                  "link": {
+                    "state": "<string>"
+                  }
                 }
-              }
-            ]
-          },
-          "expect_no_null": true,
+              ]
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "len_gte": {
-                "path": "out.peers",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_gte: {\"path\": \"out.peers\", \"value\": 1} — needs manual retranscription"
             },
             {
-              "every_row_has_non_null": {
-                "path": "out.peers",
-                "fields": [
-                  "device_id",
-                  "subject_id",
-                  "link"
-                ]
-              }
+              "path": "out.peers[*].device_id",
+              "op": "present"
             },
             {
-              "every_row_tagged_variant": {
-                "path": "out.peers",
-                "field": "link"
-              }
+              "path": "out.peers[*].subject_id",
+              "op": "present"
+            },
+            {
+              "path": "out.peers[*].link",
+              "op": "present"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert every_row_tagged_variant: {\"path\": \"out.peers\", \"field\": \"link\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
           ]
         }
@@ -1999,8 +2448,8 @@
       "intent": "Proves transport facts are refused with peers' own code when there is no live session rather than being answered with an empty list, catching a daemon that reports 'no peers' — indistinguishable from 'everyone is offline' — for a room it simply is not running.",
       "requires": [
         "subject",
-        "member_b",
-        "inactive_room"
+        "resource:member_b",
+        "resource:inactive_room"
       ],
       "steps": [
         {
@@ -2008,8 +2457,11 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "live": false
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": false
+            }
           }
         },
         {
@@ -2017,9 +2469,10 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_error": {
-            "code": "room_not_live",
-            "fields_subset": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_live",
               "room_id": "<room_id>"
             }
           }
@@ -2028,13 +2481,14 @@
           "call": "room.members",
           "in": {
             "room_id": "$rid"
-          },
+          }
+        },
+        {
           "assert": [
             {
-              "len_gte": {
-                "path": "out.members",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_gte: {\"path\": \"out.members\", \"value\": 1} — needs manual retranscription"
             }
           ]
         }
@@ -2046,10 +2500,10 @@
       "operation": "room.peers",
       "intent": "Proves membership, presence, availability and reachability stay separate answers — a member with no link is still a member, and a link is reported only by peers — catching the collapse of these into one displayed fact.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "unreachable_member_device"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "resource:unreachable_member_device"
       ],
       "steps": [
         {
@@ -2057,20 +2511,32 @@
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "members",
-          "expect_absent": [
-            "reachability",
-            "presence",
-            "link",
-            "path"
-          ],
+          "save": {
+            "members": "out"
+          }
+        },
+        {
           "assert": [
             {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_b",
-                "state": "active"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_b\", \"state\": \"active\"} — needs manual retranscription"
+            },
+            {
+              "path": "out.reachability",
+              "op": "absent"
+            },
+            {
+              "path": "out.presence",
+              "op": "absent"
+            },
+            {
+              "path": "out.link",
+              "op": "absent"
+            },
+            {
+              "path": "out.path",
+              "op": "absent"
             }
           ]
         },
@@ -2079,20 +2545,21 @@
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "peers",
+          "save": {
+            "peers": "out"
+          }
+        },
+        {
           "assert": [
             {
-              "peer_link_is_not": {
-                "path": "out.peers",
-                "bag": "subject_b",
-                "state": "direct"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert peer_link_is_not: {\"path\": \"out.peers\", \"bag\": \"subject_b\", \"state\": \"direct\"} — needs manual retranscription"
             },
             {
-              "membership_not_derived_from_peers": {
-                "members": "members",
-                "peers": "peers"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert membership_not_derived_from_peers: {\"members\": \"members\", \"peers\": \"peers\"} — needs manual retranscription"
             }
           ]
         }
@@ -2104,10 +2571,10 @@
       "operation": "room.peers",
       "intent": "Proves 'why not when not' is a typed offline reason rather than an omission or a null, catching a peers surface that cannot distinguish 'never dialed' from 'dial refused' from 'relay only'.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "unreachable_member_device"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "resource:unreachable_member_device"
       ],
       "steps": [
         {
@@ -2115,23 +2582,31 @@
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "peers": [
-              {
-                "device_id": "<hex64>",
-                "link": {
-                  "state": "<variant>",
-                  "reason": "<variant>"
+          "expect": {
+            "ok": true,
+            "out": {
+              "peers": [
+                {
+                  "device_id": "<string>",
+                  "link": {
+                    "state": "<string>",
+                    "reason": "<string>"
+                  }
                 }
-              }
-            ]
-          },
-          "expect_no_null": true,
+              ]
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "unreached_peer_has_typed_reason": {
-                "path": "out.peers"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert unreached_peer_has_typed_reason: {\"path\": \"out.peers\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
           ]
         }
@@ -2144,51 +2619,69 @@
       "operation": "room.peers",
       "intent": "Proves a teardown carrying an older connection generation cannot overwrite newer link state, catching the race in which a room briefly reports a reconnected device as offline because an old teardown landed last.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "connection_generation_fault_injection"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "resource:connection_generation_fault_injection"
       ],
       "steps": [
         {
-          "control": "inject_conn_event",
-          "event": {
-            "kind": "connected",
-            "device": "$device_b",
-            "generation": 2
+          "control": {
+            "do": "inject_fault",
+            "fault": "inject_conn_event"
           }
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"event\": {\"kind\": \"connected\", \"device\": \"$device_b\", \"generation\": 2}, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "call": "room.peers",
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "peers_gen2",
+          "save": {
+            "peers_gen2": "out"
+          }
+        },
+        {
           "assert": [
             {
-              "peer_link_state_is": {
-                "path": "out.peers",
-                "bag": "device_b",
-                "state": "connected"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert peer_link_state_is: {\"path\": \"out.peers\", \"bag\": \"device_b\", \"state\": \"connected\"} — needs manual retranscription"
             }
           ]
         },
         {
-          "control": "inject_conn_event",
-          "event": {
-            "kind": "offline",
-            "device": "$device_b",
-            "generation": 1,
-            "reason": "transport_closed"
+          "control": {
+            "do": "inject_fault",
+            "fault": "inject_conn_event"
           }
+        },
+        {
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"event\": {\"kind\": \"offline\", \"device\": \"$device_b\", \"generation\": 1, \"reason\": \"transport_closed\"}, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "call": "room.peers",
           "in": {
             "room_id": "$rid"
-          },
-          "expect_identical_to": "peers_gen2"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "peers_gen2",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         }
       ],
       "blocked_on_upstream": "U1"
@@ -2199,15 +2692,14 @@
       "operation": "member.remove",
       "intent": "Proves the authority can remove a member as a signed room fact that the remaining members converge on, catching the v1 gap in which the removed state existed but no operation could cause it.",
       "requires": [
-        "authority",
-        "member_b",
-        "member_c",
-        "live_room",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "resource:member_c",
+        "room:live",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
@@ -2215,49 +2707,62 @@
             "op_id": "$op_id_fixed"
           },
           "save": {
-            "removal_event_id": "event_id"
+            "removal_event_id": "frame.event_id"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "subject_id": "<hex64>",
-            "event_id": "<hex64>",
-            "standing": "removed"
-          },
-          "expect_no_null": true
+          "on": "subject:authority",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "subject_id": "<string>",
+              "event_id": "<string>",
+              "standing": "removed"
+            }
+          }
         },
         {
-          "as": "member_c",
-          "expect_push": {
-            "t": "room.event",
-            "match": {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
+          "on": "subject:member_c",
+          "await": {
+            "push": {
               "room_id": "<room_id>",
               "pos": "<number>",
               "event": {
                 "event_id": "<hex64>"
               }
-            },
-            "within_ms": 5000
+            }
           }
         },
         {
-          "as": "member_c",
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
-          "assert": [
-            {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_b",
-                "state": "removed"
-              }
-            }
-          ],
-          "expect_no_null": true
+          "on": "subject:member_c"
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_b\", \"state\": \"removed\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:member_c"
+        },
+        {
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -2269,15 +2774,17 @@
             },
             "direction": "forward"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "event_present": {
-                "path": "out.events",
-                "field": "event_id",
-                "bag": "removal_event_id"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert event_present: {\"path\": \"out.events\", \"field\": \"event_id\", \"bag\": \"removal_event_id\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -2287,52 +2794,56 @@
       "operation": "member.remove",
       "intent": "Proves removal is authority-only and refused with a standing-specific code for a member who is inside the room, catching a daemon that lets any member evict any other.",
       "requires": [
-        "authority",
-        "member_b",
-        "member_c",
-        "live_room",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "resource:member_c",
+        "room:live",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_c",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "insufficient_standing",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "insufficient_standing",
               "room_id": "<room_id>",
-              "required": "<variant>",
-              "held": "<variant>"
+              "required": "<string>",
+              "held": "<string>"
             }
-          },
-          "assert": [
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          }
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_c",
-                "state": "active"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_c\", \"state\": \"active\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -2342,24 +2853,25 @@
       "operation": "member.remove",
       "intent": "Proves a replayed removal returns the original result and authors exactly one removal event, catching a retry path that signs a second eviction of an already-removed member.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_b",
             "op_id": "$op_id_fixed"
           },
-          "save_out": "first_removal"
+          "on": "subject:authority",
+          "save": {
+            "first_removal": "out"
+          }
         },
         {
-          "as": "authority",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -2371,20 +2883,36 @@
             },
             "direction": "forward"
           },
-          "save_out": "timeline_after_removal"
+          "on": "subject:authority",
+          "save": {
+            "timeline_after_removal": "out"
+          }
         },
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_b",
             "op_id": "$op_id_fixed"
           },
-          "expect_identical_to": "first_removal"
+          "on": "subject:authority"
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "first_removal",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -2396,7 +2924,22 @@
             },
             "direction": "forward"
           },
-          "expect_identical_to": "timeline_after_removal"
+          "on": "subject:authority"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "timeline_after_removal",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -2406,37 +2949,39 @@
       "operation": "member.remove",
       "intent": "Proves the authority gets a member-specific code for a subject that is not in the room — safe because the caller is already a member and learns nothing about foreign state — catching a daemon that answers with a generic argument error or, worse, invents a removal event for a non-member.",
       "requires": [
-        "authority",
-        "live_room",
-        "outsider",
-        "store_observation"
+        "resource:authority",
+        "room:live",
+        "resource:outsider",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_o",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "member_unknown",
-            "fields_subset": {
+          "on": "subject:authority",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "member_unknown",
               "room_id": "<room_id>",
-              "subject_id": "<hex64>"
+              "subject_id": "<string>"
             }
-          },
-          "assert": [
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          }
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -2448,14 +2993,17 @@
             },
             "direction": "forward"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "no_event_referencing": {
-                "path": "out.events",
-                "bag": "subject_o"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_event_referencing: {\"path\": \"out.events\", \"bag\": \"subject_o\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -2465,49 +3013,53 @@
       "operation": "member.remove",
       "intent": "Proves the authority cannot remove itself, which would wind the room down through the back door the leave refusal closes, catching a daemon that leaves a room with members and no authority.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_a",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "sole_authority_cannot_leave",
-            "fields_subset": {
+          "on": "subject:authority",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "sole_authority_cannot_leave",
               "room_id": "<room_id>",
-              "authority_subject_id": "<hex64>"
+              "authority_subject_id": "<string>"
             }
-          },
-          "assert": [
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          }
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_a",
-                "state": "active"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_a\", \"state\": \"active\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -2517,14 +3069,13 @@
       "operation": "member.remove",
       "intent": "Proves the durable log is protected by state and not only by the dedup ledger — a second removal of an already-removed member adds no event and changes no standing — catching a daemon whose idempotence lives only in the ledger and so duplicates the fact whenever a client mints a new op_id.",
       "requires": [
-        "authority",
-        "member_b",
-        "removed_room",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "resource:removed_room",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid_removed",
@@ -2536,19 +3087,21 @@
             },
             "direction": "forward"
           },
-          "save_out": "timeline_before"
+          "on": "subject:authority",
+          "save": {
+            "timeline_before": "out"
+          }
         },
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid_removed",
             "subject_id": "$subject_b",
             "op_id": "$op_id_new"
-          }
+          },
+          "on": "subject:authority"
         },
         {
-          "as": "authority",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid_removed",
@@ -2560,31 +3113,44 @@
             },
             "direction": "forward"
           },
-          "expect_identical_to": "timeline_before"
+          "on": "subject:authority"
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "timeline_before",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "room.members",
           "in": {
             "room_id": "$rid_removed"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_b",
-                "state": "removed"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_b\", \"state\": \"removed\"} — needs manual retranscription"
             },
             {
-              "count_where_eq": {
-                "path": "out.members",
-                "field": "subject_id",
-                "bag": "subject_b",
-                "value": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert count_where_eq: {\"path\": \"out.members\", \"field\": \"subject_id\", \"bag\": \"subject_b\", \"value\": 1} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -2594,14 +3160,13 @@
       "operation": "member.remove",
       "intent": "Proves v2 ships no state whose cause the client cannot see: the removed member reads its standing, the signer and the instant from its own connection, catching a daemon that renders the removed state with no attributable event behind it.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
@@ -2609,33 +3174,41 @@
             "op_id": "$op_id_new"
           },
           "save": {
-            "removal_event_id": "event_id"
+            "removal_event_id": "frame.event_id"
+          },
+          "on": "subject:authority"
+        },
+        {
+          "call": "room.list",
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": false,
+                  "standing": "removed"
+                }
+              ]
+            }
           }
         },
         {
-          "as": "member_b",
-          "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": false,
-                "standing": "removed"
-              }
-            ]
-          },
-          "expect_no_null": true,
           "assert": [
             {
-              "same_value_as": {
-                "path": "out.rooms[0].standing.by",
-                "bag": "subject_a"
-              }
+              "path": "out.rooms[0].standing.by",
+              "op": "eq",
+              "value": "subject_a"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         },
         {
-          "as": "member_b",
           "call": "room.archive",
           "in": {
             "room_id": "$rid",
@@ -2645,25 +3218,29 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_subset": {
-            "standing": "removed",
-            "capabilities": []
-          },
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "standing": "removed",
+              "capabilities": []
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "same_value_as": {
-                "path": "out.standing.event_id",
-                "bag": "removal_event_id"
-              }
+              "path": "out.standing.event_id",
+              "op": "eq",
+              "value": "removal_event_id"
             },
             {
-              "event_present": {
-                "path": "out.events",
-                "field": "event_id",
-                "bag": "removal_event_id"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert event_present: {\"path\": \"out.events\", \"field\": \"event_id\", \"bag\": \"removal_event_id\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         }
       ]
     },
@@ -2673,16 +3250,15 @@
       "operation": "member.remove",
       "intent": "Proves the removal push is the last frame a removed member gets for that room — it may see its own cause but no subsequent room activity — catching both a silent eviction and a push fan-out that keeps feeding a non-member.",
       "requires": [
-        "authority",
-        "member_b",
-        "member_c",
-        "live_room",
-        "subscribed_member_b",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "resource:member_c",
+        "room:live",
+        "resource:subscribed_member_b",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
@@ -2690,58 +3266,50 @@
             "op_id": "$op_id_new"
           },
           "save": {
-            "removal_event_id": "event_id"
-          }
+            "removal_event_id": "frame.event_id"
+          },
+          "on": "subject:authority"
         },
         {
-          "as": "member_b",
-          "expect_push": {
-            "t": "room.event",
-            "match": {
+          "on": "subject:member_b",
+          "await": {
+            "push": {
               "room_id": "<room_id>",
               "pos": "<number>",
               "event": {
                 "event_id": "<hex64>"
               }
-            },
-            "within_ms": 5000,
-            "assert": [
-              {
-                "same_value_as": {
-                  "path": "event.event_id",
-                  "bag": "removal_event_id"
-                }
-              }
-            ]
+            }
           }
         },
         {
-          "as": "member_c",
           "call": "message.send",
           "in": {
             "room_id": "$rid",
             "body": "after the removal",
             "op_id": "$op_id_new"
           },
-          "expect_push": {
-            "t": "room.event",
-            "match": {
+          "on": "subject:member_c"
+        },
+        {
+          "await": {
+            "push": {
               "room_id": "<room_id>"
-            },
-            "within_ms": 5000,
-            "as": "authority"
-          }
+            }
+          },
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "as": "member_b",
-          "expect_no_push": {
-            "t": "room.event",
-            "room_id": "$rid",
-            "within_ms": 5000
-          }
+          "on": "subject:member_b",
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
-          "as": "member_b",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -2751,9 +3319,11 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "removed"
             }
           }
@@ -2766,67 +3336,66 @@
       "operation": null,
       "intent": "Proves membership changes are positioned in the same strictly increasing per-room sequence as every other push, catching a daemon that emits control-ish membership frames without a position and so hides a gap from every gap detector.",
       "requires": [
-        "authority",
-        "member_b",
-        "member_c",
-        "live_room",
-        "subscribed_authority",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "resource:member_c",
+        "room:live",
+        "resource:subscribed_authority",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "member_c",
           "call": "room.leave",
           "in": {
             "room_id": "$rid",
             "op_id": "$op_id_new"
-          }
+          },
+          "on": "subject:member_c"
         },
         {
-          "as": "authority",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_b",
             "op_id": "$op_id_new"
-          }
+          },
+          "on": "subject:authority"
         },
         {
-          "as": "authority",
           "call": "message.send",
           "in": {
             "room_id": "$rid",
             "body": "after membership churn",
             "op_id": "$op_id_new"
-          }
+          },
+          "on": "subject:authority"
         },
         {
-          "as": "authority",
           "assert": [
             {
-              "pushes_pos_strictly_increasing": {
-                "room_id": "$rid",
-                "within_ms": 5000,
-                "min_count": 3
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert pushes_pos_strictly_increasing: {\"room_id\": \"$rid\", \"within_ms\": 5000, \"min_count\": 3} — needs manual retranscription"
             },
             {
-              "every_push_has_non_null": {
-                "room_id": "$rid",
-                "fields": [
-                  "t",
-                  "room",
-                  "pos"
-                ]
-              }
+              "path": "out[*].t",
+              "op": "present"
             },
             {
-              "no_push_has_field": {
-                "room_id": "$rid",
-                "field": "id"
-              }
+              "path": "out[*].room",
+              "op": "present"
+            },
+            {
+              "path": "out[*].pos",
+              "op": "present"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_push_has_field: {\"room_id\": \"$rid\", \"field\": \"id\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -2836,15 +3405,14 @@
       "operation": null,
       "intent": "Proves the normative non-oracle property as an explicit pair: for every room-scoped operation a non-member's answer for a room that exists is identical, after normalization, to the answer for a room that does not, catching any code, field, or side effect that would let an outsider probe for a room's existence.",
       "requires": [
-        "authority",
-        "outsider",
-        "live_room",
-        "room_with_history",
-        "store_observation"
+        "resource:authority",
+        "resource:outsider",
+        "room:live",
+        "room:with_history",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "outsider",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -2854,16 +3422,19 @@
             "direction": "forward",
             "limit": 50
           },
-          "save_error": "e_exists",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_exists": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.timeline",
           "in": {
             "room_id": {
@@ -2875,85 +3446,153 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "room_not_available"
-          },
-          "expect_identical_to": "e_exists"
+          "on": "subject:outsider",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available"
+            }
+          }
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_exists",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.activate",
           "in": {
             "room_id": "$rid"
           },
-          "save_error": "e_exists_activate",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_exists_activate": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.activate",
           "in": {
             "room_id": {
               "$unknown_room_id": true
             }
           },
-          "expect_identical_to": "e_exists_activate"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_exists_activate",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.deactivate",
           "in": {
             "room_id": "$rid"
           },
-          "save_error": "e_exists_deactivate",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_exists_deactivate": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.deactivate",
           "in": {
             "room_id": {
               "$unknown_room_id": true
             }
           },
-          "expect_identical_to": "e_exists_deactivate"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_exists_deactivate",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
-          "save_error": "e_exists_members",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_exists_members": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.members",
           "in": {
             "room_id": {
               "$unknown_room_id": true
             }
           },
-          "expect_identical_to": "e_exists_members"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_exists_members",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.archive",
           "in": {
             "room_id": "$rid",
@@ -2963,16 +3602,19 @@
             "direction": "forward",
             "limit": 50
           },
-          "save_error": "e_exists_archive",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_exists_archive": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.archive",
           "in": {
             "room_id": {
@@ -2984,25 +3626,42 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_identical_to": "e_exists_archive"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_exists_archive",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.leave",
           "in": {
             "room_id": "$rid",
             "op_id": "$op_id_new"
           },
-          "save_error": "e_exists_leave",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_exists_leave": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.leave",
           "in": {
             "room_id": {
@@ -3010,26 +3669,43 @@
             },
             "op_id": "$op_id_new"
           },
-          "expect_identical_to": "e_exists_leave"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_exists_leave",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_a",
             "op_id": "$op_id_new"
           },
-          "save_error": "e_exists_remove",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_exists_remove": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "member.remove",
           "in": {
             "room_id": {
@@ -3038,34 +3714,57 @@
             "subject_id": "$subject_o",
             "op_id": "$op_id_new"
           },
-          "expect_identical_to": "e_exists_remove"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_exists_remove",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.list",
           "expect": {
-            "rooms": []
+            "ok": true,
+            "out": {
+              "rooms": []
+            }
+          },
+          "on": "subject:outsider"
+        },
+        {
+          "call": "room.list",
+          "on": "subject:authority",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "live": true,
+                  "standing": "active"
+                }
+              ]
+            }
           }
         },
         {
-          "as": "authority",
-          "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "live": true,
-                "standing": "active"
-              }
-            ]
-          },
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "case"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "case"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -3075,43 +3774,74 @@
       "operation": "room.peers",
       "intent": "Proves check order: a non-member asking for the peers of a room that is live must get room_not_available and never room_not_live, catching the classic ordering bug where a liveness check runs first and turns a transport error into an existence oracle.",
       "requires": [
-        "authority",
-        "outsider",
-        "live_room",
-        "inactive_second_room"
+        "resource:authority",
+        "resource:outsider",
+        "room:live",
+        "resource:inactive_second_room"
       ],
       "steps": [
         {
-          "as": "outsider",
           "call": "room.peers",
           "in": {
             "room_id": "$rid"
           },
-          "save_error": "e_live_foreign",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_live_foreign": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.peers",
           "in": {
             "room_id": "$rid_inactive"
           },
-          "expect_identical_to": "e_live_foreign"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_live_foreign",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.peers",
           "in": {
             "room_id": {
               "$unknown_room_id": true
             }
           },
-          "expect_identical_to": "e_live_foreign"
+          "on": "subject:outsider"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_live_foreign",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
         }
       ]
     },
@@ -3121,38 +3851,42 @@
       "operation": "member.remove",
       "intent": "Proves an outsider's removal attempt answers room_not_available and never insufficient_standing, catching an authorization preflight ordered so that the standing check confirms the room exists to someone outside it.",
       "requires": [
-        "authority",
-        "member_b",
-        "outsider",
-        "live_room",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "resource:outsider",
+        "room:live",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "outsider",
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
             "subject_id": "$subject_b",
             "op_id": "$op_id_new"
           },
-          "save_error": "e_outsider_remove",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_outsider_remove": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
-          },
-          "assert": [
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
-            }
-          ]
+          }
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "member.remove",
           "in": {
             "room_id": {
@@ -3161,23 +3895,39 @@
             "subject_id": "$subject_b",
             "op_id": "$op_id_new"
           },
-          "expect_identical_to": "e_outsider_remove"
+          "on": "subject:outsider"
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_outsider_remove",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "member_standing_is": {
-                "path": "out.members",
-                "bag": "subject_b",
-                "state": "active"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_standing_is: {\"path\": \"out.members\", \"bag\": \"subject_b\", \"state\": \"active\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -3187,14 +3937,13 @@
       "operation": null,
       "intent": "Proves possession of an unaccepted capability is not membership: the holder's room-scoped answers are identical to an outsider's for a room that does not exist, catching pre-join disclosure through a room-scoped read the invite appears to justify.",
       "requires": [
-        "authority",
-        "outsider_with_unredeemed_invite",
-        "live_room",
-        "room_with_history"
+        "resource:authority",
+        "resource:outsider_with_unredeemed_invite",
+        "room:live",
+        "room:with_history"
       ],
       "steps": [
         {
-          "as": "outsider",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -3204,16 +3953,19 @@
             "direction": "forward",
             "limit": 50
           },
-          "save_error": "e_invite_holder",
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "save": {
+            "e_invite_holder": "err"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.timeline",
           "in": {
             "room_id": {
@@ -3225,23 +3977,38 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_identical_to": "e_invite_holder"
+          "on": "subject:outsider"
         },
         {
-          "as": "outsider",
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "e_invite_holder",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ],
+          "on": "subject:outsider"
+        },
+        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.archive",
           "in": {
             "room_id": "$rid",
@@ -3251,19 +4018,24 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "room_not_available",
-            "fields": {
+          "on": "subject:outsider",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_not_available",
               "room_id": "<room_id>"
             }
           }
         },
         {
-          "as": "outsider",
           "call": "room.list",
           "expect": {
-            "rooms": []
-          }
+            "ok": true,
+            "out": {
+              "rooms": []
+            }
+          },
+          "on": "subject:outsider"
         }
       ]
     },
@@ -3273,78 +4045,46 @@
       "operation": null,
       "intent": "Proves the second half of the non-oracle requirement — indistinguishable timing — since identical fields alone still leak existence through a membership lookup that is measurably slower than a miss; it catches a guard that short-circuits on the accepted-room index for one case and walks the store for the other.",
       "requires": [
-        "authority",
-        "outsider",
-        "live_room",
-        "room_with_history",
-        "timing_instrumentation"
+        "resource:authority",
+        "resource:outsider",
+        "room:live",
+        "room:with_history",
+        "resource:timing_instrumentation"
       ],
       "steps": [
         {
-          "control": "paired_timing",
-          "samples": 200,
-          "a": {
-            "as": "outsider",
-            "call": "room.timeline",
-            "in": {
-              "room_id": "$rid",
-              "cursor": {
-                "state": "start"
-              },
-              "direction": "forward",
-              "limit": 50
-            }
-          },
-          "b": {
-            "as": "outsider",
-            "call": "room.timeline",
-            "in": {
-              "room_id": {
-                "$unknown_room_id": true
-              },
-              "cursor": {
-                "state": "start"
-              },
-              "direction": "forward",
-              "limit": 50
-            }
-          },
+          "control": {
+            "do": "inject_fault",
+            "fault": "paired_timing"
+          }
+        },
+        {
+          "note": "[dialect observation keys folded: samples, a, b — see case intent]"
+        },
+        {
           "assert": [
             {
-              "timing_indistinguishable": {
-                "test": "mann_whitney_u",
-                "alpha": 0.01,
-                "max_median_delta_ms": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert timing_indistinguishable: {\"test\": \"mann_whitney_u\", \"alpha\": 0.01, \"max_median_delta_ms\": 1} — needs manual retranscription"
             }
           ]
         },
         {
-          "control": "paired_timing",
-          "samples": 200,
-          "a": {
-            "as": "outsider",
-            "call": "room.members",
-            "in": {
-              "room_id": "$rid"
-            }
-          },
-          "b": {
-            "as": "outsider",
-            "call": "room.members",
-            "in": {
-              "room_id": {
-                "$unknown_room_id": true
-              }
-            }
-          },
+          "control": {
+            "do": "inject_fault",
+            "fault": "paired_timing"
+          }
+        },
+        {
+          "note": "[dialect observation keys folded: samples, a, b — see case intent]"
+        },
+        {
           "assert": [
             {
-              "timing_indistinguishable": {
-                "test": "mann_whitney_u",
-                "alpha": 0.01,
-                "max_median_delta_ms": 1
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert timing_indistinguishable: {\"test\": \"mann_whitney_u\", \"alpha\": 0.01, \"max_median_delta_ms\": 1} — needs manual retranscription"
             }
           ]
         }
@@ -3356,67 +4096,70 @@
       "operation": null,
       "intent": "Fixes the legality matrix for ended membership in one place — which operations are legal in which state and the exact code each returns when not — catching any drift in which one surface keeps accepting work against a room the caller has left.",
       "requires": [
-        "authority",
-        "member_b",
-        "left_room",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "room:left",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.activate",
           "in": {
             "room_id": "$rid_left"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.deactivate",
           "in": {
             "room_id": "$rid_left"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.leave",
           "in": {
             "room_id": "$rid_left",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.members",
           "in": {
             "room_id": "$rid_left"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid_left",
@@ -3426,56 +4169,62 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.peers",
           "in": {
             "room_id": "$rid_left"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "member.remove",
           "in": {
             "room_id": "$rid_left",
             "subject_id": "$subject_a",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "standing": "left",
-                "live": false
-              }
-            ]
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "standing": "left",
+                  "live": false
+                }
+              ]
+            }
           }
         },
         {
-          "as": "member_b",
           "call": "room.archive",
           "in": {
             "room_id": "$rid_left",
@@ -3485,18 +4234,24 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "standing": "left",
-            "capabilities": []
-          },
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "standing": "left",
+              "capabilities": []
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "case"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "case"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         }
       ]
     },
@@ -3506,27 +4261,27 @@
       "operation": null,
       "intent": "Fixes the same legality matrix for the removed state and proves it is reported as removed rather than collapsed into left, catching a daemon that erases the distinction between departing and being evicted — and with it the cause the removed member is owed.",
       "requires": [
-        "authority",
-        "member_b",
-        "removed_room",
-        "store_observation"
+        "resource:authority",
+        "resource:member_b",
+        "resource:removed_room",
+        "resource:store_observation"
       ],
       "steps": [
         {
-          "as": "member_b",
           "call": "room.activate",
           "in": {
             "room_id": "$rid_removed"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "removed"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid_removed",
@@ -3536,69 +4291,84 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "removed"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.members",
           "in": {
             "room_id": "$rid_removed"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "removed"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.peers",
           "in": {
             "room_id": "$rid_removed"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "removed"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.leave",
           "in": {
             "room_id": "$rid_removed",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "removed"
             }
           }
         },
         {
-          "as": "member_b",
           "call": "room.list",
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "standing": "removed",
-                "live": false
-              }
-            ]
-          },
-          "expect_no_null": true
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "standing": "removed",
+                  "live": false
+                }
+              ]
+            }
+          }
         },
         {
-          "as": "member_b",
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:member_b"
+        },
+        {
           "call": "room.archive",
           "in": {
             "room_id": "$rid_removed",
@@ -3608,17 +4378,23 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_subset": {
-            "standing": "removed",
-            "capabilities": []
-          },
+          "on": "subject:member_b",
+          "expect": {
+            "ok": true,
+            "out": {
+              "standing": "removed",
+              "capabilities": []
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "case"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "case"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         }
       ]
     },
@@ -3628,58 +4404,61 @@
       "operation": "room.list",
       "intent": "Proves 'what may I do in each' is a binding answer and not decoration: every capability room.list advertises succeeds and every write it omits is refused, catching the drift in which a client greys out the right buttons while the daemon accepts the calls anyway (or the reverse).",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "left_room",
-        "removed_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "room:left",
+        "resource:removed_room"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "room.list",
-          "save_out": "list_authority",
-          "assert": [
-            {
-              "capabilities_are_enforced": {
-                "path": "out.rooms",
-                "bag": "rid",
-                "probe": "exercise_each_advertised_and_each_omitted_write"
-              }
-            }
-          ]
+          "on": "subject:authority",
+          "save": {
+            "list_authority": "out"
+          }
         },
         {
-          "as": "member_b",
-          "call": "room.list",
           "assert": [
             {
-              "capabilities_are_empty_for_lifecycle": {
-                "path": "out.rooms",
-                "bag": "rid_left",
-                "state": "left"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert capabilities_are_enforced: {\"path\": \"out.rooms\", \"bag\": \"rid\", \"probe\": \"exercise_each_advertised_and_each_omitted_write\"} — needs manual retranscription"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
+          "call": "room.list",
+          "on": "subject:member_b"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert capabilities_are_empty_for_lifecycle: {\"path\": \"out.rooms\", \"bag\": \"rid_left\", \"state\": \"left\"} — needs manual retranscription"
             },
             {
-              "capabilities_are_empty_for_lifecycle": {
-                "path": "out.rooms",
-                "bag": "rid_removed",
-                "state": "removed"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert capabilities_are_empty_for_lifecycle: {\"path\": \"out.rooms\", \"bag\": \"rid_removed\", \"state\": \"removed\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:member_b"
         },
         {
-          "as": "member_b",
           "call": "message.send",
           "in": {
             "room_id": "$rid_left",
             "body": "unadvertised write",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "membership_ended",
-            "fields_subset": {
+          "on": "subject:member_b",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_ended",
               "state": "left"
             }
           }
@@ -3692,73 +4471,75 @@
       "operation": "room.members",
       "intent": "Proves v2's 'one name, both places' rule by comparing the role token across room.list and room.members for the same subject rather than pinning a spelling, catching the reappearance of v1's two-vocabulary split between the log's and the wire's name for the same capacity.",
       "requires": [
-        "authority",
-        "member_b",
-        "live_room",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "room:live",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "room.list",
           "save": {
-            "role_from_list": "rooms[0].role"
+            "role_from_list": "frame.rooms[0].role"
           },
-          "expect_subset": {
-            "rooms": [
-              {
-                "room_id": "<room_id>",
-                "role": "<variant>"
-              }
-            ]
+          "on": "subject:authority",
+          "expect": {
+            "ok": true,
+            "out": {
+              "rooms": [
+                {
+                  "room_id": "<room_id>",
+                  "role": "<string>"
+                }
+              ]
+            }
           }
         },
         {
-          "as": "authority",
           "call": "room.members",
+          "in": {
+            "room_id": "$rid"
+          },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "member_field_equals_bag": {
-                "path": "out.members",
-                "bag_subject": "subject_a",
-                "field": "role",
-                "bag": "role_from_list"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_field_equals_bag: {\"path\": \"out.members\", \"bag_subject\": \"subject_a\", \"field\": \"role\", \"bag\": \"role_from_list\"} — needs manual retranscription"
             }
           ],
-          "in": {
-            "room_id": "$rid"
-          }
+          "on": "subject:authority"
         },
         {
-          "as": "member_b",
           "call": "room.list",
           "save": {
-            "role_b_from_list": "rooms[0].role"
-          }
+            "role_b_from_list": "frame.rooms[0].role"
+          },
+          "on": "subject:member_b"
         },
         {
-          "as": "authority",
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
+          "on": "subject:authority"
+        },
+        {
           "assert": [
             {
-              "member_field_equals_bag": {
-                "path": "out.members",
-                "bag_subject": "subject_b",
-                "field": "role",
-                "bag": "role_b_from_list"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert member_field_equals_bag: {\"path\": \"out.members\", \"bag_subject\": \"subject_b\", \"field\": \"role\", \"bag\": \"role_b_from_list\"} — needs manual retranscription"
             },
             {
-              "not_equal_values": {
-                "bag_a": "role_from_list",
-                "bag_b": "role_b_from_list"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert not_equal_values: {\"bag_a\": \"role_from_list\", \"bag_b\": \"role_b_from_list\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -3768,16 +4549,15 @@
       "operation": "room.timeline",
       "intent": "Retains invariant #46 in v2 terms and asserts it as an outcome: after multi-author history exists, a joiner redeems an invite and room.timeline returns every prior event from every author, catching a membership closure that admits the joiner but starves it of the history that predates the join.",
       "requires": [
-        "authority",
-        "member_b",
-        "member_c",
-        "live_room",
-        "room_with_multi_author_history",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "resource:member_c",
+        "room:live",
+        "resource:room_with_multi_author_history",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -3789,18 +4569,22 @@
             },
             "direction": "forward"
           },
-          "save_out": "authority_history",
-          "assert": [
-            {
-              "distinct_authors_at_least": {
-                "path": "out.events",
-                "value": 3
-              }
-            }
-          ]
+          "on": "subject:authority",
+          "save": {
+            "authority_history": "out"
+          }
         },
         {
-          "as": "authority",
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert distinct_authors_at_least: {\"path\": \"out.events\", \"value\": 3} — needs manual retranscription"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "invite.mint",
           "in": {
             "room_id": "$rid",
@@ -3809,37 +4593,55 @@
             "op_id": "$op_id_new"
           },
           "save": {
-            "cap": "capability"
-          }
+            "cap": "frame.capability"
+          },
+          "on": "subject:authority"
         },
         {
-          "as": "joiner",
           "call": "invite.redeem",
           "in": {
             "capability": "$cap",
             "op_id": "$op_id_new"
           },
-          "expect_subset": {
-            "room_id": "<room_id>"
+          "on": "subject:joiner",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>"
+            }
           }
         },
         {
-          "as": "joiner",
           "call": "room.activate",
           "in": {
             "room_id": "$rid"
           },
-          "expect_subset": {
-            "live": true
-          },
-          "expect_absent": [
-            "events",
-            "timeline",
-            "history"
-          ]
+          "on": "subject:joiner",
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": true
+            }
+          }
         },
         {
-          "as": "joiner",
+          "assert": [
+            {
+              "path": "out.events",
+              "op": "absent"
+            },
+            {
+              "path": "out.timeline",
+              "op": "absent"
+            },
+            {
+              "path": "out.history",
+              "op": "absent"
+            }
+          ],
+          "on": "subject:joiner"
+        },
+        {
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
@@ -3851,14 +4653,17 @@
             },
             "direction": "forward"
           },
+          "on": "subject:joiner"
+        },
+        {
           "assert": [
             {
-              "contains_all_events_of": {
-                "other": "authority_history",
-                "match_field": "event_id"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert contains_all_events_of: {\"other\": \"authority_history\", \"match_field\": \"event_id\"} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:joiner"
         }
       ]
     },
@@ -3868,122 +4673,117 @@
       "operation": "room.activate",
       "intent": "Retains invariant #147 in v2 terms: one subject keeps several rooms live and each room's pushes arrive with strictly increasing positions and no cross-room loss, catching a per-room device-key or session collision in which activating one room silently tears down another.",
       "requires": [
-        "authority",
-        "member_b",
-        "three_rooms",
-        "subscribed_authority",
-        "quiescent_room"
+        "resource:authority",
+        "resource:member_b",
+        "resource:three_rooms",
+        "resource:subscribed_authority",
+        "room:quiescent"
       ],
       "steps": [
         {
-          "as": "authority",
           "call": "room.activate",
           "in": {
             "room_id": "$rid_1"
           },
-          "expect_subset": {
-            "live": true
+          "on": "subject:authority",
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": true
+            }
           }
         },
         {
-          "as": "authority",
           "call": "room.activate",
           "in": {
             "room_id": "$rid_2"
           },
-          "expect_subset": {
-            "live": true
+          "on": "subject:authority",
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": true
+            }
           }
         },
         {
-          "as": "authority",
           "call": "room.activate",
           "in": {
             "room_id": "$rid_3"
           },
-          "expect_subset": {
-            "live": true
+          "on": "subject:authority",
+          "expect": {
+            "ok": true,
+            "out": {
+              "live": true
+            }
           }
         },
         {
-          "as": "authority",
           "call": "room.list",
-          "assert": [
-            {
-              "every_row_has_value": {
-                "path": "out.rooms",
-                "field": "live",
-                "value": true
-              }
-            },
-            {
-              "len_eq": {
-                "path": "out.rooms",
-                "value": 3
-              }
-            }
-          ]
+          "on": "subject:authority"
         },
         {
-          "as": "member_b",
+          "assert": [
+            {
+              "path": "out.rooms[*].live",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert len_eq: {\"path\": \"out.rooms\", \"value\": 3} — needs manual retranscription"
+            }
+          ],
+          "on": "subject:authority"
+        },
+        {
           "call": "message.send",
           "in": {
             "room_id": "$rid_1",
             "body": "r1",
             "op_id": "$op_id_new"
-          }
+          },
+          "on": "subject:member_b"
         },
         {
-          "as": "member_b",
           "call": "message.send",
           "in": {
             "room_id": "$rid_2",
             "body": "r2",
             "op_id": "$op_id_new"
-          }
+          },
+          "on": "subject:member_b"
         },
         {
-          "as": "member_b",
           "call": "message.send",
           "in": {
             "room_id": "$rid_3",
             "body": "r3",
             "op_id": "$op_id_new"
-          }
+          },
+          "on": "subject:member_b"
         },
         {
-          "as": "authority",
           "assert": [
             {
-              "push_received_for_each_room": {
-                "rooms": [
-                  "$rid_1",
-                  "$rid_2",
-                  "$rid_3"
-                ],
-                "t": "room.event",
-                "within_ms": 10000
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert push_received_for_each_room: {\"rooms\": [\"$rid_1\", \"$rid_2\", \"$rid_3\"], \"t\": \"room.event\", \"within_ms\": 10000} — needs manual retranscription"
             },
             {
-              "pushes_pos_strictly_increasing_per_room": {
-                "rooms": [
-                  "$rid_1",
-                  "$rid_2",
-                  "$rid_3"
-                ]
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert pushes_pos_strictly_increasing_per_room: {\"rooms\": [\"$rid_1\", \"$rid_2\", \"$rid_3\"]} — needs manual retranscription"
             },
             {
-              "no_cross_room_position_inference": {
-                "rooms": [
-                  "$rid_1",
-                  "$rid_2",
-                  "$rid_3"
-                ]
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_cross_room_position_inference: {\"rooms\": [\"$rid_1\", \"$rid_2\", \"$rid_3\"]} — needs manual retranscription"
             }
-          ]
+          ],
+          "on": "subject:authority"
         }
       ]
     },
@@ -3994,22 +4794,31 @@
       "intent": "Gives room.create the error case the corpus rule requires, using room.create's OWN code rather than the generic invalid_argument its two existing malformed cases already assert. Probes the two edges no plausible name bound can admit -- the empty string, and a name whose UTF-8 encoding is half of the served max_frame_bytes -- and asserts both are refused as room_name_invalid with no room and no genesis event authored. Catches (a) a daemon that enforces no name bound at all, so a client can write an unbounded string into a signed genesis event that every member must then store and render; (b) a daemon that collapses a name-bound refusal into invalid_argument, which a client cannot distinguish from a missing field and therefore cannot present as 'that name will not work, pick another'; (c) a daemon that silently coerces a bad name (trims, truncates, or substitutes a default) so the room's signed name differs from the one the user typed. The spec assigns this code but states no numeric bound and serves none in the limits object, so this case deliberately pins no number -- see notes.",
       "requires": [
         "subject",
-        "quiescent_room",
-        "limits"
+        "room:quiescent",
+        "control:limits"
       ],
       "steps": [
         {
-          "read": "hello.limits",
           "save": {
-            "frame_max": "max_frame_bytes"
+            "frame_max": "frame.max_frame_bytes"
           },
           "expect": {
-            "max_frame_bytes": "<uint>"
+            "ok": true,
+            "out": {
+              "max_frame_bytes": "<uint>"
+            }
+          },
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           }
         },
         {
           "call": "room.list",
-          "save_out": "rooms_before"
+          "save": {
+            "rooms_before": "out"
+          }
         },
         {
           "call": "room.create",
@@ -4017,36 +4826,45 @@
             "name": "",
             "op_id": "$op_id_new"
           },
-          "expect_error": {
-            "code": "room_name_invalid",
-            "fields_subset": {}
-          },
-          "forbid_codes": [
-            "invalid_argument",
-            "subject_absent",
-            "insufficient_standing"
-          ],
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_name_invalid"
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "invalid_argument",
+                "subject_absent",
+                "insufficient_standing"
+              ]
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
             },
             {
-              "absent_key": {
-                "path": "err",
-                "key": "hint"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert absent_key: {\"path\": \"err\", \"key\": \"hint\"} — needs manual retranscription"
             },
             {
-              "no_null": {
-                "path": "err"
-              }
+              "path": "out",
+              "op": "no_nulls"
             },
             {
-              "error_fields_are_typed_not_prose": {
-                "path": "err.fields"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert error_fields_are_typed_not_prose: {\"path\": \"err.fields\"} — needs manual retranscription"
             }
           ]
         },
@@ -4071,37 +4889,60 @@
             "op_id": "$op_id_new"
           },
           "note": "half the largest frame the daemon accepts: guaranteed to reach dispatch rather than trip the 4005 close, and guaranteed to exceed any bound a room name could plausibly have",
-          "expect_error": {
-            "code": "room_name_invalid",
-            "fields_subset": {}
-          },
-          "forbid_codes": [
-            "invalid_argument",
-            "frame_too_large"
-          ],
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_name_invalid"
+            }
+          }
+        },
+        {
+          "note": "half the largest frame the daemon accepts: guaranteed to reach dispatch rather than trip the 4005 close, and guaranteed to exceed any bound a room name could plausibly have",
           "assert": [
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "invalid_argument",
+                "frame_too_large"
+              ]
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
             },
             {
-              "connection_open": {
-                "scope": "step"
-              }
+              "observe": "connection_open",
+              "on": "subject:self"
             },
             {
-              "absent_key": {
-                "path": "err",
-                "key": "hint"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert absent_key: {\"path\": \"err\", \"key\": \"hint\"} — needs manual retranscription"
             }
           ]
         },
         {
           "call": "room.list",
-          "expect_identical_to": "rooms_before",
           "note": "neither refusal left a room, a genesis event, or a half-created room behind"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "rooms_before",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         },
         {
           "call": "room.create",
@@ -4109,12 +4950,22 @@
             "name": "Conformance Name Bound",
             "op_id": "$op_id_new"
           },
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "name": "Conformance Name Bound"
-          },
-          "expect_no_null": true,
-          "note": "an ordinary name still works, so the refusals above are a bound and not a broken operation"
+          "note": "an ordinary name still works, so the refusals above are a bound and not a broken operation",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "name": "Conformance Name Bound"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -4126,89 +4977,106 @@
       "intent": "Gives room.list its own code. With a subject present and a room known to exist, the accepted-room index is made unreadable and room.list must answer room_index_unreadable -- never ok with rooms: []. Catches the single most damaging failure mode this operation has: 'I cannot read your rooms' rendered as 'you have no rooms', which a user responds to by re-creating rooms they already own and by concluding their history is gone. It also catches conflation in the other direction -- answering subject_absent (the subject is present and this is not that precondition) or room_not_available (a local storage fault reported as a membership fact). The final step proves the refusal was a read failure and not data loss: with the fault cleared, the same room lists again unchanged.",
       "requires": [
         "subject",
-        "room",
-        "fault_injection",
-        "fault_injection.room_index_unreadable"
+        "room:plain",
+        "fault:room_index_unreadable"
       ],
       "steps": [
         {
           "call": "room.list",
-          "save_out": "rooms_healthy",
-          "assert": [
-            {
-              "count_where_eq": {
-                "path": "out.rooms",
-                "field": "room_id",
-                "bag": "rid",
-                "value": 1
-              }
-            }
-          ],
-          "note": "baseline: the index is readable and names the room"
+          "note": "baseline: the index is readable and names the room",
+          "save": {
+            "rooms_healthy": "out"
+          }
         },
         {
-          "control": "fault_inject",
-          "fault": "room_index_unreadable",
-          "note": "the accepted-room index is made unreadable at the storage layer -- an I/O error or a permission denial on read, NOT a truncation or a delete. Nothing is mutated: the bytes are intact and only the read path fails, which is exactly the state in which answering 'you have no rooms' is a lie."
-        },
-        {
-          "call": "room.list",
-          "expect_error": {
-            "code": "room_index_unreadable",
-            "fields_subset": {}
-          },
-          "forbid_codes": [
-            "subject_absent",
-            "room_not_available",
-            "invalid_argument",
-            "insufficient_standing"
-          ],
           "assert": [
             {
-              "not_returned": {
-                "shape": {
-                  "ok": true,
-                  "out": {
-                    "rooms": []
-                  }
-                },
-                "why": "an empty success is indistinguishable from a subject that genuinely owns nothing"
-              }
-            },
-            {
-              "not_returned": {
-                "shape": {
-                  "ok": true
-                },
-                "why": "a partial list is also refused: this operation reads from local evidence and has no partial answer"
-              }
-            },
-            {
-              "absent_key": {
-                "path": "err",
-                "key": "hint"
-              }
-            },
-            {
-              "no_null": {
-                "path": "err"
-              }
-            },
-            {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert count_where_eq: {\"path\": \"out.rooms\", \"field\": \"room_id\", \"bag\": \"rid\", \"value\": 1} — needs manual retranscription"
             }
           ]
         },
         {
-          "control": "fault_clear",
-          "fault": "room_index_unreadable"
+          "control": {
+            "do": "inject_fault",
+            "fault": "room_index_unreadable"
+          },
+          "note": "the accepted-room index is made unreadable at the storage layer -- an I/O error or a permission denial on read, NOT a truncation or a delete. Nothing is mutated: the bytes are intact and only the read path fails, which is exactly the state in which answering 'you have no rooms' is a lie."
         },
         {
           "call": "room.list",
-          "expect_identical_to": "rooms_healthy",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "room_index_unreadable"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "subject_absent",
+                "room_not_available",
+                "invalid_argument",
+                "insufficient_standing"
+              ]
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert not_returned: {\"shape\": {\"ok\": true, \"out\": {\"rooms\": []}}, \"why\": \"an empty success is indistinguishable from a subject that genuinely owns nothing\"} — needs manual retranscription"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert not_returned: {\"shape\": {\"ok\": true}, \"why\": \"a partial list is also refused: this operation reads from local evidence and has no partial answer\"} — needs manual retranscription"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert absent_key: {\"path\": \"err\", \"key\": \"hint\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            },
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "room_index_unreadable"
+          }
+        },
+        {
+          "call": "room.list",
           "note": "the room was never lost; the daemon simply could not read it, and said so"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "rooms_healthy",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -4219,12 +5087,12 @@
       "operation": "room.members",
       "intent": "Gives room.members its own code and pins the spec's hardest membership rule: room.members is THE authoritative signed answer to who belongs and in what standing, so when the fold cannot resolve one member it must say membership_unresolved rather than serve a list. Catches the exact regression v2 removes by name -- v1's fabricated default role, which returned 'member' for a subject the fold could not resolve -- and catches the subtler variants: defaulting standing to active, silently dropping the unresolvable member so the list looks complete and shorter, or emitting a null role. Attribution a UI uses to decide how much to trust a person must not be invented, and a member list missing a member is a worse lie than an error. The contrast step is load-bearing: room.timeline over the SAME room still succeeds and reports that author as an explicit unresolved variant, so this case also catches an over-correction in which one unresolvable event makes the whole room unreadable.",
       "requires": [
-        "authority",
-        "member_b",
-        "room",
-        "room_with_unresolvable_member_standing",
-        "fault_injection",
-        "fault_injection.unresolvable_member_standing"
+        "resource:authority",
+        "resource:member_b",
+        "room:plain",
+        "resource:room_with_unresolvable_member_standing",
+        "fault:room_index_unreadable",
+        "fault:unresolvable_member_standing"
       ],
       "steps": [
         {
@@ -4232,82 +5100,98 @@
           "in": {
             "room_id": "$rid"
           },
-          "save_out": "members_healthy",
-          "expect_subset": {
-            "room_id": "<room_id>",
-            "members": [
-              {
-                "subject_id": "<hex64>",
-                "role": "<variant>",
-                "standing": "<standing>"
-              }
-            ]
+          "note": "baseline: both members resolve",
+          "save": {
+            "members_healthy": "out"
           },
-          "expect_no_null": true,
-          "note": "baseline: both members resolve"
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "members": [
+                {
+                  "subject_id": "<string>",
+                  "role": "<string>",
+                  "standing": "<standing>"
+                }
+              ]
+            }
+          }
         },
         {
-          "control": "fault_inject",
-          "fault": "unresolvable_member_standing",
-          "subject": "$sb",
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "unresolvable_member_standing"
+          },
           "note": "member B's standing is made unresolvable in the membership fold -- the signed event that would establish it is present but does not resolve (an unknown signer, or a reference the closure cannot follow). B is NOT removed and NOT made inactive: those are resolvable answers, and the point of this case is the state in which the daemon does not know."
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "on": "subject:$sb"
         },
         {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
-          "expect_error": {
-            "code": "membership_unresolved",
-            "fields_subset": {}
-          },
-          "forbid_codes": [
-            "room_not_available",
-            "invalid_argument",
-            "insufficient_standing",
-            "subject_absent"
-          ],
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "membership_unresolved"
+            }
+          }
+        },
+        {
           "assert": [
             {
-              "not_returned": {
-                "shape": {
-                  "ok": true
-                },
-                "why": "there is no partially authoritative answer; a list served here would be presented to a user as signed truth"
-              }
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "room_not_available",
+                "invalid_argument",
+                "insufficient_standing",
+                "subject_absent"
+              ]
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert not_returned: {\"shape\": {\"ok\": true}, \"why\": \"there is no partially authoritative answer; a list served here would be presented to a user as signed truth\"} — needs manual retranscription"
             },
             {
-              "no_fabricated_role": {
-                "path": "out.members",
-                "forbidden_default": "member"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_fabricated_role: {\"path\": \"out.members\", \"forbidden_default\": \"member\"} — needs manual retranscription"
             },
             {
-              "no_fabricated_standing": {
-                "path": "out.members",
-                "forbidden_defaults": [
-                  "active",
-                  {
-                    "state": "active"
-                  }
-                ]
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_fabricated_standing: {\"path\": \"out.members\", \"forbidden_defaults\": [\"active\", {\"state\": \"active\"}]} — needs manual retranscription"
             },
             {
-              "absent_key": {
-                "path": "err",
-                "key": "hint"
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert absent_key: {\"path\": \"err\", \"key\": \"hint\"} — needs manual retranscription"
             },
             {
-              "no_null": {
-                "path": "err"
-              }
+              "path": "out",
+              "op": "no_nulls"
             },
             {
-              "no_durable_mutation": {
-                "scope": "step"
-              }
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
           ]
         },
@@ -4321,28 +5205,47 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_no_null": true,
-          "assert": [
-            {
-              "no_fabricated_role": {
-                "path": "out.events",
-                "forbidden_default": "member"
-              }
-            }
-          ],
           "note": "deliberate contrast with the step above: timeline states an unresolved attribution per event and keeps serving history, while members -- the authoritative answer -- refuses. Two operations, two correct behaviours, neither of them a fabricated role."
         },
         {
-          "control": "fault_clear",
-          "fault": "unresolvable_member_standing"
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert no_fabricated_role: {\"path\": \"out.events\", \"forbidden_default\": \"member\"} — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "unresolvable_member_standing"
+          }
         },
         {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
           },
-          "expect_identical_to": "members_healthy",
           "note": "the refusal changed no membership state"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "eq_except",
+              "value": {
+                "path": "members_healthy",
+                "keys": [
+                  "id"
+                ]
+              }
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null

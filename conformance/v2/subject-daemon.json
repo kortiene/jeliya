@@ -8,53 +8,86 @@
       "operation": "subject.ensure",
       "intent": "Proves the first subject.ensure on a subject-less daemon establishes the subject and reports created:true with exactly the two public names; catches a regression that returns created:false on the create path (which would make the flag useless as a first-run signal) or that omits device_id.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "save": {
+            "limits": "frame.hello.limits"
+          },
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello": {
-            "t": "hello",
-            "protocol": 2,
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
-          },
-          "save": {
-            "limits": "hello.limits"
           }
         },
         {
-          "session": "A",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.t",
+              "op": "eq",
+              "value": "hello"
+            },
+            {
+              "path": "frame.protocol",
+              "op": "eq",
+              "value": 2
+            },
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0001"
           },
           "save": {
-            "sid": "subject_id",
-            "did": "device_id",
+            "sid": "frame.subject_id",
+            "did": "frame.device_id",
             "first_out": "$out"
           },
           "expect": {
-            "subject_id": "<hex64>",
-            "device_id": "<hex64>",
-            "created": true
+            "ok": true,
+            "out": {
+              "subject_id": "<string>",
+              "device_id": "<string>",
+              "created": true
+            }
           },
-          "assert": {
-            "no_nulls_deep": true,
-            "distinct_values": [
-              "subject_id",
-              "device_id"
-            ]
-          }
+          "on": "subject:A"
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert distinct_values: [\"subject_id\", \"device_id\"] — needs manual retranscription"
+            }
+          ],
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -65,51 +98,61 @@
       "operation": "subject.ensure",
       "intent": "Proves the spec's stated idempotence literally: a second call returns the SAME subject_id and device_id with created:false, rather than minting a second subject or erroring. Catches any implementation that rotates the device key, re-derives the subject, or treats a repeat call as a conflict.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0002a"
           },
           "save": {
-            "sid": "subject_id",
-            "did": "device_id"
+            "sid": "frame.subject_id",
+            "did": "frame.device_id"
           },
           "expect": {
-            "subject_id": "<hex64>",
-            "device_id": "<hex64>",
-            "created": true
-          }
+            "ok": true,
+            "out": {
+              "subject_id": "<string>",
+              "device_id": "<string>",
+              "created": true
+            }
+          },
+          "on": "subject:A"
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0002b"
           },
           "expect": {
-            "subject_id": "$sid",
-            "device_id": "$did",
-            "created": false
+            "ok": true,
+            "out": {
+              "subject_id": "$sid",
+              "device_id": "$did",
+              "created": false
+            }
           },
-          "note": "A DIFFERENT op_id is deliberately used. subject.ensure is naturally idempotent, not op_id-deduplicated, so idempotence must hold without ledger help."
+          "note": "A DIFFERENT op_id is deliberately used. subject.ensure is naturally idempotent, not op_id-deduplicated, so idempotence must hold without ledger help.",
+          "on": "subject:A"
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0002a"
           },
           "expect": {
-            "subject_id": "$sid",
-            "device_id": "$did",
-            "created": false
+            "ok": true,
+            "out": {
+              "subject_id": "$sid",
+              "device_id": "$did",
+              "created": false
+            }
           },
-          "note": "Replaying the FIRST op_id must also report created:false. The ledger returns the original result only for op_id-deduplicated operations; for a naturally idempotent one the live answer is authoritative and must not resurrect a stale created:true."
+          "note": "Replaying the FIRST op_id must also report created:false. The ledger returns the original result only for op_id-deduplicated operations; for a naturally idempotent one the live answer is authoritative and must not resurrect a stale created:true.",
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -120,61 +163,91 @@
       "operation": "subject.ensure",
       "intent": "Proves idempotence is a property of durable subject state, not of connection-scoped memory: a second session on the same daemon gets the same subject with created:false. Catches an implementation that caches 'already ensured' per connection and would mint a second subject after a reconnect.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "two_sessions"
+        "daemon:fresh",
+        "subject:none",
+        "resource:two_sessions"
       ],
       "steps": [
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0003a"
           },
           "save": {
-            "sid": "subject_id",
-            "did": "device_id"
+            "sid": "frame.subject_id",
+            "did": "frame.device_id"
           },
           "expect": {
-            "subject_id": "<hex64>",
-            "device_id": "<hex64>",
-            "created": true
+            "ok": true,
+            "out": {
+              "subject_id": "<string>",
+              "device_id": "<string>",
+              "created": true
+            }
+          },
+          "on": "subject:A"
+        },
+        {
+          "control": {
+            "do": "disconnect",
+            "on": "subject:self"
           }
         },
         {
-          "disconnect": {
-            "session": "A"
-          }
-        },
-        {
-          "connect": {
-            "session": "B",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello": {
-            "t": "hello",
-            "protocol": 2,
-            "subject": {
-              "state": "present",
-              "subject_id": "$sid",
-              "device_id": "$did"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "session": "B",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.t",
+              "op": "eq",
+              "value": "hello"
+            },
+            {
+              "path": "frame.protocol",
+              "op": "eq",
+              "value": 2
+            },
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "present",
+                "subject_id": "$sid",
+                "device_id": "$did"
+              }
+            }
+          ]
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0003b"
           },
           "expect": {
-            "subject_id": "$sid",
-            "device_id": "$did",
-            "created": false
-          }
+            "ok": true,
+            "out": {
+              "subject_id": "$sid",
+              "device_id": "$did",
+              "created": false
+            }
+          },
+          "on": "subject:B"
         }
       ],
       "blocked_on_upstream": null
@@ -185,95 +258,98 @@
       "operation": "subject.ensure",
       "intent": "Proves the create path is serialized: two independent sessions racing subject.ensure on a subject-less daemon both observe the same subject, and created:true is reported exactly once across the race. Catches a check-then-create race that mints two subjects (silently forking the identity) or that reports created:true twice.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "two_sessions",
-        "concurrent_dispatch"
+        "daemon:fresh",
+        "subject:none",
+        "resource:two_sessions",
+        "resource:concurrent_dispatch"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "connect": {
-            "session": "B",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "concurrent": [
-            {
-              "session": "A",
-              "call": "subject.ensure",
-              "in": {
-                "op_id": "cf-subject-ensure-0004a"
-              },
-              "save": {
-                "ra": "$out"
-              }
-            },
-            {
-              "session": "B",
-              "call": "subject.ensure",
-              "in": {
-                "op_id": "cf-subject-ensure-0004b"
-              },
-              "save": {
-                "rb": "$out"
-              }
+          "await": {
+            "frame": {
+              "t": "hello"
             }
-          ],
-          "expect_across": {
-            "both_ok": true,
-            "equal_fields": [
-              "subject_id",
-              "device_id"
-            ],
-            "true_count": {
-              "created": 1
-            },
-            "field_shapes": {
-              "subject_id": "<hex64>",
-              "device_id": "<hex64>",
-              "created": "<bool>"
-            }
-          },
-          "note": "Reply arrival order is unconstrained (v2 replies MAY arrive out of order); the assertion is over the set of the two replies, correlated by id, never over their order."
+          }
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
+          "note": "Reply arrival order is unconstrained (v2 replies MAY arrive out of order); the assertion is over the set of the two replies, correlated by id, never over their order. [concurrent: [{\"session\": \"A\", \"call\": \"subject.ensure\", \"in\": {\"op_id\": \"cf-subject-ensure-0004a\"}, \"save\": {\"ra\": \"$out\"}}, {\"session\": \"B\", \"call\": \"s]"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [expect_across: {\"both_ok\": true, \"equal_fields\": [\"subject_id\", \"device_id\"], \"true_count\": {\"created\": 1}, \"field_shapes\": {\"subject_id\": \"<hex64>\", \"devi]"
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0004c"
           },
-          "expect_subset": {
-            "created": false
-          },
-          "assert": {
-            "equals_field_of_saved": {
-              "subject_id": "ra.subject_id"
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": false
             }
           }
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert equals_field_of_saved: {\"subject_id\": \"ra.subject_id\"} — needs manual retranscription"
+            }
+          ],
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -284,134 +360,97 @@
       "operation": "subject.ensure",
       "intent": "Proves the spec's 'return its public names and no secret' as an explicit absence, on BOTH the create and the idempotent-repeat path, and in hello. Catches the single worst regression this operation can have: a private key, seed, or keypair leaking into a reply that the WebView can read.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "note": "[expect_hello_assert: {\"forbid_keys_deep\": [\"secret\", \"secret_key\", \"secretkey\", \"private_key\", \"privatekey\", \"signing_key\", \"signingkey\", \"seed\", \"keypair\", \"key]"
+        },
+        {
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           },
-          "expect_hello_assert": {
-            "forbid_keys_deep": [
-              "secret",
-              "secret_key",
-              "secretkey",
-              "private_key",
-              "privatekey",
-              "signing_key",
-              "signingkey",
-              "seed",
-              "keypair",
-              "key_pair",
-              "sk",
-              "mnemonic",
-              "entropy",
-              "passphrase",
-              "password",
-              "key_material",
-              "keymaterial",
-              "credential",
-              "token",
-              "bearer"
-            ],
-            "forbid_value_shapes_deep": [
-              "<hex64>?not_in:[subject_id,device_id]"
-            ]
-          }
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0005a"
           },
           "save": {
-            "sid": "subject_id",
-            "did": "device_id"
+            "sid": "frame.subject_id",
+            "did": "frame.device_id"
           },
           "expect": {
-            "subject_id": "<hex64>",
-            "device_id": "<hex64>",
-            "created": true
+            "ok": true,
+            "out": {
+              "subject_id": "<string>",
+              "device_id": "<string>",
+              "created": true
+            }
           },
-          "assert": {
-            "forbid_keys_deep": [
-              "secret",
-              "secret_key",
-              "secretkey",
-              "private_key",
-              "privatekey",
-              "signing_key",
-              "signingkey",
-              "seed",
-              "keypair",
-              "key_pair",
-              "sk",
-              "mnemonic",
-              "entropy",
-              "passphrase",
-              "password",
-              "key_material",
-              "keymaterial",
-              "credential",
-              "token",
-              "bearer"
-            ],
-            "exact_top_level_keys": [
-              "subject_id",
-              "device_id",
-              "created"
-            ],
-            "no_nulls_deep": true
-          }
+          "on": "subject:A"
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert forbid_keys_deep: [\"secret\", \"secret_key\", \"secretkey\", \"private_key\", \"privatekey\", \"signing_key\", \"signingkey\", \"seed\", \"keypair\", \"key_pair\", \"sk\", \"mnemonic\", \"entropy\", \"passphrase\", \"password\", \"key_material\", \"k — needs manual retranscription"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert exact_top_level_keys: [\"subject_id\", \"device_id\", \"created\"] — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0005b"
           },
           "expect": {
-            "subject_id": "$sid",
-            "device_id": "$did",
-            "created": false
+            "ok": true,
+            "out": {
+              "subject_id": "$sid",
+              "device_id": "$did",
+              "created": false
+            }
           },
-          "assert": {
-            "forbid_keys_deep": [
-              "secret",
-              "secret_key",
-              "secretkey",
-              "private_key",
-              "privatekey",
-              "signing_key",
-              "signingkey",
-              "seed",
-              "keypair",
-              "key_pair",
-              "sk",
-              "mnemonic",
-              "entropy",
-              "passphrase",
-              "password",
-              "key_material",
-              "keymaterial",
-              "credential",
-              "token",
-              "bearer"
-            ],
-            "exact_top_level_keys": [
-              "subject_id",
-              "device_id",
-              "created"
-            ],
-            "no_nulls_deep": true
-          }
+          "on": "subject:A"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert forbid_keys_deep: [\"secret\", \"secret_key\", \"secretkey\", \"private_key\", \"privatekey\", \"signing_key\", \"signingkey\", \"seed\", \"keypair\", \"key_pair\", \"sk\", \"mnemonic\", \"entropy\", \"passphrase\", \"password\", \"key_material\", \"k — needs manual retranscription"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert exact_top_level_keys: [\"subject_id\", \"device_id\", \"created\"] — needs manual retranscription"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -422,90 +461,141 @@
       "operation": null,
       "intent": "Proves v2's replacement for v1's per-operation subject_unreadable: an existing-but-unreadable subject store fails the connection closed with close code 4003 (not_ready) rather than answering any operation — a hello cannot carry an error code, and a degraded subject arm would force every client to branch on a condition it can do nothing about. Also proves the failed start does not overwrite the unreadable material with a fresh subject — which would permanently destroy a user's identity behind a transient read fault, violating 'establish the local cryptographic subject exactly once'.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "restartable_daemon",
-        "subject_store_mutable_offline",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "daemon:restartable",
+        "control:store",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0006a"
           },
           "save": {
-            "sid": "subject_id",
-            "did": "device_id"
+            "sid": "frame.subject_id",
+            "did": "frame.device_id"
           },
           "expect": {
-            "subject_id": "<hex64>",
-            "device_id": "<hex64>",
-            "created": true
+            "ok": true,
+            "out": {
+              "subject_id": "<string>",
+              "device_id": "<string>",
+              "created": true
+            }
+          },
+          "on": "subject:A"
+        },
+        {
+          "control": {
+            "do": "stop_daemon",
+            "daemon": "self"
           }
         },
         {
-          "harness": "stop_daemon"
+          "note": "Subject material is present but cannot be interpreted (truncated / corrupted bytes, or mode 0000). The harness snapshots the original bytes first.",
+          "control": {
+            "do": "inject_fault",
+            "fault": "make_subject_store_unreadable"
+          }
         },
         {
-          "harness": "make_subject_store_unreadable",
-          "note": "Subject material is present but cannot be interpreted (truncated / corrupted bytes, or mode 0000). The harness snapshots the original bytes first."
+          "control": {
+            "do": "start_daemon",
+            "daemon": "self"
+          }
         },
         {
-          "harness": "start_daemon"
-        },
-        {
-          "connect": {
-            "session": "B",
+          "note": "not_ready closes the connection rather than answering an operation: the subject store cannot be read, so there is no hello and no error reply — the upgrade itself fails closed. Any behaviour that instead serves a degraded hello and lets subject.ensure fail per-request is the retired v1 shape.",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_close": {
-            "code": 4003
-          },
-          "note": "not_ready closes the connection rather than answering an operation: the subject store cannot be read, so there is no hello and no error reply — the upgrade itself fails closed. Any behaviour that instead serves a degraded hello and lets subject.ensure fail per-request is the retired v1 shape."
-        },
-        {
-          "harness": "stop_daemon"
-        },
-        {
-          "harness": "restore_subject_store"
-        },
-        {
-          "harness": "start_daemon"
-        },
-        {
-          "connect": {
-            "session": "C",
-            "query": {
-              "v": 2,
-              "sg": "$daemon.storage_generation"
-            },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "present",
-              "subject_id": "$sid",
-              "device_id": "$did"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "session": "C",
+          "assert": [
+            {
+              "observe": "close_code",
+              "value": 4003
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "stop_daemon",
+            "daemon": "self"
+          }
+        },
+        {
+          "control": {
+            "do": "inject_fault",
+            "fault": "restore_subject_store"
+          }
+        },
+        {
+          "control": {
+            "do": "start_daemon",
+            "daemon": "self"
+          }
+        },
+        {
+          "upgrade": {
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject.state",
+              "op": "eq",
+              "value": "present"
+            },
+            {
+              "path": "frame.subject.subject_id",
+              "op": "eq",
+              "value": "$sid"
+            },
+            {
+              "path": "frame.subject.device_id",
+              "op": "eq",
+              "value": "$did"
+            }
+          ]
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0006c"
           },
           "expect": {
-            "subject_id": "$sid",
-            "device_id": "$did",
-            "created": false
+            "ok": true,
+            "out": {
+              "subject_id": "$sid",
+              "device_id": "$did",
+              "created": false
+            }
           },
-          "note": "The original subject is intact. If the unreadable-store start had regenerated, subject_id would differ and created would have been true here."
+          "note": "The original subject is intact. If the unreadable-store start had regenerated, subject_id would differ and created would have been true here.",
+          "on": "subject:C"
         }
       ],
       "blocked_on_upstream": null
@@ -516,65 +606,71 @@
       "operation": "subject.ensure",
       "intent": "Directly asserts the spec's removal of identity_exists: repeated calls against an established subject succeed, and no reply in the sequence carries identity_exists (or any conflict-flavoured code). Catches a v1 transcription that reports the idempotent case as a failure — the exact defect the spec names as 'reporting success as failure'.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0007a"
           },
           "save": {
-            "sid": "subject_id"
+            "sid": "frame.subject_id"
           },
-          "expect_subset": {
-            "created": true
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
           }
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0007b"
           },
-          "expect_subset": {
-            "subject_id": "$sid",
-            "created": false
-          },
-          "must_not_error_with": [
-            "identity_exists",
-            "subject_exists",
-            "already_exists",
-            "conflict"
-          ]
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "subject_id": "$sid",
+              "created": false
+            }
+          }
         },
         {
-          "session": "A",
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"must_not_error_with\": [\"identity_exists\", \"subject_exists\", \"already_exists\", \"conflict\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0007c"
           },
-          "expect_subset": {
-            "subject_id": "$sid",
-            "created": false
-          },
-          "must_not_error_with": [
-            "identity_exists",
-            "subject_exists",
-            "already_exists",
-            "conflict"
-          ]
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "subject_id": "$sid",
+              "created": false
+            }
+          }
         },
         {
-          "assert_over_session": {
-            "session": "A",
-            "scope": "all_frames",
-            "forbid_error_codes": [
-              "identity_exists"
-            ]
-          }
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"must_not_error_with\": [\"identity_exists\", \"subject_exists\", \"already_exists\", \"conflict\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_over_session: {\"session\": \"A\", \"scope\": \"all_frames\", \"forbid_error_codes\": [\"identity_exists\"]} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -585,14 +681,22 @@
       "operation": "subject.ensure",
       "intent": "Proves the codec rejects a type-violating payload as a machine-readable operation error rather than panicking, closing the connection, or coercing the value. Catches a codec that accepts a non-string op_id and lets it into the dedup ledger under a coerced key.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session",
-        "raw_frame_transport"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect",
+        "resource:raw_frame_transport"
       ],
       "steps": [
         {
-          "session": "A",
-          "raw_frame": {
+          "note": "invalid_argument here is a codec-level answer and does NOT satisfy this operation's own-code requirement; subject_unreadable does.",
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument"
+            }
+          },
+          "send": {
             "envelope": {
               "id": 71,
               "op": "subject.ensure",
@@ -600,43 +704,64 @@
                 "op_id": 12345
               }
             }
-          },
-          "expect_error_for_id": 71,
-          "expect_error": {
-            "code": "invalid_argument",
-            "absent_fields": [
-              "hint"
-            ],
-            "no_nulls_deep": true
-          },
-          "expect_transport": {
-            "open": true
-          },
+          }
+        },
+        {
+          "assert": [],
           "note": "invalid_argument here is a codec-level answer and does NOT satisfy this operation's own-code requirement; subject_unreadable does."
         },
         {
-          "session": "A",
-          "raw_frame": {
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument"
+            }
+          },
+          "send": {
             "envelope": {
               "id": 72,
               "op": "subject.ensure",
               "in": "not-an-object"
             }
-          },
-          "expect_error_for_id": 72,
-          "expect_error": {
-            "code": "invalid_argument",
-            "absent_fields": [
-              "hint"
-            ]
-          },
-          "expect_transport": {
-            "open": true
           }
         },
         {
-          "session": "A",
-          "raw_frame": {
+          "assert": [],
+          "note": "[split]"
+        },
+        {
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
+          "note": "No JSON null carries meaning in v2, so an explicit null is not 'op_id absent' — it is a type violation.",
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "invalid_argument"
+            }
+          },
+          "send": {
             "envelope": {
               "id": 73,
               "op": "subject.ensure",
@@ -644,30 +769,35 @@
                 "op_id": null
               }
             }
-          },
-          "expect_error_for_id": 73,
-          "expect_error": {
-            "code": "invalid_argument",
-            "absent_fields": [
-              "hint"
-            ]
-          },
-          "expect_transport": {
-            "open": true
-          },
+          }
+        },
+        {
+          "assert": [],
           "note": "No JSON null carries meaning in v2, so an explicit null is not 'op_id absent' — it is a type violation."
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0008"
           },
-          "expect_subset": {
-            "subject_id": "<hex64>",
-            "created": true
-          },
-          "note": "The connection is still usable and no malformed frame performed a partial effect: this is the FIRST successful ensure, so created must be true."
+          "note": "The connection is still usable and no malformed frame performed a partial effect: this is the FIRST successful ensure, so created must be true.",
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "subject_id": "<string>",
+              "created": true
+            }
+          }
         }
       ],
       "blocked_on_upstream": null
@@ -678,98 +808,124 @@
       "operation": "subject.ensure",
       "intent": "Proves the spec's absolute 'no JSON null carries meaning anywhere in v2' across the subject surface on both the absent and present paths — in hello, in success replies, and in error replies. Catches the single most likely v1 carry-over: spelling an absent subject as subject:null instead of the tagged absent variant. Scoped to DAEMON-EMITTED frames only: the corpus deliberately SENDS nulls in malformed-input cases, so a both-directions scan would fail on its own negative tests.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "two_sessions"
+        "daemon:fresh",
+        "subject:none",
+        "resource:two_sessions"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           },
-          "assert": {
-            "no_nulls_deep": true,
-            "tagged_variant": {
-              "path": "subject",
-              "tag_field": "state",
-              "allowed": [
-                "present",
-                "absent"
-              ]
-            },
-            "absent_variant_carries_only": {
-              "path": "subject",
-              "when": {
-                "state": "absent"
-              },
-              "exact_keys": [
-                "state"
-              ]
-            }
-          }
+          "note": "[dialect assert preserved for manual retranscription: {\"no_nulls_deep\": true, \"tagged_variant\": {\"path\": \"subject\", \"tag_field\": \"state\", \"allowed\": [\"present\", \"absent\"]}, \"absent_variant_carries_only\": {\"path\": \"subject\", \"when\": {\"state\": \"absent\"}, \"]"
         },
         {
-          "session": "A",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "note": "[dialect assert preserved for manual retranscription: {\"no_nulls_deep\": true, \"tagged_variant\": {\"path\": \"subject\", \"tag_field\": \"state\", \"allowed\": [\"present\", \"absent\"]}, \"absent_variant_carries_only\": {\"path\": \"subject\", \"when\": {\"state\": \"absent\"}, \"]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "room.list",
           "in": {},
-          "expect_error": {
-            "code": "subject_absent",
-            "no_nulls_deep": true,
-            "absent_fields": [
-              "hint"
-            ]
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0009"
           },
           "save": {
-            "sid": "subject_id",
-            "did": "device_id"
+            "sid": "frame.subject_id",
+            "did": "frame.device_id"
           },
-          "assert": {
-            "no_nulls_deep": true
-          }
+          "on": "subject:A"
         },
         {
-          "connect": {
-            "session": "B",
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "present",
-              "subject_id": "$sid",
-              "device_id": "$did"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           },
-          "assert": {
-            "no_nulls_deep": true,
-            "tagged_variant": {
-              "path": "subject",
-              "tag_field": "state",
-              "allowed": [
-                "present",
-                "absent"
-              ]
+          "note": "[dialect assert preserved for manual retranscription: {\"no_nulls_deep\": true, \"tagged_variant\": {\"path\": \"subject\", \"tag_field\": \"state\", \"allowed\": [\"present\", \"absent\"]}}]"
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
             }
-          }
+          },
+          "note": "[dialect assert preserved for manual retranscription: {\"no_nulls_deep\": true, \"tagged_variant\": {\"path\": \"subject\", \"tag_field\": \"state\", \"allowed\": [\"present\", \"absent\"]}}]"
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject.state",
+              "op": "eq",
+              "value": "present"
+            },
+            {
+              "path": "frame.subject.subject_id",
+              "op": "eq",
+              "value": "$sid"
+            },
+            {
+              "path": "frame.subject.device_id",
+              "op": "eq",
+              "value": "$did"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -780,61 +936,84 @@
       "operation": null,
       "intent": "Proves the spec's explicit statement that hello carries no pid, no port, and no data_dir — the v1 daemon.status fields whose folding into the handshake is the removal most likely to be undone by transcription — while still carrying the subject variant, protocol, storage_generation, limits, and resume.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "note": "max_shared_file_bytes is the one limit whose value the spec fixes normatively (104,857,600, as an integer, never a formatted string); the rest are asserted as integers only, since the spec deliberately leaves their values tunable. [dialect assert preserved for manual retranscription: {\"forbid_keys_deep\": [\"pid\", \"port\", \"data_dir\", \"mode\", \"schema\"], \"all_limits_are_integers\": true, \"no_nulls_deep\": true, \"exactly_one_hello_frame\": true}]",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello": {
-            "t": "hello",
-            "protocol": 2,
-            "storage_generation": "<int>",
-            "limits": {
-              "max_shared_file_bytes": 104857600,
-              "max_message_body_bytes": "<int>",
-              "max_frame_bytes": "<int>",
-              "max_inflight_requests": "<int>",
-              "max_connections": "<int>",
-              "max_concurrent_transfers": "<int>",
-              "max_transfer_bytes_inflight": "<int>",
-              "transfer_connect_allowance_ms": "<int>",
-              "transfer_floor_bits_per_second": "<int>",
-              "transfer_stall_ms": "<int>",
-              "timeline_page_max": "<int>"
-            },
-            "subject": {
-              "state": "absent"
-            },
-            "resume": {
-              "state": "fresh"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
-          },
-          "assert": {
-            "forbid_keys_deep": [
-              "pid",
-              "port",
-              "data_dir",
-              "mode",
-              "schema"
-            ],
-            "all_limits_are_integers": true,
-            "no_nulls_deep": true,
-            "exactly_one_hello_frame": true
-          },
-          "note": "max_shared_file_bytes is the one limit whose value the spec fixes normatively (104,857,600, as an integer, never a formatted string); the rest are asserted as integers only, since the spec deliberately leaves their values tunable."
+          }
         },
         {
-          "session": "A",
-          "expect_no_further_frames_of_type": "hello",
-          "note": "'The daemon's first frame after upgrade is exactly one hello.'"
+          "note": "max_shared_file_bytes is the one limit whose value the spec fixes normatively (104,857,600, as an integer, never a formatted string); the rest are asserted as integers only, since the spec deliberately leaves their values tunable. [dialect assert preserved for manual retranscription: {\"forbid_keys_deep\": [\"pid\", \"port\", \"data_dir\", \"mode\", \"schema\"], \"all_limits_are_integers\": true, \"no_nulls_deep\": true, \"exactly_one_hello_frame\": true}]",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.t",
+              "op": "eq",
+              "value": "hello"
+            },
+            {
+              "path": "frame.protocol",
+              "op": "eq",
+              "value": 2
+            },
+            {
+              "path": "frame.storage_generation",
+              "op": "eq",
+              "value": "<int>"
+            },
+            {
+              "path": "frame.limits",
+              "op": "eq",
+              "value": {
+                "max_shared_file_bytes": 104857600,
+                "max_message_body_bytes": "<int>",
+                "max_frame_bytes": "<int>",
+                "max_inflight_requests": "<int>",
+                "max_connections": "<int>",
+                "max_concurrent_transfers": "<int>",
+                "max_transfer_bytes_inflight": "<int>",
+                "transfer_connect_allowance_ms": "<int>",
+                "transfer_floor_bits_per_second": "<int>",
+                "transfer_stall_ms": "<int>",
+                "timeline_page_max": "<int>"
+              }
+            },
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": "frame.resume",
+              "op": "eq",
+              "value": {
+                "state": "fresh"
+              }
+            }
+          ]
+        },
+        {
+          "note": "'The daemon's first frame after upgrade is exactly one hello.' [expect_no_further_frames_of_type: \"hello\"]",
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -845,87 +1024,119 @@
       "operation": null,
       "intent": "Proves the spec's absolute custody rule — the daemon token MUST NOT reach script, a URL, a log, or a diagnostic in any form — across a full subject lifecycle, and that a redeemed connect ticket is burned and never re-served. Catches a diagnostic field or an error payload that echoes the credential back to the WebView.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session",
-        "browser_ticket_exchange",
-        "frame_transcript_capture"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect",
+        "resource:browser_ticket_exchange",
+        "resource:frame_transcript_capture"
       ],
       "steps": [
         {
           "http": "POST /api/session",
-          "headers": {
-            "Origin": "$loopback_origin"
-          },
           "save": {
             "ticket": "$body.ticket"
-          },
-          "assert": {
-            "forbid_substring_deep": [
-              "$daemon_token"
-            ]
           }
         },
         {
-          "connect": {
-            "session": "A",
+          "assert": [],
+          "note": "[split]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert forbid_substring_deep: [\"$daemon_token\"] — needs manual retranscription"
+            }
+          ]
+        },
+        {
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation",
               "ct": "$ticket"
             },
-            "auth": "none"
-          },
-          "expect_hello_subset": {
-            "t": "hello",
-            "protocol": 2,
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "none"
             }
           }
         },
         {
-          "session": "A",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.t",
+              "op": "eq",
+              "value": "hello"
+            },
+            {
+              "path": "frame.protocol",
+              "op": "eq",
+              "value": 2
+            },
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0011"
           },
-          "expect_subset": {
-            "created": true
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
           }
         },
         {
-          "session": "A",
           "call": "daemon.stop",
           "in": {
             "op_id": "cf-daemon-stop-0011"
           },
-          "expect_ok": true
+          "on": "subject:A"
         },
         {
-          "assert_over_session": {
-            "session": "A",
-            "scope": "all_frames",
-            "forbid_substring_deep": [
-              "$daemon_token",
-              "$ticket"
-            ]
-          }
+          "note": "[split from a multi-verb step; review] [expect_ok: true]"
         },
         {
-          "connect": {
-            "session": "B",
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_over_session: {\"session\": \"A\", \"scope\": \"all_frames\", \"forbid_substring_deep\": [\"$daemon_token\", \"$ticket\"]} — needs manual retranscription"
+            }
+          ]
+        },
+        {
+          "note": "Single use: the ticket is burned on redemption at step 2, so replaying it is refused with the v2 error envelope as a JSON body, not a plain-text v1 body. [expect_upgrade_error: {\"status\": 401, \"code\": \"unauthenticated\"}]"
+        },
+        {
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation",
               "ct": "$ticket"
             },
-            "auth": "none"
+            "headers": {
+              "Authorization": "none"
+            }
           },
-          "expect_upgrade_error": {
-            "status": 401,
-            "code": "unauthenticated"
-          },
-          "note": "Single use: the ticket is burned on redemption at step 2, so replaying it is refused with the v2 error envelope as a JSON body, not a plain-text v1 body."
+          "note": "[split from a multi-verb step; review]"
         }
       ],
       "blocked_on_upstream": null
@@ -936,28 +1147,31 @@
       "operation": "subject.ensure",
       "intent": "The at-limit half of the max_frame_bytes bound: a frame whose size equals the served limit exactly MUST be parsed and answered, not closed. Catches an off-by-one that compares with >= instead of > and rejects a legal frame.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session",
-        "raw_frame_transport",
-        "served_limits"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect",
+        "resource:raw_frame_transport",
+        "resource:served_limits"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "save": {
+            "max_frame": "frame.hello.limits.max_frame_bytes"
+          },
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "save": {
-            "max_frame": "hello.limits.max_frame_bytes"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
-          "session": "A",
-          "raw_frame": {
+          "note": "max_frame_bytes is a FRAME bound checked before parsing; whether an op_id of this length is itself acceptable is a separate codec bound the spec does not fix. Either answer is conformant. What is NOT conformant is a 4005 close: the frame is exactly at, not past, the limit.",
+          "on": "subject:A",
+          "send": {
             "envelope": {
               "id": 81,
               "op": "subject.ensure",
@@ -968,30 +1182,20 @@
             "pad_field": "in.op_id",
             "pad_byte": "a",
             "pad_to_total_frame_bytes": "$max_frame"
-          },
-          "assert_frame_size_equals": "$max_frame",
-          "expect_reply_for_id": 81,
-          "expect_transport": {
-            "open": true,
-            "closed": false
-          },
-          "expect_any_of": [
+          }
+        },
+        {
+          "note": "max_frame_bytes is a FRAME bound checked before parsing; whether an op_id of this length is itself acceptable is a separate codec bound the spec does not fix. Either answer is conformant. What is NOT conformant is a 4005 close: the frame is exactly at, not past, the limit. [expect_reply_for_id: 81] [expect_transport: {\"open\": true, \"closed\": false}] [expect_any_of: [{\"expect_subset\": {\"subject_id\": \"<hex64>\", \"created\": true}}, {\"expect_error\": {\"code\": \"invalid_argument\", \"absent_fields\": [\"hint\"]}}]]"
+        },
+        {
+          "assert": [
             {
-              "expect_subset": {
-                "subject_id": "<hex64>",
-                "created": true
-              }
-            },
-            {
-              "expect_error": {
-                "code": "invalid_argument",
-                "absent_fields": [
-                  "hint"
-                ]
-              }
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_frame_size_equals: \"$max_frame\" — needs manual retranscription"
             }
           ],
-          "note": "max_frame_bytes is a FRAME bound checked before parsing; whether an op_id of this length is itself acceptable is a separate codec bound the spec does not fix. Either answer is conformant. What is NOT conformant is a 4005 close: the frame is exactly at, not past, the limit."
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -1002,34 +1206,49 @@
       "operation": "subject.ensure",
       "intent": "The past-limit half of the bound, and the stronger claim: the frame closes the connection with application close code 4005 WITHOUT being parsed. Unparsed is made observable by proving no subject was created — a daemon that parsed the oversize envelope first and then closed would leave the subject established.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "two_sessions",
-        "raw_frame_transport",
-        "served_limits",
-        "close_code_observation"
+        "daemon:fresh",
+        "subject:none",
+        "resource:two_sessions",
+        "resource:raw_frame_transport",
+        "resource:served_limits",
+        "resource:close_code_observation"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "save": {
+            "max_frame": "frame.hello.limits.max_frame_bytes"
+          },
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
-          },
-          "save": {
-            "max_frame": "hello.limits.max_frame_bytes"
           }
         },
         {
-          "session": "A",
-          "raw_frame": {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
+          "on": "subject:A",
+          "send": {
             "envelope": {
               "id": 82,
               "op": "subject.ensure",
@@ -1040,40 +1259,65 @@
             "pad_field": "in.op_id",
             "pad_byte": "a",
             "pad_to_total_frame_bytes": "$max_frame + 1"
-          },
-          "assert_frame_size_equals": "$max_frame + 1",
-          "expect_no_reply_for_id": 82,
-          "expect_transport": {
-            "closed": true,
-            "close_code": 4005
           }
         },
         {
-          "connect": {
-            "session": "B",
+          "note": "[expect_transport: {\"closed\": true, \"close_code\": 4005}] [expect_no_reply_for_id: 82]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_frame_size_equals: \"$max_frame + 1\" — needs manual retranscription"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
+          "note": "Still absent. The oversize frame was discarded before dispatch, so its mutating operation never ran.",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
-          },
-          "note": "Still absent. The oversize frame was discarded before dispatch, so its mutating operation never ran."
+          }
         },
         {
-          "session": "B",
+          "note": "Still absent. The oversize frame was discarded before dispatch, so its mutating operation never ran.",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0083"
           },
-          "expect_subset": {
-            "created": true
-          },
-          "note": "created:true confirms this is the first ensure the daemon ever executed."
+          "note": "created:true confirms this is the first ensure the daemon ever executed.",
+          "on": "subject:B",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
+          }
         }
       ],
       "blocked_on_upstream": null
@@ -1084,83 +1328,62 @@
       "operation": "subject.ensure",
       "intent": "Exercises the served max_inflight_requests bound at the limit and one past it, using the cheapest naturally idempotent operation so the excess request is refused rather than absorbed. Catches a daemon that silently queues past its published limit, making the served number a lie, or that closes the connection instead of returning a typed refusal.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session",
-        "pipelined_requests",
-        "served_limits",
-        "stallable_operation"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect",
+        "resource:pipelined_requests",
+        "resource:served_limits",
+        "resource:stallable_operation"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "save": {
+            "n": "frame.hello.limits.max_inflight_requests"
+          },
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "save": {
-            "n": "hello.limits.max_inflight_requests"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0091"
           },
-          "expect_subset": {
-            "created": true
-          },
-          "note": "Establish the subject first so the burst below exercises only the idempotent-repeat path and cannot race on creation."
+          "note": "Establish the subject first so the burst below exercises only the idempotent-repeat path and cannot race on creation.",
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
+          }
         },
         {
-          "session": "A",
-          "pipelined": {
-            "count": "$n",
-            "call": "subject.ensure",
-            "in": {
-              "op_id": "cf-inflight-<i>"
-            },
-            "ids_from": 1000
-          },
-          "expect_all_replies": true,
-          "expect_each_subset": {
-            "created": false
-          },
-          "expect_transport": {
-            "open": true
-          },
-          "note": "Exactly max_inflight_requests outstanding: every one is answered."
+          "note": "Exactly max_inflight_requests outstanding: every one is answered. [pipelined: {\"count\": \"$n\", \"call\": \"subject.ensure\", \"in\": {\"op_id\": \"cf-inflight-<i>\"}, \"ids_from\": 1000}]",
+          "on": "subject:A"
         },
         {
-          "session": "A",
-          "pipelined": {
-            "count": "$n + 1",
-            "call": "subject.ensure",
-            "in": {
-              "op_id": "cf-inflight-over-<i>"
-            },
-            "ids_from": 2000,
-            "hold_replies_until_all_sent": true
-          },
-          "expect_at_least_one_error": {
-            "code": "resource_exhausted",
-            "fields": {
-              "resource": "<string>",
-              "limit": "$n"
-            },
-            "absent_fields": [
-              "hint"
-            ],
-            "no_nulls_deep": true
-          },
-          "expect_transport": {
-            "open": true,
-            "closed": false
-          },
-          "note": "One past the limit. The refusal is an operation error correlated by id, NOT a connection close — exceeding a served capacity limit is refused, not treated as a framing violation."
+          "note": "[split from a multi-verb step; review] [expect_all_replies: true]"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [expect_transport: {\"open\": true}] [expect_each_subset: {\"created\": false}]"
+        },
+        {
+          "note": "One past the limit. The refusal is an operation error correlated by id, NOT a connection close — exceeding a served capacity limit is refused, not treated as a framing violation. [pipelined: {\"count\": \"$n + 1\", \"call\": \"subject.ensure\", \"in\": {\"op_id\": \"cf-inflight-over-<i>\"}, \"ids_from\": 2000, \"hold_replies_until_all_sent\": true]",
+          "on": "subject:A"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [expect_at_least_one_error: {\"code\": \"resource_exhausted\", \"fields\": {\"resource\": \"<string>\", \"limit\": \"$n\"}, \"absent_fields\": [\"hint\"], \"no_nulls_deep\": true}]"
+        },
+        {
+          "assert": [],
+          "note": "[split from a multi-verb step; review]"
         }
       ],
       "blocked_on_upstream": null
@@ -1171,91 +1394,98 @@
       "operation": "daemon.stop",
       "intent": "Proves the operation's defining property: the reply frame is written and complete BEFORE any close frame and before the process exits, and termination is deterministic. Catches the classic regression where teardown begins on receipt and the caller sees only a socket close, unable to distinguish an accepted stop from a crash.",
       "requires": [
-        "disposable_daemon",
+        "resource:disposable_daemon",
         "subject",
-        "session",
-        "frame_order_observation",
-        "process_exit_observation"
+        "control:reconnect",
+        "resource:frame_order_observation",
+        "resource:process_exit_observation"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0101"
           },
-          "expect_subset": {
-            "created": true
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
           }
         },
         {
-          "session": "A",
           "call": "daemon.stop",
           "in": {
             "op_id": "cf-daemon-stop-0101"
           },
-          "expect_envelope": {
-            "id": "<matches_request>",
-            "ok": true,
-            "out": "<object>"
-          },
-          "assert": {
-            "no_nulls_deep": true,
-            "forbid_keys_deep": [
-              "secret",
-              "secret_key",
-              "private_key",
-              "signing_key",
-              "seed",
-              "token",
-              "credential",
-              "data_dir",
-              "path"
-            ]
-          },
-          "note": "The spec states daemon.stop's behaviour, not its out shape. This case deliberately does NOT pin out's keys — asserting a field the spec never names would be transcription. It asserts what the spec does say: ok, an object, no nulls, no secrets, no filesystem paths."
+          "note": "The spec states daemon.stop's behaviour, not its out shape. This case deliberately does NOT pin out's keys — asserting a field the spec never names would be transcription. It asserts what the spec does say: ok, an object, no nulls, no secrets, no filesystem paths.",
+          "on": "subject:A"
         },
         {
-          "expect_frame_order": {
-            "session": "A",
-            "before": "reply_for_id:$last_request_id:complete",
-            "after": "transport_close"
-          },
-          "note": "The full reply frame is received before any close frame. A partially-written reply followed by a close FAILS this case."
+          "note": "The spec states daemon.stop's behaviour, not its out shape. This case deliberately does NOT pin out's keys — asserting a field the spec never names would be transcription. It asserts what the spec does say: ok, an object, no nulls, no secrets, no filesystem paths. [expect_envelope: {\"id\": \"<matches_request>\", \"ok\": true, \"out\": \"<object>\"}]"
         },
         {
-          "expect_transport": {
-            "closed": true
-          },
-          "note": "The close code after an accepted daemon.stop is not defined by the spec (the 4001-4006 table covers rejections), so it is deliberately not pinned."
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert forbid_keys_deep: [\"secret\", \"secret_key\", \"private_key\", \"signing_key\", \"seed\", \"token\", \"credential\", \"data_dir\", \"path\"] — needs manual retranscription"
+            }
+          ],
+          "on": "subject:A"
         },
         {
-          "expect_process": {
-            "exited": true,
-            "within_ms": "$harness.shutdown_budget_ms"
-          }
+          "note": "The full reply frame is received before any close frame. A partially-written reply followed by a close FAILS this case. [frame order asserted: {\"session\": \"A\", \"before\": \"reply_for_id:$last_request_id:complete\", \"after\": \"transport_close\"}]"
         },
         {
-          "connect": {
-            "session": "B",
+          "assert": [],
+          "note": "[unrepaired dialect step: {\"expect_transport\": {\"closed\": true}, \"note\": \"The close code after an accepted daemon.stop is not defined by the spec (the 4001-4006 table covers rejections), so it is deliberately not pinned.\"}]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "process_exited",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "note": "Deterministic termination: the daemon does not linger accepting connections after replying.",
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "none",
+              "note": "connection refused"
+            }
+          ]
+        },
+        {
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           },
-          "expect_connect_failure": true,
-          "note": "Deterministic termination: the daemon does not linger accepting connections after replying."
+          "note": "[split from a multi-verb step; review]"
         }
       ],
       "blocked_on_upstream": null
@@ -1266,88 +1496,55 @@
       "operation": "daemon.stop",
       "intent": "Exercises daemon.stop's OWN most specific code — the code the spec adds precisely so this operation has one — and proves it is reachable. Both stops are written in a single flush so the second is already buffered when teardown begins; the daemon must answer it rather than swallow it. Catches an implementation that defines shutdown_in_progress but can never produce it, leaving the operation with only a generic code and the corpus proving nothing about it.",
       "requires": [
-        "disposable_daemon",
+        "resource:disposable_daemon",
         "subject",
-        "session",
-        "pipelined_requests",
-        "single_write_batching"
+        "control:reconnect",
+        "resource:pipelined_requests",
+        "resource:single_write_batching"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0111"
           },
-          "expect_subset": {
-            "created": true
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
           }
         },
         {
-          "session": "A",
-          "send_batch": [
-            {
-              "envelope": {
-                "id": 111,
-                "op": "daemon.stop",
-                "in": {
-                  "op_id": "cf-daemon-stop-0111a"
-                }
-              }
-            },
-            {
-              "envelope": {
-                "id": 112,
-                "op": "daemon.stop",
-                "in": {
-                  "op_id": "cf-daemon-stop-0111b"
-                }
-              }
-            }
-          ],
-          "single_write": true,
-          "expect_reply_for_id": 111,
-          "expect_reply_for_id_2": 112,
-          "expect_across": {
-            "id_111": {
-              "ok": true
-            },
-            "id_112": {
-              "ok": false,
-              "err": {
-                "code": "shutdown_in_progress",
-                "absent_fields": [
-                  "hint"
-                ],
-                "no_nulls_deep": true,
-                "code_not_in": [
-                  "invalid_argument",
-                  "invalid_params",
-                  "internal",
-                  "not_ready"
-                ]
-              }
-            },
-            "both_received_before_close": true
-          },
-          "note": "Correlated strictly by id. v2 replies MAY arrive out of order, so the case asserts the SET of replies, never that 111 precedes 112. 'Naturally idempotent' for daemon.stop means no second teardown occurs — not that the second call reports success."
+          "note": "Correlated strictly by id. v2 replies MAY arrive out of order, so the case asserts the SET of replies, never that 111 precedes 112. 'Naturally idempotent' for daemon.stop means no second teardown occurs — not that the second call reports success. [send_batch: [{\"envelope\": {\"id\": 111, \"op\": \"daemon.stop\", \"in\": {\"op_id\": \"cf-daemon-stop-0111a\"}}}, {\"envelope\": {\"id\": 112, \"op\": \"daemon.stop\", \"in\"]",
+          "on": "subject:A"
         },
         {
-          "expect_process": {
-            "exited": true,
-            "within_ms": "$harness.shutdown_budget_ms"
-          },
-          "note": "Exactly one teardown. The second stop produced a diagnosis, not a second shutdown sequence."
+          "note": "[split from a multi-verb step; review] [single_write: true]"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [expect_across: {\"id_111\": {\"ok\": true}, \"id_112\": {\"ok\": false, \"err\": {\"code\": \"shutdown_in_progress\", \"absent_fields\": [\"hint\"], \"no_nulls_deep\": true, \"] [expect_reply_for_id: 111] [expect_reply_for_id_2: 112]"
+        },
+        {
+          "note": "Exactly one teardown. The second stop produced a diagnosis, not a second shutdown sequence.",
+          "assert": [
+            {
+              "observe": "process_exited",
+              "value": 0
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1358,81 +1555,60 @@
       "operation": "daemon.stop",
       "intent": "Proves shutdown_in_progress is a daemon-global fact rather than a per-connection flag: a second session that stops during teardown gets the same distinctive code. Catches an implementation that tracks 'stopping' on the connection that asked, so a second client sees a fresh successful stop or a bare disconnect.",
       "requires": [
-        "disposable_daemon",
+        "resource:disposable_daemon",
         "subject",
-        "two_sessions",
-        "concurrent_dispatch"
+        "resource:two_sessions",
+        "resource:concurrent_dispatch"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
-          "connect": {
-            "session": "B",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0121"
           },
-          "expect_subset": {
-            "created": true
-          }
-        },
-        {
-          "concurrent": [
-            {
-              "session": "A",
-              "call": "daemon.stop",
-              "in": {
-                "op_id": "cf-daemon-stop-0121a"
-              },
-              "save": {
-                "ra": "$envelope"
-              }
-            },
-            {
-              "session": "B",
-              "call": "daemon.stop",
-              "in": {
-                "op_id": "cf-daemon-stop-0121b"
-              },
-              "save": {
-                "rb": "$envelope"
-              }
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
             }
-          ],
-          "expect_across": {
-            "ok_true_count": 1,
-            "error_count": 1,
-            "error_code": "shutdown_in_progress",
-            "error_absent_fields": [
-              "hint"
-            ],
-            "all_replies_received_before_close": true
-          },
-          "note": "Which session wins the race is undefined and is not asserted. What is asserted: exactly one accepted stop, exactly one shutdown_in_progress, and neither client learns the outcome only from a socket close."
+          }
         },
         {
-          "expect_process": {
-            "exited": true,
-            "within_ms": "$harness.shutdown_budget_ms"
-          }
+          "note": "Which session wins the race is undefined and is not asserted. What is asserted: exactly one accepted stop, exactly one shutdown_in_progress, and neither client learns the outcome only from a socket close. [concurrent: [{\"session\": \"A\", \"call\": \"daemon.stop\", \"in\": {\"op_id\": \"cf-daemon-stop-0121a\"}, \"save\": {\"ra\": \"$envelope\"}}, {\"session\": \"B\", \"call\": \"da]"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [expect_across: {\"ok_true_count\": 1, \"error_count\": 1, \"error_code\": \"shutdown_in_progress\", \"error_absent_fields\": [\"hint\"], \"all_replies_received_before_c]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "process_exited",
+              "value": 0
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1443,55 +1619,66 @@
       "operation": "daemon.stop",
       "intent": "Proves the subject precondition is scoped to operations that actually need a subject: a daemon with no subject is still stoppable, and daemon.stop does NOT answer subject_absent. Catches an over-broad precondition gate applied to every mutating operation, which would make a fresh install impossible to shut down cleanly and force users to kill the process.",
       "requires": [
-        "disposable_daemon",
-        "fresh_daemon_no_subject",
-        "session",
-        "process_exit_observation"
+        "resource:disposable_daemon",
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect",
+        "resource:process_exit_observation"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "session": "A",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "daemon.stop",
           "in": {
             "op_id": "cf-daemon-stop-0131"
           },
-          "expect_envelope": {
-            "ok": true,
-            "out": "<object>"
-          },
-          "must_not_error_with": [
-            "subject_absent",
-            "identity_missing",
-            "not_ready"
+          "on": "subject:A"
+        },
+        {
+          "note": "[split from a multi-verb step; review] [expect_envelope: {\"ok\": true, \"out\": \"<object>\"}]"
+        },
+        {
+          "assert": [],
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "note": "[frame order asserted: {\"session\": \"A\", \"before\": \"reply_for_id:$last_request_id:complete\", \"after\": \"transport_close\"}]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "process_exited",
+              "value": 0
+            }
           ]
-        },
-        {
-          "expect_frame_order": {
-            "session": "A",
-            "before": "reply_for_id:$last_request_id:complete",
-            "after": "transport_close"
-          }
-        },
-        {
-          "expect_process": {
-            "exited": true,
-            "within_ms": "$harness.shutdown_budget_ms"
-          }
         }
       ],
       "blocked_on_upstream": null
@@ -1502,62 +1689,107 @@
       "operation": "room.list",
       "intent": "Asserts the removal of v1's pre-identity room.list carve-out, in its own dedicated case because it is the single most likely v1 behaviour to survive by habit: room.list on a subject-less daemon MUST refuse with subject_absent, never answer {rooms: []}. An empty list is indistinguishable from 'you have no rooms' and hides the actual precondition from the client.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "session": "A",
-          "call": "room.list",
-          "in": {},
-          "expect_error": {
-            "code": "subject_absent",
-            "absent_fields": [
-              "hint"
-            ],
-            "no_nulls_deep": true,
-            "code_not_in": [
-              "identity_missing",
-              "invalid_argument",
-              "invalid_params"
-            ]
-          },
-          "must_not_succeed": true,
-          "note": "A success reply of ANY shape fails this case, including {rooms: []}."
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
+          "call": "room.list",
+          "in": {},
+          "note": "A success reply of ANY shape fails this case, including {rooms: []}.",
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
+          }
+        },
+        {
+          "note": "A success reply of ANY shape fails this case, including {rooms: []}.",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err",
+              "op": "no_nulls"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "identity_missing",
+                "invalid_argument",
+                "invalid_params"
+              ]
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0141"
           },
-          "expect_subset": {
-            "created": true
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
           }
         },
         {
-          "session": "A",
           "call": "room.list",
           "in": {},
           "expect": {
-            "rooms": []
+            "ok": true,
+            "out": {
+              "rooms": []
+            }
           },
-          "note": "Once the precondition is met, the same call succeeds and the empty list now means what it says."
+          "note": "Once the precondition is met, the same call succeeds and the empty list now means what it says.",
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -1568,64 +1800,91 @@
       "operation": null,
       "intent": "Asserts the general rule behind the carve-out's removal: 'one precondition, two answers' becomes one answer. Every subject-requiring operation on a subject-less daemon returns a byte-identical subject_absent error object. Catches the v1 split where room.list answered {rooms: []} and agents.fleet answered identity_missing, and any future drift where one operation invents its own spelling.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "session": "A",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "room.list",
           "in": {},
           "save": {
             "e_ref": "$err"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "absent_fields": [
-              "hint"
-            ]
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
           "call": "fleet.list",
           "in": {
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_ref"
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
           "call": "room.create",
           "in": {
             "op_id": "cf-room-create-0151",
             "name": "Should Not Exist"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_ref"
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
           "call": "room.timeline",
           "in": {
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
@@ -1635,13 +1894,15 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_ref"
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
           "call": "invite.mint",
           "in": {
             "op_id": "cf-invite-mint-0151",
@@ -1649,21 +1910,26 @@
             "identity_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "role": "member"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_ref"
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
           "call": "stream.subscribe",
           "in": {
             "op_id": "cf-stream-sub-0151",
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_ref"
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
@@ -1678,69 +1944,105 @@
       "operation": "room.create",
       "intent": "Proves 'before doing anything' as an observable absence of effect, not just an error code: a refused room.create leaves no room behind. Catches an implementation that creates the room and then discovers the missing precondition on the way out, or that partially writes storage before refusing.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "session": "A",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "room.create",
           "in": {
             "op_id": "cf-room-create-0161",
             "name": "Phantom"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "absent_fields": [
-              "hint"
-            ],
-            "no_nulls_deep": true
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
           "call": "room.create",
           "in": {
             "op_id": "cf-room-create-0162",
             "name": "Phantom Two"
           },
-          "expect_error": {
-            "code": "subject_absent"
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
           "call": "subject.ensure",
           "in": {
             "op_id": "cf-subject-ensure-0161"
           },
-          "expect_subset": {
-            "created": true
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": true
+            }
           }
         },
         {
-          "session": "A",
           "call": "room.list",
           "in": {},
           "expect": {
-            "rooms": []
+            "ok": true,
+            "out": {
+              "rooms": []
+            }
           },
-          "note": "Neither refused room.create left anything behind. A non-empty list here means the precondition was checked after the effect."
+          "note": "Neither refused room.create left anything behind. A non-empty list here means the precondition was checked after the effect.",
+          "on": "subject:A"
         }
       ],
       "blocked_on_upstream": null
@@ -1751,28 +2053,42 @@
       "operation": "room.timeline",
       "intent": "The non-oracle property applied to the subject precondition. A subject-less caller MUST NOT be able to use error-code selection as a room probe: a well-formed unknown room id, a well-formed id the daemon might hold, and a malformed id all return the identical subject_absent object with identical fields and indistinguishable timing. Catches an implementation that validates or looks up the room first and thereby leaks room_not_available versus invalid_argument to an unauthenticated-by-subject caller.",
       "requires": [
-        "fresh_daemon_no_subject",
-        "session",
-        "timing_sampling"
+        "daemon:fresh",
+        "subject:none",
+        "control:reconnect",
+        "resource:timing_sampling"
       ],
       "steps": [
         {
-          "connect": {
-            "session": "A",
+          "upgrade": {
             "query": {
               "v": 2,
               "sg": "$daemon.storage_generation"
             },
-            "auth": "bearer_from_portfile"
-          },
-          "expect_hello_subset": {
-            "subject": {
-              "state": "absent"
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
             }
           }
         },
         {
-          "session": "A",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.subject",
+              "op": "eq",
+              "value": {
+                "state": "absent"
+              }
+            }
+          ]
+        },
+        {
           "call": "room.timeline",
           "in": {
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
@@ -1785,20 +2101,33 @@
           "save": {
             "e_wellformed": "$err"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "absent_fields": [
-              "hint"
-            ],
-            "code_not_in": [
-              "room_not_available",
-              "invalid_argument",
-              "invalid_params"
-            ]
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": [
+                "room_not_available",
+                "invalid_argument",
+                "invalid_params"
+              ]
+            }
+          ],
+          "on": "subject:A"
+        },
+        {
           "call": "room.timeline",
           "in": {
             "room_id": "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -1808,13 +2137,15 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_wellformed"
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
           }
         },
         {
-          "session": "A",
           "call": "room.timeline",
           "in": {
             "room_id": "not-a-room-id",
@@ -1824,14 +2155,16 @@
             "direction": "forward",
             "limit": 50
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_wellformed"
-          },
-          "note": "A malformed id must NOT short-circuit to invalid_argument. Argument validation is 'doing something'; the precondition runs first, so the reply carries no information about the argument."
+          "note": "A malformed id must NOT short-circuit to invalid_argument. Argument validation is 'doing something'; the precondition runs first, so the reply carries no information about the argument.",
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
+          }
         },
         {
-          "session": "A",
           "call": "room.timeline",
           "in": {
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
@@ -1841,25 +2174,26 @@
             "limit": 999999999,
             "direction": "forward"
           },
-          "expect_error": {
-            "code": "subject_absent",
-            "equals_saved": "e_wellformed"
-          },
-          "note": "An over-limit page size also does not preempt the precondition."
+          "note": "An over-limit page size also does not preempt the precondition.",
+          "on": "subject:A",
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "subject_absent"
+            }
+          }
         },
         {
-          "expect_timing_indistinguishable": {
-            "session": "A",
-            "compare_steps": [
-              1,
-              2,
-              3
-            ],
-            "samples": 200,
-            "max_median_delta_ms": 2,
-            "max_p95_delta_ms": 5
-          },
-          "note": "Timing is asserted as a repeated-sample distribution comparison, never as a single measurement, because 'indistinguishable timing' is normative and a single sample cannot establish it."
+          "note": "Timing is asserted as a repeated-sample distribution comparison, never as a single measurement, because 'indistinguishable timing' is normative and a single sample cannot establish it.",
+          "assert": [
+            {
+              "observe": "timing_indistinguishable",
+              "between": [
+                "step:1",
+                "step:2"
+              ]
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
