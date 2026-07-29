@@ -47,7 +47,7 @@ mod routing;
 
 pub use error::{CodecError, GateRejection};
 pub use frame::push_to_bytes;
-pub use frame::{Frame, Reply};
+pub use frame::{Frame, Reply, Request};
 pub use gate::{gate, GateDecision, GateParams, SessionPrincipal};
 
 use jeliya_api::{ApiError, Operation};

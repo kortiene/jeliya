@@ -814,6 +814,12 @@ pub async fn serve_ws<S>(
     let (mut sink, mut messages) = ws.split();
     let mut push_rx = state.engine.subscribe_pushes();
     let bounds = jeliya_codec::CodecBounds::default();
+    // This connection's room subscriptions: `stream.subscribe` adds a room
+    // with the position the client's stream begins at; `stream.unsubscribe`
+    // removes it; pushes are gated on it (no push before subscribe, per the
+    // record's "no global broadcast" rule).
+    let mut subscriptions: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
 
     // The `hello` frame: exactly one, first, carrying the generation, the
     // storage generation, the served limits, and the local subject.
@@ -837,12 +843,12 @@ pub async fn serve_ws<S>(
         tokio::select! {
             msg = messages.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    if !handle_frame(&mut sink, &state, text.as_bytes(), &bounds).await {
+                    if !handle_frame(&mut sink, &state, text.as_bytes(), &bounds, &mut subscriptions).await {
                         break;
                     }
                 }
                 Some(Ok(Message::Binary(bytes))) => {
-                    if !handle_frame(&mut sink, &state, &bytes, &bounds).await {
+                    if !handle_frame(&mut sink, &state, &bytes, &bounds, &mut subscriptions).await {
                         break;
                     }
                 }
@@ -856,9 +862,18 @@ pub async fn serve_ws<S>(
             },
             push = push_rx.recv() => match push {
                 Ok(push) => {
-                    let bytes = jeliya_codec::push_to_bytes(&push);
-                    if sink.send(Message::Binary(bytes.into())).await.is_err() {
-                        break;
+                    // Gate delivery on this connection's subscriptions: a push
+                    // for a room the connection has not subscribed to is not
+                    // delivered (the record's no-global-broadcast rule), and a
+                    // push is never a membership oracle.
+                    let subscribed = push_room_id(&push)
+                        .map(|r| subscriptions.contains_key(r))
+                        .unwrap_or(false);
+                    if subscribed {
+                        let bytes = jeliya_codec::push_to_bytes(&push);
+                        if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
                     }
                 }
                 // A lagged receiver fell behind the push fan-out. v2 never
@@ -882,6 +897,215 @@ pub async fn serve_ws<S>(
     }
 }
 
+/// The room a push is scoped to, for subscription gating. `transfer` frames
+/// are principal-scoped (not room-gated) and `gap` may name no room yet.
+fn push_room_id(push: &jeliya_api::Push) -> Option<&str> {
+    match push {
+        jeliya_api::Push::Event { room_id, .. } => Some(room_id.as_str()),
+        jeliya_api::Push::Gap { room_id, .. } => Some(room_id.as_str()),
+        jeliya_api::Push::Peer { room_id, .. } => Some(room_id.as_str()),
+        jeliya_api::Push::Transfer { .. } => None,
+    }
+}
+
+/// The served `max_subscriptions_per_connection`.
+const MAX_SUBSCRIPTIONS: u64 = 64;
+
+/// `stream.subscribe` — add the room to this connection's subscription set.
+/// Naturally idempotent; exceeding the served limit is
+/// `subscription_limit_reached`, never a silent drop.
+async fn handle_stream_subscribe<S>(
+    sink: &mut futures_util::stream::SplitSink<WebSocketStream<S>, Message>,
+    state: &AppState,
+    request: &jeliya_codec::Request,
+    subscriptions: &mut std::collections::HashMap<String, u64>,
+) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // Extract owned values up front so no `&Request` (non-Sync) is held
+    // across an await.
+    let id = request.id;
+    let req = match request.call.input_any().downcast_ref::<jeliya_api::StreamSubscribe>() {
+        Some(r) => r.clone(),
+        None => return send_api_err(sink, id, jeliya_api::ApiError::MalformedFrame).await,
+    };
+    let room_key = req.room_id.to_string();
+    if !subscriptions.contains_key(&room_key) && subscriptions.len() as u64 >= MAX_SUBSCRIPTIONS {
+        return send_api_err(
+            sink,
+            id,
+            jeliya_api::ApiError::SubscriptionLimitReached {
+                limit: MAX_SUBSCRIPTIONS,
+            },
+        )
+        .await;
+    }
+    // Resolve the cursor to a concrete head position. A `start` cursor means
+    // the stream begins at the next committed event; an `at {pos}` cursor
+    // resumes from that position.
+    let from_pos = match &req.from {
+        jeliya_api::Cursor::Start => room_head_pos(state, &req.room_id).await,
+        jeliya_api::Cursor::At { pos } => *pos,
+    };
+    subscriptions.insert(room_key, from_pos);
+    send_typed(
+        sink,
+        id,
+        &jeliya_api::StreamSubscribeOut {
+            room_id: req.room_id,
+            from_pos,
+        },
+    )
+    .await
+}
+
+/// `stream.unsubscribe` — remove the room from this connection's set.
+async fn handle_stream_unsubscribe<S>(
+    sink: &mut futures_util::stream::SplitSink<WebSocketStream<S>, Message>,
+    request: &jeliya_codec::Request,
+    subscriptions: &mut std::collections::HashMap<String, u64>,
+) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let id = request.id;
+    let req = match request.call.input_any().downcast_ref::<jeliya_api::StreamUnsubscribe>() {
+        Some(r) => r.clone(),
+        None => return send_api_err(sink, id, jeliya_api::ApiError::MalformedFrame).await,
+    };
+    if subscriptions.remove(&req.room_id.to_string()).is_none() {
+        return send_api_err(
+            sink,
+            id,
+            jeliya_api::ApiError::SubscriptionUnknown {
+                room_id: req.room_id.clone(),
+            },
+        )
+        .await;
+    }
+    send_typed(
+        sink,
+        id,
+        &jeliya_api::StreamUnsubscribeOut {
+            room_id: req.room_id,
+            unsubscribed: true,
+        },
+    )
+    .await
+}
+
+/// `stream.resync` — the authoritative recovery: events since `from_pos`, or
+/// `resync_required` naming a position to discard back to.
+async fn handle_stream_resync<S>(
+    sink: &mut futures_util::stream::SplitSink<WebSocketStream<S>, Message>,
+    state: &AppState,
+    request: &jeliya_codec::Request,
+) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let id = request.id;
+    let req = match request.call.input_any().downcast_ref::<jeliya_api::StreamResync>() {
+        Some(r) => r.clone(),
+        None => return send_api_err(sink, id, jeliya_api::ApiError::MalformedFrame).await,
+    };
+    // Read the committed events after from_pos via the engine's typed timeline.
+    let call = jeliya_core::typed::TypedCall::RoomTimeline(jeliya_api::RoomTimeline {
+        room_id: req.room_id.clone(),
+        page: jeliya_api::Page {
+            cursor: jeliya_api::Cursor::Start,
+            direction: jeliya_api::Direction::Forward,
+            limit: 1024,
+        },
+    });
+    let executed = state.engine.execute(call).await;
+    let events: Vec<jeliya_api::Event> = match executed.reply {
+        Ok(jeliya_core::typed::TypedReply::RoomTimeline(out)) => out
+            .events
+            .into_iter()
+            .filter(|e| e.pos > req.from_pos)
+            .collect(),
+        Ok(_) => Vec::new(),
+        Err(err) => return send_api_err(sink, id, err).await,
+    };
+    let next_pos = events.last().map(|e| e.pos).unwrap_or(req.from_pos);
+    let truncated = if events.len() >= 1024 {
+        jeliya_api::Truncated::More {
+            cursor: jeliya_api::Cursor::At { pos: next_pos },
+        }
+    } else {
+        jeliya_api::Truncated::Complete
+    };
+    send_typed(
+        sink,
+        request.id,
+        &jeliya_api::StreamResyncOut {
+            room_id: req.room_id.clone(),
+            events,
+            next_pos,
+            truncated,
+        },
+    )
+    .await
+}
+
+/// The room's current head position (the next position a `start` cursor
+/// resolves to).
+async fn room_head_pos(state: &AppState, room_id: &jeliya_api::RoomId) -> u64 {
+    let call = jeliya_core::typed::TypedCall::RoomTimeline(jeliya_api::RoomTimeline {
+        room_id: room_id.clone(),
+        page: jeliya_api::Page {
+            cursor: jeliya_api::Cursor::Start,
+            direction: jeliya_api::Direction::Backward,
+            limit: 1,
+        },
+    });
+    match state.engine.execute(call).await.reply {
+        Ok(jeliya_core::typed::TypedReply::RoomTimeline(out)) => {
+            out.events.last().map(|e| e.pos + 1).unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// Encode a typed output as a reply frame and send it.
+async fn send_typed<O, S>(
+    sink: &mut futures_util::stream::SplitSink<WebSocketStream<S>, Message>,
+    id: u64,
+    out: &O,
+) -> bool
+where
+    O: serde::Serialize,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let reply = jeliya_codec::Reply {
+        id,
+        ok: true,
+        out: serde_json::to_value(out).ok(),
+        err: None,
+    };
+    sink.send(Message::Binary(reply.to_bytes().into())).await.is_ok()
+}
+
+/// Encode a typed API error as a reply frame and send it.
+async fn send_api_err<S>(
+    sink: &mut futures_util::stream::SplitSink<WebSocketStream<S>, Message>,
+    id: u64,
+    err: jeliya_api::ApiError,
+) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let reply = jeliya_codec::Reply {
+        id,
+        ok: false,
+        out: None,
+        err: Some(err),
+    };
+    sink.send(Message::Binary(reply.to_bytes().into())).await.is_ok()
+}
+
 /// Decode one frame, execute it, and encode the reply. Returns `false` when
 /// the connection must close (a frame over the limit → `4005`, an
 /// unrecoverable `id` → `4007`); `true` to continue serving.
@@ -890,6 +1114,7 @@ async fn handle_frame<S>(
     state: &AppState,
     bytes: &[u8],
     bounds: &jeliya_codec::CodecBounds,
+    subscriptions: &mut std::collections::HashMap<String, u64>,
 ) -> bool
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -942,6 +1167,22 @@ where
         // place client-to-daemon: correlated malformed reply.
         return true;
     };
+
+    // The three stream operations are connection-scoped: they read and mutate
+    // THIS connection's subscription set, never the supervisor. Intercept them
+    // here before the engine's typed dispatch.
+    match request.call.op {
+        "stream.subscribe" => {
+            return handle_stream_subscribe(sink, state, &request, subscriptions).await;
+        }
+        "stream.unsubscribe" => {
+            return handle_stream_unsubscribe(sink, &request, subscriptions).await;
+        }
+        "stream.resync" => {
+            return handle_stream_resync(sink, state, &request).await;
+        }
+        _ => {}
+    }
 
     let Some(call) = jeliya_core::typed::resolve_call(request.call.op, request.call.input_any())
     else {

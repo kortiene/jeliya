@@ -354,31 +354,23 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
     }
 }
 
-/// The next batch of committed events for one room, materialized as typed
-/// v2 [`Event`]s (the primary, sub-second push path).
+/// The next batch of newly committed events for one room (the primary,
+/// sub-second push path), deduped against the session's `seen` set so each is
+/// pushed exactly once.
 async fn recv_typed_events(
     engine: &Engine,
     room_id: &iroh_rooms::room::RoomId,
 ) -> CoreResult<Vec<Event>> {
-    let session = engine.supervisor.session(room_id)?;
-    let rows = session.node.room_tail(u32::MAX).await.map_err(|e| {
-        crate::error::CoreError::internal(format!("could not read the timeline: {e}"))
-    })?;
-    let snapshot = session.node.snapshot().await.map_err(|e| {
-        crate::error::CoreError::internal(format!("could not read the snapshot: {e}"))
-    })?;
-    Ok(rows
-        .iter()
-        .filter_map(|se| crate::projection::materialize(se, &snapshot))
-        .collect())
+    engine.supervisor.recv_room_events_typed(room_id).await
 }
 
-/// The reconcile poll: the room's not-yet-pushed events, typed.
+/// The reconcile poll: the room's not-yet-pushed events, typed, sharing the
+/// same `seen` dedup as the primary path.
 async fn poll_typed_events(
     engine: &Engine,
     room_id: &iroh_rooms::room::RoomId,
 ) -> CoreResult<Vec<Event>> {
-    recv_typed_events(engine, room_id).await
+    engine.supervisor.poll_new_events_typed(room_id).await
 }
 
 /// The per-device link rows for one room, for the peer-change drain.

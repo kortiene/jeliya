@@ -206,7 +206,7 @@ function computeNode(kind, operand, vars) {
       return unknownValue(tag);
     }
     default:
-      return node;
+      return { [kind]: operand };
   }
 }
 

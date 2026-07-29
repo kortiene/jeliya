@@ -2775,6 +2775,39 @@ impl RoomSupervisor {
         Ok(out)
     }
 
+    /// The typed-v2 reconcile poll: identical to [`Self::poll_new_events`] but
+    /// materializes committed events as typed `jeliya-api` [`Event`]s.
+    pub(crate) async fn poll_new_events_typed(
+        &self,
+        room_id: &RoomId,
+    ) -> CoreResult<Vec<jeliya_api::Event>> {
+        let session = self.session(room_id)?;
+        let rows = session
+            .node
+            .room_tail(u32::MAX)
+            .await
+            .map_err(|e| internal("could not read the timeline", e))?;
+        let snapshot = session
+            .node
+            .snapshot()
+            .await
+            .map_err(|e| internal("could not read the membership snapshot", e))?;
+        session.accept_joins.store(
+            session.is_owner && any_pending_invite(&snapshot),
+            Ordering::Relaxed,
+        );
+        let mut seen = session.seen.lock().expect("seen poisoned");
+        let mut out = Vec::new();
+        for se in &rows {
+            if seen.insert(se.event_id) {
+                if let Some(v) = crate::projection::materialize(se, &snapshot) {
+                    out.push(v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Primary push path (issue #83): await the next batch of live room events
     /// from the node's `room_events` broadcast, materialized for the daemon to
     /// fan out as `room.event` with sub-second latency.
@@ -2858,6 +2891,69 @@ impl RoomSupervisor {
         for se in &batch {
             if seen.insert(se.event_id) {
                 if let Some(v) = materializer::materialize(se, &snapshot) {
+                    out.push(v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The typed-v2 primary push path: identical to [`Self::recv_room_events`]
+    /// (same broadcast, same lag recovery, same `seen` dedup) but materializes
+    /// committed events as typed `jeliya-api` [`Event`]s.
+    pub(crate) async fn recv_room_events_typed(
+        &self,
+        room_id: &RoomId,
+    ) -> CoreResult<Vec<jeliya_api::Event>> {
+        let room_rx = self.session(room_id)?.room_rx.clone();
+
+        let mut lagged;
+        let mut batch: Vec<StoredEvent> = Vec::new();
+        {
+            let mut rx = room_rx.lock().await;
+            match rx.recv().await {
+                Ok(ev) => {
+                    lagged = false;
+                    batch.push(ev);
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => lagged = true,
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(CoreError::new(
+                        ErrorKind::RoomNotOpen,
+                        format!("room {room_id} closed"),
+                    ));
+                }
+            }
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => batch.push(ev),
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => lagged = true,
+                    Err(broadcast::error::TryRecvError::Empty)
+                    | Err(broadcast::error::TryRecvError::Closed) => break,
+                }
+            }
+        }
+
+        let session = self.session(room_id)?;
+        let snapshot = session
+            .node
+            .snapshot()
+            .await
+            .map_err(|e| internal("could not read the membership snapshot", e))?;
+        if lagged {
+            let rows = session
+                .node
+                .room_tail(u32::MAX)
+                .await
+                .map_err(|e| internal("could not read the timeline", e))?;
+            batch = rows;
+        }
+
+        let mut seen = session.seen.lock().expect("seen poisoned");
+        let mut out = Vec::new();
+        for se in &batch {
+            if seen.insert(se.event_id) {
+                if let Some(v) = crate::projection::materialize(se, &snapshot) {
                     out.push(v);
                 }
             }

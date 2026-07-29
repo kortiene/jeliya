@@ -141,6 +141,7 @@ export class Session {
   /** Send one request envelope and wait for its correlated reply. */
   async call(op, input, { opId, timeoutMs = 10_000 } = {}) {
     const id = requestId();
+    this.lastRequestId = id;
     const env = { id, op, in: input };
     if (opId !== undefined) env.op_id = opId;
     const replyPromise = new Promise((resolve, reject) => {
