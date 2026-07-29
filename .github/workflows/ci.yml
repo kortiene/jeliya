@@ -265,14 +265,20 @@ jobs:
       - name: Verify Linux packaging helpers
         run: node --test scripts/package-linux.test.mjs
 
-      # The packaging gate builds both release binaries, injects jeliyad through
-      # the Linux CMake sidecar contract, and launches the resulting app under
-      # Xvfb to prove supervised startup and teardown without assuming a display.
-      - name: Build and exercise the source-supported Linux bundle
+      # The runtime exercise of the Flutter Linux app is gated off: the app
+      # speaks the retired v1 RPC protocol (daemon.status / identity.create /
+      # room.list), which the v2-only daemon no longer serves, so it cannot
+      # complete an authenticated bootstrap. The Flutter app is retired under
+      # #202; the Dioxus desktop replacement is qualified under #201. The
+      # deterministic packaging-helper unit tests above and the
+      # bundle/source-package contract below continue to run.
+      - name: Build the source-supported Linux bundle (no v1 runtime exercise)
         run: |
           set -euo pipefail
           flutter config --enable-linux-desktop
-          xvfb-run -a node scripts/package-linux.mjs
+          cargo build --locked --release -p jeliyad
+          flutter pub get
+          flutter build linux --release
 
       - name: Verify the Linux bundle and source-package contract
         run: |
