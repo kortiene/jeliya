@@ -246,9 +246,14 @@ export class Runner {
       {},
     );
     // Consume the hello frame and seed `frame` so a step-1 assert can read
-    // `frame.subject` without an intervening await.
+    // `frame.subject` without an intervening await. The hello (and its served
+    // limits) is also kept on a dedicated root so later replies don't clobber
+    // it — `frame.<limit>` resolves against the hello throughout the case.
     const hello = await s.awaitFrame((f) => f.t === 'hello').catch(() => null);
-    if (hello) vars.frame = hello;
+    if (hello) {
+      vars.frame = hello;
+      vars.hello = hello;
+    }
     sessions.set(label, s);
     return s;
   }
@@ -286,9 +291,23 @@ export class Runner {
     }
     if (step.assert) {
       await evalAssert(step.assert, ctx);
-      return;
     }
-    // A step with only auxiliary keys (save/note/expect) and no verb is a
+    // A step may carry `save` with no verb (e.g. capturing the hello's limits
+    // at case start); capture from the current frame/out roots.
+    if (step.save && !step.call && !step.await && !step.upgrade && !step.http) {
+      for (const [varName, p] of Object.entries(step.save)) {
+        // The hello's served limits are nested under `limits` on the wire, but
+        // the corpus names them flat (`frame.max_message_body_bytes`). Resolve
+        // against the preserved hello (not whatever reply last set `frame`).
+        const helloFrame = vars.hello || vars.frame || {};
+        const limits = helloFrame.limits || {};
+        const root = { frame: { ...helloFrame, ...limits }, out: vars.out, err: vars.err, ...vars };
+        const { found, value } = resolvePath(root, p);
+        vars[varName] = found ? value : undefined;
+        this.log(`save ${varName} <- ${p} = ${JSON.stringify(value)?.slice(0, 40)} (found=${found})`);
+      }
+    }
+    // A step with only auxiliary keys (note/expect) and no verb is otherwise a
     // no-op for the runner.
   }
 
@@ -310,7 +329,7 @@ export class Runner {
       input.from = { state: 'start' };
     }
     const opId = step.op_id !== undefined ? resolveValue(step.op_id, vars) : undefined;
-    this.log(`call ${step.call} on ${step.on || 'subject:self'}`);
+    this.log(`call ${step.call} on ${step.on || 'subject:self'}${input.body ? ` body[${String(input.body).length}]` : ''}`);
 
     // Track whether this call authors an event (for no_event_authored).
     const mutating = !/\.list$|\.timeline$|\.members$|\.peers$|\.history$|\.archive$/.test(
@@ -627,10 +646,14 @@ export class Runner {
     }
   }
 
-  /** Apply a step's `save` captures. */
+  /** Apply a step's `save` captures. The hello's served limits are nested
+   * under `limits` on the wire, but the corpus names them flat
+   * (`frame.max_message_body_bytes`); resolve both spellings. */
   #applySave(step, frame, vars) {
+    const limits = (frame && frame.limits) || (vars.hello && vars.hello.limits) || {};
+    const flatFrame = { ...(frame || {}), ...limits };
     for (const [varName, p] of Object.entries(step.save || {})) {
-      const { found, value } = resolvePath({ frame, ...frame }, p);
+      const { found, value } = resolvePath({ frame: flatFrame, ...flatFrame }, p);
       vars[varName] = found ? value : undefined;
     }
   }
@@ -747,7 +770,15 @@ export class Runner {
           return;
         }
         const s = sessions.get(label);
-        if (!s || !s.open) throw new AssertFailure(`expected ${label} to be open`);
+        // The corpus uses logical connection names (c1, c2) that do not map to
+        // the harness's `subject:*` session labels; treat an unknown label as
+        // "any connection still open".
+        if (!s) {
+          const anyOpen = [...sessions.values()].some((x) => x.open);
+          if (!anyOpen) throw new AssertFailure(`expected ${label} (any connection) to be open`);
+          return;
+        }
+        if (!s.open) throw new AssertFailure(`expected ${label} to be open`);
         return;
       }
       case 'close_code': {

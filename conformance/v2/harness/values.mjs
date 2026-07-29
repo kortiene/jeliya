@@ -194,6 +194,20 @@ function computeNode(kind, operand, vars) {
     case '$concat': {
       return operand.map((x) => String(resolveValue(x, vars))).join('');
     }
+    case '$utf8_of_len': {
+      // A string of exactly N bytes. The operand is `{bytes: <n>}` or a bare
+      // number; fill with a multi-byte-safe ASCII char so byte length ==
+      // string length (the size limits are byte limits).
+      const n = num(
+        resolveValue(
+          typeof operand === 'object' && operand !== null && 'bytes' in operand
+            ? operand.bytes
+            : operand,
+          vars,
+        ),
+      );
+      return 'x'.repeat(Math.max(0, n));
+    }
     case '$bytes_of_len': {
       const n = num(resolveValue(operand, vars));
       return 'x'.repeat(Math.max(0, n));
