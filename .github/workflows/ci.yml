@@ -265,64 +265,15 @@ jobs:
       - name: Verify Linux packaging helpers
         run: node --test scripts/package-linux.test.mjs
 
-      # The runtime exercise of the Flutter Linux app is gated off: the app
-      # speaks the retired v1 RPC protocol (daemon.status / identity.create /
-      # room.list), which the v2-only daemon no longer serves, so it cannot
-      # complete an authenticated bootstrap. The Flutter app is retired under
-      # #202; the Dioxus desktop replacement is qualified under #201. The
-      # deterministic packaging-helper unit tests above and the
-      # bundle/source-package contract below continue to run.
-      - name: Build the source-supported Linux bundle (no v1 runtime exercise)
-        run: |
-          set -euo pipefail
-          flutter config --enable-linux-desktop
-          cargo build --locked --release -p jeliyad
-          flutter pub get
-          flutter build linux --release
-
-      - name: Verify the Linux bundle and source-package contract
-        run: |
-          set -euo pipefail
-          bundle=app/build/linux/x64/release/bundle
-          version="$(sed -n 's/^version: *\([0-9][0-9.]*\).*/\1/p' app/pubspec.yaml)"
-          archive="dist/Jeliya-v${version}-linux-x86_64.tar.gz"
-          checksum="${archive}.sha256"
-
-          test -n "$version"
-          test -x "$bundle/jeliya"
-          test -x "$bundle/jeliyad"
-          test -s "$archive"
-          test -s "$checksum"
-          test -z "$(git status --porcelain -- app/pubspec.lock app/linux/flutter)"
-
-          "$bundle/jeliyad" --version
-          node scripts/smoke.mjs "$bundle/jeliyad"
-
-          ldd "$bundle/jeliya" | tee "$RUNNER_TEMP/jeliya-linux-ldd.txt"
-          # `! grep` would be exempt from errexit mid-script (SC2251); test the
-          # match explicitly so an unresolved library genuinely fails the step.
-          if grep -F 'not found' "$RUNNER_TEMP/jeliya-linux-ldd.txt"; then
-            echo 'unresolved shared library in the release bundle' >&2
-            exit 1
-          fi
-          desktop-file-validate \
-            "$bundle/share/applications/com.incubtek.jeliya.desktop"
-          appstreamcli validate --no-net \
-            "$bundle/share/metainfo/com.incubtek.jeliya.metainfo.xml"
-
-          tar -tzf "$archive" > "$RUNNER_TEMP/jeliya-linux-archive.txt"
-          grep -Eq '(^|/)jeliya$' "$RUNNER_TEMP/jeliya-linux-archive.txt"
-          grep -Eq '(^|/)jeliyad$' "$RUNNER_TEMP/jeliya-linux-archive.txt"
-          grep -Eq '(^|/)share/applications/com\.incubtek\.jeliya\.desktop$' \
-            "$RUNNER_TEMP/jeliya-linux-archive.txt"
-          grep -Eq '(^|/)share/doc/jeliya/LICENSE-APACHE$' \
-            "$RUNNER_TEMP/jeliya-linux-archive.txt"
-          grep -Eq '(^|/)share/doc/jeliya/LICENSE-MIT$' \
-            "$RUNNER_TEMP/jeliya-linux-archive.txt"
-          (
-            cd dist
-            sha256sum -c "$(basename "$checksum")"
-          )
+      # The Flutter Linux app bundle, its v1 runtime exercise, and the v1
+      # smoke/source-package contract are gated off: the app speaks the retired
+      # v1 RPC protocol, which the v2-only daemon no longer serves, so it
+      # cannot bootstrap and its smoke suite cannot run. The Flutter desktop
+      # app is removed atomically under #201 (packaged Dioxus qualification);
+      # the release-artifact contract moves to the Dioxus packaging slices
+      # (#186, #187, #199). The deterministic packaging-helper unit tests above
+      # continue to run; the v0.6.x release line keeps shipping the v1 bundle
+      # from its own tags until then.
 
   rust-runtime:
     name: Rust + protocol-v2 conformance
