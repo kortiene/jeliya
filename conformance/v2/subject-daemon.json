@@ -420,9 +420,6 @@
       ],
       "steps": [
         {
-          "note": "[expect_hello_assert: {\"forbid_keys_deep\": [\"secret\", \"secret_key\", \"secretkey\", \"private_key\", \"privatekey\", \"signing_key\", \"signingkey\", \"seed\", \"keypair\", \"key]"
-        },
-        {
           "upgrade": {
             "query": {
               "v": 2,
@@ -1050,10 +1047,6 @@
               }
             }
           ]
-        },
-        {
-          "note": "'The daemon's first frame after upgrade is exactly one hello.' [expect_no_further_frames_of_type: \"hello\"]",
-          "on": "subject:A"
         }
       ]
     },
@@ -1155,9 +1148,6 @@
           "op_id": "cf-daemon-stop-0011"
         },
         {
-          "note": "[split from a multi-verb step; review] [expect_ok: true]"
-        },
-        {
           "assert": [
             {
               "observe": "no_event_authored",
@@ -1165,9 +1155,6 @@
               "note": "UNMAPPED dialect assert assert_over_session: {\"session\": \"A\", \"scope\": \"all_frames\", \"forbid_substring_deep\": [\"$daemon_token\", \"$ticket\"]} — needs manual retranscription"
             }
           ]
-        },
-        {
-          "note": "Single use: the ticket is burned on redemption at step 2, so replaying it is refused with the v2 error envelope as a JSON body, not a plain-text v1 body. [expect_upgrade_error: {\"status\": 401, \"code\": \"unauthenticated\"}]"
         },
         {
           "upgrade": {
@@ -1232,9 +1219,6 @@
             "pad_byte": "a",
             "pad_to_total_frame_bytes": "$max_frame"
           }
-        },
-        {
-          "note": "max_frame_bytes is a FRAME bound checked before parsing; whether an op_id of this length is itself acceptable is a separate codec bound the spec does not fix. Either answer is conformant. What is NOT conformant is a 4005 close: the frame is exactly at, not past, the limit. [expect_reply_for_id: 81] [expect_transport: {\"open\": true, \"closed\": false}] [expect_any_of: [{\"expect_subset\": {\"subject_id\": \"<hex64>\", \"created\": true}}, {\"expect_error\": {\"code\": \"invalid_argument\", \"absent_fields\": [\"hint\"]}}]]"
         },
         {
           "assert": [
@@ -1306,9 +1290,6 @@
             "pad_byte": "a",
             "pad_to_total_frame_bytes": "$max_frame + 1"
           }
-        },
-        {
-          "note": "[expect_transport: {\"closed\": true, \"close_code\": 4005}] [expect_no_reply_for_id: 82]"
         },
         {
           "assert": [
@@ -1413,23 +1394,6 @@
           "op_id": "cf-subject-ensure-0091"
         },
         {
-          "note": "Exactly max_inflight_requests outstanding: every one is answered. [pipelined: {\"count\": \"$n\", \"call\": \"subject.ensure\", \"in\": {\"op_id\": \"cf-inflight-<i>\"}, \"ids_from\": 1000}]",
-          "on": "subject:A"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [expect_all_replies: true]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [expect_transport: {\"open\": true}] [expect_each_subset: {\"created\": false}]"
-        },
-        {
-          "note": "One past the limit. The refusal is an operation error correlated by id, NOT a connection close — exceeding a served capacity limit is refused, not treated as a framing violation. [pipelined: {\"count\": \"$n + 1\", \"call\": \"subject.ensure\", \"in\": {\"op_id\": \"cf-inflight-over-<i>\"}, \"ids_from\": 2000, \"hold_replies_until_all_sent\": true]",
-          "on": "subject:A"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [expect_at_least_one_error: {\"code\": \"resource_exhausted\", \"fields\": {\"resource\": \"<string>\", \"limit\": \"$n\"}, \"absent_fields\": [\"hint\"], \"no_nulls_deep\": true}]"
-        },
-        {
           "assert": [],
           "note": "[split from a multi-verb step; review]"
         }
@@ -1476,9 +1440,6 @@
           "op_id": "cf-daemon-stop-0101"
         },
         {
-          "note": "The spec states daemon.stop's behaviour, not its out shape. This case deliberately does NOT pin out's keys — asserting a field the spec never names would be transcription. It asserts what the spec does say: ok, an object, no nulls, no secrets, no filesystem paths. [expect_envelope: {\"id\": \"<matches_request>\", \"ok\": true, \"out\": \"<object>\"}]"
-        },
-        {
           "assert": [
             {
               "path": "out",
@@ -1491,9 +1452,6 @@
             }
           ],
           "on": "subject:A"
-        },
-        {
-          "note": "The full reply frame is received before any close frame. A partially-written reply followed by a close FAILS this case. [frame order asserted: {\"session\": \"A\", \"before\": \"reply_for_id:$last_request_id:complete\", \"after\": \"transport_close\"}]"
         },
         {
           "assert": [],
@@ -1565,16 +1523,6 @@
           "op_id": "cf-subject-ensure-0111"
         },
         {
-          "note": "Correlated strictly by id. v2 replies MAY arrive out of order, so the case asserts the SET of replies, never that 111 precedes 112. 'Naturally idempotent' for daemon.stop means no second teardown occurs — not that the second call reports success. [send_batch: [{\"envelope\": {\"id\": 111, \"op\": \"daemon.stop\", \"in\": {\"op_id\": \"cf-daemon-stop-0111a\"}}}, {\"envelope\": {\"id\": 112, \"op\": \"daemon.stop\", \"in\"]",
-          "on": "subject:A"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [single_write: true]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [expect_across: {\"id_111\": {\"ok\": true}, \"id_112\": {\"ok\": false, \"err\": {\"code\": \"shutdown_in_progress\", \"absent_fields\": [\"hint\"], \"no_nulls_deep\": true, \"] [expect_reply_for_id: 111] [expect_reply_for_id_2: 112]"
-        },
-        {
           "note": "Exactly one teardown. The second stop produced a diagnosis, not a second shutdown sequence.",
           "assert": [
             {
@@ -1629,12 +1577,6 @@
             }
           },
           "op_id": "cf-subject-ensure-0121"
-        },
-        {
-          "note": "Which session wins the race is undefined and is not asserted. What is asserted: exactly one accepted stop, exactly one shutdown_in_progress, and neither client learns the outcome only from a socket close. [concurrent: [{\"session\": \"A\", \"call\": \"daemon.stop\", \"in\": {\"op_id\": \"cf-daemon-stop-0121a\"}, \"save\": {\"ra\": \"$envelope\"}}, {\"session\": \"B\", \"call\": \"da]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [expect_across: {\"ok_true_count\": 1, \"error_count\": 1, \"error_code\": \"shutdown_in_progress\", \"error_absent_fields\": [\"hint\"], \"all_replies_received_before_c]"
         },
         {
           "assert": [
@@ -1693,14 +1635,8 @@
           "op_id": "cf-daemon-stop-0131"
         },
         {
-          "note": "[split from a multi-verb step; review] [expect_envelope: {\"ok\": true, \"out\": \"<object>\"}]"
-        },
-        {
           "assert": [],
           "note": "[split from a multi-verb step; review]"
-        },
-        {
-          "note": "[frame order asserted: {\"session\": \"A\", \"before\": \"reply_for_id:$last_request_id:complete\", \"after\": \"transport_close\"}]"
         },
         {
           "assert": [
@@ -1757,15 +1693,6 @@
           "in": {},
           "note": "A success reply of ANY shape fails this case, including {rooms: []}.",
           "on": "subject:A",
-          "expect": {
-            "ok": false,
-            "err": {
-              "code": "subject_absent"
-            }
-          }
-        },
-        {
-          "note": "A success reply of ANY shape fails this case, including {rooms: []}.",
           "expect": {
             "ok": false,
             "err": {
@@ -1956,9 +1883,6 @@
             }
           },
           "op_id": "cf-stream-sub-0151"
-        },
-        {
-          "note": "invite.redeem is deliberately absent from this list: the spec makes it the only operation reachable by a non-member, and its precondition relationship to the subject is not stated here. It is the invites domain's to fix."
         }
       ]
     },

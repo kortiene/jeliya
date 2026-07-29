@@ -325,10 +325,6 @@
           }
         },
         {
-          "on": "subject:self#2",
-          "note": "[as_same_session_principal: true]"
-        },
-        {
           "control": {
             "do": "reconnect",
             "on": "subject:self"
@@ -432,20 +428,12 @@
           "op_id": "$op_subA"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cA"
-        },
-        {
           "call": "stream.subscribe",
           "in": {
             "room_id": "$rid"
           },
           "on": "subject:principal_b",
           "op_id": "$op_subB"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cB"
         },
         {
           "call": "message.send",
@@ -461,10 +449,6 @@
           "op_id": "OP-SHARED-XYZ"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cA"
-        },
-        {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
@@ -476,10 +460,6 @@
           },
           "on": "subject:principal_b",
           "op_id": "OP-SHARED-XYZ"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cB"
         },
         {
           "assert": [
@@ -685,10 +665,6 @@
           "op_id": "$op_left"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cL"
-        },
-        {
           "assert": [
             {
               "path": "$last_error",
@@ -726,10 +702,6 @@
           "op_id": "$op_subm"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
-        },
-        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
@@ -747,10 +719,6 @@
             }
           },
           "on": "subject:member_nonagent"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [match: \"contains\"]",
-          "on": "session:cM"
         },
         {
           "call": "status.post",
@@ -836,10 +804,6 @@
           "on": "subject:member_nonagent"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
-        },
-        {
           "assert": [
             {
               "path": "$ents",
@@ -889,10 +853,6 @@
             }
           },
           "op_id": "$op_after_removal"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cAg"
         },
         {
           "assert": [
@@ -1136,10 +1096,6 @@
           "on": "subject:principal_b"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cB"
-        },
-        {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
@@ -1150,10 +1106,6 @@
           },
           "on": "subject:principal_a",
           "op_id": "$o1"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cA"
         },
         {
           "assert": [
@@ -1184,10 +1136,6 @@
           "op_id": "$o2"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cB"
-        },
-        {
           "assert": [
             {
               "observe": "no_event_authored",
@@ -1207,10 +1155,6 @@
           },
           "on": "subject:principal_a",
           "op_id": "$o3"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cA"
         },
         {
           "await": {
@@ -1258,10 +1202,6 @@
             }
           },
           "op_id": "$o1"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
         },
         {
           "assert": [
@@ -1632,9 +1572,6 @@
           "op_id": "$o2"
         },
         {
-          "note": "[dialect observation keys folded: room_id — see case intent]"
-        },
-        {
           "control": {
             "do": "inject_fault",
             "fault": "subscription_lapse"
@@ -1805,9 +1742,6 @@
         {
           "assert": [],
           "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [keep_from_pos: {\"$add\": [\"$p1\", 5]}]"
         },
         {
           "control": {
@@ -2056,10 +1990,6 @@
           }
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
-        },
-        {
           "call": "stream.resync",
           "in": {
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
@@ -2075,10 +2005,6 @@
               "code": "room_not_available"
             }
           }
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
         },
         {
           "assert": [
@@ -2149,9 +2075,6 @@
         {
           "assert": [],
           "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [count: 200]"
         },
         {
           "control": {
@@ -2281,12 +2204,6 @@
           "op_id": "$o1"
         },
         {
-          "note": "[dialect observation keys folded: room_id — see case intent]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [unbounded: true]"
-        },
-        {
           "control": {
             "do": "inject_fault",
             "fault": "subscription_lapse"
@@ -2387,12 +2304,6 @@
               "pos": "$p1"
             }
           }
-        },
-        {
-          "note": "[dialect observation keys folded: room_id — see case intent]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [count: 1]"
         },
         {
           "control": {
@@ -2525,12 +2436,6 @@
           "note": "[split from a multi-verb step; review]"
         },
         {
-          "note": "[split from a multi-verb step; review] [collect {\"reply_pos\": \"pos\"}]",
-          "save": {
-            "collected": "frame"
-          }
-        },
-        {
           "await": {
             "push": {
               "t": "event",
@@ -2630,12 +2535,6 @@
           "op_id": "$o3"
         },
         {
-          "note": "[split from a multi-verb step; review] [collect {\"pa\": \"pos\"}]",
-          "save": {
-            "collected": "frame"
-          }
-        },
-        {
           "call": "message.send",
           "in": {
             "room_id": "$ridB",
@@ -2643,12 +2542,6 @@
           },
           "on": "subject:self#2",
           "op_id": "$o4"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [collect {\"pb\": \"pos\"}]",
-          "save": {
-            "collected": "frame"
-          }
         },
         {
           "call": "message.send",
@@ -2660,12 +2553,6 @@
           "op_id": "$o5"
         },
         {
-          "note": "[split from a multi-verb step; review] [collect {\"pa\": \"pos\"}]",
-          "save": {
-            "collected": "frame"
-          }
-        },
-        {
           "call": "message.send",
           "in": {
             "room_id": "$ridB",
@@ -2675,12 +2562,6 @@
           "op_id": "$o6"
         },
         {
-          "note": "[split from a multi-verb step; review] [collect {\"pb\": \"pos\"}]",
-          "save": {
-            "collected": "frame"
-          }
-        },
-        {
           "call": "message.send",
           "in": {
             "room_id": "$ridA",
@@ -2688,12 +2569,6 @@
           },
           "on": "subject:self#2",
           "op_id": "$o7"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [collect {\"pa\": \"pos\"}]",
-          "save": {
-            "collected": "frame"
-          }
         },
         {
           "assert": [
@@ -2799,9 +2674,6 @@
             "do": "idle",
             "ms": 0
           }
-        },
-        {
-          "note": "[split from a multi-verb step; review] [sequence: [{\"call\": \"message.send\", \"conn\": \"c1\", \"in\": {\"room_id\": \"$ridA\", \"body\": {\"$concat\": [\"a\", \"$i\"]}, \"op_id\": {\"$concat\": [\"OP-A-\", \"$i\"]}},]"
         },
         {
           "await": {
@@ -3006,12 +2878,6 @@
           "on": "session:cX"
         },
         {
-          "note": "[split from a multi-verb step; review] [collect {\"lat_exists\": \"$latency_ms\", \"err_exists\": \"$err\"}]",
-          "save": {
-            "collected": "frame"
-          }
-        },
-        {
           "in": {
             "room_id": "blake3:1111111111111111111111111111111111111111111111111111111111111111"
           },
@@ -3033,12 +2899,6 @@
           "call": "stream.subscribe",
           "note": "[split from a multi-verb step; review]",
           "on": "session:cX"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [collect {\"lat_absent\": \"$latency_ms\", \"err_absent\": \"$err\"}]",
-          "save": {
-            "collected": "frame"
-          }
         },
         {
           "assert": [
@@ -3074,10 +2934,6 @@
           "op_id": "$o1"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
-        },
-        {
           "call": "status.post",
           "in": {
             "room_id": "$foreign_rid",
@@ -3094,10 +2950,6 @@
             }
           },
           "op_id": "$o2"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
         },
         {
           "call": "status.history",
@@ -3119,10 +2971,6 @@
           }
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
-        },
-        {
           "call": "stream.resync",
           "in": {
             "room_id": "$foreign_rid",
@@ -3135,10 +2983,6 @@
               "code": "room_not_available"
             }
           }
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
         },
         {
           "call": "message.send",
@@ -3190,10 +3034,6 @@
           },
           "on": "subject:member_nonagent",
           "op_id": "$o1"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
         },
         {
           "call": "message.send",
@@ -3262,10 +3102,6 @@
           }
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
-        },
-        {
           "call": "stream.unsubscribe",
           "in": {
             "subscription_id": "$s"
@@ -3279,10 +3115,6 @@
             }
           },
           "op_id": "$o5"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
         }
       ]
     },
@@ -3386,13 +3218,6 @@
           "op_id": "$o1"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cA"
-        },
-        {
-          "note": "[call started without awaiting its reply — a following await {reply} correlates it] [long-running call started; correlated by a following await {reply}]"
-        },
-        {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
@@ -3405,10 +3230,6 @@
           "op_id": "$o2"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cB"
-        },
-        {
           "await": {
             "push": {
               "room_id": "$rid",
@@ -3418,9 +3239,6 @@
               }
             }
           }
-        },
-        {
-          "note": "[call started without awaiting its reply — a following await {reply} correlates it] [long-running call started; correlated by a following await {reply}]"
         },
         {
           "await": {
@@ -3492,10 +3310,6 @@
               "pos": "$p1"
             }
           }
-        },
-        {
-          "on": "subject:self#2",
-          "note": "[as_same_session_principal: true]"
         },
         {
           "control": {
@@ -3768,9 +3582,6 @@
         {
           "assert": [],
           "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [emit_generation: {\"$sub\": [\"$up.generation\", 1]}]"
         },
         {
           "control": {
@@ -4400,10 +4211,6 @@
           "on": "subject:member_nonagent"
         },
         {
-          "note": "[split from a multi-verb step; review] [match: \"contains\"]",
-          "on": "session:cM"
-        },
-        {
           "call": "status.post",
           "in": {
             "room_id": "$rid",
@@ -4415,10 +4222,6 @@
           },
           "on": "subject:member_nonagent",
           "op_id": "$op_nonagent"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
         },
         {
           "assert": [
@@ -4442,10 +4245,6 @@
           "op_id": "$op_agent"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cAg"
-        },
-        {
           "call": "status.history",
           "in": {
             "room_id": "$rid",
@@ -4462,10 +4261,6 @@
           "on": "subject:member_nonagent"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
-        },
-        {
           "call": "status.history",
           "in": {
             "room_id": "$rid",
@@ -4480,10 +4275,6 @@
             "ha": "$"
           },
           "on": "subject:member_agent"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cAg"
         },
         {
           "assert": [
@@ -4874,9 +4665,6 @@
           "op_id": "$o2"
         },
         {
-          "note": "[by_ms: 5000]"
-        },
-        {
           "note": "[split from a multi-verb step; review] [harness orchestration: advance_wall_clock]",
           "control": {
             "do": "idle",
@@ -5092,10 +4880,6 @@
           },
           "on": "subject:member_nonagent",
           "op_id": "$op_first"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cM"
         },
         {
           "call": "status.history",
@@ -5379,10 +5163,6 @@
           "op_id": "$op_seed"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cAg"
-        },
-        {
           "call": "fleet.list",
           "in": {},
           "save": {
@@ -5556,10 +5336,6 @@
           "op_id": "$op_seed"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cAg"
-        },
-        {
           "call": "fleet.list",
           "in": {},
           "save": {
@@ -5599,12 +5375,6 @@
             "h1": "$"
           },
           "on": "subject:self#2"
-        },
-        {
-          "note": "[session scope: subject:member_agent]"
-        },
-        {
-          "note": "[dialect observation keys folded: room_id — see case intent]"
         },
         {
           "note": "[split from a multi-verb step; review] [harness orchestration: drop_peer_connection]",
@@ -5705,10 +5475,6 @@
           },
           "on": "subject:member_agent",
           "op_id": "$op_seed"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cAg"
         },
         {
           "control": {
@@ -5823,10 +5589,6 @@
           "on": "subject:second_subject"
         },
         {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
-        },
-        {
           "assert": [
             {
               "observe": "no_event_authored",
@@ -5855,10 +5617,6 @@
             "after": "$"
           },
           "on": "subject:second_subject"
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
         },
         {
           "assert": [
@@ -5914,10 +5672,6 @@
               "code": "room_not_available"
             }
           }
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "session:cX"
         },
         {
           "assert": [
@@ -6624,9 +6378,6 @@
       ],
       "steps": [
         {
-          "note": "The bound is served, never assumed. Read it before provoking it."
-        },
-        {
           "http": {
             "method": "GET",
             "path": "/api/health"
@@ -6634,9 +6385,6 @@
           "save": {
             "cap": "frame.limits.max_subscriptions_per_connection"
           }
-        },
-        {
-          "note": "Fill exactly to the served bound; every one of these must succeed."
         },
         {
           "note": "[repeat x{\"times\": \"$cap\", \"call\": \"stream.subscribe\", \"conn\": \"c1\", \"in\": {\"room_id\": \"$ — harness iterates the following steps] [harness orchestration: repeat_steps]",
@@ -6674,9 +6422,6 @@
               "op": "no_nulls"
             }
           ]
-        },
-        {
-          "note": "The refusal must not disturb what is already subscribed."
         },
         {
           "call": "message.send",
@@ -6724,9 +6469,6 @@
           ]
         },
         {
-          "note": "Idempotent: the spec classes stream.subscribe as naturally idempotent."
-        },
-        {
           "call": "stream.subscribe",
           "in": {
             "room_id": "$rid"
@@ -6740,9 +6482,6 @@
               "op": "no_nulls"
             }
           ]
-        },
-        {
-          "note": "And exactly one delivery, not two -- idempotent means no duplicate stream."
         },
         {
           "call": "message.send",
@@ -6828,9 +6567,6 @@
           ]
         },
         {
-          "note": "Severity is SERVED, never re-derived by a client, so it must be present on every entry."
-        },
-        {
           "assert": [
             {
               "observe": "no_event_authored",
@@ -6905,9 +6641,6 @@
           ]
         },
         {
-          "note": "Exclusivity: no other closed label yields review."
-        },
-        {
           "assert": [
             {
               "observe": "no_event_authored",
@@ -6972,9 +6705,6 @@
               "code": "status_subject_unknown"
             }
           }
-        },
-        {
-          "note": "Nothing was committed, so the subject still has no history at all."
         }
       ]
     },

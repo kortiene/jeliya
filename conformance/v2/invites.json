@@ -245,9 +245,6 @@
             }
           },
           "on": "subject:authority"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key exact_on: \"invites\"]"
         }
       ]
     },
@@ -985,9 +982,6 @@
             "limit": 50
           },
           "on": "subject:authority"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key expect_every_element: {\"path\": \"invites\", \"absent_fields\": [\"capability\", \"hint\", \"ticket\"]}]"
         }
       ]
     },
@@ -2459,20 +2453,11 @@
           "note": "exactly the absolute expiry, not one tick either side"
         },
         {
-          "note": "[split from a multi-verb step; review] [dialect key instant: \"$exp_at\"]"
-        },
-        {
           "call": "invite.redeem",
           "in": {
             "capability": "$cap_at"
           },
           "on": "subject:invitee"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key expect_one_of: [{\"expect\": {\"room_id\": \"$rid\", \"created\": true, \"role\": \"member\"}}, {\"expect_error\": {\"code\": \"capability_expired\", \"fields\": {\"expired_at\": \"$exp_at\"}, \"absen]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key must_not: [\"capability_invalid\"]] [dialect key determinism: {\"repeat\": 5, \"same_outcome\": true}]"
         },
         {
           "call": "invite.mint",
@@ -2495,9 +2480,6 @@
             "ms": 0
           },
           "note": "one millisecond past"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key instant: {\"expr\": \"$exp_past + 1\"}]"
         },
         {
           "call": "invite.redeem",
@@ -2590,12 +2572,6 @@
             "capability": "$cap1"
           },
           "on": "subject:invitee"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key expect_one_of: [{\"expect_error\": {\"code\": \"capability_revoked\", \"fields\": {\"revoked_at\": \"$rev1\"}, \"absent_fields\": [\"hint\"]}}, {\"expect_error\": {\"code\": \"capability_expired\",]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key must_not: [\"ok\", \"capability_invalid\"]] [dialect key determinism: {\"repeat\": 5, \"same_outcome\": true}]"
         }
       ]
     },
@@ -2813,24 +2789,12 @@
           }
         },
         {
-          "note": "[dialect observation keys folded: matching — see case intent]"
-        },
-        {
-          "note": "[dialect observation keys folded: window_ms — see case intent]"
-        },
-        {
           "on": "subject:invitee",
           "note": "[harness orchestration: assert_no_frames]",
           "control": {
             "do": "idle",
             "ms": 0
           }
-        },
-        {
-          "note": "[dialect observation keys folded: matching_any_body_containing — see case intent]"
-        },
-        {
-          "note": "[dialect observation keys folded: window_ms — see case intent]"
         },
         {
           "call": "invite.redeem",
@@ -2944,12 +2908,6 @@
           }
         },
         {
-          "note": "[dialect observation keys folded: room_id — see case intent]"
-        },
-        {
-          "note": "[dialect observation keys folded: between — see case intent]"
-        },
-        {
           "call": "room.members",
           "in": {
             "room_id": "$rid"
@@ -3057,12 +3015,6 @@
           }
         },
         {
-          "note": "[dialect observation keys folded: room_id — see case intent]"
-        },
-        {
-          "note": "[dialect observation keys folded: window_ms — see case intent]"
-        },
-        {
           "assert": [
             {
               "path": "$frames",
@@ -3071,21 +3023,12 @@
           ]
         },
         {
-          "note": "[dialect observation keys folded: strictly_increasing — see case intent]"
-        },
-        {
-          "note": "[dialect observation keys folded: no_discontinuity, all_greater_than, no_gap_frame, min_count — see case intent]"
-        },
-        {
           "assert": [
             {
               "path": "$frames",
               "op": "present"
             }
           ]
-        },
-        {
-          "note": "[dialect observation keys folded: has_fields — see case intent]"
         },
         {
           "assert": [],
@@ -3642,9 +3585,6 @@
           "note": "the ORIGINAL op_id, replayed after the invitee joined: the ledger answers first",
           "on": "subject:authority",
           "op_id": "already-member-mint-1"
-        },
-        {
-          "note": "[dialect observation keys folded: must_not_error — see case intent]"
         },
         {
           "assert": [

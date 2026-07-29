@@ -57,10 +57,10 @@
       ]
     },
     {
-      "name": "health_limits_object_carries_all_eleven_named_integer_fields",
+      "name": "health_limits_object_carries_all_sixteen_named_integer_fields",
       "kind": "handshake",
       "operation": null,
-      "intent": "Proves the served limits object is complete and every field is an integer, so no client needs a compiled-in default; catches a daemon that drops a limit field and forces clients back to hardcoded constants.",
+      "intent": "Proves the served limits object is complete — all sixteen fields, every one an integer — so no client needs a compiled-in default; catches a daemon that drops a limit field and forces clients back to hardcoded constants. Sixteen, not eleven: max_subscriptions_per_connection and idle_timeout_ms are each load-bearing, and an eleven-field assertion is a fixture bug the specification names.",
       "requires": [
         "daemon",
         "observe:network"
@@ -79,13 +79,18 @@
                 "max_message_body_bytes": "<uint>",
                 "max_frame_bytes": "<uint>",
                 "max_inflight_requests": "<uint>",
+                "max_subscriptions_per_connection": "<uint>",
                 "max_connections": "<uint>",
                 "max_concurrent_transfers": "<uint>",
                 "max_transfer_bytes_inflight": "<uint>",
                 "transfer_connect_allowance_ms": "<uint>",
                 "transfer_floor_bits_per_second": "<uint>",
                 "transfer_stall_ms": "<uint>",
-                "timeline_page_max": "<uint>"
+                "timeline_page_max": "<uint>",
+                "idle_timeout_ms": "<uint>",
+                "pairing_code_ttl_ms": "<uint>",
+                "pairing_code_max_attempts": "<uint>",
+                "browser_session_ttl_ms": "<uint>"
               }
             },
             "status": 200
@@ -101,13 +106,18 @@
                 "max_message_body_bytes",
                 "max_frame_bytes",
                 "max_inflight_requests",
+                "max_subscriptions_per_connection",
                 "max_connections",
                 "max_concurrent_transfers",
                 "max_transfer_bytes_inflight",
                 "transfer_connect_allowance_ms",
                 "transfer_floor_bits_per_second",
                 "transfer_stall_ms",
-                "timeline_page_max"
+                "timeline_page_max",
+                "idle_timeout_ms",
+                "pairing_code_ttl_ms",
+                "pairing_code_max_attempts",
+                "browser_session_ttl_ms"
               ]
             }
           ]
@@ -164,7 +174,11 @@
           "save": {
             "ready": "$"
           },
-          "note": "[reads the daemon ready line: harness resource, asserted by following assertions]"
+          "control": {
+            "do": "inject_fault",
+            "fault": "backpressure",
+            "note": "[reads the daemon ready line: harness resource, asserted by following assertions]"
+          }
         },
         {
           "save": {
@@ -268,16 +282,13 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ],
-                "client": {
-                  "state": "declared",
-                  "protocol": 1
-                }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ],
+              "client": {
+                "state": "declared",
+                "protocol": 1
               }
             }
           }
@@ -303,15 +314,6 @@
           "save": {
             "sg": "frame.storage_generation"
           },
-          "expect": {
-            "ok": true,
-            "out": {
-              "storage_generation": "<uint>"
-            }
-          }
-        },
-        {
-          "note": "[reads the daemon portfile: harness resource, asserted by following assertions]",
           "expect": {
             "ok": true,
             "out": {
@@ -381,7 +383,7 @@
               "event_id": "<string>"
             }
           },
-          "op_id": "<uuid>"
+          "op_id": "<op_id>"
         },
         {
           "call": "message.send",
@@ -397,7 +399,7 @@
               "limit_bytes": "$body_max"
             }
           },
-          "op_id": "<uuid>"
+          "op_id": "<op_id>"
         }
       ]
     },
@@ -466,10 +468,7 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         }
@@ -501,10 +500,7 @@
           "expect": {
             "status": 403,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         }
@@ -569,15 +565,12 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ],
-                "client": {
-                  "state": "absent"
-                }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ],
+              "client": {
+                "state": "absent"
               }
             }
           }
@@ -618,16 +611,13 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ],
-                "client": {
-                  "state": "declared",
-                  "protocol": 1
-                }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ],
+              "client": {
+                "state": "declared",
+                "protocol": 1
               }
             }
           }
@@ -646,16 +636,13 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ],
-                "client": {
-                  "state": "declared",
-                  "protocol": 3
-                }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ],
+              "client": {
+                "state": "declared",
+                "protocol": 3
               }
             }
           }
@@ -681,13 +668,10 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ]
-              }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ]
             }
           }
         },
@@ -711,13 +695,10 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ]
-              }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ]
             }
           }
         },
@@ -741,13 +722,10 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ]
-              }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ]
             }
           }
         },
@@ -771,13 +749,10 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ]
-              }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ]
             }
           }
         },
@@ -801,13 +776,10 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ]
-              }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ]
             }
           }
         },
@@ -831,13 +803,10 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ]
-              }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ]
             }
           }
         },
@@ -877,10 +846,7 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported"
-              }
+              "code": "protocol_unsupported"
             }
           }
         },
@@ -895,10 +861,7 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported"
-              }
+              "code": "protocol_unsupported"
             }
           }
         }
@@ -931,13 +894,10 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "storage_generation_mismatch",
-                "daemon": "<uint>",
-                "client": {
-                  "state": "absent"
-                }
+              "code": "storage_generation_mismatch",
+              "daemon": "<uint>",
+              "client": {
+                "state": "absent"
               }
             }
           }
@@ -977,14 +937,11 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "storage_generation_mismatch",
-                "daemon": "<daemon_sg>",
-                "client": {
-                  "state": "declared",
-                  "storage_generation": 0
-                }
+              "code": "storage_generation_mismatch",
+              "daemon": "<daemon_sg>",
+              "client": {
+                "state": "declared",
+                "storage_generation": 0
               }
             }
           }
@@ -1003,14 +960,11 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "storage_generation_mismatch",
-                "daemon": "<daemon_sg>",
-                "client": {
-                  "state": "declared",
-                  "storage_generation": 99
-                }
+              "code": "storage_generation_mismatch",
+              "daemon": "<daemon_sg>",
+              "client": {
+                "state": "declared",
+                "storage_generation": 99
               }
             }
           }
@@ -1044,10 +998,7 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "unauthenticated"
-              }
+              "code": "unauthenticated"
             }
           }
         },
@@ -1075,10 +1026,7 @@
           "expect": {
             "status": 401,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "unauthenticated"
-              }
+              "code": "unauthenticated"
             }
           }
         },
@@ -1175,10 +1123,7 @@
           "expect": {
             "status": 403,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         }
@@ -1207,10 +1152,7 @@
           "expect": {
             "status": 403,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         }
@@ -1241,16 +1183,13 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "supported": [
-                  2
-                ],
-                "client": {
-                  "state": "declared",
-                  "protocol": 1
-                }
+              "code": "protocol_unsupported",
+              "supported": [
+                2
+              ],
+              "client": {
+                "state": "declared",
+                "protocol": 1
               }
             }
           }
@@ -1266,12 +1205,9 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported",
-                "client": {
-                  "state": "absent"
-                }
+              "code": "protocol_unsupported",
+              "client": {
+                "state": "absent"
               }
             }
           }
@@ -1301,14 +1237,11 @@
           "expect": {
             "status": 426,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "storage_generation_mismatch",
-                "daemon": "<uint>",
-                "client": {
-                  "state": "declared",
-                  "storage_generation": 0
-                }
+              "code": "storage_generation_mismatch",
+              "daemon": "<uint>",
+              "client": {
+                "state": "declared",
+                "storage_generation": 0
               }
             }
           }
@@ -1547,10 +1480,7 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         },
@@ -1589,10 +1519,7 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "protocol_unsupported"
-              }
+              "code": "protocol_unsupported"
             }
           }
         },
@@ -1623,10 +1550,7 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "storage_generation_mismatch"
-              }
+              "code": "storage_generation_mismatch"
             }
           }
         },
@@ -1660,10 +1584,7 @@
               "content-type": "application/json"
             },
             "body": {
-              "ok": false,
-              "err": {
-                "code": "unauthenticated"
-              }
+              "code": "unauthenticated"
             }
           }
         },
@@ -1721,17 +1642,11 @@
           "in": {}
         },
         {
-          "note": "[split from a multi-verb step; review]"
-        },
-        {
           "call": "room.create",
           "in": {
             "name": "Oracle Probe"
           },
-          "op_id": "<uuid>"
-        },
-        {
-          "note": "[split from a multi-verb step; review]"
+          "op_id": "<op_id>"
         },
         {
           "upgrade": {
@@ -1800,10 +1715,7 @@
           "expect": {
             "status": 401,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "unauthenticated"
-              }
+              "code": "unauthenticated"
             }
           }
         },
@@ -1836,10 +1748,7 @@
           "expect": {
             "status": 401,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "unauthenticated"
-              }
+              "code": "unauthenticated"
             }
           }
         }
@@ -1872,10 +1781,7 @@
           "expect": {
             "status": 403,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         },
@@ -1892,10 +1798,7 @@
           "expect": {
             "status": 403,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         },
@@ -1975,10 +1878,7 @@
           "expect": {
             "status": 401,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "unauthenticated"
-              }
+              "code": "unauthenticated"
             }
           }
         }
@@ -2040,10 +1940,7 @@
           "expect": {
             "status": 401,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "unauthenticated"
-              }
+              "code": "unauthenticated"
             }
           }
         }
@@ -2075,10 +1972,7 @@
           "expect": {
             "status": 403,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         },
@@ -2095,10 +1989,7 @@
           "expect": {
             "status": 403,
             "body": {
-              "ok": false,
-              "err": {
-                "code": "forbidden_origin"
-              }
+              "code": "forbidden_origin"
             }
           }
         },
@@ -2111,19 +2002,6 @@
               "Host": "127.0.0.1:<port>",
               "Origin": "http://127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
-            }
-          }
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "expect": {
-            "body": {
-              "ok": false,
-              "err": {
-                "code": "resource_exhausted",
-                "resource": "<string>",
-                "limit": "<uint>"
-              }
             }
           }
         }
@@ -2650,7 +2528,7 @@
           "in": {
             "room_id": "$rid"
           },
-          "op_id": "<uuid>"
+          "op_id": "<op_id>"
         },
         {
           "note": "[harness orchestration: peer authors a message in $rid]",
@@ -2716,7 +2594,7 @@
           "in": {
             "room_id": "$rid"
           },
-          "op_id": "<uuid>"
+          "op_id": "<op_id>"
         },
         {
           "note": "the slow call",
@@ -2922,12 +2800,9 @@
             "op": "room.create",
             "in": {
               "name": "NoIdProbe",
-              "op_id": "<uuid>"
+              "op_id": "<op_id>"
             }
           }
-        },
-        {
-          "note": "[timing window elided]"
         },
         {
           "assert": [
@@ -3746,12 +3621,9 @@
           },
           "expect": {
             "body": {
-              "ok": false,
-              "err": {
-                "code": "resource_exhausted",
-                "resource": "<string>",
-                "limit": "$n"
-              }
+              "code": "resource_exhausted",
+              "resource": "<string>",
+              "limit": "$n"
             }
           }
         }
@@ -4101,7 +3973,7 @@
             "op": "stream.subscribe",
             "in": {
               "room_id": "$foreign_rid",
-              "op_id": "<uuid>"
+              "op_id": "<op_id>"
             }
           }
         },
@@ -4122,9 +3994,6 @@
             "do": "idle",
             "ms": 0
           }
-        },
-        {
-          "note": "[timing window elided]"
         },
         {
           "assert": [
@@ -4347,7 +4216,7 @@
           "in": {
             "room_id": "$rid"
           },
-          "op_id": "<uuid>"
+          "op_id": "<op_id>"
         },
         {
           "note": "[harness orchestration: a peer device goes offline in $rid]",

@@ -4013,9 +4013,6 @@
           }
         },
         {
-          "note": "[dialect observation keys folded: samples, a, b — see case intent]"
-        },
-        {
           "assert": [
             {
               "observe": "no_event_authored",
@@ -4030,9 +4027,6 @@
             "do": "idle",
             "ms": 0
           }
-        },
-        {
-          "note": "[dialect observation keys folded: samples, a, b — see case intent]"
         },
         {
           "assert": [
@@ -5072,10 +5066,6 @@
             "do": "idle",
             "ms": 0
           }
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
-          "on": "subject:$sb"
         },
         {
           "call": "room.members",

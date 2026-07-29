@@ -36,6 +36,8 @@ const OBSERVE = new Set([
 const TYPE_TAGS = new Set([
   "room_id", "subject_id", "device_id", "event_id", "invite_id", "file_id",
   "pipe_id", "op_id", "ts", "uint", "bool", "string",
+  "pos", "capability", "daemon_sg", "port", "object", "any", "version",
+  "standing", "link_connected", "link_reason",
 ]);
 const REQUIRE_ARGS = {
   subject: new Set(["self", "none", "second", "outsider"]),
@@ -96,9 +98,8 @@ function checkTypeTags(value, file, caseName, where) {
     if (m) {
       if (RETIRED_TAGS.has(m[1])) {
         fail(file, caseName, where, `retired type tag <${m[1]}> (README: names an encoding or asserts nothing)`);
-      } else if (!TYPE_TAGS.has(m[1]) && !["port", "daemon_sg", "token", "version", "object", "any", "path", "standing", "link_connected", "link_reason", "page", "capability", "uuid", "i", "pos"].includes(m[1])) {
-        // Unknown tags are reported but not fatal — new domains must be added to the README table.
-        fail(file, caseName, where, `unknown type tag <${m[1]}> (not in the README's tag table)`);
+      } else if (!TYPE_TAGS.has(m[1])) {
+        fail(file, caseName, where, `unknown type tag <${m[1]}> — the README's tag table is the vocabulary, and a new tag must be added there`);
       }
     }
   } else if (Array.isArray(value)) {
@@ -157,8 +158,10 @@ function checkStep(step, file, caseName, stepIdx) {
   }
   const keys = Object.keys(step);
   const verbs = keys.filter((k) => !AUX_KEYS.has(k));
-  if (verbs.length === 0 && !keys.includes("note")) {
-    fail(file, caseName, where, `step has no verb (keys: ${keys.join(", ") || "none"})`);
+  if (verbs.length === 0) {
+    fail(file, caseName, where, keys.includes("note")
+      ? `note-only step — the DSL requires exactly one verb; note is auxiliary only`
+      : `step has no verb (keys: ${keys.join(", ") || "none"})`);
     return;
   }
   if (verbs.length > 1) {
@@ -207,7 +210,15 @@ function checkStep(step, file, caseName, stepIdx) {
     }
   }
   if (step.in !== undefined) checkTypeTags(step.in, file, caseName, `${where} in`);
-  if (step.await !== undefined) checkTypeTags(step.await, file, caseName, `${where} await`);
+  if (step.await !== undefined) {
+    const a = step.await;
+    const awKeys = typeof a === "object" && a !== null ? Object.keys(a) : [];
+    if (typeof a !== "object" || a === null || awKeys.length !== 1 || !["push", "frame", "reply"].includes(awKeys[0])) {
+      fail(file, caseName, where, `await must be exactly one of {push}, {frame}, or {reply}`);
+    } else {
+      checkTypeTags(a, file, caseName, `${where} await`);
+    }
+  }
   if (step.send !== undefined) checkTypeTags(step.send, file, caseName, `${where} send`);
   if (Array.isArray(step.assert)) checkTypeTags(step.assert, file, caseName, `${where} assert`);
   if (step.save !== undefined) {
