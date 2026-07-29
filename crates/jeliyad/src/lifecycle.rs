@@ -32,13 +32,20 @@ pub const LOCKFILE_NAME: &str = "daemon.lock";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Portfile {
-    pub schema: u32,
     pub pid: u32,
     pub port: u16,
     pub http: String,
     pub ws: String,
     pub version: String,
+    /// The shared `{protocol, min_protocol, storage_generation, limits}`
+    /// discovery object — identical to Layer-0 health and the ready line.
     pub protocol: u64,
+    pub min_protocol: u64,
+    pub storage_generation: u64,
+    pub limits: jeliya_api::Limits,
+    /// The data dir, kept here (the portfile is 0600, so a caller has already
+    /// proved local read access) but removed from the unauthenticated
+    /// Layer-0 health response.
     pub data_dir: String,
     pub auth_token: String,
     pub started_at_ms: u64,
@@ -93,7 +100,10 @@ pub fn write_portfile(data_dir: &Path, portfile: &Portfile) -> std::io::Result<P
 pub fn read_portfile(data_dir: &Path) -> Option<Portfile> {
     let raw = fs::read_to_string(portfile_path(data_dir)).ok()?;
     let portfile: Portfile = serde_json::from_str(&raw).ok()?;
-    (portfile.schema == 1).then_some(portfile)
+    // The portfile is valid iff it parses and names a live pid/port with the
+    // current discovery object (the retired `schema` field is gone; the
+    // generation axes are the validity signal now).
+    (portfile.pid != 0 && portfile.port != 0).then_some(portfile)
 }
 
 pub fn remove_portfile(data_dir: &Path) {
@@ -227,15 +237,15 @@ async fn health_check(portfile: &Portfile, expect_data_dir: &Path) -> bool {
     if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
         return false;
     }
+    let _ = expect_data_dir;
     let Ok(health) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
         return false;
     };
+    // The answering process is this data dir's daemon iff its pid matches the
+    // portfile read FROM that data dir. The v2 Layer-0 health response no
+    // longer leaks `data_dir` (an unauthenticated endpoint must not expose an
+    // absolute path); pid-plus-the-portfile's own location is the binding.
     health.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(portfile.pid))
-        && health
-            .get("data_dir")
-            .and_then(serde_json::Value::as_str)
-            .map(|dir| Path::new(dir) == expect_data_dir)
-            .unwrap_or(false)
 }
 
 /// Tracing to stderr plus a daily-rolling file in `<data_dir>/logs`, filtered

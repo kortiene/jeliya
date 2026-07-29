@@ -99,6 +99,12 @@ pub(crate) struct AppState {
     pub(crate) auth_token: Arc<String>,
     /// The actually bound port (`--port 0` resolves here).
     pub(crate) port: u16,
+    /// Outstanding single-use connect tickets (`?ct=`): ticket -> expiry
+    /// (ms since epoch). Minted by `POST /api/session` (token-gated), burned
+    /// on redemption at the upgrade gate. Bounded and short-TTL.
+    pub(crate) connect_tickets: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    /// Live WebSocket connections, for the `max_connections` gate.
+    pub(crate) connections: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[tokio::main]
@@ -196,22 +202,27 @@ async fn main() {
             shutdown_tx: shutdown_tx.clone(),
         },
     );
+    let engine_limits = engine.limits();
     let state = AppState {
         supervisor,
         data_dir: data_dir.clone(),
         engine,
         auth_token: Arc::new(auth_token.clone()),
         port: addr.port(),
+        connect_tickets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
 
     let portfile = lifecycle::Portfile {
-        schema: 1,
         pid: std::process::id(),
         port: addr.port(),
         http: format!("http://{addr}/"),
         ws: format!("ws://{addr}/ws"),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         protocol: PROTOCOL_VERSION,
+        min_protocol: jeliya_core::engine::MIN_PROTOCOL_VERSION,
+        storage_generation: jeliya_core::engine::STORAGE_GENERATION,
+        limits: engine_limits,
         data_dir: data_dir.display().to_string(),
         auth_token,
         started_at_ms: jeliya_core::now_ms(),
@@ -237,6 +248,9 @@ async fn main() {
             "ws": portfile.ws,
             "version": portfile.version,
             "protocol": portfile.protocol,
+            "min_protocol": portfile.min_protocol,
+            "storage_generation": portfile.storage_generation,
+            "limits": portfile.limits,
             "data_dir": portfile.data_dir,
             "portfile": portfile_path.display().to_string(),
         })

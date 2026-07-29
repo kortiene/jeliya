@@ -141,19 +141,23 @@ async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Res
         return preflight(&req);
     }
     if path == "/api/session" {
-        // v2's ticket issuance is `POST /api/session` proving possession of
-        // the daemon token (`Authorization: Bearer <token>`). The v1 browser
-        // GET handshake (Sec-Fetch-Site same-origin, no token) is retained so
-        // the served UI keeps working until the session-ticket exchange lands
-        // (a documented follow-up to #166).
+        // v2's ticket issuance: `POST /api/session` proves possession of the
+        // daemon token (`Authorization: Bearer <token>`) and returns a
+        // short-TTL, single-use connect ticket the client redeems once as
+        // `?ct=` — never the long-lived bearer itself, which must not be
+        // placed in a URL. The pairing-code browser flow
+        // (`POST /api/session` with a `pairing_code` body) and
+        // `/api/session/ticket` are a documented follow-up to #166; the v1
+        // browser GET handshake is retained meanwhile for the served UI.
         match *req.method() {
             Method::POST => {
                 if !token_ok(&req, &state) {
                     return unauthorized(local_origin(&req));
                 }
+                let (ticket, expires_at) = mint_connect_ticket(&state);
                 return json_response(
                     StatusCode::OK,
-                    json!({ "token": state.auth_token.as_str() }),
+                    json!({ "ticket": ticket, "expires_at": expires_at }),
                 );
             }
             Method::GET => return session(&req, &state),
@@ -186,11 +190,15 @@ async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Res
     serve_static(&path, &ui)
 }
 
-/// Liveness + identity for the supervision contract (docs/PROTOCOL.md): a
-/// parent deciding whether to adopt a running daemon checks that the process
-/// answering the advertised port is the portfile's pid on the same data dir.
-/// Deliberately unauthenticated (loopback Host only) and secret-free.
+/// Liveness + the v2 discovery object (docs/protocol-v2.md Layer 0): a parent
+/// deciding whether to adopt a running daemon checks the answering process's
+/// `pid` and `port`, and a v2 client reads the `storage_generation` it must
+/// present at the upgrade gate. `data_dir` is removed — an unauthenticated
+/// endpoint must not leak an absolute filesystem path, and the adoption check
+/// needs only pid/port. Deliberately unauthenticated (loopback Host only) and
+/// secret-free.
 fn health(state: &AppState) -> Response<Full<Bytes>> {
+    let info = version_info(state);
     json_response(
         StatusCode::OK,
         json!({
@@ -198,10 +206,52 @@ fn health(state: &AppState) -> Response<Full<Bytes>> {
             "pid": std::process::id(),
             "port": state.port,
             "version": env!("CARGO_PKG_VERSION"),
-            "protocol": crate::PROTOCOL_VERSION,
-            "data_dir": state.data_dir.display().to_string(),
+            "protocol": info.protocol,
+            "min_protocol": info.min_protocol,
+            "storage_generation": info.storage_generation,
+            "limits": info.limits,
         }),
     )
+}
+
+/// The shared `{protocol, min_protocol, storage_generation, limits}` object —
+/// Layer 0 health, the ready line, and the portfile carry an identical one so
+/// the three producers can never drift apart.
+pub(crate) fn version_info(state: &AppState) -> jeliya_api::VersionInfo {
+    jeliya_api::VersionInfo {
+        protocol: jeliya_core::engine::PROTOCOL_VERSION,
+        min_protocol: jeliya_core::engine::MIN_PROTOCOL_VERSION,
+        storage_generation: jeliya_core::engine::STORAGE_GENERATION,
+        limits: state.engine.limits(),
+    }
+}
+
+/// The connect-ticket TTL (matches the served `browser_session_ttl_ms` policy
+/// bound for a fresh ticket).
+const CONNECT_TICKET_TTL_MS: u64 = 60_000;
+
+/// Mint a single-use connect ticket and record its expiry. The ticket is a
+/// fresh 256-bit opaque value, never derived from the daemon token.
+fn mint_connect_ticket(state: &AppState) -> (String, u64) {
+    let mut bytes = [0u8; 32];
+    let _ = getrandom::fill(&mut bytes);
+    let ticket = hex::encode(bytes);
+    let expires_at = jeliya_core::now_ms() + CONNECT_TICKET_TTL_MS;
+    let mut tickets = state.connect_tickets.lock().expect("tickets poisoned");
+    // Bound the outstanding set by dropping expired entries on each mint.
+    tickets.retain(|_, exp| *exp > jeliya_core::now_ms());
+    tickets.insert(ticket.clone(), expires_at);
+    (ticket, expires_at)
+}
+
+/// Redeem a connect ticket, burning it. Returns `true` iff the ticket was
+/// outstanding, unexpired, and is now consumed.
+fn redeem_connect_ticket(state: &AppState, ticket: &str) -> bool {
+    let mut tickets = state.connect_tickets.lock().expect("tickets poisoned");
+    match tickets.remove(ticket) {
+        Some(exp) => exp > jeliya_core::now_ms(),
+        None => false,
+    }
 }
 
 /// Hand the WS auth token to the browser UI. Two browser shapes reach here:
@@ -382,16 +432,30 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
     let v = query.get("v").and_then(|s| s.parse::<u64>().ok());
     let sg = query.get("sg").and_then(|s| s.parse::<u64>().ok());
     let cid = query.get("cid").cloned();
-    let credential = presented_token(req);
+    // The credential is the daemon bearer (`?token=` / `Authorization:
+    // Bearer`) OR a single-use connect ticket (`?ct=`), which is burned on
+    // redemption. Both map to the same authenticated principal.
+    let credential = match query.get("ct") {
+        Some(ct) if !ct.is_empty() => {
+            if redeem_connect_ticket(&state, ct) {
+                Some(state.auth_token.as_str().to_owned())
+            } else {
+                None // a spent/unknown/expired ticket is not a credential
+            }
+        }
+        _ => presented_token(req),
+    };
 
+    let max_connections = state.engine.limits().max_connections;
+    let live = state.connections.load(std::sync::atomic::Ordering::Relaxed);
     let decision = jeliya_codec::gate(&jeliya_codec::GateParams {
         host,
         origin,
         v,
         sg,
         credential,
-        at_capacity: false,
-        max_connections: 64,
+        at_capacity: live >= max_connections,
+        max_connections,
         cid,
         daemon_sg: jeliya_core::engine::STORAGE_GENERATION,
         expected_credential: state.auth_token.as_str().to_owned(),
@@ -419,7 +483,11 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
         Ok((response, websocket)) => {
             tokio::spawn(async move {
                 if let Ok(ws) = websocket.await {
-                    serve_ws(ws, state, principal).await;
+                    // Count the live connection for the `max_connections`
+                    // gate; decrement on any exit path.
+                    state.connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    serve_ws(ws, state.clone(), principal).await;
+                    state.connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 }
             });
             response
@@ -870,15 +938,23 @@ pub async fn serve_ws<S>(
     // operation; a finished task's result is reaped without blocking.
     let mut inflight: tokio::task::JoinSet<bool> = tokio::task::JoinSet::new();
 
+    // The served idle timeout: a connection with no inbound activity for
+    // `idle_timeout_ms` is closed with 4004. Reset on any inbound frame.
+    let idle_ms = state.engine.limits().idle_timeout_ms;
+    let idle_deadline = tokio::time::sleep(tokio::time::Duration::from_millis(idle_ms));
+    tokio::pin!(idle_deadline);
+
     loop {
         tokio::select! {
             msg = messages.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
+                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
                     if !dispatch_inbound(text.as_bytes(), &state, &bounds, &subscriptions, &out_tx, &mut inflight).await {
                         break;
                     }
                 }
                 Some(Ok(Message::Binary(bytes))) => {
+                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
                     if !dispatch_inbound(&bytes, &state, &bounds, &subscriptions, &out_tx, &mut inflight).await {
                         break;
                     }
@@ -891,6 +967,18 @@ pub async fn serve_ws<S>(
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 Some(Ok(_)) => {} // pong frames: ignored
             },
+            () = &mut idle_deadline => {
+                // No inbound activity for the served idle window: close 4004.
+                let _ = out_tx
+                    .send(Message::Close(Some(
+                        tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                            code: 4004.into(),
+                            reason: "idle_timeout".into(),
+                        },
+                    )))
+                    .await;
+                break;
+            }
             push = push_rx.recv() => match push {
                 Ok(push) => {
                     // Gate delivery on this connection's subscriptions: a push
