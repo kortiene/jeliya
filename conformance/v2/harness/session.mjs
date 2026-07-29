@@ -9,6 +9,23 @@
 
 import WebSocket from '../../../ui/node_modules/ws/index.js';
 
+/** Serialize a value, splicing any `{__rawJson}` subtrees in verbatim. */
+function serializeWithRaw(value) {
+  const raws = [];
+  const placeholder = (v) => {
+    if (v !== null && typeof v === 'object' && v.__rawJson !== undefined) {
+      const idx = raws.length;
+      raws.push(v.__rawJson);
+      return `RAW${idx}RAW`;
+    }
+    return v;
+  };
+  let text = JSON.stringify(value, (k, v) => placeholder(v));
+  // Replace the quoted placeholders with the raw JSON text.
+  text = text.replace(/"RAW(\d+)RAW"/g, (_, i) => raws[Number(i)]);
+  return text;
+}
+
 let nextRequestId = 1;
 
 /** Allocate a process-unique envelope id. */
@@ -137,9 +154,15 @@ export class Session {
     return replyPromise;
   }
 
-  /** Send raw bytes/text that may not be a valid frame. */
+  /** Send raw bytes/text that may not be a valid frame. A `{__rawJson}` marker
+   * anywhere in the value is spliced in as pre-serialized JSON text (for
+   * deep-nesting fixtures that cannot be JSON-serialized as objects). */
   sendRaw(value) {
-    this.ws.send(typeof value === 'string' ? value : JSON.stringify(value));
+    if (typeof value === 'string') {
+      this.ws.send(value);
+      return;
+    }
+    this.ws.send(serializeWithRaw(value));
   }
 
   /** Wait for a frame matching `predicate` (already-received frames count). */

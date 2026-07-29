@@ -54,6 +54,21 @@ export class Runner {
    * Run one case. Returns { outcome, name, reason }.
    */
   async runCase(fixture) {
+    // A hard watchdog so no case can hang the whole run: a case that exceeds
+    // the budget is failed as an error and its daemons reaped.
+    const budgetMs = 90_000 * this.timeoutScale;
+    return Promise.race([
+      this.#runCaseInner(fixture),
+      new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ outcome: Outcome.ERROR, name: fixture.name, reason: `case watchdog timeout (${budgetMs}ms)` }),
+          budgetMs,
+        ),
+      ),
+    ]);
+  }
+
+  async #runCaseInner(fixture) {
     const name = fixture.name;
     const daemons = [];
     const sessions = new Map();
@@ -77,6 +92,14 @@ export class Runner {
       // Pre-seed the well-known variables a fresh case can reference.
       vars.op_id_new = `cf-op-${opIdCounter++}`;
       vars.op_id_fixed = 'cf-op-fixed-0001';
+      // Codec bounds (not in the served limits object) for placeholder
+      // synthesis; mirrors jeliya-codec's CodecBounds::default.
+      vars.limits = {
+        max_depth: 64,
+        max_frame_bytes: 128 * 1024 * 1024,
+        max_op_len: 64,
+        max_array_len: 1 << 20,
+      };
 
       // Establish requires.
       await this.#establishRequires(fixture, daemons, sessions, vars);
@@ -492,21 +515,38 @@ export class Runner {
     const a = step.await;
     const s = await this.#sessionFor(step.on, env.daemons, sessions, vars);
 
-    let predicate;
+    // The await matcher is a *locator* plus an implicit assertion: locate the
+    // correlated frame (by id for a reply, by type for a push/frame), then
+    // assert it matches. A mismatch is a fast, clear failure — never a
+    // timeout that reads as a hang.
+    let locate;
+    let want;
+    let kind;
     if (a.push !== undefined) {
-      const want = resolveValue(a.push, vars);
-      predicate = (f) => f.t !== undefined && subsetMatch(want, f, vars);
+      want = resolveValue(a.push, vars);
+      kind = 'push';
+      locate = (f) => f.t !== undefined;
     } else if (a.frame !== undefined) {
-      const want = resolveValue(a.frame, vars);
-      predicate = (f) => subsetMatch(want, f, vars);
+      want = resolveValue(a.frame, vars);
+      kind = 'frame';
+      // Correlate by id when the matcher names one; otherwise any frame.
+      const wantId = want && typeof want === 'object' ? want.id : undefined;
+      locate = (f) => (wantId !== undefined ? f.id === wantId : true);
     } else if (a.reply !== undefined) {
       const id = Number(resolveValue(a.reply, vars));
-      predicate = (f) => f.id === id;
+      want = undefined;
+      kind = 'reply';
+      locate = (f) => f.id === id;
     } else {
       throw new Error('await step with no push/frame/reply key');
     }
 
-    const frame = await s.awaitFrame(predicate, 10_000 * this.timeoutScale);
+    const frame = await s.awaitFrame(locate, 10_000 * this.timeoutScale);
+    if (want !== undefined && !subsetMatch(want, frame, vars)) {
+      throw new AssertFailure(
+        `await ${kind} did not match ${JSON.stringify(want)}; got ${JSON.stringify(frame)}`,
+      );
+    }
     vars.frame = frame;
     // A correlated reply also updates the err/out roots so a following assert
     // can read `err.code` without an intervening call.

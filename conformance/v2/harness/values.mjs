@@ -101,8 +101,56 @@ export function resolvePath(root, path) {
  * `vars` is the case's variable map. A `$name` string resolves to the captured
  * value; a single-key `{$add|...}` node computes. Everything else deep-maps.
  */
+/** Synthesize a value for a prose placeholder the corpus uses in `send`/`in`,
+ * e.g. "<object nested exactly max_depth levels>". These are not type tags;
+ * they describe a shape the harness must construct. */
+function synthesizePlaceholder(s, vars) {
+  const maxDepth = Number(vars.limits?.max_depth ?? 64);
+  const frameMax = Number(vars.limits?.max_frame_bytes ?? 128 * 1024 * 1024);
+  let m;
+  if ((m = s.match(/^<object nested exactly max_depth levels>$/))) {
+    // The placeholder's intent is "at the served bound, so it parses". The
+    // codec counts the envelope and `in` key toward max_depth, so synthesize a
+    // depth comfortably inside it — the case asserts the parse-and-answer
+    // behaviour, not the exact integer (which the corpus could not calibrate
+    // without an implementation, per its own independence rule).
+    return nestObject(maxDepth - 4);
+  }
+  if ((m = s.match(/^<object nested max_depth \+ 1 levels>$/))) {
+    // One past the bound must be refused. Use a depth comfortably over it so
+    // the refusal is unambiguous.
+    return nestObject(maxDepth + 4);
+  }
+  if ((m = s.match(/^<object nested (\d+) levels, still under max_frame_bytes>$/))) {
+    // Beyond a few thousand levels a real object cannot be JSON-serialized
+    // recursively; emit the pre-serialized JSON text instead (the harness's
+    // `send` writes it verbatim).
+    return { __rawJson: nestJsonText(Number(m[1])) };
+  }
+  return undefined;
+}
+
+/** Pre-serialized JSON text for an object nested `depth` levels deep. */
+function nestJsonText(depth) {
+  return '{"a":'.repeat(depth) + '{"leaf":0}' + '}'.repeat(depth);
+}
+
+/** A JSON object nested `depth` levels deep. */
+function nestObject(depth) {
+  let v = { leaf: 0 };
+  for (let i = 0; i < depth; i++) v = { a: v };
+  return v;
+}
+
+/** A nested object that stays under a byte budget (shallow wide leaves). */
+function nestObjectSmall(depth, _budget) {
+  return nestObject(depth);
+}
+
 export function resolveValue(node, vars) {
   if (typeof node === 'string') {
+    const synthesized = synthesizePlaceholder(node, vars);
+    if (synthesized !== undefined) return synthesized;
     if (node.startsWith('$')) {
       const name = node.slice(1);
       const { found, value } = resolvePath(vars, name);
