@@ -2266,7 +2266,7 @@
         {
           "expect_frame": {
             "t": "<string>",
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "expect_absent": [
             "id",
@@ -2343,7 +2343,7 @@
               },
               {
                 "t": "<string>",
-                "room": "$rid"
+                "room_id": "$rid"
               }
             ],
             "order_required": false
@@ -2353,7 +2353,7 @@
           "assert_frame_order": {
             "before": {
               "t": "<string>",
-              "room": "$rid"
+              "room_id": "$rid"
             },
             "after": {
               "id": 100
@@ -3599,7 +3599,7 @@
             "property": "none_matching",
             "match": {
               "t": "<string>",
-              "room": "$foreign_rid"
+              "room_id": "$foreign_rid"
             }
           }
         }
@@ -3798,7 +3798,7 @@
         {
           "expect_frame": {
             "t": "peer",
-            "room": "$rid",
+            "room_id": "$rid",
             "generation": "<uint>",
             "reason": {
               "state": "<string>"

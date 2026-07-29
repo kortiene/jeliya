@@ -48,7 +48,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -119,7 +124,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -194,7 +204,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -267,7 +282,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -340,7 +360,12 @@
           "call": "invite.list",
           "as": "authority_principal_1",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -390,7 +415,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -458,7 +488,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -516,7 +551,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -592,7 +632,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -669,7 +714,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -730,7 +780,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -751,7 +806,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -771,7 +831,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_every_element": {
             "path": "invites",
@@ -799,7 +864,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": []
@@ -841,7 +911,12 @@
           "call": "invite.list",
           "as": "member",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "insufficient_standing",
@@ -873,7 +948,12 @@
           "call": "invite.list",
           "as": "bystander",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available",
@@ -889,7 +969,12 @@
           "call": "invite.list",
           "as": "bystander",
           "in": {
-            "room_id": "<well_formed_unknown_room_id>"
+            "room_id": "<well_formed_unknown_room_id>",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available"
@@ -955,7 +1040,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -1047,7 +1137,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -1124,7 +1219,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -1196,7 +1296,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -1243,7 +1348,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": []
@@ -1302,7 +1412,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -1422,7 +1537,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -2130,7 +2250,8 @@
             "cursor": {
               "state": "start"
             },
-            "limit": 10
+            "limit": 10,
+            "direction": "forward"
           },
           "expect_error": {
             "code": "room_not_available"
@@ -2151,7 +2272,12 @@
           "call": "room.archive",
           "as": "invitee",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available"
@@ -2239,7 +2365,7 @@
           "control": "assert_no_frames",
           "as": "invitee",
           "matching": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "window_ms": 2000
         },
@@ -2338,7 +2464,7 @@
             "as": "authority",
             "match": {
               "t": "<push_kind>",
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "<number>"
             },
             "absent_fields": [
@@ -2355,7 +2481,7 @@
         {
           "control": "assert_no_gap_frame",
           "as": "authority",
-          "room": "$rid",
+          "room_id": "$rid",
           "between": [
             "$p0",
             "$p1"
@@ -2456,7 +2582,7 @@
         {
           "control": "collect_pushes",
           "as": "authority",
-          "room": "$rid",
+          "room_id": "$rid",
           "window_ms": 5000,
           "save": {
             "frames": "$captured"
@@ -2637,7 +2763,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -2744,15 +2875,23 @@
             "cursor": {
               "state": "start"
             },
-            "limit": 100
+            "limit": 100,
+            "direction": "forward"
           },
           "expect": {
             "events": {
               "contains_one": {
                 "event_id": "$e1",
-                "body": "history-a-from-authority",
-                "sender_id": "$sa",
-                "sender_role": "authority"
+                "kind": "message",
+                "content": {
+                  "body": "history-a-from-authority"
+                },
+                "author": {
+                  "state": "resolved",
+                  "subject_id": "$sa",
+                  "role": "authority",
+                  "standing": "active"
+                }
               }
             }
           }
@@ -2765,15 +2904,23 @@
             "cursor": {
               "state": "start"
             },
-            "limit": 100
+            "limit": 100,
+            "direction": "forward"
           },
           "expect": {
             "events": {
               "contains_one": {
                 "event_id": "$e2",
-                "body": "history-b-from-member",
-                "sender_id": "$sd",
-                "sender_role": "member"
+                "kind": "message",
+                "content": {
+                  "body": "history-b-from-member"
+                },
+                "author": {
+                  "state": "resolved",
+                  "subject_id": "$sd",
+                  "role": "member",
+                  "standing": "active"
+                }
               }
             }
           },
@@ -2787,15 +2934,23 @@
             "cursor": {
               "state": "start"
             },
-            "limit": 100
+            "limit": 100,
+            "direction": "forward"
           },
           "expect": {
             "events": {
               "contains_one": {
                 "event_id": "$e3",
-                "body": "history-c-from-authority",
-                "sender_id": "$sa",
-                "sender_role": "authority"
+                "kind": "message",
+                "content": {
+                  "body": "history-c-from-authority"
+                },
+                "author": {
+                  "state": "resolved",
+                  "subject_id": "$sa",
+                  "role": "authority",
+                  "standing": "active"
+                }
               }
             }
           }
@@ -2907,7 +3062,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -2940,7 +3100,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -2983,7 +3148,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {
@@ -3001,14 +3171,19 @@
         {
           "control": "fault_inject",
           "fault": "invite_index_unreadable",
-          "room": "$rid",
+          "room_id": "$rid",
           "note": "the invite index read path fails -- I/O error or permission denial. The invites themselves are untouched and still redeemable, which is what makes the empty-list answer dangerous rather than merely wrong."
         },
         {
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "invite_index_unreadable",
@@ -3041,7 +3216,12 @@
           "call": "invite.list",
           "as": "authority",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "invites": {

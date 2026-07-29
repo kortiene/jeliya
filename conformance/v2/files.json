@@ -285,7 +285,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -436,7 +441,7 @@
         },
         {
           "assert": "no_event_authored",
-          "room": "$rid"
+          "room_id": "$rid"
         },
         {
           "assert": "json_type",
@@ -519,7 +524,7 @@
         },
         {
           "assert": "no_event_authored",
-          "room": "$rid"
+          "room_id": "$rid"
         },
         {
           "assert": "no_residue",
@@ -655,7 +660,7 @@
         },
         {
           "assert": "no_event_authored",
-          "room": "$rid"
+          "room_id": "$rid"
         },
         {
           "assert": "spec_gap",
@@ -931,7 +936,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "fid": "files[0].file_id"
@@ -1023,7 +1033,7 @@
         },
         {
           "assert": "no_event_authored",
-          "room": "$rid"
+          "room_id": "$rid"
         }
       ],
       "blocked_on_upstream": null
@@ -1200,7 +1210,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": "exactly_one_entry_with",
           "file_id": "$first.file_id"
@@ -1227,7 +1242,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -1335,7 +1355,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -1373,7 +1398,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -1399,7 +1429,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available",
@@ -1449,7 +1484,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -1496,7 +1536,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "fid": "files[0].file_id"
@@ -1511,13 +1556,12 @@
           },
           "expect": {
             "file_id": "$fid",
-            "size_bytes": "<u64>",
-            "digest": "<hex64>",
+            "room_id": "$rid",
+            "bytes": "<uint>",
+            "digest": "<string>",
             "provider": {
-              "device_id": "<hex64>"
-            },
-            "local": {
-              "state": "held"
+              "subject_id": "<subject_id>",
+              "device_id": "<device_id>"
             }
           },
           "expect_absent": [
@@ -1525,25 +1569,34 @@
             "save_dir",
             "local_path",
             "dir",
-            "verified"
+            "verified",
+            "local"
           ]
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
               {
                 "file_id": "$fid",
-                "self_hosted": true,
-                "local": {
-                  "state": "held"
-                }
+                "self_hosted": true
               }
             ]
-          }
+          },
+          "assert": [
+            {
+              "path": "out.files[0].local",
+              "op": "absent"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1571,7 +1624,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -1649,7 +1707,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "fid": "files[0].file_id"
@@ -1706,7 +1769,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -1812,10 +1880,20 @@
           },
           "expect": {
             "file_id": "$fid",
-            "local": {
-              "state": "held"
+            "room_id": "$rid",
+            "bytes": "<uint>",
+            "digest": "<string>",
+            "provider": {
+              "subject_id": "<subject_id>",
+              "device_id": "<device_id>"
             }
-          }
+          },
+          "assert": [
+            {
+              "path": "out.local",
+              "op": "absent"
+            }
+          ]
         },
         {
           "drop_connection": "primary"
@@ -1880,10 +1958,20 @@
           },
           "expect": {
             "file_id": "$fid",
-            "local": {
-              "state": "held"
+            "room_id": "$rid",
+            "bytes": "<uint>",
+            "digest": "<string>",
+            "provider": {
+              "subject_id": "<subject_id>",
+              "device_id": "<device_id>"
             }
-          }
+          },
+          "assert": [
+            {
+              "path": "out.local",
+              "op": "absent"
+            }
+          ]
         },
         {
           "assert": "elapsed_exceeded",
@@ -2026,7 +2114,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -2116,7 +2209,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-cancel-target"
+            "transfer_op_id": "op-cancel-target"
           },
           "expect": {
             "outcome": {
@@ -2139,7 +2232,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-cancel-target"
+            "transfer_op_id": "op-cancel-target"
           },
           "expect": {
             "outcome": {
@@ -2186,7 +2279,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-cancel-owned"
+            "transfer_op_id": "op-cancel-owned"
           },
           "as": "principal_b",
           "save": {
@@ -2200,7 +2293,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-never-existed"
+            "transfer_op_id": "op-never-existed"
           },
           "as": "principal_b",
           "save": {
@@ -2244,7 +2337,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-does-not-exist"
+            "transfer_op_id": "op-does-not-exist"
           },
           "expect_error": {
             "code": "transfer_unknown",
@@ -2312,7 +2405,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-slot-0"
+            "transfer_op_id": "op-slot-0"
           },
           "expect": {
             "outcome": {
@@ -2329,10 +2422,20 @@
           },
           "expect": {
             "file_id": "$fid",
-            "local": {
-              "state": "held"
+            "room_id": "$rid",
+            "bytes": "<uint>",
+            "digest": "<string>",
+            "provider": {
+              "subject_id": "<subject_id>",
+              "device_id": "<device_id>"
             }
-          }
+          },
+          "assert": [
+            {
+              "path": "out.local",
+              "op": "absent"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2706,7 +2809,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-cancel-bytes"
+            "transfer_op_id": "op-cancel-bytes"
           },
           "expect": {
             "outcome": {
@@ -2748,7 +2851,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$foreign_rid"
+            "room_id": "$foreign_rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "e1": "$error"
@@ -2761,7 +2869,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "e2": "$error"
@@ -2917,7 +3030,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           }
         },
         {
@@ -2941,7 +3059,7 @@
         {
           "call": "transfer.cancel",
           "in": {
-            "op_id": "op-nopath-2"
+            "transfer_op_id": "op-nopath-2"
           }
         },
         {
@@ -2999,7 +3117,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -3019,13 +3142,18 @@
         {
           "control": "fault_inject",
           "fault": "file_index_unreadable",
-          "room": "$rid",
+          "room_id": "$rid",
           "note": "the room's file index read path fails -- I/O error or permission denial. The share event and the local blob are untouched; only the read fails."
         },
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "file_index_unreadable",
@@ -3064,7 +3192,12 @@
         {
           "call": "file.list",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [

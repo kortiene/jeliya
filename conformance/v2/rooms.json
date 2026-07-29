@@ -26,9 +26,7 @@
           "expect_subset": {
             "room_id": "<room_id>",
             "name": "Conformance Alpha",
-            "lifecycle": {
-              "state": "active"
-            },
+            "standing": "active",
             "live": false
           },
           "expect_no_null": true,
@@ -50,9 +48,7 @@
             "members": [
               {
                 "subject_id": "<hex64>",
-                "standing": {
-                  "state": "active"
-                }
+                "standing": "active"
               }
             ]
           },
@@ -75,7 +71,12 @@
         {
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": [
             {
@@ -145,7 +146,12 @@
         {
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_out": "timeline_before",
           "assert": [
@@ -168,7 +174,12 @@
         {
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_identical_to": "timeline_before"
         },
@@ -430,7 +441,7 @@
       "name": "room_list_reports_lifecycle_role_and_capabilities_from_local_evidence",
       "kind": "success",
       "operation": "room.list",
-      "intent": "Proves room.list answers what rooms are mine, in what lifecycle state and with what capabilities, from the local store with zero network activity, catching any change that makes the room list depend on liveness or on reaching peers.",
+      "intent": "Proves room.list answers what rooms are mine, in what standing and with what capabilities, from the local store with zero network activity, catching any change that makes the room list depend on liveness or on reaching peers.",
       "requires": [
         "subject",
         "room",
@@ -445,13 +456,15 @@
               {
                 "room_id": "<room_id>",
                 "name": "<string>",
-                "lifecycle": {
-                  "state": "<variant>"
-                },
+                "standing": "<standing>",
                 "live": "<bool>",
                 "role": "<variant>",
                 "member_count": "<number>",
-                "last_event_ts": "<ts>",
+                "last_event": {
+                  "state": "present",
+                  "at": "<ts>",
+                  "kind": "<string>"
+                },
                 "capabilities": "<array>"
               }
             ]
@@ -469,11 +482,11 @@
                 "fields": [
                   "room_id",
                   "name",
-                  "lifecycle",
+                  "standing",
                   "live",
                   "role",
                   "member_count",
-                  "last_event_ts",
+                  "last_event",
                   "capabilities"
                 ]
               }
@@ -581,9 +594,7 @@
               {
                 "room_id": "<room_id>",
                 "live": true,
-                "lifecycle": {
-                  "state": "active"
-                }
+                "standing": "active"
               }
             ]
           }
@@ -679,9 +690,7 @@
               {
                 "room_id": "<room_id>",
                 "live": false,
-                "lifecycle": {
-                  "state": "left"
-                }
+                "standing": "left"
               }
             ]
           }
@@ -692,7 +701,7 @@
       "name": "room_deactivate_stops_liveness_without_changing_membership",
       "kind": "success",
       "operation": "room.deactivate",
-      "intent": "Proves deactivation is a liveness change only — lifecycle, members and capabilities-to-rejoin are untouched — catching a daemon that conflates leaving the network with leaving the room.",
+      "intent": "Proves deactivation is a liveness change only — standing, members and capabilities-to-rejoin are untouched — catching a daemon that conflates leaving the network with leaving the room.",
       "requires": [
         "subject",
         "live_room",
@@ -731,9 +740,7 @@
               {
                 "room_id": "<room_id>",
                 "live": false,
-                "lifecycle": {
-                  "state": "active"
-                }
+                "standing": "active"
               }
             ]
           }
@@ -775,7 +782,7 @@
       "name": "room_deactivate_on_a_room_the_subject_left_is_refused",
       "kind": "error",
       "operation": "room.deactivate",
-      "intent": "Proves a mutating lifecycle operation on ended membership refuses with membership_ended rather than being absorbed by idempotency, catching a daemon that accepts writes against a room the caller no longer belongs to.",
+      "intent": "Proves a mutating standing operation on ended membership refuses with membership_ended rather than being absorbed by idempotency, catching a daemon that accepts writes against a room the caller no longer belongs to.",
       "requires": [
         "authority",
         "member_b",
@@ -828,9 +835,7 @@
           "expect_subset": {
             "room_id": "<room_id>",
             "event_id": "<hex64>",
-            "lifecycle": {
-              "state": "left"
-            }
+            "standing": "left"
           },
           "expect_no_null": true
         },
@@ -839,7 +844,7 @@
           "expect_push": {
             "t": "room.event",
             "match": {
-              "room": "<room_id>",
+              "room_id": "<room_id>",
               "pos": "<number>",
               "event": {
                 "event_id": "<hex64>",
@@ -859,15 +864,11 @@
             "members": [
               {
                 "subject_id": "<hex64>",
-                "standing": {
-                  "state": "active"
-                }
+                "standing": "active"
               },
               {
                 "subject_id": "<hex64>",
-                "standing": {
-                  "state": "left"
-                }
+                "standing": "left"
               }
             ]
           },
@@ -888,9 +889,7 @@
             "rooms": [
               {
                 "room_id": "<room_id>",
-                "lifecycle": {
-                  "state": "left"
-                },
+                "standing": "left",
                 "live": false
               }
             ]
@@ -923,7 +922,12 @@
           "as": "authority",
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_out": "timeline_after_leave"
         },
@@ -940,7 +944,12 @@
           "as": "authority",
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_identical_to": "timeline_after_leave"
         },
@@ -948,7 +957,7 @@
           "as": "authority",
           "expect_no_push": {
             "t": "room.event",
-            "room": "$rid",
+            "room_id": "$rid",
             "within_ms": 2000
           }
         }
@@ -1066,7 +1075,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save_out": "page_live",
           "expect_subset": {
@@ -1093,7 +1106,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_identical_to": "page_live"
         }
@@ -1115,7 +1132,12 @@
         {
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_subset": {
             "room_id": "<room_id>",
@@ -1170,7 +1192,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save_out": "page_one",
           "assert": [
@@ -1203,7 +1229,7 @@
           "expect_push": {
             "t": "room.event",
             "match": {
-              "room": "<room_id>",
+              "room_id": "<room_id>",
               "pos": "<number>"
             },
             "within_ms": 5000
@@ -1215,14 +1241,18 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "assert": [
             {
               "contains_pos_from_push": {
                 "path": "out.events",
                 "push": "room.event",
-                "room": "$rid"
+                "room_id": "$rid"
               }
             }
           ]
@@ -1246,7 +1276,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save_out": "page_one",
           "save": {
@@ -1276,7 +1310,8 @@
             "cursor": "$cur",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "direction": "forward"
           },
           "save_out": "page_two",
           "assert": [
@@ -1315,7 +1350,11 @@
                 "timeline_page_max",
                 1
               ]
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_error": {
             "code": "invalid_argument",
@@ -1352,7 +1391,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "cur_a": "cursor"
@@ -1362,7 +1405,9 @@
           "call": "room.timeline",
           "in": {
             "room_id": "$rid2",
-            "cursor": "$cur_a"
+            "cursor": "$cur_a",
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "cursor_unknown",
@@ -1375,7 +1420,9 @@
           "call": "room.timeline",
           "in": {
             "room_id": "$rid",
-            "cursor": "not-a-cursor"
+            "cursor": "not-a-cursor",
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "invalid_argument",
@@ -1406,7 +1453,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_no_null": true,
           "assert": [
@@ -1452,9 +1503,7 @@
               {
                 "subject_id": "<hex64>",
                 "role": "<variant>",
-                "standing": {
-                  "state": "<variant>"
-                }
+                "standing": "<standing>"
               }
             ]
           },
@@ -1563,16 +1612,18 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid_left"
+            "room_id": "$rid_left",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_out": "archive_view",
           "expect_subset": {
             "room_id": "<room_id>",
             "name": "<string>",
-            "lifecycle": {
-              "state": "left",
-              "at": "<ts>"
-            },
+            "standing": "left",
             "events": "<array>",
             "cursor": {
               "state": "<variant>"
@@ -1603,7 +1654,12 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid_left"
+            "room_id": "$rid_left",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_identical_to": "archive_view",
           "assert": [
@@ -1627,9 +1683,7 @@
               {
                 "room_id": "<room_id>",
                 "live": false,
-                "lifecycle": {
-                  "state": "left"
-                }
+                "standing": "left"
               }
             ]
           }
@@ -1649,15 +1703,18 @@
         {
           "call": "room.archive",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "policy_refused",
             "fields_subset": {
               "room_id": "<room_id>",
-              "lifecycle": {
-                "state": "active"
-              }
+              "standing": "active"
             }
           },
           "assert": [
@@ -1680,9 +1737,7 @@
               {
                 "room_id": "<room_id>",
                 "live": true,
-                "lifecycle": {
-                  "state": "active"
-                }
+                "standing": "active"
               }
             ]
           }
@@ -1705,7 +1760,12 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid_left"
+            "room_id": "$rid_left",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_subset": {
             "capabilities": []
@@ -1800,7 +1860,12 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid_left"
+            "room_id": "$rid_left",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": [
             {
@@ -1829,23 +1894,23 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid_removed"
+            "room_id": "$rid_removed",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_subset": {
             "room_id": "<room_id>",
-            "lifecycle": {
-              "state": "removed",
-              "at": "<ts>",
-              "by": "<hex64>",
-              "event_id": "<hex64>"
-            },
+            "standing": "removed",
             "capabilities": []
           },
           "expect_no_null": true,
           "assert": [
             {
               "same_value_as": {
-                "path": "out.lifecycle.by",
+                "path": "out.standing.by",
                 "bag": "subject_a"
               }
             },
@@ -2156,11 +2221,7 @@
             "room_id": "<room_id>",
             "subject_id": "<hex64>",
             "event_id": "<hex64>",
-            "standing": {
-              "state": "removed",
-              "at": "<ts>",
-              "by": "<hex64>"
-            }
+            "standing": "removed"
           },
           "expect_no_null": true
         },
@@ -2169,7 +2230,7 @@
           "expect_push": {
             "t": "room.event",
             "match": {
-              "room": "<room_id>",
+              "room_id": "<room_id>",
               "pos": "<number>",
               "event": {
                 "event_id": "<hex64>"
@@ -2202,7 +2263,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "assert": [
             {
@@ -2300,7 +2365,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save_out": "timeline_after_removal"
         },
@@ -2321,7 +2390,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_identical_to": "timeline_after_removal"
         }
@@ -2369,7 +2442,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "assert": [
             {
@@ -2453,7 +2530,11 @@
             "room_id": "$rid_removed",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save_out": "timeline_before"
         },
@@ -2473,7 +2554,11 @@
             "room_id": "$rid_removed",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_identical_to": "timeline_before"
         },
@@ -2507,7 +2592,7 @@
       "name": "removed_member_can_see_the_cause_of_its_own_removal",
       "kind": "authorization",
       "operation": "member.remove",
-      "intent": "Proves v2 ships no state whose cause the client cannot see: the removed member reads its lifecycle, the signer and the instant from its own connection, catching a daemon that renders the removed state with no attributable event behind it.",
+      "intent": "Proves v2 ships no state whose cause the client cannot see: the removed member reads its standing, the signer and the instant from its own connection, catching a daemon that renders the removed state with no attributable event behind it.",
       "requires": [
         "authority",
         "member_b",
@@ -2535,11 +2620,7 @@
               {
                 "room_id": "<room_id>",
                 "live": false,
-                "lifecycle": {
-                  "state": "removed",
-                  "at": "<ts>",
-                  "by": "<hex64>"
-                }
+                "standing": "removed"
               }
             ]
           },
@@ -2547,7 +2628,7 @@
           "assert": [
             {
               "same_value_as": {
-                "path": "out.rooms[0].lifecycle.by",
+                "path": "out.rooms[0].standing.by",
                 "bag": "subject_a"
               }
             }
@@ -2557,20 +2638,21 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_subset": {
-            "lifecycle": {
-              "state": "removed",
-              "event_id": "<hex64>",
-              "by": "<hex64>"
-            },
+            "standing": "removed",
             "capabilities": []
           },
           "assert": [
             {
               "same_value_as": {
-                "path": "out.lifecycle.event_id",
+                "path": "out.standing.event_id",
                 "bag": "removal_event_id"
               }
             },
@@ -2616,7 +2698,7 @@
           "expect_push": {
             "t": "room.event",
             "match": {
-              "room": "<room_id>",
+              "room_id": "<room_id>",
               "pos": "<number>",
               "event": {
                 "event_id": "<hex64>"
@@ -2644,7 +2726,7 @@
           "expect_push": {
             "t": "room.event",
             "match": {
-              "room": "<room_id>"
+              "room_id": "<room_id>"
             },
             "within_ms": 5000,
             "as": "authority"
@@ -2654,7 +2736,7 @@
           "as": "member_b",
           "expect_no_push": {
             "t": "room.event",
-            "room": "$rid",
+            "room_id": "$rid",
             "within_ms": 5000
           }
         },
@@ -2662,7 +2744,12 @@
           "as": "member_b",
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "membership_ended",
@@ -2718,14 +2805,14 @@
           "assert": [
             {
               "pushes_pos_strictly_increasing": {
-                "room": "$rid",
+                "room_id": "$rid",
                 "within_ms": 5000,
                 "min_count": 3
               }
             },
             {
               "every_push_has_non_null": {
-                "room": "$rid",
+                "room_id": "$rid",
                 "fields": [
                   "t",
                   "room",
@@ -2735,7 +2822,7 @@
             },
             {
               "no_push_has_field": {
-                "room": "$rid",
+                "room_id": "$rid",
                 "field": "id"
               }
             }
@@ -2760,7 +2847,12 @@
           "as": "outsider",
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_error": "e_exists",
           "expect_error": {
@@ -2776,7 +2868,12 @@
           "in": {
             "room_id": {
               "$unknown_room_id": true
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available"
@@ -2859,7 +2956,12 @@
           "as": "outsider",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_error": "e_exists_archive",
           "expect_error": {
@@ -2875,7 +2977,12 @@
           "in": {
             "room_id": {
               "$unknown_room_id": true
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_identical_to": "e_exists_archive"
         },
@@ -2948,9 +3055,7 @@
               {
                 "room_id": "<room_id>",
                 "live": true,
-                "lifecycle": {
-                  "state": "active"
-                }
+                "standing": "active"
               }
             ]
           },
@@ -3092,7 +3197,12 @@
           "as": "outsider",
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_error": "e_invite_holder",
           "expect_error": {
@@ -3108,7 +3218,12 @@
           "in": {
             "room_id": {
               "$unknown_room_id": true
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_identical_to": "e_invite_holder"
         },
@@ -3129,7 +3244,12 @@
           "as": "outsider",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available",
@@ -3167,7 +3287,12 @@
             "as": "outsider",
             "call": "room.timeline",
             "in": {
-              "room_id": "$rid"
+              "room_id": "$rid",
+              "cursor": {
+                "state": "start"
+              },
+              "direction": "forward",
+              "limit": 50
             }
           },
           "b": {
@@ -3176,7 +3301,12 @@
             "in": {
               "room_id": {
                 "$unknown_room_id": true
-              }
+              },
+              "cursor": {
+                "state": "start"
+              },
+              "direction": "forward",
+              "limit": 50
             }
           },
           "assert": [
@@ -3289,7 +3419,12 @@
           "as": "member_b",
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid_left"
+            "room_id": "$rid_left",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "membership_ended",
@@ -3333,9 +3468,7 @@
             "rooms": [
               {
                 "room_id": "<room_id>",
-                "lifecycle": {
-                  "state": "left"
-                },
+                "standing": "left",
                 "live": false
               }
             ]
@@ -3345,13 +3478,16 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid_left"
+            "room_id": "$rid_left",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_subset": {
             "room_id": "<room_id>",
-            "lifecycle": {
-              "state": "left"
-            },
+            "standing": "left",
             "capabilities": []
           },
           "assert": [
@@ -3393,7 +3529,12 @@
           "as": "member_b",
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid_removed"
+            "room_id": "$rid_removed",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "membership_ended",
@@ -3449,11 +3590,7 @@
             "rooms": [
               {
                 "room_id": "<room_id>",
-                "lifecycle": {
-                  "state": "removed",
-                  "by": "<hex64>",
-                  "at": "<ts>"
-                },
+                "standing": "removed",
                 "live": false
               }
             ]
@@ -3464,12 +3601,15 @@
           "as": "member_b",
           "call": "room.archive",
           "in": {
-            "room_id": "$rid_removed"
+            "room_id": "$rid_removed",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_subset": {
-            "lifecycle": {
-              "state": "removed"
-            },
+            "standing": "removed",
             "capabilities": []
           },
           "assert": [
@@ -3643,7 +3783,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save_out": "authority_history",
           "assert": [
@@ -3701,7 +3845,11 @@
             "room_id": "$rid",
             "limit": {
               "$limit": "timeline_page_max"
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "assert": [
             {
@@ -4091,9 +4239,7 @@
               {
                 "subject_id": "<hex64>",
                 "role": "<variant>",
-                "standing": {
-                  "state": "<variant>"
-                }
+                "standing": "<standing>"
               }
             ]
           },
@@ -4168,7 +4314,12 @@
         {
           "call": "room.timeline",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_no_null": true,
           "assert": [
@@ -4204,9 +4355,9 @@
     "SERVED-LIMIT SUBSTITUTION. `{\"$limit\": \"timeline_page_max\"}` and `{\"$limit_plus\": [\"timeline_page_max\", 1]}` require the harness to read the value from the `hello` limits object at replay time. This is deliberate: it makes the corpus itself obey 'no client may compile the value in', the same rule the shared-file-size policy imposes, and it means the boundary cases stay correct if the daemon retunes the page bound.",
     "PRECONDITIONS PUBLISH BAG KEYS. `requires` names are contracts on the harness. Actors: `authority`, `member_b`, `member_c`, `joiner`, `outsider`, `principal_1`/`principal_2` (two distinct authenticated session principals on ONE daemon and one subject). Bag keys published: `rid`, `rid_1..3`, `rid2`, `rid_inactive`, `rid_left`, `rid_removed`, `subject_a`/`subject_b`/`subject_c`/`subject_o`/`subject_joiner`, `device_b`, `removal_event_id`, `unresolvable_event_id`, `small_blob`. `$op_id_new` is a fresh op_id per use; `$op_id_fixed` is one value reused within a case (that is what makes the replay cases mean anything). `quiescent_room` means no other actor authors during the case, which is what makes `expect_identical_to` across two reads legitimate.",
     "HARNESS CAPABILITIES BEYOND V1's. `network_observation` (zero bytes/zero dials attributable to the room during a step), `store_observation` (data-dir snapshot equal before and after — this is how 'zero durable mutation' is checked), `network_offline`, `reconnect`, `timing_instrumentation`, `harness_fault_injection`, `connection_generation_fault_injection`, `unreachable_member_device`, `linked_member_device`, `subscribed_*`. These are harness obligations, not upstream blocks; only U1 cases carry blocked_on_upstream.",
-    "CODES THE SPEC NAMES, USED AS WRITTEN: room_not_available, room_not_live, policy_refused, insufficient_standing, invalid_argument, resource_exhausted. CODES I HAD TO PROPOSE because the taxonomy is described as 40 codes but only eight are spelled out, and #161 forbids satisfying an operation's error requirement with a generic code: `subject_absent` (the single answer to the missing-subject precondition, spelled to match hello's `subject.state: absent`), `membership_ended` {room_id, state: left|removed, at} (the lifecycle family: safe to return to a FORMER member, who already knows the room exists, so it is not an oracle), `sole_authority_cannot_leave` (kept distinct from policy_refused because #161 requires per-operation distinctiveness and policy_refused is already claimed by room.archive), `cursor_invalid` {reason: malformed|unknown|foreign_room}, `member_unknown` {subject_id}, `op_id_conflict` {op_id}. Every one of these needs ratifying in docs/protocol-v2.md or the manifest before the corpus freezes.",
-    "BIGGEST INTERPRETATION — WHAT room.archive RETURNS. The spec says it opens a left or removed room as a local read-only archive with zero network and zero durable mutation, but does not say whether (a) it RETURNS the archived history itself, or (b) it opens a read-only session after which room.timeline becomes legal for an ended room. I chose (a): room.archive takes the same cursor/limit shape and returns {room_id, name, lifecycle{state,at,by,event_id}, events, cursor, capabilities: []}, and room.timeline stays member-only. Reading (b) would make room.archive redundant with room.timeline for reads and would make it stateful despite carrying no M marker. The discriminator is the step in `lifecycle_left_room_refuses_every_write_and_every_live_read` asserting room.timeline returns membership_ended for a left room: if the spec ratifies (b), that step and the archive success cases flip to room.timeline.",
-    "LIFECYCLE VS LIVENESS. I treat these as two orthogonal fields because room.deactivate is defined as stopping live participation WITHOUT changing membership: `lifecycle.state` in {active, left, removed} (tokens taken from the spec's own prose 'a left or removed room' and #161's 'ACTIVE room') and a separate boolean `live`. `room_deactivate_stops_liveness_without_changing_membership` asserts exactly this split, so a daemon that collapses them into one enum fails. Member `standing.state` uses the same three tokens. If the manifest picks different tokens, only the tokens change; every assertion's shape survives.",
+    "CODES THE SPEC NAMES, USED AS WRITTEN: room_not_available, room_not_live, policy_refused, insufficient_standing, invalid_argument, resource_exhausted. CODES I HAD TO PROPOSE because the taxonomy is described as 40 codes but only eight are spelled out, and #161 forbids satisfying an operation's error requirement with a generic code: `subject_absent` (the single answer to the missing-subject precondition, spelled to match hello's `subject.state: absent`), `membership_ended` {room_id, state: left|removed, at} (the standing family: safe to return to a FORMER member, who already knows the room exists, so it is not an oracle), `sole_authority_cannot_leave` (kept distinct from policy_refused because #161 requires per-operation distinctiveness and policy_refused is already claimed by room.archive), `cursor_invalid` {reason: malformed|unknown|foreign_room}, `member_unknown` {subject_id}, `op_id_conflict` {op_id}. Every one of these needs ratifying in docs/protocol-v2.md or the manifest before the corpus freezes.",
+    "BIGGEST INTERPRETATION — WHAT room.archive RETURNS. The spec says it opens a left or removed room as a local read-only archive with zero network and zero durable mutation, but does not say whether (a) it RETURNS the archived history itself, or (b) it opens a read-only session after which room.timeline becomes legal for an ended room. I chose (a): room.archive takes the same cursor/limit shape and returns {room_id, name, standing{state,at,by,event_id}, events, cursor, capabilities: []}, and room.timeline stays member-only. Reading (b) would make room.archive redundant with room.timeline for reads and would make it stateful despite carrying no M marker. The discriminator is the step in `lifecycle_left_room_refuses_every_write_and_every_live_read` asserting room.timeline returns membership_ended for a left room: if the spec ratifies (b), that step and the archive success cases flip to room.timeline.",
+    "LIFECYCLE VS LIVENESS. I treat these as two orthogonal fields because room.deactivate is defined as stopping live participation WITHOUT changing membership: `standing.state` in {active, left, removed} (tokens taken from the spec's own prose 'a left or removed room' and #161's 'ACTIVE room') and a separate boolean `live`. `room_deactivate_stops_liveness_without_changing_membership` asserts exactly this split, so a daemon that collapses them into one enum fails. Member `standing.state` uses the same three tokens. If the manifest picks different tokens, only the tokens change; every assertion's shape survives.",
     "THE ROLE TOKEN IS NOT ASSERTED LITERALLY. The spec removes the two-vocabulary naming (log `admin` vs wire `owner`) and says 'one name, both places' without saying WHICH name. Inventing one would be authoring the implementation, so `role_vocabulary_is_one_token_across_every_surface` asserts cross-surface identity (room.list's role equals room.members' role for the same subject) plus authority != member, which is precisely the property the spec states and is spelling-independent.",
     "THE CAPABILITY VOCABULARY IS ALSO UNSPECIFIED. room.list must answer 'what may I do in each' and room.activate returns capabilities, but no token list exists. So capability cases assert behaviour, not tokens: `advertised_capabilities_match_enforcement_in_every_lifecycle_state` requires the harness to exercise each advertised capability (must succeed) and each omitted write (must refuse). RECOMMENDATION: the spec should enumerate the capability tokens, or this case degrades to a harness-defined probe list.",
     "op_id REQUIRED VS ACCEPTED. The spec says every mutating operation 'accepts' an op_id but splits mutations into naturally-idempotent and op_id-deduplicated classes. I read that as: op_id is REQUIRED for the deduplicated class (an undeduplicable room.create makes the stated retry policy unenforceable) and OPTIONAL for the naturally idempotent class. `room_create_without_an_op_id_is_refused` and `room_activate_is_naturally_idempotent_and_needs_no_op_id` pin both halves. If the spec instead makes op_id optional everywhere, the first case must flip — it is the one to change, not the second.",

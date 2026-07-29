@@ -18,7 +18,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -68,7 +68,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "localhost",
@@ -89,7 +89,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "loopback.example.test",
@@ -126,7 +126,7 @@
           "as": "B",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -153,7 +153,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": []
@@ -178,7 +183,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -197,7 +202,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "127.0.0.1",
@@ -219,7 +224,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "target": {
               "host": "127.0.0.1",
@@ -255,7 +260,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": {
               "nested": "object"
             },
@@ -278,7 +283,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": []
@@ -304,7 +314,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-publish-1",
             "target": {
               "host": "127.0.0.1",
@@ -326,7 +336,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-publish-1",
             "target": {
               "host": "127.0.0.1",
@@ -347,7 +357,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "array_len": {
@@ -376,7 +391,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-publish-2",
             "target": {
               "host": "127.0.0.1",
@@ -403,7 +418,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-publish-2",
             "target": {
               "host": "127.0.0.1",
@@ -421,7 +436,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "array_len": {
@@ -450,7 +470,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "shared-op-id",
             "target": {
               "host": "127.0.0.1",
@@ -468,7 +488,7 @@
           "as": "A2",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "shared-op-id",
             "target": {
               "host": "127.0.0.1",
@@ -492,7 +512,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "array_len": {
@@ -523,7 +548,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -541,7 +566,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -601,7 +631,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -619,7 +649,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -631,7 +661,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -656,7 +691,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -691,7 +731,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -709,14 +749,19 @@
           "as": "B",
           "call": "room.deactivate",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           }
         },
         {
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -761,7 +806,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -779,7 +824,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           }
@@ -788,7 +833,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -827,12 +877,17 @@
           "as": "C",
           "call": "pipe.list",
           "in": {
-            "room": "$foreign_rid"
+            "room_id": "$foreign_rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available",
             "fields": {
-              "room": "$foreign_rid",
+              "room_id": "$foreign_rid",
               "hint": "<absent>"
             }
           }
@@ -856,7 +911,12 @@
           "as": "C",
           "call": "pipe.list",
           "in": {
-            "room": "$foreign_rid"
+            "room_id": "$foreign_rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_error": {
             "e_list_real": "$"
@@ -869,7 +929,12 @@
           "as": "C",
           "call": "pipe.list",
           "in": {
-            "room": "$never_existed_rid"
+            "room_id": "$never_existed_rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_error": {
             "e_list_ghost": "$"
@@ -882,7 +947,7 @@
           "as": "C",
           "call": "pipe.publish",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -903,7 +968,7 @@
           "as": "C",
           "call": "pipe.publish",
           "in": {
-            "room": "$never_existed_rid",
+            "room_id": "$never_existed_rid",
             "op_id": "$op2",
             "target": {
               "host": "127.0.0.1",
@@ -924,7 +989,7 @@
           "as": "C",
           "call": "pipe.connect",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "op_id": "$op3",
             "pipe_id": "$foreign_pid"
           },
@@ -939,7 +1004,7 @@
           "as": "C",
           "call": "pipe.connect",
           "in": {
-            "room": "$never_existed_rid",
+            "room_id": "$never_existed_rid",
             "op_id": "$op4",
             "pipe_id": "$foreign_pid"
           },
@@ -954,7 +1019,7 @@
           "as": "C",
           "call": "pipe.revoke",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "op_id": "$op5",
             "pipe_id": "$foreign_pid"
           },
@@ -969,7 +1034,7 @@
           "as": "C",
           "call": "pipe.revoke",
           "in": {
-            "room": "$never_existed_rid",
+            "room_id": "$never_existed_rid",
             "op_id": "$op6",
             "pipe_id": "$foreign_pid"
           },
@@ -984,7 +1049,7 @@
           "as": "C",
           "call": "pipe.release",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "op_id": "$op7",
             "connection_id": "$foreign_cid"
           },
@@ -999,7 +1064,7 @@
           "as": "C",
           "call": "pipe.release",
           "in": {
-            "room": "$never_existed_rid",
+            "room_id": "$never_existed_rid",
             "op_id": "$op8",
             "connection_id": "$foreign_cid"
           },
@@ -1081,7 +1146,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1099,7 +1164,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$other_rid",
+            "room_id": "$other_rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -1110,7 +1175,7 @@
             "code": "pipe_unknown",
             "fields": {
               "pipe_id": "$pid",
-              "room": "$other_rid"
+              "room_id": "$other_rid"
             }
           }
         },
@@ -1118,7 +1183,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$other_rid",
+            "room_id": "$other_rid",
             "op_id": "$op3",
             "pipe_id": "$fabricated_pid"
           },
@@ -1171,7 +1236,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1189,7 +1254,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -1220,7 +1285,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "pipe_id": "$pid"
           },
@@ -1257,7 +1322,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1275,7 +1340,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -1287,7 +1352,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "pipe_id": "$pid"
           },
@@ -1321,7 +1386,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1344,7 +1409,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -1365,7 +1435,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -1405,7 +1475,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1423,7 +1493,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           }
@@ -1441,7 +1511,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "pipe_id": "$pid"
           },
@@ -1460,7 +1530,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -1504,7 +1579,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1525,7 +1600,7 @@
           "as": "D",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -1537,7 +1612,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "pipe_id": "$pid"
           },
@@ -1558,7 +1633,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -1602,7 +1682,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1620,7 +1700,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-connect-1",
             "pipe_id": "$pid"
           },
@@ -1634,7 +1714,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-connect-1",
             "pipe_id": "$pid"
           },
@@ -1652,7 +1732,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -1693,7 +1778,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1711,7 +1796,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -1723,7 +1808,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "pipe_id": "$pid"
           },
@@ -1735,7 +1820,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op4",
             "connection_id": "$cid1"
           },
@@ -1753,7 +1838,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -1777,7 +1867,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-release-replay",
             "connection_id": "$cid2"
           },
@@ -1789,7 +1879,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-release-replay",
             "connection_id": "$cid2"
           },
@@ -1818,7 +1908,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "connection_id": "$never_issued_cid"
           },
@@ -1837,7 +1927,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$other_rid",
+            "room_id": "$other_rid",
             "op_id": "$op2",
             "connection_id": "$cid_in_rid"
           },
@@ -1885,7 +1975,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -1903,7 +1993,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "a_before": "$"
@@ -1913,7 +2008,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -1925,7 +2020,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "connection_id": "$cid"
           },
@@ -1939,7 +2034,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -1962,7 +2062,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "identical_to": "$a_before",
@@ -1983,7 +2088,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op4",
             "pipe_id": "$pid"
           },
@@ -2001,7 +2106,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op5",
             "pipe_id": "$pid"
           },
@@ -2021,7 +2126,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -2049,7 +2159,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op6",
             "pipe_id": "$pid"
           },
@@ -2061,7 +2171,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op7",
             "connection_id": "$cid2"
           },
@@ -2091,7 +2201,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -2109,7 +2219,7 @@
           "as": "B",
           "call": "pipe.connect",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -2121,7 +2231,7 @@
           "as": "B",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "pipe_id": "$pid"
           },
@@ -2141,7 +2251,7 @@
           "as": "B",
           "call": "pipe.release",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op4",
             "connection_id": "$cid"
           },
@@ -2155,7 +2265,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -2190,7 +2305,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -2208,7 +2323,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-revoke-1",
             "pipe_id": "$pid"
           },
@@ -2233,7 +2348,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "op-revoke-1",
             "pipe_id": "$pid"
           },
@@ -2254,7 +2369,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -2287,7 +2407,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -2305,7 +2425,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           },
@@ -2317,7 +2437,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3_distinct",
             "pipe_id": "$pid"
           },
@@ -2334,7 +2454,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -2372,7 +2497,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "pipe_id": "$fabricated_pid"
           },
@@ -2380,7 +2505,7 @@
             "code": "pipe_unknown",
             "fields": {
               "pipe_id": "$fabricated_pid",
-              "room": "$rid"
+              "room_id": "$rid"
             }
           }
         }
@@ -2407,7 +2532,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -2425,7 +2550,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "127.0.0.1",
@@ -2443,7 +2568,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "pipe_id": "$pid1"
           }
@@ -2452,7 +2577,7 @@
           "as": "B",
           "expect_push": {
             "where": {
-              "room": "$rid",
+              "room_id": "$rid",
               "names_pipe_id": [
                 "$pid1",
                 "$pid2"
@@ -2461,7 +2586,7 @@
             "count": 3,
             "match": {
               "t": "<any>",
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "<pos>",
               "id": "<absent>"
             },
@@ -2476,7 +2601,7 @@
             "strictly_increasing": "$positions",
             "contiguous_with_room_stream": true,
             "no_gap_frame_observed": {
-              "room": "$rid"
+              "room_id": "$rid"
             },
             "note": "positions are asserted as strictly increasing and gap-free within this room only; no ordering relative to any other room is asserted, because v2 defines none"
           }
@@ -2504,7 +2629,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -2522,7 +2647,7 @@
           "as": "B",
           "expect_push": {
             "where": {
-              "room": "$rid",
+              "room_id": "$rid",
               "names_pipe_id": [
                 "$pid1"
               ]
@@ -2534,7 +2659,7 @@
           "as": "B",
           "call": "room.leave",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2"
           }
         },
@@ -2542,7 +2667,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "target": {
               "host": "127.0.0.1",
@@ -2560,7 +2685,7 @@
           "as": "B",
           "expect_no_push": {
             "where": {
-              "room": "$rid"
+              "room_id": "$rid"
             },
             "window_ms": 2000
           }
@@ -2569,7 +2694,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "room_not_available"
@@ -2579,7 +2709,7 @@
           "as": "B",
           "call": "stream.subscribe",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op4"
           },
           "expect_error": {
@@ -2613,7 +2743,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$any_rid"
+            "room_id": "$any_rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_error": {
             "e_pipes": "$"
@@ -2626,7 +2761,7 @@
           "as": "A",
           "call": "room.members",
           "in": {
-            "room": "$any_rid"
+            "room_id": "$any_rid"
           },
           "save_error": {
             "e_members": "$"
@@ -2639,7 +2774,7 @@
           "as": "A",
           "call": "fleet.list",
           "in": {
-            "room": "$any_rid"
+            "room_id": "$any_rid"
           },
           "save_error": {
             "e_fleet": "$"
@@ -2686,7 +2821,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -2704,7 +2839,7 @@
           "as": "B",
           "call": "room.members",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "save": {
             "m0": "$"
@@ -2713,10 +2848,8 @@
             "members": [
               {
                 "subject_id": "<hex64>",
-                "role": "owner",
-                "standing": {
-                  "state": "active"
-                },
+                "role": "authority",
+                "standing": "active",
                 "presence": "<absent>",
                 "reachability": "<absent>",
                 "online": "<absent>",
@@ -2725,9 +2858,7 @@
               {
                 "subject_id": "<hex64>",
                 "role": "member",
-                "standing": {
-                  "state": "active"
-                }
+                "standing": "active"
               }
             ]
           },
@@ -2739,7 +2870,7 @@
           "as": "B",
           "call": "room.peers",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "save": {
             "p0": "$"
@@ -2749,8 +2880,8 @@
               {
                 "device_id": "<hex64>",
                 "link": {
-                  "state": "linked",
-                  "path": "<any>"
+                  "state": "<link_connected>",
+                  "since": "<ts>"
                 }
               }
             ]
@@ -2763,7 +2894,12 @@
           "as": "B",
           "call": "file.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "f0": "$"
@@ -2794,7 +2930,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "q0": "$"
@@ -2821,7 +2962,7 @@
           "as": "A",
           "call": "pipe.revoke",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "pipe_id": "$pid"
           }
@@ -2834,7 +2975,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -2851,7 +2997,7 @@
           "as": "B",
           "call": "room.members",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "assert": {
             "identical_to": "$m0"
@@ -2861,7 +3007,7 @@
           "as": "B",
           "call": "room.peers",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "assert": {
             "equal_modulo": {
@@ -2877,7 +3023,12 @@
           "as": "B",
           "call": "file.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -2899,7 +3050,7 @@
           "as": "B",
           "call": "room.members",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "assert": {
             "identical_to": "$m0",
@@ -2910,15 +3061,15 @@
           "as": "B",
           "call": "room.peers",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "expect": {
             "peers": [
               {
                 "device_id": "<hex64>",
                 "link": {
-                  "state": "unlinked",
-                  "reason": "<any>"
+                  "state": "not_connected",
+                  "reason": "<link_reason>"
                 }
               }
             ]
@@ -2931,7 +3082,12 @@
           "as": "B",
           "call": "file.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "files": [
@@ -2987,7 +3143,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -3006,7 +3162,7 @@
           "expect_push": {
             "push": "peer",
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "device_id": "<hex64>",
               "generation": "<number>",
               "state": "online",
@@ -3027,7 +3183,7 @@
           "expect_push": {
             "push": "peer",
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "state": "online",
               "generation": "<number>"
             },
@@ -3057,14 +3213,14 @@
           "as": "B",
           "call": "room.peers",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "expect": {
             "peers": [
               {
                 "device_id": "<hex64>",
                 "link": {
-                  "state": "linked"
+                  "state": "<link_connected>"
                 },
                 "generation": "$gen_new"
               }
@@ -3078,7 +3234,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": [
@@ -3131,7 +3292,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -3162,7 +3323,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "::1",
@@ -3197,7 +3358,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "array_len": {
@@ -3225,7 +3391,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -3246,7 +3412,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "127.255.255.254",
@@ -3268,7 +3434,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "target": {
               "host": "126.255.255.255",
@@ -3299,7 +3465,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op4",
             "target": {
               "host": "128.0.0.0",
@@ -3340,7 +3506,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "array_len": {
@@ -3368,7 +3539,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "::1",
@@ -3389,7 +3560,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "::",
@@ -3417,7 +3588,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "target": {
               "host": "::2",
@@ -3442,7 +3613,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op4",
             "target": {
               "host": "fe80::1",
@@ -3467,7 +3638,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op5",
             "target": {
               "host": "::ffff:192.168.1.10",
@@ -3496,7 +3667,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "array_len": {
@@ -3523,7 +3699,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "192.168.1.10",
@@ -3554,7 +3730,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "10.0.0.5",
@@ -3595,7 +3771,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": []
@@ -3620,7 +3801,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "203.0.113.9",
@@ -3648,7 +3829,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "8.8.8.8",
@@ -3673,7 +3854,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "target": {
               "host": "2001:db8::1",
@@ -3701,7 +3882,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": []
@@ -3725,7 +3911,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "127.0.0.1",
@@ -3751,7 +3937,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "127.0.0.1",
@@ -3776,7 +3962,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op3",
             "target": {
               "host": "127.0.0.1",
@@ -3805,7 +3991,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": {
             "array_len": {
@@ -3838,7 +4029,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "b_before": "$"
@@ -3851,7 +4047,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "192.168.1.10",
@@ -3886,7 +4082,7 @@
           "as": "B",
           "expect_no_push": {
             "where": {
-              "room": "$rid"
+              "room_id": "$rid"
             },
             "window_ms": 2000,
             "note": "the refused target is never announced to the room in any frame"
@@ -3896,7 +4092,12 @@
           "as": "B",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": []
@@ -3910,7 +4111,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": []
@@ -3940,7 +4146,7 @@
           "as": "A",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op1",
             "target": {
               "host": "192.168.1.10",
@@ -3968,7 +4174,7 @@
           "as": "B",
           "call": "pipe.publish",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op2",
             "target": {
               "host": "127.0.0.1",
@@ -4008,7 +4214,12 @@
           "as": "A",
           "call": "pipe.list",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect": {
             "pipes": []

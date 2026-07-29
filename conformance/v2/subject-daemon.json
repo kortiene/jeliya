@@ -1628,7 +1628,12 @@
           "session": "A",
           "call": "room.timeline",
           "in": {
-            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "subject_absent",
@@ -1770,7 +1775,12 @@
           "session": "A",
           "call": "room.timeline",
           "in": {
-            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save": {
             "e_wellformed": "$err"
@@ -1791,7 +1801,12 @@
           "session": "A",
           "call": "room.timeline",
           "in": {
-            "room_id": "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            "room_id": "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "subject_absent",
@@ -1802,7 +1817,12 @@
           "session": "A",
           "call": "room.timeline",
           "in": {
-            "room_id": "not-a-room-id"
+            "room_id": "not-a-room-id",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_error": {
             "code": "subject_absent",
@@ -1818,7 +1838,8 @@
             "cursor": {
               "state": "start"
             },
-            "limit": 999999999
+            "limit": 999999999,
+            "direction": "forward"
           },
           "expect_error": {
             "code": "subject_absent",

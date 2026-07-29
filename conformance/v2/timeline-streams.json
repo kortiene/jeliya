@@ -17,7 +17,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op_sub"
           },
           "save": {
@@ -25,7 +25,7 @@
             "head": "head_pos"
           },
           "expect": {
-            "room": "<room_id>",
+            "room_id": "<room_id>",
             "subscription_id": "<hex64>",
             "head_pos": "<pos>"
           },
@@ -35,7 +35,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "conformance v2",
             "op_id": "$op_msg"
           },
@@ -44,7 +44,7 @@
             "p1": "pos"
           },
           "expect": {
-            "room": "<room_id>",
+            "room_id": "<room_id>",
             "event_id": "<hex64>",
             "pos": "<pos>"
           },
@@ -56,7 +56,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p1",
               "event": {
                 "event_id": "$eid",
@@ -64,7 +64,7 @@
                 "body": "conformance v2",
                 "author": {
                   "subject_id": "<hex64>",
-                  "role": "owner",
+                  "role": "authority",
                   "standing": "active"
                 },
                 "ts": "<ts>"
@@ -129,7 +129,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$utf8_of_len": {
                 "bytes": "$body_max",
@@ -188,7 +188,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$utf8_of_len": {
                 "bytes": {
@@ -250,7 +250,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op_sub"
           }
         },
@@ -258,7 +258,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "replay me",
             "op_id": "OP-FIXED-001"
           },
@@ -273,7 +273,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p1",
               "event": {
                 "event_id": "$eid"
@@ -290,7 +290,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op_sub2"
           },
           "save": {
@@ -301,7 +301,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "replay me",
             "op_id": "OP-FIXED-001"
           },
@@ -332,7 +332,7 @@
             "within_ms": 3000,
             "match": {
               "t": "event",
-              "room": "$rid",
+              "room_id": "$rid",
               "event": {
                 "body": "replay me"
               }
@@ -343,7 +343,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": {
               "$sub": [
                 "$p1",
@@ -385,7 +385,7 @@
           "conn": "cA",
           "as": "principal_a",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op_subA"
           }
         },
@@ -394,7 +394,7 @@
           "conn": "cB",
           "as": "principal_b",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op_subB"
           }
         },
@@ -403,7 +403,7 @@
           "conn": "cA",
           "as": "principal_a",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "from A",
             "op_id": "OP-SHARED-XYZ"
           },
@@ -417,7 +417,7 @@
           "conn": "cB",
           "as": "principal_b",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "from B",
             "op_id": "OP-SHARED-XYZ"
           },
@@ -448,7 +448,7 @@
             "conn": "cA",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$pB",
               "event": {
                 "event_id": "$eidB",
@@ -463,7 +463,7 @@
             "conn": "cB",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$pA",
               "event": {
                 "event_id": "$eidA",
@@ -489,7 +489,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": null,
             "op_id": "$op_n1"
           },
@@ -505,7 +505,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "x",
             "op_id": null
           },
@@ -521,7 +521,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": null,
+            "room_id": null,
             "body": "x",
             "op_id": "$op_n3"
           },
@@ -542,7 +542,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$head"
           },
           "save": {
@@ -574,7 +574,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "no op id"
           },
           "expect_error": {
@@ -613,7 +613,7 @@
           "conn": "cL",
           "as": "former_member",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "after leaving",
             "op_id": "$op_left"
           },
@@ -657,7 +657,7 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$op_subm"
           }
         },
@@ -666,7 +666,7 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "expect": {
             "members": [
@@ -684,12 +684,8 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
-            "message": {
-              "state": "present",
-              "text": "human member reporting"
-            },
             "progress": {
               "state": "reported",
               "percent": 40
@@ -701,7 +697,7 @@
             "sp": "pos"
           },
           "expect": {
-            "room": "<room_id>",
+            "room_id": "<room_id>",
             "event_id": "<hex64>",
             "pos": "<pos>"
           },
@@ -713,7 +709,7 @@
             "conn": "cM",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$sp",
               "event": {
                 "event_id": "$seid",
@@ -732,34 +728,34 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$member_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
-            "pts": "points"
+            "ents": "entries"
           },
           "expect": {
-            "points": [
+            "entries": [
               {
-                "event_id": "$seid",
-                "pos": "$sp",
+                "at": "<ts>",
                 "label": "working",
+                "severity": "ok",
                 "progress": {
                   "state": "reported",
                   "percent": 40
-                },
-                "author": {
-                  "role": "member"
-                },
-                "ts": "<ts>"
+                }
               }
             ]
           }
         },
         {
           "assert": {
-            "no_nulls": "$pts"
+            "no_nulls": "$ents"
           }
         }
       ],
@@ -781,7 +777,7 @@
           "call": "member.remove",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$agent_sid",
             "op_id": "$op_rm"
           }
@@ -791,11 +787,8 @@
           "conn": "cAg",
           "as": "member_agent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
-            "message": {
-              "state": "absent"
-            },
             "progress": {
               "state": "absent"
             },
@@ -814,122 +807,6 @@
             "absent_key": [
               "$last_error",
               "hint"
-            ]
-          }
-        }
-      ],
-      "blocked_on_upstream": null
-    },
-    {
-      "name": "status_history_positions_equal_the_positions_delivered_on_the_push_stream",
-      "kind": "ordering",
-      "operation": "status.history",
-      "intent": "The single position space is what makes gap detection meaningful: an event's position in committed history MUST be the position it was pushed at, or a client that resyncs from a pushed position reads the wrong window. Catches a daemon with two counters — one for delivery, one for storage — which is the most plausible way a correct-looking implementation silently breaks resync.",
-      "requires": [
-        "subject",
-        "live_room"
-      ],
-      "steps": [
-        {
-          "call": "stream.subscribe",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "op_id": "$op_sub"
-          }
-        },
-        {
-          "call": "status.post",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "label": "working",
-            "message": {
-              "state": "absent"
-            },
-            "progress": {
-              "state": "absent"
-            },
-            "op_id": "$o1"
-          },
-          "save": {
-            "reply_pos": "pos",
-            "eid": "event_id"
-          }
-        },
-        {
-          "await_push": {
-            "t": "event",
-            "conn": "c1",
-            "within_ms": 3000,
-            "match": {
-              "room": "$rid",
-              "event": {
-                "event_id": "$eid"
-              }
-            },
-            "save": {
-              "push_pos": "pos"
-            }
-          }
-        },
-        {
-          "call": "status.history",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "subject_id": "$self_sid",
-            "limit": 10
-          },
-          "save": {
-            "pts": "points"
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              "$reply_pos",
-              "$push_pos"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              "$pts[-1].pos",
-              "$push_pos"
-            ]
-          }
-        },
-        {
-          "call": "stream.resync",
-          "conn": "c1",
-          "in": {
-            "room": "$rid",
-            "from_pos": {
-              "$sub": [
-                "$push_pos",
-                1
-              ]
-            }
-          },
-          "save": {
-            "ev": "events"
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              "$ev[0].pos",
-              "$push_pos"
-            ]
-          }
-        },
-        {
-          "assert": {
-            "eq": [
-              "$ev[0].event.event_id",
-              "$eid"
             ]
           }
         }
@@ -961,21 +838,25 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": "$page_max"
+            "limit": "$page_max",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
-            "pts": "points"
+            "ents": "entries"
           },
           "expect": {
-            "points": "<array>"
+            "entries": "<array>"
           }
         },
         {
           "assert": {
             "len_lte": [
-              "$pts",
+              "$ents",
               "$page_max"
             ]
           }
@@ -1010,14 +891,18 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
             "limit": {
               "$add": [
                 "$page_max",
                 1
               ]
-            }
+            },
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_error": {
             "code": "resource_exhausted",
@@ -1124,7 +1009,7 @@
           "conn": "cB",
           "as": "principal_b",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           }
         },
         {
@@ -1132,7 +1017,7 @@
           "conn": "cA",
           "as": "principal_a",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "before subscribe",
             "op_id": "$o1"
           },
@@ -1146,7 +1031,7 @@
             "within_ms": 3000,
             "match": {
               "t": "event",
-              "room": "$rid"
+              "room_id": "$rid"
             }
           }
         },
@@ -1155,14 +1040,14 @@
           "conn": "cB",
           "as": "principal_b",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o2"
           },
           "save": {
             "head": "head_pos"
           },
           "expect": {
-            "room": "<room_id>",
+            "room_id": "<room_id>",
             "subscription_id": "<hex64>",
             "head_pos": "<pos>"
           }
@@ -1180,7 +1065,7 @@
           "conn": "cA",
           "as": "principal_a",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "after subscribe",
             "op_id": "$o3"
           },
@@ -1194,7 +1079,7 @@
             "conn": "cB",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p2",
               "event": {
                 "body": "after subscribe"
@@ -1229,13 +1114,13 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "op_id": "$o1"
           },
           "expect_error": {
             "code": "room_not_available",
             "fields": {
-              "room": "$foreign_rid"
+              "room_id": "$foreign_rid"
             }
           }
         },
@@ -1251,7 +1136,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "body": "members only",
             "op_id": "$o2"
           }
@@ -1261,7 +1146,7 @@
             "conn": "cX",
             "within_ms": 3000,
             "match": {
-              "room": "$foreign_rid"
+              "room_id": "$foreign_rid"
             }
           }
         }
@@ -1282,7 +1167,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           },
           "save": {
@@ -1293,7 +1178,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o2"
           },
           "save": {
@@ -1304,7 +1189,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "once",
             "op_id": "$o3"
           },
@@ -1318,7 +1203,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p"
             }
           }
@@ -1329,7 +1214,7 @@
               "conn": "c1",
               "match": {
                 "t": "event",
-                "room": "$rid",
+                "room_id": "$rid",
                 "pos": "$p"
               },
               "eq": 1
@@ -1361,7 +1246,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "op_id": "$o1"
           },
           "save": {
@@ -1372,7 +1257,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridB",
+            "room_id": "$ridB",
             "op_id": "$o2"
           },
           "save": {
@@ -1383,7 +1268,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a1",
             "op_id": "$o3"
           },
@@ -1397,7 +1282,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$ridA",
+              "room_id": "$ridA",
               "pos": "$pa1"
             }
           }
@@ -1411,14 +1296,14 @@
           },
           "expect": {
             "subscription_id": "$sA",
-            "room": "$ridA"
+            "room_id": "$ridA"
           }
         },
         {
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a2",
             "op_id": "$o5"
           },
@@ -1430,7 +1315,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridB",
+            "room_id": "$ridB",
             "body": "b1",
             "op_id": "$o6"
           },
@@ -1444,7 +1329,7 @@
             "within_ms": 3000,
             "match": {
               "t": "event",
-              "room": "$ridA"
+              "room_id": "$ridA"
             }
           }
         },
@@ -1454,7 +1339,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$ridB",
+              "room_id": "$ridB",
               "pos": "$pb1"
             }
           }
@@ -1476,7 +1361,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "from_pos": "$pa1"
           },
           "save": {
@@ -1532,7 +1417,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o2"
           },
           "save": {
@@ -1598,7 +1483,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "op_id": "$o1"
           }
         },
@@ -1606,7 +1491,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a1",
             "op_id": "$o2"
           },
@@ -1617,13 +1502,13 @@
         {
           "harness": "drop_pushes",
           "conn": "c1",
-          "room": "$ridA"
+          "room_id": "$ridA"
         },
         {
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a2",
             "op_id": "$o3"
           },
@@ -1635,7 +1520,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a3",
             "op_id": "$o4"
           },
@@ -1647,7 +1532,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridB",
+            "room_id": "$ridB",
             "body": "b1",
             "op_id": "$o5"
           }
@@ -1656,7 +1541,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "from_pos": "$p1"
           },
           "save": {
@@ -1664,7 +1549,7 @@
             "next": "next_pos"
           },
           "expect": {
-            "room": "<room_id>",
+            "room_id": "<room_id>",
             "events": "<array>",
             "next_pos": "<pos>"
           }
@@ -1750,7 +1635,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           },
           "save": {
@@ -1761,7 +1646,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m1",
             "op_id": "$o2"
           },
@@ -1771,7 +1656,7 @@
         },
         {
           "harness": "retention_prune",
-          "room": "$rid",
+          "room_id": "$rid",
           "keep_from_pos": {
             "$add": [
               "$p1",
@@ -1783,7 +1668,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$p1"
           },
           "save": {
@@ -1792,7 +1677,7 @@
           "expect_error": {
             "code": "resync_required",
             "fields": {
-              "room": "$rid",
+              "room_id": "$rid",
               "from_pos": "<pos>"
             }
           }
@@ -1827,7 +1712,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$err.fields.from_pos"
           },
           "save": {
@@ -1858,7 +1743,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           }
         },
@@ -1866,7 +1751,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m1",
             "op_id": "$o2"
           },
@@ -1878,7 +1763,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$p1"
           },
           "save": {
@@ -1923,7 +1808,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           }
         },
@@ -1931,7 +1816,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m1",
             "op_id": "$o2"
           },
@@ -1943,7 +1828,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": {
               "$add": [
                 "$p1",
@@ -1957,7 +1842,7 @@
           "expect_error": {
             "code": "resync_required",
             "fields": {
-              "room": "$rid",
+              "room_id": "$rid",
               "from_pos": "<pos>"
             }
           }
@@ -1989,7 +1874,7 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "from_pos": 1
           },
           "save": {
@@ -1998,7 +1883,7 @@
           "expect_error": {
             "code": "room_not_available",
             "fields": {
-              "room": "$foreign_rid"
+              "room_id": "$foreign_rid"
             }
           }
         },
@@ -2007,7 +1892,7 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
             "from_pos": 1
           },
           "save": {
@@ -2051,7 +1936,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           }
         },
@@ -2059,7 +1944,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m1",
             "op_id": "$o2"
           },
@@ -2073,7 +1958,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p1"
             }
           }
@@ -2084,7 +1969,7 @@
         },
         {
           "harness": "burst_sends",
-          "room": "$rid",
+          "room_id": "$rid",
           "count": 200
         },
         {
@@ -2097,7 +1982,7 @@
             "conn": "c1",
             "within_ms": 10000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "from_pos": "<pos>",
               "to": {
                 "state": "bounded",
@@ -2155,7 +2040,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$g.from_pos"
           },
           "save": {
@@ -2200,7 +2085,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           },
           "save": {
@@ -2210,7 +2095,7 @@
         {
           "harness": "lapse_subscription",
           "conn": "c1",
-          "room": "$rid",
+          "room_id": "$rid",
           "unbounded": true
         },
         {
@@ -2219,7 +2104,7 @@
             "conn": "c1",
             "within_ms": 10000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "from_pos": "<pos>",
               "to": {
                 "state": "open"
@@ -2287,7 +2172,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           }
         },
@@ -2295,7 +2180,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m1",
             "op_id": "$o2"
           },
@@ -2309,7 +2194,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p1"
             }
           }
@@ -2317,14 +2202,14 @@
         {
           "harness": "drop_next_pushes",
           "conn": "c1",
-          "room": "$rid",
+          "room_id": "$rid",
           "count": 1
         },
         {
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m2",
             "op_id": "$o3"
           },
@@ -2336,7 +2221,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m3",
             "op_id": "$o4"
           },
@@ -2350,7 +2235,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p3"
             }
           }
@@ -2372,7 +2257,7 @@
           "assert": {
             "observed_discontinuity": {
               "conn": "c1",
-              "room": "$rid",
+              "room_id": "$rid",
               "after_pos": "$p1",
               "next_pos": "$p3"
             }
@@ -2382,7 +2267,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$p1"
           },
           "save": {
@@ -2420,7 +2305,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           },
           "save": {
@@ -2435,7 +2320,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$concat": [
                 "m",
@@ -2457,7 +2342,7 @@
           "await_pushes": {
             "t": "event",
             "conn": "c1",
-            "room": "$rid",
+            "room_id": "$rid",
             "count": 10,
             "within_ms": 10000,
             "collect": {
@@ -2506,7 +2391,7 @@
             "within_ms": 2000,
             "match": {
               "t": "gap",
-              "room": "$rid"
+              "room_id": "$rid"
             }
           }
         }
@@ -2527,7 +2412,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "op_id": "$o1"
           }
         },
@@ -2535,7 +2420,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridB",
+            "room_id": "$ridB",
             "op_id": "$o2"
           }
         },
@@ -2543,7 +2428,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a1",
             "op_id": "$o3"
           },
@@ -2555,7 +2440,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridB",
+            "room_id": "$ridB",
             "body": "b1",
             "op_id": "$o4"
           },
@@ -2567,7 +2452,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a2",
             "op_id": "$o5"
           },
@@ -2579,7 +2464,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridB",
+            "room_id": "$ridB",
             "body": "b2",
             "op_id": "$o6"
           },
@@ -2591,7 +2476,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "body": "a3",
             "op_id": "$o7"
           },
@@ -2617,7 +2502,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "from_pos": "$pb[0]"
           },
           "save": {
@@ -2668,7 +2553,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridA",
+            "room_id": "$ridA",
             "op_id": "$o1"
           },
           "save": {
@@ -2679,7 +2564,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridB",
+            "room_id": "$ridB",
             "op_id": "$o2"
           },
           "save": {
@@ -2690,7 +2575,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$ridC",
+            "room_id": "$ridC",
             "op_id": "$o3"
           },
           "save": {
@@ -2707,7 +2592,7 @@
               "call": "message.send",
               "conn": "c1",
               "in": {
-                "room": "$ridA",
+                "room_id": "$ridA",
                 "body": {
                   "$concat": [
                     "a",
@@ -2729,7 +2614,7 @@
               "call": "message.send",
               "conn": "c1",
               "in": {
-                "room": "$ridB",
+                "room_id": "$ridB",
                 "body": {
                   "$concat": [
                     "b",
@@ -2751,11 +2636,8 @@
               "call": "status.post",
               "conn": "c1",
               "in": {
-                "room": "$ridC",
+                "room_id": "$ridC",
                 "label": "working",
-                "message": {
-                  "state": "absent"
-                },
                 "progress": {
                   "state": "reported",
                   "percent": 25
@@ -2777,7 +2659,7 @@
           "await_pushes": {
             "t": "event",
             "conn": "c1",
-            "room": "$ridA",
+            "room_id": "$ridA",
             "count": 4,
             "within_ms": 15000,
             "collect": {
@@ -2789,7 +2671,7 @@
           "await_pushes": {
             "t": "event",
             "conn": "c1",
-            "room": "$ridB",
+            "room_id": "$ridB",
             "count": 4,
             "within_ms": 15000,
             "collect": {
@@ -2801,7 +2683,7 @@
           "await_pushes": {
             "t": "event",
             "conn": "c1",
-            "room": "$ridC",
+            "room_id": "$ridC",
             "count": 4,
             "within_ms": 15000,
             "collect": {
@@ -2952,7 +2834,7 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "op_id": "$fresh"
           },
           "expect_error": {
@@ -2971,7 +2853,7 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+            "room_id": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
             "op_id": "$fresh"
           },
           "expect_error": {
@@ -3008,7 +2890,7 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "body": "probe",
             "op_id": "$o1"
           },
@@ -3021,11 +2903,8 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "label": "probe",
-            "message": {
-              "state": "absent"
-            },
             "progress": {
               "state": "absent"
             },
@@ -3040,9 +2919,13 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_error": {
             "code": "room_not_available"
@@ -3053,7 +2936,7 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "from_pos": 1
           },
           "expect_error": {
@@ -3064,7 +2947,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "body": "members only",
             "op_id": "$o3"
           }
@@ -3074,7 +2957,7 @@
             "conn": "cX",
             "within_ms": 5000,
             "match": {
-              "room": "$foreign_rid"
+              "room_id": "$foreign_rid"
             }
           }
         },
@@ -3105,7 +2988,7 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           },
           "save": {
@@ -3116,7 +2999,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "before removal",
             "op_id": "$o2"
           },
@@ -3130,7 +3013,7 @@
             "conn": "cM",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p1"
             }
           }
@@ -3139,7 +3022,7 @@
           "call": "member.remove",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$member_sid",
             "op_id": "$o3"
           }
@@ -3148,7 +3031,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "after removal",
             "op_id": "$o4"
           },
@@ -3162,7 +3045,7 @@
             "within_ms": 5000,
             "match": {
               "t": "event",
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p2"
             }
           }
@@ -3172,7 +3055,7 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$p1"
           },
           "expect_error": {
@@ -3215,7 +3098,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           }
         },
@@ -3223,7 +3106,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "discriminator",
             "op_id": "$o2"
           },
@@ -3237,7 +3120,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p"
             },
             "save": {
@@ -3304,7 +3187,7 @@
           "conn": "cA",
           "as": "principal_a",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           }
         },
@@ -3324,7 +3207,7 @@
           "conn": "cB",
           "as": "principal_b",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "while busy",
             "op_id": "$o2"
           },
@@ -3338,7 +3221,7 @@
             "conn": "cA",
             "within_ms": 2000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p",
               "event": {
                 "body": "while busy"
@@ -3412,7 +3295,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           },
           "save": {
@@ -3423,7 +3306,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "m1",
             "op_id": "$o2"
           },
@@ -3437,7 +3320,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p1"
             }
           }
@@ -3512,7 +3395,7 @@
             "within_ms": 3000,
             "match": {
               "t": "event",
-              "room": "$rid"
+              "room_id": "$rid"
             }
           }
         },
@@ -3534,7 +3417,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o4"
           },
           "save": {
@@ -3554,7 +3437,7 @@
           "call": "stream.resync",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "from_pos": "$p1"
           },
           "save": {
@@ -3623,7 +3506,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$utf8_of_len": {
                 "bytes": "$body_max"
@@ -3668,7 +3551,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o1"
           }
         },
@@ -3678,7 +3561,7 @@
             "conn": "c1",
             "within_ms": 15000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "device_id": "<hex64>",
               "generation": "<number>",
               "state": {
@@ -3692,7 +3575,7 @@
         },
         {
           "harness": "reorder_conn_events",
-          "room": "$rid",
+          "room_id": "$rid",
           "emit_generation": {
             "$sub": [
               "$up.generation",
@@ -3707,7 +3590,7 @@
             "conn": "c1",
             "within_ms": 15000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "device_id": "$up.device_id",
               "generation": "<number>",
               "state": {
@@ -3772,7 +3655,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -3790,9 +3673,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -3860,7 +3747,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "claiming",
             "progress": {
               "state": "absent"
@@ -3877,9 +3764,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -3952,7 +3843,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -3970,7 +3861,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "done",
             "progress": {
               "state": "reported",
@@ -3988,9 +3879,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -4053,7 +3948,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -4077,7 +3972,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -4106,9 +4001,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_error": {
             "code": "status_subject_unknown"
@@ -4131,7 +4030,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "definitely-not-a-status-label",
             "progress": {
               "state": "absent"
@@ -4159,7 +4058,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "",
             "progress": {
               "state": "absent"
@@ -4174,7 +4073,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "absent"
@@ -4186,9 +4085,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -4230,7 +4133,7 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           },
           "expect": {
             "members": [
@@ -4248,7 +4151,7 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -4267,7 +4170,7 @@
           "conn": "cAg",
           "as": "member_agent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -4281,9 +4184,13 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$member_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "hm": "$"
@@ -4294,9 +4201,13 @@
           "conn": "cAg",
           "as": "member_agent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$agent_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "ha": "$"
@@ -4359,7 +4270,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": null,
             "op_id": "$op_null_progress"
@@ -4385,7 +4296,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "absent"
@@ -4397,9 +4308,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -4450,7 +4365,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "claiming",
             "progress": {
               "state": "absent"
@@ -4462,7 +4377,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -4475,7 +4390,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "done",
             "progress": {
               "state": "reported",
@@ -4488,9 +4403,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -4515,7 +4434,7 @@
           "assert": {
             "absent_key": [
               "$h",
-              "points"
+              "entries"
             ]
           }
         },
@@ -4631,7 +4550,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "claiming",
             "progress": {
               "state": "absent"
@@ -4643,7 +4562,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -4660,7 +4579,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "done",
             "progress": {
               "state": "reported",
@@ -4673,9 +4592,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -4734,9 +4657,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h2": "$"
@@ -4768,9 +4695,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$member_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "errA": "$err"
@@ -4796,9 +4727,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "0000000000000000000000000000000000000000000000000000000000000000",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "errB": "$err"
@@ -4832,7 +4767,7 @@
           "conn": "cM",
           "as": "member_nonagent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "online",
             "progress": {
               "state": "absent"
@@ -4844,9 +4779,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$member_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -4903,7 +4842,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "claiming",
             "progress": {
               "state": "absent"
@@ -4915,7 +4854,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -4928,7 +4867,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "done",
             "progress": {
               "state": "reported",
@@ -4941,9 +4880,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 3
+            "limit": 3,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "full": "$"
@@ -4971,9 +4914,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 2
+            "limit": 2,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "short": "$"
@@ -5012,9 +4959,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": "$page_max"
+            "limit": "$page_max",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "maxpage": "$"
@@ -5062,7 +5013,7 @@
           "conn": "cAg",
           "as": "member_agent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -5263,7 +5214,7 @@
           "conn": "cAg",
           "as": "member_agent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -5305,9 +5256,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$agent_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h1": "$"
@@ -5316,7 +5271,7 @@
         {
           "harness": "drop_peer_connection",
           "subject": "member_agent",
-          "room": "$rid"
+          "room_id": "$rid"
         },
         {
           "call": "fleet.list",
@@ -5359,9 +5314,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$agent_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h2": "$"
@@ -5399,7 +5358,7 @@
           "conn": "cAg",
           "as": "member_agent",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "working",
             "progress": {
               "state": "absent"
@@ -5524,7 +5483,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "label": "working",
             "progress": {
               "state": "reported",
@@ -5583,9 +5542,13 @@
           "conn": "cX",
           "as": "second_subject",
           "in": {
-            "room": "$foreign_rid",
+            "room_id": "$foreign_rid",
             "subject_id": "$self_sid",
-            "limit": 100
+            "limit": 100,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_error": {
             "code": "room_not_available"
@@ -5645,7 +5608,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o_sub"
           },
           "save": {
@@ -5656,7 +5619,12 @@
           "call": "room.timeline",
           "conn": "c1",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_out": "timeline_before"
         },
@@ -5664,7 +5632,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$utf8_of_len": {
                 "bytes": {
@@ -5768,7 +5736,12 @@
           "call": "room.timeline",
           "conn": "c1",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_identical_to": "timeline_before",
           "note": "a refused message is not a truncated message: nothing committed"
@@ -5779,7 +5752,7 @@
               "conn": "c1",
               "match": {
                 "t": "event",
-                "room": "$rid"
+                "room_id": "$rid"
               },
               "eq": 0
             }
@@ -5832,7 +5805,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o_sub"
           }
         },
@@ -5840,7 +5813,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$utf8_of_len": {
                 "bytes": "$body_max",
@@ -5858,7 +5831,7 @@
             "p_at": "pos"
           },
           "expect": {
-            "room": "<room_id>",
+            "room_id": "<room_id>",
             "event_id": "<hex64>",
             "pos": "<uint>"
           },
@@ -5884,7 +5857,7 @@
             "conn": "c1",
             "within_ms": 3000,
             "match": {
-              "room": "$rid",
+              "room_id": "$rid",
               "pos": "$p_at",
               "event": {
                 "event_id": "$eid"
@@ -5916,7 +5889,12 @@
           "call": "room.timeline",
           "conn": "c1",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "assert": [
             {
@@ -5988,7 +5966,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "op_id": "$o_sub"
           }
         },
@@ -5996,7 +5974,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$utf8_of_len": {
                 "bytes": "$body_max",
@@ -6024,7 +6002,12 @@
           "call": "room.timeline",
           "conn": "c1",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "save_out": "timeline_after_at_limit"
         },
@@ -6032,7 +6015,7 @@
           "call": "message.send",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": {
               "$append_bytes": {
                 "to": "$edge_body",
@@ -6127,7 +6110,12 @@
           "call": "room.timeline",
           "conn": "c1",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
           },
           "expect_identical_to": "timeline_after_at_limit",
           "note": "the refused send committed nothing, and did not commit a truncated body either"
@@ -6138,7 +6126,7 @@
               "conn": "c1",
               "match": {
                 "t": "event",
-                "room": "$rid",
+                "room_id": "$rid",
                 "after_pos": "$p_at"
               },
               "eq": 0
@@ -6179,7 +6167,7 @@
             "call": "stream.subscribe",
             "conn": "c1",
             "in": {
-              "room": "$rooms[$i]"
+              "room_id": "$rooms[$i]"
             }
           }
         },
@@ -6187,7 +6175,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$one_more_room"
+            "room_id": "$one_more_room"
           },
           "expect_error": {
             "code": "subscription_limit_reached",
@@ -6216,7 +6204,7 @@
           "call": "message.send",
           "conn": "c2",
           "in": {
-            "room": "$rooms[0]",
+            "room_id": "$rooms[0]",
             "body": "still live",
             "op_id": "$op1"
           }
@@ -6225,7 +6213,7 @@
           "expect_frame": {
             "conn": "c1",
             "t": "event",
-            "room": "$rooms[0]"
+            "room_id": "$rooms[0]"
           }
         }
       ],
@@ -6245,7 +6233,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           }
         },
         {
@@ -6260,7 +6248,7 @@
           "call": "stream.subscribe",
           "conn": "c1",
           "in": {
-            "room": "$rid"
+            "room_id": "$rid"
           }
         },
         {
@@ -6275,7 +6263,7 @@
           "call": "message.send",
           "conn": "c2",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "body": "once",
             "op_id": "$op1"
           }
@@ -6284,7 +6272,7 @@
           "expect_frame": {
             "conn": "c1",
             "t": "event",
-            "room": "$rid"
+            "room_id": "$rid"
           }
         },
         {
@@ -6343,7 +6331,7 @@
             "call": "status.post",
             "conn": "c1",
             "in": {
-              "room": "$rid",
+              "room_id": "$rid",
               "label": "$item[0]",
               "progress": {
                 "state": "absent"
@@ -6356,9 +6344,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -6460,7 +6452,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "blocked",
             "progress": {
               "state": "absent"
@@ -6477,9 +6469,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "save": {
             "h": "$"
@@ -6528,7 +6524,7 @@
           "call": "status.post",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "label": "wrking",
             "progress": {
               "state": "absent"
@@ -6548,9 +6544,13 @@
           "call": "status.history",
           "conn": "c1",
           "in": {
-            "room": "$rid",
+            "room_id": "$rid",
             "subject_id": "$self_sid",
-            "limit": 10
+            "limit": 10,
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward"
           },
           "expect_error": {
             "code": "status_subject_unknown"
