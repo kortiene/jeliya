@@ -59,4 +59,3 @@ fn no_serde_json_value_in_public_source() {
         "serde_json::Value found in public source: {offenders:?}"
     );
 }
-

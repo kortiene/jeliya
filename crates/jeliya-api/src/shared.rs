@@ -10,7 +10,42 @@ use serde::{Deserialize, Serialize};
 
 /// `<ts>` — an RFC 3339 UTC instant with a `Z` offset. Signed event
 /// timestamps are non-repudiable author-dated facts, never the wall clock.
-pub type Timestamp = time::OffsetDateTime;
+///
+/// The wire form is the RFC 3339 string, not time's component sequence, and
+/// the offset is always `Z`. Serde uses `time::serde::rfc3339` so a
+/// non-`Z` offset fails deserialization rather than being silently
+/// re-zoned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Timestamp(time::OffsetDateTime);
+
+impl Timestamp {
+    /// Wraps an instant.
+    pub fn new(t: time::OffsetDateTime) -> Self {
+        Self(t)
+    }
+    /// The wrapped instant.
+    pub fn into_inner(self) -> time::OffsetDateTime {
+        self.0
+    }
+}
+
+impl From<time::OffsetDateTime> for Timestamp {
+    fn from(t: time::OffsetDateTime) -> Self {
+        Self(t)
+    }
+}
+
+impl serde::Serialize for Timestamp {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        time::serde::rfc3339::serialize(&self.0, s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Timestamp {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        time::serde::rfc3339::deserialize(d).map(Self)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Bare enums (closed, no payload on any arm)
@@ -296,12 +331,18 @@ pub enum GapTo {
 }
 
 /// `target` — a pipe's publish target, one object, never two sibling fields.
+///
+/// `port` is a `u64`, not a `u16`: the record requires every port outside
+/// `1..=65535` to produce `pipe_target_refused` carrying the rejected target
+/// verbatim, and a narrower type would reclassify that input as a structural
+/// decode error before the policy could see it. The bound is enforced at
+/// semantic validation (step 7), never by the type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     /// The host (loopback only for publish).
     pub host: String,
-    /// The port, `1..=65535`.
-    pub port: u16,
+    /// The port, validated to `1..=65535` at semantic validation.
+    pub port: u64,
 }
 
 /// `audience` — who may connect to a pipe. Required; `room` must be said

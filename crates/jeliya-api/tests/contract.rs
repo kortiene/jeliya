@@ -70,11 +70,11 @@ fn operation_paths_and_mutability() {
     assert_eq!(<PipeRevoke as Operation>::PATH, "pipe.revoke");
     assert!(<PipeRevoke as Operation>::MUTATING);
     assert_eq!(<StreamSubscribe as Operation>::PATH, "stream.subscribe");
-    assert!(!<StreamSubscribe as Operation>::MUTATING);
+    assert!(<StreamSubscribe as Operation>::MUTATING);
     assert_eq!(<StreamUnsubscribe as Operation>::PATH, "stream.unsubscribe");
-    assert!(!<StreamUnsubscribe as Operation>::MUTATING);
+    assert!(<StreamUnsubscribe as Operation>::MUTATING);
     assert_eq!(<StreamResync as Operation>::PATH, "stream.resync");
-    assert!(!<StreamResync as Operation>::MUTATING);
+    assert!(<StreamResync as Operation>::MUTATING);
 }
 
 /// There are exactly 33 operations. Counted by hand here as a guard against
@@ -202,7 +202,7 @@ fn absence_is_a_tagged_variant() {
         "{\"state\":\"absent\"}"
     );
     let present = LastEvent::Present {
-        at: time::OffsetDateTime::UNIX_EPOCH,
+        at: Timestamp::from(time::OffsetDateTime::UNIX_EPOCH),
         kind: EventKind::Message,
     };
     let s = serde_json::to_string(&present).unwrap();
@@ -270,14 +270,15 @@ fn paging_fields_are_required() {
 /// `op_id` lives at the envelope level, never inside `in`.
 #[test]
 fn op_id_is_envelope_level() {
-    let env = Envelope {
-        id: 42,
-        op_id: Some(OpId::new("op-1")),
-        input: RoomCreate {
+    let env = Envelope::new(
+        42,
+        Some(OpId::new("op-1")),
+        RoomCreate {
             name: "Build".into(),
         },
-    };
+    );
     let json = serde_json::to_string(&env).unwrap();
+    assert!(json.contains("\"op\":\"room.create\""));
     assert!(json.contains("\"op_id\":\"op-1\""));
     assert!(json.contains("\"in\":{\"name\":\"Build\"}"));
     // `in` carries no op_id key
@@ -301,14 +302,10 @@ fn push_carries_t_never_id() {
 /// An error carries a code and typed fields, never a hint.
 #[test]
 fn error_carries_no_hint() {
-    let err = ApiError {
-        code: ErrorCode::InsufficientStanding,
-        field: None,
-        reason: None,
-        room_id: None,
-        subject_id: None,
-        required: Some(Role::Authority),
-        held: Some(Role::Member),
+    let err = ApiError::InsufficientStanding {
+        room_id: RoomId::new("r1"),
+        required: Role::Authority,
+        held: Role::Member,
     };
     let json = serde_json::to_string(&err).unwrap();
     assert!(json.contains("\"code\":\"insufficient_standing\""));
@@ -316,6 +313,28 @@ fn error_carries_no_hint() {
     assert!(json.contains("\"held\":\"member\""));
     assert!(!json.contains("hint"));
     assert!(!json.contains("message"));
+}
+
+/// A code carries exactly its specified payload: `file_too_large` without
+/// its three required fields is unrepresentable.
+#[test]
+fn error_payload_is_code_discriminated() {
+    let err = ApiError::FileTooLarge {
+        declared_bytes: 104857601,
+        limit_bytes: 104857600,
+        enforced_at: EnforcedAt::StageDeclared,
+    };
+    let json = serde_json::to_string(&err).unwrap();
+    assert!(json.contains("\"code\":\"file_too_large\""));
+    assert!(json.contains("\"declared_bytes\":104857601"));
+    assert!(json.contains("\"limit_bytes\":104857600"));
+    assert!(json.contains("\"enforced_at\":\"stage_declared\""));
+    // a fieldless code carries only its code
+    let err = ApiError::SubjectAbsent;
+    assert_eq!(
+        serde_json::to_string(&err).unwrap(),
+        "{\"code\":\"subject_absent\"}"
+    );
 }
 
 /// `status.post` carries no free-text field.
@@ -398,7 +417,7 @@ fn invite_list_never_serves_the_capability() {
         invite_id: InviteId::new("i1"),
         subject_id: SubjectId::new("s1"),
         role: Role::Member,
-        expires_at: time::OffsetDateTime::UNIX_EPOCH,
+        expires_at: Timestamp::from(time::OffsetDateTime::UNIX_EPOCH),
         redeemability: Redeemability::Outstanding,
     };
     let json = serde_json::to_string(&row).unwrap();

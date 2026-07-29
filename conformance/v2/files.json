@@ -298,12 +298,6 @@
           ]
         },
         {
-          "note": "client-side rendering assertion dropped from the wire corpus (the protocol carries data, not rendering)"
-        },
-        {
-          "note": "client-side rendering assertion dropped from the wire corpus (the protocol carries data, not rendering)"
-        },
-        {
           "assert": [
             {
               "path": "frame.over_limit_message",
@@ -522,9 +516,6 @@
         {
           "assert": [],
           "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": \"$limit\"}, \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "note": "[bare-string assert 'no_error_raised' needs manual retranscription]"
         }
       ]
     },
@@ -834,9 +825,6 @@
         {
           "assert": [],
           "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 65536}, \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "note": "[bare-string assert 'no_error_raised' needs manual retranscription]"
         }
       ]
     },
@@ -940,9 +928,6 @@
               "scope": "case"
             }
           ]
-        },
-        {
-          "note": "no size was declared; #161 must state whether this carries the observed count or a tagged unknown variant, so this fixture asserts only that it is an integer [bare-string assert 'spec_gap' needs manual retranscription] [dialect key field: \"err.declared_bytes\"]"
         }
       ]
     },
@@ -1070,9 +1055,6 @@
         {
           "assert": [],
           "note": "[unrepaired dialect step: {\"scope\": \"connection\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "note": "enforced_at has no client value; the client case is proven by silence on the wire [bare-string assert 'no_daemon_error_observed' needs manual retranscription]"
         }
       ]
     },
@@ -1208,9 +1190,6 @@
               ]
             }
           ]
-        },
-        {
-          "note": "the integrity fields belong only to digest_mismatch [bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"expected\", \"observed\"]]"
         }
       ]
     },
@@ -1240,9 +1219,6 @@
           "save": {
             "limit": "frame.limits.max_shared_file_bytes"
           }
-        },
-        {
-          "note": "[dialect key provider: {\"behavior\": \"serve_corrupted_bytes\", \"declared_size_bytes\": 4096, \"served_size_bytes\": 4096}]"
         },
         {
           "call": "file.list",
@@ -1286,9 +1262,6 @@
               ]
             }
           ]
-        },
-        {
-          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"declared_bytes\", \"limit_bytes\", \"enforced_at\"]]"
         },
         {
           "assert": [
@@ -1589,9 +1562,6 @@
             "limit": 50
           },
           "note": "[bare-string assert 'exactly_one_entry_with' needs manual retranscription]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key file_id: \"$first.file_id\"]"
         },
         {
           "assert": [
@@ -1915,12 +1885,6 @@
               ]
             }
           ]
-        },
-        {
-          "note": "an empty success would be a second, distinguishable answer [bare-string assert 'not_returned' needs manual retranscription] [dialect key shape: {\"files\": []}]"
-        },
-        {
-          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"member_count\", \"exists\"]]"
         }
       ]
     },
@@ -1935,9 +1899,6 @@
         "link:up"
       ],
       "steps": [
-        {
-          "note": "[dialect key provider: {\"declared_name\": \"../../../etc/passwd\", \"declared_type\": \"text/plain\"}]"
-        },
         {
           "call": "file.list",
           "in": {
@@ -1980,14 +1941,8 @@
           ]
         },
         {
-          "note": "nothing in the response normalizes to a filesystem path [bare-string assert 'no_type_tag' needs manual retranscription] [dialect key tag: \"<path>\"]"
-        },
-        {
           "assert": [],
           "note": "[unrepaired dialect step: {\"scope\": \"result\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "note": "#161 does not state a sanitization policy; this fixture pins verbatim carriage plus absence of any path-typed field, and leaves display escaping to the client [bare-string assert 'spec_gap' needs manual retranscription] [dialect key field: \"files[].name\"]"
         }
       ]
     },
@@ -2235,9 +2190,6 @@
           }
         },
         {
-          "note": "[dialect key provider: {\"behavior\": \"serve_more_than_declared\", \"declared_size_bytes\": 4096, \"served_size_bytes\": \"$limit+1\"}]"
-        },
-        {
           "call": "file.list",
           "in": {
             "room_id": "$rid",
@@ -2428,9 +2380,6 @@
               ]
             }
           ]
-        },
-        {
-          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"path\"]]"
         }
       ]
     },
@@ -2605,9 +2554,6 @@
           ]
         },
         {
-          "note": "[split from a multi-verb step; review] [dialect key value_ms: 30000]"
-        },
-        {
           "assert": [
             {
               "path": "frame.op-budget-1",
@@ -2615,12 +2561,6 @@
               "note": "path root 'transfer:op-budget-1' names a harness surface, not a wire field"
             }
           ]
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key formula: \"$connect_ms + declared_bytes*8*1000/$floor_bps\"]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key tolerance: \"implementation_defined\"]"
         }
       ]
     },
@@ -2703,12 +2643,6 @@
               "value": "uint"
             }
           ]
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key type: \"tagged_variant\"]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key states: [\"declared\", \"absent\"]] [dialect key not: [\"null\", \"string\"]]"
         }
       ]
     },
@@ -2722,9 +2656,6 @@
         "link:up"
       ],
       "steps": [
-        {
-          "note": "[dialect key provider: {\"declared_type\": \"text/html\", \"body\": \"<img src=x onerror=alert(1)>\"}]"
-        },
         {
           "call": "file.read",
           "in": {
@@ -2740,9 +2671,6 @@
               }
             }
           }
-        },
-        {
-          "note": "[dialect observation keys folded: observe — see case intent]"
         },
         {
           "assert": [
@@ -2874,11 +2802,18 @@
           "op_id": "op-cancel-target"
         },
         {
-          "await": "none",
           "note": "[split from a multi-verb step; review]",
           "save": {
             "max_transfers": "frame.limits.max_concurrent_transfers"
-          }
+          },
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "assert": [
@@ -2988,8 +2923,15 @@
           "op_id": "op-cancel-owned"
         },
         {
-          "await": "none",
-          "note": "[split from a multi-verb step; review]"
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "upgrade": {
@@ -3042,9 +2984,6 @@
           ]
         },
         {
-          "note": "[dialect observation keys folded: including — see case intent]"
-        },
-        {
           "assert": [
             {
               "path": "err.op-cancel-owned",
@@ -3087,9 +3026,6 @@
               ]
             }
           ]
-        },
-        {
-          "note": "cancel is not room-scoped and must not echo one [bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"room_id\"]]"
         }
       ]
     },
@@ -3112,14 +3048,18 @@
           }
         },
         {
-          "note": "[dialect observation keys folded: start_transfers — see case intent]"
-        },
-        {
-          "await": "none",
           "note": "[split from a multi-verb step; review]",
           "save": {
             "max_transfers": "frame.limits.max_concurrent_transfers"
-          }
+          },
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "call": "file.fetch",
@@ -3201,17 +3141,18 @@
           }
         },
         {
-          "note": "[dialect observation keys folded: start_transfers — see case intent]"
-        },
-        {
-          "await": "none",
           "note": "[split from a multi-verb step; review]",
           "save": {
             "max_transfers": "frame.limits.max_concurrent_transfers"
-          }
-        },
-        {
-          "note": "[dialect observation keys folded: expect_all — see case intent]"
+          },
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "assert": [],
@@ -3276,18 +3217,19 @@
           }
         },
         {
-          "note": "[dialect observation keys folded: start_transfers — see case intent]"
-        },
-        {
-          "await": "none",
           "note": "[split from a multi-verb step; review]",
           "save": {
             "max_inflight": "frame.limits.max_transfer_bytes_inflight",
             "max_transfers": "frame.limits.max_concurrent_transfers"
-          }
-        },
-        {
-          "note": "[dialect observation keys folded: expect_all — see case intent]"
+          },
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "call": "file.fetch",
@@ -3370,8 +3312,15 @@
           "op_id": "op-progress-1"
         },
         {
-          "await": "none",
-          "note": "[split from a multi-verb step; review]"
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "await": {
@@ -3415,9 +3364,6 @@
               }
             }
           }
-        },
-        {
-          "note": "a push carries t and never id [bare-string assert 'push_has_no_field' needs manual retranscription] [dialect key field: \"id\"]"
         }
       ],
       "blocked_on_upstream": "U2"
@@ -3465,8 +3411,15 @@
           "op_id": "op-progress-private"
         },
         {
-          "await": "none",
-          "note": "[split from a multi-verb step; review]"
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "await": {
@@ -3515,9 +3468,6 @@
           }
         },
         {
-          "note": "[dialect key provider: {\"behavior\": \"serve_then_stall\", \"bytes_before_stall\": 16384}]"
-        },
-        {
           "call": "file.fetch",
           "in": {
             "room_id": "$rid",
@@ -3558,15 +3508,6 @@
               "note": "path root 'transfer:op-stall-1' names a harness surface, not a wire field"
             }
           ]
-        },
-        {
-          "note": "[dialect observation keys folded: lower_ms — see case intent]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [dialect key tolerance: \"implementation_defined\"]"
-        },
-        {
-          "note": "[dialect key provider: {\"behavior\": \"serve_then_stall\", \"declares_size\": false}]"
         },
         {
           "call": "file.fetch",
@@ -3621,8 +3562,15 @@
           "op_id": "op-cancel-bytes"
         },
         {
-          "await": "none",
-          "note": "[split from a multi-verb step; review]"
+          "note": "[split from a multi-verb step; review]",
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "step",
+              "note": "no push expected for this transfer on this connection"
+            }
+          ]
         },
         {
           "await": {
@@ -3850,12 +3798,6 @@
           ]
         },
         {
-          "note": "[dialect observation keys folded: including — see case intent]"
-        },
-        {
-          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"exists\", \"member_count\", \"providers\", \"hint\"]]"
-        },
-        {
           "note": "the push stream is not an oracle either",
           "assert": [
             {
@@ -3995,14 +3937,8 @@
           "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
-          "note": "no value normalizes to a filesystem path even under a differently named key [bare-string assert 'no_type_tag' needs manual retranscription] [dialect key tag: \"<path>\"]"
-        },
-        {
           "assert": [],
           "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "note": "[dialect observation keys folded: pattern — see case intent]"
         },
         {
           "assert": [],
@@ -4114,12 +4050,6 @@
               ]
             }
           ]
-        },
-        {
-          "note": "an empty success is read as 'nothing has been shared here' and costs a duplicate 100 MiB transfer [bare-string assert 'not_returned' needs manual retranscription] [dialect key shape: {\"files\": []}]"
-        },
-        {
-          "note": "[bare-string assert 'error_has_no_fields' needs manual retranscription] [dialect key fields: [\"hint\", \"available\", \"providers_count\"]]"
         },
         {
           "assert": [],

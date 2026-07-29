@@ -35,7 +35,10 @@ pub enum EventKind {
 }
 
 /// A committed room event: its per-room position, id, author-dated instant,
-/// kind, content, and attribution.
+/// attribution, and **one coupled kind-and-content**. `kind` and `content`
+/// are a single enum because the record states each of the ten kinds fixes
+/// exactly one content shape — an invalid combination (a `message` kind
+/// with `room_created` content) is unrepresentable, not merely rejected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     /// Per-room monotonic position — the same space the push stream uses.
@@ -44,62 +47,62 @@ pub struct Event {
     pub event_id: EventId,
     /// When the author dated it (non-repudiable, signed).
     pub at: crate::Timestamp,
-    /// Its kind.
-    pub kind: EventKind,
-    /// Its content, fixed by the kind.
-    pub content: EventContent,
     /// Its attribution, or the explicit unresolved variant.
     pub author: Author,
+    /// The kind and its content, coupled: each kind fixes its content.
+    #[serde(flatten)]
+    pub kind: EventKindContent,
 }
 
-/// Event content, fixed by [`EventKind`]. Carries no `severity` anywhere —
-/// severity is derived and served on projections, never written into signed
-/// content.
+/// One coupled kind-and-content. Serde encodes the kind as `kind` and the
+/// content inline, so the wire shape is the record's
+/// `{ "kind": "message", "content": { "body": "…" } }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum EventContent {
-    /// `room_created { name }`
+#[serde(tag = "kind", content = "content", rename_all = "snake_case")]
+pub enum EventKindContent {
+    /// `room.create` authored it.
     RoomCreated {
         /// The room's name.
         name: String,
     },
-    /// `message { body }`
+    /// `message.send` authored it.
     Message {
         /// The message body.
         body: String,
     },
-    /// `agent_status { label, progress }`
+    /// `status.post` authored it. Carries **no `severity`** — severity is
+    /// derived and served on projections, never written into signed content.
     AgentStatus {
         /// The closed-vocabulary label.
         label: crate::StatusLabel,
         /// Its progress variant.
         progress: Progress,
     },
-    /// `member_joined { subject_id, role }`
+    /// `invite.redeem` authored it.
     MemberJoined {
         /// Who joined.
         subject_id: SubjectId,
         /// The role they joined with.
         role: Role,
     },
-    /// `member_left { subject_id }`
+    /// `room.leave` authored it.
     MemberLeft {
         /// Who left.
         subject_id: SubjectId,
     },
-    /// `member_removed { subject_id, by }`
+    /// `member.remove` authored it.
     MemberRemoved {
         /// Who was removed.
         subject_id: SubjectId,
         /// Who removed them.
         by: SubjectId,
     },
-    /// `invite_revoked { invite_id }`
+    /// `invite.revoke` authored it.
     InviteRevoked {
         /// The revoked invite.
         invite_id: InviteId,
     },
-    /// `file_shared { file_id, name, bytes, digest }`
+    /// `file.share` authored it.
     FileShared {
         /// The file's id.
         file_id: FileId,
@@ -110,7 +113,7 @@ pub enum EventContent {
         /// Its content digest.
         digest: String,
     },
-    /// `pipe_published { pipe_id, target, audience }`
+    /// `pipe.publish` authored it.
     PipePublished {
         /// The pipe's id.
         pipe_id: PipeId,
@@ -119,9 +122,27 @@ pub enum EventContent {
         /// Its audience.
         audience: Audience,
     },
-    /// `pipe_revoked { pipe_id }`
+    /// `pipe.revoke` authored it.
     PipeRevoked {
         /// The revoked pipe.
         pipe_id: PipeId,
     },
+}
+
+impl EventKindContent {
+    /// The kind discriminant.
+    pub fn kind(&self) -> EventKind {
+        match self {
+            Self::RoomCreated { .. } => EventKind::RoomCreated,
+            Self::Message { .. } => EventKind::Message,
+            Self::AgentStatus { .. } => EventKind::AgentStatus,
+            Self::MemberJoined { .. } => EventKind::MemberJoined,
+            Self::MemberLeft { .. } => EventKind::MemberLeft,
+            Self::MemberRemoved { .. } => EventKind::MemberRemoved,
+            Self::InviteRevoked { .. } => EventKind::InviteRevoked,
+            Self::FileShared { .. } => EventKind::FileShared,
+            Self::PipePublished { .. } => EventKind::PipePublished,
+            Self::PipeRevoked { .. } => EventKind::PipeRevoked,
+        }
+    }
 }

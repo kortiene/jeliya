@@ -398,7 +398,25 @@ pins a shape without pinning a clock or a random identifier.
 **A tag names a value domain, not an encoding.**
 
 `<room_id>` `<subject_id>` `<device_id>` `<event_id>` `<invite_id>` `<file_id>`
-`<pipe_id>` `<op_id>` `<ts>` `<uint>` `<bool>` `<string>`
+`<pipe_id>` `<op_id>` `<ts>` `<uint>` `<bool>` `<string>` `<pos>` `<capability>`
+`<daemon_sg>` `<port>` `<object>` `<any>` `<version>` `<standing>` `<link_connected>`
+`<link_reason>`
+
+The second line is the domain additions #213's normalization minted, each named
+here in the same change that uses it, as the rule above requires:
+
+| Tag | Domain |
+|---|---|
+| `<pos>` | a room position — stricter than `<uint>` because positions are per-room and monotonic |
+| `<capability>` | an invite capability string |
+| `<daemon_sg>` | the daemon's storage generation, discovered at Layer 0 |
+| `<port>` | a TCP port |
+| `<object>` | any JSON object, shape unconstrained — used only where the record fixes no shape |
+| `<any>` | any JSON value — used only for "the key is present, its value is unconstrained" |
+| `<version>` | a daemon version string |
+| `<standing>` | the `standing` bare enum |
+| `<link_connected>` | a `link` variant in its `direct` or `relay` arm |
+| `<link_reason>` | the `link.reason` bare enum |
 
 - **`<hex64>` is not a tag.** It names an encoding shared by four distinct
   domains, so asserting it where `<device_id>` belongs would pass against a

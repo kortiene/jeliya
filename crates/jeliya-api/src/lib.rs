@@ -66,6 +66,9 @@ pub struct Envelope<O: Operation> {
     /// Correlates the reply to this request; unique per connection while
     /// outstanding.
     pub id: u64,
+    /// The operation's wire name — serialized as `op` so the envelope is
+    /// dispatchable as-is. It is `O::PATH`, always.
+    pub op: &'static str,
     /// Client-generated deduplication key. Accepted on every operation,
     /// ignored by those that do not deduplicate.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,4 +82,15 @@ pub struct Envelope<O: Operation> {
 impl<O: Operation> Envelope<O> {
     /// The wire name of the operation this envelope invokes.
     pub const OP: &'static str = O::PATH;
+
+    /// Builds an envelope for a request, pinning `op` to the operation's
+    /// wire name.
+    pub fn new(id: u64, op_id: Option<OpId>, input: O) -> Self {
+        Self {
+            id,
+            op: O::PATH,
+            op_id,
+            input,
+        }
+    }
 }

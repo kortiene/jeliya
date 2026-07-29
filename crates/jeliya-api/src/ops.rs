@@ -22,6 +22,112 @@ macro_rules! operation {
     };
 }
 
+/// A capability token **is** the name of the operation it authorizes — one
+/// vocabulary, total mapping, no second spelling. Closed on the 33 operation
+/// names; an unrecognized token fails deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CapabilityToken {
+    /// subject.ensure
+    #[serde(rename = "subject.ensure")]
+    SubjectEnsure,
+    /// daemon.stop
+    #[serde(rename = "daemon.stop")]
+    DaemonStop,
+    /// room.create
+    #[serde(rename = "room.create")]
+    RoomCreate,
+    /// room.list
+    #[serde(rename = "room.list")]
+    RoomList,
+    /// room.activate
+    #[serde(rename = "room.activate")]
+    RoomActivate,
+    /// room.deactivate
+    #[serde(rename = "room.deactivate")]
+    RoomDeactivate,
+    /// room.leave
+    #[serde(rename = "room.leave")]
+    RoomLeave,
+    /// room.timeline
+    #[serde(rename = "room.timeline")]
+    RoomTimeline,
+    /// room.members
+    #[serde(rename = "room.members")]
+    RoomMembers,
+    /// room.archive
+    #[serde(rename = "room.archive")]
+    RoomArchive,
+    /// room.peers
+    #[serde(rename = "room.peers")]
+    RoomPeers,
+    /// member.remove
+    #[serde(rename = "member.remove")]
+    MemberRemove,
+    /// invite.mint
+    #[serde(rename = "invite.mint")]
+    InviteMint,
+    /// invite.list
+    #[serde(rename = "invite.list")]
+    InviteList,
+    /// invite.revoke
+    #[serde(rename = "invite.revoke")]
+    InviteRevoke,
+    /// invite.redeem
+    #[serde(rename = "invite.redeem")]
+    InviteRedeem,
+    /// message.send
+    #[serde(rename = "message.send")]
+    MessageSend,
+    /// status.post
+    #[serde(rename = "status.post")]
+    StatusPost,
+    /// status.history
+    #[serde(rename = "status.history")]
+    StatusHistory,
+    /// fleet.list
+    #[serde(rename = "fleet.list")]
+    FleetList,
+    /// file.share
+    #[serde(rename = "file.share")]
+    FileShare,
+    /// file.list
+    #[serde(rename = "file.list")]
+    FileList,
+    /// file.fetch
+    #[serde(rename = "file.fetch")]
+    FileFetch,
+    /// file.read
+    #[serde(rename = "file.read")]
+    FileRead,
+    /// transfer.cancel
+    #[serde(rename = "transfer.cancel")]
+    TransferCancel,
+    /// pipe.publish
+    #[serde(rename = "pipe.publish")]
+    PipePublish,
+    /// pipe.list
+    #[serde(rename = "pipe.list")]
+    PipeList,
+    /// pipe.connect
+    #[serde(rename = "pipe.connect")]
+    PipeConnect,
+    /// pipe.release
+    #[serde(rename = "pipe.release")]
+    PipeRelease,
+    /// pipe.revoke
+    #[serde(rename = "pipe.revoke")]
+    PipeRevoke,
+    /// stream.subscribe
+    #[serde(rename = "stream.subscribe")]
+    StreamSubscribe,
+    /// stream.unsubscribe
+    #[serde(rename = "stream.unsubscribe")]
+    StreamUnsubscribe,
+    /// stream.resync
+    #[serde(rename = "stream.resync")]
+    StreamResync,
+}
+
 // ---------------------------------------------------------------------------
 // Subject and daemon
 // ---------------------------------------------------------------------------
@@ -29,6 +135,7 @@ macro_rules! operation {
 /// `subject.ensure` — establish the local subject exactly once. Naturally
 /// idempotent: a second call returns the same subject with `created: false`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubjectEnsure {}
 
 /// Its public names and no secret, in any form.
@@ -45,6 +152,7 @@ operation!(SubjectEnsure, SubjectEnsureOut, "subject.ensure", true);
 
 /// `daemon.stop` — terminate deterministically, reply flushed first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaemonStop {}
 
 /// Terminal acknowledgement.
@@ -63,6 +171,7 @@ operation!(DaemonStop, DaemonStopOut, "daemon.stop", true);
 /// `room.create` — bring a room into existence with the caller as its
 /// authority; works with no network.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomCreate {
     /// `1..=128` bytes after trimming, at least one non-whitespace.
     pub name: String,
@@ -91,6 +200,7 @@ operation!(RoomCreate, RoomCreateOut, "room.create", true);
 /// `room.list` — what rooms are mine, in what standing, what may I do in
 /// each, from local evidence with zero network activity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomList {}
 
 /// One room row.
@@ -111,7 +221,7 @@ pub struct RoomRow {
     /// The newest event, or the stated `absent` arm.
     pub last_event: LastEvent,
     /// Operation-name tokens the caller may invoke right now.
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<CapabilityToken>,
 }
 
 /// The room list.
@@ -125,6 +235,7 @@ operation!(RoomList, RoomListOut, "room.list", false);
 /// `room.activate` — make a room live on this device; returns reachability
 /// and capabilities, **not history**.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomActivate {
     /// The room.
     pub room_id: RoomId,
@@ -140,12 +251,13 @@ pub struct RoomActivateOut {
     /// Whole-room reachability.
     pub reachability: Reachability,
     /// Capabilities now available.
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<CapabilityToken>,
 }
 operation!(RoomActivate, RoomActivateOut, "room.activate", true);
 
 /// `room.deactivate` — stop live participation without changing membership.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomDeactivate {
     /// The room.
     pub room_id: RoomId,
@@ -163,6 +275,7 @@ operation!(RoomDeactivate, RoomDeactivateOut, "room.deactivate", true);
 
 /// `room.leave` — author a signed departure every member converges on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomLeave {
     /// The room.
     pub room_id: RoomId,
@@ -185,6 +298,7 @@ operation!(RoomLeave, RoomLeaveOut, "room.leave", true);
 /// Paging fields shared by the six paging operations — cursor, direction,
 /// and limit are all required, never defaulted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Page {
     /// Where to start.
     pub cursor: Cursor,
@@ -197,6 +311,7 @@ pub struct Page {
 /// `room.timeline` — read committed history identically whether or not the
 /// room is live.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomTimeline {
     /// The room.
     pub room_id: RoomId,
@@ -220,6 +335,7 @@ operation!(RoomTimeline, RoomTimelineOut, "room.timeline", false);
 /// `room.members` — the authoritative signed answer to who belongs.
 /// Carries **no** presence and **no** reachability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomMembers {
     /// The room.
     pub room_id: RoomId,
@@ -251,6 +367,7 @@ operation!(RoomMembers, RoomMembersOut, "room.members", false);
 /// `room.archive` — open a left or removed room as a local read-only
 /// archive; normatively zero network activity and zero durable mutation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomArchive {
     /// The room.
     pub room_id: RoomId,
@@ -275,6 +392,7 @@ operation!(RoomArchive, RoomArchiveOut, "room.archive", false);
 
 /// `room.peers` — observed transport facts for one live room.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoomPeers {
     /// The room.
     pub room_id: RoomId,
@@ -305,6 +423,7 @@ operation!(RoomPeers, RoomPeersOut, "room.peers", false);
 
 /// `member.remove` — room authority removes a member, as a signed fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemberRemove {
     /// The room.
     pub room_id: RoomId,
@@ -335,6 +454,7 @@ operation!(MemberRemove, MemberRemoveOut, "member.remove", true);
 /// `invite.mint` — mint one key-bound capability exactly one named identity
 /// can redeem.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InviteMint {
     /// The room.
     pub room_id: RoomId,
@@ -370,6 +490,7 @@ operation!(InviteMint, InviteMintOut, "invite.mint", true);
 
 /// `invite.list` — enumerate outstanding and recently expired invites.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InviteList {
     /// The room.
     pub room_id: RoomId,
@@ -407,6 +528,7 @@ operation!(InviteList, InviteListOut, "invite.list", false);
 
 /// `invite.revoke` — withdraw an outstanding capability before expiry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InviteRevoke {
     /// The room.
     pub room_id: RoomId,
@@ -434,6 +556,7 @@ operation!(InviteRevoke, InviteRevokeOut, "invite.revoke", true);
 /// operation reachable by a non-member; its authorization object is the
 /// key-bound capability itself, never an identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InviteRedeem {
     /// The capability.
     pub capability: String,
@@ -465,6 +588,7 @@ operation!(InviteRedeem, InviteRedeemOut, "invite.redeem", true);
 
 /// `message.send` — author a message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MessageSend {
     /// The room.
     pub room_id: RoomId,
@@ -488,6 +612,7 @@ operation!(MessageSend, MessageSendOut, "message.send", true);
 
 /// `status.post` — author an agent status. Open to any active member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatusPost {
     /// The room.
     pub room_id: RoomId,
@@ -516,6 +641,7 @@ operation!(StatusPost, StatusPostOut, "status.post", true);
 
 /// `status.history` — read status history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatusHistory {
     /// The room.
     pub room_id: RoomId,
@@ -556,6 +682,7 @@ operation!(StatusHistory, StatusHistoryOut, "status.history", false);
 
 /// `fleet.list` — the agent fleet projection. **No tallies.**
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FleetList {}
 
 /// One fleet row. An agent is a member that has authored at least one
@@ -589,6 +716,7 @@ operation!(FleetList, FleetListOut, "fleet.list", false);
 /// `file.share` — share bytes into a room. **No filesystem path appears**:
 /// v1's `path` is removed; `PlatformServices` owns paths.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileShare {
     /// The room.
     pub room_id: RoomId,
@@ -621,6 +749,7 @@ operation!(FileShare, FileShareOut, "file.share", true);
 /// `file.list` — files shared into a room, provider availability as a
 /// protocol fact.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileList {
     /// The room.
     pub room_id: RoomId,
@@ -669,6 +798,7 @@ operation!(FileList, FileListOut, "file.list", false);
 /// `file.fetch` — fetch a file's bytes from a provider. **No `save_dir`**:
 /// the daemon holds the bytes and `file.read` streams them out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileFetch {
     /// The room.
     pub room_id: RoomId,
@@ -704,6 +834,7 @@ operation!(FileFetch, FileFetchOut, "file.fetch", true);
 
 /// `file.read` — stream locally held bytes out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileRead {
     /// The room.
     pub room_id: RoomId,
@@ -730,6 +861,7 @@ operation!(FileRead, FileReadOut, "file.read", false);
 /// The request field is `transfer_op_id`, not `op_id` — one wire name never
 /// means two things.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransferCancel {
     /// The transfer's op_id.
     pub transfer_op_id: OpId,
@@ -755,6 +887,7 @@ operation!(TransferCancel, TransferCancelOut, "transfer.cancel", true);
 
 /// `pipe.publish` — publish a pipe to a loopback target.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipePublish {
     /// The room.
     pub room_id: RoomId,
@@ -785,6 +918,7 @@ operation!(PipePublish, PipePublishOut, "pipe.publish", true);
 /// `pipe.list` — pipes in a room, local connection and publisher
 /// reachability as two separately named facts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipeList {
     /// The room.
     pub room_id: RoomId,
@@ -824,6 +958,7 @@ operation!(PipeList, PipeListOut, "pipe.list", false);
 
 /// `pipe.connect` — connect to a pipe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipeConnect {
     /// The room.
     pub room_id: RoomId,
@@ -847,6 +982,7 @@ operation!(PipeConnect, PipeConnectOut, "pipe.connect", true);
 
 /// `pipe.release` — release a local connection, named by the connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipeRelease {
     /// The connection.
     pub connection_id: String,
@@ -864,6 +1000,7 @@ operation!(PipeRelease, PipeReleaseOut, "pipe.release", true);
 
 /// `pipe.revoke` — withdraw a published pipe as a signed fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipeRevoke {
     /// The room.
     pub room_id: RoomId,
@@ -894,6 +1031,7 @@ operation!(PipeRevoke, PipeRevokeOut, "pipe.revoke", true);
 /// `stream.subscribe` — subscribe a connection to a room's pushes.
 /// Naturally idempotent; scoped to the connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamSubscribe {
     /// The room.
     pub room_id: RoomId,
@@ -914,11 +1052,12 @@ operation!(
     StreamSubscribe,
     StreamSubscribeOut,
     "stream.subscribe",
-    false
+    true
 );
 
 /// `stream.unsubscribe`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamUnsubscribe {
     /// The room.
     pub room_id: RoomId,
@@ -936,12 +1075,13 @@ operation!(
     StreamUnsubscribe,
     StreamUnsubscribeOut,
     "stream.unsubscribe",
-    false
+    true
 );
 
 /// `stream.resync` — the **authoritative** recovery. The client names the
 /// last position it holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamResync {
     /// The room.
     pub room_id: RoomId,
@@ -961,4 +1101,4 @@ pub struct StreamResyncOut {
     /// The one continuation mechanism.
     pub truncated: Truncated,
 }
-operation!(StreamResync, StreamResyncOut, "stream.resync", false);
+operation!(StreamResync, StreamResyncOut, "stream.resync", true);

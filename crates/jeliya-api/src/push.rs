@@ -6,6 +6,7 @@
 //! localization is the client's job).
 
 use crate::ids::*;
+use crate::ops::ProviderRef;
 use crate::shared::*;
 use crate::types::Event;
 use serde::{Deserialize, Serialize};
@@ -223,32 +224,393 @@ pub enum ErrorCode {
 /// fields. **No `hint` and no prose** — localization is the client's job,
 /// and no daemon text may be fabricated.
 ///
-/// The `fields` carry the code's typed payload (for example
-/// `insufficient_standing { required, held }`). They are typed where the
-/// record fixes a shape and deliberately minimal: an adapter constructs
-/// errors through the typed constructors, never by stuffing raw JSON.
+/// The error is **code-discriminated**: each variant carries exactly the
+/// typed payload the taxonomy row fixes, no more and no fewer, so an
+/// adapter cannot construct a protocol-invalid error (a `file_too_large`
+/// without `declared_bytes`, `limit_bytes`, and `enforced_at` is
+/// unrepresentable). Serde flattens the variant's fields beside `code`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ApiError {
-    /// The machine-readable code.
-    pub code: ErrorCode,
-    /// The dotted path into the frame for `invalid_argument`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
-    /// The closed reason variant for `invalid_argument`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<InvalidReason>,
-    /// The room for room-scoped refusals.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub room_id: Option<RoomId>,
-    /// The subject for subject-scoped refusals.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject_id: Option<SubjectId>,
-    /// Required vs held standing for `insufficient_standing`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required: Option<Role>,
-    /// The role the caller holds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub held: Option<Role>,
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ApiError {
+    // Handshake and generation gate
+    /// `Host`, or a present `Origin`, is not loopback.
+    ForbiddenOrigin,
+    /// `v` is absent or names an unsupported generation.
+    ProtocolUnsupported {
+        /// The generations this daemon supports.
+        supported: Vec<u64>,
+        /// The client's declared generation, or `absent`.
+        client: DeclaredVersion,
+    },
+    /// `sg` is absent or does not equal the daemon's.
+    StorageGenerationMismatch {
+        /// The daemon's storage generation.
+        daemon: u64,
+        /// The client's declared generation, or `absent`.
+        client: DeclaredGeneration,
+    },
+    /// The credential is absent, wrong, or a spent ticket.
+    Unauthenticated,
+    /// The daemon is not yet serving, or its subject store cannot be read.
+    NotReady,
+    /// A frame exceeds `max_frame_bytes`; closes `4005` unparsed.
+    FrameTooLarge {
+        /// The served frame limit.
+        limit_bytes: u64,
+    },
+    /// No activity within `idle_timeout_ms`; closes `4004`.
+    IdleTimeout {
+        /// The served idle window.
+        idle_ms: u64,
+    },
+    /// A submitted pairing code is not currently redeemable.
+    PairingCodeInvalid {
+        /// Why not.
+        reason: PairingCodeInvalidReason,
+    },
+    /// A browser session credential is past its TTL or was revoked.
+    SessionExpired,
+
+    // Envelope and structure
+    /// The frame is not JSON, or decodes to no envelope with a usable `id`.
+    MalformedFrame,
+    /// `op` names no operation in this generation.
+    UnknownOperation {
+        /// The unrecognized operation name.
+        op: String,
+    },
+    /// Validation-order step 1 refused.
+    InvalidArgument {
+        /// Dotted path into the frame.
+        field: String,
+        /// Why it is invalid.
+        reason: InvalidReason,
+    },
+    /// The `op_id` was seen before with a different request body.
+    OpIdConflict {
+        /// The conflicting key.
+        op_id: OpId,
+    },
+    /// A served limit was reached by consumption.
+    ResourceExhausted {
+        /// The resource.
+        resource: String,
+        /// The limit.
+        limit: u64,
+    },
+
+    // Subject and daemon
+    /// The operation needs a local subject and none exists.
+    SubjectAbsent,
+    /// `subject.ensure` cannot persist the subject it created.
+    SubjectStoreUnwritable,
+    /// A `daemon.stop` is already sequenced.
+    ShutdownInProgress,
+
+    // Rooms and membership
+    /// No such room, or the caller cannot see it (deliberately one answer).
+    RoomNotAvailable {
+        /// The room.
+        room_id: RoomId,
+    },
+    /// The accepted-room index cannot be read.
+    RoomIndexUnreadable,
+    /// The name fails the stated bounds.
+    RoomNameInvalid {
+        /// Why (the `invalid_argument` variant).
+        reason: InvalidReason,
+    },
+    /// The caller is the room's only authority.
+    SoleAuthorityCannotLeave {
+        /// The room.
+        room_id: RoomId,
+    },
+    /// A well-formed cursor names a position the store can no longer serve.
+    CursorUnknown {
+        /// The cursor.
+        cursor: Cursor,
+    },
+    /// `room.activate` cannot bring the room live.
+    TransportUnavailable {
+        /// The room.
+        room_id: RoomId,
+    },
+    /// `member.remove` names an authority.
+    AuthorityCannotBeRemoved {
+        /// The room.
+        room_id: RoomId,
+        /// The authority.
+        subject_id: SubjectId,
+    },
+    /// The named subject is not a member of this room.
+    MemberUnknown {
+        /// The room.
+        room_id: RoomId,
+        /// The subject.
+        subject_id: SubjectId,
+    },
+    /// The caller's standing is `left` or `removed`.
+    MembershipEnded {
+        /// The room.
+        room_id: RoomId,
+        /// The caller's standing.
+        standing: Standing,
+    },
+    /// The caller's role is below what the operation needs.
+    InsufficientStanding {
+        /// The room.
+        room_id: RoomId,
+        /// The role required.
+        required: Role,
+        /// The role held.
+        held: Role,
+    },
+    /// The membership fold cannot resolve a member's standing.
+    MembershipUnresolved {
+        /// The room.
+        room_id: RoomId,
+        /// The member.
+        subject_id: SubjectId,
+    },
+    /// `room.archive` on a room the caller still belongs to.
+    RoomStillActive {
+        /// The room.
+        room_id: RoomId,
+    },
+    /// The operation requires a live room.
+    RoomNotLive {
+        /// The room.
+        room_id: RoomId,
+    },
+
+    // Invitations
+    /// `invite.mint` named an identity already an active member.
+    InviteeAlreadyMember {
+        /// The room.
+        room_id: RoomId,
+        /// The identity.
+        subject_id: SubjectId,
+    },
+    /// `invite.mint` named a role this record does not permit minting.
+    RoleNotGrantable {
+        /// The requested role.
+        requested: Role,
+    },
+    /// The invite index cannot be read.
+    InviteIndexUnreadable,
+    /// No such invite for this authority.
+    InviteUnknown {
+        /// The invite.
+        invite_id: InviteId,
+    },
+    /// The capability does not verify.
+    CapabilityInvalid,
+    /// The capability's absolute expiry has passed.
+    CapabilityExpired {
+        /// When it expired.
+        expired_at: Timestamp,
+    },
+    /// The capability was withdrawn.
+    CapabilityRevoked {
+        /// When it was revoked.
+        revoked_at: Timestamp,
+    },
+    /// The capability was already converted into membership.
+    CapabilityRedeemed {
+        /// When it was redeemed.
+        redeemed_at: Timestamp,
+    },
+
+    // Timeline
+    /// The body exceeds `max_message_body_bytes`.
+    MessageTooLarge {
+        /// The declared size.
+        declared_bytes: u64,
+        /// The served limit.
+        limit_bytes: u64,
+    },
+    /// The label is outside the closed vocabulary.
+    StatusLabelUnknown {
+        /// The unrecognized label.
+        label: String,
+    },
+    /// `status.history` named a subject with no history.
+    StatusSubjectUnknown {
+        /// The room.
+        room_id: RoomId,
+        /// The subject.
+        subject_id: SubjectId,
+    },
+    /// The fleet projection cannot be built.
+    FleetProjectionUnavailable,
+
+    // Files and transfers
+    /// `file.share`'s streamed bytes did not match its declared size.
+    DeclaredSizeMismatch {
+        /// The declared size.
+        declared_bytes: u64,
+        /// The observed size.
+        observed_bytes: u64,
+    },
+    /// The file exceeds `max_shared_file_bytes`.
+    FileTooLarge {
+        /// The declared size.
+        declared_bytes: u64,
+        /// The served limit.
+        limit_bytes: u64,
+        /// Which enforcement point fired.
+        enforced_at: EnforcedAt,
+    },
+    /// The room's file index cannot be read.
+    FileIndexUnreadable,
+    /// No such file in this room.
+    FileUnknown {
+        /// The file.
+        file_id: FileId,
+    },
+    /// `file.read` named a file whose bytes are not held locally.
+    FileNotFetched {
+        /// The file.
+        file_id: FileId,
+    },
+    /// No provider holding the file could be reached.
+    ProviderUnreachable {
+        /// The file.
+        file_id: FileId,
+        /// The provider rows that were tried.
+        providers: Vec<ProviderRef>,
+    },
+    /// Content did not verify. **Never returned for a size refusal.**
+    DigestMismatch {
+        /// The expected digest.
+        expected: String,
+        /// The observed digest.
+        observed: String,
+    },
+    /// No forward progress within the stall window.
+    TransferStalled {
+        /// Bytes transferred before the stall.
+        transferred_bytes: u64,
+        /// The total, or genuinely unknown.
+        total: ByteTotal,
+    },
+    /// No such in-flight transfer for this principal.
+    TransferUnknown {
+        /// The transfer's op_id.
+        transfer_op_id: OpId,
+    },
+
+    // Pipes
+    /// The publish target is not allowed (loopback policy).
+    PipeTargetRefused {
+        /// The rejected target, verbatim.
+        target: Target,
+    },
+    /// Publishing is not permitted in this room.
+    PolicyRefused {
+        /// The room.
+        room_id: RoomId,
+    },
+    /// The room's pipe index cannot be read.
+    PipeIndexUnreadable,
+    /// No such pipe, or the caller is outside its audience.
+    PipeUnknown {
+        /// The pipe.
+        pipe_id: PipeId,
+    },
+    /// The publisher's device could not be reached.
+    PipeUnreachable {
+        /// The pipe.
+        pipe_id: PipeId,
+        /// The last known link.
+        link: Link,
+    },
+    /// The pipe was withdrawn.
+    PipeRevoked {
+        /// The pipe.
+        pipe_id: PipeId,
+        /// When it was revoked.
+        revoked_at: Timestamp,
+    },
+    /// `pipe.revoke` named a pipe this subject did not publish.
+    PipeNotPublisher {
+        /// The pipe.
+        pipe_id: PipeId,
+    },
+    /// No such local connection.
+    ConnectionUnknown {
+        /// The connection.
+        connection_id: String,
+    },
+
+    // Stream
+    /// The connection holds `max_subscriptions_per_connection`.
+    SubscriptionLimitReached {
+        /// The served limit.
+        limit: u64,
+    },
+    /// No such subscription on this connection.
+    SubscriptionUnknown {
+        /// The room.
+        room_id: RoomId,
+    },
+    /// The named position can no longer be served; discard and re-read.
+    ResyncRequired {
+        /// The room.
+        room_id: RoomId,
+        /// The position to re-read from.
+        from_pos: u64,
+    },
+}
+
+/// The client's declared protocol generation, or its stated absence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DeclaredVersion {
+    /// A declared generation.
+    Declared {
+        /// The generation.
+        v: u64,
+    },
+    /// Nothing declared.
+    Absent,
+}
+
+/// The client's declared storage generation, or its stated absence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DeclaredGeneration {
+    /// A declared generation.
+    Declared {
+        /// The generation.
+        sg: u64,
+    },
+    /// Nothing declared.
+    Absent,
+}
+
+/// Why a pairing code is not redeemable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PairingCodeInvalidReason {
+    /// No such code is outstanding.
+    Unknown,
+    /// The code is past its TTL.
+    Expired,
+    /// The code was already used.
+    Spent,
+    /// The code was voided by too many failed attempts.
+    Voided,
+}
+
+/// Which size-enforcement point fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcedAt {
+    /// The declared size was refused before any byte was read.
+    StageDeclared,
+    /// The streamed total exceeded the declaration after the fact.
+    StageStream,
 }
 
 /// The closed `invalid_argument.reason` variant.
@@ -279,6 +641,24 @@ pub enum InvalidReason {
 // Lifecycle-visible views
 // ---------------------------------------------------------------------------
 
+/// The shared discovery version object. The ready line, the portfile, and
+/// the Layer 0 health endpoint carry an **identical** `{protocol,
+/// min_protocol, storage_generation, limits}` object, defined once here —
+/// two version axes on one artifact, or three producers each defining the
+/// shape, is the drift this single definition exists to prevent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VersionInfo {
+    /// The protocol generation (always 2).
+    pub protocol: u64,
+    /// The minimum supported protocol generation (always 2 — one
+    /// generation at a time).
+    pub min_protocol: u64,
+    /// The storage generation.
+    pub storage_generation: u64,
+    /// The served limits.
+    pub limits: Limits,
+}
+
 /// The `hello` frame — the daemon's first frame after upgrade, exactly one.
 /// Carries no `pid`, no `port`, and no `data_dir`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -308,6 +688,9 @@ pub struct Limits {
     pub max_frame_bytes: u64,
     /// Maximum in-flight requests per connection.
     pub max_inflight_requests: u64,
+    /// Room subscriptions one connection may hold. Exceeding it is
+    /// `subscription_limit_reached`, never a silent drop.
+    pub max_subscriptions_per_connection: u64,
     /// Maximum connections.
     pub max_connections: u64,
     /// Maximum concurrent transfers.
