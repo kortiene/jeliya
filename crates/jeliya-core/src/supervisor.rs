@@ -2394,6 +2394,66 @@ impl RoomSupervisor {
         }))
     }
 
+    /// `pipe.publish` (v2): expose a loopback target to a set of authorized
+    /// peers — every active member for `audience: room`, or an explicit
+    /// subject list. Returns the pipe id and the authored event id.
+    pub(crate) async fn pipe_expose_multi(
+        &self,
+        room_id: &RoomId,
+        target: SocketAddr,
+        target_hint: &str,
+        allowed: &[IdentityKey],
+    ) -> CoreResult<([u8; SHORT_ID_LEN], String)> {
+        if !is_loopback_target(&target) {
+            return Err(CoreError::new(
+                ErrorKind::PipeDenied,
+                format!("refusing to expose non-loopback target {target}"),
+            ));
+        }
+        if allowed.is_empty() {
+            return Err(CoreError::invalid("pipe.publish needs a non-empty audience"));
+        }
+        let session = self.session(room_id)?;
+        let secret = self.secrets()?;
+        let self_id = secret.identity.identity_key();
+        let snapshot = session
+            .node
+            .snapshot()
+            .await
+            .map_err(|e| internal("could not read the membership snapshot", e))?;
+        if !snapshot.is_active(&self_id) {
+            return Err(CoreError::new(
+                ErrorKind::NotAMember,
+                format!("this identity ({self_id}) is not an active member of room {room_id}"),
+            ));
+        }
+        let room_device = self.authoring_device_key(&snapshot, &secret, room_id);
+        let pipe_id = session
+            .node
+            .pipe_expose(
+                &secret.identity,
+                &room_device,
+                room_id,
+                target,
+                "pipe",
+                target_hint,
+                allowed,
+                None,
+                now_ms(),
+            )
+            .await
+            .map_err(|e| {
+                CoreError::new(
+                    ErrorKind::PipeDenied,
+                    format!("could not expose the pipe: {e:#}"),
+                )
+            })?;
+        let event_id = self
+            .find_pipe_event(room_id, EventType::PipeOpened, pipe_id)
+            .await?;
+        Ok((pipe_id, event_id))
+    }
+
     /// `pipe.list`: the room's pipes from the local log, with open/closed
     /// state and whether this daemon currently forwards or serves them.
     pub async fn pipe_list(&self, room_id_str: &str) -> CoreResult<Vec<Value>> {

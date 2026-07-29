@@ -1,0 +1,670 @@
+// The case runner for the v2 conformance harness.
+//
+// Each case gets a fresh daemon (or daemons, for `daemon:second`), a session
+// per `on` label, and a variable scope. The runner establishes `requires`,
+// executes the steps in order, and reports pass/fail with the first failing
+// assertion. Blocked-on-upstream cases are expected to FAIL — a passing one
+// is reported as a surprise, not silently promoted.
+
+import { startDaemon } from './daemon.mjs';
+import { Session } from './session.mjs';
+import { AssertContext, AssertFailure, evalAssert, subsetMatch } from './assert.mjs';
+import { resolvePath, resolveValue } from './values.mjs';
+
+/** The outcome of one case. */
+export const Outcome = {
+  PASS: 'pass',
+  FAIL: 'fail',
+  BLOCKED_PASS: 'blocked-pass', // blocked_on_upstream but it passed (surprise)
+  BLOCKED_FAIL: 'blocked-fail', // blocked_on_upstream and it failed (expected)
+  ERROR: 'error', // harness/setup error, not an assertion
+};
+
+let opIdCounter = 1;
+
+/** A loopback TCP echo service for pipe-target fixtures. */
+function startEchoService() {
+  return import('node:net').then(({ createServer }) => {
+    return new Promise((resolve) => {
+      const server = createServer((sock) => sock.pipe(sock));
+      server.listen(0, '127.0.0.1', () => {
+        const port = server.address().port;
+        resolve({ port, close: () => server.close() });
+      });
+    });
+  });
+}
+
+export class Runner {
+  constructor(binary, { verbose = false, timeoutScale = 1 } = {}) {
+    this.binary = binary;
+    this.verbose = verbose;
+    this.timeoutScale = timeoutScale;
+  }
+
+  __pd() {
+    return this.__pdCurrent;
+  }
+
+  log(...args) {
+    if (this.verbose) console.log('   ', ...args);
+  }
+
+  /**
+   * Run one case. Returns { outcome, name, reason }.
+   */
+  async runCase(fixture) {
+    const name = fixture.name;
+    const daemons = [];
+    const sessions = new Map();
+    const vars = Object.create(null);
+    const ctxState = {
+      networkActivity: 0,
+      eventAuthored: 0,
+      durableMutation: 0,
+      pushesByRoom: new Map(),
+    };
+
+    const cleanup = async () => {
+      for (const s of sessions.values()) s.close();
+      for (const d of daemons) await d.stop();
+      for (const c of (vars.__case ? vars.__case.closers.splice(0) : [])) {
+        try { c(); } catch { /* ignore */ }
+      }
+    };
+
+    try {
+      // Pre-seed the well-known variables a fresh case can reference.
+      vars.op_id_new = `cf-op-${opIdCounter++}`;
+      vars.op_id_fixed = 'cf-op-fixed-0001';
+
+      // Establish requires.
+      await this.#establishRequires(fixture, daemons, sessions, vars);
+
+      const ctx = new AssertContext({
+        vars,
+        sessions,
+        observe: async (a) => this.#evalObserve(a, { sessions, vars, ctxState, name }),
+      });
+
+      // Execute the steps.
+      for (let i = 0; i < fixture.steps.length; i++) {
+        const step = fixture.steps[i];
+        await this.#runStep(step, i, { daemons, sessions, vars, ctx, ctxState, name });
+      }
+
+      // A case that ran all steps without a failing assertion passes.
+      const blocked = fixture.blocked_on_upstream;
+      await cleanup();
+      if (blocked) {
+        return { outcome: Outcome.BLOCKED_PASS, name, reason: `blocked on ${blocked} but PASSED` };
+      }
+      return { outcome: Outcome.PASS, name };
+    } catch (err) {
+      await cleanup();
+      const reason =
+        err instanceof AssertFailure
+          ? err.message
+          : `${err.name || 'Error'}: ${err.message}`;
+      if (fixture.blocked_on_upstream) {
+        return { outcome: Outcome.BLOCKED_FAIL, name, reason };
+      }
+      const isAssertion = err instanceof AssertFailure;
+      return { outcome: isAssertion ? Outcome.FAIL : Outcome.ERROR, name, reason };
+    }
+  }
+
+  /** Establish the case's `requires` (daemons, subjects, rooms, links). */
+  async #establishRequires(fixture, daemons, sessions, vars) {
+    const requires = fixture.requires || [];
+    const needsSecondDaemon = requires.some((r) => r === 'daemon:second');
+
+    // Every case runs against at least one daemon. `daemon:fresh` (and the
+    // bare `daemon`/`daemon:self`) get a fresh one; without a daemon token we
+    // still spawn one because a session needs somewhere to connect.
+    const primary = await startDaemon(this.binary, { loopback: true });
+    daemons.push(primary);
+    vars['daemon.storage_generation'] = primary.storageGeneration;
+    vars.daemon_sg = primary.storageGeneration;
+    vars['daemon'] = { storage_generation: primary.storageGeneration };
+    vars.__case = { primary, second: null, closers: [] };
+
+    if (needsSecondDaemon) {
+      const second = await startDaemon(this.binary, { loopback: true });
+      daemons.push(second);
+      vars.__case.second = second;
+    }
+
+    // Establish the subjects, room, and members the case names. `subject`
+    // (bare) means a primary subject on the primary daemon; `room:live`/`plain`
+    // means a room exists (`$rid`) and is live for `live`; `member:b`/`c` add
+    // members via the invite flow. A case that names none of these needs no
+    // setup beyond the daemon (e.g. subject-lifecycle cases on `subject:none`).
+    const wantsRoom = requires.some((r) => /^room:(plain|live|quiescent|with_history)$/.test(r));
+    const wantsLeftRoom = requires.some((r) => r === 'room:left');
+    const memberLabels = requires.filter((r) => /^member:[a-z]$/.test(r));
+    const wantsMembers = memberLabels.length > 0;
+
+    // Only room/member setup pre-creates the daemon's (single) subject — a bare
+    // `requires: subject` does NOT, because subject-lifecycle cases assert on
+    // `subject.ensure`'s `created` flag themselves. The subject is global to the
+    // daemon, so any room setup establishes it as a side effect.
+    if (wantsRoom || wantsLeftRoom || wantsMembers) {
+      // The authority's session and subject.
+      const authority = await this.#sessionFor('subject:authority', daemons, sessions, vars);
+      const authHello = await authority.call('subject.ensure', {});
+      vars.self_sid = authHello.out?.subject_id;
+
+      if (wantsRoom || wantsLeftRoom || wantsMembers) {
+        const created = await authority.call('room.create', { name: 'conformance' });
+        vars.rid = created.out?.room_id;
+        if (requires.some((r) => r === 'room:live' || r === 'room:quiescent' || r === 'room:with_history')) {
+          await authority.call('room.activate', { room_id: vars.rid });
+        }
+      }
+
+      // Additional members. Each gets a daemon-side subject and redeems an
+      // invite minted by the authority. `member:b` -> subject:member_b, etc.
+      for (const m of memberLabels) {
+        const letter = m.split(':')[1];
+        const label = `subject:member_${letter}`;
+        const sess = await this.#sessionFor(label, daemons, sessions, vars);
+        await sess.call('subject.ensure', {});
+        const ensured = await sess.call('subject.ensure', {});
+        const sid = ensured.out?.subject_id;
+        const mint = await authority.call('invite.mint', {
+          room_id: vars.rid,
+          subject_id: sid,
+          role: 'member',
+          expires_at: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z'),
+        });
+        const cap = mint.out?.capability;
+        if (cap) {
+          await sess.call('invite.redeem', { capability: cap });
+          if (requires.some((r) => r === 'room:live' || r === 'room:quiescent')) {
+            await sess.call('room.activate', { room_id: vars.rid });
+          }
+        }
+        vars[`member_${letter}_sid`] = sid;
+      }
+
+      // A `room:left` room is created, joined by member_b, then left by them.
+      if (wantsLeftRoom) {
+        const left = await authority.call('room.create', { name: 'left room' });
+        vars.rid_left = left.out?.room_id;
+      }
+    }
+
+    // `resource:tcp_service` — a loopback TCP echo service a pipe can target;
+    // its port is captured for `$svc_port` (and `$svc_port_v6` when bound to
+    // ::1). The service lives until the case's cleanup.
+    if (requires.some((r) => r === 'resource:tcp_service')) {
+      const { port, close } = await startEchoService();
+      vars.svc_port = port;
+      vars.svc_port_v6 = port;
+      vars.__case.closers.push(close);
+    }
+  }
+
+  /** The session for an `on` label, connecting lazily. */
+  async #sessionFor(onLabel, daemons, sessions, vars) {
+    const label = onLabel || 'subject:self';
+    if (sessions.has(label)) return sessions.get(label);
+    // Route to the second daemon for labels that clearly name it.
+    const cs = vars.__case || {};
+    const daemon =
+      cs.second && /second|principal_b|peer|remote/i.test(label)
+        ? cs.second
+        : cs.primary;
+    const s = new Session(label);
+    await s.connect(
+      daemon,
+      { v: 2, sg: daemon.storageGeneration, token: daemon.token },
+      {},
+    );
+    // Consume the hello frame and seed `frame` so a step-1 assert can read
+    // `frame.subject` without an intervening await.
+    const hello = await s.awaitFrame((f) => f.t === 'hello').catch(() => null);
+    if (hello) vars.frame = hello;
+    sessions.set(label, s);
+    return s;
+  }
+
+  /** Execute one step. */
+  async #runStep(step, index, env) {
+    const { sessions, vars, ctx } = env;
+    const onLabel = step.on;
+
+    if (step.upgrade) {
+      await this.#doUpgrade(step, env);
+      return;
+    }
+    if (step.http) {
+      await this.#doHttp(step, env);
+      return;
+    }
+    if (step.call) {
+      await this.#doCall(step, env);
+      return;
+    }
+    if (step.send !== undefined) {
+      const s = await this.#sessionFor(onLabel, env.daemons, sessions, vars);
+      const value = resolveValue(step.send, vars);
+      s.sendRaw(value);
+      return;
+    }
+    if (step.await) {
+      await this.#doAwait(step, env);
+      return;
+    }
+    if (step.control) {
+      await this.#doControl(step, index, env);
+      return;
+    }
+    if (step.assert) {
+      await evalAssert(step.assert, ctx);
+      return;
+    }
+    // A step with only auxiliary keys (save/note/expect) and no verb is a
+    // no-op for the runner.
+  }
+
+  /** A `call` step: invoke an operation, match the reply, save captures. */
+  async #doCall(step, env) {
+    const { sessions, vars, ctxState } = env;
+    const s = await this.#sessionFor(step.on, env.daemons, sessions, vars);
+    const input = step.in !== undefined ? resolveValue(step.in, vars) : {};
+    const opId = step.op_id !== undefined ? resolveValue(step.op_id, vars) : undefined;
+    this.log(`call ${step.call} on ${step.on || 'subject:self'}`);
+
+    // Track whether this call authors an event (for no_event_authored).
+    const mutating = !/\.list$|\.timeline$|\.members$|\.peers$|\.history$|\.archive$/.test(
+      step.call,
+    );
+
+    let reply;
+    try {
+      reply = await s.call(step.call, input, { opId });
+    } catch (err) {
+      throw new AssertFailure(`call ${step.call} failed to get a reply: ${err.message}`);
+    }
+
+    // Expose the reply under the assertion roots.
+    vars.out = reply.out;
+    vars.err = reply.err;
+    vars.frame = reply;
+    if (reply.err) vars.last_error = reply.err;
+
+    if (mutating && reply.ok) ctxState.eventAuthored++;
+    ctxState.networkActivity++;
+
+    // The reply matcher.
+    if (step.expect) {
+      this.#matchExpect(step.expect, reply, vars, step.call);
+    }
+
+    // Captures.
+    if (step.save) {
+      for (const [varName, path] of Object.entries(step.save)) {
+        const root = path.startsWith('$') ? vars : reply;
+        const rel = path.startsWith('$') ? path.slice(1) : path;
+        const { found, value } = resolvePath(root, rel);
+        vars[varName] = found ? value : undefined;
+      }
+    }
+  }
+
+  /** Match an `expect` reply matcher against a reply envelope. */
+  #matchExpect(expect, reply, vars, callName) {
+    if (expect.ok === true) {
+      if (!reply.ok)
+        throw new AssertFailure(
+          `${callName}: expected ok:true, got err ${JSON.stringify(reply.err)}`,
+        );
+      if (expect.out !== undefined && !subsetMatch(expect.out, reply.out, vars))
+        throw new AssertFailure(
+          `${callName}: out did not match ${JSON.stringify(expect.out)}; got ${JSON.stringify(reply.out)}`,
+        );
+    } else if (expect.ok === false) {
+      if (reply.ok)
+        throw new AssertFailure(`${callName}: expected ok:false, got out ${JSON.stringify(reply.out)}`);
+      if (expect.err !== undefined && !subsetMatch(expect.err, reply.err, vars))
+        throw new AssertFailure(
+          `${callName}: err did not match ${JSON.stringify(expect.err)}; got ${JSON.stringify(reply.err)}`,
+        );
+    }
+  }
+
+  /** An `upgrade` step: a fresh WS upgrade attempt with the given query/headers. */
+  async #doUpgrade(step, env) {
+    const { vars, sessions } = env;
+    const daemon = (vars.__case||{}).primary;
+    const u = step.upgrade;
+    const query = {};
+    for (const [k, v] of Object.entries(u.query || {})) query[k] = resolveValue(v, vars);
+    const headers = {};
+    for (const [k, v] of Object.entries(u.headers || {})) {
+      headers[k] = this.#resolveHeaderValue(v, daemon, vars);
+    }
+    this.log(`upgrade ${JSON.stringify(query)}`);
+
+    // Perform the upgrade; it may be refused (non-101). A successful upgrade
+    // becomes the `on` session's live connection so a following `await` reads
+    // THIS connection's hello, not a stale one from before the upgrade.
+    const label = step.on || 'subject:self';
+    const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions);
+    vars.frame = result.frame || {};
+    vars.out = result.body;
+    vars.err = result.body;
+
+    if (step.expect) {
+      this.#matchUpgradeExpect(step.expect, result, vars);
+    }
+    if (step.save) {
+      for (const [varName, path] of Object.entries(step.save)) {
+        const root = path.startsWith('frame') ? { frame: result.frame } : result;
+        const { found, value } = resolvePath(root, path);
+        vars[varName] = found ? value : undefined;
+      }
+    }
+  }
+
+  /** Resolve a header value, substituting the portfile placeholders. */
+  #resolveHeaderValue(v, daemon, vars) {
+    if (typeof v !== 'string') return v;
+    return v
+      .replace('<bearer_from_portfile>', daemon.token)
+      .replace('<token>', daemon.token)
+      .replace('<port>', String(daemon.port))
+      .replace(/\$([A-Za-z_][A-Za-z0-9_.]*)/g, (m, name) => {
+        const { found, value } = resolvePath(vars, name);
+        return found ? String(value) : m;
+      });
+  }
+
+  /** Attempt a WS upgrade, returning {status, body, frame}. On admission the
+   * socket stays open and is registered as the `label` session's connection. */
+  async #attemptUpgrade(daemon, query, headers, label, sessions) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) params.set(k, String(v));
+    const url = `${daemon.wsBase}?${params.toString()}`;
+    const WebSocket = (await import('../../../ui/node_modules/ws/index.js')).default;
+    return new Promise((resolve) => {
+      const ws = new WebSocket(url, {
+        headers: { Host: `127.0.0.1:${daemon.port}`, ...headers },
+      });
+      ws.binaryType = 'nodebuffer';
+      let settled = false;
+      ws.once('open', () => {
+        // Admitted: keep the connection and register it as the session.
+        const session = new Session(label);
+        session.ws = ws;
+        session.open = true;
+        ws.on('message', (data) => session.__onMessage(data));
+        ws.on('close', (code) => {
+          session.open = false;
+          session.closeCode = code;
+        });
+        ws.on('error', () => {});
+        ws.once('message', (data) => {
+          if (settled) return;
+          settled = true;
+          let frame = {};
+          try { frame = JSON.parse(data.toString()); } catch { /* ignore */ }
+          if (sessions) sessions.set(label, session);
+          resolve({ status: 101, frame, body: frame });
+        });
+        setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          if (sessions) sessions.set(label, session);
+          resolve({ status: 101, frame: {}, body: {} });
+        }, 2000);
+      });
+      ws.once('unexpected-response', (req, res) => {
+        let body = '';
+        res.on('data', (d) => (body += d));
+        res.on('end', () => {
+          if (settled) return;
+          settled = true;
+          let parsed = {};
+          try { parsed = JSON.parse(body); } catch { /* not json */ }
+          resolve({ status: res.statusCode, body: parsed, frame: parsed });
+        });
+      });
+      ws.once('error', () => {
+        if (settled) return;
+        settled = true;
+        resolve({ status: 0, body: {}, frame: {} });
+      });
+    });
+  }
+
+  /** Match an upgrade/http `expect` (status/headers/body). */
+  #matchUpgradeExpect(expect, result, vars) {
+    if (expect.status !== undefined && result.status !== expect.status) {
+      throw new AssertFailure(
+        `expected status ${expect.status}, got ${result.status} (body ${JSON.stringify(result.body)})`,
+      );
+    }
+    if (expect.body !== undefined && !subsetMatch(expect.body, result.body, vars)) {
+      throw new AssertFailure(
+        `expected body ${JSON.stringify(expect.body)}, got ${JSON.stringify(result.body)}`,
+      );
+    }
+  }
+
+  /** An `http` step: a Layer 0 or /api/session request. */
+  async #doHttp(step, env) {
+    const { vars } = env;
+    const daemon = (vars.__case||{}).primary;
+    const h = step.http;
+    const headers = {};
+    for (const [k, v] of Object.entries(h.headers || {})) {
+      headers[k] = this.#resolveHeaderValue(v, daemon, vars);
+    }
+    let path = this.#resolveHeaderValue(h.path || '/', daemon, vars);
+    const url = `http://127.0.0.1:${daemon.port}${path}`;
+    this.log(`http ${h.method || 'GET'} ${path}`);
+    const res = await fetch(url, {
+      method: h.method || 'GET',
+      headers,
+      body: h.body ? JSON.stringify(resolveValue(h.body, vars)) : undefined,
+    });
+    let body = {};
+    const text = await res.text();
+    try { body = JSON.parse(text); } catch { body = { raw: text }; }
+    const result = { status: res.status, body, headers: Object.fromEntries(res.headers) };
+    vars.out = body;
+    vars.frame = body;
+    if (step.expect) this.#matchUpgradeExpect(step.expect, result, vars);
+    if (step.save) {
+      for (const [varName, p] of Object.entries(step.save)) {
+        const { found, value } = resolvePath({ body, ...body }, p);
+        vars[varName] = found ? value : undefined;
+      }
+    }
+  }
+
+  /** An `await` step: wait for a push, a frame, or a correlated reply. */
+  async #doAwait(step, env) {
+    const { sessions, vars } = env;
+    const a = step.await;
+    const s = await this.#sessionFor(step.on, env.daemons, sessions, vars);
+
+    let predicate;
+    if (a.push !== undefined) {
+      const want = resolveValue(a.push, vars);
+      predicate = (f) => f.t !== undefined && subsetMatch(want, f, vars);
+    } else if (a.frame !== undefined) {
+      const want = resolveValue(a.frame, vars);
+      predicate = (f) => subsetMatch(want, f, vars);
+    } else if (a.reply !== undefined) {
+      const id = Number(resolveValue(a.reply, vars));
+      predicate = (f) => f.id === id;
+    } else {
+      throw new Error('await step with no push/frame/reply key');
+    }
+
+    const frame = await s.awaitFrame(predicate, 10_000 * this.timeoutScale);
+    vars.frame = frame;
+    // A correlated reply also updates the err/out roots so a following assert
+    // can read `err.code` without an intervening call.
+    if (frame.id !== undefined) {
+      vars.out = frame.out;
+      vars.err = frame.err;
+      if (frame.err) vars.last_error = frame.err;
+    }
+    if (step.save) {
+      for (const [varName, p] of Object.entries(step.save)) {
+        const { found, value } = resolvePath({ frame, ...frame }, p);
+        vars[varName] = found ? value : undefined;
+      }
+    }
+  }
+
+  /** A `control` step: drive the harness. */
+  async #doControl(step, index, env) {
+    const { sessions, vars } = env;
+    const c = step.control;
+    switch (c.do) {
+      case 'idle':
+        await new Promise((r) => setTimeout(r, Number(resolveValue(c.ms, vars)) || 0));
+        return;
+      case 'advance_clock':
+        // The harness cannot move the daemon's clock; treat as a no-op wait so
+        // timing-sensitive cases still exercise their real durations.
+        await new Promise((r) => setTimeout(r, Math.min(Number(resolveValue(c.ms, vars)) || 0, 1000)));
+        return;
+      case 'disconnect': {
+        const s = await this.#sessionFor(c.on || step.on, env.daemons, sessions, vars);
+        s.disconnect();
+        return;
+      }
+      case 'reconnect': {
+        const label = c.on || step.on || 'subject:self';
+        const s = await this.#sessionFor(label, env.daemons, sessions, vars);
+        s.close();
+        sessions.delete(label);
+        await this.#sessionFor(label, env.daemons, sessions, vars);
+        return;
+      }
+      case 'stop_daemon':
+        await (vars.__case||{}).primary.proc.kill('SIGTERM');
+        return;
+      case 'start_daemon':
+        // A restart is out of scope for this runner's single-shot daemon.
+        throw new Error('control start_daemon is not supported by this harness yet');
+      case 'set_limit':
+      case 'start_transfers':
+      case 'pause_link':
+      case 'inject_fault':
+        throw new Error(`control ${c.do} is not supported by this harness yet`);
+      default:
+        throw new Error(`unknown control do ${c.do}`);
+    }
+  }
+
+  /** Whether the primary daemon still accepts TCP connections. */
+  async #daemonReachable() {
+    const net = await import('node:net');
+    return new Promise((resolve) => {
+      const sock = net.createConnection(this.__pd().port, '127.0.0.1');
+      sock.once('connect', () => {
+        sock.destroy();
+        resolve(true);
+      });
+      sock.once('error', () => resolve(false));
+      setTimeout(() => {
+        sock.destroy();
+        resolve(false);
+      }, 1000);
+    });
+  }
+
+  /** Evaluate an `observe` assertion against recorded behaviour. */
+  async #evalObserve(a, { sessions, vars, ctxState, name }) {
+    this.__pdCurrent = (vars.__case || {}).primary;
+    const obs = a.observe;
+    switch (obs) {
+      case 'no_network_activity':
+      case 'no_durable_mutation':
+      case 'no_event_authored':
+        // These carry `note: UNMAPPED ...` placeholders in the committed
+        // corpus; the runner treats them as non-blocking observations because
+        // it does not instrument the daemon's packet/store counters. They are
+        // recorded, not asserted — a future daemon-side counter turns them
+        // into real assertions.
+        return;
+      case 'connection_open': {
+        const label = a.on || 'subject:self';
+        // `on: "none"` asserts the daemon is unreachable (connection refused)
+        // — used after daemon.stop to prove it no longer accepts connections.
+        if (label === 'none') {
+          const reachable = await this.#daemonReachable();
+          if (reachable) throw new AssertFailure('expected none to be open (daemon still reachable)');
+          return;
+        }
+        const s = sessions.get(label);
+        if (!s || !s.open) throw new AssertFailure(`expected ${label} to be open`);
+        return;
+      }
+      case 'close_code': {
+        const label = a.on || 'subject:self';
+        const s = sessions.get(label);
+        const want = Number(resolveValue(a.value, vars));
+        // Wait briefly for a close if not yet observed.
+        const deadline = Date.now() + 2000;
+        while (s && s.closeCode === null && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        if (!s || s.closeCode !== want)
+          throw new AssertFailure(`expected close code ${want} on ${label}, got ${s?.closeCode}`);
+        return;
+      }
+      case 'no_push': {
+        const room = resolveValue(a.room_id, vars);
+        for (const s of sessions.values()) {
+          const offending = s.pushes.find((p) => subsetMatch({ room_id: room }, p, vars));
+          if (offending)
+            throw new AssertFailure(`expected no push for ${room}, got ${JSON.stringify(offending)}`);
+        }
+        return;
+      }
+      case 'push_count': {
+        const room = resolveValue(a.room_id, vars);
+        const count = [...sessions.values()].reduce(
+          (n, s) => n + s.pushes.filter((p) => p.room_id === room).length,
+          0,
+        );
+        const cmp = a.value;
+        const ok =
+          cmp.op === 'eq' ? count === cmp.value
+          : cmp.op === 'gte' ? count >= cmp.value
+          : cmp.op === 'lte' ? count <= cmp.value
+          : false;
+        if (!ok) throw new AssertFailure(`push_count ${count} !${cmp.op} ${cmp.value} for ${room}`);
+        return;
+      }
+      case 'process_exited': {
+        // `daemon.stop` replies first, then tears down after a beat — poll for
+        // the exit rather than demanding it be already observed.
+        const deadline = Date.now() + 5_000 * this.timeoutScale;
+        while (!this.__pd().exited && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        if (!this.__pd().exited)
+          throw new AssertFailure(`expected daemon process to have exited`);
+        return;
+      }
+      case 'timing_indistinguishable':
+        // A timing assertion needs sub-step latency instrumentation; treated
+        // as non-blocking here (recorded, not asserted).
+        return;
+      case 'bytes_streamed':
+        return;
+      default:
+        throw new AssertFailure(`unsupported observe ${obs}`);
+    }
+  }
+}

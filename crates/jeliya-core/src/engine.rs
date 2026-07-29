@@ -17,6 +17,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -75,6 +76,9 @@ pub struct Engine {
     /// misses pushes and re-syncs via `stream.resync` (the one resync path).
     push_tx: broadcast::Sender<Push>,
     config: EngineConfig,
+    /// Set once a `daemon.stop` has been accepted: a second stop is
+    /// `shutdown_in_progress`, never a comfortable repeat `stopping: true`.
+    stopping: Arc<AtomicBool>,
 }
 
 /// The result of executing one typed call: the reply to encode, plus the
@@ -109,6 +113,7 @@ impl Engine {
             supervisor,
             push_tx,
             config,
+            stopping: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -154,6 +159,16 @@ impl Engine {
     pub async fn execute(&self, call: TypedCall) -> Executed {
         let stop_after_reply = matches!(call, TypedCall::DaemonStop(_));
         if stop_after_reply {
+            // Exactly one teardown: a second `daemon.stop` is
+            // `shutdown_in_progress`, never a comfortable repeat
+            // `stopping: true`. The check-and-set is atomic so two concurrent
+            // stops on two sessions cannot both sequence a shutdown.
+            if self.stopping.swap(true, Ordering::SeqCst) {
+                return Executed {
+                    reply: Err(ApiError::ShutdownInProgress),
+                    stop_after_reply: false,
+                };
+            }
             // Reply first, then die: the shutdown signal is delayed a beat so
             // the reply flushes to the requesting client before teardown.
             let tx = self.config.shutdown_tx.clone();
@@ -408,17 +423,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn room_list_before_identity_is_empty() {
+    async fn room_list_before_identity_is_subject_absent() {
         let dir = TempDir::new().expect("tempdir");
         let engine = test_engine(&dir);
+        // Validation-order step 2: with no subject, `room.list` is
+        // `subject_absent` — never an empty list (the step-5 carve-out that
+        // lets `room.list` enumerate left rooms does not reach step 2).
         let executed = engine
             .execute(TypedCall::RoomList(jeliya_api::RoomList {}))
             .await;
-        let reply = executed.reply.expect("room.list succeeds pre-identity");
-        match reply {
-            TypedReply::RoomList(out) => assert!(out.rooms.is_empty()),
-            other => panic!("wrong reply: {other:?}"),
-        }
+        let err = executed.reply.unwrap_err();
+        assert!(matches!(err, ApiError::SubjectAbsent), "got {err:?}");
     }
 
     #[tokio::test]

@@ -141,10 +141,24 @@ async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Res
         return preflight(&req);
     }
     if path == "/api/session" {
-        if req.method() != Method::GET {
-            return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        // v2's ticket issuance is `POST /api/session` proving possession of
+        // the daemon token (`Authorization: Bearer <token>`). The v1 browser
+        // GET handshake (Sec-Fetch-Site same-origin, no token) is retained so
+        // the served UI keeps working until the session-ticket exchange lands
+        // (a documented follow-up to #166).
+        match *req.method() {
+            Method::POST => {
+                if !token_ok(&req, &state) {
+                    return unauthorized(local_origin(&req));
+                }
+                return json_response(
+                    StatusCode::OK,
+                    json!({ "token": state.auth_token.as_str() }),
+                );
+            }
+            Method::GET => return session(&req, &state),
+            _ => return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
         }
-        return session(&req, &state);
     }
     if path == "/api/files/share" {
         if req.method() != Method::POST {

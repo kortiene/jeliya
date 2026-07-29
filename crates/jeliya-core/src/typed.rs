@@ -207,6 +207,13 @@ impl<'a> TypedSupervisor<'a> {
         })
     }
 
+    /// Whether a local subject exists (the step-2 precondition).
+    pub(crate) fn subject_present(&self) -> Result<bool, ApiError> {
+        crate::identity::load_profile(self.sup.data_dir())
+            .map(|p| p.is_some())
+            .map_err(|_| ApiError::NotReady)
+    }
+
     /// The `hello` `subject` fact: present with ids, or its stated absence.
     pub fn subject_state(&self) -> SubjectState {
         match crate::identity::load_profile(self.sup.data_dir()) {
@@ -948,52 +955,59 @@ impl<'a> TypedSupervisor<'a> {
     // Pipes
     // ------------------------------------------------------------------
 
-    /// `pipe.publish` — publish a pipe to a loopback target.
-    pub async fn pipe_publish(&self, req: &PipePublish) -> CoreResult<PipePublishOut> {
-        // Validate the target is loopback and the port is in range.
+    /// `pipe.publish` — publish a pipe to a loopback target. `audience: room`
+    /// authorizes every active member; `audience: subjects` authorizes the
+    /// named list. A non-loopback target or an out-of-range port is
+    /// `pipe_target_refused` carrying the rejected target verbatim.
+    pub async fn pipe_publish(&self, req: &PipePublish) -> Result<PipePublishOut, ApiError> {
+        let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        // The target must be loopback (IPv4 127.0.0.0/8 or IPv6 ::1) with a
+        // port in 1..=65535. Anything else is pipe_target_refused carrying the
+        // rejected target verbatim, never the generic policy_refused.
+        // Parse the address, bracketing an IPv6 host so `::1` resolves (the
+        // bare `host:port` form is ambiguous for a bare IPv6 literal).
+        let host = if req.target.host.contains(':') && !req.target.host.starts_with('[') {
+            format!("[{}]", req.target.host)
+        } else {
+            req.target.host.clone()
+        };
+        let target_addr: Option<std::net::SocketAddr> =
+            format!("{host}:{}", req.target.port).parse().ok();
         let port_ok = (1..=65535).contains(&req.target.port);
-        if !port_ok {
-            return Err(CoreError::new(
-                ErrorKind::PipeDenied,
-                format!("pipe target port {} is outside 1..=65535", req.target.port),
-            ));
+        let loopback = target_addr.as_ref().is_some_and(is_loopback_addr);
+        if !port_ok || !loopback {
+            return Err(ApiError::PipeTargetRefused {
+                target: req.target.clone(),
+            });
         }
-        let target_str = format!("{}:{}", req.target.host, req.target.port);
-        let peer_identity =
-            match &req.audience {
-                Audience::Subjects { subject_ids } if subject_ids.len() == 1 => {
-                    subject_ids[0].to_string()
-                }
-                Audience::Room => return Err(CoreError::new(
-                    ErrorKind::InvalidParams,
-                    "pipe.publish to the whole room is not supported by the runtime in this build",
-                )),
-                _ => {
-                    return Err(CoreError::new(
-                        ErrorKind::InvalidParams,
-                        "pipe.publish requires exactly one authorized subject in this build",
-                    ))
-                }
-            };
-        let result = self
+        let target_addr = target_addr.expect("parsed above");
+
+        // Resolve the audience to a concrete authorized-subject set.
+        let snapshot = self.sup.readable_snapshot(&room_id).await.map_err(core_to_api)?;
+        let allowed: Vec<iroh_rooms::identity::IdentityKey> = match &req.audience {
+            Audience::Room => snapshot.active_members().map(|m| m.identity).collect(),
+            Audience::Subjects { subject_ids } => subject_ids
+                .iter()
+                .map(Self::parse_subject)
+                .collect::<CoreResult<Vec<_>>>()
+                .map_err(core_to_api)?,
+        };
+        if allowed.is_empty() {
+            return Err(ApiError::PolicyRefused {
+                room_id: req.room_id.clone(),
+            });
+        }
+
+        let target_hint = format!("{}:{}", req.target.host, req.target.port);
+        let (pipe_id, event_id) = self
             .sup
-            .pipe_expose(req.room_id.as_ref(), &target_str, &peer_identity)
-            .await?;
-        let pipe_id = result
-            .get("pipe_id")
-            .and_then(|p| p.as_str())
-            .ok_or_else(|| CoreError::internal("pipe expose carried no pipe_id"))?
-            .to_string();
-        let event_id = result
-            .get("event_id")
-            .and_then(|p| p.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let room_id = Self::parse_room(&req.room_id)?;
-        let pos = self.latest_pos(&room_id)?;
+            .pipe_expose_multi(&room_id, target_addr, &target_hint, &allowed)
+            .await
+            .map_err(core_to_api)?;
+        let pos = self.latest_pos(&room_id).map_err(core_to_api)?;
         Ok(PipePublishOut {
             room_id: req.room_id.clone(),
-            pipe_id: PipeId::new(pipe_id),
+            pipe_id: crate::projection::pipe_id(&pipe_id),
             target: req.target.clone(),
             audience: req.audience.clone(),
             event_id: EventId::new(event_id),
@@ -1383,6 +1397,11 @@ fn proj_epoch() -> Timestamp {
     Timestamp::new(time::OffsetDateTime::UNIX_EPOCH)
 }
 
+/// Whether a socket address is loopback (IPv4 127.0.0.0/8 or IPv6 ::1).
+fn is_loopback_addr(addr: &std::net::SocketAddr) -> bool {
+    addr.ip().is_loopback()
+}
+
 /// Split a `"host:port"` loopback address into a `Target`.
 fn split_host_port(addr: &str) -> (String, u64) {
     match addr.rsplit_once(':') {
@@ -1423,6 +1442,14 @@ fn closed_pipe_ids(
 /// cannot fail.
 pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedReply, ApiError> {
     let t = TypedSupervisor::new(sup);
+    // Validation-order step 2 (subject precondition): every operation except
+    // `subject.ensure` — which exists to create the subject — requires a local
+    // subject before any later stage (dedup, room index, standing, role,
+    // semantics) runs. `subject_absent` outranks `room_not_available` and is
+    // never a membership oracle.
+    if !matches!(call, TypedCall::SubjectEnsure(_)) && !t.subject_present()? {
+        return Err(ApiError::SubjectAbsent);
+    }
     match call {
         TypedCall::SubjectEnsure(_) => t
             .subject_ensure()
@@ -1542,11 +1569,7 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .await
             .map(TypedReply::TransferCancel)
             .map_err(core_to_api),
-        TypedCall::PipePublish(r) => t
-            .pipe_publish(&r)
-            .await
-            .map(TypedReply::PipePublish)
-            .map_err(core_to_api),
+        TypedCall::PipePublish(r) => t.pipe_publish(&r).await.map(TypedReply::PipePublish),
         TypedCall::PipeList(r) => t
             .pipe_list(&r)
             .await
