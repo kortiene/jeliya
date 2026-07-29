@@ -913,12 +913,29 @@ pub async fn serve_ws<S>(
         std::collections::HashMap::new();
 
     // The `hello` frame: exactly one, first, carrying the generation, the
-    // storage generation, the served limits, and the local subject.
+    // storage generation, the served limits, and the local subject. An
+    // unreadable subject store is `not_ready` — refuse the connection rather
+    // than inviting `subject.ensure` against state that cannot be served.
+    let subject = match state.engine.subject_state() {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = out_tx
+                .send(Message::Close(Some(
+                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4003.into(),
+                        reason: "not_ready".into(),
+                    },
+                )))
+                .await;
+            writer.abort();
+            return;
+        }
+    };
     let hello = jeliya_api::Hello {
         protocol: jeliya_core::engine::PROTOCOL_VERSION,
         storage_generation: jeliya_core::engine::STORAGE_GENERATION,
         limits: state.engine.limits(),
-        subject: state.engine.subject_state(),
+        subject,
         resume: jeliya_api::Resume::Fresh,
     };
     match serde_json::to_vec(&hello) {

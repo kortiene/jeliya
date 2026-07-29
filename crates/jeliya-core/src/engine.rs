@@ -147,9 +147,11 @@ impl Engine {
         typed::limits()
     }
 
-    /// The `hello` `subject` fact: present with ids, or its stated absence.
-    #[must_use]
-    pub fn subject_state(&self) -> SubjectState {
+    /// The `hello` `subject` fact: present with ids, its stated absence, or
+    /// `not_ready` when the subject store cannot be read (the connection must
+    /// be refused rather than invited to run `subject.ensure` against
+    /// unreadable existing state).
+    pub fn subject_state(&self) -> Result<SubjectState, ApiError> {
         typed::TypedSupervisor::new(&self.supervisor).subject_state()
     }
 

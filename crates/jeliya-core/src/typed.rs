@@ -274,14 +274,18 @@ impl<'a> TypedSupervisor<'a> {
             .map_err(|_| ApiError::NotReady)
     }
 
-    /// The `hello` `subject` fact: present with ids, or its stated absence.
-    pub fn subject_state(&self) -> SubjectState {
+    /// The `hello` `subject` fact: present with ids, its stated absence, or
+    /// `not_ready` when the subject store cannot be read (corrupt or
+    /// permission-denied — the connection must not be invited to run
+    /// `subject.ensure` against unreadable existing state).
+    pub fn subject_state(&self) -> Result<SubjectState, ApiError> {
         match crate::identity::load_profile(self.sup.data_dir()) {
-            Ok(Some(p)) => SubjectState::Present {
+            Ok(Some(p)) => Ok(SubjectState::Present {
                 subject_id: SubjectId::new(p.identity_id),
                 device_id: DeviceId::new(p.device_id),
-            },
-            _ => SubjectState::Absent,
+            }),
+            Ok(None) => Ok(SubjectState::Absent),
+            Err(_) => Err(ApiError::NotReady),
         }
     }
 
@@ -330,7 +334,7 @@ impl<'a> TypedSupervisor<'a> {
     /// `room.list` — every room this identity holds, in what standing, with
     /// recency and capabilities, from local evidence with zero network
     /// activity.
-    pub async fn room_list(&self) -> CoreResult<RoomListOut> {
+    pub async fn room_list(&self) -> Result<RoomListOut, ApiError> {
         if !self.sup.db_path().exists() {
             return Ok(RoomListOut { rooms: Vec::new() });
         }
@@ -339,23 +343,30 @@ impl<'a> TypedSupervisor<'a> {
             Err(e) if e.kind == ErrorKind::IdentityMissing => {
                 return Ok(RoomListOut { rooms: Vec::new() })
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(core_to_api(e)),
         };
-        let room_ids: Vec<IrohRoomId> = crate::localstate::load(self.sup.data_dir())?
+        let room_ids: Vec<IrohRoomId> = crate::localstate::load(self.sup.data_dir())
+            .map_err(|_| ApiError::RoomIndexUnreadable)?
             .rooms
             .keys()
             .filter_map(|room_id| room_id.parse().ok())
             .collect();
         let mut rooms = Vec::with_capacity(room_ids.len());
         for room_id in room_ids {
-            let Ok(snapshot) = self.sup.snapshot_for(&room_id).await else {
-                continue;
-            };
+            // A locally indexed room whose log will not fold is a read
+            // failure, not an absent room: silently dropping it would present
+            // an incomplete index as complete. Surface `room_index_unreadable`
+            // rather than a misleading partial list.
+            let snapshot = self
+                .sup
+                .snapshot_for(&room_id)
+                .await
+                .map_err(|_| ApiError::RoomIndexUnreadable)?;
             if RoomSupervisor::require_local_room_access(&snapshot, &self_key).is_err() {
                 continue;
             }
             let name = {
-                let store = self.sup.open_store()?;
+                let store = self.sup.open_store().map_err(core_to_api)?;
                 crate::supervisor::genesis_name(&store, &room_id).or_else(|| {
                     crate::localstate::local_name(self.sup.data_dir(), &room_id.to_string())
                 })
@@ -365,8 +376,9 @@ impl<'a> TypedSupervisor<'a> {
                 .role(&self_key)
                 .map(proj::role)
                 .unwrap_or(Role::Member);
-            let store = self.sup.open_store()?;
-            let (removed_ids, left_ids) = crate::supervisor::departure_sets(&store, &room_id)?;
+            let store = self.sup.open_store().map_err(core_to_api)?;
+            let (removed_ids, left_ids) = crate::supervisor::departure_sets(&store, &room_id)
+                .map_err(core_to_api)?;
             let standing = self_member.map(|m| {
                 proj::standing(
                     removed_ids.contains(&m.identity)
@@ -375,10 +387,13 @@ impl<'a> TypedSupervisor<'a> {
                 )
             });
             // Recency: the newest committed event's author-dated instant and
-            // kind, max by timestamp (never the wall clock).
+            // kind, max by timestamp over the COMPLETE history (never the wall
+            // clock, never a bounded window — a clock-ahead peer's older row
+            // with the greatest signed instant must not fall out and move the
+            // projection backward).
             let recency = store
-                .room_tail(&room_id, 256)
-                .map_err(|e| CoreError::internal(format!("could not read recency: {e}")))?
+                .room_tail(&room_id, u32::MAX)
+                .map_err(|_| ApiError::RoomIndexUnreadable)?
                 .iter()
                 .filter_map(|se| {
                     proj::stored_event_recency(se).map(|(ts, kind)| (ts, se.event_id, kind))
@@ -594,14 +609,19 @@ impl<'a> TypedSupervisor<'a> {
             ));
         }
         // v2 `expires_at` is an absolute instant; the supervisor takes a
-        // relative spec. Convert absolute -> seconds-from-now.
+        // relative spec. Convert absolute -> seconds-from-now. A past or
+        // already-expiring expiry is refused rather than minting a capability
+        // that is born expired yet labelled `outstanding` — the reply's
+        // redeemability must agree with the capability's signed expiry.
         let expires_ms = req.expires_at.into_inner().unix_timestamp().max(0) as u64 * 1000;
         let now = crate::now_ms();
-        let spec = if expires_ms > now {
-            format!("{}s", (expires_ms - now) / 1000)
-        } else {
-            "0s".to_string()
-        };
+        if expires_ms <= now {
+            return Err(CoreError::new(
+                ErrorKind::InvalidParams,
+                "invite.mint expiry is not in the future",
+            ));
+        }
+        let spec = format!("{}s", (expires_ms - now) / 1000);
         let ticket = self
             .sup
             .create_invite(
@@ -1528,11 +1548,7 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .room_create(&r)
             .map(TypedReply::RoomCreate)
             .map_err(core_to_api),
-        TypedCall::RoomList(_) => t
-            .room_list()
-            .await
-            .map(TypedReply::RoomList)
-            .map_err(core_to_api),
+        TypedCall::RoomList(_) => t.room_list().await.map(TypedReply::RoomList),
         TypedCall::RoomActivate(r) => t
             .room_activate(&r)
             .await
@@ -1862,6 +1878,9 @@ fn api_to_core(err: ApiError) -> CoreError {
     match err {
         ApiError::InvalidArgument { .. } => {
             CoreError::new(ErrorKind::InvalidParams, "invalid paging argument")
+        }
+        ApiError::RoomIndexUnreadable => {
+            CoreError::new(ErrorKind::Internal, "room index unreadable")
         }
         _ => CoreError::internal("typed projection error"),
     }
