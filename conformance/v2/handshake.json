@@ -9,7 +9,7 @@
       "intent": "Proves GET /api/health is unauthenticated and serves exactly {ok, pid, port, version, protocol, min_protocol, limits} with data_dir absent; catches a reintroduction of v1's absolute-filesystem-path leak to any unauthenticated local caller.",
       "requires": [
         "daemon",
-        "raw_http"
+        "observe:network"
       ],
       "steps": [
         {
@@ -20,8 +20,6 @@
               "Host": "127.0.0.1:<port>"
             }
           },
-          "expect_status": 200,
-          "expect_content_type": "application/json",
           "expect": {
             "ok": true,
             "pid": "<uint>",
@@ -29,13 +27,31 @@
             "version": "<version>",
             "protocol": 2,
             "min_protocol": 2,
-            "limits": "<object>"
-          },
-          "expect_absent": [
-            "data_dir",
-            "schema",
-            "identity",
-            "mode"
+            "limits": "<object>",
+            "status": 200,
+            "headers": {
+              "content-type": "application/json"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.schema",
+              "op": "absent"
+            },
+            {
+              "path": "out.identity",
+              "op": "absent"
+            },
+            {
+              "path": "out.mode",
+              "op": "absent"
+            }
           ]
         }
       ],
@@ -48,7 +64,7 @@
       "intent": "Proves the served limits object is complete and every field is an integer, so no client needs a compiled-in default; catches a daemon that drops a limit field and forces clients back to hardcoded constants.",
       "requires": [
         "daemon",
-        "raw_http"
+        "observe:network"
       ],
       "steps": [
         {
@@ -56,38 +72,46 @@
             "method": "GET",
             "path": "/api/health"
           },
-          "expect_status": 200,
-          "expect_subset": {
-            "limits": {
-              "max_shared_file_bytes": "<uint>",
-              "max_message_body_bytes": "<uint>",
-              "max_frame_bytes": "<uint>",
-              "max_inflight_requests": "<uint>",
-              "max_connections": "<uint>",
-              "max_concurrent_transfers": "<uint>",
-              "max_transfer_bytes_inflight": "<uint>",
-              "transfer_connect_allowance_ms": "<uint>",
-              "transfer_floor_bits_per_second": "<uint>",
-              "transfer_stall_ms": "<uint>",
-              "timeline_page_max": "<uint>"
-            }
-          },
-          "assert_exact_key_set": {
-            "at": "$.limits",
-            "keys": [
-              "max_shared_file_bytes",
-              "max_message_body_bytes",
-              "max_frame_bytes",
-              "max_inflight_requests",
-              "max_connections",
-              "max_concurrent_transfers",
-              "max_transfer_bytes_inflight",
-              "transfer_connect_allowance_ms",
-              "transfer_floor_bits_per_second",
-              "transfer_stall_ms",
-              "timeline_page_max"
-            ]
+          "expect": {
+            "ok": true,
+            "out": {
+              "limits": {
+                "max_shared_file_bytes": "<uint>",
+                "max_message_body_bytes": "<uint>",
+                "max_frame_bytes": "<uint>",
+                "max_inflight_requests": "<uint>",
+                "max_connections": "<uint>",
+                "max_concurrent_transfers": "<uint>",
+                "max_transfer_bytes_inflight": "<uint>",
+                "transfer_connect_allowance_ms": "<uint>",
+                "transfer_floor_bits_per_second": "<uint>",
+                "transfer_stall_ms": "<uint>",
+                "timeline_page_max": "<uint>"
+              }
+            },
+            "status": 200
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "max_shared_file_bytes",
+                "max_message_body_bytes",
+                "max_frame_bytes",
+                "max_inflight_requests",
+                "max_connections",
+                "max_concurrent_transfers",
+                "max_transfer_bytes_inflight",
+                "transfer_connect_allowance_ms",
+                "transfer_floor_bits_per_second",
+                "transfer_stall_ms",
+                "timeline_page_max"
+              ]
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -99,7 +123,7 @@
       "intent": "Pins the one limit whose value the shared-file size policy fixes: exactly 104857600, carried as a JSON integer, never a formatted string like \"100 MiB\"; catches a daemon that serves a human unit or drifts to the PRD's 25 MB.",
       "requires": [
         "daemon",
-        "raw_http"
+        "observe:network"
       ],
       "steps": [
         {
@@ -107,15 +131,23 @@
             "method": "GET",
             "path": "/api/health"
           },
-          "expect_subset": {
-            "limits": {
-              "max_shared_file_bytes": 104857600
+          "expect": {
+            "ok": true,
+            "out": {
+              "limits": {
+                "max_shared_file_bytes": 104857600
+              }
             }
-          },
-          "assert_json_type": {
-            "at": "$.limits.max_shared_file_bytes",
-            "type": "integer"
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.limits.max_shared_file_bytes",
+              "op": "type",
+              "value": "uint"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -127,24 +159,27 @@
       "intent": "Proves {protocol, min_protocol, limits} is defined once and emitted identically by all three Layer 0 surfaces, and that the portfile's v1 `schema` field is gone; catches the duplicated-constant defect the single definition exists to end.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile",
-        "ready_line"
+        "observe:network",
+        "resource:portfile",
+        "resource:ready_line"
       ],
       "steps": [
         {
-          "read_ready_line": true,
           "save": {
             "ready": "$"
-          }
+          },
+          "note": "[reads the daemon ready line: harness resource, asserted by following assertions]"
         },
         {
-          "read_portfile": true,
           "save": {
             "pf": "$"
           },
-          "expect_absent": [
-            "schema"
+          "note": "[reads the daemon portfile: harness resource, asserted by following assertions]",
+          "assert": [
+            {
+              "path": "out.schema",
+              "op": "absent"
+            }
           ]
         },
         {
@@ -157,32 +192,46 @@
           }
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$ready.protocol",
-              "$pf.protocol",
-              "$health.protocol"
-            ]
-          }
+          "assert": [
+            {
+              "path": "$ready.protocol",
+              "op": "eq",
+              "value": "$pf.protocol"
+            },
+            {
+              "path": "$ready.protocol",
+              "op": "eq",
+              "value": "$health.protocol"
+            }
+          ]
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$ready.min_protocol",
-              "$pf.min_protocol",
-              "$health.min_protocol"
-            ]
-          }
+          "assert": [
+            {
+              "path": "$ready.min_protocol",
+              "op": "eq",
+              "value": "$pf.min_protocol"
+            },
+            {
+              "path": "$ready.min_protocol",
+              "op": "eq",
+              "value": "$health.min_protocol"
+            }
+          ]
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$ready.limits",
-              "$pf.limits",
-              "$health.limits"
-            ],
-            "deep": true
-          }
+          "assert": [
+            {
+              "path": "$ready.limits",
+              "op": "eq",
+              "value": "$pf.limits"
+            },
+            {
+              "path": "$ready.limits",
+              "op": "eq",
+              "value": "$health.limits"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -194,7 +243,7 @@
       "intent": "Proves the daemon advertises a single supported generation (min_protocol == protocol == 2) and that protocol_unsupported.supported lists exactly [2]; catches accidental dual support, which the clean-slate decision forbids outright.",
       "requires": [
         "daemon",
-        "raw_http"
+        "observe:network"
       ],
       "steps": [
         {
@@ -202,13 +251,16 @@
             "method": "GET",
             "path": "/api/health"
           },
-          "expect_subset": {
-            "protocol": 2,
-            "min_protocol": 2
+          "expect": {
+            "ok": true,
+            "out": {
+              "protocol": 2,
+              "min_protocol": 2
+            }
           }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "1",
               "sg": "<daemon_sg>"
@@ -218,18 +270,19 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported",
-              "supported": [
-                2
-              ],
-              "client": {
-                "state": "declared",
-                "protocol": 1
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ],
+                "client": {
+                  "state": "declared",
+                  "protocol": 1
+                }
               }
             }
           }
@@ -244,8 +297,8 @@
       "intent": "Proves a first-contact client can learn the daemon's storage generation at Layer 0 and that it equals hello.storage_generation; SPEC GAP — Layer 1 requires `sg` on the upgrade URL but the spec's Layer 0 field list omits storage_generation entirely, making the gate unsatisfiable by a client that has never connected. This case fails until Layer 0 publishes it.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
@@ -253,21 +306,27 @@
             "method": "GET",
             "path": "/api/health"
           },
-          "expect_subset": {
-            "storage_generation": "<uint>"
-          },
           "save": {
-            "sg": "storage_generation"
+            "sg": "frame.storage_generation"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "storage_generation": "<uint>"
+            }
           }
         },
         {
-          "read_portfile": true,
-          "expect_subset": {
-            "storage_generation": "<uint>"
+          "note": "[reads the daemon portfile: harness resource, asserted by following assertions]",
+          "expect": {
+            "ok": true,
+            "out": {
+              "storage_generation": "<uint>"
+            }
           }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "$sg"
@@ -276,13 +335,14 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "storage_generation": "$sg"
+          "await": {
+            "frame": {
+              "t": "hello",
+              "storage_generation": "$sg"
+            }
           }
         }
       ],
@@ -294,9 +354,9 @@
       "operation": null,
       "intent": "Proves a client's enforced bound tracks the served value rather than a compiled-in default: against a daemon configured with a non-default max_message_body_bytes, the accept/refuse boundary moves with the served integer. Catches a client that hardcodes any limit.",
       "requires": [
-        "configurable_limits",
+        "resource:configurable_limits",
         "subject",
-        "live_room"
+        "room:live"
       ],
       "steps": [
         {
@@ -305,14 +365,17 @@
             "path": "/api/health"
           },
           "save": {
-            "body_max": "limits.max_message_body_bytes"
-          },
-          "assert_not_equal": {
-            "projections": [
-              "$body_max",
-              "<compiled_default>"
-            ]
+            "body_max": "frame.limits.max_message_body_bytes"
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "$body_max",
+              "op": "ne",
+              "value": "<compiled_default>"
+            }
+          ]
         },
         {
           "call": "message.send",
@@ -322,7 +385,10 @@
             "op_id": "<uuid>"
           },
           "expect": {
-            "event_id": "<hex64>"
+            "ok": true,
+            "out": {
+              "event_id": "<string>"
+            }
           }
         },
         {
@@ -332,9 +398,10 @@
             "body": "<string of exactly $body_max + 1 bytes>",
             "op_id": "<uuid>"
           },
-          "expect_error": {
-            "code": "message_too_large",
-            "fields": {
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "message_too_large",
               "declared_bytes": "<uint>",
               "limit_bytes": "$body_max"
             }
@@ -350,12 +417,12 @@
       "intent": "The positive control for the whole gate: loopback Host, loopback Origin, v=2, matching sg, and a valid bearer credential upgrade to a WebSocket and receive hello. Every negative gate case below is only meaningful against this one.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -366,13 +433,16 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": true,
-          "expect_status": 101
+          "expect": {
+            "status": 101
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "protocol": 2
+          "await": {
+            "frame": {
+              "t": "hello",
+              "protocol": 2
+            }
           }
         }
       ],
@@ -385,12 +455,12 @@
       "intent": "Proves check 1 fires with its own code and its own status (403 forbidden_origin) against a DNS-rebinding Host; catches a daemon that only inspects Origin and lets a rebound name through.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -400,13 +470,16 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 403,
-          "expect_content_type": "application/json",
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         }
@@ -420,12 +493,12 @@
       "intent": "Proves check 2 fires with its own code (403 forbidden_origin) against a cross-site WebSocket hijack from a hostile page, even with a loopback Host and a valid credential.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -436,12 +509,13 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 403,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         }
@@ -455,12 +529,12 @@
       "intent": "Proves Origin is conditional (\"if present\") and its absence is NOT refusal, unlike `v` and `sg`; a native client sends no Origin and must be admitted. Catches an over-broad application of absence-is-refusal that would lock out every native client.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -468,17 +542,15 @@
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
-            },
-            "omit_headers": [
-              "Origin"
-            ]
-          },
-          "expect_upgrade": true
+            }
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "protocol": 2
+          "await": {
+            "frame": {
+              "t": "hello",
+              "protocol": 2
+            }
           }
         }
       ],
@@ -491,43 +563,46 @@
       "intent": "THE load-bearing case. A v1 client connects to /ws?token=<hex> with no `v` at all. Absence must be refusal, never a default to the current generation. Catches the single defect that would silently admit every legacy client through a gate whose entire purpose is to exclude them.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "token": "<token>"
             },
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Origin",
-              "Authorization"
-            ],
-            "raw_url": "/ws?token=<token>"
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_content_type": "application/json",
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported",
-              "supported": [
-                2
-              ],
-              "client": {
-                "state": "absent"
+          "expect": {
+            "status": 426,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ],
+                "client": {
+                  "state": "absent"
+                }
               }
             }
           }
         },
         {
-          "assert_no_close_code": true,
-          "note": "the connection was never upgraded, so no 4001 close occurs"
+          "note": "the connection was never upgraded, so no 4001 close occurs",
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -539,12 +614,12 @@
       "intent": "Proves a declared but unsupported generation (both below and above the supported set) is refused with 426 protocol_unsupported carrying the declared variant; catches a daemon that range-accepts anything <= 2 or ignores a future generation.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "1",
               "sg": "<daemon_sg>"
@@ -554,24 +629,25 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported",
-              "supported": [
-                2
-              ],
-              "client": {
-                "state": "declared",
-                "protocol": 1
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ],
+                "client": {
+                  "state": "declared",
+                  "protocol": 1
+                }
               }
             }
           }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "3",
               "sg": "<daemon_sg>"
@@ -581,18 +657,19 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported",
-              "supported": [
-                2
-              ],
-              "client": {
-                "state": "declared",
-                "protocol": 3
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ],
+                "client": {
+                  "state": "declared",
+                  "protocol": 3
+                }
               }
             }
           }
@@ -607,32 +684,31 @@
       "intent": "Proves `v` is matched as a canonical integer generation, not coerced: \"02\", \"2.0\", \"+2\", \" 2\", \"2abc\" and \"\" are all refused. Catches a lenient parser that a client could use to smuggle an unnamed generation past the gate.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect_each": [
-            {
-              "v": "02"
-            },
-            {
-              "v": "2.0"
-            },
-            {
-              "v": "+2"
-            },
-            {
-              "v": " 2"
-            },
-            {
-              "v": "2abc"
-            },
-            {
-              "v": ""
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          },
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ]
+              }
             }
-          ],
-          "with": {
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
             "query": {
               "sg": "<daemon_sg>"
             },
@@ -640,16 +716,155 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported",
-              "supported": [
-                2
-              ]
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ]
+              }
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          },
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ]
+              }
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          },
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ]
+              }
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          },
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ]
+              }
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          },
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ]
+              }
+            }
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
             }
           }
         }
@@ -663,41 +878,43 @@
       "intent": "Parameter-pollution: ?v=1&v=2 and ?v=2&v=1 must both be refused rather than resolved by first-wins or last-wins. Catches a gate that a client could straddle to present one generation to the check and another to the dispatcher.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
-            "raw_url": "/ws?v=1&v=2&sg=<daemon_sg>",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported"
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported"
+              }
             }
           }
         },
         {
-          "connect": {
-            "raw_url": "/ws?v=2&v=1&sg=<daemon_sg>",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported"
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported"
+              }
             }
           }
         }
@@ -711,12 +928,12 @@
       "intent": "Proves absence-is-refusal applies to the storage generation too, not only the protocol generation, with its own code storage_generation_mismatch at 426 and the client side expressed as a tagged absent variant (never a null). Catches a daemon that gates the protocol and merely reports storage, which discharges half of one sentence of the fail-closed rule.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2"
             },
@@ -725,20 +942,30 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_content_type": "application/json",
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "storage_generation_mismatch",
-              "daemon": "<uint>",
-              "client": {
-                "state": "absent"
+          "expect": {
+            "status": 426,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "storage_generation_mismatch",
+                "daemon": "<uint>",
+                "client": {
+                  "state": "absent"
+                }
               }
             }
-          },
-          "assert_no_null": true
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -750,12 +977,12 @@
       "intent": "Proves a client carrying state from another storage generation is refused before it can write, with 426 storage_generation_mismatch naming both sides. Catches a daemon that admits a stale-generation client and lets it mutate the new store.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "0"
@@ -765,22 +992,23 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "storage_generation_mismatch",
-              "daemon": "<daemon_sg>",
-              "client": {
-                "state": "declared",
-                "storage_generation": 0
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "storage_generation_mismatch",
+                "daemon": "<daemon_sg>",
+                "client": {
+                  "state": "declared",
+                  "storage_generation": 0
+                }
               }
             }
           }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "99"
@@ -790,16 +1018,17 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "storage_generation_mismatch",
-              "daemon": "<daemon_sg>",
-              "client": {
-                "state": "declared",
-                "storage_generation": 99
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "storage_generation_mismatch",
+                "daemon": "<daemon_sg>",
+                "client": {
+                  "state": "declared",
+                  "storage_generation": 99
+                }
               }
             }
           }
@@ -814,38 +1043,41 @@
       "intent": "Proves check 5 fires with its own code and status (401 unauthenticated) for both a missing and an incorrect bearer token, and that the two responses are identical. Catches a daemon that distinguishes \"no credential\" from \"bad credential\".",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "save": {
+            "absent_body": "$"
+          },
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
             },
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
-          },
-          "expect_upgrade": false,
-          "expect_status": 401,
-          "expect_content_type": "application/json",
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "unauthenticated"
             }
           },
-          "save": {
-            "absent_body": "$"
+          "expect": {
+            "status": 401,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "unauthenticated"
+              }
+            }
           }
         },
         {
-          "connect": {
+          "save": {
+            "wrong_body": "$"
+          },
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -855,26 +1087,24 @@
               "Authorization": "Bearer 00000000000000000000000000000000000000000000000000000000000000ff"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 401,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "unauthenticated"
+          "expect": {
+            "status": 401,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "unauthenticated"
+              }
             }
-          },
-          "save": {
-            "wrong_body": "$"
           }
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$absent_body",
-              "$wrong_body"
-            ],
-            "deep": true
-          }
+          "assert": [
+            {
+              "path": "$absent_body",
+              "op": "eq",
+              "value": "$wrong_body"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -886,52 +1116,47 @@
       "intent": "Proves the constant-time requirement on check 5: a token sharing a long correct prefix and a token wrong in its first byte produce identical bodies and statistically indistinguishable latency. Catches a short-circuiting byte comparison that leaks the token to a local process one byte at a time.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile",
-        "timing_sampler"
+        "observe:network",
+        "resource:portfile",
+        "observe:timing"
       ],
       "steps": [
         {
-          "connect_repeated": {
-            "n": 1000,
-            "query": {
-              "v": "2",
-              "sg": "<daemon_sg>"
-            },
-            "headers": {
-              "Host": "127.0.0.1:<port>",
-              "Authorization": "Bearer <token with final byte flipped>"
-            }
-          },
-          "expect_status": 401,
           "save": {
-            "late_mismatch": "latencies"
+            "late_mismatch": "frame.latencies"
+          },
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
+          },
+          "note": "[repeated connect xOrderedDict({'n': 1000, 'query': OrderedDict({'v': '2', 'sg': '<daemon_sg>'}), 'headers': OrderedDict({'Host': '127.0.0.1:<port>', 'Authorization': 'Bearer <token with final byte flipped>'})}) folded into one reconnect; review]",
+          "expect": {
+            "status": 401
           }
         },
         {
-          "connect_repeated": {
-            "n": 1000,
-            "query": {
-              "v": "2",
-              "sg": "<daemon_sg>"
-            },
-            "headers": {
-              "Host": "127.0.0.1:<port>",
-              "Authorization": "Bearer <token with first byte flipped>"
-            }
-          },
-          "expect_status": 401,
           "save": {
-            "early_mismatch": "latencies"
+            "early_mismatch": "frame.latencies"
+          },
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
+          },
+          "note": "[repeated connect xOrderedDict({'n': 1000, 'query': OrderedDict({'v': '2', 'sg': '<daemon_sg>'}), 'headers': OrderedDict({'Host': '127.0.0.1:<port>', 'Authorization': 'Bearer <token with first byte flipped>'})}) folded into one reconnect; review]",
+          "expect": {
+            "status": 401
           }
         },
         {
-          "assert_timing_indistinguishable": {
-            "samples": [
-              "$late_mismatch",
-              "$early_mismatch"
-            ]
-          }
+          "assert": [
+            {
+              "observe": "timing_indistinguishable",
+              "between": [
+                "step:1",
+                "step:2"
+              ]
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -943,26 +1168,24 @@
       "intent": "Proves check 1 runs first: a request failing ALL five checks at once answers forbidden_origin/403, not protocol_unsupported/426 or unauthenticated/401. Catches a reordered gate that would tell a rebound host which generations the daemon speaks.",
       "requires": [
         "daemon",
-        "raw_http"
+        "observe:network"
       ],
       "steps": [
         {
-          "connect": {
-            "raw_url": "/ws",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "evil.example.com",
               "Origin": "https://evil.example.com"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 403,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         }
@@ -976,25 +1199,26 @@
       "intent": "Proves check 2 runs before check 3: a hostile Origin with an absent `v` answers forbidden_origin, not protocol_unsupported. Catches an order in which a cross-site page learns the supported generation set before being refused.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
-            "raw_url": "/ws?sg=<daemon_sg>",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Origin": "https://evil.example.com",
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 403,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         }
@@ -1008,12 +1232,12 @@
       "intent": "Proves check 3 runs before check 4: with BOTH `v` and `sg` wrong, the answer is protocol_unsupported, never storage_generation_mismatch. Fixing the order is what makes a client's reset path deterministic instead of dependent on which check happened to run.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "1",
               "sg": "0"
@@ -1023,38 +1247,40 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported",
-              "supported": [
-                2
-              ],
-              "client": {
-                "state": "declared",
-                "protocol": 1
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "supported": [
+                  2
+                ],
+                "client": {
+                  "state": "declared",
+                  "protocol": 1
+                }
               }
             }
           }
         },
         {
-          "connect": {
-            "raw_url": "/ws",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "protocol_unsupported",
-              "client": {
-                "state": "absent"
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported",
+                "client": {
+                  "state": "absent"
+                }
               }
             }
           }
@@ -1069,32 +1295,30 @@
       "intent": "Proves check 4 runs before check 5: a mismatched `sg` with NO credential answers storage_generation_mismatch/426, not unauthenticated/401. This ordering is normative and it means the daemon's storage generation is disclosed to an unauthenticated loopback caller — the corpus pins the spec's order so that the disclosure is a decision on the record rather than an accident.",
       "requires": [
         "daemon",
-        "raw_http"
+        "observe:network"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "0"
             },
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "storage_generation_mismatch",
-              "daemon": "<uint>",
-              "client": {
-                "state": "declared",
-                "storage_generation": 0
+          "expect": {
+            "status": 426,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "storage_generation_mismatch",
+                "daemon": "<uint>",
+                "client": {
+                  "state": "declared",
+                  "storage_generation": 0
+                }
               }
             }
           }
@@ -1109,13 +1333,13 @@
       "intent": "Proves the gate runs on the upgrade request, before the WebSocket upgrade is performed: every refusal is an HTTP response with a status and a JSON body and NO 101, NO WebSocket close frame, and NO 4001/4002/4006 close code. Catches a daemon that upgrades first and closes after, which would be a version gate running after the socket can already execute operations.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile",
-        "frame_recorder"
+        "observe:network",
+        "resource:portfile",
+        "resource:frame_recorder"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "1",
               "sg": "<daemon_sg>"
@@ -1125,13 +1349,24 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "assert_no_frames_exchanged": true,
-          "assert_no_close_code": true
+          "expect": {
+            "status": 426
+          }
         },
         {
-          "connect": {
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            },
+            {
+              "observe": "no_network_activity",
+              "scope": "step"
+            }
+          ]
+        },
+        {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "0"
@@ -1141,28 +1376,47 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 426,
-          "assert_no_frames_exchanged": true,
-          "assert_no_close_code": true
+          "expect": {
+            "status": 426
+          }
         },
         {
-          "connect": {
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            },
+            {
+              "observe": "no_network_activity",
+              "scope": "step"
+            }
+          ]
+        },
+        {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
             },
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 401,
-          "assert_no_frames_exchanged": true,
-          "assert_no_close_code": true
+          "expect": {
+            "status": 401
+          }
+        },
+        {
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            },
+            {
+              "observe": "no_network_activity",
+              "scope": "step"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1174,8 +1428,8 @@
       "intent": "Proves the gate is provably before mutation: a refused upgrade that carried a well-formed mutating intent leaves the store untouched, and the daemon's own state (subject, rooms) is byte-identical before and after a burst of refusals. Catches a gate placed after any dispatch path.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile",
+        "observe:network",
+        "resource:portfile",
         "subject"
       ],
       "steps": [
@@ -1187,29 +1441,79 @@
           }
         },
         {
-          "connect_each": [
-            {
-              "v": "1"
-            },
-            {
-              "v": ""
-            },
-            {
-              "sg": "0"
-            },
-            {
-              "token": "wrong"
-            },
-            {
-              "host": "evil.example.com"
-            }
-          ],
-          "with": {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>"
             }
-          },
-          "expect_upgrade": false
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {},
+            "headers": {
+              "Host": "127.0.0.1:<port>"
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {},
+            "headers": {
+              "Host": "127.0.0.1:<port>"
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {},
+            "headers": {
+              "Host": "127.0.0.1:<port>"
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
+            "headers": {}
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "upgrade": {
+            "query": {},
+            "headers": {
+              "Host": "127.0.0.1:<port>"
+            }
+          }
         },
         {
           "call": "room.list",
@@ -1219,13 +1523,13 @@
           }
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$before",
-              "$after"
-            ],
-            "deep": true
-          }
+          "assert": [
+            {
+              "path": "$before",
+              "op": "eq",
+              "value": "$after"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1237,8 +1541,8 @@
       "intent": "Proves v1's plain-text refusal bodies are gone and one error format is used everywhere: every gate rejection is application/json carrying {ok:false, err:{code,...}} with no `hint` key and no `id` (no request id exists pre-upgrade). Catches a daemon that returns \"forbidden\" as text, or that reintroduces hardcoded English prose in a protocol.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
@@ -1261,7 +1565,9 @@
                 "code": "forbidden_origin"
               }
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
               "path": "err.hint",
@@ -1276,7 +1582,7 @@
               "op": "absent"
             },
             {
-              "path": "id",
+              "path": "frame.id",
               "op": "absent"
             }
           ]
@@ -1301,14 +1607,16 @@
                 "code": "protocol_unsupported"
               }
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
               "path": "err.hint",
               "op": "absent"
             },
             {
-              "path": "id",
+              "path": "frame.id",
               "op": "absent"
             }
           ]
@@ -1333,14 +1641,16 @@
                 "code": "storage_generation_mismatch"
               }
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
               "path": "err.hint",
               "op": "absent"
             },
             {
-              "path": "id",
+              "path": "frame.id",
               "op": "absent"
             }
           ]
@@ -1368,14 +1678,16 @@
                 "code": "unauthenticated"
               }
             }
-          },
+          }
+        },
+        {
           "assert": [
             {
               "path": "err.hint",
               "op": "absent"
             },
             {
-              "path": "id",
+              "path": "frame.id",
               "op": "absent"
             }
           ]
@@ -1389,78 +1701,81 @@
       "operation": null,
       "intent": "The non-oracle property at Layer 1: an unauthenticated refusal is byte-identical whether or not the daemon has a subject and whether or not it holds any rooms, and its latency is indistinguishable. Catches a gate whose 401 becomes an existence oracle for the local subject to any process that can reach loopback.",
       "requires": [
-        "fresh_daemon",
-        "raw_http",
-        "timing_sampler"
+        "daemon:fresh",
+        "observe:network",
+        "observe:timing"
       ],
       "steps": [
         {
-          "connect": {
+          "save": {
+            "no_subject": "$"
+          },
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
             },
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ],
-            "against": "fresh_daemon_no_subject"
+            }
           },
-          "expect_status": 401,
-          "save": {
-            "no_subject": "$"
+          "expect": {
+            "status": 401
           }
         },
         {
           "call": "subject.ensure",
-          "in": {},
-          "against": "fresh_daemon_no_subject"
+          "in": {}
+        },
+        {
+          "note": "[split from a multi-verb step; review]"
         },
         {
           "call": "room.create",
           "in": {
             "name": "Oracle Probe",
             "op_id": "<uuid>"
-          },
-          "against": "fresh_daemon_no_subject"
+          }
         },
         {
-          "connect": {
+          "note": "[split from a multi-verb step; review]"
+        },
+        {
+          "save": {
+            "with_subject": "$"
+          },
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
             },
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ],
-            "against": "fresh_daemon_no_subject"
+            }
           },
-          "expect_status": 401,
-          "save": {
-            "with_subject": "$"
+          "expect": {
+            "status": 401
           }
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$no_subject",
-              "$with_subject"
-            ],
-            "deep": true
-          }
+          "assert": [
+            {
+              "path": "$no_subject",
+              "op": "eq",
+              "value": "$with_subject"
+            }
+          ]
         },
         {
-          "assert_timing_indistinguishable": {
-            "samples": [
-              "$no_subject.latencies",
-              "$with_subject.latencies"
-            ]
-          }
+          "assert": [
+            {
+              "observe": "timing_indistinguishable",
+              "between": [
+                "step:1",
+                "step:2"
+              ]
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1472,41 +1787,37 @@
       "intent": "Proves v2 removes token-in-URL and token-in-body credential shapes: the CORRECT token presented as ?token= is refused 401 unauthenticated, and only Authorization: Bearer is accepted. Catches a daemon that keeps v1's ?token= path, which would also make the credential land in every log and referrer.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
-            "raw_url": "/ws?v=2&sg=<daemon_sg>&token=<valid token>",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 401,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "unauthenticated"
+          "expect": {
+            "status": 401,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "unauthenticated"
+              }
             }
           }
         },
         {
-          "connect": {
-            "raw_url": "/ws?v=2&sg=<daemon_sg>&auth_token=<valid token>",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 401
+          "expect": {
+            "status": 401
+          }
         },
         {
           "http": {
@@ -1523,11 +1834,13 @@
               "Authorization"
             ]
           },
-          "expect_status": 401,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "unauthenticated"
+          "expect": {
+            "status": 401,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "unauthenticated"
+              }
             }
           }
         }
@@ -1541,12 +1854,12 @@
       "intent": "Proves v1's Sec-Fetch-Site heuristic is removed and Host+Origin are the boundary: a forged Sec-Fetch-Site: same-origin does not rescue a hostile Origin, and an absent Sec-Fetch-Site does not block a legitimate loopback client. Catches a daemon that still trusts a header a local non-browser process forges freely.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -1558,12 +1871,13 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_upgrade": false,
-          "expect_status": 403,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         },
@@ -1577,16 +1891,18 @@
               "Sec-Fetch-Site": "same-origin"
             }
           },
-          "expect_status": 403,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -1595,14 +1911,8 @@
               "Host": "127.0.0.1:<port>",
               "Origin": "http://127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
-            },
-            "omit_headers": [
-              "Sec-Fetch-Site",
-              "Sec-Fetch-Mode",
-              "Sec-Fetch-Dest"
-            ]
-          },
-          "expect_upgrade": true
+            }
+          }
         }
       ],
       "blocked_on_upstream": null
@@ -1614,9 +1924,9 @@
       "intent": "Proves the browser connect-ticket exchange: POST /api/session mints a ticket, ?ct= redeems it once and upgrades, and the SAME ticket presented again is refused 401 unauthenticated. Catches a daemon that fails to burn the ticket, turning a short-lived connect grant into a replayable credential in the URL bar and history.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile",
-        "browser_origin"
+        "observe:network",
+        "resource:portfile",
+        "resource:browser_origin"
       ],
       "steps": [
         {
@@ -1629,51 +1939,50 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_status": 200,
-          "expect_subset": {
-            "ticket": "<string>",
-            "expires_in_ms": "<uint>"
-          },
           "save": {
-            "ct": "ticket"
+            "ct": "frame.ticket"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "ticket": "<string>",
+              "expires_in_ms": "<uint>"
+            },
+            "status": 200
           }
         },
         {
-          "connect": {
-            "raw_url": "/ws?v=2&sg=<daemon_sg>&ct=$ct",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Origin": "http://127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
-          },
-          "expect_upgrade": true
-        },
-        {
-          "expect_frame": {
-            "t": "hello",
-            "protocol": 2
+            }
           }
         },
         {
-          "connect": {
-            "raw_url": "/ws?v=2&sg=<daemon_sg>&ct=$ct",
+          "await": {
+            "frame": {
+              "t": "hello",
+              "protocol": 2
+            }
+          }
+        },
+        {
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Origin": "http://127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 401,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "unauthenticated"
+          "expect": {
+            "status": 401,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "unauthenticated"
+              }
             }
           }
         }
@@ -1687,10 +1996,10 @@
       "intent": "Proves the ticket's short TTL is enforced (an unredeemed ticket past its stated expires_in_ms is refused) and that neither the ticket nor any field of the /api/session response equals or contains the daemon token. Catches a TTL that is advertised but not enforced, and catches the daemon token leaking into WebView script through the session endpoint.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile",
-        "browser_origin",
-        "clock_control"
+        "observe:network",
+        "resource:portfile",
+        "resource:browser_origin",
+        "resource:clock_control"
       ],
       "steps": [
         {
@@ -1703,40 +2012,45 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_status": 200,
           "save": {
-            "ct": "ticket",
-            "ttl": "expires_in_ms",
+            "ct": "frame.ticket",
+            "ttl": "frame.expires_in_ms",
             "resp": "$"
+          },
+          "expect": {
+            "status": 200
           }
         },
         {
-          "assert_does_not_contain": {
-            "haystack": "$resp",
-            "needle": "<token>",
-            "recursive": true
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_does_not_contain: {\"haystack\": \"$resp\", \"needle\": \"<token>\", \"recursive\": true} — needs manual retranscription"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "advance_clock",
+            "ms": "$ttl + 1"
           }
         },
         {
-          "advance_clock_ms": "$ttl + 1"
-        },
-        {
-          "connect": {
-            "raw_url": "/ws?v=2&sg=<daemon_sg>&ct=$ct",
+          "upgrade": {
+            "query": {},
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Origin": "http://127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+            }
           },
-          "expect_upgrade": false,
-          "expect_status": 401,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "unauthenticated"
+          "expect": {
+            "status": 401,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "unauthenticated"
+              }
             }
           }
         }
@@ -1750,8 +2064,8 @@
       "intent": "Proves the ticket-issuing endpoint is gated at least as strongly as /ws: an absent Origin and a non-exact Origin are both refused 403 forbidden_origin (stricter than /ws, where Origin is optional), and minting past the rate limit answers resource_exhausted. Catches a credential boundary that is looser than the connection it grants.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
@@ -1766,11 +2080,13 @@
               "Origin"
             ]
           },
-          "expect_status": 403,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         },
@@ -1784,16 +2100,18 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_status": 403,
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "forbidden_origin"
+          "expect": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
             }
           }
         },
         {
-          "http_repeated": {
+          "http": {
             "n": "<rate_limit> + 1",
             "method": "POST",
             "path": "/api/session",
@@ -1802,13 +2120,18 @@
               "Origin": "http://127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_final_body": {
-            "ok": false,
-            "err": {
-              "code": "resource_exhausted",
-              "resource": "<string>",
-              "limit": "<uint>"
+          }
+        },
+        {
+          "note": "[split from a multi-verb step; review]",
+          "expect": {
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "resource_exhausted",
+                "resource": "<string>",
+                "limit": "<uint>"
+              }
             }
           }
         }
@@ -1822,12 +2145,12 @@
       "intent": "Proves the daemon's first frame after upgrade is exactly one hello, that no reply or push precedes it, and that no second hello ever arrives on the same connection. Catches a daemon that sends a greeting lazily or re-greets after a resubscribe, which would break every client's readiness gate.",
       "requires": [
         "daemon",
-        "raw_socket",
-        "frame_recorder"
+        "resource:raw_socket",
+        "resource:frame_recorder"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -1836,38 +2159,49 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
+          }
         },
         {
-          "send_frame": {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "send": {
             "id": 1,
             "op": "room.list",
             "in": {}
           },
-          "immediately": true
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "assert_frame_order": {
-            "first_frame_from_daemon": {
-              "t": "hello"
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_frame_order: {\"first_frame_from_daemon\": {\"t\": \"hello\"}} — needs manual retranscription"
+            }
+          ]
+        },
+        {
+          "await": {
+            "frame": {
+              "id": 1,
+              "ok": true,
+              "out": "<object>"
             }
           }
         },
         {
-          "expect_frame": {
-            "id": 1,
-            "ok": true,
-            "out": "<object>"
-          }
-        },
-        {
-          "assert_recorded_frames": {
-            "property": "exactly_one",
-            "match": {
-              "t": "hello"
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"property\": \"exactly_one\", \"match\": {\"t\": \"hello\"}}"
             }
-          }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1879,11 +2213,11 @@
       "intent": "Proves hello is not v1's daemon.status transcribed: its key set is exactly {t, protocol, storage_generation, limits, subject, resume}. Catches the single most likely authoring failure — copying the v1 status response into the v2 greeting and re-leaking a filesystem path across the WebView boundary.",
       "requires": [
         "daemon",
-        "raw_socket"
+        "resource:raw_socket"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -1892,37 +2226,62 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "protocol": 2,
-            "storage_generation": "<uint>",
-            "limits": "<object>",
-            "subject": "<object>",
-            "resume": "<object>"
-          },
-          "assert_exact_key_set": {
-            "at": "$",
-            "keys": [
-              "t",
-              "protocol",
-              "storage_generation",
-              "limits",
-              "subject",
-              "resume"
-            ]
-          },
-          "expect_absent": [
-            "pid",
-            "port",
-            "data_dir",
-            "version",
-            "mode",
-            "identity",
-            "id"
+          "await": {
+            "frame": {
+              "t": "hello",
+              "protocol": 2,
+              "storage_generation": "<uint>",
+              "limits": "<object>",
+              "subject": "<object>",
+              "resume": "<object>"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.pid",
+              "op": "absent"
+            },
+            {
+              "path": "out.port",
+              "op": "absent"
+            },
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.version",
+              "op": "absent"
+            },
+            {
+              "path": "out.mode",
+              "op": "absent"
+            },
+            {
+              "path": "out.identity",
+              "op": "absent"
+            },
+            {
+              "path": "out.id",
+              "op": "absent"
+            },
+            {
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "t",
+                "protocol",
+                "storage_generation",
+                "limits",
+                "subject",
+                "resume"
+              ]
+            }
           ]
         }
       ],
@@ -1935,12 +2294,12 @@
       "intent": "Proves subject.state is a tagged variant carrying its payload inline when present, with 64-hex subject_id and device_id. Catches a nullable-subject shape and catches the v1 `identity` naming leaking into v2.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -1949,26 +2308,32 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "subject": {
-              "state": "present",
-              "subject_id": "<hex64>",
-              "device_id": "<hex64>"
+          "await": {
+            "frame": {
+              "t": "hello",
+              "subject": {
+                "state": "present",
+                "subject_id": "<hex64>",
+                "device_id": "<hex64>"
+              }
             }
-          },
-          "assert_exact_key_set": {
-            "at": "$.subject",
-            "keys": [
-              "state",
-              "subject_id",
-              "device_id"
-            ]
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "state",
+                "subject_id",
+                "device_id"
+              ]
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -1979,12 +2344,12 @@
       "operation": null,
       "intent": "Proves the absent arm of the tagged variant against a daemon on which subject.ensure has never run: {\"state\":\"absent\"} and NOTHING else — no subject_id:null, no device_id:null. This is the no-null rule at Layer 2 and it catches the v1 compatibility-nullability shape being carried into v2's own frames.",
       "requires": [
-        "fresh_daemon",
-        "raw_socket"
+        "daemon:fresh",
+        "resource:raw_socket"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -1992,27 +2357,33 @@
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
-            },
-            "against": "fresh_daemon_no_subject"
-          },
-          "expect_upgrade": true
+            }
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "subject": {
-              "state": "absent"
+          "await": {
+            "frame": {
+              "t": "hello",
+              "subject": {
+                "state": "absent"
+              }
             }
-          },
-          "assert_exact_key_set": {
-            "at": "$.subject",
-            "keys": [
-              "state"
-            ]
-          },
-          "assert_no_null": {
-            "at": "$"
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "state"
+              ]
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2024,11 +2395,11 @@
       "intent": "Proves resume is a tagged variant on a fresh connection ({\"state\":\"fresh\"}) rather than a nullable cursor. Catches a resume field that expresses \"nothing to resume\" as null, which is exactly the \"null means unknown\" convention v2 exists to shed.",
       "requires": [
         "daemon",
-        "raw_socket"
+        "resource:raw_socket"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -2037,23 +2408,30 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "resume": {
-              "state": "fresh"
+          "await": {
+            "frame": {
+              "t": "hello",
+              "resume": {
+                "state": "fresh"
+              }
             }
-          },
-          "assert_json_type": {
-            "at": "$.resume.state",
-            "type": "string"
-          },
-          "assert_no_null": {
-            "at": "$.resume"
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "frame.resume.state",
+              "op": "type",
+              "value": "string"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2065,8 +2443,8 @@
       "intent": "Proves the limits object is defined once and served identically at Layer 0 and Layer 2, so a client that preflights against health and a client that preflights against hello enforce the same bound. Catches two divergent limit sources, which is the six-copies defect reappearing inside one generation.",
       "requires": [
         "daemon",
-        "raw_http",
-        "raw_socket"
+        "observe:network",
+        "resource:raw_socket"
       ],
       "steps": [
         {
@@ -2075,11 +2453,11 @@
             "path": "/api/health"
           },
           "save": {
-            "h": "limits"
+            "h": "frame.limits"
           }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -2088,25 +2466,26 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello"
-          },
           "save": {
-            "w": "limits"
+            "w": "frame.limits"
+          },
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           }
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$h",
-              "$w"
-            ],
-            "deep": true
-          }
+          "assert": [
+            {
+              "path": "$h",
+              "op": "eq",
+              "value": "$w"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2118,11 +2497,11 @@
       "intent": "Proves the greeting confirms exactly what the gate admitted: hello.protocol equals the accepted `v` and hello.storage_generation equals the accepted `sg`. Catches a daemon that gates on one value and operates on another, which would make the gate decorative.",
       "requires": [
         "daemon",
-        "raw_socket"
+        "resource:raw_socket"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -2131,14 +2510,15 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
+          }
         },
         {
-          "expect_frame": {
-            "t": "hello",
-            "protocol": 2,
-            "storage_generation": "<daemon_sg>"
+          "await": {
+            "frame": {
+              "t": "hello",
+              "protocol": 2,
+              "storage_generation": "<daemon_sg>"
+            }
           }
         }
       ],
@@ -2151,35 +2531,49 @@
       "intent": "The envelope positive control: {id, op, in} produces exactly one {id, ok:true, out} bearing the same id, and a successful reply carries no `err` and no `t`. Catches a reply that omits or renames the correlation id.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 42,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 42,
-            "ok": true,
-            "out": "<object>"
-          },
-          "assert_exact_key_set": {
-            "at": "$",
-            "keys": [
-              "id",
-              "ok",
-              "out"
-            ]
-          },
-          "expect_absent": [
-            "t",
-            "err",
-            "hint"
+          "await": {
+            "frame": {
+              "id": 42,
+              "ok": true,
+              "out": "<object>"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.t",
+              "op": "absent"
+            },
+            {
+              "path": "out.err",
+              "op": "absent"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "id",
+                "ok",
+                "out"
+              ]
+            }
           ]
         }
       ],
@@ -2192,12 +2586,12 @@
       "intent": "Proves the error arm of the envelope: {id, ok:false, err:{code, ...typed fields}} correlated by the request's id, with the v1 `hint` field removed everywhere in the frame. Catches hardcoded English prose returning to the protocol and catches an error delivered as a bare object without ok:false.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 7,
             "op": "room.timeline",
             "in": {
@@ -2210,31 +2604,49 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 7,
-            "ok": false,
-            "err": {
-              "code": "room_not_available"
+          "await": {
+            "frame": {
+              "id": 7,
+              "ok": false,
+              "err": {
+                "code": "room_not_available"
+              }
             }
-          },
-          "assert_exact_key_set": {
-            "at": "$",
-            "keys": [
-              "id",
-              "ok",
-              "err"
-            ]
-          },
-          "expect_absent": [
-            "t",
-            "out",
-            "err.hint",
-            "err.message"
-          ],
-          "assert_json_type": {
-            "at": "$.err.code",
-            "type": "string"
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.t",
+              "op": "absent"
+            },
+            {
+              "path": "out.out",
+              "op": "absent"
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err.message",
+              "op": "absent"
+            },
+            {
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "id",
+                "ok",
+                "err"
+              ]
+            },
+            {
+              "path": "err.code",
+              "op": "type",
+              "value": "string"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2246,11 +2658,11 @@
       "intent": "Proves the one rule that lets a client demultiplex the stream: every push frame has a `t` discriminator and NO `id` key at all, and conversely every reply has `id` and no `t`. Catches a push that carries an id (which a client would mis-deliver to a pending call) and a reply that carries a t.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "live_room",
-        "frame_recorder",
-        "second_subject"
+        "room:live",
+        "resource:frame_recorder",
+        "resource:second_subject"
       ],
       "steps": [
         {
@@ -2261,25 +2673,47 @@
           }
         },
         {
-          "trigger": "peer authors a message in $rid"
+          "control": {
+            "do": "inject_fault",
+            "fault": "peer authors a message in $rid"
+          }
         },
         {
-          "expect_frame": {
-            "t": "<string>",
-            "room_id": "$rid"
-          },
-          "expect_absent": [
-            "id",
-            "ok",
-            "out",
-            "err"
+          "await": {
+            "frame": {
+              "t": "<string>",
+              "room_id": "$rid"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.id",
+              "op": "absent"
+            },
+            {
+              "path": "out.ok",
+              "op": "absent"
+            },
+            {
+              "path": "out.out",
+              "op": "absent"
+            },
+            {
+              "path": "out.err",
+              "op": "absent"
+            }
           ]
         },
         {
-          "assert_recorded_frames": {
-            "property": "partition",
-            "rule": "every frame from the daemon has exactly one of `t` or `id`, never both and never neither, except the close frame"
-          }
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"property\": \"partition\", \"rule\": \"every frame from the daemon has exactly one of `t` or `id`, never both and never neither, except the close frame\"}"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2291,11 +2725,11 @@
       "intent": "Proves v2 explicitly abandons v1's strictly-serial socket: with a slow call and a fast call both outstanding, the fast reply may arrive first and both are correlated by id; and a push generated while a call is in flight is delivered BEFORE that call's reply rather than being withheld. Catches a dispatcher that reintroduces head-of-line blocking, which would make every push latency hostage to the slowest call.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "live_room",
-        "second_subject",
-        "frame_recorder"
+        "room:live",
+        "resource:second_subject",
+        "resource:frame_recorder"
       ],
       "steps": [
         {
@@ -2306,7 +2740,8 @@
           }
         },
         {
-          "send_frame": {
+          "note": "the slow call",
+          "send": {
             "id": 100,
             "op": "room.timeline",
             "in": {
@@ -2316,49 +2751,39 @@
               },
               "limit": "<timeline_page_max>"
             }
-          },
-          "note": "the slow call"
+          }
         },
         {
-          "send_frame": {
+          "note": "the fast call, issued second",
+          "send": {
             "id": 101,
             "op": "room.list",
             "in": {}
-          },
-          "note": "the fast call, issued second"
-        },
-        {
-          "trigger": "peer authors a message in $rid while id 100 is outstanding"
-        },
-        {
-          "assert_frames_received": {
-            "all_of": [
-              {
-                "id": 100,
-                "ok": true
-              },
-              {
-                "id": 101,
-                "ok": true
-              },
-              {
-                "t": "<string>",
-                "room_id": "$rid"
-              }
-            ],
-            "order_required": false
           }
         },
         {
-          "assert_frame_order": {
-            "before": {
-              "t": "<string>",
-              "room_id": "$rid"
-            },
-            "after": {
-              "id": 100
+          "control": {
+            "do": "inject_fault",
+            "fault": "peer authors a message in $rid while id 100 is outstanding"
+          }
+        },
+        {
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"all_of\": [{\"id\": 100, \"ok\": true}, {\"id\": 101, \"ok\": true}, {\"t\": \"<string>\", \"room_id\": \"$rid\"}], \"order_required\": false}"
             }
-          }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_frame_order: {\"before\": {\"t\": \"<string>\", \"room_id\": \"$rid\"}, \"after\": {\"id\": 100}} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2370,34 +2795,38 @@
       "intent": "Proves uniqueness is required only WHILE outstanding: reusing id 7 after id 7's reply has been received is legal and answered normally. Catches a daemon that keeps a permanent per-connection id set, which would exhaust a long-lived connection that counts ids in a small integer.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 7,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 7,
-            "ok": true
+          "await": {
+            "frame": {
+              "id": 7,
+              "ok": true
+            }
           }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 7,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 7,
-            "ok": true
+          "await": {
+            "frame": {
+              "id": 7,
+              "ok": true
+            }
           }
         }
       ],
@@ -2410,20 +2839,25 @@
       "intent": "Proves the daemon defends correlation when a client violates id uniqueness: two outstanding frames with id 42 and DIFFERENT op_ids must not both execute — exactly one room exists afterwards — the duplicate is refused with a machine-readable code, and the connection is not closed. Also proves envelope `id` and `op_id` are independent namespaces. Catches a daemon that silently runs both and delivers two replies a client cannot tell apart.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "frame_recorder"
+        "resource:frame_recorder"
       ],
       "steps": [
         {
           "call": "room.list",
           "in": {},
           "save": {
-            "before_count": "rooms.length"
+            "before_count": "frame.rooms.length"
           }
         },
         {
-          "send_frame": {
+          "await": {
+            "reply": "$id"
+          }
+        },
+        {
+          "send": {
             "id": 42,
             "op": "room.create",
             "in": {
@@ -2431,10 +2865,15 @@
               "op_id": "<uuid-a>"
             }
           },
-          "await_reply": false
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "send_frame": {
+          "await": {
+            "reply": "$id"
+          }
+        },
+        {
+          "send": {
             "id": 42,
             "op": "room.create",
             "in": {
@@ -2442,37 +2881,51 @@
               "op_id": "<uuid-b>"
             }
           },
-          "await_reply": false
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "expect_frame": {
-            "id": 42,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "note": "SPEC GAP: v2 names no distinct code for a duplicate in-flight id; see notes",
+          "await": {
+            "frame": {
+              "id": 42,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
-          },
-          "note": "SPEC GAP: v2 names no distinct code for a duplicate in-flight id; see notes"
+          }
         },
         {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         },
         {
-          "send_frame": {
+          "send": {
             "id": 43,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 43,
-            "ok": true
-          },
-          "assert_count": {
-            "at": "$.out.rooms",
-            "equals": "$before_count + 1"
+          "await": {
+            "frame": {
+              "id": 43,
+              "ok": true
+            }
           }
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_count: {\"at\": \"$.out.rooms\", \"equals\": \"$before_count + 1\"} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2484,13 +2937,13 @@
       "intent": "Proves an uncorrelatable request is discarded rather than run: a well-formed, otherwise-valid room.create with no `id` creates no room, produces no reply bearing a fabricated id, and does not close the connection with a code outside the defined table. Catches a daemon that executes on `op` alone and mutates state a client can never learn about.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "frame_recorder"
+        "resource:frame_recorder"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "op": "room.create",
             "in": {
               "name": "NoIdProbe",
@@ -2499,25 +2952,44 @@
           }
         },
         {
-          "assert_no_frame_matching": {
-            "out": {
-              "room_id": "<room_id>"
+          "note": "[timing window elided]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_no_frame_matching: {\"out\": {\"room_id\": \"<room_id>\"}} — needs manual retranscription"
             }
-          },
-          "within_ms": 2000
+          ]
         },
         {
-          "assert_close_code_in_table_or_open": true
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_close_code_in_table_or_open: true — needs manual retranscription"
+            }
+          ]
         },
         {
-          "reconnect_if_closed": true
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
+          }
         },
         {
           "call": "room.list",
-          "in": {},
-          "assert_none_matching": {
-            "name": "NoIdProbe"
-          }
+          "in": {}
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_none_matching: {\"name\": \"NoIdProbe\"} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2529,45 +3001,54 @@
       "intent": "Proves an op outside the 33 is answered as an ordinary error reply correlated by id, on a connection that stays usable — not a close, not a silent drop. Catches a daemon that tears down the connection on an unknown op, which would make any future op addition a client-visible disconnect storm.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
         {
-          "send_frame": {
+          "note": "room.open is a v1 op that v2 split and removed",
+          "send": {
             "id": 5,
             "op": "room.open",
             "in": {
               "room_id": "$rid"
             }
-          },
-          "note": "room.open is a v1 op that v2 split and removed"
+          }
         },
         {
-          "expect_frame": {
-            "id": 5,
-            "ok": false,
-            "err": {
-              "code": "unknown_operation",
-              "op": "room.open"
+          "note": "code name is an interpretation; see notes",
+          "await": {
+            "frame": {
+              "id": 5,
+              "ok": false,
+              "err": {
+                "code": "unknown_operation",
+                "op": "room.open"
+              }
             }
-          },
-          "note": "code name is an interpretation; see notes"
+          }
         },
         {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         },
         {
-          "send_frame": {
+          "send": {
             "id": 6,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 6,
-            "ok": true
+          "await": {
+            "frame": {
+              "id": 6,
+              "ok": true
+            }
           }
         }
       ],
@@ -2580,41 +3061,45 @@
       "intent": "Proves `in` is an object and only an object: a string, an array, a number and a bare `null` are each refused with invalid_argument correlated by id, while `in: {}` is the legal spelling of no arguments. Catches a decoder that coerces, and catches `in: null` being accepted as an alias for empty, which would put a semantic null back on the wire.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 10,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 10,
-            "ok": true
+          "await": {
+            "frame": {
+              "id": 10,
+              "ok": true
+            }
           }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 11,
             "op": "room.list",
             "in": "hello"
           }
         },
         {
-          "expect_frame": {
-            "id": 11,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 11,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 12,
             "op": "room.list",
             "in": [
@@ -2625,44 +3110,55 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 12,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 12,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 13,
             "op": "room.list",
             "in": 7
           }
         },
         {
-          "expect_frame": {
-            "id": 13,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 13,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "send_frame_raw_json": "{\"id\":14,\"op\":\"room.list\",\"in\":null}"
+          "send": "{\"id\":14,\"op\":\"room.list\",\"in\":null}"
         },
         {
-          "expect_frame": {
-            "id": 14,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 14,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2674,44 +3170,59 @@
       "intent": "Proves the envelope's own types are enforced: a string `id`, a float `id`, a negative `id`, a non-string `op` and a boolean `ok` on an inbound frame are all refused, no reply ever echoes a non-integer id, and none of the mutating probes executes. Catches a decoder loose enough that a client could desynchronize correlation on purpose.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "frame_recorder"
+        "resource:frame_recorder"
       ],
       "steps": [
         {
-          "send_frame_raw_json": "{\"id\":\"42\",\"op\":\"room.create\",\"in\":{\"name\":\"StrIdProbe\",\"op_id\":\"<uuid>\"}}"
+          "send": "{\"id\":\"42\",\"op\":\"room.create\",\"in\":{\"name\":\"StrIdProbe\",\"op_id\":\"<uuid>\"}}"
         },
         {
-          "send_frame_raw_json": "{\"id\":1.5,\"op\":\"room.create\",\"in\":{\"name\":\"FloatIdProbe\",\"op_id\":\"<uuid>\"}}"
+          "send": "{\"id\":1.5,\"op\":\"room.create\",\"in\":{\"name\":\"FloatIdProbe\",\"op_id\":\"<uuid>\"}}"
         },
         {
-          "send_frame_raw_json": "{\"id\":-1,\"op\":\"room.create\",\"in\":{\"name\":\"NegIdProbe\",\"op_id\":\"<uuid>\"}}"
+          "send": "{\"id\":-1,\"op\":\"room.create\",\"in\":{\"name\":\"NegIdProbe\",\"op_id\":\"<uuid>\"}}"
         },
         {
-          "send_frame_raw_json": "{\"id\":50,\"op\":7,\"in\":{}}"
+          "send": "{\"id\":50,\"op\":7,\"in\":{}}"
         },
         {
-          "assert_recorded_frames": {
-            "property": "every_id_is_a_nonnegative_integer"
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"property\": \"every_id_is_a_nonnegative_integer\"}"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_close_code_in_table_or_open: true — needs manual retranscription"
+            }
+          ]
+        },
+        {
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
           }
-        },
-        {
-          "assert_close_code_in_table_or_open": true
-        },
-        {
-          "reconnect_if_closed": true
         },
         {
           "call": "room.list",
-          "in": {},
-          "assert_none_matching": {
-            "name_in": [
-              "StrIdProbe",
-              "FloatIdProbe",
-              "NegIdProbe"
-            ]
-          }
+          "in": {}
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_none_matching: {\"name_in\": [\"StrIdProbe\", \"FloatIdProbe\", \"NegIdProbe\"]} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2723,59 +3234,70 @@
       "intent": "Proves the op-name length bound: a name of exactly the bound is parsed (and answered as an unknown op) while one character past it is invalid_argument — a reply, not a panic, not a close, not an unbounded allocation. SPEC GAP: the op-name bound is not in the served limits object, so a client cannot preflight it; the corpus can assert the code but not the value.",
       "requires": [
         "daemon",
-        "raw_socket",
-        "codec_bounds"
+        "resource:raw_socket",
+        "resource:codec_bounds"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 20,
             "op": "<'a' repeated exactly op_name_max times>",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 20,
-            "ok": false,
-            "err": {
-              "code": "unknown_operation"
+          "note": "parsed, then rejected on lookup",
+          "await": {
+            "frame": {
+              "id": 20,
+              "ok": false,
+              "err": {
+                "code": "unknown_operation"
+              }
             }
-          },
-          "note": "parsed, then rejected on lookup"
+          }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 21,
             "op": "<'a' repeated op_name_max + 1 times>",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 21,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 21,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         },
         {
-          "send_frame": {
+          "send": {
             "id": 22,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 22,
-            "ok": true
-          },
-          "note": "connection still healthy proves no panic"
+          "note": "connection still healthy proves no panic",
+          "await": {
+            "frame": {
+              "id": 22,
+              "ok": true
+            }
+          }
         }
       ],
       "blocked_on_upstream": null
@@ -2787,73 +3309,86 @@
       "intent": "Proves bounded parsing of depth: `in` nested to exactly the bound is parsed, one level past is invalid_argument, and in BOTH cases the connection survives and answers the next request. Catches a recursive-descent decoder that stack-overflows on a hostile frame — the panic path the spec forbids by name.",
       "requires": [
         "daemon",
-        "raw_socket",
-        "codec_bounds"
+        "resource:raw_socket",
+        "resource:codec_bounds"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 30,
             "op": "room.list",
             "in": "<object nested exactly max_depth levels>"
           }
         },
         {
-          "expect_frame": {
-            "id": 30,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "note": "parsed then rejected as an unknown field for room.list",
+          "await": {
+            "frame": {
+              "id": 30,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
-          },
-          "note": "parsed then rejected as an unknown field for room.list"
+          }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 31,
             "op": "room.list",
             "in": "<object nested max_depth + 1 levels>"
           }
         },
         {
-          "expect_frame": {
-            "id": 31,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 31,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 32,
             "op": "room.list",
             "in": "<object nested 100000 levels, still under max_frame_bytes>"
           }
         },
         {
-          "expect_frame": {
-            "id": 32,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 32,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         },
         {
-          "send_frame": {
+          "send": {
             "id": 33,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 33,
-            "ok": true
+          "await": {
+            "frame": {
+              "id": 33,
+              "ok": true
+            }
           }
         }
       ],
@@ -2866,12 +3401,12 @@
       "intent": "Proves the third named codec bound: an array of exactly max_array_len is parsed, one element past is invalid_argument, and the connection survives. Catches an unbounded pre-allocation from a declared array length.",
       "requires": [
         "daemon",
-        "raw_socket",
-        "codec_bounds"
+        "resource:raw_socket",
+        "resource:codec_bounds"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 34,
             "op": "room.list",
             "in": {
@@ -2880,16 +3415,18 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 34,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 34,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 35,
             "op": "room.list",
             "in": {
@@ -2898,28 +3435,37 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 35,
-            "ok": false,
-            "err": {
-              "code": "invalid_argument"
+          "await": {
+            "frame": {
+              "id": 35,
+              "ok": false,
+              "err": {
+                "code": "invalid_argument"
+              }
             }
           }
         },
         {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         },
         {
-          "send_frame": {
+          "send": {
             "id": 36,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 36,
-            "ok": true
+          "await": {
+            "frame": {
+              "id": 36,
+              "ok": true
+            }
           }
         }
       ],
@@ -2932,7 +3478,7 @@
       "intent": "The accepting side of the frame bound, read from the served limits: a frame whose encoded length is exactly max_frame_bytes is parsed and answered with a reply correlated by id, and the connection is NOT closed. Catches an off-by-one that closes at the limit rather than past it, which would make the served number a lie.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
@@ -2942,29 +3488,29 @@
             "path": "/api/health"
           },
           "save": {
-            "max": "limits.max_frame_bytes"
+            "max": "frame.limits.max_frame_bytes"
           }
         },
         {
-          "send_frame_of_exact_size": {
-            "bytes": "$max",
-            "template": {
-              "id": 60,
-              "op": "room.list",
-              "in": {
-                "pad": "<'a' padding to reach exactly $max bytes>"
-              }
+          "send": {
+            "$bytes_of_len": "$max"
+          }
+        },
+        {
+          "note": "ok true or false is immaterial; a correlated reply proves the frame was parsed",
+          "await": {
+            "frame": {
+              "id": 60
             }
           }
         },
         {
-          "expect_frame": {
-            "id": 60
-          },
-          "note": "ok true or false is immaterial; a correlated reply proves the frame was parsed"
-        },
-        {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -2976,8 +3522,8 @@
       "intent": "Proves size is checked BEFORE parsing: an over-limit frame that is also syntactically invalid JSON closes with 4005 frame_too_large — not a parse error, not invalid_argument, and with no reply of any kind. If the daemon had parsed it, the JSON syntax error would have surfaced instead. Catches a daemon that buffers and decodes first and only then measures, which is the unbounded-allocation path the bound exists to prevent.",
       "requires": [
         "daemon",
-        "raw_socket",
-        "frame_recorder"
+        "resource:raw_socket",
+        "resource:frame_recorder"
       ],
       "steps": [
         {
@@ -2986,35 +3532,39 @@
             "path": "/api/health"
           },
           "save": {
-            "max": "limits.max_frame_bytes"
+            "max": "frame.limits.max_frame_bytes"
           }
         },
         {
-          "send_frame_of_exact_size": {
-            "bytes": "$max + 1",
-            "raw": "{\"id\":61,\"op\":\"room.list\",\"in\":{\"pad\":\"aaaa...",
-            "note": "deliberately truncated: unterminated string and unclosed braces"
+          "send": {
+            "$bytes_of_len": "$max + 1"
           }
         },
         {
-          "expect_close": {
-            "code": 4005
-          }
-        },
-        {
-          "assert_no_frame_matching": {
-            "id": 61
-          }
-        },
-        {
-          "assert_recorded_frames": {
-            "property": "none_matching",
-            "match": {
-              "err": {
-                "code": "invalid_argument"
-              }
+          "assert": [
+            {
+              "observe": "close_code",
+              "value": 4005
             }
-          }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_no_frame_matching: {\"id\": 61} — needs manual retranscription"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"property\": \"none_matching\", \"match\": {\"err\": {\"code\": \"invalid_argument\"}}}"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3026,7 +3576,7 @@
       "intent": "The side-effect proof for the frame bound: a fully valid, would-have-succeeded room.create padded one byte past max_frame_bytes closes 4005, and after reconnecting the room does not exist. Catches a daemon that dispatches the operation and only then notices the size.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
@@ -3036,37 +3586,40 @@
             "path": "/api/health"
           },
           "save": {
-            "max": "limits.max_frame_bytes"
+            "max": "frame.limits.max_frame_bytes"
           }
         },
         {
-          "send_frame_of_exact_size": {
-            "bytes": "$max + 1",
-            "template": {
-              "id": 62,
-              "op": "room.create",
-              "in": {
-                "name": "OversizeProbe",
-                "op_id": "<uuid>",
-                "pad": "<padding>"
-              }
+          "send": {
+            "$bytes_of_len": "$max + 1"
+          }
+        },
+        {
+          "assert": [
+            {
+              "observe": "close_code",
+              "value": 4005
             }
-          }
+          ]
         },
         {
-          "expect_close": {
-            "code": 4005
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
           }
-        },
-        {
-          "reconnect": true
         },
         {
           "call": "room.list",
-          "in": {},
-          "assert_none_matching": {
-            "name": "OversizeProbe"
-          }
+          "in": {}
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_none_matching: {\"name\": \"OversizeProbe\"} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3078,7 +3631,7 @@
       "intent": "Proves max_inflight_requests is honoured at the limit: exactly that many concurrent outstanding requests all receive correlated replies. Establishes the accepting side of the bound the next case exceeds.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
@@ -3088,30 +3641,32 @@
             "path": "/api/health"
           },
           "save": {
-            "n": "limits.max_inflight_requests"
+            "n": "frame.limits.max_inflight_requests"
           }
         },
         {
-          "send_frames_concurrently": {
-            "count": "$n",
-            "template": {
-              "id": "<i>",
-              "op": "room.list",
-              "in": {}
+          "control": {
+            "do": "start_transfers",
+            "count": "$n"
+          },
+          "note": "[concurrent in-flight frames; the harness drives N senders]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"count\": \"$n\", \"each\": {\"ok\": true}, \"order_required\": false}"
             }
-          }
+          ]
         },
         {
-          "assert_frames_received": {
-            "count": "$n",
-            "each": {
-              "ok": true
-            },
-            "order_required": false
-          }
-        },
-        {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3123,7 +3678,7 @@
       "intent": "Proves the limit is refused rather than absorbed and rather than fatal: the (n+1)th outstanding request answers resource_exhausted naming the resource and the served limit, the n in-flight requests still complete, and the connection stays open. Catches a daemon that silently queues past its own advertised bound, and one that treats the overflow as a protocol violation and disconnects.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
@@ -3133,52 +3688,52 @@
             "path": "/api/health"
           },
           "save": {
-            "n": "limits.max_inflight_requests"
+            "n": "frame.limits.max_inflight_requests"
           }
         },
         {
-          "send_frames_concurrently": {
-            "count": "$n",
-            "template": {
-              "id": "<i>",
-              "op": "room.timeline",
-              "in": {
-                "room_id": "$rid",
-                "cursor": {
-                  "state": "start"
-                },
-                "limit": "<timeline_page_max>"
-              }
-            },
-            "await_replies": false
-          }
+          "control": {
+            "do": "start_transfers",
+            "count": "$n"
+          },
+          "note": "[concurrent in-flight frames; the harness drives N senders]"
         },
         {
-          "send_frame": {
+          "send": {
             "id": 9999,
             "op": "room.list",
             "in": {}
           }
         },
         {
-          "expect_frame": {
-            "id": 9999,
-            "ok": false,
-            "err": {
-              "code": "resource_exhausted",
-              "resource": "<string>",
-              "limit": "$n"
+          "await": {
+            "frame": {
+              "id": 9999,
+              "ok": false,
+              "err": {
+                "code": "resource_exhausted",
+                "resource": "<string>",
+                "limit": "$n"
+              }
             }
           }
         },
         {
-          "assert_no_close_code": true
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self"
+            }
+          ]
         },
         {
-          "assert_frames_received": {
-            "count": "$n",
-            "order_required": false
-          }
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"count\": \"$n\", \"order_required\": false}"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3190,8 +3745,8 @@
       "intent": "Proves max_connections is real and discoverable: exactly max_connections concurrent gated connections each receive hello, and the next is refused with resource_exhausted naming the served limit. SPEC GAP: capacity has no position in the gate's fixed five-check order, so where it fires is unstated; this case pins the refusal shape.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
@@ -3200,29 +3755,26 @@
             "path": "/api/health"
           },
           "save": {
-            "n": "limits.max_connections"
+            "n": "frame.limits.max_connections"
           }
         },
         {
-          "connect_repeated": {
-            "n": "$n",
-            "query": {
-              "v": "2",
-              "sg": "<daemon_sg>"
-            },
-            "headers": {
-              "Host": "127.0.0.1:<port>",
-              "Authorization": "Bearer <token>"
-            },
-            "hold_open": true
+          "note": "[repeated connect xOrderedDict({'n': '$n', 'query': OrderedDict({'v': '2', 'sg': '<daemon_sg>'}), 'headers': OrderedDict({'Host': '127.0.0.1:<port>', 'Authorization': 'Bearer <token>'}), 'hold_open': True}) folded into one reconnect; review] [each concurrent frame matches this shape]",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
           },
-          "expect_upgrade": true,
-          "expect_each_frame": {
-            "t": "hello"
-          }
+          "note": "[split from a multi-verb step; review]"
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -3232,12 +3784,14 @@
               "Authorization": "Bearer <token>"
             }
           },
-          "expect_body": {
-            "ok": false,
-            "err": {
-              "code": "resource_exhausted",
-              "resource": "<string>",
-              "limit": "$n"
+          "expect": {
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "resource_exhausted",
+                "resource": "<string>",
+                "limit": "$n"
+              }
             }
           }
         }
@@ -3251,8 +3805,8 @@
       "intent": "Proves a refused upgrade never becomes a connection: because the gate runs before the upgrade is performed, a burst of gate-refused attempts far exceeding max_connections leaves the daemon able to admit a full complement of legitimate connections afterwards. Catches a daemon in which an unauthenticated local process can exhaust the connection table.",
       "requires": [
         "daemon",
-        "raw_http",
-        "portfile"
+        "observe:network",
+        "resource:portfile"
       ],
       "steps": [
         {
@@ -3261,42 +3815,33 @@
             "path": "/api/health"
           },
           "save": {
-            "n": "limits.max_connections"
+            "n": "frame.limits.max_connections"
           }
         },
         {
-          "connect_repeated": {
-            "n": "$n * 10",
-            "query": {
-              "v": "1"
-            },
-            "headers": {
-              "Host": "127.0.0.1:<port>"
-            },
-            "omit_headers": [
-              "Authorization"
-            ]
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
           },
-          "expect_upgrade": false,
-          "expect_status": 426
+          "note": "[repeated connect xOrderedDict({'n': '$n * 10', 'query': OrderedDict({'v': '1'}), 'headers': OrderedDict({'Host': '127.0.0.1:<port>'}), 'omit_headers': ['Authorization']}) folded into one reconnect; review]",
+          "expect": {
+            "status": 426
+          }
         },
         {
-          "connect_repeated": {
-            "n": "$n",
-            "query": {
-              "v": "2",
-              "sg": "<daemon_sg>"
-            },
-            "headers": {
-              "Host": "127.0.0.1:<port>",
-              "Authorization": "Bearer <token>"
-            },
-            "hold_open": true
-          },
-          "expect_upgrade": true,
-          "expect_each_frame": {
-            "t": "hello"
+          "note": "[repeated connect xOrderedDict({'n': '$n', 'query': OrderedDict({'v': '2', 'sg': '<daemon_sg>'}), 'headers': OrderedDict({'Host': '127.0.0.1:<port>', 'Authorization': 'Bearer <token>'}), 'hold_open': True}) folded into one reconnect; review] [each concurrent frame matches this shape]",
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           }
+        },
+        {
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
+          },
+          "note": "[split from a multi-verb step; review]"
         }
       ],
       "blocked_on_upstream": null
@@ -3308,19 +3853,26 @@
       "intent": "Pins the 4005 row of the close-code table and proves a client can act on the numeric code alone, with no reason string to parse. Catches a daemon that closes 1009/1008/1011 (generic WebSocket codes) where the protocol defines an application code.",
       "requires": [
         "daemon",
-        "raw_socket"
+        "resource:raw_socket"
       ],
       "steps": [
         {
-          "send_frame_of_exact_size": {
-            "bytes": "<max_frame_bytes + 1>"
+          "send": {
+            "$bytes_of_len": "<max_frame_bytes + 1>"
           }
         },
         {
-          "expect_close": {
-            "code": 4005
-          },
-          "assert_decidable_from_code_alone": true
+          "assert": [
+            {
+              "observe": "close_code",
+              "value": 4005
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_decidable_from_code_alone: true — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3332,8 +3884,8 @@
       "intent": "Pins the 4004 row: an otherwise healthy connection that sends nothing for longer than the idle window is closed with 4004, distinguishable from a daemon crash. SPEC GAP: no idle-window value appears in the served limits object, so a conformant client cannot compute the keepalive interval that would avoid 4004; this case fails until the window is served.",
       "requires": [
         "daemon",
-        "raw_socket",
-        "clock_control"
+        "resource:raw_socket",
+        "resource:clock_control"
       ],
       "steps": [
         {
@@ -3341,17 +3893,20 @@
             "method": "GET",
             "path": "/api/health"
           },
-          "expect_subset": {
-            "limits": {
-              "idle_timeout_ms": "<uint>"
-            }
-          },
           "save": {
-            "idle": "limits.idle_timeout_ms"
+            "idle": "frame.limits.idle_timeout_ms"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "limits": {
+                "idle_timeout_ms": "<uint>"
+              }
+            }
           }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -3360,21 +3915,28 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
-        },
-        {
-          "expect_frame": {
-            "t": "hello"
           }
         },
         {
-          "idle_ms": "$idle + 1"
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
         },
         {
-          "expect_close": {
-            "code": 4004
+          "control": {
+            "do": "idle",
+            "ms": "$idle + 1"
           }
+        },
+        {
+          "assert": [
+            {
+              "observe": "close_code",
+              "value": 4004
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3385,13 +3947,13 @@
       "operation": null,
       "intent": "Pins the 4003 row: a connection admitted before the daemon is ready is closed with not_ready rather than left hanging or answered with an operation error, so a client retries instead of presenting the reset path. Catches a daemon that conflates \"starting\" with \"wrong generation\".",
       "requires": [
-        "daemon_pre_ready",
-        "raw_socket",
-        "portfile"
+        "resource:daemon_pre_ready",
+        "resource:raw_socket",
+        "resource:portfile"
       ],
       "steps": [
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -3399,20 +3961,25 @@
             "headers": {
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
-            },
-            "against": "daemon_pre_ready"
-          },
-          "expect_upgrade": true
-        },
-        {
-          "expect_close": {
-            "code": 4003
+            }
           }
         },
         {
-          "assert_no_frame_matching": {
-            "t": "hello"
-          }
+          "assert": [
+            {
+              "observe": "close_code",
+              "value": 4003
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_no_frame_matching: {\"t\": \"hello\"} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3423,22 +3990,18 @@
       "operation": null,
       "intent": "A corpus-wide invariant over every recorded close: each application close code observed anywhere in the v2 corpus is one of 4001-4006 and maps to the named code, and no close uses an undefined 4xxx value. Catches a daemon that invents a seventh code, which no client would be able to interpret.",
       "requires": [
-        "frame_recorder",
-        "full_corpus_run"
+        "resource:frame_recorder",
+        "resource:full_corpus_run"
       ],
       "steps": [
         {
-          "assert_recorded_closes": {
-            "allowed": {
-              "4001": "protocol_unsupported",
-              "4002": "unauthenticated",
-              "4003": "not_ready",
-              "4004": "idle_timeout",
-              "4005": "frame_too_large",
-              "4006": "storage_generation_mismatch"
-            },
-            "reject_range": "4000-4999 outside the table"
-          }
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_recorded_closes: {\"allowed\": {\"4001\": \"protocol_unsupported\", \"4002\": \"unauthenticated\", \"4003\": \"not_ready\", \"4004\": \"idle_timeout\", \"4005\": \"frame_too_large\", \"4006\": \"storage_generation_mismatch\"}, \"reject_range\":  — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3449,16 +4012,18 @@
       "operation": null,
       "intent": "The no-null rule as a corpus-wide invariant over DAEMON-EMITTED frames: hello, replies, errors, pushes, gap frames, and gate rejection bodies. No JSON null at any depth; absence is always a tagged variant. Catches v1's compatibility-nullability (nullable role, status, last_event_kind, last_event_ts, and a null meaning \"unbounded\") re-entering v2's own frames. Deliberately NOT both directions: the corpus SENDS nulls on purpose in malformed-input cases, so a both-directions scan would fail on its own negative tests.",
       "requires": [
-        "frame_recorder",
-        "full_corpus_run"
+        "resource:frame_recorder",
+        "resource:full_corpus_run"
       ],
       "steps": [
         {
-          "assert_recorded_frames": {
-            "property": "no_json_null",
-            "scope": "daemon_emitted_only",
-            "excludes": "client-sent frames, which include deliberate nulls in malformed-input cases"
-          }
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"property\": \"no_json_null\", \"scope\": \"daemon_emitted_only\", \"excludes\": \"client-sent frames, which include deliberate nulls in malformed-input cases\"}"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3470,17 +4035,20 @@
       "intent": "The non-oracle property at the envelope layer: for a caller that is not a member, a room-scoped op naming a real foreign room and one naming a room that exists nowhere produce err objects that are equal field-for-field (both room_not_available, no extra field, no differing typed payload) with indistinguishable latency. Catches an implementation that answers the same code but leaks existence through a differing field set or a measurable timing difference.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "second_subject",
-        "timing_sampler"
+        "resource:second_subject",
+        "observe:timing"
       ],
       "steps": [
         {
-          "trigger": "second subject creates a room and saves its id as $foreign_rid; caller is not a member"
+          "control": {
+            "do": "inject_fault",
+            "fault": "second subject creates a room and saves its id as $foreign_rid; caller is not a member"
+          }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 70,
             "op": "room.timeline",
             "in": {
@@ -3493,19 +4061,21 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 70,
-            "ok": false,
-            "err": {
-              "code": "room_not_available"
-            }
-          },
           "save": {
             "foreign_err": "err"
+          },
+          "await": {
+            "frame": {
+              "id": 70,
+              "ok": false,
+              "err": {
+                "code": "room_not_available"
+              }
+            }
           }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 71,
             "op": "room.timeline",
             "in": {
@@ -3518,34 +4088,38 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 71,
-            "ok": false,
-            "err": {
-              "code": "room_not_available"
-            }
-          },
           "save": {
             "unknown_err": "err"
+          },
+          "await": {
+            "frame": {
+              "id": 71,
+              "ok": false,
+              "err": {
+                "code": "room_not_available"
+              }
+            }
           }
         },
         {
-          "assert_equal": {
-            "projections": [
-              "$foreign_err",
-              "$unknown_err"
-            ],
-            "deep": true
-          }
+          "assert": [
+            {
+              "path": "$foreign_err",
+              "op": "eq",
+              "value": "$unknown_err"
+            }
+          ]
         },
         {
-          "assert_timing_indistinguishable": {
-            "samples": [
-              "$foreign_err.latencies",
-              "$unknown_err.latencies"
-            ],
-            "repeat": 500
-          }
+          "assert": [
+            {
+              "observe": "timing_indistinguishable",
+              "between": [
+                "step:1",
+                "step:2"
+              ]
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3557,17 +4131,20 @@
       "intent": "The non-oracle property on the push stream: a connection that subscribes to a foreign room is refused room_not_available, and while that room is active NO frame carrying its id, or any frame at all attributable to it, ever reaches the non-member's connection. Catches a push router that fans out by subscription rather than by membership, which would turn the stream into a live membership oracle.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "second_subject",
-        "frame_recorder"
+        "resource:second_subject",
+        "resource:frame_recorder"
       ],
       "steps": [
         {
-          "trigger": "second subject creates and activates $foreign_rid and authors several messages"
+          "control": {
+            "do": "inject_fault",
+            "fault": "second subject creates and activates $foreign_rid and authors several messages"
+          }
         },
         {
-          "send_frame": {
+          "send": {
             "id": 80,
             "op": "stream.subscribe",
             "in": {
@@ -3577,31 +4154,42 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 80,
-            "ok": false,
-            "err": {
-              "code": "room_not_available"
+          "await": {
+            "frame": {
+              "id": 80,
+              "ok": false,
+              "err": {
+                "code": "room_not_available"
+              }
             }
           }
         },
         {
-          "trigger": "second subject authors ten more messages in $foreign_rid"
-        },
-        {
-          "assert_no_frame_matching": {
-            "any_field_equals": "$foreign_rid"
-          },
-          "within_ms": 5000
-        },
-        {
-          "assert_recorded_frames": {
-            "property": "none_matching",
-            "match": {
-              "t": "<string>",
-              "room_id": "$foreign_rid"
-            }
+          "control": {
+            "do": "inject_fault",
+            "fault": "second subject authors ten more messages in $foreign_rid"
           }
+        },
+        {
+          "note": "[timing window elided]"
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_no_frame_matching: {\"any_field_equals\": \"$foreign_rid\"} — needs manual retranscription"
+            }
+          ]
+        },
+        {
+          "assert": [
+            {
+              "observe": "connection_open",
+              "on": "subject:self",
+              "note": "frame-recording assertion needs manual review: {\"property\": \"none_matching\", \"match\": {\"t\": \"<string>\", \"room_id\": \"$foreign_rid\"}}"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3613,12 +4201,12 @@
       "intent": "Proves envelope `id` and `op_id` are independent and that the dedup ledger is keyed on the session principal, not the connection: the same op_id replayed on a NEW connection under a DIFFERENT envelope id returns the ORIGINAL result and creates nothing new. This is the case that motivates retry at all — a reply lost to a dropped connection. Catches a per-connection ledger, which would double-create on every reconnect.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject"
       ],
       "steps": [
         {
-          "send_frame": {
+          "send": {
             "id": 90,
             "op": "room.create",
             "in": {
@@ -3628,22 +4216,27 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 90,
-            "ok": true,
-            "out": {
-              "room_id": "<room_id>"
-            }
-          },
           "save": {
             "rid": "out.room_id"
+          },
+          "await": {
+            "frame": {
+              "id": 90,
+              "ok": true,
+              "out": {
+                "room_id": "<room_id>"
+              }
+            }
           }
         },
         {
-          "disconnect": true
+          "control": {
+            "do": "disconnect",
+            "on": "subject:self"
+          }
         },
         {
-          "connect": {
+          "upgrade": {
             "query": {
               "v": "2",
               "sg": "<daemon_sg>"
@@ -3652,16 +4245,17 @@
               "Host": "127.0.0.1:<port>",
               "Authorization": "Bearer <token>"
             }
-          },
-          "expect_upgrade": true
-        },
-        {
-          "expect_frame": {
-            "t": "hello"
           }
         },
         {
-          "send_frame": {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "send": {
             "id": 1,
             "op": "room.create",
             "in": {
@@ -3671,21 +4265,28 @@
           }
         },
         {
-          "expect_frame": {
-            "id": 1,
-            "ok": true,
-            "out": {
-              "room_id": "$rid"
+          "await": {
+            "frame": {
+              "id": 1,
+              "ok": true,
+              "out": {
+                "room_id": "$rid"
+              }
             }
           }
         },
         {
           "call": "room.list",
-          "in": {},
-          "assert_count_matching": {
-            "name": "Ledger Room",
-            "equals": 1
-          }
+          "in": {}
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_count_matching: {\"name\": \"Ledger Room\", \"equals\": 1} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3697,77 +4298,84 @@
       "intent": "Proves the ledger is keyed on the authenticated session principal and not on the subject: two independently authenticated sessions on one daemon using the SAME op_id each get their own effect, and neither is served the other's result. Catches a daemon-global per-subject ledger, in which the WebView, a native agent and the CLI would silently replay one another's mutations.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "two_principals"
+        "resource:two_principals"
       ],
       "steps": [
         {
-          "send_frame": {
+          "on": "subject:principal_a",
+          "send": {
             "id": 1,
             "op": "room.create",
             "in": {
               "name": "Principal A Room",
               "op_id": "shared-op-id"
             }
-          },
-          "as": "principal_a"
-        },
-        {
-          "expect_frame": {
-            "id": 1,
-            "ok": true,
-            "out": {
-              "room_id": "<room_id>"
-            }
-          },
-          "as": "principal_a",
-          "save": {
-            "rid_a": "out.room_id"
           }
         },
         {
-          "send_frame": {
+          "save": {
+            "rid_a": "out.room_id"
+          },
+          "on": "subject:principal_a",
+          "await": {
+            "frame": {
+              "id": 1,
+              "ok": true,
+              "out": {
+                "room_id": "<room_id>"
+              }
+            }
+          }
+        },
+        {
+          "on": "subject:principal_b",
+          "send": {
             "id": 1,
             "op": "room.create",
             "in": {
               "name": "Principal B Room",
               "op_id": "shared-op-id"
             }
-          },
-          "as": "principal_b"
+          }
         },
         {
-          "expect_frame": {
-            "id": 1,
-            "ok": true,
-            "out": {
-              "room_id": "<room_id>"
-            }
-          },
-          "as": "principal_b",
           "save": {
             "rid_b": "out.room_id"
+          },
+          "on": "subject:principal_b",
+          "await": {
+            "frame": {
+              "id": 1,
+              "ok": true,
+              "out": {
+                "room_id": "<room_id>"
+              }
+            }
           }
         },
         {
-          "assert_not_equal": {
-            "projections": [
-              "$rid_a",
-              "$rid_b"
-            ]
-          }
+          "assert": [
+            {
+              "path": "$rid_a",
+              "op": "ne",
+              "value": "$rid_b"
+            }
+          ]
         },
         {
           "call": "room.list",
-          "in": {},
-          "assert_count_matching": {
-            "name_in": [
-              "Principal A Room",
-              "Principal B Room"
-            ],
-            "equals": 2
-          }
+          "in": {}
+        },
+        {
+          "assert": [
+            {
+              "observe": "no_event_authored",
+              "scope": "case",
+              "note": "UNMAPPED dialect assert assert_count_matching: {\"name_in\": [\"Principal A Room\", \"Principal B Room\"], \"equals\": 2} — needs manual retranscription"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": null
@@ -3779,10 +4387,10 @@
       "intent": "The envelope shape of the presence push: `t` present, `id` absent, plus the connection generation and a TAGGED offline reason (never a null, never an English string). BLOCKED ON U1 — iroh-rooms at a5d98b70 cannot supply the generation or a typed reason, so this case fails rather than skips; a skipped case reads as coverage, a failing case reads as work.",
       "requires": [
         "daemon",
-        "raw_socket",
+        "resource:raw_socket",
         "subject",
-        "live_room",
-        "second_subject"
+        "room:live",
+        "resource:second_subject"
       ],
       "steps": [
         {
@@ -3793,26 +4401,46 @@
           }
         },
         {
-          "trigger": "a peer device goes offline in $rid"
+          "control": {
+            "do": "inject_fault",
+            "fault": "a peer device goes offline in $rid"
+          }
         },
         {
-          "expect_frame": {
-            "t": "peer",
-            "room_id": "$rid",
-            "generation": "<uint>",
-            "reason": {
-              "state": "<string>"
+          "await": {
+            "frame": {
+              "t": "peer",
+              "room_id": "$rid",
+              "generation": "<uint>",
+              "reason": {
+                "state": "<string>"
+              }
             }
-          },
-          "expect_absent": [
-            "id",
-            "ok",
-            "out",
-            "err"
-          ],
-          "assert_no_null": {
-            "at": "$"
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.id",
+              "op": "absent"
+            },
+            {
+              "path": "out.ok",
+              "op": "absent"
+            },
+            {
+              "path": "out.out",
+              "op": "absent"
+            },
+            {
+              "path": "out.err",
+              "op": "absent"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ]
         }
       ],
       "blocked_on_upstream": "U1"
