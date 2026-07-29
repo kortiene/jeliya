@@ -43,7 +43,16 @@ impl serde::Serialize for Timestamp {
 
 impl<'de> serde::Deserialize<'de> for Timestamp {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        time::serde::rfc3339::deserialize(d).map(Self)
+        let t = time::serde::rfc3339::deserialize(d)?;
+        // The v2 `<ts>` wire form requires a `Z` offset, not a numeric one —
+        // an instant carrying `+01:00` is not the wire shape, so it is
+        // refused at deserialization rather than silently re-zoned.
+        if t.offset() != time::UtcOffset::UTC {
+            return Err(serde::de::Error::custom(
+                "timestamp must carry a `Z` (UTC) offset",
+            ));
+        }
+        Ok(Self(t))
     }
 }
 
@@ -231,7 +240,7 @@ pub enum Link {
 /// does not yet know one; it is the caller's explicit choice, not a daemon
 /// default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Cursor {
     /// From the beginning.
     Start,
@@ -257,17 +266,38 @@ pub enum Truncated {
     },
 }
 
-/// `progress` on a status post.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `progress` on a status post. The `reported` arm's `percent` is bounded
+/// to `0..=100` at deserialization: the record fixes the inclusive range
+/// and requires anything outside it to be `invalid_argument`, so the bound
+/// is structural, not a later check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Progress {
     /// No progress reported.
     Absent,
     /// Progress reported as a percentage in `0..=100`.
     Reported {
-        /// The percentage, inclusive.
+        /// The percentage, inclusive `0..=100`.
         percent: u8,
     },
+}
+
+impl<'de> Deserialize<'de> for Progress {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+        enum Raw {
+            Absent,
+            Reported { percent: u8 },
+        }
+        match Raw::deserialize(d)? {
+            Raw::Absent => Ok(Progress::Absent),
+            Raw::Reported { percent } if percent <= 100 => Ok(Progress::Reported { percent }),
+            Raw::Reported { percent } => Err(serde::de::Error::custom(format!(
+                "progress.percent {percent} is outside 0..=100"
+            ))),
+        }
+    }
 }
 
 /// `author` on a committed event — a variant because the record removes the
@@ -338,6 +368,7 @@ pub enum GapTo {
 /// decode error before the policy could see it. The bound is enforced at
 /// semantic validation (step 7), never by the type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Target {
     /// The host (loopback only for publish).
     pub host: String,
@@ -348,7 +379,7 @@ pub struct Target {
 /// `audience` — who may connect to a pipe. Required; `room` must be said
 /// out loud rather than fallen into.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Audience {
     /// Any member of the room.
     Room,
