@@ -1,0 +1,6 @@
+provider=com.google.android.documentsui / Downloads
+file=jeliya-spike-160.txt
+size=37 B
+result=selected
+uri_scheme=content://
+log=SPIKE160_SAF status=selected (URI and filename redacted from logs)

@@ -1,0 +1,9 @@
+PASS  bad-aab-signature -> only 'AAB has a valid development signature' failed
+PASS  missing-backup-resource -> only 'AAB packages full-backup exclusions' failed
+PASS  forbidden-ffi-library -> only 'AAB contains no Flutter or jeliya-ffi native library' failed
+PASS  loopback-mode -> only 'native network_mode' failed
+PASS  fabricated-ffi -> only 'native ffi' failed
+PASS  missing-endpoint -> only 'native endpoint_id_reported' failed
+PASS  skipped-first-run -> only 'native serialized_calls' failed
+PASS  emulator gate rejects qemu/generic and accepts measured Motorola hardware
+ALL DELIBERATE REGRESSIONS PASSED

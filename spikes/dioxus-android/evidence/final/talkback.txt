@@ -1,0 +1,19 @@
+attributes:{id=0, touchExplorationEnabled=true, serviceHandlesDoubleTap=true, requestMultiFingerGestures=true, requestTwoFingerPassthrough=true, sendMotionEventsEnabledfalse, displayMagnificationEnabled=false, autoclickEnabled=false, nonInteractiveUiTimeout=0, interactiveUiTimeout=10000, installedServiceCount=6, magnificationModes={0=1}, magnificationCapabilities=3, audioDescriptionByDefaultEnabled=false, magnificationFollowTypingEnabled=true}
+Bound services:{Service[label=TalkBack, feedbackType[FEEDBACK_SPOKEN, FEEDBACK_HAPTIC, FEEDBACK_AUDIBLE], capabilities=251, eventTypes=TYPES_ALL_MASK, notificationTimeout=0, requestA11yBtn=false]}
+Enabled services:{{com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService}}
+I MediaFocusControl: requestAudioFocus() from uid/pid 10201/17401 AA=USAGE_ASSISTANCE_ACCESSIBILITY/CONTENT_TYPE_SPEECH clientId=<redacted> callingPack=com.google.android.marvin.talkback req=3 flags=0x0 sdk=37
+I GoogleTTSServiceImpl: Synthesis request for locale eng-USA and name en-US-language
+I GoogleTTSServiceImpl: TTS dispatch: en-us-x-iog-locomel-embedded
+I GoogleTTSServiceImpl: Synthesis request for locale eng-USA and name en-US-language
+I GoogleTTSServiceImpl: TTS dispatch: en-us-x-iog-locomel-embedded
+I GoogleTTSServiceImpl: Synthesis request for locale eng-USA and name en-US-language
+I GoogleTTSServiceImpl: TTS dispatch: en-us-x-iog-locomel-embedded
+I GoogleTTSServiceImpl: Synthesis request for locale eng-USA and name en-US-language
+I GoogleTTSServiceImpl: TTS dispatch: en-us-x-iog-locomel-embedded
+I GoogleTTSServiceImpl: Synthesis request for locale eng-USA and name en-US-language
+I GoogleTTSServiceImpl: TTS dispatch: en-us-x-iog-locomel-embedded
+I GoogleTTSServiceImpl: Synthesis request for locale eng-USA and name en-US-language
+I GoogleTTSServiceImpl: TTS dispatch: en-us-x-iog-locomel-embedded
+I GoogleTTSServiceImpl: Synthesis request for locale eng-USA and name en-US-language
+I GoogleTTSServiceImpl: TTS dispatch: en-us-x-iog-locomel-embedded
+Observation: focus outline remained on the system WebView as one node during next-item gestures; descendant traversal was not proven.

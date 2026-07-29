@@ -1,0 +1,31 @@
+Physical release APK accessibility/UI observations (Android UIAutomator)
+
+Portrait bootstrap hierarchy:
+- heading: Physical-device feasibility
+- live status: In-process bootstrap completed. Network mode is real; path reachability is not inferred.
+- boundary: jeliya-core direct
+- protected state suffix: /no_backup/dioxus-m0-spike-v1
+- network mode: real
+- relay observation: engine reported no relay URL
+- WebView: 150.0.7871.181
+- viewport: 411 × 822
+- orientation: portrait-primary
+- labeled text field: Message field
+- editable node class: android.widget.EditText
+- button: Choose a test file
+
+IME/resume hierarchy:
+- IME visible and text entry succeeded
+- resumed viewport: 411 × 534
+- resume action: authoritative room.list after resume: 1 room(s)
+
+Landscape hierarchy:
+- viewport: 822 × 387
+- orientation: landscape-primary
+
+TalkBack observation:
+- TalkBack service bound with spoken/haptic/audible feedback
+- touch exploration enabled
+- Google TTS acquired accessibility audio focus and synthesized speech
+- next-item gestures left the green focus outline around the whole system WebView
+- descendant heading/input/button traversal was not proven (PARTIAL)

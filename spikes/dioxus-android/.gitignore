@@ -1,0 +1,7 @@
+/target/
+/.android/
+/artifacts/
+/evidence/run-*/
+!evidence/.gitkeep
+*.iml
+.DS_Store

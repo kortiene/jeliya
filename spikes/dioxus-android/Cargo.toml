@@ -1,0 +1,55 @@
+# Disposable feasibility spike for issue #160. NOT a workspace member: this
+# crate carries its own `[workspace]` table so production CI and the root
+# workspace remain untouched. Nothing here is the proposed M2/M5 design.
+[package]
+name = "jeliya-spike-dioxus-android"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.91"
+publish = false
+license = "MIT OR Apache-2.0"
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "jeliya-spike-dioxus-android"
+path = "src/main.rs"
+
+[features]
+default = ["mobile"]
+mobile = ["dioxus/mobile"]
+
+[dependencies]
+# The architecture record selects Dioxus 0.7 system-WebView rendering. Pin the
+# exact version measured by this spike rather than accepting a semver update.
+# Do not enable Dioxus's broad `lib` feature here: it includes the optional
+# Manganis asset API, whose Android callback ABI deliberately compile-errors on
+# 32-bit targets. This device is armeabi-v7a-only and this slice uses no asset
+# API, so select the exact renderer/UI/eval surface instead.
+dioxus = { version = "=0.7.9", default-features = false, features = ["minimal", "document", "mobile"] }
+dioxus-desktop = { version = "=0.7.9", default-features = false, features = ["tokio_runtime"] }
+
+# Direct, in-process core dependency. Deliberately NOT jeliya-ffi: no Dart VM,
+# C ABI, socket, token, or portfile exists on this path. This consumes today's
+# v1 Engine only as a feasibility beachhead; it is not the future DirectClient.
+jeliya-core = { path = "../../crates/jeliya-core" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Match Dioxus/wry's JNI generation. Rust calls the custom MainActivity for
+# protected storage and SAF; callbacks return to the exported symbols below.
+jni = "=0.21.1"
+ndk-context = "=0.1.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
