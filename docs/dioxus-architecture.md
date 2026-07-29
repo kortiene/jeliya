@@ -391,7 +391,7 @@ issue: the program is entirely ahead of the repository.
 
 | Milestone | Exit gate |
 |---|---|
-| M0 — Architecture and platform feasibility | the clean-slate system-WebView architecture, fresh-state/reset policy, required product behavior, and web/desktop/Android feasibility evidence are recorded |
+| M0 — Architecture and platform feasibility | the clean-slate system-WebView architecture, fresh-state/reset policy, required product behavior ([product behavior contract](product-behavior-contract.md)), and web/desktop/Android feasibility evidence are recorded |
 | M1 — Typed API and protocol v2 | one Iroh-free typed API and protocol-v2 contract drive a typed core and v2-only daemon; v1 clients fail before mutation and no public JSON or compatibility facade remains |
 | M2 — Client runtime and platform adapters | bounded lifecycle-aware runtime, WsWeb, WsNative, DirectClient, PlatformServices, shared adapter tests, and the current OpenCode agent v2 cutover are complete |
 | M3 — Web replacement | Dioxus web covers the required Room Workbench and global flows, passes its Playwright/real-daemon matrix, and produces the sole reproducible embedded UI artifact |
@@ -407,7 +407,7 @@ The slices that carry this record:
 | #157 | This record, and the superseded pre-Dioxus proposal. |
 | #113 | The first-release distribution decision it records. |
 | #161 | Protocol v2 and its independently authored conformance corpus. |
-| #162 | The required cross-platform product behavior contract. |
+| #162 | The required cross-platform product behavior contract — recorded as the [product behavior contract](product-behavior-contract.md). |
 | #163 | The Iroh-free `jeliya-api` contract. |
 | #167 | The lifecycle-aware client seam and its deterministic mock. |
 | #174 | Injectable `PlatformServices`. |
