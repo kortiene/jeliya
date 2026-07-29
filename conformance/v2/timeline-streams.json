@@ -1073,7 +1073,7 @@
             "errA": "$err"
           },
           "expect_error": {
-            "code": "subject_missing",
+            "code": "subject_absent",
             "fields": {}
           }
         },
@@ -1085,7 +1085,7 @@
             "errB": "$err"
           },
           "expect_error": {
-            "code": "subject_missing",
+            "code": "subject_absent",
             "fields": {}
           }
         },

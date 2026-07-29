@@ -417,10 +417,10 @@
       "blocked_on_upstream": null
     },
     {
-      "name": "subject_ensure_reports_subject_unreadable_and_does_not_clobber",
+      "name": "subject_store_unreadable_fails_the_connection_closed_and_does_not_clobber",
       "kind": "error",
-      "operation": "subject.ensure",
-      "intent": "Exercises subject.ensure's OWN most specific error code. Proves that an existing-but-unreadable subject store is reported as subject_unreadable (not internal, not invalid_argument, not a silent success) AND that the failed call does not overwrite the unreadable material with a fresh subject — which would permanently destroy a user's identity behind a transient read fault, violating 'establish the local cryptographic subject exactly once'.",
+      "operation": null,
+      "intent": "Proves v2's replacement for v1's per-operation subject_unreadable: an existing-but-unreadable subject store fails the connection closed with close code 4003 (not_ready) rather than answering any operation — a hello cannot carry an error code, and a degraded subject arm would force every client to branch on a condition it can do nothing about. Also proves the failed start does not overwrite the unreadable material with a fresh subject — which would permanently destroy a user's identity behind a transient read fault, violating 'establish the local cryptographic subject exactly once'.",
       "requires": [
         "fresh_daemon_no_subject",
         "restartable_daemon",
@@ -463,33 +463,10 @@
             },
             "auth": "bearer_from_portfile"
           },
-          "expect_hello_subset": {
-            "t": "hello",
-            "protocol": 2
+          "expect_close": {
+            "code": 4003
           },
-          "note": "hello's subject variant on an unreadable store is not fixed by the spec; only that it is a tagged variant and never a null. Asserted as such, not pinned to present or absent."
-        },
-        {
-          "session": "B",
-          "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0006b"
-          },
-          "expect_error": {
-            "code": "subject_unreadable",
-            "absent_fields": [
-              "hint"
-            ],
-            "code_not_in": [
-              "internal",
-              "invalid_argument",
-              "invalid_params",
-              "identity_exists",
-              "identity_missing",
-              "subject_absent"
-            ],
-            "no_nulls_deep": true
-          }
+          "note": "not_ready closes the connection rather than answering an operation: the subject store cannot be read, so there is no hello and no error reply — the upgrade itself fails closed. Any behaviour that instead serves a degraded hello and lets subject.ensure fail per-request is the retired v1 shape."
         },
         {
           "harness": "stop_daemon"
@@ -528,7 +505,7 @@
             "device_id": "$did",
             "created": false
           },
-          "note": "The original subject is intact. If the failed ensure had regenerated, subject_id would differ and created would have been true at step 6."
+          "note": "The original subject is intact. If the unreadable-store start had regenerated, subject_id would differ and created would have been true here."
         }
       ],
       "blocked_on_upstream": null

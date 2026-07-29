@@ -1242,62 +1242,142 @@
       ],
       "steps": [
         {
-          "connect_each": [
-            {
-              "expect_status": 403,
-              "code": "forbidden_origin",
-              "with": {
-                "headers": {
-                  "Host": "evil.example.com"
-                }
-              }
-            },
-            {
-              "expect_status": 426,
-              "code": "protocol_unsupported",
-              "with": {
-                "query": {
-                  "v": "1",
-                  "sg": "<daemon_sg>"
-                }
-              }
-            },
-            {
-              "expect_status": 426,
-              "code": "storage_generation_mismatch",
-              "with": {
-                "query": {
-                  "v": "2",
-                  "sg": "0"
-                }
-              }
-            },
-            {
-              "expect_status": 401,
-              "code": "unauthenticated",
-              "with": {
-                "omit_headers": [
-                  "Authorization"
-                ],
-                "query": {
-                  "v": "2",
-                  "sg": "<daemon_sg>"
-                }
-              }
-            }
-          ],
-          "expect_content_type": "application/json",
-          "expect_body_shape": {
-            "ok": false,
-            "err": {
-              "code": "<the case's code>"
+          "note": "Each gate rejection below must answer application/json with the v2 error envelope: ok:false and err:{code, ...typed fields}. v1's plain-text refusal bodies are gone, and no rejection carries id (no request id exists pre-upgrade) or prose (hint/message/detail).",
+          "http": {
+            "method": "GET",
+            "path": "/ws",
+            "headers": {
+              "Host": "evil.example.com"
             }
           },
-          "expect_absent": [
-            "id",
-            "err.hint",
-            "err.message",
-            "err.detail"
+          "expect": {
+            "status": 403,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "forbidden_origin"
+              }
+            }
+          },
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err.message",
+              "op": "absent"
+            },
+            {
+              "path": "err.detail",
+              "op": "absent"
+            },
+            {
+              "path": "id",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/ws",
+            "query": {
+              "v": "1",
+              "sg": "<daemon_sg>"
+            }
+          },
+          "expect": {
+            "status": 426,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "protocol_unsupported"
+              }
+            }
+          },
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "id",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/ws",
+            "query": {
+              "v": "2",
+              "sg": "0"
+            }
+          },
+          "expect": {
+            "status": 426,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "storage_generation_mismatch"
+              }
+            }
+          },
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "id",
+              "op": "absent"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/ws",
+            "query": {
+              "v": "2",
+              "sg": "<daemon_sg>"
+            },
+            "omit_headers": [
+              "Authorization"
+            ]
+          },
+          "expect": {
+            "status": 401,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": {
+              "ok": false,
+              "err": {
+                "code": "unauthenticated"
+              }
+            }
+          },
+          "assert": [
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "id",
+              "op": "absent"
+            }
           ]
         }
       ],

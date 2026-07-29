@@ -1339,7 +1339,7 @@
       "name": "room_timeline_rejects_a_cursor_minted_for_another_room",
       "kind": "error",
       "operation": "room.timeline",
-      "intent": "Proves a cursor is bound to its room and a foreign cursor is refused with a cursor-specific code rather than being honoured or reported as a generic argument error, catching a cursor that becomes a cross-room read primitive.",
+      "intent": "Proves a cursor is bound to its room and a foreign cursor is refused as an unknown position rather than being honoured or reported as a generic argument error, catching a cursor that becomes a cross-room read primitive. A cursor that cannot be parsed at all is instead a malformed argument — the two are different failures and never share a code.",
       "requires": [
         "subject",
         "two_rooms_with_history",
@@ -1365,10 +1365,9 @@
             "cursor": "$cur_a"
           },
           "expect_error": {
-            "code": "cursor_invalid",
+            "code": "cursor_unknown",
             "fields_subset": {
-              "reason": "foreign_room",
-              "room_id": "<room_id>"
+              "cursor": "$cur_a"
             }
           }
         },
@@ -1379,9 +1378,12 @@
             "cursor": "not-a-cursor"
           },
           "expect_error": {
-            "code": "cursor_invalid",
+            "code": "invalid_argument",
             "fields_subset": {
-              "reason": "malformed"
+              "field": "in.cursor",
+              "reason": {
+                "state": "format"
+              }
             }
           }
         }
