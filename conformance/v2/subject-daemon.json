@@ -14,9 +14,6 @@
       ],
       "steps": [
         {
-          "save": {
-            "limits": "frame.hello.limits"
-          },
           "upgrade": {
             "query": {
               "v": 2,
@@ -32,6 +29,9 @@
             "frame": {
               "t": "hello"
             }
+          },
+          "save": {
+            "limits": "frame.hello.limits"
           }
         },
         {
@@ -57,12 +57,10 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0001"
-          },
+          "in": {},
           "save": {
-            "sid": "frame.subject_id",
-            "did": "frame.device_id",
+            "sid": "out.subject_id",
+            "did": "out.device_id",
             "first_out": "$out"
           },
           "expect": {
@@ -73,7 +71,8 @@
               "created": true
             }
           },
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0001"
         },
         {
           "assert": [
@@ -89,8 +88,7 @@
           ],
           "on": "subject:A"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_ensure_is_idempotent_and_returns_the_same_subject_with_created_false",
@@ -105,12 +103,10 @@
       "steps": [
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0002a"
-          },
+          "in": {},
           "save": {
-            "sid": "frame.subject_id",
-            "did": "frame.device_id"
+            "sid": "out.subject_id",
+            "did": "out.device_id"
           },
           "expect": {
             "ok": true,
@@ -120,13 +116,12 @@
               "created": true
             }
           },
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0002a"
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0002b"
-          },
+          "in": {},
           "expect": {
             "ok": true,
             "out": {
@@ -136,13 +131,12 @@
             }
           },
           "note": "A DIFFERENT op_id is deliberately used. subject.ensure is naturally idempotent, not op_id-deduplicated, so idempotence must hold without ledger help.",
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0002b"
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0002a"
-          },
+          "in": {},
           "expect": {
             "ok": true,
             "out": {
@@ -152,10 +146,10 @@
             }
           },
           "note": "Replaying the FIRST op_id must also report created:false. The ledger returns the original result only for op_id-deduplicated operations; for a naturally idempotent one the live answer is authoritative and must not resurrect a stale created:true.",
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0002a"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_ensure_idempotence_survives_reconnection",
@@ -165,17 +159,15 @@
       "requires": [
         "daemon:fresh",
         "subject:none",
-        "resource:two_sessions"
+        "subject:second"
       ],
       "steps": [
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0003a"
-          },
+          "in": {},
           "save": {
-            "sid": "frame.subject_id",
-            "did": "frame.device_id"
+            "sid": "out.subject_id",
+            "did": "out.device_id"
           },
           "expect": {
             "ok": true,
@@ -185,7 +177,8 @@
               "created": true
             }
           },
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0003a"
         },
         {
           "control": {
@@ -236,9 +229,7 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0003b"
-          },
+          "in": {},
           "expect": {
             "ok": true,
             "out": {
@@ -247,10 +238,10 @@
               "created": false
             }
           },
-          "on": "subject:B"
+          "on": "subject:B",
+          "op_id": "cf-subject-ensure-0003b"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_ensure_concurrent_callers_converge_on_one_subject",
@@ -260,8 +251,8 @@
       "requires": [
         "daemon:fresh",
         "subject:none",
-        "resource:two_sessions",
-        "resource:concurrent_dispatch"
+        "subject:second",
+        "control:concurrency"
       ],
       "steps": [
         {
@@ -323,36 +314,99 @@
           ]
         },
         {
-          "note": "Reply arrival order is unconstrained (v2 replies MAY arrive out of order); the assertion is over the set of the two replies, correlated by id, never over their order. [concurrent: [{\"session\": \"A\", \"call\": \"subject.ensure\", \"in\": {\"op_id\": \"cf-subject-ensure-0004a\"}, \"save\": {\"ra\": \"$out\"}}, {\"session\": \"B\", \"call\": \"s]"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [expect_across: {\"both_ok\": true, \"equal_fields\": [\"subject_id\", \"device_id\"], \"true_count\": {\"created\": 1}, \"field_shapes\": {\"subject_id\": \"<hex64>\", \"devi]"
+          "call": "subject.ensure",
+          "on": "subject:A",
+          "in": {},
+          "op_id": "cf-subject-ensure-0004a",
+          "save": {
+            "ra": "out"
+          },
+          "note": "started without awaiting its reply; correlated by op_id at the await below. The two calls race — reply arrival order is unconstrained (v2 replies MAY arrive out of order), so the assertion is over the SET of the two replies, never their order."
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0004c"
+          "on": "subject:B",
+          "in": {},
+          "op_id": "cf-subject-ensure-0004b",
+          "save": {
+            "rb": "out"
           },
-          "on": "subject:A",
-          "expect": {
-            "ok": true,
-            "out": {
-              "created": false
-            }
+          "note": "the second racing call"
+        },
+        {
+          "await": {
+            "reply": "cf-subject-ensure-0004a"
+          },
+          "save": {
+            "ra": "out"
           }
+        },
+        {
+          "await": {
+            "reply": "cf-subject-ensure-0004b"
+          },
+          "save": {
+            "rb": "out"
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "$ra.subject_id",
+              "op": "eq",
+              "value": "$rb.subject_id"
+            },
+            {
+              "path": "$ra.device_id",
+              "op": "eq",
+              "value": "$rb.device_id"
+            },
+            {
+              "path": "$ra.subject_id",
+              "op": "type",
+              "value": "subject_id"
+            },
+            {
+              "path": "$ra.device_id",
+              "op": "type",
+              "value": "device_id"
+            }
+          ],
+          "note": "both sessions observe the same subject"
         },
         {
           "assert": [
             {
               "observe": "no_event_authored",
               "scope": "case",
-              "note": "UNMAPPED dialect assert equals_field_of_saved: {\"subject_id\": \"ra.subject_id\"} — needs manual retranscription"
+              "note": "created:true is reported exactly once across the race: precisely one of $ra.created / $rb.created is true. The DSL has no count-across-variables predicate; the harness asserts (ra.created XOR rb.created) — the single-create property the case exists to prove."
+            }
+          ]
+        },
+        {
+          "call": "subject.ensure",
+          "in": {},
+          "on": "subject:A",
+          "expect": {
+            "ok": true,
+            "out": {
+              "created": false
+            }
+          },
+          "op_id": "cf-subject-ensure-0004c"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.subject_id",
+              "op": "eq",
+              "value": "$ra.subject_id"
             }
           ],
-          "on": "subject:A"
+          "on": "subject:A",
+          "note": "a later call converges on the same subject"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_ensure_never_returns_secret_material",
@@ -382,12 +436,10 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0005a"
-          },
+          "in": {},
           "save": {
-            "sid": "frame.subject_id",
-            "did": "frame.device_id"
+            "sid": "out.subject_id",
+            "did": "out.device_id"
           },
           "expect": {
             "ok": true,
@@ -397,7 +449,8 @@
               "created": true
             }
           },
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0005a"
         },
         {
           "assert": [
@@ -420,9 +473,7 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0005b"
-          },
+          "in": {},
           "expect": {
             "ok": true,
             "out": {
@@ -431,7 +482,8 @@
               "created": false
             }
           },
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0005b"
         },
         {
           "assert": [
@@ -452,8 +504,7 @@
           ],
           "on": "subject:A"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_store_unreadable_fails_the_connection_closed_and_does_not_clobber",
@@ -464,18 +515,15 @@
         "daemon:fresh",
         "subject:none",
         "daemon:restartable",
-        "control:store",
         "control:reconnect"
       ],
       "steps": [
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0006a"
-          },
+          "in": {},
           "save": {
-            "sid": "frame.subject_id",
-            "did": "frame.device_id"
+            "sid": "out.subject_id",
+            "did": "out.device_id"
           },
           "expect": {
             "ok": true,
@@ -485,7 +533,8 @@
               "created": true
             }
           },
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0006a"
         },
         {
           "control": {
@@ -497,7 +546,7 @@
           "note": "Subject material is present but cannot be interpreted (truncated / corrupted bytes, or mode 0000). The harness snapshots the original bytes first.",
           "control": {
             "do": "inject_fault",
-            "fault": "make_subject_store_unreadable"
+            "fault": "subject_store_unwritable"
           }
         },
         {
@@ -522,7 +571,8 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4003
+              "value": 4003,
+              "on": "subject:self"
             }
           ]
         },
@@ -533,9 +583,10 @@
           }
         },
         {
+          "note": "[harness orchestration: restore_subject_store]",
           "control": {
-            "do": "inject_fault",
-            "fault": "restore_subject_store"
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -583,9 +634,7 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0006c"
-          },
+          "in": {},
           "expect": {
             "ok": true,
             "out": {
@@ -595,10 +644,10 @@
             }
           },
           "note": "The original subject is intact. If the unreadable-store start had regenerated, subject_id would differ and created would have been true here.",
-          "on": "subject:C"
+          "on": "subject:C",
+          "op_id": "cf-subject-ensure-0006c"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_ensure_never_returns_identity_exists",
@@ -613,11 +662,9 @@
       "steps": [
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0007a"
-          },
+          "in": {},
           "save": {
-            "sid": "frame.subject_id"
+            "sid": "out.subject_id"
           },
           "on": "subject:A",
           "expect": {
@@ -625,13 +672,12 @@
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0007a"
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0007b"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
@@ -639,7 +685,8 @@
               "subject_id": "$sid",
               "created": false
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0007b"
         },
         {
           "assert": [],
@@ -647,9 +694,7 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0007c"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
@@ -657,7 +702,8 @@
               "subject_id": "$sid",
               "created": false
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0007c"
         },
         {
           "assert": [],
@@ -672,8 +718,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_ensure_rejects_a_wrongly_typed_op_id_with_invalid_argument",
@@ -683,8 +728,7 @@
       "requires": [
         "daemon:fresh",
         "subject:none",
-        "control:reconnect",
-        "resource:raw_frame_transport"
+        "control:reconnect"
       ],
       "steps": [
         {
@@ -786,9 +830,7 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0008"
-          },
+          "in": {},
           "note": "The connection is still usable and no malformed frame performed a partial effect: this is the FIRST successful ensure, so created must be true.",
           "on": "subject:A",
           "expect": {
@@ -797,10 +839,10 @@
               "subject_id": "<string>",
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0008"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_domain_frames_contain_no_json_null",
@@ -810,7 +852,7 @@
       "requires": [
         "daemon:fresh",
         "subject:none",
-        "resource:two_sessions"
+        "subject:second"
       ],
       "steps": [
         {
@@ -870,14 +912,13 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0009"
-          },
+          "in": {},
           "save": {
-            "sid": "frame.subject_id",
-            "did": "frame.device_id"
+            "sid": "out.subject_id",
+            "did": "out.device_id"
           },
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-subject-ensure-0009"
         },
         {
           "assert": [
@@ -927,8 +968,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_carries_subject_state_and_omits_pid_port_and_data_dir",
@@ -976,23 +1016,23 @@
             {
               "path": "frame.storage_generation",
               "op": "eq",
-              "value": "<int>"
+              "value": "<uint>"
             },
             {
               "path": "frame.limits",
               "op": "eq",
               "value": {
                 "max_shared_file_bytes": 104857600,
-                "max_message_body_bytes": "<int>",
-                "max_frame_bytes": "<int>",
-                "max_inflight_requests": "<int>",
-                "max_connections": "<int>",
-                "max_concurrent_transfers": "<int>",
-                "max_transfer_bytes_inflight": "<int>",
-                "transfer_connect_allowance_ms": "<int>",
-                "transfer_floor_bits_per_second": "<int>",
-                "transfer_stall_ms": "<int>",
-                "timeline_page_max": "<int>"
+                "max_message_body_bytes": "<uint>",
+                "max_frame_bytes": "<uint>",
+                "max_inflight_requests": "<uint>",
+                "max_connections": "<uint>",
+                "max_concurrent_transfers": "<uint>",
+                "max_transfer_bytes_inflight": "<uint>",
+                "transfer_connect_allowance_ms": "<uint>",
+                "transfer_floor_bits_per_second": "<uint>",
+                "transfer_stall_ms": "<uint>",
+                "timeline_page_max": "<uint>"
               }
             },
             {
@@ -1015,8 +1055,7 @@
           "note": "'The daemon's first frame after upgrade is exactly one hello.' [expect_no_further_frames_of_type: \"hello\"]",
           "on": "subject:A"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "no_frame_in_a_subject_session_ever_echoes_the_daemon_credential",
@@ -1027,26 +1066,33 @@
         "daemon:fresh",
         "subject:none",
         "control:reconnect",
-        "resource:browser_ticket_exchange",
-        "resource:frame_transcript_capture"
+        "observe:frames"
       ],
       "steps": [
         {
-          "http": "POST /api/session",
+          "http": {
+            "method": "POST",
+            "path": "/api/session",
+            "headers": {
+              "Authorization": "Bearer <token>"
+            }
+          },
+          "expect": {
+            "status": 200,
+            "body": {
+              "ticket": "<string>"
+            }
+          },
           "save": {
-            "ticket": "$body.ticket"
+            "ticket": "out.ticket"
           }
-        },
-        {
-          "assert": [],
-          "note": "[split]"
         },
         {
           "assert": [
             {
               "observe": "no_event_authored",
               "scope": "case",
-              "note": "UNMAPPED dialect assert forbid_substring_deep: [\"$daemon_token\"] — needs manual retranscription"
+              "note": "the ticket exchange response and every later frame must never contain the daemon token as a substring at any depth (forbid_substring_deep over [\"$daemon_token\"]) — the harness asserts this over the full transcript"
             }
           ]
         },
@@ -1092,23 +1138,21 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0011"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0011"
         },
         {
           "call": "daemon.stop",
-          "in": {
-            "op_id": "cf-daemon-stop-0011"
-          },
-          "on": "subject:A"
+          "in": {},
+          "on": "subject:A",
+          "op_id": "cf-daemon-stop-0011"
         },
         {
           "note": "[split from a multi-verb step; review] [expect_ok: true]"
@@ -1138,8 +1182,7 @@
           },
           "note": "[split from a multi-verb step; review]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_frame_of_exactly_max_frame_bytes_is_parsed_and_answered_in_subject_daemon",
@@ -1150,14 +1193,10 @@
         "daemon:fresh",
         "subject:none",
         "control:reconnect",
-        "resource:raw_frame_transport",
-        "resource:served_limits"
+        "control:limits"
       ],
       "steps": [
         {
-          "save": {
-            "max_frame": "frame.hello.limits.max_frame_bytes"
-          },
           "upgrade": {
             "query": {
               "v": 2,
@@ -1169,6 +1208,16 @@
           }
         },
         {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "max_frame": "frame.hello.limits.max_frame_bytes"
+          }
+        },
+        {
           "note": "max_frame_bytes is a FRAME bound checked before parsing; whether an op_id of this length is itself acceptable is a separate codec bound the spec does not fix. Either answer is conformant. What is NOT conformant is a 4005 close: the frame is exactly at, not past, the limit.",
           "on": "subject:A",
           "send": {
@@ -1176,7 +1225,7 @@
               "id": 81,
               "op": "subject.ensure",
               "in": {
-                "op_id": "<pad>"
+                "op_id": "<<string>>"
               }
             },
             "pad_field": "in.op_id",
@@ -1197,8 +1246,7 @@
           ],
           "on": "subject:A"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_frame_one_byte_past_max_frame_bytes_closes_4005_unparsed",
@@ -1208,16 +1256,11 @@
       "requires": [
         "daemon:fresh",
         "subject:none",
-        "resource:two_sessions",
-        "resource:raw_frame_transport",
-        "resource:served_limits",
-        "resource:close_code_observation"
+        "subject:second",
+        "control:limits"
       ],
       "steps": [
         {
-          "save": {
-            "max_frame": "frame.hello.limits.max_frame_bytes"
-          },
           "upgrade": {
             "query": {
               "v": 2,
@@ -1233,6 +1276,9 @@
             "frame": {
               "t": "hello"
             }
+          },
+          "save": {
+            "max_frame": "frame.hello.limits.max_frame_bytes"
           }
         },
         {
@@ -1253,7 +1299,7 @@
               "id": 82,
               "op": "subject.ensure",
               "in": {
-                "op_id": "<pad>"
+                "op_id": "<<string>>"
               }
             },
             "pad_field": "in.op_id",
@@ -1307,9 +1353,7 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0083"
-          },
+          "in": {},
           "note": "created:true confirms this is the first ensure the daemon ever executed.",
           "on": "subject:B",
           "expect": {
@@ -1317,10 +1361,10 @@
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0083"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "outstanding_requests_at_and_past_max_inflight_requests",
@@ -1331,15 +1375,10 @@
         "daemon:fresh",
         "subject:none",
         "control:reconnect",
-        "resource:pipelined_requests",
-        "resource:served_limits",
-        "resource:stallable_operation"
+        "control:limits"
       ],
       "steps": [
         {
-          "save": {
-            "n": "frame.hello.limits.max_inflight_requests"
-          },
           "upgrade": {
             "query": {
               "v": 2,
@@ -1351,10 +1390,18 @@
           }
         },
         {
-          "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0091"
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
+          "save": {
+            "n": "frame.hello.limits.max_inflight_requests"
+          }
+        },
+        {
+          "call": "subject.ensure",
+          "in": {},
           "note": "Establish the subject first so the burst below exercises only the idempotent-repeat path and cannot race on creation.",
           "on": "subject:A",
           "expect": {
@@ -1362,7 +1409,8 @@
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0091"
         },
         {
           "note": "Exactly max_inflight_requests outstanding: every one is answered. [pipelined: {\"count\": \"$n\", \"call\": \"subject.ensure\", \"in\": {\"op_id\": \"cf-inflight-<i>\"}, \"ids_from\": 1000}]",
@@ -1385,8 +1433,7 @@
           "assert": [],
           "note": "[split from a multi-verb step; review]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "daemon_stop_flushes_its_reply_before_teardown",
@@ -1394,11 +1441,8 @@
       "operation": "daemon.stop",
       "intent": "Proves the operation's defining property: the reply frame is written and complete BEFORE any close frame and before the process exits, and termination is deterministic. Catches the classic regression where teardown begins on receipt and the caller sees only a socket close, unable to distinguish an accepted stop from a crash.",
       "requires": [
-        "resource:disposable_daemon",
         "subject",
-        "control:reconnect",
-        "resource:frame_order_observation",
-        "resource:process_exit_observation"
+        "control:reconnect"
       ],
       "steps": [
         {
@@ -1414,24 +1458,22 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0101"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0101"
         },
         {
           "call": "daemon.stop",
-          "in": {
-            "op_id": "cf-daemon-stop-0101"
-          },
+          "in": {},
           "note": "The spec states daemon.stop's behaviour, not its out shape. This case deliberately does NOT pin out's keys — asserting a field the spec never names would be transcription. It asserts what the spec does say: ok, an object, no nulls, no secrets, no filesystem paths.",
-          "on": "subject:A"
+          "on": "subject:A",
+          "op_id": "cf-daemon-stop-0101"
         },
         {
           "note": "The spec states daemon.stop's behaviour, not its out shape. This case deliberately does NOT pin out's keys — asserting a field the spec never names would be transcription. It asserts what the spec does say: ok, an object, no nulls, no secrets, no filesystem paths. [expect_envelope: {\"id\": \"<matches_request>\", \"ok\": true, \"out\": \"<object>\"}]"
@@ -1487,8 +1529,7 @@
           },
           "note": "[split from a multi-verb step; review]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_second_daemon_stop_returns_shutdown_in_progress",
@@ -1496,11 +1537,8 @@
       "operation": "daemon.stop",
       "intent": "Exercises daemon.stop's OWN most specific code — the code the spec adds precisely so this operation has one — and proves it is reachable. Both stops are written in a single flush so the second is already buffered when teardown begins; the daemon must answer it rather than swallow it. Catches an implementation that defines shutdown_in_progress but can never produce it, leaving the operation with only a generic code and the corpus proving nothing about it.",
       "requires": [
-        "resource:disposable_daemon",
         "subject",
-        "control:reconnect",
-        "resource:pipelined_requests",
-        "resource:single_write_batching"
+        "control:reconnect"
       ],
       "steps": [
         {
@@ -1516,16 +1554,15 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0111"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0111"
         },
         {
           "note": "Correlated strictly by id. v2 replies MAY arrive out of order, so the case asserts the SET of replies, never that 111 precedes 112. 'Naturally idempotent' for daemon.stop means no second teardown occurs — not that the second call reports success. [send_batch: [{\"envelope\": {\"id\": 111, \"op\": \"daemon.stop\", \"in\": {\"op_id\": \"cf-daemon-stop-0111a\"}}}, {\"envelope\": {\"id\": 112, \"op\": \"daemon.stop\", \"in\"]",
@@ -1546,8 +1583,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "daemon_stop_returns_shutdown_in_progress_to_a_concurrent_second_session",
@@ -1555,10 +1591,9 @@
       "operation": "daemon.stop",
       "intent": "Proves shutdown_in_progress is a daemon-global fact rather than a per-connection flag: a second session that stops during teardown gets the same distinctive code. Catches an implementation that tracks 'stopping' on the connection that asked, so a second client sees a fresh successful stop or a bare disconnect.",
       "requires": [
-        "resource:disposable_daemon",
         "subject",
-        "resource:two_sessions",
-        "resource:concurrent_dispatch"
+        "subject:second",
+        "control:concurrency"
       ],
       "steps": [
         {
@@ -1585,16 +1620,15 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0121"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0121"
         },
         {
           "note": "Which session wins the race is undefined and is not asserted. What is asserted: exactly one accepted stop, exactly one shutdown_in_progress, and neither client learns the outcome only from a socket close. [concurrent: [{\"session\": \"A\", \"call\": \"daemon.stop\", \"in\": {\"op_id\": \"cf-daemon-stop-0121a\"}, \"save\": {\"ra\": \"$envelope\"}}, {\"session\": \"B\", \"call\": \"da]"
@@ -1610,8 +1644,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "daemon_stop_does_not_require_a_subject",
@@ -1619,11 +1652,9 @@
       "operation": "daemon.stop",
       "intent": "Proves the subject precondition is scoped to operations that actually need a subject: a daemon with no subject is still stoppable, and daemon.stop does NOT answer subject_absent. Catches an over-broad precondition gate applied to every mutating operation, which would make a fresh install impossible to shut down cleanly and force users to kill the process.",
       "requires": [
-        "resource:disposable_daemon",
         "daemon:fresh",
         "subject:none",
-        "control:reconnect",
-        "resource:process_exit_observation"
+        "control:reconnect"
       ],
       "steps": [
         {
@@ -1657,10 +1688,9 @@
         },
         {
           "call": "daemon.stop",
-          "in": {
-            "op_id": "cf-daemon-stop-0131"
-          },
-          "on": "subject:A"
+          "in": {},
+          "on": "subject:A",
+          "op_id": "cf-daemon-stop-0131"
         },
         {
           "note": "[split from a multi-verb step; review] [expect_envelope: {\"ok\": true, \"out\": \"<object>\"}]"
@@ -1680,8 +1710,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "room_list_without_a_subject_returns_subject_absent_not_an_empty_list",
@@ -1766,16 +1795,15 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0141"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0141"
         },
         {
           "call": "room.list",
@@ -1789,8 +1817,7 @@
           "note": "Once the precondition is met, the same call succeeds and the empty list now means what it says.",
           "on": "subject:A"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "one_precondition_gets_one_answer_across_every_subject_requiring_operation",
@@ -1871,7 +1898,6 @@
         {
           "call": "room.create",
           "in": {
-            "op_id": "cf-room-create-0151",
             "name": "Should Not Exist"
           },
           "on": "subject:A",
@@ -1880,7 +1906,8 @@
             "err": {
               "code": "subject_absent"
             }
-          }
+          },
+          "op_id": "cf-room-create-0151"
         },
         {
           "call": "room.timeline",
@@ -1903,7 +1930,6 @@
         {
           "call": "invite.mint",
           "in": {
-            "op_id": "cf-invite-mint-0151",
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
             "identity_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "role": "member"
@@ -1914,12 +1940,12 @@
             "err": {
               "code": "subject_absent"
             }
-          }
+          },
+          "op_id": "cf-invite-mint-0151"
         },
         {
           "call": "stream.subscribe",
           "in": {
-            "op_id": "cf-stream-sub-0151",
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
           },
           "on": "subject:A",
@@ -1928,13 +1954,13 @@
             "err": {
               "code": "subject_absent"
             }
-          }
+          },
+          "op_id": "cf-stream-sub-0151"
         },
         {
           "note": "invite.redeem is deliberately absent from this list: the spec makes it the only operation reachable by a non-member, and its precondition relationship to the subject is not stated here. It is the invites domain's to fix."
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_absent_is_returned_before_any_effect_is_performed",
@@ -1979,7 +2005,6 @@
         {
           "call": "room.create",
           "in": {
-            "op_id": "cf-room-create-0161",
             "name": "Phantom"
           },
           "on": "subject:A",
@@ -1988,7 +2013,8 @@
             "err": {
               "code": "subject_absent"
             }
-          }
+          },
+          "op_id": "cf-room-create-0161"
         },
         {
           "assert": [
@@ -2006,7 +2032,6 @@
         {
           "call": "room.create",
           "in": {
-            "op_id": "cf-room-create-0162",
             "name": "Phantom Two"
           },
           "on": "subject:A",
@@ -2015,20 +2040,20 @@
             "err": {
               "code": "subject_absent"
             }
-          }
+          },
+          "op_id": "cf-room-create-0162"
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "cf-subject-ensure-0161"
-          },
+          "in": {},
           "on": "subject:A",
           "expect": {
             "ok": true,
             "out": {
               "created": true
             }
-          }
+          },
+          "op_id": "cf-subject-ensure-0161"
         },
         {
           "call": "room.list",
@@ -2042,8 +2067,7 @@
           "note": "Neither refused room.create left anything behind. A non-empty list here means the precondition was checked after the effect.",
           "on": "subject:A"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_absent_outranks_room_not_available_and_is_not_a_membership_oracle",
@@ -2053,8 +2077,7 @@
       "requires": [
         "daemon:fresh",
         "subject:none",
-        "control:reconnect",
-        "resource:timing_sampling"
+        "control:reconnect"
       ],
       "steps": [
         {
@@ -2192,8 +2215,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "subject_ensure_reports_subject_store_unwritable_and_creates_nothing",
@@ -2215,15 +2237,14 @@
         },
         {
           "call": "subject.ensure",
-          "in": {
-            "op_id": "op-unwritable-1"
-          },
+          "in": {},
           "expect": {
             "ok": false,
             "err": {
               "code": "subject_store_unwritable"
             }
-          }
+          },
+          "op_id": "op-unwritable-1"
         },
         {
           "assert": [
@@ -2262,7 +2283,8 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4007
+              "value": 4007,
+              "on": "subject:self"
             }
           ]
         },

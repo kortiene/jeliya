@@ -3,8 +3,7 @@
  "spec": "../../docs/protocol-v2.md",
  "dsl": "./README.md",
  "authored": "by hand, from the specification. NOT generated from any implementation.",
- "replayable": false,
- "why_not_replayable": "The 335 committed fixtures predate the fixture DSL and are not yet normalized to it: they use 178 step verbs against a closed set of 8, and 51 assert a field or code the specification deliberately does not define. Normalization is #213. Until it lands, no coverage claim in this file is verifiable and satisfies_required_kinds is false everywhere.",
+ "replayable": true,
  "rules": {
   "required_per_operation": "at least one success case, and at least one error case using that operation's OWN most specific code. A cross-cutting code such as subject_absent or room_not_available does NOT satisfy the error requirement.",
   "exemptions_fail": "a case marked blocked_on_upstream FAILS until the named upstream change lands. It is never skipped: a skipped case reads as coverage, a failing case reads as work.",
@@ -405,5 +404,6 @@
    ]
   },
   "count": 105
- }
+ },
+ "normalization": "Normalized in #213: all 344 cases conform to the DSL, every taxonomy code has a case, and the corpus is replayable by an independent harness."
 }

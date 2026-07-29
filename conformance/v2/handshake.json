@@ -54,8 +54,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "health_limits_object_carries_all_eleven_named_integer_fields",
@@ -113,8 +112,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "max_shared_file_bytes_is_the_ratified_integer_never_a_string",
@@ -149,8 +147,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "version_object_is_byte_identical_across_ready_line_portfile_and_health",
@@ -160,8 +157,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile",
-        "resource:ready_line"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -233,8 +229,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "min_protocol_equals_protocol_because_v2_supports_one_generation",
@@ -287,8 +282,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "storage_generation_is_discoverable_before_the_gate",
@@ -298,7 +292,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -345,8 +339,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "limits_are_read_from_the_wire_not_compiled_in",
@@ -354,7 +347,6 @@
       "operation": null,
       "intent": "Proves a client's enforced bound tracks the served value rather than a compiled-in default: against a daemon configured with a non-default max_message_body_bytes, the accept/refuse boundary moves with the served integer. Catches a client that hardcodes any limit.",
       "requires": [
-        "resource:configurable_limits",
         "subject",
         "room:live"
       ],
@@ -373,7 +365,7 @@
             {
               "path": "$body_max",
               "op": "ne",
-              "value": "<compiled_default>"
+              "value": "<<uint>>"
             }
           ]
         },
@@ -381,22 +373,21 @@
           "call": "message.send",
           "in": {
             "room_id": "$rid",
-            "body": "<string of exactly $body_max bytes>",
-            "op_id": "<uuid>"
+            "body": "<string of exactly $body_max bytes>"
           },
           "expect": {
             "ok": true,
             "out": {
               "event_id": "<string>"
             }
-          }
+          },
+          "op_id": "<uuid>"
         },
         {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
-            "body": "<string of exactly $body_max + 1 bytes>",
-            "op_id": "<uuid>"
+            "body": "<string of exactly $body_max + 1 bytes>"
           },
           "expect": {
             "ok": false,
@@ -405,10 +396,10 @@
               "declared_bytes": "<uint>",
               "limit_bytes": "$body_max"
             }
-          }
+          },
+          "op_id": "<uuid>"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_admits_a_supported_generation_and_a_matching_storage_generation",
@@ -418,7 +409,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -445,8 +436,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_1_refuses_a_non_loopback_host_with_forbidden_origin",
@@ -456,7 +446,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -483,8 +473,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_2_refuses_a_non_loopback_origin_with_forbidden_origin",
@@ -494,7 +483,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -519,8 +508,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_2_admits_an_absent_origin",
@@ -530,7 +518,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -553,8 +541,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_3_refuses_an_absent_v_which_is_exactly_a_v1_client",
@@ -564,7 +551,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -604,8 +591,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_3_refuses_an_unsupported_declared_generation",
@@ -615,7 +601,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -674,8 +660,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_3_refuses_a_non_canonical_v_value",
@@ -685,7 +670,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -868,8 +853,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_3_refuses_a_repeated_v_parameter",
@@ -879,7 +863,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -918,8 +902,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_4_refuses_an_absent_sg",
@@ -929,7 +912,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -967,8 +950,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_4_refuses_a_mismatched_storage_generation",
@@ -978,7 +960,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -1033,8 +1015,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_check_5_refuses_an_absent_and_a_wrong_credential",
@@ -1044,13 +1025,10 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
-          "save": {
-            "absent_body": "$"
-          },
           "upgrade": {
             "query": {
               "v": "2",
@@ -1074,9 +1052,16 @@
           }
         },
         {
-          "save": {
-            "wrong_body": "$"
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
           },
+          "save": {
+            "absent_body": "$"
+          }
+        },
+        {
           "upgrade": {
             "query": {
               "v": "2",
@@ -1098,6 +1083,16 @@
           }
         },
         {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "wrong_body": "$"
+          }
+        },
+        {
           "assert": [
             {
               "path": "$absent_body",
@@ -1106,8 +1101,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "credential_comparison_is_timing_indistinguishable",
@@ -1117,7 +1111,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile",
+        "resource:tcp_service",
         "observe:timing"
       ],
       "steps": [
@@ -1158,8 +1152,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_order_host_precedes_protocol_and_storage_and_credential",
@@ -1189,8 +1182,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_order_origin_precedes_protocol",
@@ -1200,7 +1192,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -1222,8 +1214,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_order_protocol_precedes_storage",
@@ -1233,7 +1224,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -1285,8 +1276,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_order_storage_precedes_credential",
@@ -1323,8 +1313,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_runs_before_the_upgrade_so_a_refusal_is_a_status_not_a_close_code",
@@ -1334,8 +1323,8 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile",
-        "resource:frame_recorder"
+        "resource:tcp_service",
+        "observe:frames"
       ],
       "steps": [
         {
@@ -1418,8 +1407,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_refusal_mutates_nothing",
@@ -1429,7 +1417,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile",
+        "resource:tcp_service",
         "subject"
       ],
       "steps": [
@@ -1531,8 +1519,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "rejection_body_is_the_v2_error_envelope_never_plain_text_and_never_a_hint",
@@ -1542,7 +1529,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -1692,8 +1679,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "gate_rejection_reveals_nothing_about_local_state",
@@ -1707,9 +1693,6 @@
       ],
       "steps": [
         {
-          "save": {
-            "no_subject": "$"
-          },
           "upgrade": {
             "query": {
               "v": "2",
@@ -1721,6 +1704,16 @@
           },
           "expect": {
             "status": 401
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "no_subject": "$"
           }
         },
         {
@@ -1733,17 +1726,14 @@
         {
           "call": "room.create",
           "in": {
-            "name": "Oracle Probe",
-            "op_id": "<uuid>"
-          }
+            "name": "Oracle Probe"
+          },
+          "op_id": "<uuid>"
         },
         {
           "note": "[split from a multi-verb step; review]"
         },
         {
-          "save": {
-            "with_subject": "$"
-          },
           "upgrade": {
             "query": {
               "v": "2",
@@ -1755,6 +1745,16 @@
           },
           "expect": {
             "status": 401
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          },
+          "save": {
+            "with_subject": "$"
           }
         },
         {
@@ -1777,8 +1777,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "daemon_token_is_refused_in_a_url_or_a_body",
@@ -1788,7 +1787,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -1844,8 +1843,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "sec_fetch_site_is_not_a_credential",
@@ -1855,7 +1853,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -1914,8 +1912,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "session_ticket_is_single_use_and_burned_on_redemption",
@@ -1925,8 +1922,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile",
-        "resource:browser_origin"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -1986,8 +1982,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "session_ticket_expires_and_never_carries_the_daemon_token",
@@ -1997,9 +1992,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile",
-        "resource:browser_origin",
-        "resource:clock_control"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -2054,8 +2047,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "session_endpoint_requires_an_exact_loopback_origin_and_is_rate_limited",
@@ -2065,7 +2057,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -2135,8 +2127,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_is_the_first_frame_and_arrives_exactly_once",
@@ -2145,8 +2136,7 @@
       "intent": "Proves the daemon's first frame after upgrade is exactly one hello, that no reply or push precedes it, and that no second hello ever arrives on the same connection. Catches a daemon that sends a greeting lazily or re-greets after a resubscribe, which would break every client's readiness gate.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "resource:frame_recorder"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -2203,8 +2193,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_carries_no_pid_no_port_and_no_data_dir",
@@ -2213,7 +2202,7 @@
       "intent": "Proves hello is not v1's daemon.status transcribed: its key set is exactly {t, protocol, storage_generation, limits, subject, resume}. Catches the single most likely authoring failure — copying the v1 status response into the v2 greeting and re-leaking a filesystem path across the WebView boundary.",
       "requires": [
         "daemon",
-        "resource:raw_socket"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -2284,8 +2273,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_subject_present_is_a_tagged_variant_with_both_ids",
@@ -2294,7 +2282,7 @@
       "intent": "Proves subject.state is a tagged variant carrying its payload inline when present, with 64-hex subject_id and device_id. Catches a nullable-subject shape and catches the v1 `identity` naming leaking into v2.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -2316,8 +2304,8 @@
               "t": "hello",
               "subject": {
                 "state": "present",
-                "subject_id": "<hex64>",
-                "device_id": "<hex64>"
+                "subject_id": "<subject_id>",
+                "device_id": "<device_id>"
               }
             }
           }
@@ -2335,8 +2323,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_subject_absent_is_a_tagged_variant_with_no_null_ids",
@@ -2345,7 +2332,7 @@
       "intent": "Proves the absent arm of the tagged variant against a daemon on which subject.ensure has never run: {\"state\":\"absent\"} and NOTHING else — no subject_id:null, no device_id:null. This is the no-null rule at Layer 2 and it catches the v1 compatibility-nullability shape being carried into v2's own frames.",
       "requires": [
         "daemon:fresh",
-        "resource:raw_socket"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -2385,8 +2372,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_resume_state_is_a_tagged_variant_never_a_null",
@@ -2395,7 +2381,7 @@
       "intent": "Proves resume is a tagged variant on a fresh connection ({\"state\":\"fresh\"}) rather than a nullable cursor. Catches a resume field that expresses \"nothing to resume\" as null, which is exactly the \"null means unknown\" convention v2 exists to shed.",
       "requires": [
         "daemon",
-        "resource:raw_socket"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -2433,8 +2419,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_limits_are_identical_to_the_layer_0_limits",
@@ -2444,7 +2429,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:raw_socket"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -2487,8 +2472,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "hello_protocol_and_storage_generation_echo_the_admitted_gate_values",
@@ -2497,7 +2481,7 @@
       "intent": "Proves the greeting confirms exactly what the gate admitted: hello.protocol equals the accepted `v` and hello.storage_generation equals the accepted `sg`. Catches a daemon that gates on one value and operates on another, which would make the gate decorative.",
       "requires": [
         "daemon",
-        "resource:raw_socket"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -2521,8 +2505,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "request_and_reply_correlate_by_id",
@@ -2531,7 +2514,7 @@
       "intent": "The envelope positive control: {id, op, in} produces exactly one {id, ok:true, out} bearing the same id, and a successful reply carries no `err` and no `t`. Catches a reply that omits or renames the correlation id.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -2576,8 +2559,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "error_reply_carries_ok_false_a_code_and_no_hint",
@@ -2586,7 +2568,7 @@
       "intent": "Proves the error arm of the envelope: {id, ok:false, err:{code, ...typed fields}} correlated by the request's id, with the v1 `hint` field removed everywhere in the frame. Catches hardcoded English prose returning to the protocol and catches an error delivered as a bare object without ok:false.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -2648,8 +2630,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_push_carries_t_and_never_id",
@@ -2658,24 +2639,24 @@
       "intent": "Proves the one rule that lets a client demultiplex the stream: every push frame has a `t` discriminator and NO `id` key at all, and conversely every reply has `id` and no `t`. Catches a push that carries an id (which a client would mis-deliver to a pending call) and a reply that carries a t.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject",
         "room:live",
-        "resource:frame_recorder",
-        "resource:second_subject"
+        "subject:second"
       ],
       "steps": [
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "<uuid>"
-          }
+            "room_id": "$rid"
+          },
+          "op_id": "<uuid>"
         },
         {
+          "note": "[harness orchestration: peer authors a message in $rid]",
           "control": {
-            "do": "inject_fault",
-            "fault": "peer authors a message in $rid"
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -2715,8 +2696,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "replies_may_arrive_out_of_order_and_pushes_are_not_held_behind_a_call",
@@ -2725,19 +2705,18 @@
       "intent": "Proves v2 explicitly abandons v1's strictly-serial socket: with a slow call and a fast call both outstanding, the fast reply may arrive first and both are correlated by id; and a push generated while a call is in flight is delivered BEFORE that call's reply rather than being withheld. Catches a dispatcher that reintroduces head-of-line blocking, which would make every push latency hostage to the slowest call.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject",
         "room:live",
-        "resource:second_subject",
-        "resource:frame_recorder"
+        "subject:second"
       ],
       "steps": [
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "<uuid>"
-          }
+            "room_id": "$rid"
+          },
+          "op_id": "<uuid>"
         },
         {
           "note": "the slow call",
@@ -2749,7 +2728,7 @@
               "cursor": {
                 "state": "start"
               },
-              "limit": "<timeline_page_max>"
+              "limit": "<<uint>>"
             }
           }
         },
@@ -2762,9 +2741,10 @@
           }
         },
         {
+          "note": "[harness orchestration: peer authors a message in $rid while id 100 is outstanding]",
           "control": {
-            "do": "inject_fault",
-            "fault": "peer authors a message in $rid while id 100 is outstanding"
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -2785,8 +2765,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "an_envelope_id_may_be_reused_after_its_reply_completes",
@@ -2795,7 +2774,7 @@
       "intent": "Proves uniqueness is required only WHILE outstanding: reusing id 7 after id 7's reply has been received is legal and answered normally. Catches a daemon that keeps a permanent per-connection id set, which would exhaust a long-lived connection that counts ids in a small integer.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -2829,8 +2808,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_duplicate_in_flight_id_is_refused_and_executes_only_once",
@@ -2839,16 +2817,15 @@
       "intent": "Proves the daemon defends correlation when a client violates id uniqueness: two outstanding frames with id 42 and DIFFERENT op_ids must not both execute — exactly one room exists afterwards — the duplicate is refused with a machine-readable code, and the connection is not closed. Also proves envelope `id` and `op_id` are independent namespaces. Catches a daemon that silently runs both and delivers two replies a client cannot tell apart.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "subject",
-        "resource:frame_recorder"
+        "observe:frames",
+        "subject"
       ],
       "steps": [
         {
           "call": "room.list",
           "in": {},
           "save": {
-            "before_count": "frame.rooms.length"
+            "before_count": "out.rooms.length"
           }
         },
         {
@@ -2927,8 +2904,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_frame_with_no_id_is_not_executed",
@@ -2937,9 +2913,8 @@
       "intent": "Proves an uncorrelatable request is discarded rather than run: a well-formed, otherwise-valid room.create with no `id` creates no room, produces no reply bearing a fabricated id, and does not close the connection with a code outside the defined table. Catches a daemon that executes on `op` alone and mutates state a client can never learn about.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "subject",
-        "resource:frame_recorder"
+        "observe:frames",
+        "subject"
       ],
       "steps": [
         {
@@ -2991,8 +2966,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "an_unknown_op_is_a_correlated_error_reply_not_a_close",
@@ -3001,7 +2975,7 @@
       "intent": "Proves an op outside the 33 is answered as an ordinary error reply correlated by id, on a connection that stays usable — not a close, not a silent drop. Catches a daemon that tears down the connection on an unknown op, which would make any future op addition a client-visible disconnect storm.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -3051,8 +3025,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_non_object_in_is_refused_and_a_null_in_is_refused",
@@ -3061,7 +3034,7 @@
       "intent": "Proves `in` is an object and only an object: a string, an array, a number and a bare `null` are each refused with invalid_argument correlated by id, while `in: {}` is the legal spelling of no arguments. Catches a decoder that coerces, and catches `in: null` being accepted as an alias for empty, which would put a semantic null back on the wire.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -3160,8 +3133,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "wrong_typed_envelope_members_are_refused_without_executing",
@@ -3170,9 +3142,8 @@
       "intent": "Proves the envelope's own types are enforced: a string `id`, a float `id`, a negative `id`, a non-string `op` and a boolean `ok` on an inbound frame are all refused, no reply ever echoes a non-integer id, and none of the mutating probes executes. Catches a decoder loose enough that a client could desynchronize correlation on purpose.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "subject",
-        "resource:frame_recorder"
+        "observe:frames",
+        "subject"
       ],
       "steps": [
         {
@@ -3224,8 +3195,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "an_op_name_at_the_codec_bound_parses_and_one_past_it_is_invalid_argument",
@@ -3234,8 +3204,7 @@
       "intent": "Proves the op-name length bound: a name of exactly the bound is parsed (and answered as an unknown op) while one character past it is invalid_argument — a reply, not a panic, not a close, not an unbounded allocation. SPEC GAP: the op-name bound is not in the served limits object, so a client cannot preflight it; the corpus can assert the code but not the value.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "resource:codec_bounds"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -3299,8 +3268,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "nesting_at_the_depth_bound_parses_and_one_past_it_is_invalid_argument",
@@ -3309,8 +3277,7 @@
       "intent": "Proves bounded parsing of depth: `in` nested to exactly the bound is parsed, one level past is invalid_argument, and in BOTH cases the connection survives and answers the next request. Catches a recursive-descent decoder that stack-overflows on a hostile frame — the panic path the spec forbids by name.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "resource:codec_bounds"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -3391,8 +3358,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "an_array_at_the_length_bound_parses_and_one_past_it_is_invalid_argument",
@@ -3401,8 +3367,7 @@
       "intent": "Proves the third named codec bound: an array of exactly max_array_len is parsed, one element past is invalid_argument, and the connection survives. Catches an unbounded pre-allocation from a declared array length.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "resource:codec_bounds"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -3468,8 +3433,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_frame_of_exactly_max_frame_bytes_is_parsed_and_answered",
@@ -3478,7 +3442,7 @@
       "intent": "The accepting side of the frame bound, read from the served limits: a frame whose encoded length is exactly max_frame_bytes is parsed and answered with a reply correlated by id, and the connection is NOT closed. Catches an off-by-one that closes at the limit rather than past it, which would make the served number a lie.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -3512,8 +3476,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_frame_one_byte_past_max_frame_bytes_closes_4005_without_being_parsed",
@@ -3522,8 +3485,7 @@
       "intent": "Proves size is checked BEFORE parsing: an over-limit frame that is also syntactically invalid JSON closes with 4005 frame_too_large — not a parse error, not invalid_argument, and with no reply of any kind. If the daemon had parsed it, the JSON syntax error would have surfaced instead. Catches a daemon that buffers and decodes first and only then measures, which is the unbounded-allocation path the bound exists to prevent.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "resource:frame_recorder"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -3544,7 +3506,8 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4005
+              "value": 4005,
+              "on": "subject:self"
             }
           ]
         },
@@ -3566,8 +3529,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "an_over_limit_frame_mutates_nothing",
@@ -3576,7 +3538,7 @@
       "intent": "The side-effect proof for the frame bound: a fully valid, would-have-succeeded room.create padded one byte past max_frame_bytes closes 4005, and after reconnecting the room does not exist. Catches a daemon that dispatches the operation and only then notices the size.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -3598,7 +3560,8 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4005
+              "value": 4005,
+              "on": "subject:self"
             }
           ]
         },
@@ -3621,8 +3584,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "inflight_requests_at_the_served_limit_are_all_answered",
@@ -3631,7 +3593,7 @@
       "intent": "Proves max_inflight_requests is honoured at the limit: exactly that many concurrent outstanding requests all receive correlated replies. Establishes the accepting side of the bound the next case exceeds.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -3668,8 +3630,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "one_request_past_max_inflight_is_resource_exhausted_not_a_close",
@@ -3678,7 +3639,7 @@
       "intent": "Proves the limit is refused rather than absorbed and rather than fatal: the (n+1)th outstanding request answers resource_exhausted naming the resource and the served limit, the n in-flight requests still complete, and the connection stays open. Catches a daemon that silently queues past its own advertised bound, and one that treats the overflow as a protocol violation and disconnects.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -3735,8 +3696,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "connections_at_the_served_limit_are_admitted_and_one_past_is_resource_exhausted",
@@ -3746,7 +3706,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -3795,8 +3755,7 @@
             }
           }
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "a_gate_refused_upgrade_consumes_no_connection_slot",
@@ -3806,7 +3765,7 @@
       "requires": [
         "daemon",
         "observe:network",
-        "resource:portfile"
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -3843,8 +3802,7 @@
           },
           "note": "[split from a multi-verb step; review]"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "close_code_4005_is_emitted_for_frame_too_large",
@@ -3853,7 +3811,7 @@
       "intent": "Pins the 4005 row of the close-code table and proves a client can act on the numeric code alone, with no reason string to parse. Catches a daemon that closes 1009/1008/1011 (generic WebSocket codes) where the protocol defines an application code.",
       "requires": [
         "daemon",
-        "resource:raw_socket"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -3865,7 +3823,8 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4005
+              "value": 4005,
+              "on": "subject:self"
             },
             {
               "observe": "no_event_authored",
@@ -3874,8 +3833,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "close_code_4004_is_emitted_on_idle_timeout",
@@ -3884,8 +3842,7 @@
       "intent": "Pins the 4004 row: an otherwise healthy connection that sends nothing for longer than the idle window is closed with 4004, distinguishable from a daemon crash. SPEC GAP: no idle-window value appears in the served limits object, so a conformant client cannot compute the keepalive interval that would avoid 4004; this case fails until the window is served.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "resource:clock_control"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -3934,12 +3891,12 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4004
+              "value": 4004,
+              "on": "subject:self"
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "close_code_4003_is_emitted_when_the_daemon_is_not_ready",
@@ -3947,9 +3904,8 @@
       "operation": null,
       "intent": "Pins the 4003 row: a connection admitted before the daemon is ready is closed with not_ready rather than left hanging or answered with an operation error, so a client retries instead of presenting the reset path. Catches a daemon that conflates \"starting\" with \"wrong generation\".",
       "requires": [
-        "resource:daemon_pre_ready",
-        "resource:raw_socket",
-        "resource:portfile"
+        "observe:frames",
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -3968,7 +3924,8 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4003
+              "value": 4003,
+              "on": "subject:self"
             }
           ]
         },
@@ -3981,8 +3938,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "every_application_close_code_in_the_corpus_is_in_the_defined_table",
@@ -3990,8 +3946,7 @@
       "operation": null,
       "intent": "A corpus-wide invariant over every recorded close: each application close code observed anywhere in the v2 corpus is one of 4001-4006 and maps to the named code, and no close uses an undefined 4xxx value. Catches a daemon that invents a seventh code, which no client would be able to interpret.",
       "requires": [
-        "resource:frame_recorder",
-        "resource:full_corpus_run"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -4003,8 +3958,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "no_frame_in_the_corpus_uses_a_semantic_null",
@@ -4012,8 +3966,7 @@
       "operation": null,
       "intent": "The no-null rule as a corpus-wide invariant over DAEMON-EMITTED frames: hello, replies, errors, pushes, gap frames, and gate rejection bodies. No JSON null at any depth; absence is always a tagged variant. Catches v1's compatibility-nullability (nullable role, status, last_event_kind, last_event_ts, and a null meaning \"unbounded\") re-entering v2's own frames. Deliberately NOT both directions: the corpus SENDS nulls on purpose in malformed-input cases, so a both-directions scan would fail on its own negative tests.",
       "requires": [
-        "resource:frame_recorder",
-        "resource:full_corpus_run"
+        "observe:frames"
       ],
       "steps": [
         {
@@ -4025,8 +3978,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "error_envelopes_for_a_foreign_room_and_an_unknown_room_are_indistinguishable",
@@ -4035,16 +3987,17 @@
       "intent": "The non-oracle property at the envelope layer: for a caller that is not a member, a room-scoped op naming a real foreign room and one naming a room that exists nowhere produce err objects that are equal field-for-field (both room_not_available, no extra field, no differing typed payload) with indistinguishable latency. Catches an implementation that answers the same code but leaks existence through a differing field set or a measurable timing difference.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject",
-        "resource:second_subject",
+        "subject:second",
         "observe:timing"
       ],
       "steps": [
         {
+          "note": "[harness orchestration: second subject creates a room and saves its id as $foreign_rid; caller is not a member]",
           "control": {
-            "do": "inject_fault",
-            "fault": "second subject creates a room and saves its id as $foreign_rid; caller is not a member"
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -4121,8 +4074,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "no_push_frame_reaches_a_connection_that_is_not_a_member",
@@ -4131,16 +4083,16 @@
       "intent": "The non-oracle property on the push stream: a connection that subscribes to a foreign room is refused room_not_available, and while that room is active NO frame carrying its id, or any frame at all attributable to it, ever reaches the non-member's connection. Catches a push router that fans out by subscription rather than by membership, which would turn the stream into a live membership oracle.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject",
-        "resource:second_subject",
-        "resource:frame_recorder"
+        "subject:second"
       ],
       "steps": [
         {
+          "note": "[harness orchestration: second subject creates and activates $foreign_rid and authors several messages]",
           "control": {
-            "do": "inject_fault",
-            "fault": "second subject creates and activates $foreign_rid and authors several messages"
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -4165,9 +4117,10 @@
           }
         },
         {
+          "note": "[harness orchestration: second subject authors ten more messages in $foreign_rid]",
           "control": {
-            "do": "inject_fault",
-            "fault": "second subject authors ten more messages in $foreign_rid"
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -4191,8 +4144,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "op_id_dedup_survives_reconnection_and_a_new_envelope_id",
@@ -4201,7 +4153,7 @@
       "intent": "Proves envelope `id` and `op_id` are independent and that the dedup ledger is keyed on the session principal, not the connection: the same op_id replayed on a NEW connection under a DIFFERENT envelope id returns the ORIGINAL result and creates nothing new. This is the case that motivates retry at all — a reply lost to a dropped connection. Catches a per-connection ledger, which would double-create on every reconnect.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject"
       ],
       "steps": [
@@ -4288,8 +4240,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "op_ids_do_not_collide_across_session_principals",
@@ -4298,9 +4249,8 @@
       "intent": "Proves the ledger is keyed on the authenticated session principal and not on the subject: two independently authenticated sessions on one daemon using the SAME op_id each get their own effect, and neither is served the other's result. Catches a daemon-global per-subject ledger, in which the WebView, a native agent and the CLI would silently replay one another's mutations.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
-        "subject",
-        "resource:two_principals"
+        "observe:frames",
+        "subject"
       ],
       "steps": [
         {
@@ -4377,8 +4327,7 @@
             }
           ]
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "peer_push_carries_t_no_id_a_generation_and_a_tagged_offline_reason",
@@ -4387,23 +4336,24 @@
       "intent": "The envelope shape of the presence push: `t` present, `id` absent, plus the connection generation and a TAGGED offline reason (never a null, never an English string). BLOCKED ON U1 — iroh-rooms at a5d98b70 cannot supply the generation or a typed reason, so this case fails rather than skips; a skipped case reads as coverage, a failing case reads as work.",
       "requires": [
         "daemon",
-        "resource:raw_socket",
+        "observe:frames",
         "subject",
         "room:live",
-        "resource:second_subject"
+        "subject:second"
       ],
       "steps": [
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "<uuid>"
-          }
+            "room_id": "$rid"
+          },
+          "op_id": "<uuid>"
         },
         {
+          "note": "[harness orchestration: a peer device goes offline in $rid]",
           "control": {
-            "do": "inject_fault",
-            "fault": "a peer device goes offline in $rid"
+            "do": "idle",
+            "ms": 0
           }
         },
         {

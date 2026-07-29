@@ -8,11 +8,10 @@
       "operation": "invite.mint",
       "intent": "Proves invite.mint returns the four things the spec names (invite id, absolute expiry, role, redeemability) plus the capability itself, with redeemability as a tagged variant rather than a boolean or a null. Catches a regression that drops the capability from the reply (making the grant unusable), reports expiry as a relative duration or a formatted string instead of an absolute instant, or reintroduces a nullable redeemability field.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -20,13 +19,12 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-basic-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id",
-            "cap1": "frame.capability",
-            "exp1": "frame.expires_at"
+            "inv1": "out.invite_id",
+            "cap1": "out.capability",
+            "exp1": "out.expires_at"
           },
           "expect": {
             "ok": true,
@@ -40,7 +38,8 @@
               }
             }
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-basic-1"
         },
         {
           "assert": [],
@@ -83,11 +82,10 @@
       "operation": "invite.mint",
       "intent": "SECURITY. Proves a replayed op_id on invite.mint returns the ORIGINAL capability byte-for-byte and performs no second effect, so a retry after a lost reply cannot silently create a second live grant. Catches the failure where the dedup ledger records only the request and re-executes the mint, leaving two redeemable capabilities where the authority believes it issued one — a grant the authority cannot see to revoke.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -95,13 +93,12 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-replay-1"
+            "ttl_ms": 3600000
           },
           "save": {
             "out1": "$whole_out",
-            "inv1": "frame.invite_id",
-            "cap1": "frame.capability"
+            "inv1": "out.invite_id",
+            "cap1": "out.capability"
           },
           "expect": {
             "ok": true,
@@ -113,7 +110,8 @@
               }
             }
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-replay-1"
         },
         {
           "call": "invite.mint",
@@ -121,10 +119,10 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-replay-1"
+            "ttl_ms": 3600000
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-replay-1"
         },
         {
           "assert": [],
@@ -177,12 +175,11 @@
       "operation": "invite.mint",
       "intent": "SECURITY. The ledger is keyed on (principal, op_id) only, so a replay carrying a different subject or an elevated role must not be executed as a fresh mint. Proves privilege escalation by op_id replay is impossible: whichever way the daemon resolves the payload divergence, exactly one grant exists afterwards and it is the ORIGINAL low-privilege one for the ORIGINAL subject.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
-        "resource:bystander_subject",
+        "daemon:self",
+        "subject:second",
+        "subject:outsider",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -190,12 +187,11 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-divergent-1"
+            "ttl_ms": 3600000
           },
           "save": {
             "out1": "$whole_out",
-            "inv1": "frame.invite_id"
+            "inv1": "out.invite_id"
           },
           "expect": {
             "ok": true,
@@ -204,7 +200,8 @@
               "role": "member"
             }
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-divergent-1"
         },
         {
           "call": "invite.mint",
@@ -212,10 +209,10 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "authority",
-            "ttl_ms": 86400000,
-            "op_id": "mint-divergent-1"
+            "ttl_ms": 86400000
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-divergent-1"
         },
         {
           "assert": [],
@@ -260,12 +257,10 @@
       "operation": "invite.mint",
       "intent": "The spec states the ledger survives reconnection because the case that motivates retry is a reply lost to a dropped connection. Proves the retry a real client will actually perform — reconnect, resend the same op_id — returns the original capability rather than minting a second one. Catches a ledger held in per-connection state, which would make every dropped-reply retry a duplicate grant.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
-        "room:plain",
-        "resource:stable_principal_across_connections"
+        "daemon:self",
+        "subject:second",
+        "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -273,14 +268,14 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-reconnect-1"
+            "ttl_ms": 3600000
           },
           "save": {
             "out1": "$whole_out",
-            "inv1": "frame.invite_id"
+            "inv1": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-reconnect-1"
         },
         {
           "control": {
@@ -303,10 +298,10 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-reconnect-1"
+            "ttl_ms": 3600000
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-reconnect-1"
         },
         {
           "assert": [],
@@ -358,13 +353,11 @@
       "operation": "invite.mint",
       "intent": "The spec rejects a per-subject ledger explicitly: a daemon has exactly one subject, so a subject-keyed ledger would be daemon-global across the WebView, native agents, and the CLI, letting one client's op_id replay another's. Proves two distinct session principals on the SAME daemon using the SAME op_id each get their own genuine grant. Catches a ledger keyed on the subject, where the CLI's op_id 'a' would silently return the WebView's unrelated capability.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:two_principals_one_daemon",
-        "resource:invitee_subject",
-        "resource:bystander_subject",
+        "daemon:self",
+        "subject:second",
+        "subject:outsider",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -372,14 +365,14 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "shared-op-id"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id",
-            "cap1": "frame.capability"
+            "inv1": "out.invite_id",
+            "cap1": "out.capability"
           },
-          "on": "subject:authority_principal_1"
+          "on": "subject:authority_principal_1",
+          "op_id": "shared-op-id"
         },
         {
           "call": "invite.mint",
@@ -387,12 +380,11 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "shared-op-id"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv2": "frame.invite_id",
-            "cap2": "frame.capability"
+            "inv2": "out.invite_id",
+            "cap2": "out.capability"
           },
           "expect": {
             "ok": true,
@@ -409,7 +401,8 @@
               }
             }
           },
-          "on": "subject:authority_principal_2"
+          "on": "subject:authority_principal_2",
+          "op_id": "shared-op-id"
         },
         {
           "call": "invite.list",
@@ -443,14 +436,13 @@
       "operation": "invite.mint",
       "intent": "Authority-only enforcement on mint. An active non-authority member of the room — who already knows the room exists, so the non-oracle rule does not apply — is refused with insufficient_standing and no prose hint. Catches an implementation that authorizes minting on membership rather than on room authority, which would let any member grow the room without the authority's consent.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:member_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "daemon:second",
+        "subject:second",
         "room:plain",
         "room:live",
-        "resource:member_is_active_non_authority"
+        "member:non_agent"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -458,8 +450,7 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-nonauth-1"
+            "ttl_ms": 3600000
           },
           "on": "subject:member",
           "expect": {
@@ -467,7 +458,8 @@
             "err": {
               "code": "insufficient_standing"
             }
-          }
+          },
+          "op_id": "mint-nonauth-1"
         },
         {
           "assert": [
@@ -507,12 +499,10 @@
       "operation": "invite.mint",
       "intent": "NON-ORACLE. A caller who is not a member of a room must not be able to tell 'no such room' from 'that room exists and you are not a member'. Both answer room_not_available with identical fields and indistinguishable timing. Specifically catches the natural but fatal implementation order — resolve the room, then check standing — which returns insufficient_standing for a real room and room_not_available for an unknown one, turning invite.mint into a room-existence oracle for any local principal.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:bystander_daemon",
-        "room:plain",
-        "resource:well_formed_unknown_room_id"
+        "daemon:self",
+        "daemon:second",
+        "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -520,8 +510,7 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-foreign-1"
+            "ttl_ms": 3600000
           },
           "save": {
             "err_existing": "$whole_err"
@@ -532,7 +521,8 @@
             "err": {
               "code": "room_not_available"
             }
-          }
+          },
+          "op_id": "mint-foreign-1"
         },
         {
           "assert": [
@@ -551,8 +541,7 @@
             },
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-foreign-2"
+            "ttl_ms": 3600000
           },
           "on": "subject:bystander",
           "expect": {
@@ -560,7 +549,8 @@
             "err": {
               "code": "room_not_available"
             }
-          }
+          },
+          "op_id": "mint-foreign-2"
         },
         {
           "assert": [],
@@ -609,11 +599,10 @@
       "operation": "invite.mint",
       "intent": "SECURITY. The spec records that the creator is permanently the sole authority, that room-authority transfer does not exist, and that the authority cannot leave. A mint that grants role 'authority' would create a second authority by the back door and defeat every authority-only check in this domain. Proves the refusal, and proves it is a refusal and not a silently-downgraded success: no invite of any role appears afterwards.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -621,10 +610,10 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "authority",
-            "ttl_ms": 3600000,
-            "op_id": "mint-authority-role-1"
+            "ttl_ms": 3600000
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-authority-role-1"
         },
         {
           "assert": [],
@@ -676,11 +665,10 @@
       "operation": "invite.mint",
       "intent": "No JSON null carries meaning anywhere in v2; absence is a tagged variant. Proves a null role is a parse-level rejection and is NOT silently read as 'unspecified, use the default role'. Catches the v1 compatibility-nullability habit returning through the back door as a fabricated default — the same defect the spec removes when it deletes v1's invented 'member' role for unresolvable senders.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -688,8 +676,7 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": null,
-            "ttl_ms": 3600000,
-            "op_id": "mint-null-role-1"
+            "ttl_ms": 3600000
           },
           "on": "subject:authority",
           "expect": {
@@ -697,7 +684,8 @@
             "err": {
               "code": "invalid_argument"
             }
-          }
+          },
+          "op_id": "mint-null-role-1"
         },
         {
           "assert": [
@@ -714,8 +702,7 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": null,
-            "op_id": "mint-null-ttl-1"
+            "ttl_ms": null
           },
           "note": "a null ttl must not be read as 'never expires'; unbounded-by-null is exactly the v1 shape v2 sheds",
           "on": "subject:authority",
@@ -724,7 +711,8 @@
             "err": {
               "code": "invalid_argument"
             }
-          }
+          },
+          "op_id": "mint-null-ttl-1"
         },
         {
           "assert": [
@@ -763,20 +751,20 @@
       "operation": "invite.mint",
       "intent": "BOUNDARY on the served max_frame_bytes limit. A frame EXCEEDING max_frame_bytes closes the connection with 4005 without being parsed; a frame of exactly max_frame_bytes does not exceed it and must therefore be parsed and answered with a correlated error envelope. Proves the bound is '>' not '>=', that the oversize path produces no reply at all, and — the part that matters — that neither attempt mints anything, i.e. the frame bound runs before mutation.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain",
-        "resource:served_limits"
+        "control:limits"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
-          "control": {
-            "do": "inject_fault",
-            "fault": "read_limit"
-          },
           "save": {
             "mfb": "frame.value"
+          },
+          "note": "[harness orchestration: read_limit]",
+          "control": {
+            "do": "idle",
+            "ms": 0
           }
         },
         {
@@ -791,8 +779,7 @@
               "$unknown": "<string>"
             },
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-frame-at-limit"
+            "ttl_ms": 3600000
           },
           "note": "parsed, then rejected on content — proves exactly-at-limit is admitted",
           "on": "subject:authority",
@@ -801,7 +788,8 @@
             "err": {
               "code": "invalid_argument"
             }
-          }
+          },
+          "op_id": "mint-frame-at-limit"
         },
         {
           "assert": [],
@@ -829,10 +817,10 @@
               "$unknown": "<string>"
             },
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "mint-frame-past-limit"
+            "ttl_ms": 3600000
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "mint-frame-past-limit"
         },
         {
           "assert": [],
@@ -842,7 +830,8 @@
           "assert": [
             {
               "observe": "close_code",
-              "value": 4005
+              "value": 4005,
+              "on": "subject:authority"
             }
           ],
           "on": "subject:authority"
@@ -882,13 +871,12 @@
       "operation": "invite.list",
       "intent": "invite.list exists so an authority can manage what it issued: it enumerates outstanding AND recently expired invites, each carrying its redeemability as a tagged variant so the authority can tell the two apart without comparing timestamps itself. Also proves list entries carry the invite IDENTIFIER and not the redeemable capability — management is by id; the capability is returned exactly once, at mint.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
-        "resource:bystander_subject",
+        "daemon:self",
+        "subject:second",
+        "subject:outsider",
         "room:plain",
-        "resource:expiry_control"
+        "control:clock"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -896,14 +884,14 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000,
-            "op_id": "list-short-1"
+            "ttl_ms": 1000
           },
           "save": {
-            "inv_short": "frame.invite_id",
-            "exp_short": "frame.expires_at"
+            "inv_short": "out.invite_id",
+            "exp_short": "out.expires_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "list-short-1"
         },
         {
           "call": "invite.mint",
@@ -911,18 +899,18 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "list-long-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv_long": "frame.invite_id"
+            "inv_long": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "list-long-1"
         },
         {
           "control": {
-            "do": "inject_fault",
-            "fault": "await_expiry"
+            "do": "advance_clock",
+            "ms": 3600000
           }
         },
         {
@@ -1009,10 +997,9 @@
       "operation": "invite.list",
       "intent": "BOUNDARY at zero. The empty result is an empty array, never a null, never an omitted key, and never a special empty-state variant. Catches the v1 habit the spec deletes elsewhere — answering an unpopulated projection with a null or with a carve-out shape — and pins that a client can iterate the field unconditionally.",
       "requires": [
-        "resource:authority_daemon",
+        "daemon:self",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.list",
@@ -1044,14 +1031,13 @@
       "operation": "invite.list",
       "intent": "Authority-only enforcement on list. An active non-authority member is refused with insufficient_standing rather than being served a filtered or empty list. Catches an implementation that treats read operations as harmless and lets any member enumerate who has been invited, when to, and in what role — the outstanding-invite set is the authority's private management state.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:member_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "daemon:second",
+        "subject:second",
         "room:plain",
         "room:live",
-        "resource:member_is_active_non_authority"
+        "member:non_agent"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1059,10 +1045,10 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "list-auth-1"
+            "ttl_ms": 3600000
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "list-auth-1"
         },
         {
           "call": "invite.list",
@@ -1104,12 +1090,10 @@
       "operation": "invite.list",
       "intent": "NON-ORACLE on invite.list. A non-member asking to list a real room's invites and a non-member asking about a room id that names nothing must receive byte-identical room_not_available errors with indistinguishable timing. Catches the same resolve-then-authorize ordering bug as the mint case, on the read path where it is easiest to overlook.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:bystander_daemon",
-        "room:plain",
-        "resource:well_formed_unknown_room_id"
+        "daemon:self",
+        "daemon:second",
+        "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.list",
@@ -1188,13 +1172,12 @@
       "operation": "invite.revoke",
       "intent": "invite.revoke is new in v2 — v1 had no way to withdraw a grant once minted. Proves revocation returns the instant the withdrawal was recorded, flips the invite's redeemability to a revoked tagged variant carrying the same instant, and actually stops the capability working. Catches a revoke that updates a local projection without producing the signed fact, leaving the capability redeemable against the room.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1202,24 +1185,23 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "revoke-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id",
-            "cap1": "frame.capability"
+            "inv1": "out.invite_id",
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revoke-mint-1"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "revoke-1"
+            "invite_id": "$inv1"
           },
           "save": {
-            "rev1": "frame.revoked_at"
+            "rev1": "out.revoked_at"
           },
           "expect": {
             "ok": true,
@@ -1228,7 +1210,8 @@
               "revoked_at": "<ts>"
             }
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revoke-1"
         },
         {
           "assert": [],
@@ -1297,11 +1280,10 @@
       "operation": "invite.revoke",
       "intent": "invite.revoke is op_id deduplicated, so a replay returns the ORIGINAL result and authors no second signed revocation fact. Proves revoked_at does not advance on replay — a moving revoked_at would mean a second fact entered the room log, and any member folding the log would see two withdrawals of one grant.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1309,35 +1291,35 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "revoke-replay-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id"
+            "inv1": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revoke-replay-mint-1"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "revoke-replay-1"
+            "invite_id": "$inv1"
           },
           "save": {
             "out1": "$whole_out",
-            "rev1": "frame.revoked_at"
+            "rev1": "out.revoked_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revoke-replay-1"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "revoke-replay-1"
+            "invite_id": "$inv1"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revoke-replay-1"
         },
         {
           "assert": [],
@@ -1393,11 +1375,10 @@
       "operation": "invite.revoke",
       "intent": "A SECOND revocation under a DIFFERENT op_id is not a replay — it is a real request against a capability that is already withdrawn, and it must answer with revoke's own domain-specific code carrying the ORIGINAL revoked_at. Catches an implementation that either succeeds idempotently (overwriting revoked_at with 'now' and silently rewriting history) or collapses the case into a generic invalid_argument.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1405,32 +1386,31 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "double-revoke-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id"
+            "inv1": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "double-revoke-mint-1"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "double-revoke-a"
+            "invite_id": "$inv1"
           },
           "save": {
-            "rev1": "frame.revoked_at"
+            "rev1": "out.revoked_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "double-revoke-a"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "double-revoke-b"
+            "invite_id": "$inv1"
           },
           "on": "subject:authority",
           "expect": {
@@ -1439,7 +1419,8 @@
               "code": "capability_revoked",
               "revoked_at": "$rev1"
             }
-          }
+          },
+          "op_id": "double-revoke-b"
         },
         {
           "assert": [
@@ -1485,12 +1466,11 @@
       "operation": "invite.revoke",
       "intent": "The spec defines revoke as withdrawing an outstanding capability BEFORE expiry. Once the absolute expiry has passed there is nothing outstanding to withdraw, and the refusal must be capability_expired carrying the capability's own expired_at — not capability_revoked, not a success that fabricates a revocation fact for an already-dead grant. Catches an implementation that lets an authority author revocations against expired invites, polluting the signed log.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain",
-        "resource:expiry_control"
+        "control:clock"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1498,19 +1478,19 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000,
-            "op_id": "revoke-expired-mint-1"
+            "ttl_ms": 1000
           },
           "save": {
-            "inv1": "frame.invite_id",
-            "exp1": "frame.expires_at"
+            "inv1": "out.invite_id",
+            "exp1": "out.expires_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revoke-expired-mint-1"
         },
         {
           "control": {
-            "do": "inject_fault",
-            "fault": "await_expiry"
+            "do": "advance_clock",
+            "ms": 3600000
           }
         },
         {
@@ -1521,8 +1501,7 @@
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "revoke-expired-1"
+            "invite_id": "$inv1"
           },
           "on": "subject:authority",
           "expect": {
@@ -1531,7 +1510,8 @@
               "code": "capability_expired",
               "expired_at": "$exp1"
             }
-          }
+          },
+          "op_id": "revoke-expired-1"
         },
         {
           "assert": [
@@ -1580,11 +1560,9 @@
       "operation": "invite.revoke",
       "intent": "Gives invite.revoke a code specific to itself rather than a generic invalid_argument, by the same method the spec uses when it adds subscription_unknown for stream.unsubscribe. The caller is the room's authority, so no non-oracle constraint applies — they already know the room — and a distinctive code lets a client distinguish 'that invite id is stale' from 'your request was malformed'.",
       "requires": [
-        "resource:authority_daemon",
-        "room:plain",
-        "resource:well_formed_unknown_invite_id"
+        "daemon:self",
+        "room:plain"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.revoke",
@@ -1592,8 +1570,7 @@
             "room_id": "$rid",
             "invite_id": {
               "$unknown": "{\"$unknown\": \"<file_id>\"}"
-            },
-            "op_id": "revoke-unknown-1"
+            }
           },
           "on": "subject:authority",
           "expect": {
@@ -1601,7 +1578,8 @@
             "err": {
               "code": "invite_unknown"
             }
-          }
+          },
+          "op_id": "revoke-unknown-1"
         },
         {
           "assert": [
@@ -1642,15 +1620,13 @@
       "operation": "invite.revoke",
       "intent": "Authority-only enforcement on the one operation that destroys a grant. An active non-authority member is refused with insufficient_standing and the capability remains redeemable. Catches an implementation that authorizes revoke on membership, which would let any member cancel the authority's outstanding invitations and quietly prevent a room from growing.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:member_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:member_is_active_non_authority"
+        "link:up",
+        "member:non_agent"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1658,21 +1634,20 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "revoke-nonauth-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id",
-            "cap1": "frame.capability"
+            "inv1": "out.invite_id",
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revoke-nonauth-mint-1"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "revoke-nonauth-1"
+            "invite_id": "$inv1"
           },
           "on": "subject:member",
           "expect": {
@@ -1680,7 +1655,8 @@
             "err": {
               "code": "insufficient_standing"
             }
-          }
+          },
+          "op_id": "revoke-nonauth-1"
         },
         {
           "assert": [
@@ -1740,13 +1716,12 @@
       "operation": "invite.redeem",
       "intent": "invite.redeem is THE ONLY operation reachable by a caller who is not a member of the room, and it succeeds on the strength of the capability alone. Proves the whole point of the operation: before redeem the invitee cannot see the room at all; after redeem the authoritative signed member list contains them with an active standing and the granted role. Catches an implementation that gates redeem behind the same accepted-room guard as every other room-scoped operation, which would make the room unjoinable.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "room.members",
@@ -1768,20 +1743,19 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "redeem-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability",
-            "inv1": "frame.invite_id"
+            "cap1": "out.capability",
+            "inv1": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "redeem-mint-1"
         },
         {
           "call": "invite.redeem",
           "in": {
-            "capability": "$cap1",
-            "op_id": "redeem-1"
+            "capability": "$cap1"
           },
           "expect": {
             "ok": true,
@@ -1791,7 +1765,8 @@
               "role": "member"
             }
           },
-          "on": "subject:invitee"
+          "on": "subject:invitee",
+          "op_id": "redeem-1"
         },
         {
           "assert": [],
@@ -1869,13 +1844,12 @@
       "operation": "invite.redeem",
       "intent": "The spec classes invite.redeem as NATURALLY idempotent — re-redeeming from the same subject reports existing membership — rather than op_id deduplicated. Proves the second redeem succeeds and distinguishes itself with created:false (the same convention the spec fixes for subject.ensure), and that it authors no second membership fact. Catches a redeem that errors on re-redemption, which would make an ordinary client retry look like a failure, and one that appends a duplicate member row.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1883,13 +1857,13 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "reredeem-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability"
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "reredeem-mint-1"
         },
         {
           "call": "invite.redeem",
@@ -1951,13 +1925,12 @@
       "operation": "invite.redeem",
       "intent": "SECURITY, and the sharpest statement in this domain: redeem's authorization object is the key-bound capability ITSELF, never an identifier. Proves that the invite_id — which the authority sees in invite.list, which a UI may display, and which may reach a log — does not redeem, whether supplied under its own key (schema rejection) or smuggled into the capability slot (capability_invalid). Catches an implementation that resolves the capability field by looking an identifier up in a table, which would turn every displayed invite id into a bearer token.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -1965,14 +1938,14 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "idnotauth-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id",
-            "cap1": "frame.capability"
+            "inv1": "out.invite_id",
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "idnotauth-mint-1"
         },
         {
           "call": "invite.redeem",
@@ -2072,14 +2045,12 @@
       "operation": "invite.redeem",
       "intent": "SECURITY. A minted capability is key-bound to EXACTLY ONE named identity. Proves that a third party who obtains the capability bytes — from a screenshot, a chat, a log, a compromised channel — cannot redeem them, and that the refusal is capability_invalid carrying nothing that confirms the room exists. Catches a capability implemented as a bearer secret rather than as a key-bound proof, which would make every out-of-band leak a full room compromise.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
-        "resource:bystander_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -2087,13 +2058,13 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "keybind-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability"
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "keybind-mint-1"
         },
         {
           "call": "invite.redeem",
@@ -2178,15 +2149,12 @@
       "operation": "invite.redeem",
       "intent": "NON-ORACLE on the only non-member-reachable operation. A well-formed but forged capability naming a room that exists, and one naming nothing at all, must both answer capability_invalid with identical fields and indistinguishable timing. Catches an implementation that resolves the named room first and leaks its existence through a different code, a different field set, or a slower path — which would make invite.redeem a room-enumeration primitive for anyone who can reach the daemon.",
       "requires": [
-        "resource:invitee_daemon",
-        "resource:authority_daemon",
+        "daemon:second",
+        "daemon:self",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:forged_capability_for_existing_room",
-        "resource:forged_capability_for_unknown_room"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.redeem",
@@ -2290,14 +2258,13 @@
       "operation": "invite.redeem",
       "intent": "Pins the taxonomy the spec is explicit about: expired is distinct from invalid AND from revoked, each with its own code and its own typed fields. Drives three capabilities into the three terminal states in one scenario and asserts three different codes, that capability_expired carries expired_at and no revoked_at, that capability_revoked carries revoked_at and no expired_at, and that capability_invalid carries neither. Catches the single most likely regression in this domain — collapsing all three into one 'bad invite' code, which is what a client would then have to distinguish by English substring.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:expiry_control"
+        "link:up",
+        "control:clock"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -2305,15 +2272,15 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000,
-            "op_id": "three-mint-expire"
+            "ttl_ms": 1000
           },
           "save": {
-            "cap_exp": "frame.capability",
-            "inv_exp": "frame.invite_id",
-            "exp_at": "frame.expires_at"
+            "cap_exp": "out.capability",
+            "inv_exp": "out.invite_id",
+            "exp_at": "out.expires_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "three-mint-expire"
         },
         {
           "call": "invite.mint",
@@ -2321,31 +2288,31 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "three-mint-revoke"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap_rev": "frame.capability",
-            "inv_rev": "frame.invite_id"
+            "cap_rev": "out.capability",
+            "inv_rev": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "three-mint-revoke"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv_rev",
-            "op_id": "three-revoke"
+            "invite_id": "$inv_rev"
           },
           "save": {
-            "rev_at": "frame.revoked_at"
+            "rev_at": "out.revoked_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "three-revoke"
         },
         {
           "control": {
-            "do": "inject_fault",
-            "fault": "await_expiry"
+            "do": "advance_clock",
+            "ms": 3600000
           }
         },
         {
@@ -2460,15 +2427,14 @@
       "operation": "invite.redeem",
       "intent": "BOUNDARY on the absolute expiry. One millisecond past expires_at is unambiguously capability_expired carrying expires_at as expired_at. Exactly AT expires_at the spec does not state whether the comparison is inclusive, so this case pins the two things that must hold whichever way it is resolved: the outcome is deterministic across repeated attempts, and if it refuses it refuses with capability_expired — never capability_invalid. Catches a boundary that degrades into the wrong code, which would tell a user their invite was forged when it had merely just lapsed.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
-        "resource:bystander_subject",
+        "daemon:self",
+        "daemon:second",
+        "subject:outsider",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:expiry_control"
+        "link:up",
+        "control:clock"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -2476,19 +2442,19 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 60000,
-            "op_id": "bound-mint-at"
+            "ttl_ms": 60000
           },
           "save": {
-            "cap_at": "frame.capability",
-            "exp_at": "frame.expires_at"
+            "cap_at": "out.capability",
+            "exp_at": "out.expires_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "bound-mint-at"
         },
         {
           "control": {
-            "do": "inject_fault",
-            "fault": "set_clock_to"
+            "do": "advance_clock",
+            "ms": 0
           },
           "note": "exactly the absolute expiry, not one tick either side"
         },
@@ -2514,19 +2480,19 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 60000,
-            "op_id": "bound-mint-past"
+            "ttl_ms": 60000
           },
           "save": {
-            "cap_past": "frame.capability",
-            "exp_past": "frame.expires_at"
+            "cap_past": "out.capability",
+            "exp_past": "out.expires_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "bound-mint-past"
         },
         {
           "control": {
-            "do": "inject_fault",
-            "fault": "set_clock_to"
+            "do": "advance_clock",
+            "ms": 0
           },
           "note": "one millisecond past"
         },
@@ -2572,14 +2538,13 @@
       "operation": "invite.redeem",
       "intent": "Two terminal states can hold at once: a capability revoked at T1 whose expiry then passes at T2. The spec names both codes and does not state their precedence. This case pins what must hold regardless — the answer is capability_revoked or capability_expired, never capability_invalid, it is the same answer on every attempt, and the instant it carries is the real recorded instant for whichever code it chose. Catches an implementation whose answer depends on which check happened to run first, which would make a client's error handling nondeterministic.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:expiry_control"
+        "link:up",
+        "control:clock"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -2587,32 +2552,32 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000,
-            "op_id": "revexp-mint"
+            "ttl_ms": 1000
           },
           "save": {
-            "cap1": "frame.capability",
-            "inv1": "frame.invite_id",
-            "exp1": "frame.expires_at"
+            "cap1": "out.capability",
+            "inv1": "out.invite_id",
+            "exp1": "out.expires_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revexp-mint"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv1",
-            "op_id": "revexp-revoke"
+            "invite_id": "$inv1"
           },
           "save": {
-            "rev1": "frame.revoked_at"
+            "rev1": "out.revoked_at"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "revexp-revoke"
         },
         {
           "control": {
-            "do": "inject_fault",
-            "fault": "await_expiry"
+            "do": "advance_clock",
+            "ms": 3600000
           }
         },
         {
@@ -2640,14 +2605,12 @@
       "operation": null,
       "intent": "SECURITY. Invite possession is not accepted membership: holding a valid, outstanding, correctly-key-bound capability must not open any room-scoped operation. Proves every other room-scoped operation still answers room_not_available for the holder — identically to how it answers for a total stranger — until redeem has actually run. Catches the pre-join disclosure the threat model names, where an invite-only room becomes readable on the strength of the invite alone.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
-        "resource:bystander_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -2655,13 +2618,13 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "possession-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability"
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "possession-mint-1"
         },
         {
           "call": "room.members",
@@ -2709,8 +2672,7 @@
         {
           "call": "room.activate",
           "in": {
-            "room_id": "$rid",
-            "op_id": "possession-activate-1"
+            "room_id": "$rid"
           },
           "on": "subject:invitee",
           "expect": {
@@ -2718,7 +2680,8 @@
             "err": {
               "code": "room_not_available"
             }
-          }
+          },
+          "op_id": "possession-activate-1"
         },
         {
           "call": "room.archive",
@@ -2742,8 +2705,7 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "possession-sub-1"
+            "room_id": "$rid"
           },
           "on": "subject:invitee",
           "expect": {
@@ -2751,7 +2713,8 @@
             "err": {
               "code": "room_not_available"
             }
-          }
+          },
+          "op_id": "possession-sub-1"
         },
         {
           "call": "room.members",
@@ -2794,14 +2757,12 @@
       "operation": null,
       "intent": "NON-ORACLE on the push stream. Pushes are delivered only to subscribers who are members of the room, and a push MUST NOT be a membership oracle. Proves that while the authority and an existing member generate real room activity, the holder of an outstanding unredeemed capability receives zero frames referencing that room — no event, no gap, no peer frame. Catches a fanout keyed on 'has an invite' or on transport reachability rather than on committed membership.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:member_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -2809,45 +2770,47 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "nopush-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability"
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "nopush-mint-1"
         },
         {
+          "on": "subject:invitee",
+          "note": "[harness orchestration: begin_frame_capture]",
           "control": {
-            "do": "inject_fault",
-            "fault": "begin_frame_capture"
-          },
-          "on": "subject:invitee"
+            "do": "idle",
+            "ms": 0
+          }
         },
         {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
-            "body": "activity one",
-            "op_id": "nopush-msg-1"
+            "body": "activity one"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "nopush-msg-1"
         },
         {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
-            "body": "activity two",
-            "op_id": "nopush-msg-2"
+            "body": "activity two"
           },
-          "on": "subject:member"
+          "on": "subject:member",
+          "op_id": "nopush-msg-2"
         },
         {
+          "on": "subject:invitee",
+          "note": "[harness orchestration: assert_no_frames]",
           "control": {
-            "do": "inject_fault",
-            "fault": "assert_no_frames"
-          },
-          "on": "subject:invitee"
+            "do": "idle",
+            "ms": 0
+          }
         },
         {
           "note": "[dialect observation keys folded: matching — see case intent]"
@@ -2856,11 +2819,12 @@
           "note": "[dialect observation keys folded: window_ms — see case intent]"
         },
         {
+          "on": "subject:invitee",
+          "note": "[harness orchestration: assert_no_frames]",
           "control": {
-            "do": "inject_fault",
-            "fault": "assert_no_frames"
-          },
-          "on": "subject:invitee"
+            "do": "idle",
+            "ms": 0
+          }
         },
         {
           "note": "[dialect observation keys folded: matching_any_body_containing — see case intent]"
@@ -2885,8 +2849,7 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "nopush-sub-1"
+            "room_id": "$rid"
           },
           "expect": {
             "ok": true,
@@ -2895,7 +2858,8 @@
             }
           },
           "note": "the same subscribe that was refused a moment ago now succeeds — the difference is redemption, not possession",
-          "on": "subject:invitee"
+          "on": "subject:invitee",
+          "op_id": "nopush-sub-1"
         }
       ]
     },
@@ -2905,23 +2869,20 @@
       "operation": "invite.redeem",
       "intent": "Every push carries a per-room monotonic position, carries a t, and never carries an id — that is how a push is told apart from a reply. Proves a successful redemption reaches existing subscribers of the room as a positioned push whose position is strictly greater than the last one they held, so a client can detect that it missed the join. Catches a redemption that mutates membership without entering the sequenced stream, which would leave every other member's roster stale until they resynced for an unrelated reason.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:subscription"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "redeempush-sub-1"
+            "room_id": "$rid"
           },
           "save": {
-            "p0": "frame.pos"
+            "p0": "out.pos"
           },
           "expect": {
             "ok": true,
@@ -2930,7 +2891,8 @@
               "pos": "<uint>"
             }
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "redeempush-sub-1"
         },
         {
           "call": "invite.mint",
@@ -2938,13 +2900,13 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "redeempush-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability"
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "redeempush-mint-1"
         },
         {
           "call": "invite.redeem",
@@ -2967,18 +2929,19 @@
           },
           "await": {
             "push": {
-              "t": "<push_kind>",
+              "t": "<<string>>",
               "room_id": "$rid",
-              "pos": "<number>"
+              "pos": "<uint>"
             }
           }
         },
         {
+          "on": "subject:authority",
+          "note": "[harness orchestration: assert_no_gap_frame]",
           "control": {
-            "do": "inject_fault",
-            "fault": "assert_no_gap_frame"
-          },
-          "on": "subject:authority"
+            "do": "idle",
+            "ms": 0
+          }
         },
         {
           "note": "[dialect observation keys folded: room_id — see case intent]"
@@ -3013,26 +2976,24 @@
       "operation": null,
       "intent": "Within one room, positions are strictly increasing with no gaps in a healthy stream. Drives two distinct signed invitation facts — one redemption and one revocation — through a single subscribed room and proves the observed positions increase strictly, with no discontinuity and no gap frame. Catches an implementation that assigns positions per-operation-kind, reuses a position, or emits invitation facts on a side channel outside the sequenced stream, any of which would make client-side gap detection produce false alarms or miss real losses.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
-        "resource:bystander_subject",
+        "daemon:self",
+        "daemon:second",
+        "subject:outsider",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:subscription"
+        "link:up"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid",
-            "op_id": "order-sub-1"
+            "room_id": "$rid"
           },
           "save": {
-            "p0": "frame.pos"
+            "p0": "out.pos"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "order-sub-1"
         },
         {
           "call": "invite.mint",
@@ -3040,13 +3001,13 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "order-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability"
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "order-mint-1"
         },
         {
           "call": "invite.redeem",
@@ -3067,32 +3028,33 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "order-mint-2"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv2": "frame.invite_id"
+            "inv2": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "order-mint-2"
         },
         {
           "call": "invite.revoke",
           "in": {
             "room_id": "$rid",
-            "invite_id": "$inv2",
-            "op_id": "order-revoke-1"
+            "invite_id": "$inv2"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "order-revoke-1"
         },
         {
-          "control": {
-            "do": "inject_fault",
-            "fault": "collect_pushes"
-          },
           "save": {
             "frames": "$captured"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "note": "[harness orchestration: collect_pushes]",
+          "control": {
+            "do": "idle",
+            "ms": 0
+          }
         },
         {
           "note": "[dialect observation keys folded: room_id — see case intent]"
@@ -3137,14 +3099,13 @@
       "operation": "invite.redeem",
       "intent": "RETAINED INVARIANT #47, expressed in v2 terms against fresh state. After a capability expires, the authority mints a FRESH one for the SAME identity and that identity redeems it successfully. This is the regression that made an expired invite permanently unrecoverable: an implementation that records the expiry against the invited SUBJECT rather than against the CAPABILITY will refuse the reissue too, and the room can never admit that person again. Also proves the first capability stays dead after the reissue, so the expiry is not healed retroactively.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:expiry_control"
+        "link:up",
+        "control:clock"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "invite.mint",
@@ -3152,13 +3113,12 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000,
-            "op_id": "inv47-mint-1"
+            "ttl_ms": 1000
           },
           "save": {
-            "cap1": "frame.capability",
-            "inv1": "frame.invite_id",
-            "exp1": "frame.expires_at"
+            "cap1": "out.capability",
+            "inv1": "out.invite_id",
+            "exp1": "out.expires_at"
           },
           "expect": {
             "ok": true,
@@ -3172,12 +3132,13 @@
               }
             }
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "inv47-mint-1"
         },
         {
           "control": {
-            "do": "inject_fault",
-            "fault": "await_expiry"
+            "do": "advance_clock",
+            "ms": 3600000
           }
         },
         {
@@ -3231,12 +3192,11 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "inv47-mint-2"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap2": "frame.capability",
-            "inv2": "frame.invite_id"
+            "cap2": "out.capability",
+            "inv2": "out.invite_id"
           },
           "expect": {
             "ok": true,
@@ -3255,7 +3215,8 @@
             }
           },
           "note": "SAME subject_id, fresh capability — this is the operation the invariant exists to protect",
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "inv47-mint-2"
         },
         {
           "call": "invite.redeem",
@@ -3344,51 +3305,49 @@
       "operation": "invite.redeem",
       "intent": "RETAINED INVARIANT #46, expressed in v2 terms against fresh state. With an authority, a second non-authority author, and a joiner: after multi-author history already exists, invite.redeem succeeds and the joiner reads the FULL prior history. Asserted as an outcome — the joiner's own timeline read — not as a claim about what the membership closure contains. Catches the regression where a room that has accumulated content events from more than one author becomes unjoinable, or admits the joiner but serves them a truncated or single-author history.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:member_daemon",
-        "resource:invitee_daemon",
+        "daemon:self",
+        "daemon:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport",
-        "resource:member_is_active_non_authority"
+        "link:up",
+        "member:non_agent"
       ],
-      "blocked_on_upstream": null,
       "steps": [
         {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
-            "body": "history-a-from-authority",
-            "op_id": "inv46-msg-1"
+            "body": "history-a-from-authority"
           },
           "save": {
-            "e1": "frame.event_id"
+            "e1": "out.event_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "inv46-msg-1"
         },
         {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
-            "body": "history-b-from-member",
-            "op_id": "inv46-msg-2"
+            "body": "history-b-from-member"
           },
           "save": {
-            "e2": "frame.event_id"
+            "e2": "out.event_id"
           },
-          "on": "subject:member"
+          "on": "subject:member",
+          "op_id": "inv46-msg-2"
         },
         {
           "call": "message.send",
           "in": {
             "room_id": "$rid",
-            "body": "history-c-from-authority",
-            "op_id": "inv46-msg-3"
+            "body": "history-c-from-authority"
           },
           "save": {
-            "e3": "frame.event_id"
+            "e3": "out.event_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "inv46-msg-3"
         },
         {
           "call": "invite.mint",
@@ -3396,13 +3355,13 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "inv46-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "cap1": "frame.capability"
+            "cap1": "out.capability"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "inv46-mint-1"
         },
         {
           "call": "invite.redeem",
@@ -3529,12 +3488,12 @@
       "operation": "invite.mint",
       "intent": "Gives invite.mint its own code on the case that actually happens in the product: an authority forgets who is already in the room, or an invite link is re-sent, and a second capability is minted for an identity that has already redeemed one and is an active member. That must be invitee_already_member, not a silent success. Catches a daemon that mints the redundant grant, which is a real security defect and not merely noise -- a live unrevoked capability for an existing member survives member.remove, so the removed member can walk straight back in, and the authority never knew the credential existed because they believed the mint was a no-op. It also catches the two wrong codes: insufficient_standing (the caller IS the authority) and invalid_argument (the input is well-formed; the room's state is what refuses it). The last two steps pin the ordering the idempotency section requires: the dedup ledger is consulted BEFORE this precondition, so replaying the original mint's op_id after the invitee joined still returns the ORIGINAL capability rather than this error -- otherwise a reply lost to a dropped connection turns a successful mint into a permanent failure on retry.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "daemon:second",
+        "subject:second",
         "room:plain",
         "room:live",
-        "resource:loopback_transport"
+        "link:up"
       ],
       "steps": [
         {
@@ -3543,12 +3502,11 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "already-member-mint-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id",
-            "cap1": "frame.capability",
+            "inv1": "out.invite_id",
+            "cap1": "out.capability",
             "first_mint": "out"
           },
           "expect": {
@@ -3563,13 +3521,13 @@
               }
             }
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "already-member-mint-1"
         },
         {
           "call": "invite.redeem",
           "in": {
-            "capability": "$cap1",
-            "op_id": "already-member-redeem-1"
+            "capability": "$cap1"
           },
           "expect": {
             "ok": true,
@@ -3579,7 +3537,8 @@
               "role": "member"
             }
           },
-          "on": "subject:invitee"
+          "on": "subject:invitee",
+          "op_id": "already-member-redeem-1"
         },
         {
           "call": "room.members",
@@ -3607,8 +3566,7 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "already-member-mint-2"
+            "ttl_ms": 3600000
           },
           "note": "a FRESH op_id, so the dedup ledger cannot answer and the precondition must [dialect assert preserved for manual retranscription: {\"no_nulls\": \"$last_error\", \"note\": \"the refusal must carry no capability of any kind: a minted-then-errored grant is the worst of both\"}]",
           "on": "subject:authority",
@@ -3617,7 +3575,8 @@
             "err": {
               "code": "invitee_already_member"
             }
-          }
+          },
+          "op_id": "already-member-mint-2"
         },
         {
           "note": "a FRESH op_id, so the dedup ledger cannot answer and the precondition must [dialect assert preserved for manual retranscription: {\"no_nulls\": \"$last_error\", \"note\": \"the refusal must carry no capability of any kind: a minted-then-errored grant is the worst of both\"}] [dialect key must_not: [\"ok\"]]",
@@ -3678,11 +3637,11 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "already-member-mint-1"
+            "ttl_ms": 3600000
           },
           "note": "the ORIGINAL op_id, replayed after the invitee joined: the ledger answers first",
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "already-member-mint-1"
         },
         {
           "note": "[dialect observation keys folded: must_not_error — see case intent]"
@@ -3723,8 +3682,7 @@
           "note": "the replay performed no second effect either",
           "on": "subject:authority"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "invite_list_reports_an_unreadable_invite_index_rather_than_an_empty_list",
@@ -3732,8 +3690,8 @@
       "operation": "invite.list",
       "intent": "Gives invite.list its own code, and separates the two answers an authority must never confuse: 'nothing is outstanding' and 'I cannot tell you what is outstanding'. With one redeemable invite known to exist, the invite index is made unreadable and the call must answer invite_index_unreadable. Catches a daemon that swallows the read failure and returns invites: [] -- which is precisely the answer that makes invite.revoke unreachable, because an authority who sees an empty list has no invite_id to revoke and concludes there is nothing to withdraw while a live capability into their room stays redeemable. The corpus already asserts that a room with no invites answers an empty array, so without this case those two states are indistinguishable to the harness as well as to the user. Also forbids room_not_available: the caller is the room's authority, and reporting a local storage fault as a membership fact would send them to the wrong recovery entirely.",
       "requires": [
-        "resource:authority_daemon",
-        "resource:invitee_subject",
+        "daemon:self",
+        "subject:second",
         "room:plain",
         "fault:room_index_unreadable",
         "fault:invite_index_unreadable"
@@ -3745,13 +3703,13 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "invite-index-1"
+            "ttl_ms": 3600000
           },
           "save": {
-            "inv1": "frame.invite_id"
+            "inv1": "out.invite_id"
           },
-          "on": "subject:authority"
+          "on": "subject:authority",
+          "op_id": "invite-index-1"
         },
         {
           "call": "invite.list",
@@ -3867,8 +3825,7 @@
           "note": "the capability was never lost, and the refusal revoked nothing",
           "on": "subject:authority"
         }
-      ],
-      "blocked_on_upstream": null
+      ]
     },
     {
       "name": "revoking_a_capability_already_redeemed_is_capability_redeemed",
@@ -3887,8 +3844,7 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000,
-            "op_id": "op-redeemed-mint"
+            "ttl_ms": 3600000
           },
           "save": {
             "cap": "out.capability",
@@ -3900,7 +3856,8 @@
               "invite_id": "<invite_id>",
               "capability": "<string>"
             }
-          }
+          },
+          "op_id": "op-redeemed-mint"
         },
         {
           "call": "invite.redeem",
