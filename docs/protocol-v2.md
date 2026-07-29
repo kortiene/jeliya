@@ -4,7 +4,7 @@ title: "Jeliya protocol v2"
 description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the three-layer handshake and generation gate, the 33 approved operations, the error taxonomy, the sequenced push stream with gap detection and authoritative resync, and the conformance corpus that binds them."
 tags: ["clean-slate", "conformance", "protocol", "security"]
 timestamp: "2026-07-28T15:26:05Z"
-status: "draft"
+status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
 release_status: "unreleased"
@@ -13,10 +13,8 @@ audience: ["client-authors", "contributors", "maintainers"]
 
 # Jeliya protocol v2
 
-**Status: DRAFT 2026-07-28. The contract is complete; its corpus is not yet
-normalized to it — see [What this does not yet
-specify](#what-this-does-not-yet-specify). Nothing in this record is
-built.** Protocol v2
+**Status: CANONICAL 2026-07-29. The contract is complete and its corpus is
+normalized to it (#213). Nothing in this record is built.** Protocol v2
 is the wire contract for the clean-slate client stack in the
 [Dioxus clean-slate architecture](dioxus-architecture.md). It replaces
 [protocol v1](PROTOCOL.md) outright: one generation at a time, no dual support,
@@ -33,30 +31,22 @@ Engine cutover (#165/#166) implement it.
 [What v2 removes](#what-v2-removes). Nothing here preserves a v1 field name,
 null convention, event shape, or storage shape for its own sake.
 
-## What this does not yet specify
+## The corpus
 
-The three gaps that made this record `draft` are closed. It now states
+The record states
 [the shape of every request and reply](#operation-schemas), the
 [complete 60-code taxonomy](#errors), and — in
 [the corpus's own README](../conformance/v2/README.md) — one normative fixture
 DSL. An independent adapter can implement from this document alone.
 
-**One gap remains, and it is the corpus, not the contract.**
-
-| Gap | Consequence while it is open |
-|---|---|
-| **The 335 committed fixtures are not yet normalized to the DSL** | They were authored against the specification's earlier silence, so they use 178 step verbs where the DSL defines a closed set, and 51 of them assert a field or code this record deliberately does not define. Until they are retranscribed, the corpus is not replayable and cannot be cited as evidence for any adapter |
-
-That work is tracked as **#213**. This record stays `draft` until it lands, for
-one reason: a `canonical` contract whose own bundled corpus contradicts it in
-fifty-one places is a contract that overclaims. The distinction matters more
-than the label — everything an implementer needs is here, and #163 and #164 are
-unblocked by the content rather than by the status field.
-
-Where this record and a fixture disagree, **this record is right and the fixture
-is a bug**, unless the disagreement is named as a specification defect below.
-Each class of fixture bug is named at the point the relevant rule is stated,
-rather than gathered into a list that would rot separately from the rules.
+The 344 hand-authored fixtures in
+[`conformance/v2/`](../conformance/v2/README.md) are normalized to that DSL
+(#213): every case conforms, every one of the 60 codes has at least one case,
+and the corpus is replayable by an independent harness. Where a fixture and
+this record disagree, **this record is right and the fixture is a bug** — the
+normalization retired fourteen refused codes and the field shapes this record
+deliberately does not define, and the corpus now asserts nothing this record
+does not state.
 
 Everything is settled in substance — the operation set, the handshake and its
 gate, the removals, the push and resync model, the severity derivation, and the
