@@ -1198,6 +1198,27 @@ async fn handle_stream_resync(
         Some(r) => r.clone(),
         None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
     };
+    // A client naming a position AHEAD of the room's head holds state the
+    // daemon does not: that is the discard-and-re-read case, never an empty
+    // success (which would leave the client permanently convinced it is
+    // ahead). The head is the last committed position; `from_pos > head` is
+    // `resync_required` naming the real head. `from_pos == head` is caught
+    // up and answers an empty set below.
+    let head = match room_head_pos(state, &req.room_id).await {
+        Ok(next) => next.saturating_sub(1),
+        Err(err) => return send_api_err(out_tx, id, err).await,
+    };
+    if req.from_pos > head {
+        return send_api_err(
+            out_tx,
+            id,
+            jeliya_api::ApiError::ResyncRequired {
+                room_id: req.room_id.clone(),
+                from_pos: head,
+            },
+        )
+        .await;
+    }
     // Read the committed events after from_pos via the engine's typed
     // timeline, starting the page AT from_pos (positions are exclusive on the
     // low side, so `at {pos: from_pos + 1}` reads strictly after it) rather

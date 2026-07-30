@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jeliya_api::{ApiError, Event, PeerRow, Push, RoomId, SubjectState};
+use jeliya_api::{ApiError, PeerRow, Push, RoomId, SubjectState};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -310,11 +310,8 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
                         };
                         match received {
                             Ok(events) => {
-                                for event in events {
-                                    engine.emit(Push::Event {
-                                        room_id: api_room.clone(),
-                                        event,
-                                    });
+                                for committed in events {
+                                    emit_committed(&engine, &api_room, committed);
                                 }
                             }
                             Err(err) if err.kind == ErrorKind::RoomNotOpen => break,
@@ -332,11 +329,8 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
             // broadcast event is still pushed exactly once (shared `seen`).
             match poll_typed_events(&engine, &room_id).await {
                 Ok(events) => {
-                    for event in events {
-                        engine.emit(Push::Event {
-                            room_id: api_room.clone(),
-                            event,
-                        });
+                    for committed in events {
+                        emit_committed(&engine, &api_room, committed);
                     }
                 }
                 Err(err) => warn!("push reconcile failed for {room_str}: {err}"),
@@ -362,7 +356,7 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
 async fn recv_typed_events(
     engine: &Engine,
     room_id: &iroh_rooms::room::RoomId,
-) -> CoreResult<Vec<Event>> {
+) -> CoreResult<Vec<crate::supervisor::CommittedEvent>> {
     engine.supervisor.recv_room_events_typed(room_id).await
 }
 
@@ -371,8 +365,34 @@ async fn recv_typed_events(
 async fn poll_typed_events(
     engine: &Engine,
     room_id: &iroh_rooms::room::RoomId,
-) -> CoreResult<Vec<Event>> {
+) -> CoreResult<Vec<crate::supervisor::CommittedEvent>> {
     engine.supervisor.poll_new_events_typed(room_id).await
+}
+
+/// Emit one newly-pushed committed event, preceded by a corrective `gap` when
+/// it reordered already-served history. A late concurrent sibling interleaving
+/// below the frontier shifts the ranks of events the stream already served;
+/// the client cannot detect that from an event frame alone (the reordered
+/// event arrives at a position it already holds), so the stream first tells it
+/// to discard the shifted suffix and resync via `stream.resync` (the one
+/// resync path), then delivers the event at its true rank.
+fn emit_committed(
+    engine: &Engine,
+    api_room: &RoomId,
+    committed: crate::supervisor::CommittedEvent,
+) {
+    if let Some(from_pos) = committed.reordered_at {
+        engine.emit(Push::Gap {
+            room_id: api_room.clone(),
+            from_pos,
+            to: jeliya_api::GapTo::Open,
+            reason: jeliya_api::GapReason::Backpressure,
+        });
+    }
+    engine.emit(Push::Event {
+        room_id: api_room.clone(),
+        event: committed.event,
+    });
 }
 
 /// The per-device link rows for one room, for the peer-change drain.
@@ -500,7 +520,10 @@ mod tests {
         let TypedReply::MessageSend(sent) = sent else {
             panic!("wrong reply");
         };
-        assert!(sent.pos > 0, "a message commits at a positive position");
+        // The second committed event in the room (after the genesis) sits at
+        // dense position 1 — the rank over the canonical order, not the raw
+        // lamport.
+        assert_eq!(sent.pos, 1, "the reply position is the dense rank");
 
         // The committed event lands on the typed push fan-out as Push::Event.
         let push = tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -518,10 +541,13 @@ mod tests {
         })
         .await
         .expect("a typed Push::Event arrives within 10s");
-        let EventKindContent::Message { body } = push.kind else {
+        let EventKindContent::Message { body } = &push.kind else {
             panic!("wrong kind");
         };
         assert_eq!(body, "hello typed push");
+        // Reply, push, and timeline positions are ONE dense position space:
+        // the push carries exactly the position the reply served.
+        assert_eq!(push.pos, sent.pos, "push and reply positions agree");
 
         // The timeline serves the same committed event, typed, at pos >= 1.
         let page = Page {
@@ -544,6 +570,10 @@ mod tests {
         assert_eq!(timeline.events[0].kind.kind(), EventKind::RoomCreated);
         assert_eq!(timeline.events[0].pos, 0);
         assert_eq!(timeline.events[1].kind.kind(), EventKind::Message);
+        assert_eq!(
+            timeline.events[1].pos, sent.pos,
+            "timeline and reply positions agree"
+        );
 
         engine.close_all_rooms().await;
     }

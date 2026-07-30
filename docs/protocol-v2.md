@@ -1521,6 +1521,13 @@ activity, exactly as `transfer.cancel` would be without its principal guard.
 and no cursor — only wall-clock timestamps — so a client could not tell that it
 had missed anything.
 
+A position is the **dense rank over the room's canonical `(lamport, event_id)`
+order**: the genesis is `0` and every later committed event is exactly one past
+its predecessor. The store's raw Lamport value is not a position — concurrent
+siblings share one lamport, so only the dense rank is unique, strictly
+increasing, and gap-free. The timeline, the push stream, every mutation reply's
+`pos`, and `stream.resync` all serve this one rank.
+
 - Within one room, positions are strictly increasing with no gaps in a healthy
   stream.
 - Across rooms, no ordering is defined. A client MUST NOT infer one.

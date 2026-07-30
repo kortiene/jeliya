@@ -36,12 +36,66 @@ fn ts(created_at_ms: u64) -> Timestamp {
     Timestamp::new(OffsetDateTime::from_unix_timestamp(secs).unwrap_or(OffsetDateTime::UNIX_EPOCH))
 }
 
-/// The room's per-event monotonic position, from the store's derived Lamport
-/// clock. The genesis is `0`, matching the record's position space anchored
-/// at the origin. A causally-incomplete row (a missing parent leaves
-/// `lamport` unset) is not materialized into a committed timeline event.
-fn pos(se: &StoredEvent) -> Option<u64> {
-    se.lamport
+/// The v2 per-room position space is the room's committed timeline events
+/// **ranked densely in canonical `(lamport, event_id)` order**: the genesis
+/// is `0` and every later committed event is exactly one past its
+/// predecessor. Two rules make that hold:
+///
+/// - **Filter to committed events FIRST.** Only kinds the record commits to
+///   the timeline hold a position. A stored row [`materialize`] drops (a
+///   `member.invited`, an out-of-vocabulary `agent.status`) is not a
+///   committed event and consumes no position — otherwise the next rendered
+///   event would jump a position and leave a hole resync cannot fill.
+/// - **Rank densely over the survivors.** The store's raw Lamport value is
+///   NOT a position — concurrent siblings share a lamport, and the record
+///   requires strictly-increasing, gap-free positions, which only the dense
+///   rank over the canonical order provides.
+///
+/// [`positioned`] applies both: it filters a canonical tail to committed
+/// events and assigns each its dense rank. Ranking happens at the read
+/// boundary (`TypedSupervisor::committed_events` for timeline/resync/archive,
+/// and the supervisor's typed push paths for `Push::Event`), so one
+/// consistent rank serves every position the protocol exposes.
+///
+/// A causally-incomplete row (a missing parent leaves `lamport` unset) is
+/// excluded from the canonical order, hence holds no position.
+///
+/// # Stability across convergence
+///
+/// The canonical order is **not stable across convergence**: a late-arriving
+/// concurrent event can interleave below the frontier and shift the ranks of
+/// already-served events after it. Positions are therefore a per-room,
+/// eventually-consistent sequence the client treats as authoritative only at
+/// read time. The push paths are reorder-aware (see
+/// [`supervisor::collect_committed`](crate::supervisor)): when a new event's
+/// rank is at or below an already-served rank, the stream emits an explicit
+/// `gap` from the first shifted position so the client discards and resyncs
+/// rather than trusting a silently renumbered suffix.
+pub(crate) fn positioned(
+    rows: &[&StoredEvent],
+    snapshot: &MembershipSnapshot,
+) -> Vec<(u64, Event)> {
+    let mut out = Vec::new();
+    let mut rank = 0u64;
+    for se in rows {
+        if let Some(event) = materialize(se, 0, snapshot) {
+            out.push((rank, Event { pos: rank, ..event }));
+            rank += 1;
+        }
+    }
+    out
+}
+
+/// Whether a stored event is a committed timeline event (its kind is one the
+/// record commits and, for `agent.status`, its label is in the closed
+/// vocabulary). Snapshot-free: the committed check depends only on the signed
+/// content, not on membership. [`positioned`]'s callers and the rank lookups
+/// use this to keep non-committed rows from consuming a position.
+pub(crate) fn is_committed(se: &StoredEvent) -> bool {
+    let Ok(ev) = SignedEvent::decode(&se.wire.signed) else {
+        return false;
+    };
+    kind_content(&ev.content).is_some()
 }
 
 /// Map an Iroh fold role to the v2 `role` vocabulary. `Admin` is the room's
@@ -120,9 +174,10 @@ fn progress(pct: Option<u64>) -> Progress {
     }
 }
 
-/// Fold one stored event into its committed v2 [`Event`], or `None` for an
-/// event kind the protocol does not commit to the displayed timeline. Pure:
-/// no IO, no clock beyond the signed `created_at`.
+/// Fold one stored event, at its dense canonical rank `pos` (see
+/// [`positioned`]), into its committed v2 [`Event`], or `None` for an event
+/// kind the protocol does not commit to the displayed timeline. Pure: no IO,
+/// no clock beyond the signed `created_at`.
 ///
 /// `member.invited` and `member.removed` are not among the ten committed
 /// kinds the record enumerates (`invite.mint` produces no timeline event;
@@ -144,8 +199,7 @@ fn progress(pct: Option<u64>) -> Progress {
 /// - `pipe.closed` → `pipe_revoked`
 /// - `member.invited` → (no committed event; `invite.mint` authors none)
 #[must_use]
-pub fn materialize(se: &StoredEvent, snapshot: &MembershipSnapshot) -> Option<Event> {
-    let pos = pos(se)?;
+pub fn materialize(se: &StoredEvent, pos: u64, snapshot: &MembershipSnapshot) -> Option<Event> {
     let ev = SignedEvent::decode(&se.wire.signed).ok()?;
     materialize_signed(pos, &se.event_id, &ev, snapshot)
 }
@@ -417,6 +471,7 @@ mod tests {
     use iroh_rooms::files::{build_file_shared, HashRef};
     use iroh_rooms::identity::DeviceBinding;
     use iroh_rooms::identity::SigningKey;
+    use iroh_rooms::room::build_member_invited;
     use iroh_rooms::room::{
         build_member_joined, build_member_left, build_room_created, derive_room_id,
         MembershipSnapshot, RoomId, RoomMembership,
@@ -652,16 +707,157 @@ mod tests {
 
         let snapshot = snapshot_of(&fx);
         let rows = store.room_tail(&fx.room_id, 100).unwrap();
-        let events: Vec<Event> = rows
-            .iter()
-            .filter_map(|se| materialize(se, &snapshot))
+        let refs: Vec<&StoredEvent> = rows.iter().collect();
+        let events: Vec<Event> = positioned(&refs, &snapshot)
+            .into_iter()
+            .map(|(_, e)| e)
             .collect();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind.kind(), EventKind::RoomCreated);
         assert_eq!(events[1].kind.kind(), EventKind::Message);
-        // Positions come from the store's Lamport clock: genesis is 0.
+        // Positions are the dense rank over the canonical order: genesis is
+        // 0 and each later committed event is exactly one past its
+        // predecessor.
         assert_eq!(events[0].pos, 0);
-        assert!(events[1].pos > events[0].pos);
+        assert_eq!(events[1].pos, 1);
+    }
+
+    #[test]
+    fn concurrent_siblings_get_dense_gap_free_positions() {
+        // Two messages authored against the SAME parent are concurrent
+        // siblings: the store's derived Lamport clock assigns them the same
+        // value. The v2 position space must still be dense, strictly
+        // increasing, and gap-free, so positions are the rank over the
+        // canonical `(lamport, event_id)` order — never the raw lamport.
+        let fx = fixture();
+        let mut store = EventStore::open_in_memory().unwrap();
+        let ctx = ValidationContext::for_room(fx.room_id);
+        let genesis = validate_wire_bytes(&fx.genesis.to_bytes(), &ctx).unwrap();
+        let genesis_id = genesis.event_id;
+        store.insert(&genesis).unwrap();
+
+        // Two distinct authors (two devices), both children of the genesis.
+        let device_b = SigningKey::generate();
+        let a = validate_wire_bytes(
+            &build_message_text(
+                &fx.identity,
+                &fx.device,
+                &fx.room_id,
+                "sibling a",
+                None,
+                None,
+                &[],
+                &[genesis_id],
+                TS + 1,
+            )
+            .to_bytes(),
+            &ctx,
+        )
+        .unwrap();
+        let b = validate_wire_bytes(
+            &build_message_text(
+                &fx.identity,
+                &device_b,
+                &fx.room_id,
+                "sibling b",
+                None,
+                None,
+                &[],
+                &[genesis_id],
+                TS + 1,
+            )
+            .to_bytes(),
+            &ctx,
+        )
+        .unwrap();
+        store.insert(&a).unwrap();
+        store.insert(&b).unwrap();
+
+        let rows = store.room_tail(&fx.room_id, 100).unwrap();
+        assert_eq!(rows.len(), 3);
+        // The two siblings share one lamport: the raw store value is NOT
+        // unique, which is exactly why it cannot be the served position.
+        assert_eq!(rows[1].lamport, rows[2].lamport);
+
+        let snapshot = snapshot_of(&fx);
+        let refs: Vec<&StoredEvent> = rows.iter().collect();
+        let events: Vec<Event> = positioned(&refs, &snapshot)
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        let positions: Vec<u64> = events.iter().map(|e| e.pos).collect();
+        assert_eq!(positions, [0, 1, 2], "dense and gap-free across siblings");
+    }
+
+    #[test]
+    fn non_committed_events_consume_no_position() {
+        // A `member.invited` row is stored but NOT committed to the timeline
+        // (`invite.mint` authors no committed event). It must consume no
+        // position: the message after it sits immediately after the genesis,
+        // not a rank higher, so the served space stays dense and gap-free.
+        let fx = fixture();
+        let mut store = EventStore::open_in_memory().unwrap();
+        let ctx = ValidationContext::for_room(fx.room_id);
+        let genesis = validate_wire_bytes(&fx.genesis.to_bytes(), &ctx).unwrap();
+        let genesis_id = genesis.event_id;
+        store.insert(&genesis).unwrap();
+
+        let invitee = SigningKey::generate();
+        let invited = validate_wire_bytes(
+            &build_member_invited(
+                &fx.identity,
+                &fx.device,
+                &fx.room_id,
+                &[0x07; 16],
+                &[0x09; 32],
+                "member",
+                &invitee.identity_key(),
+                None,
+                None,
+                &[genesis_id],
+                TS + 1,
+            )
+            .to_bytes(),
+            &ctx,
+        )
+        .unwrap();
+        store.insert(&invited).unwrap();
+        let msg = validate_wire_bytes(
+            &build_message_text(
+                &fx.identity,
+                &fx.device,
+                &fx.room_id,
+                "after the invite",
+                None,
+                None,
+                &[],
+                &[genesis_id],
+                TS + 2,
+            )
+            .to_bytes(),
+            &ctx,
+        )
+        .unwrap();
+        store.insert(&msg).unwrap();
+
+        let snapshot = snapshot_of(&fx);
+        let rows = store.room_tail(&fx.room_id, 100).unwrap();
+        assert_eq!(
+            rows.len(),
+            3,
+            "invite row is stored even though not committed"
+        );
+        let refs: Vec<&StoredEvent> = rows.iter().collect();
+        let events: Vec<Event> = positioned(&refs, &snapshot)
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        // The invite consumed no position: genesis 0, message 1, no hole.
+        assert_eq!(events.len(), 2, "the invite is not a committed event");
+        assert_eq!(events[0].kind.kind(), EventKind::RoomCreated);
+        assert_eq!(events[0].pos, 0);
+        assert_eq!(events[1].kind.kind(), EventKind::Message);
+        assert_eq!(events[1].pos, 1, "no position hole where the invite sat");
     }
 
     #[test]
