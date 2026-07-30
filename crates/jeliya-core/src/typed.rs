@@ -1583,16 +1583,33 @@ fn closed_pipe_ids(
 /// for `member.remove`, `invite.mint`, `invite.revoke`, and `invite.list`;
 /// `None` for every other operation. A malformed room id yields no gate here
 /// — the operation's own `parse_room` reports it.
-fn authority_gated_room(call: &TypedCall) -> Option<(RoomId, IrohRoomId)> {
+/// The room an authority-gated operation targets, for the dispatch-time
+/// validation-order steps 5–6. Returns `Ok(Some((api_room, iroh_room)))` for
+/// `member.remove`, `invite.mint`, `invite.revoke`, and `invite.list`;
+/// `Ok(None)` for every other operation. A malformed room id yields no gate
+/// (the operation's own `parse_room` reports it). Step 1 (structure) runs
+/// here for `invite.list`: an out-of-bounds paging `limit` is
+/// `invalid_argument` before the room/role preflight, per the normative
+/// validation order.
+fn authority_gated_room(call: &TypedCall) -> Result<Option<(RoomId, IrohRoomId)>, ApiError> {
     let api_room = match call {
         TypedCall::MemberRemove(r) => &r.room_id,
         TypedCall::InviteMint(r) => &r.room_id,
         TypedCall::InviteRevoke(r) => &r.room_id,
-        TypedCall::InviteList(r) => &r.room_id,
-        _ => return None,
+        TypedCall::InviteList(r) => {
+            // Step 1 first: a structurally invalid page (limit outside
+            // 1..=timeline_page_max) is invalid_argument, never gated by
+            // role. Window::resolve is the one bound check.
+            Window::resolve(&r.page)?;
+            &r.room_id
+        }
+        _ => return Ok(None),
     };
-    let iroh_room = api_room.as_str().trim().parse().ok()?;
-    Some((api_room.clone(), iroh_room))
+    let iroh_room = match api_room.as_str().trim().parse() {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some((api_room.clone(), iroh_room)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1616,20 +1633,27 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
     if !matches!(call, TypedCall::SubjectEnsure(_)) && !t.subject_present()? {
         return Err(ApiError::SubjectAbsent);
     }
-    // Validation-order step 6 (role): the four authority-gated operations
-    // (`member.remove`, `invite.mint`, `invite.revoke`, `invite.list`) refuse
-    // a plain member with `insufficient_standing { required: authority, held
-    // }` before any operation semantics run. Step 5 (standing) is enforced
-    // per-operation where the operation is defined over a live membership;
-    // the role check needs only the membership snapshot. A room the caller
-    // cannot read answers `room_not_available` (step 4 outranks step 6 — the
-    // role check must not be a membership oracle for a foreign room).
-    if let Some((api_room, iroh_room)) = authority_gated_room(&call) {
+    // Validation-order steps 5 and 6 (standing, then role) for the four
+    // authority-gated operations (`member.remove`, `invite.mint`,
+    // `invite.revoke`, `invite.list`). Step 1 (structure) runs first: a
+    // structurally invalid request (a paging `limit` outside
+    // `1..=timeline_page_max`) is `invalid_argument` before any room/role
+    // preflight, so authorization behavior is never exposed for malformed
+    // input. Step 5 (standing) runs before step 6 (role): a former member is
+    // `membership_ended`, never `insufficient_standing` — the role code is
+    // defined only for active members. A room the caller cannot read answers
+    // `room_not_available` (step 4 outranks both), and a room-index failure
+    // is `room_index_unreadable`, never a generic error.
+    if let Some((api_room, iroh_room)) = authority_gated_room(&call)? {
         let snapshot = t
             .sup
             .readable_snapshot(&iroh_room)
             .await
-            .map_err(|e| core_to_api_room(e, &api_room))?;
+            .map_err(|e| match e.kind {
+                ErrorKind::Internal => ApiError::RoomIndexUnreadable,
+                _ => core_to_api_room(e, &api_room),
+            })?;
+        t.require_active_standing(&api_room, &iroh_room, &snapshot)?;
         t.require_role(&api_room, &snapshot, Role::Authority)?;
     }
     match call {
@@ -2134,7 +2158,7 @@ mod tests {
     #[test]
     fn authority_gated_room_covers_exactly_the_four_authority_ops() {
         let rid = || RoomId::new(format!("blake3:{}", "ab".repeat(32)));
-        let gated = |call: &TypedCall| authority_gated_room(call).is_some();
+        let gated = |call: &TypedCall| authority_gated_room(call).ok().flatten().is_some();
         assert!(gated(&TypedCall::MemberRemove(MemberRemove {
             room_id: rid(),
             subject_id: SubjectId::new("s"),
@@ -2170,5 +2194,37 @@ mod tests {
             },
             audience: Audience::Room,
         })));
+    }
+
+    /// Validation-order step 1 (structure) precedes the role gate: an
+    /// `invite.list` with a `limit` outside `1..=timeline_page_max` is
+    /// `invalid_argument { field: "in.limit", reason: bound }`, never
+    /// `insufficient_standing` — authorization is not exposed for malformed
+    /// input.
+    #[test]
+    fn invite_list_out_of_bounds_limit_is_invalid_argument_before_role() {
+        let rid = || RoomId::new(format!("blake3:{}", "ab".repeat(32)));
+        for limit in [0, limits().timeline_page_max + 1] {
+            let call = TypedCall::InviteList(InviteList {
+                room_id: rid(),
+                page: Page {
+                    cursor: Cursor::Start,
+                    direction: Direction::Forward,
+                    limit,
+                },
+            });
+            let err = authority_gated_room(&call)
+                .expect_err("an out-of-bounds limit is refused at step 1");
+            assert!(
+                matches!(
+                    err,
+                    ApiError::InvalidArgument {
+                        reason: InvalidReason::Bound { .. },
+                        ..
+                    }
+                ),
+                "limit {limit}: got {err:?}"
+            );
+        }
     }
 }
