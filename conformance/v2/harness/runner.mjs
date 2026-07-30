@@ -255,16 +255,46 @@ export class Runner {
       vars.svc_port_v6 = port;
       vars.__case.closers.push(close);
     }
+
+    // Subject-id vars the fixtures name but the runner must bind. Each is a
+    // real ensured subject; the fixtures reference the id (an invitee, an
+    // outsider) without authoring it inline. `$sb` is the second subject (the
+    // invitee a capability is bound to), `$sc` the outsider (a subject with
+    // no room relationship). A daemon holds exactly ONE subject, so a
+    // `subject:second` / `subject:outsider` require implies a second daemon
+    // even when `daemon:second` is not named — spawn one so the ids are
+    // genuinely distinct from the authority's. Bound only when the case
+    // declares the matching subject require, so a case that does not name one
+    // never sees an id it did not ask for.
+    const ensureSecondDaemon = async () => {
+      if (!vars.__case.second) {
+        const second = await startDaemon(this.binary, { loopback: true });
+        daemons.push(second);
+        vars.__case.second = second;
+      }
+      return vars.__case.second;
+    };
+    const bindSubject = async (requireToken, sessionLabel, varName, onSecond) => {
+      if (!requires.includes(requireToken)) return;
+      if (onSecond) await ensureSecondDaemon();
+      const sess = await this.#sessionFor(sessionLabel, daemons, sessions, vars);
+      const ensured = await sess.call('subject.ensure', {});
+      vars[varName] = ensured.out?.subject_id;
+    };
+    await bindSubject('subject:second', 'subject:second', 'sb', true);
+    await bindSubject('subject:outsider', 'subject:outsider', 'sc', true);
   }
 
   /** The session for an `on` label, connecting lazily. */
   async #sessionFor(onLabel, daemons, sessions, vars) {
     const label = onLabel || 'subject:self';
     if (sessions.has(label)) return sessions.get(label);
-    // Route to the second daemon for labels that clearly name it.
+    // Route to the second daemon for labels that clearly name a distinct
+    // subject (a daemon holds one subject, so second/outsider/peer subjects
+    // live on the second daemon).
     const cs = vars.__case || {};
     const daemon =
-      cs.second && /second|principal_b|peer|remote/i.test(label)
+      cs.second && /second|outsider|principal_b|peer|remote/i.test(label)
         ? cs.second
         : cs.primary;
     const s = new Session(label);

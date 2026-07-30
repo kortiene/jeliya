@@ -35,9 +35,7 @@
               "capability": "<capability>",
               "role": "member",
               "expires_at": "<ts>",
-              "redeemability": {
-                "state": "redeemable"
-              }
+              "redeemability": "outstanding"
             }
           },
           "on": "subject:authority",
@@ -67,9 +65,7 @@
                   "subject_id": "$sb",
                   "role": "member",
                   "expires_at": "$exp1",
-                  "redeemability": {
-                    "state": "redeemable"
-                  }
+                  "redeemability": "outstanding"
                 }
               }
             }
@@ -109,9 +105,7 @@
             "out": {
               "invite_id": "<invite_id>",
               "capability": "<capability>",
-              "redeemability": {
-                "state": "redeemable"
-              }
+              "redeemability": "outstanding"
             }
           },
           "on": "subject:authority",
@@ -411,9 +405,7 @@
                 "not": "$cap1"
               },
               "subject_id": "$sc",
-              "redeemability": {
-                "state": "redeemable"
-              }
+              "redeemability": "outstanding"
             }
           },
           "on": "subject:authority_principal_2",
@@ -972,9 +964,7 @@
                   "subject_id": "$sc",
                   "role": "member",
                   "expires_at": "<ts>",
-                  "redeemability": {
-                    "state": "redeemable"
-                  }
+                  "redeemability": "outstanding"
                 }
               }
             }
@@ -998,10 +988,7 @@
                 "contains_one": {
                   "invite_id": "$inv_short",
                   "subject_id": "$sb",
-                  "redeemability": {
-                    "state": "expired",
-                    "expired_at": "$exp_short"
-                  }
+                  "redeemability": "expired"
                 }
               }
             }
@@ -1269,16 +1256,11 @@
               "invites": {
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "revoked",
-                    "revoked_at": "$rev1"
-                  }
+                  "redeemability": "revoked"
                 },
                 "contains_none": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "redeemable"
-                  }
+                  "redeemability": "outstanding"
                 }
               }
             }
@@ -1395,10 +1377,7 @@
                 "len": 1,
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "revoked",
-                    "revoked_at": "$rev1"
-                  }
+                  "redeemability": "revoked"
                 }
               }
             }
@@ -1487,10 +1466,7 @@
               "invites": {
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "revoked",
-                    "revoked_at": "$rev1"
-                  }
+                  "redeemability": "revoked"
                 }
               }
             }
@@ -1584,10 +1560,7 @@
               "invites": {
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "expired",
-                    "expired_at": "$exp1"
-                  }
+                  "redeemability": "expired"
                 }
               }
             }
@@ -1727,9 +1700,7 @@
               "invites": {
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "redeemable"
-                  }
+                  "redeemability": "outstanding"
                 }
               }
             }
@@ -1872,9 +1843,7 @@
               "invites": {
                 "contains_none": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "redeemable"
-                  }
+                  "redeemability": "outstanding"
                 }
               }
             }
@@ -3150,9 +3119,7 @@
               "capability": "<capability>",
               "expires_at": "<ts>",
               "role": "member",
-              "redeemability": {
-                "state": "redeemable"
-              }
+              "redeemability": "outstanding"
             }
           },
           "on": "subject:authority",
@@ -3234,9 +3201,7 @@
               },
               "subject_id": "$sb",
               "role": "member",
-              "redeemability": {
-                "state": "redeemable"
-              }
+              "redeemability": "outstanding"
             }
           },
           "note": "SAME subject_id, fresh capability — this is the operation the invariant exists to protect",
@@ -3312,10 +3277,7 @@
               "invites": {
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "expired",
-                    "expired_at": "$exp1"
-                  }
+                  "redeemability": "expired"
                 }
               }
             }
@@ -3545,9 +3507,7 @@
               "capability": "<capability>",
               "role": "member",
               "expires_at": "<ts>",
-              "redeemability": {
-                "state": "redeemable"
-              }
+              "redeemability": "outstanding"
             }
           },
           "on": "subject:authority",
@@ -3760,9 +3720,7 @@
                 "len": 1,
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "redeemable"
-                  }
+                  "redeemability": "outstanding"
                 }
               }
             }
@@ -3847,9 +3805,7 @@
                 "len": 1,
                 "contains_one": {
                   "invite_id": "$inv1",
-                  "redeemability": {
-                    "state": "redeemable"
-                  }
+                  "redeemability": "outstanding"
                 }
               }
             }
