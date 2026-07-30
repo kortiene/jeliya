@@ -1247,24 +1247,36 @@ impl<'a> TypedSupervisor<'a> {
         let rows = store
             .room_tail(room_id, u32::MAX)
             .map_err(|e| CoreError::internal(format!("could not read the timeline: {e}")))?;
-        Ok(proj::positioned(&rows)
-            .filter_map(|(rank, se)| proj::materialize(se, rank, snapshot))
+        let refs: Vec<&iroh_rooms::experimental::store::StoredEvent> = rows.iter().collect();
+        Ok(proj::positioned(&refs, snapshot)
+            .into_iter()
+            .map(|(_, e)| e)
             .collect())
     }
 
     /// The dense canonical position of one committed event, looked up by its
-    /// event id over the full tail. Mutation replies use this so the `pos`
-    /// they serve is the same rank the timeline, resync, and push stream
-    /// serve for that event — never the raw lamport, and never the head's
-    /// position (which a later concurrent event can share).
+    /// event id. Mutation replies use this so the `pos` they serve is the same
+    /// rank the timeline, resync, and push stream serve for that event —
+    /// never the raw lamport, and never the head's position (which a later
+    /// concurrent event can share). Ranking counts only committed kinds (see
+    /// [`proj::positioned`]), so a non-committed row consumes no position.
     fn pos_of_event(&self, room_id: &IrohRoomId, event_id_hex: &str) -> CoreResult<u64> {
         let store = self.sup.open_store()?;
         let rows = store
             .room_tail(room_id, u32::MAX)
             .map_err(|e| CoreError::internal(format!("could not read the timeline: {e}")))?;
-        let found = proj::positioned(&rows)
-            .find(|(_, se)| proj::event_id(&se.event_id).as_str() == event_id_hex)
-            .map(|(rank, _)| rank);
+        let mut rank = 0u64;
+        let mut found = None;
+        for se in &rows {
+            if !proj::is_committed(se) {
+                continue;
+            }
+            if proj::event_id(&se.event_id).as_str() == event_id_hex {
+                found = Some(rank);
+                break;
+            }
+            rank += 1;
+        }
         found.ok_or_else(|| {
             CoreError::internal(format!(
                 "committed event {event_id_hex} is absent from the room tail"
@@ -1273,7 +1285,7 @@ impl<'a> TypedSupervisor<'a> {
     }
 
     /// The newest committed event authored by a subject, with its dense
-    /// canonical position.
+    /// canonical position. Ranking counts only committed kinds.
     fn latest_by_subject(
         &self,
         room_id: &IrohRoomId,
@@ -1281,16 +1293,19 @@ impl<'a> TypedSupervisor<'a> {
     ) -> Option<(EventId, u64)> {
         let store = self.sup.open_store().ok()?;
         let rows = store.room_tail(room_id, u32::MAX).ok()?;
-        proj::positioned(&rows)
-            .filter_map(|(rank, se)| {
-                let ev = SignedEvent::decode(&se.wire.signed).ok()?;
-                if &ev.sender_id == subject {
-                    Some((proj::event_id(&se.event_id), rank))
-                } else {
-                    None
-                }
-            })
-            .last()
+        let mut rank = 0u64;
+        let mut latest = None;
+        for se in &rows {
+            if !proj::is_committed(se) {
+                continue;
+            }
+            let ev = SignedEvent::decode(&se.wire.signed).ok()?;
+            if &ev.sender_id == subject {
+                latest = Some((proj::event_id(&se.event_id), rank));
+            }
+            rank += 1;
+        }
+        latest
     }
 
     /// The author-dated instant a subject joined, when discoverable.

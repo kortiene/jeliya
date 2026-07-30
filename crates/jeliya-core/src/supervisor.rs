@@ -178,6 +178,12 @@ pub struct RoomSession {
     room_rx: Arc<TokioMutex<broadcast::Receiver<StoredEvent>>>,
     forwarders: StdMutex<HashMap<[u8; SHORT_ID_LEN], PipeForwarder>>,
     seen: StdMutex<BTreeSet<EventId>>,
+    /// The next dense rank this room's push stream expects to serve (the
+    /// per-room high-water mark). An in-order append advances it by one; a
+    /// NEW committed event whose canonical rank falls below it has reordered
+    /// already-served history and is served as a corrective gap instead of a
+    /// normal append (see `collect_committed`). Starts at 0 (genesis rank).
+    next_push_rank: StdMutex<u64>,
     /// Live gate for join-bootstrap provisional admission (an unknown device may
     /// pull the membership sub-DAG). Flipped on so that a stranger can only
     /// bootstrap while this owner session actually has a pending invite open,
@@ -226,6 +232,87 @@ fn internal(context: &str, err: impl std::fmt::Display) -> CoreError {
 /// owner session legitimately hosts join bootstraps.
 fn any_pending_invite(snapshot: &MembershipSnapshot) -> bool {
     snapshot.members().any(|m| m.status == Status::Invited)
+}
+
+/// One newly-pushed committed event plus whether it reorders already-served
+/// history. The engine turns a `reordered_at` into an explicit `gap` push so
+/// subscribers discard and resync the shifted suffix rather than trust a
+/// silently renumbered one.
+#[derive(Debug)]
+pub(crate) struct CommittedEvent {
+    /// The committed event, carrying its dense canonical rank as `pos`.
+    pub event: jeliya_api::Event,
+    /// `Some(pos)` when this event's rank is at or below one the stream
+    /// already served (a late concurrent sibling interleaved below the
+    /// frontier): the first position the client must discard and resync from.
+    /// `None` for an in-order append.
+    pub reordered_at: Option<u64>,
+}
+
+/// Rank the newly-pushed committed events of a room's **full canonical tail**
+/// densely and detect reordering. Both typed push paths call this with the
+/// full tail: the reconcile poll already scans it, and the hot path must too
+/// — only the full tail reveals whether a late concurrent sibling interleaved
+/// below an already-served position. (This is one tail read per push batch on
+/// top of the 300 ms reconcile, both over the same already-materialized rows;
+/// the store serves them from the indexed cache, so the per-batch cost is one
+/// ordered scan, not a decode per row — non-committed rows are rejected on
+/// their signed type alone.)
+///
+/// Only COMMITTED kinds hold a rank (`is_committed`), so a non-committed row
+/// consumes no position. `seen` dedupes exactly-once; `next_push_rank` is the
+/// per-room high-water mark — the rank the next in-order append takes.
+///
+/// An event whose canonical rank is at or below the high-water mark has
+/// reordered history the stream already served: it is emitted with
+/// `reordered_at = Some(rank)`, the mark is reset to that rank, and every
+/// later new event is likewise marked (the whole suffix shifted), so the
+/// engine emits ONE corrective gap from the first shifted position.
+fn collect_committed(
+    tail: &[StoredEvent],
+    snapshot: &MembershipSnapshot,
+    seen: &mut BTreeSet<EventId>,
+    next_push_rank: &mut u64,
+) -> Vec<CommittedEvent> {
+    let mut out = Vec::new();
+    let mut rank = 0u64;
+    for se in tail {
+        if !crate::projection::is_committed(se) {
+            continue; // not a committed event: holds no position
+        }
+        let this_rank = rank;
+        rank += 1;
+        if !seen.insert(se.event_id) {
+            continue; // already pushed by an earlier batch or reconcile
+        }
+        let event = crate::projection::materialize(se, 0, snapshot)
+            .expect("is_committed implies materializable");
+        if this_rank >= *next_push_rank {
+            // In-order append at or past the high-water mark.
+            *next_push_rank = this_rank + 1;
+            out.push(CommittedEvent {
+                event: jeliya_api::Event {
+                    pos: this_rank,
+                    ..event
+                },
+                reordered_at: None,
+            });
+        } else {
+            // Reorder: this new event interleaved below the frontier. Serve it
+            // at its true rank, mark it so the engine emits a corrective gap
+            // from the first shifted position, and rewind the mark so the
+            // whole shifted suffix is re-served (and re-marked) after resync.
+            *next_push_rank = this_rank;
+            out.push(CommittedEvent {
+                event: jeliya_api::Event {
+                    pos: this_rank,
+                    ..event
+                },
+                reordered_at: Some(this_rank),
+            });
+        }
+    }
+    out
 }
 
 impl RoomSupervisor {
@@ -921,12 +1008,14 @@ impl RoomSupervisor {
 
     /// Build a shared session around a freshly spawned node, seeding the push
     /// dedupe set with `seen` (the caller passes the full current history at
-    /// open time).
+    /// open time) and the push high-water mark with the number of COMMITTED
+    /// events already in that history (the next rank a fresh push serves).
     fn make_session(
         node: Node,
         accept_joins: Arc<AtomicBool>,
         is_owner: bool,
         seen: BTreeSet<EventId>,
+        committed_so_far: u64,
     ) -> Arc<RoomSession> {
         let conn_rx = node.conn_events();
         let room_rx = node.room_events();
@@ -936,6 +1025,7 @@ impl RoomSupervisor {
             room_rx: Arc::new(TokioMutex::new(room_rx)),
             forwarders: StdMutex::new(HashMap::new()),
             seen: StdMutex::new(seen),
+            next_push_rank: StdMutex::new(committed_so_far),
             accept_joins,
             is_owner,
         })
@@ -1154,7 +1244,13 @@ impl RoomSupervisor {
                 .await
                 .map_err(|e| internal("could not read the timeline", e))?;
             let seen: BTreeSet<EventId> = rows.iter().map(|se| se.event_id).collect();
-            let session = Self::make_session(node, accept_joins, is_owner, seen);
+            // The push high-water mark starts past the COMMITTED history the
+            // open-time read already covered (non-committed rows hold no rank).
+            let committed_so_far = rows
+                .iter()
+                .filter(|se| crate::projection::is_committed(se))
+                .count() as u64;
+            let session = Self::make_session(node, accept_joins, is_owner, seen, committed_so_far);
             self.sessions().insert(room_id, session);
         }
 
@@ -2778,11 +2874,18 @@ impl RoomSupervisor {
     }
 
     /// The typed-v2 reconcile poll: identical to [`Self::poll_new_events`] but
-    /// materializes committed events as typed `jeliya-api` [`Event`]s.
+    /// materializes committed events as typed [`CommittedEvent`]s.
+    ///
+    /// Scans the full canonical tail (the reconcile safety net), so it is the
+    /// path that observes a late-arriving concurrent sibling interleaving
+    /// below an already-pushed position. `collect_committed` marks that
+    /// reorder; the engine turns it into an explicit `gap` so subscribers
+    /// discard and resync the shifted suffix rather than trust a silently
+    /// renumbered one.
     pub(crate) async fn poll_new_events_typed(
         &self,
         room_id: &RoomId,
-    ) -> CoreResult<Vec<jeliya_api::Event>> {
+    ) -> CoreResult<Vec<CommittedEvent>> {
         let session = self.session(room_id)?;
         let rows = session
             .node
@@ -2798,19 +2901,14 @@ impl RoomSupervisor {
             session.is_owner && any_pending_invite(&snapshot),
             Ordering::Relaxed,
         );
-        // Rank the full canonical tail densely so each new event's served
-        // position agrees with the timeline/resync position space exactly
-        // (the raw lamport is not unique across concurrent siblings).
         let mut seen = session.seen.lock().expect("seen poisoned");
-        let mut out = Vec::new();
-        for (rank, se) in crate::projection::positioned(&rows) {
-            if seen.insert(se.event_id) {
-                if let Some(v) = crate::projection::materialize(se, rank, &snapshot) {
-                    out.push(v);
-                }
-            }
-        }
-        Ok(out)
+        let mut next_rank = session.next_push_rank.lock().expect("next rank poisoned");
+        Ok(collect_committed(
+            &rows,
+            &snapshot,
+            &mut seen,
+            &mut next_rank,
+        ))
     }
 
     /// Primary push path (issue #83): await the next batch of live room events
@@ -2905,36 +3003,28 @@ impl RoomSupervisor {
 
     /// The typed-v2 primary push path: identical to [`Self::recv_room_events`]
     /// (same broadcast, same lag recovery, same `seen` dedup) but materializes
-    /// committed events as typed `jeliya-api` [`Event`]s.
+    /// committed events as typed [`CommittedEvent`]s, ranked densely with
+    /// reorder detection (see [`collect_committed`]).
     pub(crate) async fn recv_room_events_typed(
         &self,
         room_id: &RoomId,
-    ) -> CoreResult<Vec<jeliya_api::Event>> {
+    ) -> CoreResult<Vec<CommittedEvent>> {
         let room_rx = self.session(room_id)?.room_rx.clone();
 
-        let mut lagged;
-        let mut batch: Vec<StoredEvent> = Vec::new();
+        // Park on the broadcast until at least one event commits (or the room
+        // closes). The batch itself is only the wake-up signal — the
+        // authoritative set is the full tail below — so a lossy `Lagged`
+        // receiver needs no special branch here: the tail read recovers
+        // anything the broadcast dropped, exactly as the reconcile poll does.
         {
             let mut rx = room_rx.lock().await;
             match rx.recv().await {
-                Ok(ev) => {
-                    lagged = false;
-                    batch.push(ev);
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => lagged = true,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => {
                     return Err(CoreError::new(
                         ErrorKind::RoomNotOpen,
                         format!("room {room_id} closed"),
                     ));
-                }
-            }
-            loop {
-                match rx.try_recv() {
-                    Ok(ev) => batch.push(ev),
-                    Err(broadcast::error::TryRecvError::Lagged(_)) => lagged = true,
-                    Err(broadcast::error::TryRecvError::Empty)
-                    | Err(broadcast::error::TryRecvError::Closed) => break,
                 }
             }
         }
@@ -2945,31 +3035,26 @@ impl RoomSupervisor {
             .snapshot()
             .await
             .map_err(|e| internal("could not read the membership snapshot", e))?;
-        // Positions are the dense rank over the canonical `(lamport,
-        // event_id)` order. The live batch is receive-ordered, not canonical,
-        // and a lag already falls back to the full tail — so rank the full
-        // tail either way and serve only events this path has not yet pushed.
-        // `seen` dedupe keeps this exactly-once across the batch, the lag
-        // fallback, and the reconcile poll.
-        let rows = if lagged {
-            batch
-        } else {
-            session
-                .node
-                .room_tail(u32::MAX)
-                .await
-                .map_err(|e| internal("could not read the timeline", e))?
-        };
+        // Rank the room's COMMITTED events densely over the full canonical
+        // tail. Only the full tail reveals whether a late concurrent sibling
+        // interleaved below an already-served position, and it is the
+        // authoritative recovery for a lagged broadcast — so it is ranked on
+        // every wake-up, hot path and lag alike. `collect_committed` ranks
+        // new events against the high-water mark and marks any reorder so the
+        // stream emits a corrective gap.
+        let rows = session
+            .node
+            .room_tail(u32::MAX)
+            .await
+            .map_err(|e| internal("could not read the timeline", e))?;
         let mut seen = session.seen.lock().expect("seen poisoned");
-        let mut out = Vec::new();
-        for (rank, se) in crate::projection::positioned(&rows) {
-            if seen.insert(se.event_id) {
-                if let Some(v) = crate::projection::materialize(se, rank, &snapshot) {
-                    out.push(v);
-                }
-            }
-        }
-        Ok(out)
+        let mut next_rank = session.next_push_rank.lock().expect("next rank poisoned");
+        Ok(collect_committed(
+            &rows,
+            &snapshot,
+            &mut seen,
+            &mut next_rank,
+        ))
     }
 
     /// Drain the session's `conn_events` broadcast; `true` if any peer
@@ -3660,13 +3745,17 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        parse_expiry, parse_file_id, parse_pipe_id, sanitize_name, validate_room_name, Content,
-        EventType, RoomSupervisor,
+        collect_committed, parse_expiry, parse_file_id, parse_pipe_id, sanitize_name,
+        validate_room_name, Content, EventType, RoomSupervisor,
     };
     use crate::error::ErrorKind;
-    use iroh_rooms::events::{validate_wire_bytes, ValidationContext, WireEvent};
+    use iroh_rooms::events::{
+        build_message_text, validate_wire_bytes, ValidationContext, WireEvent,
+    };
+    use iroh_rooms::experimental::store::EventStore;
     use iroh_rooms::identity::{DeviceBinding, SigningKey};
-    use iroh_rooms::room::{RoomId, RoomInviteTicket};
+    use iroh_rooms::room::{build_room_created, derive_room_id, RoomId, RoomInviteTicket};
+    use std::collections::BTreeSet;
     use tempfile::tempdir;
 
     /// Persist an event authored elsewhere directly into the supervisor's
@@ -3677,6 +3766,186 @@ mod tests {
                 .expect("authored event validates");
         let mut store = sup.open_store().unwrap();
         store.insert(&validated).unwrap();
+    }
+
+    /// A self-contained room: identity/device keys, the room id, and the
+    /// validated genesis — enough to author further events against it.
+    struct RoomFixture {
+        identity: SigningKey,
+        device: SigningKey,
+        room_id: RoomId,
+        genesis_id: iroh_rooms::events::EventId,
+        store: EventStore,
+        snapshot: iroh_rooms::room::MembershipSnapshot,
+    }
+
+    fn room_fixture() -> RoomFixture {
+        const TS: u64 = 1_783_190_000_000;
+        let identity = SigningKey::generate();
+        let device = SigningKey::generate();
+        let nonce = [0x42u8; 16];
+        let room_id = derive_room_id(&identity.identity_key(), &nonce, TS);
+        let genesis = build_room_created(&identity, &device, "rank room", &nonce, TS);
+        let ctx = ValidationContext::for_room(room_id);
+        let genesis = validate_wire_bytes(&genesis.to_bytes(), &ctx).unwrap();
+        let genesis_id = genesis.event_id;
+        let mut store = EventStore::open_in_memory().unwrap();
+        store.insert(&genesis).unwrap();
+        let snapshot =
+            iroh_rooms::room::RoomMembership::from_events(room_id, vec![genesis]).snapshot();
+        RoomFixture {
+            identity,
+            device,
+            room_id,
+            genesis_id,
+            store,
+            snapshot,
+        }
+    }
+
+    impl RoomFixture {
+        fn message(&self, body: &str, device: &SigningKey, at: u64) -> WireEvent {
+            build_message_text(
+                &self.identity,
+                device,
+                &self.room_id,
+                body,
+                None,
+                None,
+                &[],
+                &[self.genesis_id],
+                at,
+            )
+        }
+
+        fn own_message(&self, body: &str, at: u64) -> WireEvent {
+            build_message_text(
+                &self.identity,
+                &self.device,
+                &self.room_id,
+                body,
+                None,
+                None,
+                &[],
+                &[self.genesis_id],
+                at,
+            )
+        }
+
+        fn insert(&mut self, wire: &WireEvent) {
+            let ctx = ValidationContext::for_room(self.room_id);
+            let validated = validate_wire_bytes(&wire.to_bytes(), &ctx).unwrap();
+            self.store.insert(&validated).unwrap();
+        }
+
+        fn tail(&self) -> Vec<iroh_rooms::experimental::store::StoredEvent> {
+            self.store.room_tail(&self.room_id, u32::MAX).unwrap()
+        }
+    }
+
+    #[test]
+    fn collect_committed_serves_dense_in_order_positions() {
+        let mut fx = room_fixture();
+        let d2 = SigningKey::generate();
+        let m1 = fx.own_message("m1", 1_783_190_001_000);
+        fx.insert(&m1);
+        fx.insert(&fx.message("m2", &d2, 1_783_190_002_000));
+        let tail = fx.tail();
+        let mut seen = BTreeSet::new();
+        let mut next = 0;
+        let out = collect_committed(&tail, &fx.snapshot, &mut seen, &mut next);
+        let positions: Vec<u64> = out.iter().map(|c| c.event.pos).collect();
+        assert_eq!(positions, [0, 1, 2], "dense ranks over the committed tail");
+        assert!(
+            out.iter().all(|c| c.reordered_at.is_none()),
+            "all in-order appends"
+        );
+        assert_eq!(next, 3, "the high-water mark advanced past all three");
+    }
+
+    /// Validate one authored message and return its canonical `EventId`.
+    fn validated_id(room_id: &RoomId, wire: &WireEvent) -> iroh_rooms::events::EventId {
+        validate_wire_bytes(&wire.to_bytes(), &ValidationContext::for_room(*room_id))
+            .expect("authored event validates")
+            .event_id
+    }
+
+    #[test]
+    fn collect_committed_marks_a_late_sibling_as_a_reorder() {
+        let mut fx = room_fixture();
+        // Serve genesis + m1 first (positions 0 and 1).
+        let m1 = fx.own_message("m1", 1_783_190_001_000);
+        let m1_id = validated_id(&fx.room_id, &m1);
+        fx.insert(&m1);
+        let tail = fx.tail();
+        let mut seen = BTreeSet::new();
+        let mut next = 0;
+        let first = collect_committed(&tail, &fx.snapshot, &mut seen, &mut next);
+        assert_eq!(first.len(), 2);
+        assert_eq!(next, 2);
+
+        // Author late siblings (same parent as m1, so the same lamport) until
+        // one sorts BEFORE m1 in the canonical (lamport, event_id) order. That
+        // is the reorder case: it interleaves below the already-served tip.
+        let mut before = None;
+        for attempt in 0..64u64 {
+            let cand = fx.message("late", &SigningKey::generate(), 1_783_190_001_500 + attempt);
+            if validated_id(&fx.room_id, &cand) < m1_id {
+                before = Some(cand);
+                break;
+            }
+        }
+        let late = before.expect("some device yields a before-sorting sibling");
+        fx.insert(&late);
+        let tail2 = fx.tail();
+        let out2 = collect_committed(&tail2, &fx.snapshot, &mut seen, &mut next);
+        assert_eq!(out2.len(), 1, "exactly one new event");
+        assert_eq!(
+            out2[0].reordered_at,
+            Some(out2[0].event.pos),
+            "a sibling interleaving below the served tip is a reorder"
+        );
+        assert_eq!(
+            out2[0].event.pos, 1,
+            "it took m1's old rank, shifting m1 up"
+        );
+        assert_eq!(next, 1, "the mark rewound so the shifted suffix re-serves");
+    }
+
+    #[test]
+    fn collect_committed_appends_a_tip_sibling_without_reorder() {
+        let mut fx = room_fixture();
+        let m1 = fx.own_message("m1", 1_783_190_001_000);
+        let m1_id = validated_id(&fx.room_id, &m1);
+        fx.insert(&m1);
+        let tail = fx.tail();
+        let mut seen = BTreeSet::new();
+        let mut next = 0;
+        collect_committed(&tail, &fx.snapshot, &mut seen, &mut next);
+        assert_eq!(next, 2);
+
+        // A sibling that sorts AFTER m1 is an ordinary in-order append at the
+        // tip — no reorder, no gap.
+        let mut after = None;
+        for attempt in 0..64u64 {
+            let cand = fx.message(
+                "after",
+                &SigningKey::generate(),
+                1_783_190_001_500 + attempt,
+            );
+            if validated_id(&fx.room_id, &cand) > m1_id {
+                after = Some(cand);
+                break;
+            }
+        }
+        let tip = after.expect("some device yields an after-sorting sibling");
+        fx.insert(&tip);
+        let tail2 = fx.tail();
+        let out2 = collect_committed(&tail2, &fx.snapshot, &mut seen, &mut next);
+        assert_eq!(out2.len(), 1);
+        assert_eq!(out2[0].reordered_at, None, "a tip append is not a reorder");
+        assert_eq!(out2[0].event.pos, 2);
+        assert_eq!(next, 3);
     }
 
     /// Join `agent` keys into the room offline: mint a real invite through
