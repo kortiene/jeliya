@@ -3870,53 +3870,36 @@ mod tests {
             .event_id
     }
 
-    /// Author a sibling of `m1` (same parent, so the same lamport) whose
-    /// canonical `EventId` sorts on the requested side of `m1_id`, varying the
-    /// signing device and timestamp until one lands. The canonical tie-break
-    /// is bytewise on the id, so across enough distinct devices a match is
-    /// guaranteed; the bound is generous to keep the test deterministic in
-    /// practice rather than probabilistic.
-    fn sibling_sorted(
-        fx: &RoomFixture,
-        m1_id: iroh_rooms::events::EventId,
-        before: bool,
-    ) -> WireEvent {
-        for attempt in 0..4096u64 {
-            let cand = fx.message(
-                "sibling",
-                &SigningKey::generate(),
-                1_783_190_001_500 + attempt,
-            );
-            let id = validated_id(&fx.room_id, &cand);
-            if (id < m1_id) == before {
-                return cand;
-            }
+    /// Author two siblings of the genesis (same parent, so the same lamport)
+    /// and return them ordered by their canonical `EventId`. The ordering is
+    /// deterministic — no random search: the two events are generated first,
+    /// then the caller designates the lower or higher one for its scenario.
+    fn two_sorted_siblings(fx: &RoomFixture) -> (WireEvent, WireEvent) {
+        let a = fx.message("sibling a", &SigningKey::generate(), 1_783_190_001_500);
+        let b = fx.message("sibling b", &SigningKey::generate(), 1_783_190_001_500);
+        if validated_id(&fx.room_id, &a) <= validated_id(&fx.room_id, &b) {
+            (a, b)
+        } else {
+            (b, a)
         }
-        panic!(
-            "no sibling sorted {} m1 in 4096 tries",
-            if before { "before" } else { "after" }
-        );
     }
 
     #[test]
     fn collect_committed_marks_a_late_sibling_as_a_reorder() {
         let mut fx = room_fixture();
-        // Serve genesis + m1 first (positions 0 and 1).
-        let m1 = fx.own_message("m1", 1_783_190_001_000);
-        let m1_id = validated_id(&fx.room_id, &m1);
-        fx.insert(&m1);
+        // Two siblings: `lower` sorts before `higher` in the canonical order.
+        // Serve the HIGHER one first (as m1 at position 1), then commit the
+        // LOWER one late — it interleaves below the served tip.
+        let (lower, higher) = two_sorted_siblings(&fx);
+        fx.insert(&higher);
         let tail = fx.tail();
         let mut seen = BTreeSet::new();
         let mut next = 0;
         let first = collect_committed(&tail, &fx.snapshot, &mut seen, &mut next);
-        assert_eq!(first.len(), 2);
+        assert_eq!(first.len(), 2, "genesis + the served sibling");
         assert_eq!(next, 2);
 
-        // A late sibling sorting BEFORE m1 in the canonical (lamport,
-        // event_id) order interleaves below the already-served tip: the
-        // reorder case the stream must surface as a corrective gap.
-        let late = sibling_sorted(&fx, m1_id, true);
-        fx.insert(&late);
+        fx.insert(&lower);
         let tail2 = fx.tail();
         let out2 = collect_committed(&tail2, &fx.snapshot, &mut seen, &mut next);
         assert_eq!(out2.len(), 1, "exactly one new event");
@@ -3927,7 +3910,7 @@ mod tests {
         );
         assert_eq!(
             out2[0].event.pos, 1,
-            "it took m1's old rank, shifting m1 up"
+            "it took the served sibling's old rank, shifting it up"
         );
         assert_eq!(next, 1, "the mark rewound so the shifted suffix re-serves");
     }
@@ -3935,19 +3918,17 @@ mod tests {
     #[test]
     fn collect_committed_appends_a_tip_sibling_without_reorder() {
         let mut fx = room_fixture();
-        let m1 = fx.own_message("m1", 1_783_190_001_000);
-        let m1_id = validated_id(&fx.room_id, &m1);
-        fx.insert(&m1);
+        // Serve the LOWER sibling first (position 1), then commit the HIGHER
+        // one: an ordinary in-order append at the tip, no reorder, no gap.
+        let (lower, higher) = two_sorted_siblings(&fx);
+        fx.insert(&lower);
         let tail = fx.tail();
         let mut seen = BTreeSet::new();
         let mut next = 0;
         collect_committed(&tail, &fx.snapshot, &mut seen, &mut next);
         assert_eq!(next, 2);
 
-        // A sibling that sorts AFTER m1 is an ordinary in-order append at the
-        // tip — no reorder, no gap.
-        let tip = sibling_sorted(&fx, m1_id, false);
-        fx.insert(&tip);
+        fx.insert(&higher);
         let tail2 = fx.tail();
         let out2 = collect_committed(&tail2, &fx.snapshot, &mut seen, &mut next);
         assert_eq!(out2.len(), 1);
