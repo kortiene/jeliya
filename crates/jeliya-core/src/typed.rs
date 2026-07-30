@@ -1871,6 +1871,11 @@ impl TypedCall {
         }
         .unwrap_or_default();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // The operation path is part of the fingerprint: two operations with
+        // structurally identical inputs (pipe.connect and pipe.revoke both
+        // serialize as {room_id, pipe_id}) must not read as a faithful replay
+        // of one another. Hash the path alongside the body.
+        self.path().hash(&mut hasher);
         body.hash(&mut hasher);
         hasher.finish()
     }

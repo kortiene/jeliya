@@ -94,15 +94,33 @@ fn is_dedup_op(op: &str) -> bool {
     )
 }
 
-/// A recorded dedup-ledger entry: the request body hash and the reply the
-/// first execution produced. The reply is stored as a typed [`TypedReply`] so
-/// a replay re-encodes byte-for-byte what the original caller received.
-struct LedgerEntry {
-    /// A hash of the canonical request body (the typed input), used to tell a
-    /// faithful retry from a conflicting reuse of the same `op_id`.
-    body_hash: u64,
-    /// The reply the first (only) effect produced.
-    reply: Result<TypedReply, ApiError>,
+/// The reply a dedup'd operation produced, shared between the original
+/// execution and every faithful replay. Clone-cheap (`Arc`).
+type LedgerReply = Arc<Result<TypedReply, ApiError>>;
+
+/// A dedup-ledger entry in one of two states. `InFlight` reserves the key
+/// BEFORE the effect runs and carries a [`watch`] the original execution
+/// publishes its reply into; a concurrent duplicate of the same key subscribes
+/// and awaits that reply rather than dispatching a second effect. `Done` is
+/// the recorded outcome a later replay returns. The reservation is what makes
+/// the effect single even when two retries overlap, and what lets the reply
+/// outlive the connection that asked for it.
+enum LedgerEntry {
+    /// The effect is running; `done` resolves to its reply exactly once.
+    InFlight {
+        /// The request fingerprint (operation path + canonical body), to tell
+        /// a faithful retry from a conflicting reuse of the same `op_id`.
+        body_hash: u64,
+        /// Publishes the reply the moment the original execution completes.
+        done: watch::Sender<Option<LedgerReply>>,
+    },
+    /// The effect completed; the reply is recorded for faithful replays.
+    Done {
+        /// The request fingerprint.
+        body_hash: u64,
+        /// The recorded reply.
+        reply: LedgerReply,
+    },
 }
 
 /// The `op_id` dedup ledger, keyed per `(session principal, op_id)` per the
@@ -114,7 +132,7 @@ struct LedgerEntry {
 /// nor cancel another's operations.
 #[derive(Default)]
 struct DedupLedger {
-    /// `(principal_key, op_id)` → the recorded entry. `principal_key` is the
+    /// `(principal_key, op_id)` → the entry. `principal_key` is the
     /// authenticated session principal rendered as a single string
     /// (`credential` + `client_id`), never the bare subject — a daemon has
     /// one subject, so a per-subject ledger would be daemon-global.
@@ -134,8 +152,10 @@ pub struct Engine {
     /// Set once a `daemon.stop` has been accepted: a second stop is
     /// `shutdown_in_progress`, never a comfortable repeat `stopping: true`.
     stopping: Arc<AtomicBool>,
-    /// The `op_id` dedup ledger (see [`DedupLedger`]).
-    ledger: Mutex<DedupLedger>,
+    /// The `op_id` dedup ledger (see [`DedupLedger`]). Shared (`Arc`) so a
+    /// detached effect task can record the reply after the connection that
+    /// requested it has dropped.
+    ledger: Arc<Mutex<DedupLedger>>,
 }
 
 /// The result of executing one typed call: the reply to encode, plus the
@@ -171,7 +191,7 @@ impl Engine {
             push_tx,
             config,
             stopping: Arc::new(AtomicBool::new(false)),
-            ledger: Mutex::new(DedupLedger::default()),
+            ledger: Arc::new(Mutex::new(DedupLedger::default())),
         })
     }
 
@@ -266,45 +286,117 @@ impl Engine {
         // op_id", and refusing an omitted one would break the corpus's own
         // setup provisioning, which sends no op_id — see the corpus note
         // pinning the required reading as a fixture question for #163, not an
-        // implementation default). The ledger is checked and the entry
-        // recorded around the effect; the mutex is held only for the map ops,
-        // never across the dispatch `.await`.
+        // implementation default).
         let op = call.path();
         let dedup_key = if is_dedup_op(op) { op_id } else { None };
         if let Some(op_id) = dedup_key {
-            let body_hash = call.body_hash();
-            let key = (principal_key.to_owned(), op_id.clone());
-            // A prior entry decides without re-running the effect: a matching
-            // body returns the recorded reply; a divergent body conflicts.
-            {
-                let ledger = self.ledger.lock().expect("dedup ledger poisoned");
-                if let Some(entry) = ledger.entries.get(&key) {
+            // Validation-order step 2 (subject) runs BEFORE the ledger is
+            // consulted or populated: a deduplicated call on a subject-less
+            // daemon must not bind its `op_id` to `subject_absent`, or a
+            // retry after `subject.ensure` would replay a stale cached error
+            // instead of reaching the dedup stage as a first eligible call.
+            let typed = typed::TypedSupervisor::new(&self.supervisor);
+            match typed.subject_present() {
+                Ok(true) => {}
+                Ok(false) => {
                     return Executed {
-                        reply: if entry.body_hash == body_hash {
-                            entry.reply.clone()
-                        } else {
-                            Err(ApiError::OpIdConflict { op_id })
-                        },
+                        reply: Err(ApiError::SubjectAbsent),
+                        stop_after_reply: false,
+                    };
+                }
+                Err(e) => {
+                    return Executed {
+                        reply: Err(e),
                         stop_after_reply: false,
                     };
                 }
             }
-            // First sighting: run the effect, then record the outcome. A
-            // concurrent replay of the same op_id can double-effect (the check
-            // and the record are not one atomic step), which the record
-            // tolerates: dedup protects against a RETRY after a lost reply,
-            // never a simultaneous duplicate.
-            let reply = typed::dispatch(&self.supervisor, call).await;
-            let mut ledger = self.ledger.lock().expect("dedup ledger poisoned");
-            ledger.entries.insert(
-                key,
-                LedgerEntry {
-                    body_hash,
-                    reply: reply.clone(),
+
+            let body_hash = call.body_hash();
+            let key = (principal_key.to_owned(), op_id.clone());
+            // Reserve or join under the lock; never held across the await.
+            enum Gate {
+                /// We own the effect: it is already spawned (below) and we
+                /// await its completion here.
+                Run(watch::Receiver<Option<LedgerReply>>),
+                /// A faithful replay: await the in-flight/recorded reply.
+                Await(watch::Receiver<Option<LedgerReply>>),
+                /// A recorded reply to return directly.
+                Done(LedgerReply),
+                /// The same `op_id` with a different body.
+                Conflict,
+            }
+            let gate = {
+                let mut ledger = self.ledger.lock().expect("dedup ledger poisoned");
+                match ledger.entries.get(&key) {
+                    Some(LedgerEntry::Done {
+                        body_hash: h,
+                        reply,
+                    }) => {
+                        if *h == body_hash {
+                            Gate::Done(reply.clone())
+                        } else {
+                            Gate::Conflict
+                        }
+                    }
+                    Some(LedgerEntry::InFlight { body_hash: h, done }) => {
+                        if *h == body_hash {
+                            Gate::Await(done.subscribe())
+                        } else {
+                            Gate::Conflict
+                        }
+                    }
+                    None => {
+                        // First sighting: reserve the key, then run the effect
+                        // in a DETACHED task so it completes and records the
+                        // reply even if this connection's reply task is
+                        // aborted on disconnect (the record's motivating case
+                        // is a reply lost to a dropped connection). Publish to
+                        // the watch, then mark Done.
+                        let (tx, rx) = watch::channel(None);
+                        ledger.entries.insert(
+                            key.clone(),
+                            LedgerEntry::InFlight {
+                                body_hash,
+                                done: tx.clone(),
+                            },
+                        );
+                        let sup = self.supervisor.clone();
+                        let ledger = self.ledger.clone();
+                        tokio::spawn(async move {
+                            let reply: LedgerReply = Arc::new(typed::dispatch(&sup, call).await);
+                            let _ = tx.send(Some(reply.clone()));
+                            let mut ledger = ledger.lock().expect("dedup ledger poisoned");
+                            ledger
+                                .entries
+                                .insert(key, LedgerEntry::Done { body_hash, reply });
+                        });
+                        Gate::Run(rx)
+                    }
+                }
+            };
+            let reply = match gate {
+                Gate::Done(reply) => reply,
+                Gate::Conflict => {
+                    return Executed {
+                        reply: Err(ApiError::OpIdConflict { op_id }),
+                        stop_after_reply: false,
+                    };
+                }
+                Gate::Run(mut rx) | Gate::Await(mut rx) => loop {
+                    if let Some(reply) = rx.borrow().clone() {
+                        break reply;
+                    }
+                    if rx.changed().await.is_err() {
+                        // The publisher dropped without a reply (the spawned
+                        // effect panicked): report not_ready rather than hang
+                        // the caller forever.
+                        break Arc::new(Err(ApiError::NotReady));
+                    }
                 },
-            );
+            };
             return Executed {
-                reply,
+                reply: (*reply).clone(),
                 stop_after_reply,
             };
         }
@@ -710,6 +802,99 @@ mod tests {
             panic!("wrong replies");
         };
         assert_ne!(a.room_id, b.room_id, "an absent op_id does not dedup");
+    }
+
+    #[tokio::test]
+    async fn dedup_concurrent_replay_runs_one_effect() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let op_id = jeliya_api::OpId::new("op-concurrent");
+        let call = || {
+            TypedCall::RoomCreate(jeliya_api::RoomCreate {
+                name: "concurrent room".into(),
+            })
+        };
+        // Fire two overlapping requests with the SAME principal and op_id.
+        // The in-flight reservation must make both return the ONE original
+        // room, not author two.
+        let (r1, r2) = {
+            let e1 = engine.clone();
+            let e2 = engine.clone();
+            let o1 = op_id.clone();
+            let o2 = op_id.clone();
+            tokio::join!(
+                e1.execute_with(call(), Some(o1), "principal:a"),
+                e2.execute_with(call(), Some(o2), "principal:a"),
+            )
+        };
+        let a = r1.reply.expect("first completes");
+        let b = r2.reply.expect("second completes");
+        let (TypedReply::RoomCreate(a), TypedReply::RoomCreate(b)) = (a, b) else {
+            panic!("wrong replies");
+        };
+        assert_eq!(
+            a.room_id, b.room_id,
+            "an overlapping replay awaits the one original effect"
+        );
+        let list = engine
+            .execute(TypedCall::RoomList(jeliya_api::RoomList {}))
+            .await
+            .reply
+            .expect("room.list");
+        let TypedReply::RoomList(list) = list else {
+            panic!("wrong reply");
+        };
+        assert_eq!(list.rooms.len(), 1, "exactly one room was authored");
+    }
+
+    #[tokio::test]
+    async fn dedup_fingerprint_distinguishes_operations_with_identical_inputs() {
+        // pipe.connect and pipe.revoke both serialize as {room_id, pipe_id}.
+        // The fingerprint includes the operation path, so reusing an op_id
+        // from one for the other is a CONFLICT, not a false faithful replay.
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let room = engine
+            .execute_with(
+                TypedCall::RoomCreate(jeliya_api::RoomCreate { name: "r".into() }),
+                Some(jeliya_api::OpId::new("setup")),
+                "principal:a",
+            )
+            .await
+            .reply
+            .expect("create room");
+        let TypedReply::RoomCreate(room) = room else {
+            panic!("wrong reply");
+        };
+        let rid = room.room_id.clone();
+        let pid = jeliya_api::PipeId::new("01");
+        let op_id = jeliya_api::OpId::new("shared-op");
+        // Record an entry under pipe.connect.
+        let _ = engine
+            .execute_with(
+                TypedCall::PipeConnect(jeliya_api::PipeConnect {
+                    room_id: rid.clone(),
+                    pipe_id: pid.clone(),
+                }),
+                Some(op_id.clone()),
+                "principal:a",
+            )
+            .await;
+        // The same op_id under pipe.revoke with the same ids is a conflict
+        // (different operation), never a replay of the connect.
+        let err = engine
+            .execute_with(
+                TypedCall::PipeRevoke(jeliya_api::PipeRevoke {
+                    room_id: rid,
+                    pipe_id: pid,
+                }),
+                Some(op_id),
+                "principal:a",
+            )
+            .await
+            .reply
+            .expect_err("a different operation with the same op_id conflicts");
+        assert!(matches!(err, ApiError::OpIdConflict { .. }), "got {err:?}");
     }
 
     #[tokio::test]

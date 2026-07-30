@@ -904,10 +904,18 @@ pub async fn serve_ws<S>(
     // `(credential, client_id)`. An omitted `client_id` yields a fresh
     // ephemeral principal per connection (no cross-reconnect replay), the
     // documented choice a short-lived CLI makes. Rendered once here; every
-    // request on this connection shares it.
+    // request on this connection shares it. Explicit `cid`s and generated
+    // ephemeral keys live in DISJOINT namespaces (distinct tag bytes): a
+    // client declaring `cid=ephemeral:0` must not land in the same ledger
+    // principal as a connection that omitted `cid`, or two supposedly
+    // isolated principals could replay/conflict each other's operations.
     let principal_key = match &principal.client_id {
-        Some(cid) => format!("{}\u{1}{}", principal.credential, cid),
-        None => format!("{}\u{1}ephemeral:{}", principal.credential, conn_nonce()),
+        Some(cid) => format!("{}\u{1}explicit\u{1}{}", principal.credential, cid),
+        None => format!(
+            "{}\u{1}generated\u{1}{}",
+            principal.credential,
+            conn_nonce()
+        ),
     };
 
     // All outbound frames flow through ONE writer task over an mpsc channel,
