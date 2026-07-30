@@ -500,7 +500,10 @@ mod tests {
         let TypedReply::MessageSend(sent) = sent else {
             panic!("wrong reply");
         };
-        assert!(sent.pos > 0, "a message commits at a positive position");
+        // The second committed event in the room (after the genesis) sits at
+        // dense position 1 — the rank over the canonical order, not the raw
+        // lamport.
+        assert_eq!(sent.pos, 1, "the reply position is the dense rank");
 
         // The committed event lands on the typed push fan-out as Push::Event.
         let push = tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -518,10 +521,13 @@ mod tests {
         })
         .await
         .expect("a typed Push::Event arrives within 10s");
-        let EventKindContent::Message { body } = push.kind else {
+        let EventKindContent::Message { body } = &push.kind else {
             panic!("wrong kind");
         };
         assert_eq!(body, "hello typed push");
+        // Reply, push, and timeline positions are ONE dense position space:
+        // the push carries exactly the position the reply served.
+        assert_eq!(push.pos, sent.pos, "push and reply positions agree");
 
         // The timeline serves the same committed event, typed, at pos >= 1.
         let page = Page {
@@ -544,6 +550,10 @@ mod tests {
         assert_eq!(timeline.events[0].kind.kind(), EventKind::RoomCreated);
         assert_eq!(timeline.events[0].pos, 0);
         assert_eq!(timeline.events[1].kind.kind(), EventKind::Message);
+        assert_eq!(
+            timeline.events[1].pos, sent.pos,
+            "timeline and reply positions agree"
+        );
 
         engine.close_all_rooms().await;
     }

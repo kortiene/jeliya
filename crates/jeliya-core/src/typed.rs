@@ -20,11 +20,14 @@
 //!
 //! The v2 record fixes one continuation mechanism: every paging operation
 //! takes a required [`Page`] (`cursor`, `direction`, `limit`) and answers a
-//! [`Truncated`]. Positions are the store's per-room Lamport clock (`pos`),
-//! anchored at `0` for the genesis. The Iroh store's `room_tail` returns the
-//! most-recent `limit` events in ascending `(lamport, event_id)` order, which
-//! is exactly the v2 position space; cursor/direction paging is applied over
-//! that space here.
+//! [`Truncated`]. Positions are the **dense rank** over the room's canonical
+//! `(lamport, event_id)` order — `0` for the genesis, exactly one past the
+//! predecessor for every later committed event. The store's raw Lamport
+//! value is not a position (concurrent siblings share one), so ranking
+//! happens here at the read boundary and in the supervisor's typed push
+//! paths, keeping the timeline, the push stream, and `stream.resync` in one
+//! consistent position space. Cursor/direction paging is applied over that
+//! space here.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -456,7 +459,7 @@ impl<'a> TypedSupervisor<'a> {
     pub async fn room_leave(&self, req: &RoomLeave) -> CoreResult<RoomLeaveOut> {
         let room_id = Self::parse_room(&req.room_id)?;
         let event_id_hex = self.sup.leave_room(req.room_id.as_ref()).await?;
-        let pos = self.latest_pos(&room_id)?;
+        let pos = self.pos_of_event(&room_id, &event_id_hex)?;
         Ok(RoomLeaveOut {
             room_id: req.room_id.clone(),
             event_id: EventId::new(event_id_hex),
@@ -718,7 +721,7 @@ impl<'a> TypedSupervisor<'a> {
             .sup
             .send_message(req.room_id.as_ref(), &req.body)
             .await?;
-        let pos = self.latest_pos(&room_id)?;
+        let pos = self.pos_of_event(&room_id, &event_id_hex)?;
         Ok(MessageSendOut {
             room_id: req.room_id.clone(),
             event_id: EventId::new(event_id_hex),
@@ -739,7 +742,7 @@ impl<'a> TypedSupervisor<'a> {
             .sup
             .post_status(req.room_id.as_ref(), label, None, progress_pct, &[])
             .await?;
-        let pos = self.latest_pos(&room_id)?;
+        let pos = self.pos_of_event(&room_id, &event_id_hex)?;
         Ok(StatusPostOut {
             room_id: req.room_id.clone(),
             event_id: EventId::new(event_id_hex),
@@ -1105,7 +1108,9 @@ impl<'a> TypedSupervisor<'a> {
             .pipe_expose_multi(&room_id, target_addr, &target_hint, &allowed)
             .await
             .map_err(core_to_api)?;
-        let pos = self.latest_pos(&room_id).map_err(core_to_api)?;
+        let pos = self
+            .pos_of_event(&room_id, &event_id)
+            .map_err(core_to_api)?;
         Ok(PipePublishOut {
             room_id: req.room_id.clone(),
             pipe_id: crate::projection::pipe_id(&pipe_id),
@@ -1217,7 +1222,7 @@ impl<'a> TypedSupervisor<'a> {
             .and_then(|p| p.as_str())
             .unwrap_or_default()
             .to_string();
-        let pos = self.latest_pos(&room_id)?;
+        let pos = self.pos_of_event(&room_id, &event_id)?;
         Ok(PipeRevokeOut {
             room_id: req.room_id.clone(),
             pipe_id: req.pipe_id.clone(),
@@ -1231,7 +1236,8 @@ impl<'a> TypedSupervisor<'a> {
     // Shared helpers
     // ------------------------------------------------------------------
 
-    /// All committed timeline events for a room, ascending by position.
+    /// All committed timeline events for a room, ascending by position —
+    /// the dense rank over the canonical `(lamport, event_id)` order.
     fn committed_events(
         &self,
         room_id: &IrohRoomId,
@@ -1241,22 +1247,33 @@ impl<'a> TypedSupervisor<'a> {
         let rows = store
             .room_tail(room_id, u32::MAX)
             .map_err(|e| CoreError::internal(format!("could not read the timeline: {e}")))?;
-        Ok(rows
-            .iter()
-            .filter_map(|se| proj::materialize(se, snapshot))
+        Ok(proj::positioned(&rows)
+            .filter_map(|(rank, se)| proj::materialize(se, rank, snapshot))
             .collect())
     }
 
-    /// The newest committed position in a room (0 when empty).
-    fn latest_pos(&self, room_id: &IrohRoomId) -> CoreResult<u64> {
+    /// The dense canonical position of one committed event, looked up by its
+    /// event id over the full tail. Mutation replies use this so the `pos`
+    /// they serve is the same rank the timeline, resync, and push stream
+    /// serve for that event — never the raw lamport, and never the head's
+    /// position (which a later concurrent event can share).
+    fn pos_of_event(&self, room_id: &IrohRoomId, event_id_hex: &str) -> CoreResult<u64> {
         let store = self.sup.open_store()?;
         let rows = store
-            .room_tail(room_id, 1)
+            .room_tail(room_id, u32::MAX)
             .map_err(|e| CoreError::internal(format!("could not read the timeline: {e}")))?;
-        Ok(rows.first().and_then(|se| se.lamport).unwrap_or(0))
+        let found = proj::positioned(&rows)
+            .find(|(_, se)| proj::event_id(&se.event_id).as_str() == event_id_hex)
+            .map(|(rank, _)| rank);
+        found.ok_or_else(|| {
+            CoreError::internal(format!(
+                "committed event {event_id_hex} is absent from the room tail"
+            ))
+        })
     }
 
-    /// The newest committed event authored by a subject, with its position.
+    /// The newest committed event authored by a subject, with its dense
+    /// canonical position.
     fn latest_by_subject(
         &self,
         room_id: &IrohRoomId,
@@ -1264,17 +1281,16 @@ impl<'a> TypedSupervisor<'a> {
     ) -> Option<(EventId, u64)> {
         let store = self.sup.open_store().ok()?;
         let rows = store.room_tail(room_id, u32::MAX).ok()?;
-        rows.iter()
-            .filter(|se| se.lamport.is_some())
-            .filter_map(|se| {
+        proj::positioned(&rows)
+            .filter_map(|(rank, se)| {
                 let ev = SignedEvent::decode(&se.wire.signed).ok()?;
                 if &ev.sender_id == subject {
-                    Some((proj::event_id(&se.event_id), se.lamport.unwrap()))
+                    Some((proj::event_id(&se.event_id), rank))
                 } else {
                     None
                 }
             })
-            .next_back()
+            .last()
     }
 
     /// The author-dated instant a subject joined, when discoverable.

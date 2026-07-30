@@ -2798,11 +2798,14 @@ impl RoomSupervisor {
             session.is_owner && any_pending_invite(&snapshot),
             Ordering::Relaxed,
         );
+        // Rank the full canonical tail densely so each new event's served
+        // position agrees with the timeline/resync position space exactly
+        // (the raw lamport is not unique across concurrent siblings).
         let mut seen = session.seen.lock().expect("seen poisoned");
         let mut out = Vec::new();
-        for se in &rows {
+        for (rank, se) in crate::projection::positioned(&rows) {
             if seen.insert(se.event_id) {
-                if let Some(v) = crate::projection::materialize(se, &snapshot) {
+                if let Some(v) = crate::projection::materialize(se, rank, &snapshot) {
                     out.push(v);
                 }
             }
@@ -2942,20 +2945,26 @@ impl RoomSupervisor {
             .snapshot()
             .await
             .map_err(|e| internal("could not read the membership snapshot", e))?;
-        if lagged {
-            let rows = session
+        // Positions are the dense rank over the canonical `(lamport,
+        // event_id)` order. The live batch is receive-ordered, not canonical,
+        // and a lag already falls back to the full tail — so rank the full
+        // tail either way and serve only events this path has not yet pushed.
+        // `seen` dedupe keeps this exactly-once across the batch, the lag
+        // fallback, and the reconcile poll.
+        let rows = if lagged {
+            batch
+        } else {
+            session
                 .node
                 .room_tail(u32::MAX)
                 .await
-                .map_err(|e| internal("could not read the timeline", e))?;
-            batch = rows;
-        }
-
+                .map_err(|e| internal("could not read the timeline", e))?
+        };
         let mut seen = session.seen.lock().expect("seen poisoned");
         let mut out = Vec::new();
-        for se in &batch {
+        for (rank, se) in crate::projection::positioned(&rows) {
             if seen.insert(se.event_id) {
-                if let Some(v) = crate::projection::materialize(se, &snapshot) {
+                if let Some(v) = crate::projection::materialize(se, rank, &snapshot) {
                     out.push(v);
                 }
             }
