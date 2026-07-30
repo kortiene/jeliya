@@ -230,6 +230,17 @@ pub(crate) fn version_info(state: &AppState) -> jeliya_api::VersionInfo {
 /// bound for a fresh ticket).
 const CONNECT_TICKET_TTL_MS: u64 = 60_000;
 
+/// A process-unique counter for ephemeral session principals: an omitted
+/// `client_id` yields a fresh principal per connection, so the counter (not
+/// the wall clock, never a guessable sequence a client could reuse) is what
+/// keeps two ephemeral connections' ledgers isolated.
+static EPHEMERAL_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The next ephemeral-connection nonce.
+fn conn_nonce() -> u64 {
+    EPHEMERAL_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Mint a single-use connect ticket and record its expiry. The ticket is a
 /// fresh 256-bit opaque value, never derived from the daemon token.
 fn mint_connect_ticket(state: &AppState) -> (String, u64) {
@@ -879,7 +890,7 @@ fn serve_static(path: &str, ui: &UiSource) -> Response<Full<Bytes>> {
 pub async fn serve_ws<S>(
     ws: WebSocketStream<S>,
     state: AppState,
-    _principal: jeliya_codec::SessionPrincipal,
+    principal: jeliya_codec::SessionPrincipal,
 ) where
     // `Send + 'static` so the single-writer task and the spawned request tasks
     // can own the socket and engine handles across threads.
@@ -888,6 +899,24 @@ pub async fn serve_ws<S>(
     let (mut sink, mut messages) = ws.split();
     let mut push_rx = state.engine.subscribe_pushes();
     let bounds = jeliya_codec::CodecBounds::default();
+
+    // The authenticated session principal rendered as one ledger key:
+    // `(credential, client_id)`. An omitted `client_id` yields a fresh
+    // ephemeral principal per connection (no cross-reconnect replay), the
+    // documented choice a short-lived CLI makes. Rendered once here; every
+    // request on this connection shares it. Explicit `cid`s and generated
+    // ephemeral keys live in DISJOINT namespaces (distinct tag bytes): a
+    // client declaring `cid=ephemeral:0` must not land in the same ledger
+    // principal as a connection that omitted `cid`, or two supposedly
+    // isolated principals could replay/conflict each other's operations.
+    let principal_key = match &principal.client_id {
+        Some(cid) => format!("{}\u{1}explicit\u{1}{}", principal.credential, cid),
+        None => format!(
+            "{}\u{1}generated\u{1}{}",
+            principal.credential,
+            conn_nonce()
+        ),
+    };
 
     // All outbound frames flow through ONE writer task over an mpsc channel,
     // so a slow request's execution never head-of-line blocks a push, a ping,
@@ -971,13 +1000,13 @@ pub async fn serve_ws<S>(
             msg = messages.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
                     idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
-                    if !dispatch_inbound(text.as_bytes(), &state, &bounds, &subscriptions, &out_tx, &mut inflight).await {
+                    if !dispatch_inbound(text.as_bytes(), &state, &bounds, &subscriptions, &out_tx, &mut inflight, &principal_key).await {
                         break;
                     }
                 }
                 Some(Ok(Message::Binary(bytes))) => {
                     idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
-                    if !dispatch_inbound(&bytes, &state, &bounds, &subscriptions, &out_tx, &mut inflight).await {
+                    if !dispatch_inbound(&bytes, &state, &bounds, &subscriptions, &out_tx, &mut inflight, &principal_key).await {
                         break;
                     }
                 }
@@ -1347,6 +1376,7 @@ async fn dispatch_inbound(
     subscriptions: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
     out_tx: &tokio::sync::mpsc::Sender<Message>,
     inflight: &mut tokio::task::JoinSet<bool>,
+    principal_key: &str,
 ) -> bool {
     use jeliya_codec::CodecError;
     let frame = match jeliya_codec::decode(bytes, bounds) {
@@ -1420,12 +1450,15 @@ async fn dispatch_inbound(
 
     // Execute on a spawned task so a slow op (file.fetch, pipe.connect) does
     // not block the loop. `daemon.stop` is sequenced by the engine; its reply
-    // is flushed by the writer before teardown.
+    // is flushed by the writer before teardown. The envelope `op_id` and this
+    // connection's principal key drive the dedup ledger.
     let id = request.id;
+    let op_id = request.op_id.clone();
+    let principal_key = principal_key.to_owned();
     let engine = state.engine.clone();
     let out_tx = out_tx.clone();
     inflight.spawn(async move {
-        let executed = engine.execute(call).await;
+        let executed = engine.execute_with(call, op_id, &principal_key).await;
         let reply = match executed.reply {
             Ok(out) => jeliya_codec::Reply {
                 id,

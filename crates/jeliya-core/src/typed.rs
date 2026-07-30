@@ -1785,6 +1785,102 @@ pub enum TypedCall {
     StreamResync(StreamResync),
 }
 
+impl TypedCall {
+    /// The operation's wire name (its capability token).
+    #[must_use]
+    pub fn path(&self) -> &'static str {
+        match self {
+            TypedCall::SubjectEnsure(_) => "subject.ensure",
+            TypedCall::DaemonStop(_) => "daemon.stop",
+            TypedCall::RoomCreate(_) => "room.create",
+            TypedCall::RoomList(_) => "room.list",
+            TypedCall::RoomActivate(_) => "room.activate",
+            TypedCall::RoomDeactivate(_) => "room.deactivate",
+            TypedCall::RoomLeave(_) => "room.leave",
+            TypedCall::RoomTimeline(_) => "room.timeline",
+            TypedCall::RoomMembers(_) => "room.members",
+            TypedCall::RoomArchive(_) => "room.archive",
+            TypedCall::RoomPeers(_) => "room.peers",
+            TypedCall::MemberRemove(_) => "member.remove",
+            TypedCall::InviteMint(_) => "invite.mint",
+            TypedCall::InviteList(_) => "invite.list",
+            TypedCall::InviteRevoke(_) => "invite.revoke",
+            TypedCall::InviteRedeem(_) => "invite.redeem",
+            TypedCall::MessageSend(_) => "message.send",
+            TypedCall::StatusPost(_) => "status.post",
+            TypedCall::StatusHistory(_) => "status.history",
+            TypedCall::FleetList(_) => "fleet.list",
+            TypedCall::FileShare(_) => "file.share",
+            TypedCall::FileList(_) => "file.list",
+            TypedCall::FileFetch(_) => "file.fetch",
+            TypedCall::FileRead(_) => "file.read",
+            TypedCall::TransferCancel(_) => "transfer.cancel",
+            TypedCall::PipePublish(_) => "pipe.publish",
+            TypedCall::PipeList(_) => "pipe.list",
+            TypedCall::PipeConnect(_) => "pipe.connect",
+            TypedCall::PipeRelease(_) => "pipe.release",
+            TypedCall::PipeRevoke(_) => "pipe.revoke",
+            TypedCall::StreamSubscribe(_) => "stream.subscribe",
+            TypedCall::StreamUnsubscribe(_) => "stream.unsubscribe",
+            TypedCall::StreamResync(_) => "stream.resync",
+        }
+    }
+
+    /// A stable hash of the canonical request body, for telling a faithful
+    /// `op_id` retry from a conflicting reuse. The typed input serializes
+    /// deterministically (serde field order is declaration order), so two
+    /// calls with equal bodies hash alike and two with different bodies do
+    /// not — which is exactly the fidelity the dedup ledger needs.
+    #[must_use]
+    pub fn body_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let body = match self {
+            TypedCall::SubjectEnsure(r) => serde_json::to_vec(r),
+            TypedCall::DaemonStop(r) => serde_json::to_vec(r),
+            TypedCall::RoomCreate(r) => serde_json::to_vec(r),
+            TypedCall::RoomList(r) => serde_json::to_vec(r),
+            TypedCall::RoomActivate(r) => serde_json::to_vec(r),
+            TypedCall::RoomDeactivate(r) => serde_json::to_vec(r),
+            TypedCall::RoomLeave(r) => serde_json::to_vec(r),
+            TypedCall::RoomTimeline(r) => serde_json::to_vec(r),
+            TypedCall::RoomMembers(r) => serde_json::to_vec(r),
+            TypedCall::RoomArchive(r) => serde_json::to_vec(r),
+            TypedCall::RoomPeers(r) => serde_json::to_vec(r),
+            TypedCall::MemberRemove(r) => serde_json::to_vec(r),
+            TypedCall::InviteMint(r) => serde_json::to_vec(r),
+            TypedCall::InviteList(r) => serde_json::to_vec(r),
+            TypedCall::InviteRevoke(r) => serde_json::to_vec(r),
+            TypedCall::InviteRedeem(r) => serde_json::to_vec(r),
+            TypedCall::MessageSend(r) => serde_json::to_vec(r),
+            TypedCall::StatusPost(r) => serde_json::to_vec(r),
+            TypedCall::StatusHistory(r) => serde_json::to_vec(r),
+            TypedCall::FleetList(r) => serde_json::to_vec(r),
+            TypedCall::FileShare(r) => serde_json::to_vec(r),
+            TypedCall::FileList(r) => serde_json::to_vec(r),
+            TypedCall::FileFetch(r) => serde_json::to_vec(r),
+            TypedCall::FileRead(r) => serde_json::to_vec(r),
+            TypedCall::TransferCancel(r) => serde_json::to_vec(r),
+            TypedCall::PipePublish(r) => serde_json::to_vec(r),
+            TypedCall::PipeList(r) => serde_json::to_vec(r),
+            TypedCall::PipeConnect(r) => serde_json::to_vec(r),
+            TypedCall::PipeRelease(r) => serde_json::to_vec(r),
+            TypedCall::PipeRevoke(r) => serde_json::to_vec(r),
+            TypedCall::StreamSubscribe(r) => serde_json::to_vec(r),
+            TypedCall::StreamUnsubscribe(r) => serde_json::to_vec(r),
+            TypedCall::StreamResync(r) => serde_json::to_vec(r),
+        }
+        .unwrap_or_default();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // The operation path is part of the fingerprint: two operations with
+        // structurally identical inputs (pipe.connect and pipe.revoke both
+        // serialize as {room_id, pipe_id}) must not read as a faithful replay
+        // of one another. Hash the path alongside the body.
+        self.path().hash(&mut hasher);
+        body.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 /// Resolve a codec-routed `op` and its erased input into a concrete
 /// [`TypedCall`]. The codec guarantees `op` is one of the 33 and the input
 /// decoded into the matching request type, so the downcast is total — a
