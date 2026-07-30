@@ -19,7 +19,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id",
@@ -93,7 +95,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "out1": "$whole_out",
@@ -119,7 +123,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:authority",
           "op_id": "mint-replay-1"
@@ -187,7 +193,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "out1": "$whole_out",
@@ -209,7 +217,9 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "authority",
-            "ttl_ms": 86400000
+            "expires_at": {
+              "$expires_in_ms": 86400000
+            }
           },
           "on": "subject:authority",
           "op_id": "mint-divergent-1"
@@ -265,7 +275,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "out1": "$whole_out",
@@ -295,7 +307,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:authority",
           "op_id": "mint-reconnect-1"
@@ -362,7 +376,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id",
@@ -377,7 +393,9 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv2": "out.invite_id",
@@ -447,7 +465,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:member",
           "expect": {
@@ -507,7 +527,9 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "err_existing": "$whole_err"
@@ -538,7 +560,9 @@
             },
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:bystander",
           "expect": {
@@ -607,7 +631,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "authority",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:authority",
           "op_id": "mint-authority-role-1"
@@ -673,7 +699,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": null,
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:authority",
           "expect": {
@@ -699,7 +727,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": null
+            "expires_at": {
+              "$expires_in_ms": 86400000
+            }
           },
           "note": "a null ttl must not be read as 'never expires'; unbounded-by-null is exactly the v1 shape v2 sheds",
           "on": "subject:authority",
@@ -776,7 +806,9 @@
               "$unknown": "<string>"
             },
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "note": "parsed, then rejected on content — proves exactly-at-limit is admitted",
           "on": "subject:authority",
@@ -814,7 +846,9 @@
               "$unknown": "<string>"
             },
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:authority",
           "op_id": "mint-frame-past-limit"
@@ -881,7 +915,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000
+            "expires_at": {
+              "$expires_in_ms": 1000
+            }
           },
           "save": {
             "inv_short": "out.invite_id",
@@ -896,7 +932,9 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv_long": "out.invite_id"
@@ -1039,7 +1077,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:authority",
           "op_id": "list-auth-1"
@@ -1179,7 +1219,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id",
@@ -1285,7 +1327,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id"
@@ -1380,7 +1424,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id"
@@ -1472,7 +1518,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000
+            "expires_at": {
+              "$expires_in_ms": 1000
+            }
           },
           "save": {
             "inv1": "out.invite_id",
@@ -1628,7 +1676,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id",
@@ -1737,7 +1787,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability",
@@ -1851,7 +1903,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability"
@@ -1932,7 +1986,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id",
@@ -2052,7 +2108,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability"
@@ -2266,7 +2324,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000
+            "expires_at": {
+              "$expires_in_ms": 1000
+            }
           },
           "save": {
             "cap_exp": "out.capability",
@@ -2282,7 +2342,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap_rev": "out.capability",
@@ -2436,7 +2498,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 60000
+            "expires_at": {
+              "$expires_in_ms": 60000
+            }
           },
           "save": {
             "cap_at": "out.capability",
@@ -2465,7 +2529,9 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 60000
+            "expires_at": {
+              "$expires_in_ms": 60000
+            }
           },
           "save": {
             "cap_past": "out.capability",
@@ -2534,7 +2600,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000
+            "expires_at": {
+              "$expires_in_ms": 1000
+            }
           },
           "save": {
             "cap1": "out.capability",
@@ -2594,7 +2662,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability"
@@ -2746,7 +2816,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability"
@@ -2864,7 +2936,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability"
@@ -2959,7 +3033,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability"
@@ -2986,7 +3062,9 @@
             "room_id": "$rid",
             "subject_id": "$sc",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv2": "out.invite_id"
@@ -3056,7 +3134,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 1000
+            "expires_at": {
+              "$expires_in_ms": 1000
+            }
           },
           "save": {
             "cap1": "out.capability",
@@ -3135,7 +3215,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap2": "out.capability",
@@ -3298,7 +3380,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap1": "out.capability"
@@ -3445,7 +3529,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id",
@@ -3509,7 +3595,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "note": "a FRESH op_id, so the dedup ledger cannot answer and the precondition must [dialect assert preserved for manual retranscription: {\"no_nulls\": \"$last_error\", \"note\": \"the refusal must carry no capability of any kind: a minted-then-errored grant is the worst of both\"}]",
           "on": "subject:authority",
@@ -3580,7 +3668,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "note": "the ORIGINAL op_id, replayed after the invitee joined: the ledger answers first",
           "on": "subject:authority",
@@ -3643,7 +3733,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "inv1": "out.invite_id"
@@ -3784,7 +3876,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "ttl_ms": 3600000
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "save": {
             "cap": "out.capability",

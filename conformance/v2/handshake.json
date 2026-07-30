@@ -2397,6 +2397,10 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "send": {
             "id": 42,
             "op": "room.list",
@@ -2427,7 +2431,7 @@
               "op": "absent"
             },
             {
-              "path": "out",
+              "path": "frame",
               "op": "exact_keys",
               "value": [
                 "id",
@@ -2451,6 +2455,10 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "send": {
             "id": 7,
             "op": "room.timeline",
@@ -2459,6 +2467,7 @@
               "cursor": {
                 "state": "start"
               },
+              "direction": "forward",
               "limit": 10
             }
           }
@@ -2493,7 +2502,7 @@
               "op": "absent"
             },
             {
-              "path": "out",
+              "path": "frame",
               "op": "exact_keys",
               "value": [
                 "id",
@@ -2606,6 +2615,7 @@
               "cursor": {
                 "state": "start"
               },
+              "direction": "forward",
               "limit": "<<uint>>"
             }
           }
@@ -2657,6 +2667,10 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "send": {
             "id": 7,
             "op": "room.list",
@@ -2700,6 +2714,10 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "call": "room.list",
           "in": {},
           "save": {
@@ -2715,9 +2733,9 @@
           "send": {
             "id": 42,
             "op": "room.create",
+            "op_id": "<uuid-a>",
             "in": {
-              "name": "Dup A",
-              "op_id": "<uuid-a>"
+              "name": "Dup A"
             }
           },
           "note": "[split from a multi-verb step; review]"
@@ -2731,9 +2749,9 @@
           "send": {
             "id": 42,
             "op": "room.create",
+            "op_id": "<uuid-b>",
             "in": {
-              "name": "Dup B",
-              "op_id": "<uuid-b>"
+              "name": "Dup B"
             }
           },
           "note": "[split from a multi-verb step; review]"
@@ -2798,9 +2816,9 @@
         {
           "send": {
             "op": "room.create",
+            "op_id": "<op_id>",
             "in": {
-              "name": "NoIdProbe",
-              "op_id": "<op_id>"
+              "name": "NoIdProbe"
             }
           }
         },
@@ -2854,6 +2872,10 @@
         "subject"
       ],
       "steps": [
+        {
+          "call": "subject.ensure",
+          "in": {}
+        },
         {
           "note": "room.open is a v1 op that v2 split and removed",
           "send": {
@@ -2913,6 +2935,10 @@
         "subject"
       ],
       "steps": [
+        {
+          "call": "subject.ensure",
+          "in": {}
+        },
         {
           "send": {
             "id": 10,
@@ -3866,6 +3892,10 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "note": "[harness orchestration: second subject creates a room and saves its id as $foreign_rid; caller is not a member]",
           "control": {
             "do": "idle",
@@ -3881,6 +3911,7 @@
               "cursor": {
                 "state": "start"
               },
+              "direction": "forward",
               "limit": 10
             }
           }
@@ -3908,6 +3939,7 @@
               "cursor": {
                 "state": "start"
               },
+              "direction": "forward",
               "limit": 10
             }
           }
@@ -3961,6 +3993,10 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "note": "[harness orchestration: second subject creates and activates $foreign_rid and authors several messages]",
           "control": {
             "do": "idle",
@@ -3971,9 +4007,12 @@
           "send": {
             "id": 80,
             "op": "stream.subscribe",
+            "op_id": "<op_id>",
             "in": {
               "room_id": "$foreign_rid",
-              "op_id": "<op_id>"
+              "from": {
+                "state": "start"
+              }
             }
           }
         },
@@ -4027,12 +4066,16 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "send": {
             "id": 90,
             "op": "room.create",
+            "op_id": "fixed-op-id-1",
             "in": {
-              "name": "Ledger Room",
-              "op_id": "fixed-op-id-1"
+              "name": "Ledger Room"
             }
           }
         },
@@ -4079,9 +4122,9 @@
           "send": {
             "id": 1,
             "op": "room.create",
+            "op_id": "fixed-op-id-1",
             "in": {
-              "name": "Ledger Room",
-              "op_id": "fixed-op-id-1"
+              "name": "Ledger Room"
             }
           }
         },
@@ -4123,13 +4166,17 @@
       ],
       "steps": [
         {
+          "call": "subject.ensure",
+          "in": {}
+        },
+        {
           "on": "subject:principal_a",
           "send": {
             "id": 1,
             "op": "room.create",
+            "op_id": "shared-op-id",
             "in": {
-              "name": "Principal A Room",
-              "op_id": "shared-op-id"
+              "name": "Principal A Room"
             }
           }
         },
@@ -4153,9 +4200,9 @@
           "send": {
             "id": 1,
             "op": "room.create",
+            "op_id": "shared-op-id",
             "in": {
-              "name": "Principal B Room",
-              "op_id": "shared-op-id"
+              "name": "Principal B Room"
             }
           }
         },

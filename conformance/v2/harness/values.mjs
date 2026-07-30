@@ -212,6 +212,14 @@ function computeNode(kind, operand, vars) {
       const n = num(resolveValue(operand, vars));
       return 'x'.repeat(Math.max(0, n));
     }
+    case '$expires_in_ms': {
+      // An absolute `<ts>` (RFC 3339, `Z` offset) N ms from now — the value
+      // `expires_at` takes where a v1 fixture used relative `ttl_ms`. A static
+      // fixture cannot name a future instant, so it is computed at run time,
+      // in the same second-precision format the daemon serves.
+      const ms = num(resolveValue(operand, vars));
+      return new Date(Date.now() + ms).toISOString().replace(/\.\d+Z$/, 'Z');
+    }
     case '$unknown': {
       // A well-formed value of the named domain that names nothing real. The
       // operand is a type tag; produce a syntactically valid, definitely
