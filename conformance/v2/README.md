@@ -107,6 +107,10 @@ committed fixture needs it.
 | `requires` | yes | array of preconditions, closed vocabulary below |
 | `steps` | yes | non-empty array |
 | `blocked_on_upstream` | no | `"U1"`, `"U2"`, or `"U3"` |
+| `blocked_on_record` | no | Named settled record/corpus contradiction retained as an expected failure until the stale case is retired |
+
+Both block forms **fail, never skip**. A passing blocked case is reported as a
+surprise; a setup/runner error is still an error rather than an expected block.
 
 `kind` is closed: `success`, `error`, `malformed`, `boundary`, `authorization`,
 `handshake`, `push`, `ordering`.
@@ -379,6 +383,7 @@ value may also be a single-key computed node:
 | `{"$sub": ["$max", 1]}` | |
 | `{"$bytes_of_len": "$max"}` | A string of exactly that many bytes |
 | `{"$concat": ["a", "$b"]}` | Concatenation |
+| `{"$expires_in_ms": 3600000}` | An absolute RFC 3339 `Z` timestamp that many milliseconds from run time |
 | `{"$unknown": "<room_id>"}` | A well-formed value of that domain naming nothing that exists |
 
 Without these, **every case that probes a served limit would have to hard-code

@@ -136,8 +136,11 @@ export class Runner {
         ctxState.dirSnapshot = this.#dirStateSignature(daemons);
       }
 
-      // A case that ran all steps without a failing assertion passes.
-      const blocked = fixture.blocked_on_upstream;
+      // A case that ran all steps without a failing assertion passes. A block
+      // may name an upstream dependency or a settled record/corpus
+      // contradiction awaiting fixture retirement (e.g. the old "op_id is
+      // required" case after the record settled optional-but-deduplicated).
+      const blocked = fixture.blocked_on_upstream || fixture.blocked_on_record;
       await cleanup();
       if (blocked) {
         return { outcome: Outcome.BLOCKED_PASS, name, reason: `blocked on ${blocked} but PASSED` };
@@ -149,16 +152,16 @@ export class Runner {
         err instanceof AssertFailure
           ? err.message
           : `${err.name || 'Error'}: ${err.message}`;
-      if (fixture.blocked_on_upstream) {
+      const blocked = fixture.blocked_on_upstream || fixture.blocked_on_record;
+      if (blocked) {
         // Only a genuine assertion failure counts as the EXPECTED blocked
         // failure. A setup error, an unsupported control verb, a missing
-        // dependency, or a runner bug is not the upstream-dependent assertion
-        // failing — it is the case never reaching that assertion — so it is
-        // an ERROR, not a green BLOCKED_FAIL.
+        // dependency, or a runner bug means the case never reached the
+        // blocked assertion, so it remains ERROR.
         if (err instanceof AssertFailure) {
           return { outcome: Outcome.BLOCKED_FAIL, name, reason };
         }
-        return { outcome: Outcome.ERROR, name, reason: `blocked case errored before the upstream assertion: ${reason}` };
+        return { outcome: Outcome.ERROR, name, reason: `blocked case errored before the blocked assertion: ${reason}` };
       }
       const isAssertion = err instanceof AssertFailure;
       return { outcome: isAssertion ? Outcome.FAIL : Outcome.ERROR, name, reason };

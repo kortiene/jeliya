@@ -465,7 +465,10 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "insufficient_standing"
+              "code": "insufficient_standing",
+              "room_id": "$rid",
+              "required": "authority",
+              "held": "member"
             }
           },
           "op_id": "mint-nonauth-1"
@@ -1086,7 +1089,10 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "insufficient_standing"
+              "code": "insufficient_standing",
+              "room_id": "$rid",
+              "required": "authority",
+              "held": "member"
             }
           }
         },
@@ -1670,7 +1676,10 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "insufficient_standing"
+              "code": "insufficient_standing",
+              "room_id": "$rid",
+              "required": "authority",
+              "held": "member"
             }
           },
           "op_id": "revoke-nonauth-1"
@@ -2720,7 +2729,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "on": "subject:invitee",
           "expect": {
@@ -2854,7 +2866,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "expect": {
             "ok": true,
@@ -2884,7 +2899,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "save": {
             "p0": "out.pos"
@@ -2988,7 +3006,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "save": {
             "p0": "out.pos"

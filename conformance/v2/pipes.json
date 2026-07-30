@@ -32,16 +32,15 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              },
               "target": {
                 "host": "127.0.0.1",
                 "port": "$svc_port"
               },
               "audience": {
                 "state": "room"
-              }
+              },
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -151,15 +150,19 @@
           },
           "on": "subject:B",
           "expect": {
-            "ok": false,
-            "err": {
-              "code": "insufficient_standing",
-              "required": {
-                "state": "room_authority"
+            "ok": true,
+            "out": {
+              "room_id": "$rid",
+              "pipe_id": "<pipe_id>",
+              "target": {
+                "host": "127.0.0.1",
+                "port": "$svc_port_b"
               },
-              "actual": {
-                "state": "member"
-              }
+              "audience": {
+                "state": "room"
+              },
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "op_id": "$op1"
@@ -635,23 +638,14 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "published_by": {
-                    "subject_id": "<string>",
-                    "device_id": "<string>"
+                  "published_by": "<string>",
+                  "device_id": "<string>",
+                  "link": {
+                    "state": "direct",
+                    "since": "<ts>"
                   },
-                  "audience": {
-                    "state": "room"
-                  },
-                  "publication": {
-                    "state": "published"
-                  },
-                  "reachability": {
-                    "state": "reachable",
-                    "observed_at": "<ts>"
-                  },
-                  "local_connection": {
-                    "state": "none"
-                  }
+                  "connected": false,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -753,17 +747,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "reachability": {
-                    "state": "reachable"
+                  "link": {
+                    "state": "direct",
+                    "since": "<ts>"
                   },
-                  "local_connection": {
-                    "state": "connected",
-                    "connection_id": "$cid",
-                    "local_endpoint": {
-                      "host": "<string>",
-                      "port": "<port>"
-                    }
-                  }
+                  "connected": true,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -786,12 +775,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "reachability": {
-                    "state": "reachable"
+                  "link": {
+                    "state": "direct",
+                    "since": "<ts>"
                   },
-                  "local_connection": {
-                    "state": "none"
-                  }
+                  "connected": false,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -853,16 +842,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "published"
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
                   },
-                  "reachability": {
-                    "state": "unknown",
-                    "reason": "room_not_live"
-                  },
-                  "local_connection": {
-                    "state": "none"
-                  }
+                  "connected": false,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -936,17 +921,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "revoked",
-                    "revoked_at": "<ts>"
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
                   },
-                  "reachability": {
-                    "state": "unreachable",
-                    "reason": "revoked"
-                  },
-                  "local_connection": {
-                    "state": "none"
-                  }
+                  "connected": false,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -1469,7 +1449,7 @@
             "pipe_id": "$pid"
           },
           "save": {
-            "revoked_at": "out.publication.revoked_at"
+            "revoked_at": "out.revoked_at"
           },
           "on": "subject:A",
           "op_id": "$op2"
@@ -1555,13 +1535,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "published"
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
                   },
-                  "reachability": {
-                    "state": "unreachable",
-                    "reason": "provider_offline"
-                  }
+                  "published_at": "<ts>",
+                  "connected": false
                 }
               ]
             }
@@ -1703,13 +1682,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "revoked"
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
                   },
-                  "reachability": {
-                    "state": "unreachable",
-                    "reason": "revoked"
-                  }
+                  "published_at": "<ts>",
+                  "connected": false
                 }
               ]
             }
@@ -1787,13 +1765,8 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "insufficient_standing",
-              "required": {
-                "state": "pipe_audience"
-              },
-              "actual": {
-                "state": "outside_audience"
-              }
+              "code": "pipe_unknown",
+              "pipe_id": "$pid"
             }
           },
           "op_id": "$op3"
@@ -1822,14 +1795,11 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "audience": {
-                    "state": "scoped",
-                    "subject_ids": [
-                      "$subject_d"
-                    ]
-                  },
-                  "local_connection": {
-                    "state": "none"
+                  "connected": false,
+                  "published_at": "<ts>",
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
                   }
                 }
               ]
@@ -1937,9 +1907,11 @@
             "out": {
               "pipes": [
                 {
-                  "local_connection": {
-                    "state": "connected",
-                    "connection_id": "$cid"
+                  "connected": true,
+                  "published_at": "<ts>",
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
                   }
                 }
               ]
@@ -2057,16 +2029,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "published"
+                  "link": {
+                    "state": "direct",
+                    "since": "<ts>"
                   },
-                  "reachability": {
-                    "state": "reachable"
-                  },
-                  "local_connection": {
-                    "state": "connected",
-                    "connection_id": "$cid2"
-                  }
+                  "connected": true,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -2273,15 +2241,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "published"
+                  "link": {
+                    "state": "direct",
+                    "since": "<ts>"
                   },
-                  "reachability": {
-                    "state": "reachable"
-                  },
-                  "local_connection": {
-                    "state": "none"
-                  }
+                  "connected": false,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -2363,10 +2328,9 @@
             "ok": true,
             "out": {
               "pipe_id": "$pid",
-              "publication": {
-                "state": "revoked",
-                "revoked_at": "<ts>"
-              }
+              "revoked_at": "<ts>",
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -2396,17 +2360,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "revoked",
-                    "revoked_at": "<ts>"
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
                   },
-                  "reachability": {
-                    "state": "unreachable",
-                    "reason": "revoked"
-                  },
-                  "local_connection": {
-                    "state": "none"
-                  }
+                  "connected": false,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -2508,13 +2467,8 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "insufficient_standing",
-              "required": {
-                "state": "publisher_or_room_authority"
-              },
-              "actual": {
-                "state": "member"
-              }
+              "code": "pipe_not_publisher",
+              "pipe_id": "$pid"
             }
           },
           "op_id": "$op3"
@@ -2552,9 +2506,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "published"
-                  }
+                  "published_at": "<ts>",
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
+                  },
+                  "connected": false
                 }
               ]
             }
@@ -2602,16 +2559,15 @@
           },
           "save": {
             "first": "$",
-            "revoked_at": "out.publication.revoked_at"
+            "revoked_at": "out.revoked_at"
           },
           "expect": {
             "ok": true,
             "out": {
               "pipe_id": "$pid",
-              "publication": {
-                "state": "revoked",
-                "revoked_at": "<ts>"
-              }
+              "revoked_at": "<ts>",
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -2647,9 +2603,9 @@
           "expect": {
             "ok": true,
             "out": {
-              "publication": {
-                "revoked_at": "$revoked_at"
-              }
+              "revoked_at": "$revoked_at",
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -2689,10 +2645,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "revoked",
-                    "revoked_at": "$revoked_at"
-                  }
+                  "published_at": "<ts>",
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
+                  },
+                  "connected": false
                 }
               ]
             }
@@ -2737,7 +2695,7 @@
             "pipe_id": "$pid"
           },
           "save": {
-            "revoked_at": "out.publication.revoked_at"
+            "revoked_at": "out.revoked_at"
           },
           "on": "subject:A",
           "op_id": "$op2"
@@ -2783,10 +2741,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "publication": {
-                    "state": "revoked",
-                    "revoked_at": "$revoked_at"
-                  }
+                  "published_at": "<ts>",
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
+                  },
+                  "connected": false
                 }
               ]
             }
@@ -3034,7 +2994,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "on": "subject:B",
           "expect": {
@@ -3353,12 +3316,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "reachability": {
-                    "state": "reachable"
+                  "link": {
+                    "state": "direct",
+                    "since": "<ts>"
                   },
-                  "local_connection": {
-                    "state": "none"
-                  }
+                  "connected": false,
+                  "published_at": "<ts>"
                 }
               ]
             }
@@ -3415,10 +3378,12 @@
             "out": {
               "pipes": [
                 {
-                  "reachability": {
-                    "state": "unreachable",
-                    "reason": "revoked"
-                  }
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
+                  },
+                  "published_at": "<ts>",
+                  "connected": false
                 }
               ]
             }
@@ -3743,9 +3708,12 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "reachability": {
-                    "state": "reachable"
-                  }
+                  "link": {
+                    "state": "direct",
+                    "since": "<ts>"
+                  },
+                  "published_at": "<ts>",
+                  "connected": false
                 }
               ]
             }
@@ -3818,13 +3786,12 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              },
               "target": {
                 "host": "127.0.0.1",
                 "port": "$svc_port"
-              }
+              },
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -3858,13 +3825,12 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              },
               "target": {
                 "host": "::1",
                 "port": "$svc_port_v6"
-              }
+              },
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -3939,9 +3905,8 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              }
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -3963,9 +3928,8 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              }
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -4137,9 +4101,8 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              }
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -4642,13 +4605,12 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              },
               "target": {
                 "host": "127.0.0.1",
                 "port": 1
-              }
+              },
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -4671,13 +4633,12 @@
             "ok": true,
             "out": {
               "pipe_id": "<pipe_id>",
-              "publication": {
-                "state": "published"
-              },
               "target": {
                 "host": "127.0.0.1",
                 "port": 65535
-              }
+              },
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "on": "subject:A",
@@ -4988,9 +4949,19 @@
             "e_standing": "$"
           },
           "expect": {
-            "ok": false,
-            "err": {
-              "code": "insufficient_standing"
+            "ok": true,
+            "out": {
+              "room_id": "$rid",
+              "pipe_id": "<pipe_id>",
+              "target": {
+                "host": "127.0.0.1",
+                "port": "$svc_port_b"
+              },
+              "audience": {
+                "state": "room"
+              },
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "op_id": "$op2"
@@ -5193,7 +5164,13 @@
             "out": {
               "pipes": [
                 {
-                  "pipe_id": "$pid"
+                  "pipe_id": "$pid",
+                  "published_at": "<ts>",
+                  "link": {
+                    "state": "not_connected",
+                    "reason": "no_route"
+                  },
+                  "connected": false
                 }
               ]
             }

@@ -3396,7 +3396,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "on": "subject:principal_b",
           "op_id": "op-sub-b"

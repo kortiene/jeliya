@@ -2535,7 +2535,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "op_id": "<op_id>"
         },
@@ -2601,7 +2604,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "op_id": "<op_id>"
         },
@@ -4261,7 +4267,10 @@
         {
           "call": "stream.subscribe",
           "in": {
-            "room_id": "$rid"
+            "room_id": "$rid",
+            "from": {
+              "state": "start"
+            }
           },
           "op_id": "<op_id>"
         },
