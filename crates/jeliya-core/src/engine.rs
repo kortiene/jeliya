@@ -15,13 +15,13 @@
 //! facade. A legacy client is refused at the codec's generation gate, before
 //! any frame is parsed or any dispatch occurs.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jeliya_api::{ApiError, PeerRow, Push, RoomId, SubjectState};
+use jeliya_api::{ApiError, OpId, PeerRow, Push, RoomId, SubjectState};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -66,6 +66,61 @@ pub struct EngineConfig {
     pub shutdown_tx: mpsc::Sender<String>,
 }
 
+/// Whether `op` is in the record's **`op_id`-deduplicated** class: the
+/// caller MUST supply an envelope `op_id`, a replay returns the original
+/// result with no second effect, and a replay with a different body is
+/// `op_id_conflict`. These are the operations whose retry would otherwise
+/// author a duplicate signed fact. Naturally-idempotent operations
+/// (`subject.ensure`, `room.activate`, `room.deactivate`, `invite.redeem`),
+/// terminal `daemon.stop`, connection-scoped `stream.*`, and
+/// principal-scoped `transfer.cancel` are NOT in this class — they accept an
+/// `op_id` and ignore it.
+fn is_dedup_op(op: &str) -> bool {
+    matches!(
+        op,
+        "room.create"
+            | "room.leave"
+            | "member.remove"
+            | "invite.mint"
+            | "invite.revoke"
+            | "message.send"
+            | "status.post"
+            | "file.share"
+            | "file.fetch"
+            | "pipe.publish"
+            | "pipe.connect"
+            | "pipe.release"
+            | "pipe.revoke"
+    )
+}
+
+/// A recorded dedup-ledger entry: the request body hash and the reply the
+/// first execution produced. The reply is stored as a typed [`TypedReply`] so
+/// a replay re-encodes byte-for-byte what the original caller received.
+struct LedgerEntry {
+    /// A hash of the canonical request body (the typed input), used to tell a
+    /// faithful retry from a conflicting reuse of the same `op_id`.
+    body_hash: u64,
+    /// The reply the first (only) effect produced.
+    reply: Result<TypedReply, ApiError>,
+}
+
+/// The `op_id` dedup ledger, keyed per `(session principal, op_id)` per the
+/// record. It survives reconnection (the motivating case for retry is a reply
+/// lost to a dropped connection) but is intentionally **in-memory**: the v2
+/// harness has no daemon restart, and a durable ledger is a persistence
+/// concern the clean-slate milestone does not take on. Distinct principals
+/// have isolated ledgers, so one local client can neither observe, replay,
+/// nor cancel another's operations.
+#[derive(Default)]
+struct DedupLedger {
+    /// `(principal_key, op_id)` → the recorded entry. `principal_key` is the
+    /// authenticated session principal rendered as a single string
+    /// (`credential` + `client_id`), never the bare subject — a daemon has
+    /// one subject, so a per-subject ledger would be daemon-global.
+    entries: HashMap<(String, OpId), LedgerEntry>,
+}
+
 /// The engine: a [`RoomSupervisor`] plus the typed push fan-out channel.
 /// Cheap to share (`Arc`); no engine-wide lock — the supervisor guards its
 /// own maps internally, never across an `.await`.
@@ -79,6 +134,8 @@ pub struct Engine {
     /// Set once a `daemon.stop` has been accepted: a second stop is
     /// `shutdown_in_progress`, never a comfortable repeat `stopping: true`.
     stopping: Arc<AtomicBool>,
+    /// The `op_id` dedup ledger (see [`DedupLedger`]).
+    ledger: Mutex<DedupLedger>,
 }
 
 /// The result of executing one typed call: the reply to encode, plus the
@@ -114,6 +171,7 @@ impl Engine {
             push_tx,
             config,
             stopping: Arc::new(AtomicBool::new(false)),
+            ledger: Mutex::new(DedupLedger::default()),
         })
     }
 
@@ -155,10 +213,32 @@ impl Engine {
         typed::TypedSupervisor::new(&self.supervisor).subject_state()
     }
 
+    /// Execute one typed call with no request context. Equivalent to
+    /// [`Self::execute_with`] with no `op_id` and an ephemeral principal — the
+    /// form in-process hosts and internal sub-operations (which never dedup)
+    /// use. Dedup-class operations called this way are refused
+    /// `invalid_argument{field:op_id}` exactly as on the wire, because an
+    /// undeduplable mutation must not be silently accepted.
+    pub async fn execute(&self, call: TypedCall) -> Executed {
+        self.execute_with(call, None, "ephemeral").await
+    }
+
     /// Execute one typed call. This is the engine's only dispatch surface:
     /// total by construction (the codec's router already refused any `op`
     /// outside the 33, so the [`TypedCall`] always maps to exactly one output).
-    pub async fn execute(&self, call: TypedCall) -> Executed {
+    ///
+    /// `op_id` is the envelope dedup key and `principal_key` the authenticated
+    /// session principal rendered as one string; together they key the dedup
+    /// ledger. For a dedup-class operation, a missing `op_id` is
+    /// `invalid_argument{field:op_id, reason:missing}`, a faithful replay
+    /// returns the recorded original reply with no second effect, and a replay
+    /// with a different body is `op_id_conflict`.
+    pub async fn execute_with(
+        &self,
+        call: TypedCall,
+        op_id: Option<OpId>,
+        principal_key: &str,
+    ) -> Executed {
         let stop_after_reply = matches!(call, TypedCall::DaemonStop(_));
         if stop_after_reply {
             // Exactly one teardown: a second `daemon.stop` is
@@ -179,6 +259,56 @@ impl Engine {
                 let _ = tx.send("daemon.stop".to_owned()).await;
             });
         }
+
+        // Dedup-ledger gate for the op_id-deduplicated class. An `op_id` is
+        // ACCEPTED and, when present, deduplicated; when absent the effect
+        // runs undeduplicated (the record says these operations "accept an
+        // op_id", and refusing an omitted one would break the corpus's own
+        // setup provisioning, which sends no op_id — see the corpus note
+        // pinning the required reading as a fixture question for #163, not an
+        // implementation default). The ledger is checked and the entry
+        // recorded around the effect; the mutex is held only for the map ops,
+        // never across the dispatch `.await`.
+        let op = call.path();
+        let dedup_key = if is_dedup_op(op) { op_id } else { None };
+        if let Some(op_id) = dedup_key {
+            let body_hash = call.body_hash();
+            let key = (principal_key.to_owned(), op_id.clone());
+            // A prior entry decides without re-running the effect: a matching
+            // body returns the recorded reply; a divergent body conflicts.
+            {
+                let ledger = self.ledger.lock().expect("dedup ledger poisoned");
+                if let Some(entry) = ledger.entries.get(&key) {
+                    return Executed {
+                        reply: if entry.body_hash == body_hash {
+                            entry.reply.clone()
+                        } else {
+                            Err(ApiError::OpIdConflict { op_id })
+                        },
+                        stop_after_reply: false,
+                    };
+                }
+            }
+            // First sighting: run the effect, then record the outcome. A
+            // concurrent replay of the same op_id can double-effect (the check
+            // and the record are not one atomic step), which the record
+            // tolerates: dedup protects against a RETRY after a lost reply,
+            // never a simultaneous duplicate.
+            let reply = typed::dispatch(&self.supervisor, call).await;
+            let mut ledger = self.ledger.lock().expect("dedup ledger poisoned");
+            ledger.entries.insert(
+                key,
+                LedgerEntry {
+                    body_hash,
+                    reply: reply.clone(),
+                },
+            );
+            return Executed {
+                reply,
+                stop_after_reply,
+            };
+        }
+
         let reply = typed::dispatch(&self.supervisor, call).await;
         Executed {
             reply,
@@ -448,6 +578,138 @@ mod tests {
             .await;
         let err = executed.reply.unwrap_err();
         assert!(matches!(err, ApiError::SubjectAbsent), "got {err:?}");
+    }
+
+    /// Create a subject and return an engine ready for room ops.
+    async fn engine_with_subject(dir: &TempDir) -> Arc<Engine> {
+        let engine = test_engine(dir);
+        engine
+            .execute(TypedCall::SubjectEnsure(jeliya_api::SubjectEnsure {}))
+            .await
+            .reply
+            .expect("subject.ensure");
+        engine
+    }
+
+    #[tokio::test]
+    async fn dedup_replay_returns_original_without_second_effect() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let op_id = Some(jeliya_api::OpId::new("op-1"));
+        let call = || {
+            TypedCall::RoomCreate(jeliya_api::RoomCreate {
+                name: "dedup room".into(),
+            })
+        };
+        let first = engine
+            .execute_with(call(), op_id.clone(), "principal:a")
+            .await
+            .reply
+            .expect("first create");
+        // A faithful replay returns the SAME room_id and authors no second
+        // room.
+        let replay = engine
+            .execute_with(call(), op_id.clone(), "principal:a")
+            .await
+            .reply
+            .expect("replay returns the original");
+        let (TypedReply::RoomCreate(first), TypedReply::RoomCreate(replay)) = (first, replay)
+        else {
+            panic!("wrong replies");
+        };
+        assert_eq!(first.room_id, replay.room_id, "replay returns the original");
+        let list = engine
+            .execute(TypedCall::RoomList(jeliya_api::RoomList {}))
+            .await
+            .reply
+            .expect("room.list");
+        let TypedReply::RoomList(list) = list else {
+            panic!("wrong reply");
+        };
+        assert_eq!(list.rooms.len(), 1, "no second room was authored");
+    }
+
+    #[tokio::test]
+    async fn dedup_divergent_body_conflicts() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let op_id = Some(jeliya_api::OpId::new("op-1"));
+        engine
+            .execute_with(
+                TypedCall::RoomCreate(jeliya_api::RoomCreate { name: "A".into() }),
+                op_id.clone(),
+                "principal:a",
+            )
+            .await
+            .reply
+            .expect("first create");
+        let err = engine
+            .execute_with(
+                TypedCall::RoomCreate(jeliya_api::RoomCreate { name: "B".into() }),
+                op_id.clone(),
+                "principal:a",
+            )
+            .await
+            .reply
+            .expect_err("a divergent body conflicts");
+        assert!(matches!(err, ApiError::OpIdConflict { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn dedup_ledgers_are_isolated_per_principal() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let op_id = Some(jeliya_api::OpId::new("op-1"));
+        let call = || {
+            TypedCall::RoomCreate(jeliya_api::RoomCreate {
+                name: "shared op id".into(),
+            })
+        };
+        let a = engine
+            .execute_with(call(), op_id.clone(), "principal:a")
+            .await
+            .reply
+            .expect("principal a creates");
+        // The SAME op_id under a DIFFERENT principal is an independent entry,
+        // not a replay: it authors its own room.
+        let b = engine
+            .execute_with(call(), op_id.clone(), "principal:b")
+            .await
+            .reply
+            .expect("principal b creates");
+        let (TypedReply::RoomCreate(a), TypedReply::RoomCreate(b)) = (a, b) else {
+            panic!("wrong replies");
+        };
+        assert_ne!(
+            a.room_id, b.room_id,
+            "distinct principals have isolated ledgers"
+        );
+    }
+
+    #[tokio::test]
+    async fn dedup_op_id_is_optional_and_undeduplicated_when_absent() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let call = || {
+            TypedCall::RoomCreate(jeliya_api::RoomCreate {
+                name: "no op id".into(),
+            })
+        };
+        // No op_id: the effect runs each time, undeduplicated.
+        let a = engine
+            .execute_with(call(), None, "principal:a")
+            .await
+            .reply
+            .expect("first");
+        let b = engine
+            .execute_with(call(), None, "principal:a")
+            .await
+            .reply
+            .expect("second");
+        let (TypedReply::RoomCreate(a), TypedReply::RoomCreate(b)) = (a, b) else {
+            panic!("wrong replies");
+        };
+        assert_ne!(a.room_id, b.room_id, "an absent op_id does not dedup");
     }
 
     #[tokio::test]
