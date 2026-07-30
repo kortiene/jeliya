@@ -520,6 +520,33 @@ impl<'a> TypedSupervisor<'a> {
         })
     }
 
+    /// Validation-order step 6: the caller's role must meet what the
+    /// operation needs. Authority-gated operations (`invite.mint`,
+    /// `member.remove`, `invite.revoke`, `pipe.publish`, `pipe.revoke`) refuse
+    /// a plain member with `insufficient_standing { required, held }` — the
+    /// role tokens, per the record. Step 5 (standing) runs first; this checks
+    /// role among ACTIVE members.
+    fn require_role(
+        &self,
+        api_room_id: &RoomId,
+        snapshot: &iroh_rooms::room::MembershipSnapshot,
+        required: Role,
+    ) -> Result<(), ApiError> {
+        let self_key = self.sup.local_identity_key().map_err(core_to_api)?;
+        let held = snapshot
+            .role(&self_key)
+            .map(proj::role)
+            .unwrap_or(Role::Member);
+        if required == Role::Authority && held != Role::Authority {
+            return Err(ApiError::InsufficientStanding {
+                room_id: api_room_id.clone(),
+                required,
+                held,
+            });
+        }
+        Ok(())
+    }
+
     /// `room.members` — the authoritative signed answer to who belongs. No
     /// presence, no reachability.
     pub async fn room_members(&self, req: &RoomMembers) -> CoreResult<RoomMembersOut> {
@@ -604,7 +631,8 @@ impl<'a> TypedSupervisor<'a> {
     // ------------------------------------------------------------------
 
     /// `invite.mint` — mint one key-bound capability exactly one named
-    /// identity can redeem.
+    /// identity can redeem. Authority-only (validation-order step 6): the
+    /// role gate lives in [`dispatch`], before this body runs.
     pub async fn invite_mint(&self, req: &InviteMint) -> CoreResult<InviteMintOut> {
         if req.role != Role::Member {
             return Err(CoreError::new(
@@ -1550,6 +1578,23 @@ fn closed_pipe_ids(
     Ok(ids)
 }
 
+/// The room an authority-gated operation targets, for the dispatch-time
+/// validation-order step 6 role check. Returns `Some((api_room, iroh_room))`
+/// for `member.remove`, `invite.mint`, `invite.revoke`, and `invite.list`;
+/// `None` for every other operation. A malformed room id yields no gate here
+/// — the operation's own `parse_room` reports it.
+fn authority_gated_room(call: &TypedCall) -> Option<(RoomId, IrohRoomId)> {
+    let api_room = match call {
+        TypedCall::MemberRemove(r) => &r.room_id,
+        TypedCall::InviteMint(r) => &r.room_id,
+        TypedCall::InviteRevoke(r) => &r.room_id,
+        TypedCall::InviteList(r) => &r.room_id,
+        _ => return None,
+    };
+    let iroh_room = api_room.as_str().trim().parse().ok()?;
+    Some((api_room.clone(), iroh_room))
+}
+
 // ---------------------------------------------------------------------------
 // The typed dispatch table (the engine's v2 surface)
 // ---------------------------------------------------------------------------
@@ -1570,6 +1615,22 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
     // never a membership oracle.
     if !matches!(call, TypedCall::SubjectEnsure(_)) && !t.subject_present()? {
         return Err(ApiError::SubjectAbsent);
+    }
+    // Validation-order step 6 (role): the four authority-gated operations
+    // (`member.remove`, `invite.mint`, `invite.revoke`, `invite.list`) refuse
+    // a plain member with `insufficient_standing { required: authority, held
+    // }` before any operation semantics run. Step 5 (standing) is enforced
+    // per-operation where the operation is defined over a live membership;
+    // the role check needs only the membership snapshot. A room the caller
+    // cannot read answers `room_not_available` (step 4 outranks step 6 — the
+    // role check must not be a membership oracle for a foreign room).
+    if let Some((api_room, iroh_room)) = authority_gated_room(&call) {
+        let snapshot = t
+            .sup
+            .readable_snapshot(&iroh_room)
+            .await
+            .map_err(|e| core_to_api_room(e, &api_room))?;
+        t.require_role(&api_room, &snapshot, Role::Authority)?;
     }
     match call {
         TypedCall::SubjectEnsure(_) => t
@@ -2060,5 +2121,54 @@ fn core_to_api_ctx(err: CoreError, room_id: Option<RoomId>) -> ApiError {
                 reason: InvalidReason::Format,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dispatch-time role gate targets exactly the four authority
+    /// operations the record names — no more (an open operation must not be
+    /// gated by accident), no fewer.
+    #[test]
+    fn authority_gated_room_covers_exactly_the_four_authority_ops() {
+        let rid = || RoomId::new(format!("blake3:{}", "ab".repeat(32)));
+        let gated = |call: &TypedCall| authority_gated_room(call).is_some();
+        assert!(gated(&TypedCall::MemberRemove(MemberRemove {
+            room_id: rid(),
+            subject_id: SubjectId::new("s"),
+        })));
+        assert!(gated(&TypedCall::InviteMint(InviteMint {
+            room_id: rid(),
+            subject_id: SubjectId::new("s"),
+            role: Role::Member,
+            expires_at: proj_epoch(),
+        })));
+        assert!(gated(&TypedCall::InviteRevoke(InviteRevoke {
+            room_id: rid(),
+            invite_id: InviteId::new("i"),
+        })));
+        assert!(gated(&TypedCall::InviteList(InviteList {
+            room_id: rid(),
+            page: Page {
+                cursor: Cursor::Start,
+                direction: Direction::Forward,
+                limit: 1,
+            },
+        })));
+        // Open operations are NOT gated: a plain member runs them.
+        assert!(!gated(&TypedCall::MessageSend(MessageSend {
+            room_id: rid(),
+            body: "hi".into(),
+        })));
+        assert!(!gated(&TypedCall::PipePublish(PipePublish {
+            room_id: rid(),
+            target: Target {
+                host: "127.0.0.1".into(),
+                port: 9,
+            },
+            audience: Audience::Room,
+        })));
     }
 }
