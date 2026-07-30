@@ -3870,6 +3870,34 @@ mod tests {
             .event_id
     }
 
+    /// Author a sibling of `m1` (same parent, so the same lamport) whose
+    /// canonical `EventId` sorts on the requested side of `m1_id`, varying the
+    /// signing device and timestamp until one lands. The canonical tie-break
+    /// is bytewise on the id, so across enough distinct devices a match is
+    /// guaranteed; the bound is generous to keep the test deterministic in
+    /// practice rather than probabilistic.
+    fn sibling_sorted(
+        fx: &RoomFixture,
+        m1_id: iroh_rooms::events::EventId,
+        before: bool,
+    ) -> WireEvent {
+        for attempt in 0..4096u64 {
+            let cand = fx.message(
+                "sibling",
+                &SigningKey::generate(),
+                1_783_190_001_500 + attempt,
+            );
+            let id = validated_id(&fx.room_id, &cand);
+            if (id < m1_id) == before {
+                return cand;
+            }
+        }
+        panic!(
+            "no sibling sorted {} m1 in 4096 tries",
+            if before { "before" } else { "after" }
+        );
+    }
+
     #[test]
     fn collect_committed_marks_a_late_sibling_as_a_reorder() {
         let mut fx = room_fixture();
@@ -3884,18 +3912,10 @@ mod tests {
         assert_eq!(first.len(), 2);
         assert_eq!(next, 2);
 
-        // Author late siblings (same parent as m1, so the same lamport) until
-        // one sorts BEFORE m1 in the canonical (lamport, event_id) order. That
-        // is the reorder case: it interleaves below the already-served tip.
-        let mut before = None;
-        for attempt in 0..64u64 {
-            let cand = fx.message("late", &SigningKey::generate(), 1_783_190_001_500 + attempt);
-            if validated_id(&fx.room_id, &cand) < m1_id {
-                before = Some(cand);
-                break;
-            }
-        }
-        let late = before.expect("some device yields a before-sorting sibling");
+        // A late sibling sorting BEFORE m1 in the canonical (lamport,
+        // event_id) order interleaves below the already-served tip: the
+        // reorder case the stream must surface as a corrective gap.
+        let late = sibling_sorted(&fx, m1_id, true);
         fx.insert(&late);
         let tail2 = fx.tail();
         let out2 = collect_committed(&tail2, &fx.snapshot, &mut seen, &mut next);
@@ -3926,19 +3946,7 @@ mod tests {
 
         // A sibling that sorts AFTER m1 is an ordinary in-order append at the
         // tip — no reorder, no gap.
-        let mut after = None;
-        for attempt in 0..64u64 {
-            let cand = fx.message(
-                "after",
-                &SigningKey::generate(),
-                1_783_190_001_500 + attempt,
-            );
-            if validated_id(&fx.room_id, &cand) > m1_id {
-                after = Some(cand);
-                break;
-            }
-        }
-        let tip = after.expect("some device yields an after-sorting sibling");
+        let tip = sibling_sorted(&fx, m1_id, false);
         fx.insert(&tip);
         let tail2 = fx.tail();
         let out2 = collect_committed(&tail2, &fx.snapshot, &mut seen, &mut next);
