@@ -30,17 +30,18 @@
 //! space here.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use jeliya_api::*;
 use serde::{Deserialize, Serialize};
 
-use iroh_rooms::events::{Content, EventType, SignedEvent};
+use iroh_rooms::events::{capability_hash, Content, EventType, SignedEvent};
 use iroh_rooms::room::RoomId as IrohRoomId;
 
 use crate::error::{CoreError, CoreResult, ErrorKind};
-use crate::materializer::file_handle;
 use crate::projection as proj;
-use crate::supervisor::RoomSupervisor;
+use crate::projection::file_handle;
+use crate::supervisor::{RemoveMemberOutcome, RoomSupervisor};
 
 /// The daemon's served limits, surfaced in `hello`/`VersionInfo` and enforced
 /// here. Values are the record's served-limits object; the shared-file maximum
@@ -209,21 +210,15 @@ fn page_indexed<T: Clone>(items: Vec<T>, window: Window) -> (Vec<T>, Truncated) 
 }
 
 /// The typed projection facade. Cheap to construct; borrows the supervisor.
-pub struct TypedSupervisor<'a> {
+pub(crate) struct TypedSupervisor<'a> {
     sup: &'a RoomSupervisor,
 }
 
 impl<'a> TypedSupervisor<'a> {
     /// Wrap a supervisor.
     #[must_use]
-    pub fn new(sup: &'a RoomSupervisor) -> Self {
+    pub(crate) fn new(sup: &'a RoomSupervisor) -> Self {
         Self { sup }
-    }
-
-    /// The underlying supervisor (for host surfaces that bypass dispatch).
-    #[must_use]
-    pub fn supervisor(&self) -> &'a RoomSupervisor {
-        self.sup
     }
 
     fn parse_room(room_id: &RoomId) -> CoreResult<IrohRoomId> {
@@ -382,13 +377,8 @@ impl<'a> TypedSupervisor<'a> {
             let store = self.sup.open_store().map_err(core_to_api)?;
             let (removed_ids, left_ids) =
                 crate::supervisor::departure_sets(&store, &room_id).map_err(core_to_api)?;
-            let standing = self_member.map(|m| {
-                proj::standing(
-                    removed_ids.contains(&m.identity)
-                        || matches!(m.status, iroh_rooms::room::Status::Removed),
-                    left_ids.contains(&m.identity),
-                )
-            });
+            let standing = self_member
+                .map(|m| member_standing(m.status, &m.identity, &removed_ids, &left_ids));
             // Recency: the newest committed event's author-dated instant and
             // kind, max by timestamp over the COMPLETE history (never the wall
             // clock, never a bounded window — a clock-ahead peer's older row
@@ -428,7 +418,7 @@ impl<'a> TypedSupervisor<'a> {
         let room_id = Self::parse_room(&req.room_id)?;
         // Activate is also a read boundary: authorize before spawning a node.
         self.sup.readable_snapshot(&room_id).await?;
-        self.sup.open_room(req.room_id.as_ref(), &[]).await?;
+        self.sup.activate_room(req.room_id.as_ref(), &[]).await?;
         let live = self.sup.is_open(&room_id);
         let snapshot = self.sup.snapshot_for(&room_id).await?;
         let self_key = self.sup.local_identity_key()?;
@@ -447,8 +437,25 @@ impl<'a> TypedSupervisor<'a> {
     }
 
     /// `room.deactivate` — stop live participation without changing membership.
-    pub async fn room_deactivate(&self, req: &RoomDeactivate) -> CoreResult<RoomDeactivateOut> {
-        self.sup.close_room(req.room_id.as_ref()).await?;
+    pub async fn room_deactivate(
+        &self,
+        req: &RoomDeactivate,
+    ) -> Result<RoomDeactivateOut, ApiError> {
+        let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        let snapshot = self
+            .sup
+            .readable_snapshot(&room_id)
+            .await
+            .map_err(|e| core_to_api_room(e, &req.room_id))?;
+        self.require_active_standing(&req.room_id, &room_id, &snapshot)?;
+        match self.sup.close_room(req.room_id.as_ref()).await {
+            Ok(()) => {}
+            // Deactivation is naturally idempotent. A concurrent or repeated
+            // close is success, but only after the standing check above has
+            // proved this is still an active membership.
+            Err(err) if err.kind == ErrorKind::RoomNotOpen => {}
+            Err(err) => return Err(core_to_api_room(err, &req.room_id)),
+        }
         Ok(RoomDeactivateOut {
             room_id: req.room_id.clone(),
             live: false,
@@ -505,11 +512,7 @@ impl<'a> TypedSupervisor<'a> {
         let (removed_ids, left_ids) =
             crate::supervisor::departure_sets(&store, room_id).map_err(core_to_api)?;
         let standing = snapshot.member(&self_key).map_or(Standing::Active, |m| {
-            proj::standing(
-                removed_ids.contains(&m.identity)
-                    || matches!(m.status, iroh_rooms::room::Status::Removed),
-                left_ids.contains(&m.identity),
-            )
+            member_standing(m.status, &m.identity, &removed_ids, &left_ids)
         });
         if standing == Standing::Active {
             return Ok(());
@@ -549,21 +552,23 @@ impl<'a> TypedSupervisor<'a> {
 
     /// `room.members` — the authoritative signed answer to who belongs. No
     /// presence, no reachability.
-    pub async fn room_members(&self, req: &RoomMembers) -> CoreResult<RoomMembersOut> {
-        let room_id = Self::parse_room(&req.room_id)?;
-        let snapshot = self.sup.readable_snapshot(&room_id).await?;
-        let store = self.sup.open_store()?;
-        let (removed_ids, left_ids) = crate::supervisor::departure_sets(&store, &room_id)?;
+    pub async fn room_members(&self, req: &RoomMembers) -> Result<RoomMembersOut, ApiError> {
+        let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        let snapshot = self
+            .sup
+            .readable_snapshot(&room_id)
+            .await
+            .map_err(|error| core_to_api_room(error, &req.room_id))?;
+        self.require_active_standing(&req.room_id, &room_id, &snapshot)?;
+        let store = self.sup.open_store().map_err(core_to_api)?;
+        let (removed_ids, left_ids) =
+            crate::supervisor::departure_sets(&store, &room_id).map_err(core_to_api)?;
         let members = snapshot
             .members()
             .map(|m| MemberRow {
                 subject_id: SubjectId::new(m.identity.to_string()),
                 role: proj::role(m.role),
-                standing: proj::standing(
-                    removed_ids.contains(&m.identity)
-                        || matches!(m.status, iroh_rooms::room::Status::Removed),
-                    left_ids.contains(&m.identity),
-                ),
+                standing: member_standing(m.status, &m.identity, &removed_ids, &left_ids),
                 // The fold does not date joins; joined_at is the join event's
                 // author-dated instant when discoverable, else the genesis.
                 joined_at: self
@@ -615,15 +620,42 @@ impl<'a> TypedSupervisor<'a> {
         })
     }
 
-    /// `member.remove` — room authority removes a member, as a signed fact.
-    /// Not yet backed by the runtime (the MVP supervisor exposes no removal
-    /// flow), so it is refused honestly rather than fabricated.
-    pub async fn member_remove(&self, req: &MemberRemove) -> CoreResult<MemberRemoveOut> {
-        let _ = req;
-        Err(CoreError::new(
-            ErrorKind::InvalidParams,
-            "member.remove is not implemented in this build",
-        ))
+    /// `member.remove` — room authority removes a joined member as a signed
+    /// fact. A repeat against the same terminal removal returns that original
+    /// fact without authoring another event.
+    pub async fn member_remove(&self, req: &MemberRemove) -> Result<MemberRemoveOut, ApiError> {
+        let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        let subject = Self::parse_subject(&req.subject_id).map_err(core_to_api)?;
+        let outcome = self
+            .sup
+            .remove_member(&room_id, &subject)
+            .await
+            .map_err(|error| core_to_api_room(error, &req.room_id))?;
+        let event_id = match outcome {
+            RemoveMemberOutcome::Removed(event_id) => event_id,
+            RemoveMemberOutcome::Authority => {
+                return Err(ApiError::AuthorityCannotBeRemoved {
+                    room_id: req.room_id.clone(),
+                    subject_id: req.subject_id.clone(),
+                })
+            }
+            RemoveMemberOutcome::Unknown => {
+                return Err(ApiError::MemberUnknown {
+                    room_id: req.room_id.clone(),
+                    subject_id: req.subject_id.clone(),
+                })
+            }
+        };
+        let pos = self
+            .pos_of_event(&room_id, &event_id)
+            .map_err(|error| core_to_api_room(error, &req.room_id))?;
+        Ok(MemberRemoveOut {
+            room_id: req.room_id.clone(),
+            subject_id: req.subject_id.clone(),
+            event_id: EventId::new(event_id),
+            pos,
+            standing: Standing::Removed,
+        })
     }
 
     // ------------------------------------------------------------------
@@ -707,15 +739,83 @@ impl<'a> TypedSupervisor<'a> {
         })
     }
 
-    /// `invite.list` — enumerate outstanding and recently expired invites.
-    /// The MVP runtime does not maintain a served invite index, so this is
-    /// refused honestly rather than fabricated empty.
-    pub async fn invite_list(&self, req: &InviteList) -> CoreResult<InviteListOut> {
-        let _ = req;
-        Err(CoreError::new(
-            ErrorKind::InvalidParams,
-            "invite.list is not implemented in this build",
-        ))
+    /// `invite.list` — fold the accepted invitation and redemption facts into
+    /// an authority-only typed index. Capability secrets and hashes never
+    /// enter the returned rows.
+    pub async fn invite_list(&self, req: &InviteList) -> Result<InviteListOut, ApiError> {
+        let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        let store = self
+            .sup
+            .open_store()
+            .map_err(|_| ApiError::InviteIndexUnreadable)?;
+        let stored = store
+            .room_tail(&room_id, u32::MAX)
+            .map_err(|_| ApiError::InviteIndexUnreadable)?;
+
+        // Decode the two membership facts that define this index once. A
+        // corrupt/unrepresentable row makes the index unreadable; silently
+        // skipping it would present a partial answer as complete.
+        let mut joins = Vec::new();
+        for se in stored
+            .iter()
+            .filter(|se| se.event_type == EventType::MemberJoined)
+        {
+            let event = SignedEvent::decode(&se.wire.signed)
+                .map_err(|_| ApiError::InviteIndexUnreadable)?;
+            let Content::MemberJoined(join) = event.content else {
+                return Err(ApiError::InviteIndexUnreadable);
+            };
+            joins.push((event.sender_id, join));
+        }
+
+        let now = crate::now_ms();
+        let mut rows = Vec::new();
+        for se in stored
+            .iter()
+            .filter(|se| se.event_type == EventType::MemberInvited)
+        {
+            let event = SignedEvent::decode(&se.wire.signed)
+                .map_err(|_| ApiError::InviteIndexUnreadable)?;
+            let Content::MemberInvited(invite) = event.content else {
+                return Err(ApiError::InviteIndexUnreadable);
+            };
+            let expires_ms = invite.expires_at.ok_or(ApiError::InviteIndexUnreadable)?;
+            let expires_at =
+                checked_timestamp(expires_ms).ok_or(ApiError::InviteIndexUnreadable)?;
+            let role = match invite.role.as_str() {
+                "admin" => Role::Authority,
+                "member" | "agent" => Role::Member,
+                _ => return Err(ApiError::InviteIndexUnreadable),
+            };
+            let redeemed = joins.iter().any(|(sender, join)| {
+                join.via_invite_id == invite.invite_id
+                    && *sender == invite.invitee_key
+                    && join.device_binding.identity_key == invite.invitee_key
+                    && join.role == invite.role
+                    && capability_hash(&room_id, &join.via_invite_id, &join.capability_secret)
+                        == invite.capability_hash
+            });
+            let redeemability = if redeemed {
+                Redeemability::Redeemed
+            } else if now > expires_ms {
+                Redeemability::Expired
+            } else {
+                Redeemability::Outstanding
+            };
+            rows.push(InviteRow {
+                invite_id: proj::invite_id(&invite.invite_id),
+                subject_id: SubjectId::new(invite.invitee_key.to_string()),
+                role,
+                expires_at,
+                redeemability,
+            });
+        }
+        let (invites, truncated) = page_indexed(rows, Window::resolve(&req.page)?);
+        Ok(InviteListOut {
+            room_id: req.room_id.clone(),
+            invites,
+            truncated,
+        })
     }
 
     /// `invite.revoke` — withdraw an outstanding capability before expiry.
@@ -948,16 +1048,71 @@ impl<'a> TypedSupervisor<'a> {
         ))
     }
 
+    /// Host-side half of `file.share`: the host has already staged the bytes
+    /// under the daemon data directory and supplies the typed declaration.
+    /// The runtime result is converted directly to the protocol-v2 output;
+    /// no JSON projection is built or decoded inside core.
+    pub(crate) async fn share_staged_file(
+        &self,
+        req: &FileShare,
+        path: &Path,
+    ) -> CoreResult<FileShareOut> {
+        let actual_bytes = std::fs::metadata(path)
+            .map_err(|e| CoreError::invalid(format!("cannot read {}: {e}", path.display())))?
+            .len();
+        if actual_bytes != req.declared_bytes {
+            return Err(CoreError::invalid(format!(
+                "declared size {} does not match staged size {actual_bytes}",
+                req.declared_bytes
+            )));
+        }
+        let shared = self
+            .sup
+            .share_file(
+                req.room_id.as_ref(),
+                path.to_string_lossy().as_ref(),
+                Some(&req.name),
+                Some(&req.declared_content_type),
+            )
+            .await?;
+        let room_id = Self::parse_room(&req.room_id)?;
+        let pos = self.pos_of_event(&room_id, &shared.event_id)?;
+        Ok(FileShareOut {
+            room_id: req.room_id.clone(),
+            file_id: FileId::new(shared.file_id),
+            event_id: EventId::new(shared.event_id),
+            pos,
+            bytes: shared.bytes,
+            digest: shared.digest,
+        })
+    }
+
     /// `file.list` — files shared into a room, provider availability as a
     /// protocol fact.
     pub async fn file_list(&self, req: &FileList) -> CoreResult<FileListOut> {
         let room_id = Self::parse_room(&req.room_id)?;
-        self.sup.readable_snapshot(&room_id).await?;
+        let snapshot = self.sup.readable_snapshot(&room_id).await?;
         let store = self.sup.open_store()?;
         let events = store
             .by_type(&room_id, EventType::FileShared)
             .map_err(|e| CoreError::internal(format!("could not read file.shared events: {e}")))?;
         let session = self.sup.session_opt(&room_id);
+        let peer_paths: std::collections::HashMap<_, _> = if let Some(session) = session.as_deref()
+        {
+            session
+                .node
+                .peer_paths()
+                .await
+                .into_iter()
+                .map(|(device, path, _relay)| (device, path.label()))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+        let peer_entries: std::collections::HashMap<_, _> = session
+            .as_deref()
+            .map(|session| session.node.peer_entries().into_iter().collect())
+            .unwrap_or_default();
         let room_id_str = room_id.to_string();
         let mut files = Vec::with_capacity(events.len());
         for se in &events {
@@ -971,26 +1126,48 @@ impl<'a> TypedSupervisor<'a> {
                 Some(list) if !list.is_empty() => list.clone(),
                 _ => vec![ev.device_id],
             };
-            let fetchable = session.as_deref().is_some_and(|s| {
-                providers.iter().any(|p| {
-                    crate::supervisor::endpoint_id_of(*p).is_ok_and(|id| {
-                        s.node.peer_state(id)
-                            == Some(iroh_rooms::experimental::session::PeerConnState::Connected)
+            let fetchable = providers.iter().any(|provider| {
+                crate::supervisor::endpoint_id_of(*provider)
+                    .ok()
+                    .and_then(|endpoint| peer_entries.get(&endpoint))
+                    .is_some_and(|entry| {
+                        entry.state == iroh_rooms::experimental::session::PeerConnState::Connected
                     })
-                })
             });
             let file_id = file_handle(&f.file_id);
-            let self_hosted =
-                crate::localstate::fetched_file(self.sup.data_dir(), &room_id_str, &file_id)
+            let local_device =
+                self.sup.local_identity_key().ok().and_then(|identity| {
+                    snapshot.member(&identity).and_then(|member| member.device)
+                });
+            let self_hosted = local_device.is_some_and(|device| providers.contains(&device))
+                || crate::localstate::fetched_file(self.sup.data_dir(), &room_id_str, &file_id)
                     .is_some();
             let provider_rows = providers
                 .iter()
-                .map(|p| PeerRow {
-                    subject_id: SubjectId::new(ev.sender_id.to_string()),
-                    device_id: DeviceId::new(p.to_string()),
-                    link: Link::NotConnected {
-                        reason: LinkReason::NoRoute,
-                    },
+                .filter_map(|provider| {
+                    let subject = snapshot.identity_of_device(provider)?;
+                    let endpoint = crate::supervisor::endpoint_id_of(*provider).ok();
+                    let link = endpoint
+                        .as_ref()
+                        .and_then(|endpoint| peer_entries.get(endpoint))
+                        .map_or(
+                            Link::NotConnected {
+                                reason: LinkReason::NeverDialed,
+                            },
+                            |entry| {
+                                peer_link(
+                                    entry,
+                                    endpoint
+                                        .as_ref()
+                                        .and_then(|endpoint| peer_paths.get(endpoint).copied()),
+                                )
+                            },
+                        );
+                    Some(PeerRow {
+                        subject_id: SubjectId::new(subject.to_string()),
+                        device_id: DeviceId::new(provider.to_string()),
+                        link,
+                    })
                 })
                 .collect();
             files.push(FileRow {
@@ -1020,14 +1197,12 @@ impl<'a> TypedSupervisor<'a> {
     /// the bytes and `file.read` streams them out.
     pub async fn file_fetch(&self, req: &FileFetch) -> CoreResult<FileFetchOut> {
         let room_id = Self::parse_room(&req.room_id)?;
+        let snapshot = self.sup.readable_snapshot(&room_id).await?;
         let result = self
             .sup
             .fetch_file(req.room_id.as_ref(), req.file_id.as_str(), None)
             .await?;
-        let bytes = result
-            .get("bytes")
-            .and_then(|b| b.as_u64())
-            .ok_or_else(|| CoreError::internal("fetch result carried no byte count"))?;
+        let bytes = result.bytes;
         // The verified digest comes from the shared file's declared hash.
         let file_id = Self::parse_file(&req.file_id)?;
         let store = self.sup.open_store()?;
@@ -1041,16 +1216,18 @@ impl<'a> TypedSupervisor<'a> {
                 Content::FileShared(f) if f.file_id == file_id => Some(f.blob_hash.to_string()),
                 _ => None,
             })
-            .unwrap_or_default();
-        let _ = room_id;
+            .ok_or_else(|| CoreError::internal("fetched file has no declared digest"))?;
+        let provider_subject = snapshot
+            .identity_of_device(&result.provider_device)
+            .ok_or_else(|| CoreError::internal("fetched provider device has no bound subject"))?;
         Ok(FileFetchOut {
             room_id: req.room_id.clone(),
             file_id: req.file_id.clone(),
             bytes,
             digest,
             provider: ProviderRef {
-                subject_id: SubjectId::new(""),
-                device_id: DeviceId::new(""),
+                subject_id: SubjectId::new(provider_subject.to_string()),
+                device_id: DeviceId::new(result.provider_device.to_string()),
             },
         })
     }
@@ -1089,6 +1266,12 @@ impl<'a> TypedSupervisor<'a> {
     /// `pipe_target_refused` carrying the rejected target verbatim.
     pub async fn pipe_publish(&self, req: &PipePublish) -> Result<PipePublishOut, ApiError> {
         let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        let snapshot = self
+            .sup
+            .readable_snapshot(&room_id)
+            .await
+            .map_err(|error| core_to_api_room(error, &req.room_id))?;
+        self.require_active_standing(&req.room_id, &room_id, &snapshot)?;
         // The target must be loopback (IPv4 127.0.0.0/8 or IPv6 ::1) with a
         // port in 1..=65535. Anything else is pipe_target_refused carrying the
         // rejected target verbatim, never the generic policy_refused.
@@ -1111,11 +1294,6 @@ impl<'a> TypedSupervisor<'a> {
         let target_addr = target_addr.expect("parsed above");
 
         // Resolve the audience to a concrete authorized-subject set.
-        let snapshot = self
-            .sup
-            .readable_snapshot(&room_id)
-            .await
-            .map_err(core_to_api)?;
         let allowed: Vec<iroh_rooms::identity::IdentityKey> = match &req.audience {
             Audience::Room => snapshot.active_members().map(|m| m.identity).collect(),
             Audience::Subjects { subject_ids } => subject_ids
@@ -1130,7 +1308,7 @@ impl<'a> TypedSupervisor<'a> {
             });
         }
 
-        let target_hint = format!("{}:{}", req.target.host, req.target.port);
+        let target_hint = target_addr.to_string();
         let (pipe_id, event_id) = self
             .sup
             .pipe_expose_multi(&room_id, target_addr, &target_hint, &allowed)
@@ -1156,6 +1334,23 @@ impl<'a> TypedSupervisor<'a> {
         self.sup.readable_snapshot(&room_id).await?;
         let store = self.sup.open_store()?;
         let session = self.sup.session_opt(&room_id);
+        let local_identity = self.sup.local_identity_key().ok();
+        let peer_paths: std::collections::HashMap<_, _> = if let Some(session) = session.as_deref()
+        {
+            session
+                .node
+                .peer_paths()
+                .await
+                .into_iter()
+                .map(|(device, path, _relay)| (device, path.label()))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+        let peer_entries: std::collections::HashMap<_, _> = session
+            .as_deref()
+            .map(|session| session.node.peer_entries().into_iter().collect())
+            .unwrap_or_default();
         let closed = closed_pipe_ids(&store, &room_id)?;
         let opened = store
             .by_type(&room_id, EventType::PipeOpened)
@@ -1174,20 +1369,31 @@ impl<'a> TypedSupervisor<'a> {
             if closed.contains(&p.pipe_id) {
                 continue; // revoked pipes are not listed
             }
-            let connected = session.as_deref().is_some_and(|s| {
-                crate::supervisor::endpoint_id_of(p.owner_endpoint).is_ok_and(|id| {
-                    s.node.peer_state(id)
-                        == Some(iroh_rooms::experimental::session::PeerConnState::Connected)
-                })
-            });
-            let link = if connected {
+            let connected = self
+                .sup
+                .pipe_connection_open(&room_id, p.pipe_id, &p.owner_id);
+            let owner_endpoint = crate::supervisor::endpoint_id_of(p.owner_endpoint).ok();
+            let link = if local_identity.as_ref() == Some(&p.owner_id) && session.is_some() {
                 Link::Direct {
-                    since: proj_epoch(),
+                    since: proj_ts(ev.created_at),
                 }
             } else {
-                Link::NotConnected {
-                    reason: LinkReason::NoRoute,
-                }
+                owner_endpoint
+                    .as_ref()
+                    .and_then(|endpoint| peer_entries.get(endpoint))
+                    .map_or(
+                        Link::NotConnected {
+                            reason: LinkReason::NeverDialed,
+                        },
+                        |entry| {
+                            peer_link(
+                                entry,
+                                owner_endpoint
+                                    .as_ref()
+                                    .and_then(|endpoint| peer_paths.get(endpoint).copied()),
+                            )
+                        },
+                    )
             };
             pipes.push((
                 se.lamport.unwrap(),
@@ -1213,11 +1419,19 @@ impl<'a> TypedSupervisor<'a> {
     }
 
     /// `pipe.connect` — connect to a pipe.
-    pub async fn pipe_connect(&self, req: &PipeConnect) -> CoreResult<PipeConnectOut> {
+    pub async fn pipe_connect(&self, req: &PipeConnect) -> Result<PipeConnectOut, ApiError> {
+        let room_id = Self::parse_room(&req.room_id).map_err(core_to_api)?;
+        let snapshot = self
+            .sup
+            .readable_snapshot(&room_id)
+            .await
+            .map_err(|error| core_to_api_room(error, &req.room_id))?;
+        self.require_active_standing(&req.room_id, &room_id, &snapshot)?;
         let local_addr = self
             .sup
             .pipe_connect(req.room_id.as_ref(), req.pipe_id.as_str())
-            .await?;
+            .await
+            .map_err(|error| core_to_api_room(error, &req.room_id))?;
         let (host, port) = split_host_port(&local_addr);
         Ok(PipeConnectOut {
             room_id: req.room_id.clone(),
@@ -1228,28 +1442,25 @@ impl<'a> TypedSupervisor<'a> {
     }
 
     /// `pipe.release` — release a local connection, named by the connection.
-    pub async fn pipe_release(&self, req: &PipeRelease) -> CoreResult<PipeReleaseOut> {
-        // The runtime names connections by their local addr today; releasing
-        // by connection_id requires a connection index the MVP does not keep.
-        let _ = req;
-        Err(CoreError::new(
-            ErrorKind::InvalidParams,
-            "pipe.release by connection_id is not implemented in this build",
-        ))
+    pub async fn pipe_release(&self, req: &PipeRelease) -> Result<PipeReleaseOut, ApiError> {
+        if !self.sup.pipe_release(&req.connection_id) {
+            return Err(ApiError::ConnectionUnknown {
+                connection_id: req.connection_id.clone(),
+            });
+        }
+        Ok(PipeReleaseOut {
+            connection_id: req.connection_id.clone(),
+            released: true,
+        })
     }
 
     /// `pipe.revoke` — withdraw a published pipe as a signed fact.
     pub async fn pipe_revoke(&self, req: &PipeRevoke) -> CoreResult<PipeRevokeOut> {
         let room_id = Self::parse_room(&req.room_id)?;
-        let result = self
+        let event_id = self
             .sup
             .pipe_close(req.room_id.as_ref(), req.pipe_id.as_str())
             .await?;
-        let event_id = result
-            .get("event_id")
-            .and_then(|p| p.as_str())
-            .unwrap_or_default()
-            .to_string();
         let pos = self.pos_of_event(&room_id, &event_id)?;
         Ok(PipeRevokeOut {
             room_id: req.room_id.clone(),
@@ -1372,37 +1583,13 @@ impl<'a> TypedSupervisor<'a> {
             .collect();
         node.peer_entries()
             .into_iter()
-            .map(|(device, entry)| {
-                let connected = matches!(
-                    entry.state,
-                    iroh_rooms::experimental::session::PeerConnState::Connected
-                );
-                let link = if connected {
-                    match paths.get(&device).copied() {
-                        Some("direct") | Some("mixed") => Link::Direct {
-                            since: proj_epoch(),
-                        },
-                        Some("relay") => Link::Relay {
-                            since: proj_epoch(),
-                        },
-                        _ => Link::NotConnected {
-                            reason: LinkReason::NoRoute,
-                        },
-                    }
-                } else {
-                    Link::NotConnected {
-                        reason: LinkReason::NoRoute,
-                    }
-                };
-                PeerRow {
-                    subject_id: entry
-                        .identity
-                        .as_ref()
-                        .map(|id| SubjectId::new(id.to_string()))
-                        .unwrap_or_else(|| SubjectId::new("")),
+            .filter_map(|(device, entry)| {
+                let identity = entry.identity.as_ref()?;
+                Some(PeerRow {
+                    subject_id: SubjectId::new(identity.to_string()),
                     device_id: DeviceId::new(device.to_string()),
-                    link,
-                }
+                    link: peer_link(&entry, paths.get(&device).copied()),
+                })
             })
             .collect()
     }
@@ -1482,12 +1669,23 @@ fn self_key_standing(
     let store = sup.open_store()?;
     let (removed_ids, left_ids) = crate::supervisor::departure_sets(&store, room_id)?;
     Ok(snapshot.member(self_key).map_or(Standing::Active, |m| {
-        proj::standing(
-            removed_ids.contains(&m.identity)
-                || matches!(m.status, iroh_rooms::room::Status::Removed),
-            left_ids.contains(&m.identity),
-        )
+        member_standing(m.status, &m.identity, &removed_ids, &left_ids)
     }))
+}
+
+/// Refine the upstream terminal membership status with the signed fact that
+/// caused it. The fold uses `Status::Removed` for both voluntary leave and
+/// administrative removal; the v2 API keeps those lifecycle states distinct.
+fn member_standing(
+    status: iroh_rooms::room::Status,
+    identity: &iroh_rooms::identity::IdentityKey,
+    removed_ids: &BTreeSet<iroh_rooms::identity::IdentityKey>,
+    left_ids: &BTreeSet<iroh_rooms::identity::IdentityKey>,
+) -> Standing {
+    let left = left_ids.contains(identity);
+    let removed = removed_ids.contains(identity)
+        || (!left && matches!(status, iroh_rooms::room::Status::Removed));
+    proj::standing(removed, left)
 }
 
 /// The v2 wire label for a status label (snake_case, matching the Iroh
@@ -1534,10 +1732,15 @@ fn proj_progress(pct: Option<u64>) -> Progress {
 
 /// The wire `<ts>` for an author-dated ms instant.
 fn proj_ts(created_at_ms: u64) -> Timestamp {
-    let secs = i64::try_from(created_at_ms / 1000).unwrap_or(i64::MAX);
-    Timestamp::new(
-        time::OffsetDateTime::from_unix_timestamp(secs).unwrap_or(time::OffsetDateTime::UNIX_EPOCH),
-    )
+    checked_timestamp(created_at_ms).unwrap_or_else(proj_epoch)
+}
+
+/// Convert a millisecond instant only when it is representable on the wire.
+fn checked_timestamp(created_at_ms: u64) -> Option<Timestamp> {
+    let secs = i64::try_from(created_at_ms / 1000).ok()?;
+    time::OffsetDateTime::from_unix_timestamp(secs)
+        .ok()
+        .map(Timestamp::new)
 }
 
 /// The Unix epoch as a `<ts>` (an honest "unknown instant", never the wall
@@ -1549,6 +1752,33 @@ fn proj_epoch() -> Timestamp {
 /// Whether a socket address is loopback (IPv4 127.0.0.0/8 or IPv6 ::1).
 fn is_loopback_addr(addr: &std::net::SocketAddr) -> bool {
     addr.ip().is_loopback()
+}
+
+/// Convert the runtime's observed peer state to the one shared v2 link
+/// vocabulary. The state-change clock is observability data (the `since`
+/// field), not a signed room-event timestamp.
+fn peer_link(entry: &iroh_rooms::experimental::session::PeerEntry, path: Option<&str>) -> Link {
+    use iroh_rooms::experimental::session::{OfflineReason, PeerConnState};
+
+    if entry.state == PeerConnState::Connected {
+        return match path {
+            Some("relay") => Link::Relay {
+                since: proj_ts(entry.last_change_ms),
+            },
+            Some("direct" | "mixed") => Link::Direct {
+                since: proj_ts(entry.last_change_ms),
+            },
+            _ => Link::NotConnected {
+                reason: LinkReason::NoRoute,
+            },
+        };
+    }
+    let reason = match entry.offline_reason {
+        OfflineReason::NeverDialed => LinkReason::NeverDialed,
+        OfflineReason::Unreachable | OfflineReason::TransportError => LinkReason::DialFailed,
+        OfflineReason::LinkDropped | OfflineReason::Deauthorized => LinkReason::Closed,
+    };
+    Link::NotConnected { reason }
 }
 
 /// Split a `"host:port"` loopback address into a `Target`.
@@ -1593,7 +1823,20 @@ fn closed_pipe_ids(
 /// validation order.
 fn authority_gated_room(call: &TypedCall) -> Result<Option<(RoomId, IrohRoomId)>, ApiError> {
     let api_room = match call {
-        TypedCall::MemberRemove(r) => &r.room_id,
+        TypedCall::MemberRemove(r) => {
+            if r.subject_id
+                .as_str()
+                .trim()
+                .parse::<iroh_rooms::identity::IdentityKey>()
+                .is_err()
+            {
+                return Err(ApiError::InvalidArgument {
+                    field: "in.subject_id".into(),
+                    reason: InvalidReason::Format,
+                });
+            }
+            &r.room_id
+        }
         TypedCall::InviteMint(r) => &r.room_id,
         TypedCall::InviteRevoke(r) => &r.room_id,
         TypedCall::InviteList(r) => {
@@ -1623,7 +1866,10 @@ fn authority_gated_room(call: &TypedCall) -> Result<Option<(RoomId, IrohRoomId)>
 /// The dispatch is **total by construction**: the codec's router already
 /// refused any `op` not in the 33, so the downcast to the concrete input type
 /// cannot fail.
-pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedReply, ApiError> {
+pub(crate) async fn dispatch(
+    sup: &RoomSupervisor,
+    call: TypedCall,
+) -> Result<TypedReply, ApiError> {
     let t = TypedSupervisor::new(sup);
     // Validation-order step 2 (subject precondition): every operation except
     // `subject.ensure` — which exists to create the subject — requires a local
@@ -1671,22 +1917,14 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .await
             .map(TypedReply::RoomActivate)
             .map_err(|e| core_to_api_room(e, &r.room_id)),
-        TypedCall::RoomDeactivate(r) => t
-            .room_deactivate(&r)
-            .await
-            .map(TypedReply::RoomDeactivate)
-            .map_err(|e| core_to_api_room(e, &r.room_id)),
+        TypedCall::RoomDeactivate(r) => t.room_deactivate(&r).await.map(TypedReply::RoomDeactivate),
         TypedCall::RoomLeave(r) => t
             .room_leave(&r)
             .await
             .map(TypedReply::RoomLeave)
             .map_err(|e| core_to_api_room(e, &r.room_id)),
         TypedCall::RoomTimeline(r) => t.room_timeline(&r).await.map(TypedReply::RoomTimeline),
-        TypedCall::RoomMembers(r) => t
-            .room_members(&r)
-            .await
-            .map(TypedReply::RoomMembers)
-            .map_err(|e| core_to_api_room(e, &r.room_id)),
+        TypedCall::RoomMembers(r) => t.room_members(&r).await.map(TypedReply::RoomMembers),
         TypedCall::RoomArchive(r) => t
             .room_archive(&r)
             .await
@@ -1697,21 +1935,13 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .await
             .map(TypedReply::RoomPeers)
             .map_err(|e| core_to_api_room(e, &r.room_id)),
-        TypedCall::MemberRemove(r) => t
-            .member_remove(&r)
-            .await
-            .map(TypedReply::MemberRemove)
-            .map_err(|e| core_to_api_room(e, &r.room_id)),
+        TypedCall::MemberRemove(r) => t.member_remove(&r).await.map(TypedReply::MemberRemove),
         TypedCall::InviteMint(r) => t
             .invite_mint(&r)
             .await
             .map(TypedReply::InviteMint)
             .map_err(|e| core_to_api_room(e, &r.room_id)),
-        TypedCall::InviteList(r) => t
-            .invite_list(&r)
-            .await
-            .map(TypedReply::InviteList)
-            .map_err(|e| core_to_api_room(e, &r.room_id)),
+        TypedCall::InviteList(r) => t.invite_list(&r).await.map(TypedReply::InviteList),
         TypedCall::InviteRevoke(r) => t
             .invite_revoke(&r)
             .await
@@ -1773,16 +2003,8 @@ pub async fn dispatch(sup: &RoomSupervisor, call: TypedCall) -> Result<TypedRepl
             .await
             .map(TypedReply::PipeList)
             .map_err(|e| core_to_api_room(e, &r.room_id)),
-        TypedCall::PipeConnect(r) => t
-            .pipe_connect(&r)
-            .await
-            .map(TypedReply::PipeConnect)
-            .map_err(|e| core_to_api_room(e, &r.room_id)),
-        TypedCall::PipeRelease(r) => t
-            .pipe_release(&r)
-            .await
-            .map(TypedReply::PipeRelease)
-            .map_err(core_to_api),
+        TypedCall::PipeConnect(r) => t.pipe_connect(&r).await.map(TypedReply::PipeConnect),
+        TypedCall::PipeRelease(r) => t.pipe_release(&r).await.map(TypedReply::PipeRelease),
         TypedCall::PipeRevoke(r) => t
             .pipe_revoke(&r)
             .await
@@ -2151,6 +2373,7 @@ fn core_to_api_ctx(err: CoreError, room_id: Option<RoomId>) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     /// The dispatch-time role gate targets exactly the four authority
     /// operations the record names — no more (an open operation must not be
@@ -2159,9 +2382,12 @@ mod tests {
     fn authority_gated_room_covers_exactly_the_four_authority_ops() {
         let rid = || RoomId::new(format!("blake3:{}", "ab".repeat(32)));
         let gated = |call: &TypedCall| authority_gated_room(call).ok().flatten().is_some();
+        let member_id = iroh_rooms::identity::SigningKey::generate()
+            .identity_key()
+            .to_string();
         assert!(gated(&TypedCall::MemberRemove(MemberRemove {
             room_id: rid(),
-            subject_id: SubjectId::new("s"),
+            subject_id: SubjectId::new(member_id),
         })));
         assert!(gated(&TypedCall::InviteMint(InviteMint {
             room_id: rid(),
@@ -2226,5 +2452,240 @@ mod tests {
                 "limit {limit}: got {err:?}"
             );
         }
+    }
+
+    fn first_page(room_id: &str) -> InviteList {
+        InviteList {
+            room_id: RoomId::new(room_id),
+            page: Page {
+                cursor: Cursor::Start,
+                direction: Direction::Forward,
+                limit: 32,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn invite_list_folds_outstanding_then_redeemed_without_capability_material() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id_str = sup.create_room("Invite Index").unwrap();
+        let room_id: IrohRoomId = room_id_str.parse().unwrap();
+        let invitee_identity = iroh_rooms::identity::SigningKey::generate();
+        let invitee_device = iroh_rooms::identity::SigningKey::generate();
+        let capability = sup
+            .create_invite(
+                &room_id_str,
+                &invitee_identity.identity_key().to_string(),
+                "member",
+                Some("1h"),
+            )
+            .await
+            .unwrap();
+
+        let typed = TypedSupervisor::new(&sup);
+        let outstanding = typed.invite_list(&first_page(&room_id_str)).await.unwrap();
+        assert_eq!(outstanding.invites.len(), 1);
+        assert_eq!(
+            outstanding.invites[0].redeemability,
+            Redeemability::Outstanding
+        );
+        let encoded = serde_json::to_value(&outstanding).unwrap();
+        assert!(
+            encoded["invites"][0].get("capability").is_none(),
+            "the authority index never returns the bearer capability"
+        );
+        assert!(
+            encoded["invites"][0].get("capability_hash").is_none(),
+            "the authority index never returns capability verification material"
+        );
+
+        let ticket: iroh_rooms::room::RoomInviteTicket = capability.parse().unwrap();
+        let mut heads = sup.open_store().unwrap().heads(&room_id).unwrap();
+        heads.truncate(iroh_rooms::events::constants::MAX_PREV_EVENTS);
+        let binding = iroh_rooms::identity::DeviceBinding::create(
+            &room_id,
+            &invitee_identity,
+            invitee_device.device_key(),
+        );
+        let joined = iroh_rooms::room::build_member_joined(
+            &invitee_identity,
+            &invitee_device,
+            &room_id,
+            &ticket.invite_id,
+            &ticket.capability_secret,
+            &ticket.role,
+            binding,
+            None,
+            &heads,
+            crate::now_ms(),
+        );
+        let validated = iroh_rooms::events::validate_wire_bytes(
+            &joined.to_bytes(),
+            &iroh_rooms::events::ValidationContext::for_room(room_id),
+        )
+        .unwrap();
+        sup.open_store().unwrap().insert(&validated).unwrap();
+
+        let redeemed = typed.invite_list(&first_page(&room_id_str)).await.unwrap();
+        assert_eq!(redeemed.invites[0].redeemability, Redeemability::Redeemed);
+    }
+
+    #[tokio::test]
+    async fn room_deactivate_is_naturally_idempotent_for_an_active_member() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id = sup.create_room("Idempotent Deactivate").unwrap();
+        sup.activate_room(&room_id, &[]).await.unwrap();
+        let typed = TypedSupervisor::new(&sup);
+        let req = RoomDeactivate {
+            room_id: RoomId::new(&room_id),
+        };
+
+        let first = typed.room_deactivate(&req).await.unwrap();
+        let second = typed.room_deactivate(&req).await.unwrap();
+
+        assert_eq!(first, second);
+        assert!(!first.live);
+        assert!(sup.open_rooms().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn room_deactivate_rejects_an_ended_membership_before_idempotency() {
+        let owner_dir = tempdir().unwrap();
+        crate::identity::create(owner_dir.path()).unwrap();
+        let owner = RoomSupervisor::new(owner_dir.path().to_path_buf(), true).unwrap();
+        let room_id = owner.create_room("Ended Deactivate").unwrap();
+        let opened = owner.open_room(&room_id, &[]).await.unwrap();
+        let owner_addr = opened["endpoint"]["addr"].as_str().unwrap().to_owned();
+
+        let member_dir = tempdir().unwrap();
+        let member_profile = crate::identity::create(member_dir.path()).unwrap();
+        let member = RoomSupervisor::new(member_dir.path().to_path_buf(), true).unwrap();
+        let ticket = owner
+            .create_invite(&room_id, &member_profile.identity_id, "member", None)
+            .await
+            .unwrap();
+        member
+            .join_room(&ticket, None, std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        member.open_room(&room_id, &[]).await.unwrap();
+        member.leave_room(&room_id).await.unwrap();
+
+        let err = TypedSupervisor::new(&member)
+            .room_deactivate(&RoomDeactivate {
+                room_id: RoomId::new(&room_id),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ApiError::MembershipEnded {
+                room_id: RoomId::new(&room_id),
+                standing: Standing::Left,
+            }
+        );
+
+        owner.close_room(&room_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn member_remove_and_pipe_release_map_semantic_errors_exactly() {
+        let dir = tempdir().unwrap();
+        let profile = crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id = sup.create_room("Exact Errors").unwrap();
+        let typed = TypedSupervisor::new(&sup);
+
+        let authority = typed
+            .member_remove(&MemberRemove {
+                room_id: RoomId::new(&room_id),
+                subject_id: SubjectId::new(&profile.identity_id),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            authority,
+            ApiError::AuthorityCannotBeRemoved { .. }
+        ));
+
+        let unknown_subject = iroh_rooms::identity::SigningKey::generate()
+            .identity_key()
+            .to_string();
+        let unknown = typed
+            .member_remove(&MemberRemove {
+                room_id: RoomId::new(&room_id),
+                subject_id: SubjectId::new(unknown_subject),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(unknown, ApiError::MemberUnknown { .. }));
+
+        let connection_id = "127.0.0.1:65535".to_owned();
+        assert_eq!(
+            typed
+                .pipe_release(&PipeRelease {
+                    connection_id: connection_id.clone(),
+                })
+                .await
+                .unwrap_err(),
+            ApiError::ConnectionUnknown { connection_id }
+        );
+    }
+
+    #[tokio::test]
+    async fn pipe_operations_preflight_room_access_before_runtime_or_policy() {
+        let dir = tempdir().unwrap();
+        crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        sup.create_room("Known Room").unwrap();
+        let typed = TypedSupervisor::new(&sup);
+        let unknown_room = RoomId::new(format!("blake3:{}", "de".repeat(32)));
+
+        let publish = typed
+            .pipe_publish(&PipePublish {
+                room_id: unknown_room.clone(),
+                target: Target {
+                    host: "203.0.113.10".into(),
+                    port: 4444,
+                },
+                audience: Audience::Room,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            publish,
+            ApiError::RoomNotAvailable { ref room_id } if room_id == &unknown_room
+        ));
+
+        let connect = typed
+            .pipe_connect(&PipeConnect {
+                room_id: unknown_room.clone(),
+                pipe_id: PipeId::new("ab".repeat(16)),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            connect,
+            ApiError::RoomNotAvailable { ref room_id } if room_id == &unknown_room
+        ));
+    }
+
+    #[test]
+    fn malformed_member_remove_subject_is_structural_before_authorization() {
+        let call = TypedCall::MemberRemove(MemberRemove {
+            room_id: RoomId::new(format!("blake3:{}", "ab".repeat(32))),
+            subject_id: SubjectId::new("not-an-identity"),
+        });
+        assert_eq!(
+            authority_gated_room(&call).unwrap_err(),
+            ApiError::InvalidArgument {
+                field: "in.subject_id".into(),
+                reason: InvalidReason::Format,
+            }
+        );
     }
 }

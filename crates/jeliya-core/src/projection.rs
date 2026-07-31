@@ -10,9 +10,9 @@
 //! out of scope and stays JSON.
 
 use jeliya_api::{
-    Audience, Author, Cursor, DeviceId, Event, EventId, EventKind, EventKindContent, FileId,
-    InviteId, LastEvent, LastSeen, LatestStatus, Link, LinkReason, Liveness, PipeId, Progress,
-    Role, RoomId, Severity, Standing, StatusLabel, SubjectId, Target, Timestamp, Truncated,
+    Audience, Author, Cursor, Event, EventId, EventKind, EventKindContent, FileId, InviteId,
+    LastEvent, LastSeen, LatestStatus, Liveness, PipeId, Progress, Role, RoomId, Standing,
+    StatusLabel, SubjectId, Target, Timestamp, Truncated,
 };
 use time::OffsetDateTime;
 
@@ -22,7 +22,21 @@ use iroh_rooms::identity::IdentityKey;
 use iroh_rooms::room::{MembershipSnapshot, Role as IrohRole};
 
 use crate::error::{CoreError, CoreResult};
-use crate::materializer::{bare_event_hex, file_handle};
+
+/// The bare 64-hex form of an event id. Protocol v2 strips the SDK's optional
+/// `blake3:` display prefix.
+pub(crate) fn bare_event_hex(event_id: &iroh_rooms::events::EventId) -> String {
+    let displayed = event_id.to_string();
+    displayed
+        .strip_prefix("blake3:")
+        .unwrap_or(&displayed)
+        .to_owned()
+}
+
+/// The protocol file handle for a 16-byte on-wire short id.
+pub(crate) fn file_handle(file_id: &[u8; 16]) -> String {
+    format!("file_{}", hex::encode(file_id))
+}
 
 /// Convert a signed author-dated `created_at` (ms since the Unix epoch, the
 /// non-repudiable author clock) into the wire `<ts>` (RFC 3339, `Z` offset).
@@ -31,9 +45,11 @@ use crate::materializer::{bare_event_hex, file_handle};
 /// clock is never read here. Milliseconds are truncated to whole seconds
 /// because RFC 3339 has no fractional requirement and the `<ts>` grammar is
 /// second-precision.
-fn ts(created_at_ms: u64) -> Timestamp {
-    let secs = i64::try_from(created_at_ms / 1000).unwrap_or(i64::MAX);
-    Timestamp::new(OffsetDateTime::from_unix_timestamp(secs).unwrap_or(OffsetDateTime::UNIX_EPOCH))
+fn ts(created_at_ms: u64) -> Option<Timestamp> {
+    let secs = i64::try_from(created_at_ms / 1000).ok()?;
+    OffsetDateTime::from_unix_timestamp(secs)
+        .ok()
+        .map(Timestamp::new)
 }
 
 /// The v2 per-room position space is the room's committed timeline events
@@ -95,7 +111,7 @@ pub(crate) fn is_committed(se: &StoredEvent) -> bool {
     let Ok(ev) = SignedEvent::decode(&se.wire.signed) else {
         return false;
     };
-    kind_content(&ev.content).is_some()
+    ts(ev.created_at).is_some() && kind_content(&ev.content).is_some()
 }
 
 /// Map an Iroh fold role to the v2 `role` vocabulary. `Admin` is the room's
@@ -113,11 +129,11 @@ pub fn role(iroh: IrohRole) -> Role {
 /// Map an on-wire role string (`admin|member|agent`) to the v2 role.
 /// `admin` is `authority`; everything else is `member` (including `agent`,
 /// which is not a role in v2).
-fn role_from_wire(wire: &str) -> Role {
-    if wire == "admin" {
-        Role::Authority
-    } else {
-        Role::Member
+fn role_from_wire(wire: &str) -> Option<Role> {
+    match wire {
+        "admin" => Some(Role::Authority),
+        "member" | "agent" => Some(Role::Member),
+        _ => None,
     }
 }
 
@@ -219,7 +235,7 @@ pub fn materialize_signed(
     Some(Event {
         pos,
         event_id: EventId::new(bare_event_hex(event_id)),
-        at: ts(ev.created_at),
+        at: ts(ev.created_at)?,
         author: author(snapshot, &ev.sender_id),
         kind,
     })
@@ -241,10 +257,9 @@ pub fn stored_event_recency(se: &StoredEvent) -> Option<(u64, Option<EventKind>)
 #[must_use]
 pub fn last_event(recency: Option<(u64, Option<EventKind>)>) -> LastEvent {
     match recency {
-        Some((created_at_ms, Some(kind))) => LastEvent::Present {
-            at: ts(created_at_ms),
-            kind,
-        },
+        Some((created_at_ms, Some(kind))) => {
+            ts(created_at_ms).map_or(LastEvent::Absent, |at| LastEvent::Present { at, kind })
+        }
         _ => LastEvent::Absent,
     }
 }
@@ -271,7 +286,7 @@ fn kind_content(content: &Content) -> Option<EventKindContent> {
         }
         Content::MemberJoined(c) => EventKindContent::MemberJoined {
             subject_id: SubjectId::new(c.device_binding.identity_key.to_string()),
-            role: role_from_wire(&c.role),
+            role: role_from_wire(&c.role)?,
         },
         Content::MemberLeft(c) => EventKindContent::MemberLeft {
             subject_id: SubjectId::new(c.member_id.to_string()),
@@ -288,7 +303,7 @@ fn kind_content(content: &Content) -> Option<EventKindContent> {
         },
         Content::PipeOpened(c) => EventKindContent::PipePublished {
             pipe_id: PipeId::new(hex::encode(c.pipe_id)),
-            target: pipe_target(&c.target_hint),
+            target: pipe_target(&c.target_hint)?,
             audience: pipe_audience(&c.allowed_members),
         },
         Content::PipeClosed(c) => EventKindContent::PipeRevoked {
@@ -305,19 +320,17 @@ fn kind_content(content: &Content) -> Option<EventKindContent> {
 }
 
 /// Parse a pipe `target_hint` (`"host:port"`) into the v2 `target` object.
-/// The hint is authored as a loopback target; a malformed hint falls back to
-/// a loopback placeholder rather than failing the whole event.
-fn pipe_target(hint: &str) -> Target {
-    match hint.rsplit_once(':') {
-        Some((host, port)) => Target {
-            host: host.to_string(),
-            port: port.parse().unwrap_or(0),
-        },
-        None => Target {
-            host: hint.to_string(),
-            port: 0,
-        },
+/// The hint is authored as a loopback target. A malformed or non-loopback
+/// target is omitted rather than projected as a fabricated endpoint.
+fn pipe_target(hint: &str) -> Option<Target> {
+    let addr: std::net::SocketAddr = hint.parse().ok()?;
+    if !addr.ip().is_loopback() || addr.port() == 0 {
+        return None;
     }
+    Some(Target {
+        host: addr.ip().to_string(),
+        port: u64::from(addr.port()),
+    })
 }
 
 /// Map a pipe's allowed-member list to the v2 `audience`. A single allowed
@@ -349,28 +362,11 @@ pub fn standing(removed: bool, left: bool) -> Standing {
     }
 }
 
-/// Build a `Link` from an observed transport state. `direct`/`mixed` are a
-/// direct path, `relay` a relayed one, and anything else is not connected.
-/// `since` is the author-dated instant the link came up when known; the
-/// transport layer does not always date link establishment, so an unknown
-/// since uses the Unix epoch rather than the wall clock.
-#[must_use]
-pub fn link(path: Option<&str>, since_ms: Option<u64>) -> Link {
-    let since = ts(since_ms.unwrap_or(0));
-    match path {
-        Some("direct") | Some("mixed") => Link::Direct { since },
-        Some("relay") => Link::Relay { since },
-        _ => Link::NotConnected {
-            reason: LinkReason::NoRoute,
-        },
-    }
-}
-
 /// A `LastSeen` variant from an optional author-dated instant.
 #[must_use]
 pub fn last_seen(at_ms: Option<u64>) -> LastSeen {
-    match at_ms {
-        Some(ms) => LastSeen::Present { at: ts(ms) },
+    match at_ms.and_then(ts) {
+        Some(at) => LastSeen::Present { at },
         None => LastSeen::Absent,
     }
 }
@@ -380,9 +376,9 @@ pub fn last_seen(at_ms: Option<u64>) -> LastSeen {
 #[must_use]
 pub fn latest_status(label: Option<(&str, u64)>) -> LatestStatus {
     match label {
-        Some((l, ms)) => match status_label(l) {
-            Ok(label) => LatestStatus::Present { label, at: ts(ms) },
-            Err(_) => LatestStatus::Absent,
+        Some((l, ms)) => match (status_label(l), ts(ms)) {
+            (Ok(label), Some(at)) => LatestStatus::Present { label, at },
+            _ => LatestStatus::Absent,
         },
         None => LatestStatus::Absent,
     }
@@ -397,13 +393,6 @@ pub fn liveness(live: crate::fleet::Liveness) -> Liveness {
         crate::fleet::Liveness::Offline => Liveness::Offline,
         crate::fleet::Liveness::Stale => Liveness::Stale,
     }
-}
-
-/// The derived severity for a status label — served, never re-derived by a
-/// client.
-#[must_use]
-pub fn severity(label: StatusLabel) -> Severity {
-    label.severity()
 }
 
 /// A continuation cursor: `More` carrying the position to resume from when a
@@ -430,18 +419,6 @@ pub fn event_id(id: &iroh_rooms::events::EventId) -> EventId {
     EventId::new(bare_event_hex(id))
 }
 
-/// Wrap an Iroh identity key in the opaque v2 `SubjectId`.
-#[must_use]
-pub fn subject_id(key: &IdentityKey) -> SubjectId {
-    SubjectId::new(key.to_string())
-}
-
-/// Wrap a device key string in the opaque v2 `DeviceId`.
-#[must_use]
-pub fn device_id(key: impl Into<String>) -> DeviceId {
-    DeviceId::new(key)
-}
-
 /// Wrap a 16-byte invite short id in the opaque v2 `InviteId` (bare hex).
 #[must_use]
 pub fn invite_id(id: &[u8; 16]) -> InviteId {
@@ -452,12 +429,6 @@ pub fn invite_id(id: &[u8; 16]) -> InviteId {
 #[must_use]
 pub fn pipe_id(id: &[u8; 16]) -> PipeId {
     PipeId::new(hex::encode(id))
-}
-
-/// Wrap a 16-byte file short id in the opaque v2 `FileId` (`file_<hex>`).
-#[must_use]
-pub fn file_id(id: &[u8; 16]) -> FileId {
-    FileId::new(file_handle(id))
 }
 
 #[cfg(test)]
@@ -476,6 +447,7 @@ mod tests {
         build_member_joined, build_member_left, build_room_created, derive_room_id,
         MembershipSnapshot, RoomId, RoomMembership,
     };
+    use jeliya_api::Severity;
 
     const TS: u64 = 1_783_190_000_000;
 
