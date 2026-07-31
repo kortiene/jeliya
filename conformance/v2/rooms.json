@@ -2783,9 +2783,9 @@
             "ok": false,
             "err": {
               "code": "insufficient_standing",
-              "room_id": "<room_id>",
-              "required": "<string>",
-              "held": "<string>"
+              "room_id": "$rid",
+              "required": "authority",
+              "held": "member"
             }
           },
           "op_id": "$op_id_new"

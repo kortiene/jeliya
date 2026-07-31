@@ -10,7 +10,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon } from './daemon.mjs';
 import { Session } from './session.mjs';
-import { AssertContext, AssertFailure, evalAssert, subsetMatch } from './assert.mjs';
+import { AssertContext, AssertFailure, TransportFailure, evalAssert, subsetMatch } from './assert.mjs';
 import { resolvePath, resolveValue } from './values.mjs';
 
 /** The outcome of one case. */
@@ -136,8 +136,11 @@ export class Runner {
         ctxState.dirSnapshot = this.#dirStateSignature(daemons);
       }
 
-      // A case that ran all steps without a failing assertion passes.
-      const blocked = fixture.blocked_on_upstream;
+      // A case that ran all steps without a failing assertion passes. A block
+      // may name an upstream dependency or a settled record/corpus
+      // contradiction awaiting fixture retirement (e.g. the old "op_id is
+      // required" case after the record settled optional-but-deduplicated).
+      const blocked = fixture.blocked_on_upstream || fixture.blocked_on_record;
       await cleanup();
       if (blocked) {
         return { outcome: Outcome.BLOCKED_PASS, name, reason: `blocked on ${blocked} but PASSED` };
@@ -149,16 +152,20 @@ export class Runner {
         err instanceof AssertFailure
           ? err.message
           : `${err.name || 'Error'}: ${err.message}`;
-      if (fixture.blocked_on_upstream) {
-        // Only a genuine assertion failure counts as the EXPECTED blocked
-        // failure. A setup error, an unsupported control verb, a missing
-        // dependency, or a runner bug is not the upstream-dependent assertion
-        // failing — it is the case never reaching that assertion — so it is
-        // an ERROR, not a green BLOCKED_FAIL.
+      const blocked = fixture.blocked_on_upstream || fixture.blocked_on_record;
+      if (blocked) {
+        // Only a genuine matcher assertion failure counts as the EXPECTED
+        // blocked failure. A setup error, an unsupported control verb, a
+        // missing dependency, a transport failure (a reply timeout, closed
+        // socket, failed upgrade, send failure, or crash), or a runner bug
+        // means the case never reached the blocked assertion, so it remains
+        // ERROR. TransportFailure is deliberately not an AssertFailure so a
+        // dead daemon during a blocked case surfaces here rather than being
+        // counted as the block's expected failure.
         if (err instanceof AssertFailure) {
           return { outcome: Outcome.BLOCKED_FAIL, name, reason };
         }
-        return { outcome: Outcome.ERROR, name, reason: `blocked case errored before the upstream assertion: ${reason}` };
+        return { outcome: Outcome.ERROR, name, reason: `blocked case errored before the blocked assertion: ${reason}` };
       }
       const isAssertion = err instanceof AssertFailure;
       return { outcome: isAssertion ? Outcome.FAIL : Outcome.ERROR, name, reason };
@@ -312,11 +319,15 @@ export class Runner {
     // `frame.subject` without an intervening await. The hello (and its served
     // limits) is also kept on a dedicated root so later replies don't clobber
     // it — `frame.<limit>` resolves against the hello throughout the case.
-    const hello = await s.awaitFrame((f) => f.t === 'hello').catch(() => null);
-    if (hello) {
-      vars.frame = hello;
-      vars.hello = hello;
+    let hello;
+    try {
+      hello = await s.awaitFrame((f) => f.t === 'hello');
+    } catch (err) {
+      s.close();
+      throw new TransportFailure(`session ${label} failed before hello: ${err.message}`);
     }
+    vars.frame = hello;
+    vars.hello = hello;
     sessions.set(label, s);
     return s;
   }
@@ -341,7 +352,11 @@ export class Runner {
     if (step.send !== undefined) {
       const s = await this.#sessionFor(onLabel, env.daemons, sessions, vars);
       const value = resolveValue(step.send, vars);
-      s.sendRaw(value);
+      try {
+        await s.sendRaw(value);
+      } catch (err) {
+        throw new TransportFailure(`send failed: ${err.message}`);
+      }
       return;
     }
     if (step.await) {
@@ -404,7 +419,11 @@ export class Runner {
       reply = await s.call(step.call, input, { opId });
       this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)}`);
     } catch (err) {
-      throw new AssertFailure(`call ${step.call} failed to get a reply: ${err.message}`);
+      // Never a reply — a timeout, a closed socket, or a crash. This is a
+      // transport/runner failure, not a matcher verdict: raise a
+      // TransportFailure (not an AssertFailure) so a blocked case cannot count
+      // a dead daemon as its expected blocked assertion.
+      throw new TransportFailure(`call ${step.call} failed to get a reply: ${err.message}`);
     }
 
     // Expose the reply under the assertion roots.
@@ -507,14 +526,23 @@ export class Runner {
     for (const [k, v] of Object.entries(query)) params.set(k, String(v));
     const url = `${daemon.wsBase}?${params.toString()}`;
     const WebSocket = (await import('ws')).default;
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const ws = new WebSocket(url, {
         headers: { Host: `127.0.0.1:${daemon.port}`, ...headers },
       });
       ws.binaryType = 'nodebuffer';
       let settled = false;
+      let opened = false;
+      let helloTimer;
+      const fail = (message) => {
+        if (settled) return;
+        settled = true;
+        if (helloTimer) clearTimeout(helloTimer);
+        try { ws.terminate(); } catch { /* already closed */ }
+        reject(new TransportFailure(message));
+      };
       ws.once('open', () => {
-        // Admitted: keep the connection and register it as the session.
+        opened = true;
         const session = new Session(label);
         session.ws = ws;
         session.open = true;
@@ -522,38 +550,67 @@ export class Runner {
         ws.on('close', (code) => {
           session.open = false;
           session.closeCode = code;
+          if (!settled) fail(`upgrade connection closed before hello (${code})`);
         });
-        ws.on('error', () => {});
+        ws.on('error', (err) => {
+          if (!settled) fail(`upgrade failed before hello: ${err.message}`);
+        });
         ws.once('message', (data) => {
           if (settled) return;
+          let frame;
+          try {
+            frame = JSON.parse(data.toString());
+          } catch {
+            fail('upgrade first frame was not valid JSON');
+            return;
+          }
+          if (frame.t !== 'hello') {
+            fail(`upgrade first frame was ${JSON.stringify(frame.t)}, expected hello`);
+            return;
+          }
           settled = true;
-          let frame = {};
-          try { frame = JSON.parse(data.toString()); } catch { /* ignore */ }
+          if (helloTimer) clearTimeout(helloTimer);
           if (sessions) sessions.set(label, session);
-          resolve({ status: 101, frame, body: frame });
+          resolve({ status: 101, frame, body: frame, headers: {} });
         });
-        setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          if (sessions) sessions.set(label, session);
-          resolve({ status: 101, frame: {}, body: {} });
-        }, 2000);
+        helloTimer = setTimeout(
+          () => fail('upgrade timed out waiting for hello'),
+          2000 * this.timeoutScale,
+        );
       });
       ws.once('unexpected-response', (req, res) => {
         let body = '';
+        const responseHeaders = Object.fromEntries(
+          Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v)]),
+        );
+        const responseFail = (message) => fail(`upgrade response ${message}`);
         res.on('data', (d) => (body += d));
-        res.on('end', () => {
+        res.once('aborted', () => responseFail('was aborted'));
+        res.once('error', (err) => responseFail(`failed: ${err.message}`));
+        res.once('end', () => {
           if (settled) return;
           settled = true;
           let parsed = {};
           try { parsed = JSON.parse(body); } catch { /* not json */ }
-          resolve({ status: res.statusCode, body: parsed, frame: parsed });
+          resolve({ status: res.statusCode, body: parsed, frame: parsed, headers: responseHeaders });
         });
       });
-      ws.once('error', () => {
+      ws.once('error', (err) => {
         if (settled) return;
-        settled = true;
-        resolve({ status: 0, body: {}, frame: {} });
+        // A pre-open connection error (e.g. ECONNREFUSED against a daemon that
+        // is not accepting connections) is an unambiguous, observable Layer-0
+        // outcome, not a mid-stream transport ambiguity: report it as status 0
+        // so a fixture that intentionally probes a stopped daemon sees a
+        // refusal rather than an ERROR. A failure AFTER the socket opened is
+        // the genuinely ambiguous case (admitted vs. crashed) and stays a
+        // TransportFailure via the open handler's listeners.
+        if (!opened) {
+          settled = true;
+          if (helloTimer) clearTimeout(helloTimer);
+          resolve({ status: 0, body: {}, frame: {}, headers: {} });
+          return;
+        }
+        fail(`upgrade failed: ${err.message}`);
       });
     });
   }
@@ -655,8 +712,22 @@ export class Runner {
       want = resolveValue(a.push, vars);
       kind = 'push';
       const PUSH_T = new Set(['event', 'gap', 'peer', 'transfer']);
-      locate = (f) => f.t !== undefined && PUSH_T.has(f.t);
-      const frame = await this.#awaitAcrossSessions(sessions, locate, step.on, env, vars);
+      const wantType = want && typeof want === 'object' ? want.t : undefined;
+      const wantRoom = want && typeof want === 'object' ? want.room_id : undefined;
+      locate = (f) =>
+        f.t !== undefined &&
+        PUSH_T.has(f.t) &&
+        (wantType === undefined || f.t === wantType) &&
+        (wantRoom === undefined || f.room_id === wantRoom);
+      let frame;
+      try {
+        frame = await this.#awaitAcrossSessions(sessions, locate, step.on, env, vars);
+      } catch (err) {
+        if (/timed out/.test(err.message)) {
+          throw new AssertFailure(`await push timed out waiting for ${JSON.stringify(want)}`);
+        }
+        throw new TransportFailure(`await push failed: ${err.message}`);
+      }
       this.#setFrameRoots(vars, frame);
       if (want !== undefined && !this.#matchPushOrFrame('push', want, frame, vars)) {
         throw new AssertFailure(`await push did not match ${JSON.stringify(want)}; got ${JSON.stringify(frame)}`);
@@ -666,9 +737,14 @@ export class Runner {
     } else if (a.frame !== undefined) {
       want = resolveValue(a.frame, vars);
       kind = 'frame';
-      // Correlate by id when the matcher names one; otherwise any frame.
+      // Correlate by stable locator fields before applying the full matcher.
+      // Without this, a matcher naming `t: "peer"` can select the historical
+      // hello frame and count that unrelated mismatch as a blocked failure.
       const wantId = want && typeof want === 'object' ? want.id : undefined;
-      locate = (f) => (wantId !== undefined ? f.id === wantId : true);
+      const wantType = want && typeof want === 'object' ? want.t : undefined;
+      locate = (f) =>
+        (wantId === undefined || f.id === wantId) &&
+        (wantType === undefined || f.t === wantType);
     } else if (a.reply !== undefined) {
       // `$id` names the connection's most recent request id (replies may
       // arrive out of order, so a case correlates by id, not request order).
@@ -680,7 +756,15 @@ export class Runner {
       throw new Error('await step with no push/frame/reply key');
     }
 
-    const frame = await s.awaitFrame(locate, 10_000 * this.timeoutScale);
+    let frame;
+    try {
+      frame = await s.awaitFrame(locate, 10_000 * this.timeoutScale);
+    } catch (err) {
+      if (/timed out/.test(err.message)) {
+        throw new AssertFailure(`await ${kind} timed out waiting for ${JSON.stringify(want)}`);
+      }
+      throw new TransportFailure(`await ${kind} failed: ${err.message}`);
+    }
     if (want !== undefined) {
       if (!this.#matchPushOrFrame(kind, want, frame, vars)) {
         throw new AssertFailure(
