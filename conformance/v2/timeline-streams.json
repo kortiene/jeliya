@@ -1505,8 +1505,9 @@
         {
           "call": "stream.unsubscribe",
           "in": {
-            "room_id": "0000000000000000000000000000000000000000000000000000000000000000"
+            "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
           },
+          "note": "a syntactically valid unknown room id reaches the subscription lookup rather than failing identifier parsing, and the error must echo that exact id",
           "save": {
             "e1": "$err"
           },
@@ -1515,7 +1516,7 @@
             "ok": false,
             "err": {
               "code": "subscription_unknown",
-              "room_id": "<string>"
+              "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
             }
           },
           "op_id": "$o1"

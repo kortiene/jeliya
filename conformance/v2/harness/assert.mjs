@@ -18,6 +18,21 @@ export class AssertFailure extends Error {
 }
 
 /**
+ * A transport failure: the daemon never produced a protocol response to
+ * match — a reply timeout, socket close, failed upgrade, or send failure. It
+ * is deliberately NOT an `AssertFailure`: the case never reached its
+ * assertion, so it is a runner/daemon ERROR, never a conformance verdict and
+ * never a satisfied `blocked_on_*` expectation.
+ */
+export class TransportFailure extends Error {
+  constructor(message, detail = {}) {
+    super(message);
+    this.name = 'TransportFailure';
+    this.detail = detail;
+  }
+}
+
+/**
  * The context a case's assertions evaluate against. `roots` maps the path
  * roots (`out`, `err`, `frame`, and `$variables` live under `$`) to values;
  * `observe` is a callback the harness provides for behaviour facts.

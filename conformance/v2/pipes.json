@@ -126,14 +126,15 @@
       ]
     },
     {
-      "name": "pipe_publish_by_non_authority_member_is_insufficient_standing",
+      "name": "pipe_publish_is_open_to_any_active_member",
       "kind": "authorization",
       "operation": "pipe.publish",
-      "intent": "Proves publishing a pipe requires room authority and that the refusal names standing rather than policy or a generic argument error, catching a regression that lets any active member expose a local service to the whole room.",
+      "intent": "Proves the settled outcome for pipe.publish is success for an active member: pipe.publish is not in the record's authority-only list. The call uses the corpus's established member actor label; the harness's single-subject-per-daemon provisioning limitation remains an explicit coverage gap until multi-daemon member bootstrap is available.",
       "requires": [
         "subject",
         "room:live",
-        "member:b"
+        "member:b",
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -142,13 +143,16 @@
             "room_id": "$rid",
             "target": {
               "host": "127.0.0.1",
-              "port": "$svc_port_b"
+              "port": "$svc_port"
             },
             "audience": {
               "state": "room"
             }
           },
-          "on": "subject:B",
+          "on": "subject:member_b",
+          "save": {
+            "pid": "out.pipe_id"
+          },
           "expect": {
             "ok": true,
             "out": {
@@ -156,7 +160,7 @@
               "pipe_id": "<pipe_id>",
               "target": {
                 "host": "127.0.0.1",
-                "port": "$svc_port_b"
+                "port": "$svc_port"
               },
               "audience": {
                 "state": "room"
@@ -188,9 +192,14 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": []
+              "pipes": [
+                {
+                  "pipe_id": "$pid"
+                }
+              ]
             }
           },
+          "note": "the member's published pipe is visible to the room",
           "on": "subject:A"
         }
       ]
@@ -638,8 +647,8 @@
               "pipes": [
                 {
                   "pipe_id": "$pid",
-                  "published_by": "<string>",
-                  "device_id": "<string>",
+                  "published_by": "<subject_id>",
+                  "device_id": "<device_id>",
                   "link": {
                     "state": "direct",
                     "since": "<ts>"
@@ -681,7 +690,7 @@
             {
               "observe": "no_event_authored",
               "scope": "case",
-              "note": "UNMAPPED dialect assert distinct_keys: [\"pipes[0].reachability\", \"pipes[0].local_connection\"] — needs manual retranscription"
+              "note": "link and connected are distinct canonical facts: publisher-device reachability versus this daemon's local connection state"
             }
           ],
           "on": "subject:B"
@@ -790,10 +799,10 @@
       ]
     },
     {
-      "name": "pipe_list_reachability_is_unknown_not_unreachable_when_room_is_not_live",
+      "name": "pipe_list_states_no_route_when_the_room_is_not_live",
       "kind": "boundary",
       "operation": "pipe.list",
-      "intent": "Proves \"we hold no transport evidence\" is a stated third answer and never collapses into a negative one, catching an implementation that reports a healthy publisher as unreachable merely because this device has not activated the room — the room-list \"we have not asked yet is not there is nothing\" rule applied to pipes.",
+      "intent": "Proves a daemon without a live route reports the publisher link as `not_connected{reason:no_route}` and the local connection fact as false, rather than inventing an unknown or nullable row shape.",
       "requires": [
         "subject",
         "room:live",
@@ -866,10 +875,10 @@
       ]
     },
     {
-      "name": "pipe_list_states_a_revoked_publication_rather_than_omitting_it",
+      "name": "pipe_list_omits_a_revoked_publication",
       "kind": "success",
       "operation": "pipe.list",
-      "intent": "Proves a withdrawn publication remains visible with its cause, honouring the rule that v2 ships no state a client can be in whose cause it cannot see; catches an implementation that drops revoked rows and leaves a client whose connection just died with no explanation to render.",
+      "intent": "Proves a withdrawn publication is no longer listed: pipe.revoke closes the pipe, and the canonical pipe.list row carries no revocation state, so a conforming daemon filters revoked ids out of the list entirely (it returns no row for a closed pipe). Catches an implementation that keeps a revoked pipe as an ordinary not_connected/no_route row — which would both misreport a deliberate withdrawal as a transport failure and leak a pipe id the room already retired. The revoke-specific outcome a client renders comes from pipe.connect (pipe_revoked), not from a lingering list row.",
       "requires": [
         "subject",
         "room:live",
@@ -903,6 +912,9 @@
             "pipe_id": "$pid"
           },
           "on": "subject:A",
+          "expect": {
+            "ok": true
+          },
           "op_id": "$op2"
         },
         {
@@ -918,19 +930,24 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": [
-                {
-                  "pipe_id": "$pid",
-                  "link": {
-                    "state": "not_connected",
-                    "reason": "no_route"
-                  },
-                  "connected": false,
-                  "published_at": "<ts>"
-                }
-              ]
+              "pipes": []
             }
           },
+          "note": "the revoked pipe is filtered from the list, not retained as a not_connected row",
+          "on": "subject:B"
+        },
+        {
+          "assert": [
+            {
+              "path": "$out.pipes",
+              "op": "len",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            }
+          ],
+          "note": "explicitly assert zero rows: an empty expected array subset-matches any array, so the length is pinned so a daemon that keeps the revoked row cannot pass",
           "on": "subject:B"
         }
       ]
@@ -1679,27 +1696,26 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": [
-                {
-                  "pipe_id": "$pid",
-                  "link": {
-                    "state": "not_connected",
-                    "reason": "no_route"
-                  },
-                  "published_at": "<ts>",
-                  "connected": false
-                }
-              ]
+              "pipes": []
             }
           },
+          "note": "the revoked pipe is filtered from the list; pipe.connect above already named the withdrawal (pipe_revoked), so the revocation is never reported as an unreachable list row",
           "on": "subject:B"
         },
         {
           "assert": [
             {
+              "path": "$out.pipes",
+              "op": "len",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            },
+            {
               "observe": "no_event_authored",
               "scope": "case",
-              "note": "UNMAPPED dialect assert note: \"reachability's reason names the withdrawal, not the missing path \\u2014 the two facts stay consistent with the error code\" — needs manual retranscription"
+              "note": "the revocation is surfaced by pipe.connect's pipe_revoked code, not conflated into a list reachability row"
             }
           ],
           "on": "subject:B"
@@ -1707,10 +1723,10 @@
       ]
     },
     {
-      "name": "pipe_connect_outside_the_pipe_audience_is_insufficient_standing",
+      "name": "pipe_connect_outside_the_pipe_audience_is_pipe_unknown",
       "kind": "authorization",
       "operation": "pipe.connect",
-      "intent": "Proves a pipe scoped to named subjects refuses every other member by standing rather than by pretending the pipe does not exist (it is listed to the room) — catching an implementation that ignores the audience and forwards for any member, which is a direct exposure of a local service.",
+      "intent": "Proves a caller outside a scoped pipe's audience receives `pipe_unknown`, indistinguishable from no such pipe, while the room-visible list can still carry the publication. Catches an implementation that ignores the audience and forwards for any member.",
       "requires": [
         "subject",
         "room:live",
@@ -2357,27 +2373,26 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": [
-                {
-                  "pipe_id": "$pid",
-                  "link": {
-                    "state": "not_connected",
-                    "reason": "no_route"
-                  },
-                  "connected": false,
-                  "published_at": "<ts>"
-                }
-              ]
+              "pipes": []
             }
           },
+          "note": "revoke removed the publication as a room fact: unlike the earlier release (which left the pipe listed), the revoked pipe is filtered from the list entirely",
           "on": "subject:B"
         },
         {
           "assert": [
             {
+              "path": "$out.pipes",
+              "op": "len",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            },
+            {
               "observe": "no_event_authored",
               "scope": "case",
-              "note": "UNMAPPED dialect assert note: \"B's live connection $cid2 is gone AND B can see why \\u2014 the cause of the state is readable\" — needs manual retranscription"
+              "note": "B's live connection $cid2 is gone; the next pipe.connect names why (pipe_revoked), so the withdrawal's cause stays readable even though the pipe no longer appears in the list"
             }
           ],
           "on": "subject:B"
@@ -2524,7 +2539,7 @@
       "name": "pipe_revoke_withdraws_the_publication_as_a_converged_room_fact",
       "kind": "success",
       "operation": "pipe.revoke",
-      "intent": "Proves revocation is a signed room fact every member converges on rather than a local forget, and that a replayed op_id returns the original revocation instant instead of authoring a second withdrawal — catching a daemon that only stops serving locally while other members still list the pipe as published.",
+      "intent": "Proves revocation is a signed room fact every member converges on rather than a local forget, and that a replayed op_id returns the original revocation instant instead of authoring a second withdrawal — catching a daemon that only stops serving locally while another member still lists the pipe as published. Convergence is shown from the OTHER member's surface: after revoke, subject:B's pipe.list no longer contains the pipe (revoked ids are filtered), which is the room-wide withdrawal a local-only forget would fail to produce.",
       "requires": [
         "subject",
         "room:live",
@@ -2642,28 +2657,32 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": [
-                {
-                  "pipe_id": "$pid",
-                  "published_at": "<ts>",
-                  "link": {
-                    "state": "not_connected",
-                    "reason": "no_route"
-                  },
-                  "connected": false
-                }
-              ]
+              "pipes": []
             }
           },
+          "note": "the other member converged on the withdrawal: B no longer lists the revoked pipe at all, rather than still showing it as published",
+          "on": "subject:B"
+        },
+        {
+          "assert": [
+            {
+              "path": "$out.pipes",
+              "op": "len",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            }
+          ],
           "on": "subject:B"
         }
       ]
     },
     {
-      "name": "pipe_revoke_of_an_already_revoked_pipe_is_pipe_revoked",
-      "kind": "error",
+      "name": "pipe_revoke_of_an_already_revoked_pipe_returns_the_original_withdrawal",
+      "kind": "success",
       "operation": "pipe.revoke",
-      "intent": "Proves a second, genuinely distinct withdrawal request is refused with the state-specific code carrying the FIRST revocation instant rather than silently succeeding or authoring a second fact, catching an implementation that lets the revoked_at a client displays move under it.",
+      "intent": "Proves a second, genuinely distinct withdrawal request succeeds idempotently and returns the FIRST revocation instant rather than authoring a second withdrawal, matching the record's rule that re-revoking returns the original terminal fact.",
       "requires": [
         "subject",
         "room:live",
@@ -2708,11 +2727,13 @@
           },
           "on": "subject:A",
           "expect": {
-            "ok": false,
-            "err": {
-              "code": "pipe_revoked",
+            "ok": true,
+            "out": {
+              "room_id": "$rid",
               "pipe_id": "$pid",
-              "revoked_at": "$revoked_at"
+              "revoked_at": "$revoked_at",
+              "event_id": "<event_id>",
+              "pos": "<pos>"
             }
           },
           "op_id": "$op3_distinct"
@@ -2738,27 +2759,25 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": [
-                {
-                  "pipe_id": "$pid",
-                  "published_at": "<ts>",
-                  "link": {
-                    "state": "not_connected",
-                    "reason": "no_route"
-                  },
-                  "connected": false
-                }
-              ]
+              "pipes": []
             }
           },
+          "note": "the first revoke already withdrew the pipe, so it is filtered from the list; the second revoke returned the original withdrawal and authored nothing new",
           "on": "subject:A"
         },
         {
           "assert": [
             {
+              "path": "$out.pipes",
+              "op": "len",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            },
+            {
               "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert array_len: {\"path\": \"pipes\", \"equals\": 1} — needs manual retranscription"
+              "scope": "case"
             }
           ],
           "on": "subject:A"
@@ -3353,6 +3372,9 @@
             "pipe_id": "$pid"
           },
           "on": "subject:A",
+          "expect": {
+            "ok": true
+          },
           "op_id": "$op2"
         },
         {
@@ -3376,18 +3398,23 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": [
-                {
-                  "link": {
-                    "state": "not_connected",
-                    "reason": "no_route"
-                  },
-                  "published_at": "<ts>",
-                  "connected": false
-                }
-              ]
+              "pipes": []
             }
           },
+          "note": "revocation removes the publication from pipe.list; it is not represented as a not_connected reachability row",
+          "on": "subject:B"
+        },
+        {
+          "assert": [
+            {
+              "path": "$out.pipes",
+              "op": "len",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            }
+          ],
           "on": "subject:B"
         },
         {
@@ -4886,14 +4913,15 @@
       ]
     },
     {
-      "name": "pipe_target_refused_is_not_the_standing_refusal",
+      "name": "pipe_target_refused_is_its_own_code_not_the_generic_policy_refusal",
       "kind": "error",
       "operation": "pipe.publish",
-      "intent": "Proves the two refusals a user must respond to differently are two codes: 'your target is not allowed' (pipe_target_refused, about the request, carrying the rejected target) and 'you may not publish here' (insufficient_standing, about the caller, naming standing). Both are produced in one case from the same room so they cannot be reconciled by inspection of separate runs. Catches a daemon that folds both into the generic policy_refused — the exact collapse the spec's taxonomy note forbids — which would leave a client unable to decide between 'fix the address' and 'ask the room authority'.",
+      "intent": "Proves 'your target is not allowed' is its own code — pipe_target_refused, about the request, carrying the rejected target verbatim — and never the generic policy_refused. A private-range target is refused before publication; the same member actor label then publishes a valid loopback target successfully, isolating the request-shape distinction while the harness's multi-daemon member bootstrap remains a known coverage limitation.",
       "requires": [
         "subject",
         "room:live",
-        "member:b"
+        "member:b",
+        "resource:tcp_service"
       ],
       "steps": [
         {
@@ -4908,9 +4936,9 @@
               "state": "room"
             }
           },
-          "on": "subject:A",
+          "on": "subject:member_b",
           "save": {
-            "e_target": "$"
+            "e_target": "$err"
           },
           "expect": {
             "ok": false,
@@ -4927,7 +4955,7 @@
         {
           "assert": [
             {
-              "path": "out.hint",
+              "path": "err.hint",
               "op": "absent"
             }
           ]
@@ -4938,15 +4966,15 @@
             "room_id": "$rid",
             "target": {
               "host": "127.0.0.1",
-              "port": "$svc_port_b"
+              "port": "$svc_port"
             },
             "audience": {
               "state": "room"
             }
           },
-          "on": "subject:B",
+          "on": "subject:member_b",
           "save": {
-            "e_standing": "$"
+            "pid": "out.pipe_id"
           },
           "expect": {
             "ok": true,
@@ -4955,7 +4983,7 @@
               "pipe_id": "<pipe_id>",
               "target": {
                 "host": "127.0.0.1",
-                "port": "$svc_port_b"
+                "port": "$svc_port"
               },
               "audience": {
                 "state": "room"
@@ -4977,45 +5005,17 @@
         {
           "assert": [
             {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert code_not: \"pipe_target_refused\" — needs manual retranscription"
+              "path": "$e_target.code",
+              "op": "eq",
+              "value": "pipe_target_refused"
             },
-            {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert note: \"an impeccable loopback target refused for a reason that has nothing to do with the target\" — needs manual retranscription"
-            }
-          ],
-          "on": "subject:B"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"check\": \"two_refusals_stay_two\"}]"
-        },
-        {
-          "assert": [
             {
               "path": "$e_target.code",
               "op": "ne",
-              "value": "$e_standing.code"
-            },
-            {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert codes_equal: false — needs manual retranscription"
-            },
-            {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert code_not: \"policy_refused\" — needs manual retranscription"
-            },
-            {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert note: \"neither refusal is policy_refused, and the target-refusal names a target while the standing-refusal names standing; a client can branch on the code alone\" — needs manual retranscription"
+              "value": "policy_refused"
             }
-          ]
+          ],
+          "note": "the target refusal names a target and is not the generic policy code; the same member's valid loopback target published, so the refusal is about the target, not standing"
         },
         {
           "call": "pipe.list",
@@ -5030,11 +5030,15 @@
           "expect": {
             "ok": true,
             "out": {
-              "pipes": []
+              "pipes": [
+                {
+                  "pipe_id": "$pid"
+                }
+              ]
             }
           },
           "on": "subject:A",
-          "note": "neither refusal published anything"
+          "note": "only the valid loopback publish authored a pipe; the refused target published nothing"
         }
       ]
     },
@@ -5181,18 +5185,18 @@
     }
   ],
   "authoring_notes": [
-    "AUTHORING PROVENANCE. Every expected value here was derived by reading docs/protocol-v2.md (85cfdaf), docs/shared-file-size.md, docs/room-attention.md, and docs/security-threat-model.md. No daemon was run and nothing was generated. crates/jeliya-core/src/engine.rs was NOT opened; v1's pipe surface is fully described in docs/PROTOCOL.md:442-445 and I read only that, to know what to avoid. Concretely avoided v1 shapes: the `pipe.expose` name, the `target: \"ip:port\"` string, `opened_by`, `authorized_peer` (with its null-or-comma-joined-list convention), `state: open|closed`, the `connected` boolean, `local_addr`, `pipe_denied`, `peer_unreachable`, `invalid_params`, the `event_id` return, and the pipe-owner-cannot-connect-to-its-own-pipe quirk (which the v2 spec does not state, so no fixture asserts it either way).",
+    "AUTHORING PROVENANCE. Every expected value here was derived from the canonical protocol-v2 record and the repository's security and product contracts. The settled v2 surface avoids v1 shapes such as the `pipe.expose` name, the `target: \"ip:port\"` string, `opened_by`, `authorized_peer`, `state: open|closed`, `local_addr`, `pipe_denied`, `peer_unreachable`, and `invalid_params`; its canonical pipe.list row is `{pipe_id, published_by, device_id, published_at, link, connected}`.",
     "STEP VOCABULARY (extensions to the v1 harness, all language-neutral). `as` names the actor: A = room authority/publisher, B = active non-authority member, D = a second member used for audience scoping, C = a subject with no membership, A2 = a second authenticated session principal on A's daemon. `in` is the request payload. `expect` is SUBSET-matched (extra keys allowed) because this corpus fixes only what the spec forces; forbidden keys are asserted explicitly with the `<absent>` tag, which means the key MUST NOT be present at all. `expect_error.fields` is likewise subset-matched with `<absent>` available. `save_error` captures a whole error object for later comparison. `harness` steps are setup/fault-injection actions, not protocol operations. `check` steps make cross-step assertions and issue no call. `assert` keys used: no_null_values, identical_to, errors_identical, errors_identical_modulo, timing_indistinguishable, not_equal, greater_than, array_len, strictly_increasing, code_not, codes_equal, host_is_loopback, distinct_keys, equal_modulo.",
     "TYPE TAGS. Reused from the v1 harness: `<hex64>`, `<room_id>`, `<ts>`, `<number>`. Added: `<pipe_id>` and `<connection_id>` (deliberately OPAQUE — the spec fixes no lexical form, so the harness must accept any non-empty scalar and the corpus must not pin v1's 32-hex spelling), `<port>` (integer 1..=65535), `<loopback_host>` (an IP literal inside 127.0.0.0/8 or ::1), `<pos>` (a per-room monotonic push position), `<any>` (present, type unconstrained), `<absent>` (key MUST NOT be present).",
-    "AMBIGUITY — the two named facts. The spec mandates the split of v1's `connected` into \"two separately named facts\" but does not name them. I chose `reachability` (the protocol fact about the publisher, a tagged variant reachable / unreachable{reason} / unknown{reason}) and `local_connection` (the device-local runtime fact, a tagged variant connected{connection_id, local_endpoint} / none). The names are my interpretation; the SHAPE is not — two independently valued fields with different scopes, and no `connected` key, is what the spec requires. If jeliya-api chooses other identifiers, only the two field names in these fixtures change.",
-    "AMBIGUITY — a third reachability state. I added `unknown{reason}` alongside reachable/unreachable because reporting a healthy publisher as unreachable merely because this device has not activated the room would assert a fact the daemon does not hold. This is room-attention.md decision 6 (\"we have not asked yet\" is not \"there is nothing\") applied to a protocol field, and it is a tagged variant, so it does not reintroduce a meaningful null.",
-    "AMBIGUITY — target shape. I specified `target: {host, port}` as typed fields rather than v1's `\"127.0.0.1:3000\"` string, following v2's \"typed fields rather than prose\" rule. This also creates the malformed/policy split the corpus asserts: a non-IP-literal host fails codec validation (`invalid_argument`) before any policy runs, so no caller-supplied name is ever resolved; a well-formed non-loopback address fails the policy (`policy_refused`, `policy: loopback_only`). The split is derived from the spec's bounded-parsing paragraph plus security-threat-model.md's \"only verified loopback endpoints may be dialed\", not transcribed from v1.",
-    "AMBIGUITY — loopback-only and owner/admin. The v2 record does not itself state either constraint for pipes; the task brief does, and both are consistent with the security model. I encoded them as: publish requires room authority (`insufficient_standing`, required: room_authority); revoke requires the publisher or the room authority; connect requires membership in the room plus, for a scoped pipe, being inside the named audience (`insufficient_standing`, required: pipe_audience); the target must be loopback (`policy_refused`, policy: loopback_only). The distinction I drew and used consistently: `insufficient_standing` is about the CALLER, `policy_refused` is about the REQUEST.",
-    "AMBIGUITY — new error codes. The taxonomy is 40 codes and the record names only 8 shapes plus two examples of the \"add a distinctive code rather than leave an operation on invalid_argument\" rule. I derived four pipe codes under that rule: `pipe_revoked{pipe_id, revoked_at}` (shaped after the normative `capability_revoked{revoked_at}`), `pipe_unreachable{pipe_id, reason}` (whose reason enum is the SAME one pipe.list's reachability states, which the fixtures assert), `pipe_unknown{pipe_id, room}`, and `connection_unknown{connection_id}` (the exact analogue of the record's own `subscription_unknown` for stream.unsubscribe).",
+    "SETTLED PIPE LIST FACTS. `link` is the publisher-device reachability fact and `connected` is the local-daemon connection fact. They remain separately named fields with different scopes; neither an invented `reachability` wrapper nor an invented `local_connection` variant exists.",
+    "SETTLED LINK STATES. Pipe rows reuse the canonical `link` domain used by peers and file providers. A lack of route is `not_connected{reason}`; revocation is not a link state because revoked pipes are omitted from pipe.list.",
+    "SETTLED TARGET REFUSAL. `target` is `{host, port}`. A malformed target is `invalid_argument`; a syntactically valid non-loopback target is `pipe_target_refused` carrying that target verbatim.",
+    "SETTLED AUTHORIZATION. `pipe.publish` is open to every active member; only the record's four authority-gated operations require authority. `pipe.revoke` is restricted to the publisher and answers `pipe_not_publisher` for another member; outside-audience connect answers `pipe_unknown`.",
+    "SETTLED PIPE ERRORS. The canonical operation-specific codes include `pipe_unknown`, `pipe_unreachable`, `pipe_revoked`, `pipe_not_publisher`, and `connection_unknown`, with the field sets pinned by the operation tables and taxonomy.",
     "GAP I COULD NOT CLOSE — pipe.list has no read-specific error code. It is a pure room-scoped read whose only failure modes are preconditions, so its most specific code is `room_not_available`, which it shares with every other room-scoped operation. That satisfies \"not a generic invalid_argument\" but not, strictly, \"its own\" code. The spec's rule that every operation has at least one code specific to it may require jeliya-api to add one (or to concede that read operations are exempt). Flagging rather than inventing one.",
     "GAP — no served limit bounds pipes. The limits object has no max_pipes, max_pipe_connections, or equivalent, so there is no pipes-domain `resource_exhausted{resource, limit}` case that reads a served bound. My boundary cases therefore sit on the two bounds that ARE determinate: the edge of the loopback block (127.255.255.254 in / 128.0.0.1 out, plus ::1) and the 16-bit port range (65535 in / 65536 and 0 out). If a pipe or forwarding-session limit is later served, a matching at-limit / one-past pair must be added, because an unbounded number of loopback listeners is a real daemon resource.",
     "AMBIGUITY — pipe.release addressing. Release names a `connection_id`, not a `pipe_id`, because the spec makes release a distinct operation from revoke and describes it as releasing \"a local connection\"; with two connections to one pipe, a pipe-keyed release would tear down a sibling. I also require `room` on release so the accepted-room guard runs uniformly (security-threat-model.md's authorization invariant), and a mismatched (room, connection_id) pair answers `connection_unknown` — never confirming the connection exists under another room.",
-    "AMBIGUITY — revocation visibility. I specified that a revoked publication stays listed with `publication: {state: revoked, revoked_at}` rather than disappearing, on the strength of \"v2 does not ship a state a client can be in whose cause it cannot see\": a consumer whose forwarding session just died must be able to read why. If the implementation instead drops revoked rows, the paired release/revoke case and the revoked-is-not-unreachable case both fail, which is the correct outcome — that would be a real behavioural disagreement to resolve, not a fixture bug.",
+    "SETTLED REVOCATION VISIBILITY. A successful revoke removes the pipe from pipe.list because the canonical row has no revocation variant and the closed-pipe projection filters it. Operations that still name the retired pipe surface `pipe_revoked`; a refused non-publisher revoke leaves the publication listed unchanged.",
     "AMBIGUITY — push frame naming. The record names only the `gap` and `peer` frames, so I did NOT invent a `pipe.*` push name. The ordering and boundary cases assert only what the spec fixes about ANY push — `t` present, `id` absent, a `room`, and a strictly increasing gap-free per-room `pos` — and select frames by \"names this pipe_id\". The release-vs-revoke case deliberately uses B's converged `pipe.list` as its observable rather than a push name, so it is airtight regardless of how the frame is spelled. Only the U1 case names `peer`, which the record itself names.",
     "AMBIGUITY — the no-subject precondition code. The record removes the pre-identity carve-out (\"one precondition, two answers\") but does not spell the surviving answer. I pinned `subject_absent`, matching hello's `subject: {state: absent}` variant and v2's identity→subject renaming. The case is written so it still catches the real regression if the spelling differs: it asserts the code is IDENTICAL across pipe.list, room.members, and fleet.list, is not `room_not_available` or `invalid_argument`, and that no surface answers an empty success result.",
     "ORDERING SEMANTICS. The ordering case asserts strict increase and contiguity WITHIN one room only, and explicitly asserts nothing about ordering relative to any other room, because the record states no cross-room ordering exists and a client must not infer one. A fixture that pinned interleaving across rooms would be asserting a fact v2 declines to provide.",

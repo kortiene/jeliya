@@ -164,11 +164,21 @@ export class Session {
    * anywhere in the value is spliced in as pre-serialized JSON text (for
    * deep-nesting fixtures that cannot be JSON-serialized as objects). */
   sendRaw(value) {
-    if (typeof value === 'string') {
-      this.ws.send(value);
-      return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('connection is not open'));
     }
-    this.ws.send(serializeWithRaw(value));
+    let payload;
+    try {
+      payload = typeof value === 'string' ? value : serializeWithRaw(value);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return new Promise((resolve, reject) => {
+      this.ws.send(payload, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
   }
 
   /** Wait for a frame matching `predicate`. Replies (correlated by id) and the
