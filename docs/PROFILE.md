@@ -1,9 +1,9 @@
 ---
 type: "Policy"
 title: "Jeliya documentation profile"
-description: "Metadata, navigation, linking, and CI rules for the repository's OKF-compatible documentation wiki."
+description: "OKF v0.1 alignment boundary, metadata, navigation, linking, and CI rules for Jeliya's documentation bundle."
 tags: ["documentation", "governance", "okf", "wiki"]
-timestamp: "2026-07-12T12:21:59Z"
+timestamp: "2026-07-31T00:24:07Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "verified"
@@ -14,22 +14,30 @@ audience: ["contributors", "documentation-authors", "maintainers"]
 # Jeliya documentation profile
 
 This document defines the repository's documentation contract. The `docs/`
-directory is the canonical, docs-as-code wiki for Jeliya. Documentation changes
-travel with code changes, use the same review history, and can later be rendered
-by any compatible documentation frontend without creating a second source of
-truth.
+directory is the canonical, docs-as-code wiki for Jeliya and targets the OKF
+v0.1 bundle model through a stricter Jeliya authoring profile. Documentation
+changes travel with code changes, use the same review history, and can later be
+rendered without creating a second source of truth.
 
-The profile is based on the [Open Knowledge Format (OKF) v0.1
-draft](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md).
-The commit is pinned because OKF is still a draft and its reference tooling may
-change independently. Jeliya deliberately narrows the format where predictable
-authoring and CI validation matter more than accepting every YAML or Markdown
-variant.
+The profile targets the Open Knowledge Format (OKF) v0.1 draft at upstream
+commit `ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a`, linked under
+[Citations](#citations). The commit is pinned because OKF is still a draft and
+may change independently. Jeliya deliberately narrows the producer format where
+predictable authoring and CI validation matter more than accepting every YAML
+or Markdown variant.
+
+`scripts/check-docs.mjs` is therefore a gate for documents authored into this
+bundle. It is not a general OKF validator, importer, consumer, or round-trip
+editor. If Jeliya later consumes arbitrary OKF bundles, that separate path must
+follow OKF's permissive consumer rules: tolerate unknown types and fields,
+missing optional metadata and indexes, and broken links. A round-trip editor
+should also preserve unknown metadata.
 
 ## Scope and source of truth
 
 - Every Markdown file under `docs/` is a Jeliya documentation concept except
-  the reserved `index.md` navigation file.
+  an `index.md` or `log.md` reserved by OKF. The profile permits navigation
+  indexes at any directory level, requires `docs/index.md`, and prohibits logs.
 - Root project documents such as `README.md`, `PRODUCT.md`, `DESIGN.md`,
   `CHANGELOG.md`, and `SECURITY.md` remain outside the bundle. The wiki index
   links to them as repository resources instead of duplicating their content.
@@ -38,6 +46,33 @@ variant.
 - A document marked `canonical` is the current source of truth for its stated
   scope. This says nothing by itself about whether the subject is implemented,
   verified, or released; those states have separate required fields.
+
+## OKF v0.1 alignment matrix
+
+The matrix separates OKF's bundle requirements from stricter producer-quality
+rules and states where Jeliya intentionally differs from the draft's soft
+conventions. “Profile extension” means that Jeliya-authored documents face an
+additional constraint; it does not mean a generic OKF consumer may reject an
+otherwise conformant bundle. A green gate proves this profile, not every
+possible OKF producer or consumer behavior.
+
+| OKF section | Responsibility | Jeliya evidence and interpretation | Classification |
+|---|---|---|---|
+| §2, concepts and IDs | Bundle | Each non-reserved Markdown file is one concept; its ID is its `docs/`-relative path without `.md`. | Conformant |
+| §3, bundle structure | Bundle | `docs/` is a hierarchical bundle distributed as a subdirectory of a Git repository. | Conformant |
+| §3.1, reserved files | Producer | `index.md` is navigation, never a concept. Optional `log.md` is omitted because Git is authoritative. | Conformant; no-log rule is a profile restriction |
+| §4, encoding and document shape | Producer | The gate decodes every permitted concept and index as strict UTF-8; every concept requires opening and closing frontmatter delimiters before a Markdown body. | Conformant |
+| §4.1, required `type` | Producer | All concepts require a non-empty controlled `type`; requiring nine additional fields is stricter than OKF's baseline. | Conformant; profile extension |
+| §4.1, optional and extension fields | Producer and future consumer | Jeliya authors exactly the fields defined below and currently omits the optional OKF `resource` field. A future consumer must accept unknown fields and should preserve them when round-tripping. | Profile restriction; consumer work is out of scope |
+| §4.1, YAML | Producer | Double-quoted JSON-compatible strings and flow arrays form a deterministic frontmatter subset. The gate rejects malformed UTF-8, lone surrogates, YAML execution features, nesting, and implicit scalars; it intentionally does not accept arbitrary conformant YAML. | Restricted producer syntax; current authored output is YAML-compatible |
+| §4.2, Markdown body | Producer | CommonMark-compatible bodies use one title H1 and H2 internal sections. OKF's body headings are conventions, not conformance requirements. | Conformant; profile extension |
+| §5, cross-links | Producer and future consumer | Jeliya authors file-relative links, a form OKF supports despite recommending `/`-prefixed bundle-relative links, and rejects broken links before merge. A future consumer must tolerate broken links and support both forms. | Conformant output; intentional difference from soft guidance |
+| §6, indexes | Producer | `docs/index.md` is required and every `index.md` has no frontmatter, one first-position H1, valid links, and no raw HTML. H2 grouping and descriptive list quality remain human-reviewed; the intentionally empty v0.6.1 evidence boundary contains no concepts to enumerate yet. | Progressive-disclosure surface with stricter root-index requirement; full grouping semantics are not machine-verified |
+| §7, logs | Producer | No log is present. Git provides chronological history and attribution. | Conformant optional-feature omission |
+| §8, citations | Producer | Jeliya intentionally maps the conventional numbered final `# Citations` section to descriptive entries under a final `## Citations`, beneath the document's single title H1. This remains a human-reviewed rule; the gate validates link safety, not citation completeness. | Intentional difference from soft guidance |
+| §9, hard conformance | Bundle | The gate verifies strict UTF-8, closed restricted frontmatter, a non-empty controlled `type`, exact reserved-name handling, no logs, and the index checks described above. It does not claim to be a generic YAML/OKF validator or to prove every soft structural convention. | Profile-level evidence toward OKF conformance; remaining semantic review is explicit |
+| §9, permissive consumption | Future consumer | No generic OKF consumer or round-trip editor is implemented. The strict authoring gate must not be reused as one. | Out of scope for the current producer |
+| §11, version declaration | Bundle and future consumer | The target version is pinned in this policy. Jeliya elects not to use the draft's optional root-index frontmatter exception. A future consumer should attempt best-effort handling of unknown declared versions. | Conformant optional-feature omission |
 
 ## Required frontmatter
 
@@ -62,12 +97,18 @@ audience: ["client-authors", "contributors", "maintainers"]
 The repository profile accepts a safe, deterministic YAML subset:
 
 - keys are unquoted ASCII identifiers;
-- string values are double-quoted;
-- `tags` and `audience` are non-empty flow-style arrays of double-quoted
-  strings;
+- string values are JSON-compatible double-quoted strings containing valid
+  Unicode scalar values;
+- `tags` and `audience` are non-empty flow-style arrays of unique,
+  double-quoted lowercase hyphenated tokens;
 - nested mappings, custom tags, anchors, aliases, merge keys, block scalars,
   duplicate keys, and implicit scalar typing are not allowed;
 - unknown fields are rejected until this profile explicitly defines them.
+
+The optional OKF `resource` field is not part of the current producer profile
+because these concepts describe repository knowledge rather than separately
+addressable assets. Add it explicitly if Jeliya gains concepts that need stable
+resource URIs; a future OKF consumer must accept it regardless.
 
 ### Fields
 
@@ -77,7 +118,7 @@ The repository profile accepts a safe, deterministic YAML subset:
 | `title` | Human-readable title. It must match the document's single level-one heading. |
 | `description` | One sentence explaining the document's scope and value. |
 | `tags` | Lowercase topical tokens used for discovery. |
-| `timestamp` | UTC ISO 8601 time of the last meaningful content change. |
+| `timestamp` | A real UTC instant in `YYYY-MM-DDTHH:mm:ss[.sss]Z` form for the last meaningful content change. |
 | `status` | The document lifecycle only: one value from the lifecycle table below. |
 | `implementation_status` | Whether the subject described by the document exists in the current candidate tree. |
 | `verification_status` | Strength and currency of evidence for the subject described by the document. |
@@ -179,9 +220,9 @@ and sanitized evidence location. If any of these are missing, use `partial`,
 - Use file-relative links (`PROTOCOL.md`, `../README.md`, or
   `signing-notarization.md#acceptance-checklist`). Never use a leading slash for
   a repository document.
-- Local paths and heading fragments must resolve. External links must use
-  `https://`; the validator checks their shape but does not make network
-  requests.
+- Local paths and heading fragments must resolve inside the repository without
+  traversing symlinks. External links must be credential-free `https://` URLs;
+  the validator checks their shape but does not make network requests.
 - Moving a document changes its OKF concept ID. Avoid moves without a concrete
   information-architecture benefit, and update every inbound link in the same
   change.
@@ -209,10 +250,18 @@ Run the documentation gate from the repository root:
 node scripts/check-docs.mjs
 ```
 
-The gate validates frontmatter, all four controlled status axes, timestamps,
-unique titles, the single-H1 contract, local paths and fragments, and
-reachability from `docs/index.md`. A documentation change is not complete until
-the gate passes.
+The gate validates strict UTF-8 for every permitted concept and index,
+restricted frontmatter syntax, all four controlled status axes, timestamps,
+unique titles, the single-H1 contract, local paths and fragments, regular-file
+and symlink boundaries, and reachability from `docs/index.md`. It also rejects
+images as navigation edges and accepts inline, full-reference, collapsed, and
+shortcut reference links.
+
+The gate does not prove prose quality, one-sentence descriptions, meaningful
+change dates, the two-document threshold for new types, citation completeness,
+status-evidence sufficiency, or qualitative index grouping. Those remain review
+obligations. A documentation change is not complete until both the machine gate
+and the applicable review obligations pass.
 
 ## Non-goals
 
@@ -220,3 +269,8 @@ This profile does not define a product knowledge runtime, retrieval system,
 vector index, P2P bundle protocol, or agent trust boundary. It structures the
 repository wiki. Jeliya's signed room event log remains the product's source of
 operational truth.
+
+## Citations
+
+- [Open Knowledge Format v0.1 draft, pinned revision](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) - Normative bundle, concept, producer, consumer, linking, index, log, citation,
+  conformance, and versioning rules used by this profile.
