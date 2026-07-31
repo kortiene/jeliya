@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jeliya_api::{ApiError, OpId, PeerRow, Push, RoomId, SubjectState};
+use jeliya_api::{
+    ApiError, FileRead, FileShare, FileShareOut, OpId, PeerRow, Push, RoomId, SubjectState,
+};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -64,6 +66,21 @@ pub struct EngineConfig {
     /// process-shutdown channel; an in-process host passes a sender whose
     /// receiver performs real engine teardown.
     pub shutdown_tx: mpsc::Sender<String>,
+}
+
+/// A verified local file copy for a host-controlled byte response. The path is
+/// never accepted from a protocol caller; core resolves it from `(room_id,
+/// file_id)` after authorization.
+#[derive(Debug, Clone)]
+pub struct LocalFile {
+    /// Verified local path under the daemon's managed storage.
+    pub path: PathBuf,
+    /// Peer-declared display name.
+    pub name: String,
+    /// Peer-declared, untrusted content type.
+    pub declared_content_type: String,
+    /// Verified byte count.
+    pub bytes: u64,
 }
 
 /// Whether `op` is in the record's **`op_id`-deduplicated** class: the
@@ -184,7 +201,10 @@ impl Engine {
     /// to it besides dispatch — `jeliyad`'s HTTP staging endpoints call the
     /// supervisor directly.
     #[must_use]
-    pub fn with_supervisor(supervisor: Arc<RoomSupervisor>, config: EngineConfig) -> Arc<Self> {
+    pub(crate) fn with_supervisor(
+        supervisor: Arc<RoomSupervisor>,
+        config: EngineConfig,
+    ) -> Arc<Self> {
         let (push_tx, _) = broadcast::channel(1024);
         Arc::new(Self {
             supervisor,
@@ -193,12 +213,6 @@ impl Engine {
             stopping: Arc::new(AtomicBool::new(false)),
             ledger: Arc::new(Mutex::new(DedupLedger::default())),
         })
-    }
-
-    /// The underlying supervisor (for host surfaces that bypass dispatch).
-    #[must_use]
-    pub fn supervisor(&self) -> &Arc<RoomSupervisor> {
-        &self.supervisor
     }
 
     /// The resolved data directory.
@@ -223,6 +237,33 @@ impl Engine {
     #[must_use]
     pub fn limits(&self) -> jeliya_api::Limits {
         typed::limits()
+    }
+
+    /// Complete a host-staged typed file share. Hosts supply a managed path;
+    /// the protocol declaration and result remain `jeliya-api` values.
+    pub async fn share_staged_file(
+        &self,
+        req: &FileShare,
+        staged_path: &Path,
+    ) -> CoreResult<FileShareOut> {
+        typed::TypedSupervisor::new(&self.supervisor)
+            .share_staged_file(req, staged_path)
+            .await
+    }
+
+    /// Resolve a verified local file from a typed protocol address for a
+    /// host-controlled byte response.
+    pub async fn local_file(&self, req: &FileRead) -> CoreResult<LocalFile> {
+        let file = self
+            .supervisor
+            .local_file(req.room_id.as_ref(), req.file_id.as_str())
+            .await?;
+        Ok(LocalFile {
+            path: file.path,
+            name: file.name,
+            declared_content_type: file.mime,
+            bytes: file.bytes,
+        })
     }
 
     /// The `hello` `subject` fact: present with ids, its stated absence, or
@@ -533,7 +574,18 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
                         match received {
                             Ok(events) => {
                                 for committed in events {
-                                    emit_committed(&engine, &api_room, committed);
+                                    let membership_ended =
+                                        emit_committed(&engine, &room_id, &api_room, committed);
+                                    if membership_ended {
+                                        if let Err(err) =
+                                            engine.supervisor.close_room(api_room.as_str()).await
+                                        {
+                                            if err.kind != ErrorKind::RoomNotOpen {
+                                                warn!("could not close removed room {key}: {err}");
+                                            }
+                                        }
+                                        break;
+                                    }
                                 }
                             }
                             Err(err) if err.kind == ErrorKind::RoomNotOpen => break,
@@ -552,7 +604,16 @@ async fn push_loop(engine: Arc<Engine>, mut cancel_rx: watch::Receiver<bool>) {
             match poll_typed_events(&engine, &room_id).await {
                 Ok(events) => {
                     for committed in events {
-                        emit_committed(&engine, &api_room, committed);
+                        let membership_ended =
+                            emit_committed(&engine, &room_id, &api_room, committed);
+                        if membership_ended {
+                            if let Err(err) = sup.close_room(&room_str).await {
+                                if err.kind != ErrorKind::RoomNotOpen {
+                                    warn!("could not close removed room {room_str}: {err}");
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
                 Err(err) => warn!("push reconcile failed for {room_str}: {err}"),
@@ -600,9 +661,21 @@ async fn poll_typed_events(
 /// resync path), then delivers the event at its true rank.
 fn emit_committed(
     engine: &Engine,
+    room_id: &iroh_rooms::room::RoomId,
     api_room: &RoomId,
     committed: crate::supervisor::CommittedEvent,
-) {
+) -> bool {
+    let removes_local_subject = match &committed.event.kind {
+        jeliya_api::EventKindContent::MemberRemoved { subject_id, .. } => engine
+            .supervisor
+            .local_identity_key()
+            .is_ok_and(|local| subject_id.as_str() == local.to_string()),
+        _ => false,
+    };
+    let revoked_pipe = match &committed.event.kind {
+        jeliya_api::EventKindContent::PipeRevoked { pipe_id } => Some(pipe_id.clone()),
+        _ => None,
+    };
     if let Some(from_pos) = committed.reordered_at {
         engine.emit(Push::Gap {
             room_id: api_room.clone(),
@@ -615,6 +688,18 @@ fn emit_committed(
         room_id: api_room.clone(),
         event: committed.event,
     });
+    if let Some(pipe_id) = revoked_pipe {
+        if let Err(error) = engine
+            .supervisor
+            .release_pipe_connections(room_id, pipe_id.as_str())
+        {
+            warn!(
+                "could not release local connections for revoked pipe {}: {error}",
+                pipe_id.as_str()
+            );
+        }
+    }
+    removes_local_subject
 }
 
 /// The per-device link rows for one room, for the peer-change drain.
@@ -1023,5 +1108,166 @@ mod tests {
         );
 
         engine.close_all_rooms().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn member_removal_is_the_removed_members_last_push_and_closes_the_room() {
+        use jeliya_api::*;
+
+        let owner_dir = TempDir::new().expect("owner tempdir");
+        let member_dir = TempDir::new().expect("member tempdir");
+        let owner = engine_with_subject(&owner_dir).await;
+        let member = engine_with_subject(&member_dir).await;
+        let SubjectState::Present {
+            subject_id: member_id,
+            ..
+        } = member.subject_state().unwrap()
+        else {
+            panic!("member subject missing");
+        };
+
+        let created = owner
+            .execute(TypedCall::RoomCreate(RoomCreate {
+                name: "Removal lifecycle".into(),
+            }))
+            .await
+            .reply
+            .expect("owner creates room");
+        let TypedReply::RoomCreate(created) = created else {
+            panic!("wrong reply");
+        };
+        let room_id = created.room_id;
+        owner
+            .execute(TypedCall::RoomActivate(RoomActivate {
+                room_id: room_id.clone(),
+            }))
+            .await
+            .reply
+            .expect("owner activates");
+        let owner_loop = owner.clone().start_push_loop();
+
+        let iroh_room: iroh_rooms::room::RoomId = room_id.as_str().parse().unwrap();
+        let owner_session = owner.supervisor.session(&iroh_room).unwrap();
+        let endpoint = owner_session.node.endpoint_addr().unwrap();
+        let sockets: Vec<String> = endpoint.ip_addrs().map(|addr| addr.to_string()).collect();
+        assert!(
+            !sockets.is_empty(),
+            "loopback endpoint has a socket address"
+        );
+        let owner_addr = format!("{}@{}", endpoint.id, sockets.join(","));
+        drop(owner_session);
+
+        let ticket = owner
+            .supervisor
+            .create_invite(room_id.as_str(), member_id.as_str(), "member", None)
+            .await
+            .expect("owner invites member");
+        member
+            .supervisor
+            .join_room(&ticket, None, &[owner_addr])
+            .await
+            .expect("member redeems");
+        member
+            .execute(TypedCall::RoomActivate(RoomActivate {
+                room_id: room_id.clone(),
+            }))
+            .await
+            .reply
+            .expect("member activates");
+        let member_loop = member.clone().start_push_loop();
+        let mut pushes = member.subscribe_pushes();
+        let member_endpoint = member.supervisor.session(&iroh_room).unwrap().node.id();
+
+        let member_key: iroh_rooms::identity::IdentityKey = member_id.as_str().parse().unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let joined = owner
+                    .supervisor
+                    .snapshot_for(&iroh_room)
+                    .await
+                    .is_ok_and(|snapshot| snapshot.is_active(&member_key));
+                let linked = owner.supervisor.session(&iroh_room).is_ok_and(|session| {
+                    session.node.peer_state(member_endpoint)
+                        == Some(iroh_rooms::experimental::session::PeerConnState::Connected)
+                });
+                if joined && linked {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("owner observes joined member");
+
+        owner
+            .execute(TypedCall::MemberRemove(MemberRemove {
+                room_id: room_id.clone(),
+                subject_id: member_id.clone(),
+            }))
+            .await
+            .reply
+            .expect("authority removes member");
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match pushes.recv().await {
+                    Ok(Push::Event {
+                        room_id: pushed,
+                        event,
+                    }) if pushed == room_id
+                        && matches!(
+                            event.kind,
+                            EventKindContent::MemberRemoved {
+                                ref subject_id,
+                                ..
+                            } if subject_id == &member_id
+                        ) =>
+                    {
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) => panic!("member push stream failed: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("member receives its removal fact");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while member.supervisor.is_open(&iroh_room) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("removed member room closes");
+
+        owner
+            .execute(TypedCall::MessageSend(MessageSend {
+                room_id: room_id.clone(),
+                body: "after removal".into(),
+            }))
+            .await
+            .reply
+            .expect("authority can keep authoring");
+        let later_event = tokio::time::timeout(Duration::from_millis(750), async {
+            loop {
+                match pushes.recv().await {
+                    Ok(Push::Event {
+                        room_id: pushed, ..
+                    }) if pushed == room_id => break,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+        .await;
+        assert!(
+            later_event.is_err(),
+            "no room event is pushed after membership removal"
+        );
+
+        owner_loop.stop();
+        member_loop.stop();
+        owner.close_all_rooms().await;
+        member.close_all_rooms().await;
     }
 }

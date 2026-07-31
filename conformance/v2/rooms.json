@@ -2928,7 +2928,7 @@
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
-            "subject_id": "$subject_o"
+            "subject_id": "$sc"
           },
           "on": "subject:authority",
           "expect": {
@@ -2944,7 +2944,7 @@
         {
           "assert": [
             {
-              "observe": "no_durable_mutation",
+              "observe": "no_event_authored",
               "scope": "step"
             }
           ],
@@ -2990,15 +2990,15 @@
           "call": "member.remove",
           "in": {
             "room_id": "$rid",
-            "subject_id": "$subject_a"
+            "subject_id": "$self_sid"
           },
           "on": "subject:authority",
           "expect": {
             "ok": false,
             "err": {
-              "code": "sole_authority_cannot_leave",
+              "code": "authority_cannot_be_removed",
               "room_id": "<room_id>",
-              "authority_subject_id": "<string>"
+              "subject_id": "$self_sid"
             }
           },
           "op_id": "$op_id_new"
@@ -3006,7 +3006,7 @@
         {
           "assert": [
             {
-              "observe": "no_durable_mutation",
+              "observe": "no_event_authored",
               "scope": "step"
             }
           ],

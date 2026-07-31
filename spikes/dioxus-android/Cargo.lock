@@ -1056,6 +1056,9 @@ name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "derive_more"
@@ -3208,8 +3211,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms"
-version = "0.1.0-rc.3"
-source = "git+https://github.com/kortiene/iroh-room?rev=a5d98b70d717f35d3ce60953a88e12e646f2e871#a5d98b70d717f35d3ce60953a88e12e646f2e871"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/kortiene/iroh-room?rev=52a4c89e900c2b065f7112638acedeccab83952f#52a4c89e900c2b065f7112638acedeccab83952f"
 dependencies = [
  "iroh",
  "iroh-rooms-core",
@@ -3218,8 +3221,8 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms-core"
-version = "0.1.0-rc.3"
-source = "git+https://github.com/kortiene/iroh-room?rev=a5d98b70d717f35d3ce60953a88e12e646f2e871#a5d98b70d717f35d3ce60953a88e12e646f2e871"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/kortiene/iroh-room?rev=52a4c89e900c2b065f7112638acedeccab83952f#52a4c89e900c2b065f7112638acedeccab83952f"
 dependencies = [
  "blake3",
  "data-encoding",
@@ -3232,13 +3235,14 @@ dependencies = [
 
 [[package]]
 name = "iroh-rooms-net"
-version = "0.1.0-rc.3"
-source = "git+https://github.com/kortiene/iroh-room?rev=a5d98b70d717f35d3ce60953a88e12e646f2e871#a5d98b70d717f35d3ce60953a88e12e646f2e871"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/kortiene/iroh-room?rev=52a4c89e900c2b065f7112638acedeccab83952f#52a4c89e900c2b065f7112638acedeccab83952f"
 dependencies = [
  "anyhow",
  "bao-tree",
  "blake3",
  "bytes",
+ "getrandom 0.4.3",
  "hex",
  "iroh",
  "iroh-blobs",
@@ -3349,6 +3353,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jeliya-api"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.19",
+ "time",
+]
+
+[[package]]
 name = "jeliya-core"
 version = "0.6.1"
 dependencies = [
@@ -3359,8 +3372,10 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-rooms",
+ "jeliya-api",
  "serde",
  "serde_json",
+ "time",
  "tokio",
  "tracing",
  "zeroize",

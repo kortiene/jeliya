@@ -28,7 +28,6 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use jeliya_core::engine::{Engine, EngineConfig};
-use jeliya_core::supervisor::RoomSupervisor;
 
 #[cfg(feature = "relay-only-test")]
 const RELAY_ONLY_VERIFICATION_MARKER: &str = "jeliya-relay-only-test-build-v1";
@@ -80,18 +79,10 @@ struct Args {
     verification_relay_only_build: bool,
 }
 
-/// Shared server state: the engine (dispatch + push fan-out) plus the
-/// daemon-only surfaces.
-///
-/// The supervisor is shared as a plain `Arc` (no daemon-wide async mutex): its
-/// own internal locks are held only for brief map operations, never across a
-/// network `.await`, so one client's slow request can no longer freeze every
-/// other client or the push loop. The daemon keeps its own handle besides the
-/// engine's because the HTTP staging endpoints (`/api/files/*`) call the
-/// supervisor directly, bypassing dispatch.
+/// Shared server state: the typed engine (dispatch, host file services, and
+/// push fan-out) plus daemon-only transport state.
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) supervisor: Arc<RoomSupervisor>,
     pub(crate) data_dir: PathBuf,
     /// Protocol dispatch and the push broadcast (`jeliya_core::engine`).
     pub(crate) engine: Arc<Engine>,
@@ -148,14 +139,6 @@ async fn main() {
     };
     let _instance_guard = lifecycle::acquire_or_adopt(&mut instance_lock, &data_dir).await;
 
-    let supervisor = match RoomSupervisor::new(data_dir.clone(), args.loopback) {
-        Ok(sup) => sup,
-        Err(err) => {
-            error!("could not initialize the data dir: {err}");
-            std::process::exit(1);
-        }
-    };
-
     let auth_token = match lifecycle::generate_token() {
         Ok(token) => token,
         Err(err) => {
@@ -193,18 +176,23 @@ async fn main() {
     }
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<String>(4);
-    let supervisor = Arc::new(supervisor);
-    let engine = Engine::with_supervisor(
-        supervisor.clone(),
+    let engine = match Engine::new(
+        data_dir.clone(),
+        args.loopback,
         EngineConfig {
             port: addr.port(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             shutdown_tx: shutdown_tx.clone(),
         },
-    );
+    ) {
+        Ok(engine) => engine,
+        Err(err) => {
+            error!("could not initialize the data dir: {err}");
+            std::process::exit(1);
+        }
+    };
     let engine_limits = engine.limits();
     let state = AppState {
-        supervisor,
         data_dir: data_dir.clone(),
         engine,
         auth_token: Arc::new(auth_token.clone()),

@@ -24,7 +24,6 @@ use serde_json::{json, Value};
 
 use hyper_util::rt::TokioIo;
 use jeliya_core::error::CoreError;
-use jeliya_core::supervisor::FILE_UPLOAD_MAX_BYTES;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -519,7 +518,7 @@ fn gate_refusal(rejection: jeliya_codec::GateRejection) -> Response<Full<Bytes>>
         .unwrap_or_else(|_| "{\"code\":\"forbidden_origin\"}".to_owned());
     Response::builder()
         .status(status)
-        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(body)))
         .expect("gate refusal is well-formed")
 }
@@ -541,7 +540,11 @@ async fn local_file(req: Request<Incoming>, state: AppState) -> Response<Full<By
             &CoreError::invalid("missing file_id for local file"),
         );
     };
-    let file = match state.supervisor.local_file(room_id, file_id).await {
+    let file_req = jeliya_api::FileRead {
+        room_id: jeliya_api::RoomId::new(room_id),
+        file_id: jeliya_api::FileId::new(file_id),
+    };
+    let file = match state.engine.local_file(&file_req).await {
         Ok(file) => file,
         Err(err) => return json_error(StatusCode::BAD_REQUEST, &err),
     };
@@ -569,7 +572,7 @@ async fn local_file(req: Request<Incoming>, state: AppState) -> Response<Full<By
     // and could exfiltrate the auth token. Force a download (attachment),
     // forbid MIME sniffing, and hand the browser only a safe, inert type — the
     // real type travels in the filename the user saved.
-    let content_type = HeaderValue::from_str(&safe_download_mime(&file.mime))
+    let content_type = HeaderValue::from_str(&safe_download_mime(&file.declared_content_type))
         .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
     let content_disposition =
         HeaderValue::from_str(&content_disposition_value(&display_name, "attachment"))
@@ -624,6 +627,7 @@ fn safe_download_mime(mime: &str) -> String {
 /// daemon stages those bytes under its data dir, then uses the normal confined
 /// `file.share` path so protocol authorship and blob import remain centralized.
 async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<Bytes>> {
+    let upload_limit = state.engine.limits().max_shared_file_bytes;
     if let Some(origin) = req.headers().get(ORIGIN) {
         let allowed = origin.to_str().map(is_local_origin).unwrap_or(false);
         if !allowed {
@@ -641,12 +645,12 @@ async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
         {
-            Some(n) if n <= FILE_UPLOAD_MAX_BYTES => {}
+            Some(n) if n <= upload_limit => {}
             Some(n) => {
                 return json_error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     &CoreError::invalid(format!(
-                        "upload is {n} bytes; the share limit is {FILE_UPLOAD_MAX_BYTES} bytes"
+                        "upload is {n} bytes; the share limit is {upload_limit} bytes"
                     )),
                 )
             }
@@ -682,7 +686,7 @@ async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<
                 .filter(|value| !value.is_empty())
         });
 
-    let body = match read_limited(req.into_body(), FILE_UPLOAD_MAX_BYTES).await {
+    let body = match read_limited(req.into_body(), upload_limit).await {
         Ok(bytes) => bytes,
         Err(err) => return json_error(StatusCode::PAYLOAD_TOO_LARGE, &err),
     };
@@ -701,11 +705,13 @@ async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<
         );
     }
 
-    let path = stage_path.to_string_lossy().to_string();
-    let result = state
-        .supervisor
-        .share_file(room_id, &path, Some(&display_name), mime.as_deref())
-        .await;
+    let share = jeliya_api::FileShare {
+        room_id: jeliya_api::RoomId::new(room_id),
+        name: display_name,
+        declared_bytes: body.len() as u64,
+        declared_content_type: mime.unwrap_or_else(|| "application/octet-stream".to_owned()),
+    };
+    let result = state.engine.share_staged_file(&share, &stage_path).await;
     let _ = std::fs::remove_file(&stage_path);
     match result {
         Ok(value) => json_ok(value),
@@ -821,7 +827,7 @@ fn unique_stage_name(display_name: &str) -> String {
     format!("{}-{now}-{display_name}", std::process::id())
 }
 
-fn json_ok(result: Value) -> Response<Full<Bytes>> {
+fn json_ok(result: impl serde::Serialize) -> Response<Full<Bytes>> {
     json_response(StatusCode::OK, json!({ "ok": true, "result": result }))
 }
 
@@ -939,12 +945,8 @@ pub async fn serve_ws<S>(
     // engine await).
     let subscriptions = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
         String,
-        u64,
+        SubscriptionState,
     >::new()));
-    // The last position actually delivered to this connection per room, so a
-    // backpressure lag can name a real resync point for each subscribed room.
-    let mut last_delivered: std::collections::HashMap<String, u64> =
-        std::collections::HashMap::new();
 
     // The `hello` frame: exactly one, first, carrying the generation, the
     // storage generation, the served limits, and the local subject. An
@@ -1038,15 +1040,20 @@ pub async fn serve_ws<S>(
                     // push is never a membership oracle.
                     let room = push_room_id(&push).map(str::to_owned);
                     let subscribed = {
-                        let subs = subscriptions.lock().await;
-                        room.as_ref().map(|r| subs.contains_key(r)).unwrap_or(false)
+                        let mut subs = subscriptions.lock().await;
+                        room.as_ref()
+                            .and_then(|room| subs.get_mut(room))
+                            .map(|subscription| {
+                                // The position joins the subscription state so
+                                // unsubscribe/resubscribe cannot retain a stale
+                                // high-water mark and skip recovery events.
+                                if let Some(pos) = push_pos(&push) {
+                                    subscription.last_delivered = Some(pos);
+                                }
+                            })
+                            .is_some()
                     };
                     if subscribed {
-                        // Track the last-delivered position per room so a later
-                        // lag can name a real resync point for that room.
-                        if let (Some(r), Some(pos)) = (room.as_ref(), push_pos(&push)) {
-                            last_delivered.insert(r.clone(), pos);
-                        }
                         let bytes = jeliya_codec::push_to_bytes(&push);
                         if out_tx.send(Message::Binary(bytes.into())).await.is_err() {
                             break;
@@ -1059,12 +1066,20 @@ pub async fn serve_ws<S>(
                 // resync each affected room rather than getting one unusable
                 // global frame.
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let rooms: Vec<String> = {
+                    let rooms: Vec<(String, u64)> = {
                         let subs = subscriptions.lock().await;
-                        subs.keys().cloned().collect()
+                        subs.iter()
+                            .map(|(room, subscription)| {
+                                (
+                                    room.clone(),
+                                    subscription
+                                        .last_delivered
+                                        .unwrap_or(subscription.from_pos),
+                                )
+                            })
+                            .collect()
                     };
-                    for room in rooms {
-                        let from_pos = last_delivered.get(&room).copied().unwrap_or(0);
+                    for (room, from_pos) in rooms {
                         let gap = jeliya_api::Push::Gap {
                             room_id: jeliya_api::RoomId::new(room),
                             from_pos,
@@ -1114,6 +1129,17 @@ fn push_pos(push: &jeliya_api::Push) -> Option<u64> {
 /// The served `max_subscriptions_per_connection`.
 const MAX_SUBSCRIPTIONS: u64 = 64;
 
+/// Per-room delivery baseline for one connection.
+///
+/// Keeping the resolved cursor and delivered high-water mark in the same map
+/// makes unsubscribe remove both atomically; a later subscribe cannot inherit
+/// a stale position from the prior subscription.
+#[derive(Debug, Clone, Copy)]
+struct SubscriptionState {
+    from_pos: u64,
+    last_delivered: Option<u64>,
+}
+
 /// `stream.subscribe` — add the room to this connection's subscription set.
 /// Naturally idempotent; exceeding the served limit is
 /// `subscription_limit_reached`, never a silent drop.
@@ -1121,7 +1147,9 @@ async fn handle_stream_subscribe(
     out_tx: &tokio::sync::mpsc::Sender<Message>,
     state: &AppState,
     request: &jeliya_codec::Request,
-    subscriptions: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    subscriptions: &std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, SubscriptionState>>,
+    >,
 ) -> bool {
     // Extract owned values up front so no `&Request` (non-Sync) is held
     // across an await.
@@ -1135,8 +1163,22 @@ async fn handle_stream_subscribe(
         None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
     };
     let room_key = req.room_id.to_string();
-    let mut subs = subscriptions.lock().await;
-    if !subs.contains_key(&room_key) && subs.len() as u64 >= MAX_SUBSCRIPTIONS {
+    let existing = {
+        let subs = subscriptions.lock().await;
+        subs.get(&room_key).map(|state| state.from_pos)
+    };
+    if let Some(from_pos) = existing {
+        return send_typed(
+            out_tx,
+            id,
+            &jeliya_api::StreamSubscribeOut {
+                room_id: req.room_id,
+                from_pos,
+            },
+        )
+        .await;
+    }
+    if subscriptions.lock().await.len() as u64 >= MAX_SUBSCRIPTIONS {
         return send_api_err(
             out_tx,
             id,
@@ -1162,7 +1204,33 @@ async fn handle_stream_subscribe(
             }
         }
     };
-    subs.insert(room_key, from_pos);
+    // Another in-flight subscribe can race this one. The first insertion wins
+    // and defines the idempotent result; the second returns that same baseline.
+    let from_pos = {
+        let mut subs = subscriptions.lock().await;
+        if let Some(existing) = subs.get(&room_key) {
+            existing.from_pos
+        } else if subs.len() as u64 >= MAX_SUBSCRIPTIONS {
+            drop(subs);
+            return send_api_err(
+                out_tx,
+                id,
+                jeliya_api::ApiError::SubscriptionLimitReached {
+                    limit: MAX_SUBSCRIPTIONS,
+                },
+            )
+            .await;
+        } else {
+            subs.insert(
+                room_key,
+                SubscriptionState {
+                    from_pos,
+                    last_delivered: None,
+                },
+            );
+            from_pos
+        }
+    };
     send_typed(
         out_tx,
         id,
@@ -1178,7 +1246,9 @@ async fn handle_stream_subscribe(
 async fn handle_stream_unsubscribe(
     out_tx: &tokio::sync::mpsc::Sender<Message>,
     request: &jeliya_codec::Request,
-    subscriptions: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    subscriptions: &std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, SubscriptionState>>,
+    >,
 ) -> bool {
     let id = request.id;
     let req = match request
@@ -1234,7 +1304,7 @@ async fn handle_stream_resync(
     // `resync_required` naming the real head. `from_pos == head` is caught
     // up and answers an empty set below.
     let head = match room_head_pos(state, &req.room_id).await {
-        Ok(next) => next.saturating_sub(1),
+        Ok(head) => head,
         Err(err) => return send_api_err(out_tx, id, err).await,
     };
     if req.from_pos > head {
@@ -1305,8 +1375,8 @@ async fn authorize_room(
     }
 }
 
-/// The room's current head position (the next position a `start` cursor
-/// resolves to), or the access error if the room is not visible.
+/// The room's last committed position (the concrete lower bound a `start`
+/// subscription resolves to), or the access error if the room is not visible.
 async fn room_head_pos(
     state: &AppState,
     room_id: &jeliya_api::RoomId,
@@ -1321,12 +1391,21 @@ async fn room_head_pos(
         },
     });
     match state.engine.execute(call).await.reply {
-        Ok(jeliya_core::typed::TypedReply::RoomTimeline(out)) => {
-            Ok(out.events.last().map(|e| e.pos + 1).unwrap_or(0))
-        }
+        Ok(jeliya_core::typed::TypedReply::RoomTimeline(out)) => Ok(stream_start_position(
+            out.events.last().map(|event| event.pos),
+        )),
         Ok(_) => Ok(0),
         Err(err) => Err(err),
     }
+}
+
+/// Resolve a `start` cursor to the last position the room already holds.
+///
+/// The first future event is one greater than this baseline. Returning that
+/// next position here would make lag recovery read strictly after it and skip
+/// the first missed event.
+fn stream_start_position(last_committed: Option<u64>) -> u64 {
+    last_committed.unwrap_or(0)
 }
 
 /// Encode a typed output as a reply frame and send it.
@@ -1373,7 +1452,9 @@ async fn dispatch_inbound(
     bytes: &[u8],
     state: &AppState,
     bounds: &jeliya_codec::CodecBounds,
-    subscriptions: &std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, u64>>>,
+    subscriptions: &std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, SubscriptionState>>,
+    >,
     out_tx: &tokio::sync::mpsc::Sender<Message>,
     inflight: &mut tokio::task::JoinSet<bool>,
     principal_key: &str,
@@ -1538,7 +1619,28 @@ fn text(status: StatusCode, body: &'static str) -> Response<Full<Bytes>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, safe_download_mime};
+    use super::{constant_time_eq, gate_refusal, safe_download_mime, stream_start_position};
+    use hyper::{header::CONTENT_TYPE, StatusCode};
+
+    #[test]
+    fn gate_refusal_is_bare_json_with_the_exact_media_type() {
+        let response = gate_refusal(jeliya_codec::GateRejection {
+            body: jeliya_api::ApiError::ProtocolUnsupported {
+                supported: vec![2],
+                client: jeliya_api::DeclaredVersion::Declared { v: 1 },
+            },
+            status: 426,
+        });
+
+        assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
+        assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+    }
+
+    #[test]
+    fn stream_start_uses_the_last_held_position_not_the_next_position() {
+        assert_eq!(stream_start_position(Some(41)), 41);
+        assert_eq!(stream_start_position(None), 0);
+    }
 
     #[test]
     fn constant_time_eq_matches_only_identical_bytes() {

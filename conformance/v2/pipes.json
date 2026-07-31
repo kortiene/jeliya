@@ -1164,7 +1164,6 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$foreign_rid",
             "connection_id": "$foreign_cid"
           },
           "on": "subject:C",
@@ -1174,7 +1173,8 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "room_not_available"
+              "code": "connection_unknown",
+              "connection_id": "$foreign_cid"
             }
           },
           "op_id": "$op7"
@@ -1182,7 +1182,6 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$never_existed_rid",
             "connection_id": "$foreign_cid"
           },
           "on": "subject:C",
@@ -1192,7 +1191,8 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "room_not_available"
+              "code": "connection_unknown",
+              "connection_id": "$foreign_cid"
             }
           },
           "op_id": "$op8"
@@ -2005,16 +2005,13 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$rid",
             "connection_id": "$cid1"
           },
           "expect": {
             "ok": true,
             "out": {
               "connection_id": "$cid1",
-              "released": {
-                "state": "released"
-              }
+              "released": true
             }
           },
           "on": "subject:B",
@@ -2060,7 +2057,6 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$rid",
             "connection_id": "$cid2"
           },
           "save": {
@@ -2072,7 +2068,6 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$rid",
             "connection_id": "$cid2"
           },
           "on": "subject:B",
@@ -2109,7 +2104,6 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$rid",
             "connection_id": "$never_issued_cid"
           },
           "on": "subject:B",
@@ -2136,7 +2130,6 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$other_rid",
             "connection_id": "$cid_in_rid"
           },
           "on": "subject:B",
@@ -2227,15 +2220,12 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$rid",
             "connection_id": "$cid"
           },
           "expect": {
             "ok": true,
             "out": {
-              "released": {
-                "state": "released"
-              }
+              "released": true
             }
           },
           "on": "subject:B",
@@ -2415,7 +2405,6 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$rid",
             "connection_id": "$cid2"
           },
           "on": "subject:B",
@@ -2491,15 +2480,12 @@
         {
           "call": "pipe.release",
           "in": {
-            "room_id": "$rid",
             "connection_id": "$cid"
           },
           "expect": {
             "ok": true,
             "out": {
-              "released": {
-                "state": "released"
-              }
+              "released": true
             }
           },
           "on": "subject:B",

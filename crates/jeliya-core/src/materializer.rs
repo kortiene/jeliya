@@ -18,7 +18,7 @@ use iroh_rooms::room::{MembershipSnapshot, Role};
 /// Map a fold [`Role`] to the protocol's `owner|member|agent` vocabulary.
 /// (The SDK calls the room creator `admin`; the protocol calls it `owner`.)
 #[must_use]
-pub fn role_label(role: Role) -> &'static str {
+pub(crate) fn role_label(role: Role) -> &'static str {
     match role {
         Role::Admin => "owner",
         Role::Member => "member",
@@ -45,7 +45,7 @@ fn sender_role(snapshot: &MembershipSnapshot, sender: &IdentityKey) -> &'static 
 /// The bare 64-hex form of an event id (the protocol strips the `blake3:`
 /// prefix for `event_id`; `room_id` keeps it).
 #[must_use]
-pub fn bare_event_hex(event_id: &EventId) -> String {
+pub(crate) fn bare_event_hex(event_id: &EventId) -> String {
     let s = event_id.to_string();
     match s.strip_prefix("blake3:") {
         Some(hex_part) => hex_part.to_owned(),
@@ -56,21 +56,21 @@ pub fn bare_event_hex(event_id: &EventId) -> String {
 /// The `file_<32-hex>` handle for a 16-byte on-wire short id (mirrors the
 /// reference CLI's `file_handle`).
 #[must_use]
-pub fn file_handle(file_id: &[u8; 16]) -> String {
+pub(crate) fn file_handle(file_id: &[u8; 16]) -> String {
     format!("file_{}", hex::encode(file_id))
 }
 
 /// Fold one stored event into its protocol `TimelineEvent`, or `None` for an
 /// event kind the protocol does not display. Pure: no IO, no clock.
 #[must_use]
-pub fn materialize(se: &StoredEvent, snapshot: &MembershipSnapshot) -> Option<Value> {
+pub(crate) fn materialize(se: &StoredEvent, snapshot: &MembershipSnapshot) -> Option<Value> {
     let ev = SignedEvent::decode(&se.wire.signed).ok()?;
     materialize_signed(&se.room_id, &se.event_id, &ev, snapshot)
 }
 
 /// Fold one decoded signed event into its protocol `TimelineEvent`.
 #[must_use]
-pub fn materialize_signed(
+pub(crate) fn materialize_signed(
     room_id: &RoomId,
     event_id: &EventId,
     ev: &SignedEvent,
@@ -103,7 +103,7 @@ pub fn materialize_signed(
 /// does not name (`member.removed`) — the timestamp is still real, so the row
 /// says *when* without inventing *what*.
 #[must_use]
-pub fn stored_event_recency(se: &StoredEvent) -> Option<(u64, Option<&'static str>)> {
+pub(crate) fn stored_event_recency(se: &StoredEvent) -> Option<(u64, Option<&'static str>)> {
     let ev = SignedEvent::decode(&se.wire.signed).ok()?;
     Some((
         ev.created_at,

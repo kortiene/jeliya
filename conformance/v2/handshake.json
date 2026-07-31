@@ -288,7 +288,7 @@
               ],
               "client": {
                 "state": "declared",
-                "protocol": 1
+                "v": 1
               }
             }
           }
@@ -576,13 +576,19 @@
           }
         },
         {
-          "note": "the connection was never upgraded, so no 4001 close occurs",
-          "assert": [
-            {
-              "observe": "connection_open",
-              "on": "subject:self"
+          "note": "the v1 connection was never upgraded, so no 4001 close occurs; the daemon remains available for a fresh v2 client",
+          "http": {
+            "method": "GET",
+            "path": "/api/health",
+            "headers": {
+              "Host": "127.0.0.1:<port>"
             }
-          ]
+          },
+          "expect": {
+            "ok": true,
+            "protocol": 2,
+            "status": 200
+          }
         }
       ]
     },
@@ -617,7 +623,7 @@
               ],
               "client": {
                 "state": "declared",
-                "protocol": 1
+                "v": 1
               }
             }
           }
@@ -642,7 +648,7 @@
               ],
               "client": {
                 "state": "declared",
-                "protocol": 3
+                "v": 3
               }
             }
           }
@@ -941,7 +947,7 @@
               "daemon": "<daemon_sg>",
               "client": {
                 "state": "declared",
-                "storage_generation": 0
+                "sg": 0
               }
             }
           }
@@ -964,7 +970,7 @@
               "daemon": "<daemon_sg>",
               "client": {
                 "state": "declared",
-                "storage_generation": 99
+                "sg": 99
               }
             }
           }
@@ -1189,7 +1195,7 @@
               ],
               "client": {
                 "state": "declared",
-                "protocol": 1
+                "v": 1
               }
             }
           }
@@ -1241,7 +1247,7 @@
               "daemon": "<uint>",
               "client": {
                 "state": "declared",
-                "storage_generation": 0
+                "sg": 0
               }
             }
           }
@@ -4330,8 +4336,8 @@
     "SPEC GAP 3 — no idle-window value is served, yet 4004 idle_timeout is a defined close code. A conformant client cannot compute a keepalive interval that avoids being closed. `close_code_4004_is_emitted_on_idle_timeout` asserts `limits.idle_timeout_ms` exists and will fail until it does.",
     "SPEC GAP 4 — no code is named for a duplicate in-flight `id`, a missing `id`, or an unknown `op`. The spec fixes `invalid_argument` only for the three codec bounds. For duplicate-id and non-object-`in` the fixtures assert `invalid_argument` (they are decode/validation failures and the generic-code prohibition is stated per-operation, not per-envelope). For an unknown `op` the fixture asserts a distinct `unknown_operation` code, derived from the spec's own reasoning that 'a conformance corpus that can only assert a generic code proves nothing about that operation' — an op outside the 33 is not an argument-bound violation. Both are flagged in the fixtures themselves. #163/#164 must ratify or replace these three names before the corpus freezes.",
     "SPEC GAP 5 — capacity has no position in the gate's fixed five-check order. `max_connections` is served but the order is Host, Origin, v, sg, credential, with no capacity step. `connections_at_the_served_limit_...` pins the refusal code (`resource_exhausted`) without claiming a position, and `a_gate_refused_upgrade_consumes_no_connection_slot` derives the security-relevant half that IS decidable: because the gate runs before the upgrade is performed, a gate-refused request never becomes a connection and so cannot exhaust the table.",
-    "INTERPRETATION — tagged-variant field names. The spec shows the tag pattern three times (`subject: {state:'present', subject_id, device_id}`, `resume: {state:'fresh'}`, `gap.to: {state:'bounded', pos}`): a `state` discriminator with the payload inline. The fixtures apply that pattern to the two gate errors, spelling `protocol_unsupported.client` as `{state:'declared', protocol:N}` / `{state:'absent'}` and `storage_generation_mismatch.client` as `{state:'declared', storage_generation:N}` / `{state:'absent'}`. The spec explicitly names the declared/absent variant only for `protocol_unsupported`; for `storage_generation_mismatch` it lists bare fields `daemon`, `client`, but since `sg` may be absent and no null may carry meaning, `client` must be tagged there too. The tag names and the payload key are #163's to fix; the fixtures assert the shape, not the spelling.",
-    "INTERPRETATION — the pre-upgrade rejection body. 'The v2 error envelope as a JSON body' cannot carry an `id`, because no request envelope exists before the upgrade. The fixtures assert `{ok:false, err:{code,...}}` with `id` explicitly absent, `Content-Type: application/json`, and no `hint`/`message`/`detail`.",
+    "TAGGED-VARIANT FIELD NAMES. The spec and #163's typed contract settle `protocol_unsupported.client` as `{state:'declared', v:N}` / `{state:'absent'}` and `storage_generation_mismatch.client` as `{state:'declared', sg:N}` / `{state:'absent'}`. Both use the same inline `state` discriminator pattern as the other protocol variants; no null carries absence.",
+    "INTERPRETATION — the pre-upgrade rejection body. 'The v2 error envelope as a JSON body' cannot carry an `id`, because no request envelope exists before the upgrade. The fixtures assert the bare `{code,...}` error object with `id`/`ok`/`err` absent, `Content-Type: application/json`, and no `hint`/`message`/`detail`.",
     "INTERPRETATION — an expired connect ticket answers `unauthenticated`, not `capability_expired`. The taxonomy scopes `capability_expired` to an invite ('Invite expired — distinct from invalid and from revoked'), and a connect ticket is a credential, so it fails check 5.",
     "INTERPRETATION — /api/session requires an Origin, where /ws does not. The spec says the ticket endpoint must be gated 'at least as strongly as /ws: exact loopback Origin match'. On /ws, Origin is conditional ('if present'); 'at least as strongly' plus 'exact match' reads as mandatory at /api/session, which is also the only reading that makes the endpoint a real credential boundary for a browser. `gate_check_2_admits_an_absent_origin` pins the /ws side so the two are not conflated — over-applying absence-is-refusal to Origin would lock out every native client.",
     "ORDERING DISCLOSURE, deliberately pinned. Check 4 running before check 5 means an unauthenticated loopback caller learns the daemon's storage generation from a 426 body. That is what the spec's fixed order requires, so `gate_order_storage_precedes_credential` asserts it rather than quietly asserting the safer order. If that disclosure is unintended, the fix is to reorder the spec, and this fixture is the thing that will fail when it is reordered.",

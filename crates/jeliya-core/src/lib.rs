@@ -2,11 +2,9 @@
 //! `iroh_rooms` SDK (stable tier for authoring/validation, experimental tier
 //! for the online runtime), consumed by the `jeliyad` daemon.
 //!
-//! Modules:
-//! * [`engine`] — the transport-free engine facade: protocol dispatch,
-//!   request/response envelope, and push fan-out per `docs/PROTOCOL.md`,
-//!   shared by every transport (the `jeliyad` WebSocket daemon, the mobile
-//!   FFI shim).
+//! Public modules:
+//! * [`engine`] — the transport-free protocol-v2 facade: typed calls, typed
+//!   replies, and typed push fan-out. Hosts own framing and serialization.
 //! * [`fleet`] — pure agent-liveness derivation (the `agents.fleet` /
 //!   `agent.history` decision table per `docs/agent-orchestration.md` §1.2).
 //! * [`identity`] — create/load the device identity under `--data-dir`
@@ -15,20 +13,21 @@
 //!   overrides. Note: the wire protocol *does* carry a room name
 //!   (`room.created.room_name`), so the local name is an index/override, not
 //!   the source of truth.
-//! * [`materializer`] — pure `StoredEvent -> TimelineEvent` JSON view-models
-//!   per `docs/PROTOCOL.md`.
-//! * [`supervisor`] — `RoomSupervisor`: one experimental `Node` per open room
-//!   (spawned the way the reference CLI spawns its room session), plus the
-//!   offline flows (create/invite/join/reads) mirrored from the CLI.
+//!
+//! The runtime supervisor and the retired v1 JSON materializer are deliberately
+//! private. Protocol callers enter through [`Engine`] and receive
+//! `jeliya-api` values; JSON exists only in host codecs and in the explicitly
+//! out-of-scope daemon-local persistence modules (`identity` and `localstate`).
 
 pub mod engine;
 pub mod error;
 pub mod fleet;
 pub mod identity;
 pub mod localstate;
-pub mod materializer;
-pub mod projection;
-pub mod supervisor;
+#[cfg(test)]
+mod materializer;
+mod projection;
+mod supervisor;
 pub mod typed;
 
 pub use engine::{Engine, EngineConfig, PROTOCOL_VERSION};

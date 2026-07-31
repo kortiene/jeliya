@@ -15,11 +15,11 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.91"
 
 [workspace.dependencies]
-# Pinned to the first upstream main commit carrying the provisional-peer gate
-# and store-insert recovery fixes, including the connection-generation follow-ups.
-# This revision is deliberately untagged: rc.3 predates the fixes, while later
-# main adds CLI-only code Jeliya does not consume. Local working trees may drift.
-iroh-rooms = { git = "https://github.com/kortiene/iroh-room", rev = "a5d98b70d717f35d3ce60953a88e12e646f2e871", features = ["experimental"] }
+# Pinned to the upstream terminal-removal delivery fix, which includes the
+# provisional-peer gate, store-insert recovery, and connection-generation
+# hardening required by Jeliya's live lifecycle tests. This revision is
+# deliberately untagged until the upstream release containing those fixes.
+iroh-rooms = { git = "https://github.com/kortiene/iroh-room", rev = "52a4c89e900c2b065f7112638acedeccab83952f", features = ["experimental"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
