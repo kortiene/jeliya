@@ -715,7 +715,16 @@ async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<
     let _ = std::fs::remove_file(&stage_path);
     match result {
         Ok(value) => json_ok(value),
-        Err(err) => json_error(StatusCode::BAD_REQUEST, &err),
+        // The typed refusal is already the record's error object; it is served
+        // verbatim rather than flattened into a prose HTTP error, so the
+        // legacy staging edge answers the same taxonomy the WS surface does.
+        Err(err) => match serde_json::to_value(&err) {
+            Ok(body) => json_response(StatusCode::BAD_REQUEST, serde_json::json!({"error": body})),
+            Err(_) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &CoreError::internal("could not encode the typed refusal"),
+            ),
+        },
     }
 }
 

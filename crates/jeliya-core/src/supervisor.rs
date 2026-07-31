@@ -332,6 +332,10 @@ fn collect_committed(
     seen: &mut BTreeSet<EventId>,
     next_push_rank: &mut u64,
 ) -> Vec<CommittedEvent> {
+    // The pushed event's `author.standing` is the same derivation `room.members`
+    // and `room.timeline` serve, so it is folded from the same tail rather than
+    // assumed active. One pre-pass over rows already in hand.
+    let departures = crate::projection::Departures::from_rows(tail.iter());
     let mut out = Vec::new();
     let mut rank = 0u64;
     for se in tail {
@@ -343,7 +347,7 @@ fn collect_committed(
         if !seen.insert(se.event_id) {
             continue; // already pushed by an earlier batch or reconcile
         }
-        let event = crate::projection::materialize(se, 0, snapshot)
+        let event = crate::projection::materialize(se, 0, snapshot, &departures)
             .expect("is_committed implies materializable");
         if this_rank >= *next_push_rank {
             // In-order append at or past the high-water mark.
@@ -1198,9 +1202,15 @@ impl RoomSupervisor {
             let self_member = snapshot.member(&self_key);
             let role = snapshot.role(&self_key).map(role_label);
             let store = self.open_store()?;
-            let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
-            let status = self_member
-                .map(|member| status_label(member.status, &self_key, &removed_ids, &left_ids));
+            let departures = departure_sets(&store, &room_id)?;
+            let status = self_member.map(|member| {
+                status_label(
+                    member.status,
+                    &self_key,
+                    &departures.removed,
+                    &departures.left,
+                )
+            });
             // Recency projection (docs/room-attention.md decision 2): the
             // `created_at` the newest signed event's author actually signed —
             // never the wall clock, never render time. One bounded store read
@@ -1691,14 +1701,19 @@ impl RoomSupervisor {
         let room_id = parse_room_id(room_id_str)?;
         let snapshot = self.readable_snapshot(&room_id).await?;
         let store = self.open_store()?;
-        let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
+        let departures = departure_sets(&store, &room_id)?;
         Ok(snapshot
             .members()
             .map(|m| {
                 json!({
                     "identity_id": m.identity.to_string(),
                     "role": role_label(m.role),
-                    "status": status_label(m.status, &m.identity, &removed_ids, &left_ids),
+                    "status": status_label(
+                        m.status,
+                        &m.identity,
+                        &departures.removed,
+                        &departures.left,
+                    ),
                 })
             })
             .collect())
@@ -1711,12 +1726,45 @@ impl RoomSupervisor {
     /// `invite.create`: mint a key-bound invite ticket (owner only). When the
     /// room is open the `member.invited` publishes through the live node (so
     /// it also fans out); otherwise it persists directly, like the CLI.
+    /// [`Self::create_invite_at`] with a **relative** expiry spec
+    /// (`<int>{s|m|h|d}`), resolved against this call's clock.
+    ///
+    /// Test-only: protocol v2's `invite.mint` carries an absolute `<ts>`, so
+    /// the daemon path takes [`Self::create_invite_at`]. The relative form
+    /// survives because it is how the lifecycle tests express "an hour from
+    /// now" without pinning a clock.
+    #[cfg(test)]
     pub(crate) async fn create_invite(
         &self,
         room_id_str: &str,
         invitee_hex: &str,
         role: &str,
         expiry: Option<&str>,
+    ) -> CoreResult<String> {
+        let absolute = match expiry {
+            Some(spec) => Some(parse_expiry(spec, now_ms())?),
+            None => None,
+        };
+        self.create_invite_at(room_id_str, invitee_hex, role, absolute)
+            .await
+    }
+
+    /// Mint a key-bound invite ticket with an **absolute** expiry in ms since
+    /// the epoch, which is what protocol v2's `invite.mint` carries.
+    ///
+    /// The absolute form exists so the expiry the caller asked for is the
+    /// expiry the capability is signed with, exactly. Converting to a relative
+    /// spec and re-resolving it here against a later clock shifted the signed
+    /// instant off the requested one, so `invite.mint`'s reply, the
+    /// `invite.list` row, and the capability itself could all disagree — and a
+    /// faithful `op_id` retry that resent the reply's value became an
+    /// `op_id_conflict`.
+    pub(crate) async fn create_invite_at(
+        &self,
+        room_id_str: &str,
+        invitee_hex: &str,
+        role: &str,
+        expires_at_ms: Option<u64>,
     ) -> CoreResult<String> {
         let room_id = parse_room_id(room_id_str)?;
         if role != "member" && role != "agent" {
@@ -1740,9 +1788,13 @@ impl RoomSupervisor {
         getrandom::fill(secret_bytes.as_mut_slice())
             .map_err(|e| internal("OS CSPRNG unavailable", e))?;
         let cap_hash = capability_hash(&room_id, &invite_id, &secret_bytes);
-        let expires_at = expiry
-            .map(|spec| parse_expiry(spec, created_at))
-            .transpose()?;
+        // The absolute instant the caller named, signed verbatim.
+        let expires_at = expires_at_ms;
+        if expires_at.is_some_and(|at| at <= created_at) {
+            return Err(CoreError::invalid(
+                "expiry must be in the future at the moment the capability is signed",
+            ));
+        }
 
         let is_open = self.is_open(&room_id);
         // The whole store-backed authoring path lives in one sync scope so no
@@ -2472,14 +2524,25 @@ impl RoomSupervisor {
                     break;
                 }
                 O::HashMismatch => {
-                    return Err(CoreError::new(
+                    // The upstream mismatch arm still hands back the bytes it
+                    // rejected, so the digest they actually hash to is
+                    // computable here rather than unknowable. It travels as
+                    // the error's machine-readable detail so `file.fetch` can
+                    // serve `digest_mismatch { expected, observed }` with both
+                    // halves real, instead of an empty `observed`.
+                    let observed = data.map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+                    let error = CoreError::new(
                         ErrorKind::HashMismatch,
                         format!(
                             "integrity check FAILED: fetched bytes do not hash to the declared \
                              {}; refusing to save",
                             shared.blob_hash
                         ),
-                    ));
+                    );
+                    return Err(match observed {
+                        Some(observed) => error.with_detail(observed),
+                        None => error,
+                    });
                 }
                 O::DeniedAtConnect => {
                     denied_at_connect += 1;
@@ -3683,32 +3746,11 @@ pub(crate) fn genesis_name(store: &EventStore, room_id: &RoomId) -> Option<Strin
 pub(crate) fn departure_sets(
     store: &EventStore,
     room_id: &RoomId,
-) -> CoreResult<(BTreeSet<IdentityKey>, BTreeSet<IdentityKey>)> {
-    let mut removed_ids = BTreeSet::new();
-    let mut left_ids = BTreeSet::new();
-    for stored in store
+) -> CoreResult<crate::projection::Departures> {
+    let rows = store
         .room_tail(room_id, u32::MAX)
-        .map_err(|e| internal("could not read member departure history", e))?
-    {
-        if let Ok(event) = SignedEvent::decode(&stored.wire.signed) {
-            match event.content {
-                Content::MemberJoined(_) => {
-                    removed_ids.remove(&event.sender_id);
-                    left_ids.remove(&event.sender_id);
-                }
-                Content::MemberRemoved(c) => {
-                    left_ids.remove(&c.member_id);
-                    removed_ids.insert(c.member_id);
-                }
-                Content::MemberLeft(c) => {
-                    removed_ids.remove(&c.member_id);
-                    left_ids.insert(c.member_id);
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok((removed_ids, left_ids))
+        .map_err(|e| internal("could not read member departure history", e))?;
+    Ok(crate::projection::Departures::from_rows(rows.iter()))
 }
 
 /// The removal among `subject`'s current causal heads.
@@ -3912,6 +3954,7 @@ fn open_pipe(
 
 /// Parse an expiry spec (`<int>{s|m|h|d}`, bare integer = seconds) into an
 /// absolute ms timestamp anchored at `now`.
+#[cfg(test)]
 fn parse_expiry(spec: &str, now: u64) -> CoreResult<u64> {
     let spec = spec.trim();
     if spec.is_empty() {

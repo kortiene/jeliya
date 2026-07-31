@@ -240,12 +240,14 @@ impl Engine {
     }
 
     /// Complete a host-staged typed file share. Hosts supply a managed path;
-    /// the protocol declaration and result remain `jeliya-api` values.
+    /// the protocol declaration and result remain `jeliya-api` values, and so
+    /// does the refusal — a size disagreement is `declared_size_mismatch`
+    /// carrying both counts, never a prose error the host must re-classify.
     pub async fn share_staged_file(
         &self,
         req: &FileShare,
         staged_path: &Path,
-    ) -> CoreResult<FileShareOut> {
+    ) -> Result<FileShareOut, ApiError> {
         typed::TypedSupervisor::new(&self.supervisor)
             .share_staged_file(req, staged_path)
             .await
@@ -331,11 +333,23 @@ impl Engine {
         let op = call.path();
         let dedup_key = if is_dedup_op(op) { op_id } else { None };
         if let Some(op_id) = dedup_key {
-            // Validation-order step 2 (subject) runs BEFORE the ledger is
-            // consulted or populated: a deduplicated call on a subject-less
-            // daemon must not bind its `op_id` to `subject_absent`, or a
-            // retry after `subject.ensure` would replay a stale cached error
-            // instead of reaching the dedup stage as a first eligible call.
+            // Validation-order steps 1 and 2 run BEFORE the ledger is consulted
+            // or populated, because the record puts dedup at step 3.
+            //
+            // Both matter for the same reason: a refusal from an earlier stage
+            // must not be recorded against the `op_id`, or a client that fixes
+            // the request and retries with the same key gets `op_id_conflict`
+            // instead of its effect. `member.remove` is the reachable case —
+            // it deduplicates and carries a step-1 subject-id format check —
+            // and a subject-less daemon is the case for step 2, where a retry
+            // after `subject.ensure` must reach the ledger as a first eligible
+            // call rather than replay a cached `subject_absent`.
+            if let Err(err) = typed::validate_structure(&call) {
+                return Executed {
+                    reply: Err(err),
+                    stop_after_reply: false,
+                };
+            }
             let typed = typed::TypedSupervisor::new(&self.supervisor);
             match typed.subject_present() {
                 Ok(true) => {}
@@ -703,14 +717,19 @@ fn emit_committed(
 }
 
 /// The per-device link rows for one room, for the peer-change drain.
+///
+/// It goes through [`typed::dispatch`] rather than the projection body, so the
+/// push path is gated by the same validation pipeline a client read is: a room
+/// whose membership has ended stops producing peer frames at exactly the point
+/// it stops answering `room.peers`, rather than at whatever the push loop
+/// happens to check.
 async fn typed_peer_rows(engine: &Engine, room_id: &iroh_rooms::room::RoomId) -> Vec<PeerRow> {
-    let typed = typed::TypedSupervisor::new(&engine.supervisor);
-    let req = jeliya_api::RoomPeers {
+    let call = TypedCall::RoomPeers(jeliya_api::RoomPeers {
         room_id: RoomId::new(room_id.to_string()),
-    };
-    match typed.room_peers(&req).await {
-        Ok(out) => out.peers,
-        Err(_) => Vec::new(),
+    });
+    match typed::dispatch(&engine.supervisor, call).await {
+        Ok(TypedReply::RoomPeers(out)) => out.peers,
+        _ => Vec::new(),
     }
 }
 

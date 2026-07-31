@@ -97,6 +97,16 @@ pub struct CoreError {
     pub message: String,
     /// Next-action line (IR-0303 convention) or `None`.
     pub hint: Option<String>,
+    /// One **machine-readable** value the typed v2 layer lifts into a typed
+    /// error field, distinct from [`Self::message`], which is prose the wire
+    /// never carries.
+    ///
+    /// It exists because some v2 error codes fix a typed field the runtime is
+    /// the only thing that knows: today the sole use is the **observed**
+    /// digest on a `hash_mismatch`, which `digest_mismatch { expected,
+    /// observed }` requires and which would otherwise be served as an empty
+    /// string — a schema satisfied and a fact invented.
+    pub detail: Option<String>,
 }
 
 impl CoreError {
@@ -106,6 +116,7 @@ impl CoreError {
             kind,
             message: message.into(),
             hint: kind.default_hint().map(str::to_owned),
+            detail: None,
         }
     }
 
@@ -113,6 +124,14 @@ impl CoreError {
     #[must_use]
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    /// Attach the machine-readable value the typed layer lifts into a typed
+    /// error field. See [`CoreError::detail`].
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 
