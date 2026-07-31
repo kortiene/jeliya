@@ -1314,14 +1314,6 @@ impl<'a> TypedSupervisor<'a> {
             if RoomSupervisor::require_local_room_access(&snapshot, &self_id).is_err() {
                 continue;
             }
-            let agent_ids: BTreeSet<iroh_rooms::identity::IdentityKey> = snapshot
-                .members()
-                .filter(|m| m.role == iroh_rooms::room::Role::Agent)
-                .map(|m| m.identity)
-                .collect();
-            if agent_ids.is_empty() {
-                continue;
-            }
             let rows = {
                 let store = self
                     .sup
@@ -1331,6 +1323,35 @@ impl<'a> TypedSupervisor<'a> {
                     .room_tail(&room_id, u32::MAX)
                     .map_err(|_| ApiError::FleetProjectionUnavailable)?
             };
+            // **Agent-ness is derived, not declared.** The record: "An agent is
+            // a member that has authored at least one `status.post` event.
+            // Agent-ness is derived here, not declared: it is a
+            // classification, not a permission, so it is not a `role` and
+            // appears in no membership row."
+            //
+            // An earlier revision read the upstream fold's `Role::Agent`
+            // instead, which is a membership row and gets the answer wrong in
+            // both directions: a member that posts statuses never appeared in
+            // the fleet, and one that holds the upstream role but has never
+            // posted appeared with `latest_status: absent` — an agent the
+            // operator has no evidence for.
+            //
+            // Membership is still required: the subject must have joined, which
+            // is the same device-binding test the roster uses.
+            let agent_ids: BTreeSet<iroh_rooms::identity::IdentityKey> = rows
+                .iter()
+                .filter_map(|se| SignedEvent::decode(&se.wire.signed).ok())
+                .filter(|ev| matches!(ev.content, Content::AgentStatus(_)))
+                .map(|ev| ev.sender_id)
+                .filter(|id| {
+                    snapshot
+                        .member(id)
+                        .is_some_and(|member| member.device.is_some())
+                })
+                .collect();
+            if agent_ids.is_empty() {
+                continue;
+            }
             let mut signals: AgentSignalsMap = BTreeMap::new();
             for se in &rows {
                 let Ok(ev) = SignedEvent::decode(&se.wire.signed) else {
@@ -4893,6 +4914,71 @@ mod tests {
             panic!("wrong reply");
         };
         assert!(out.stopping);
+    }
+
+    /// **Agent-ness is derived from posting, not from a membership row.** The
+    /// record: "An agent is a member that has authored at least one
+    /// `status.post` event ... it is a classification, not a permission, so it
+    /// is not a `role` and appears in no membership row."
+    ///
+    /// The room's authority holds the upstream `Admin` role, never `Agent`, so
+    /// under the old role-based derivation it could never appear in the fleet
+    /// no matter how many statuses it posted. It posts one here and must.
+    #[tokio::test]
+    async fn fleet_derives_agents_from_posted_status_not_from_a_role() {
+        let dir = tempdir().unwrap();
+        let profile = crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id = sup.create_room("Fleet Derivation").unwrap();
+        sup.activate_room(&room_id, &[]).await.unwrap();
+        let api_room = RoomId::new(&room_id);
+
+        // Before posting: a member, not an agent.
+        let TypedReply::FleetList(before) = dispatch(&sup, TypedCall::FleetList(FleetList {}))
+            .await
+            .expect("fleet.list")
+        else {
+            panic!("wrong reply");
+        };
+        assert!(
+            before.agents.is_empty(),
+            "a member that has posted nothing is not an agent: {:?}",
+            before.agents
+        );
+
+        dispatch(
+            &sup,
+            TypedCall::StatusPost(StatusPost {
+                room_id: api_room,
+                label: StatusLabel::Working,
+                progress: Progress::Reported { percent: 40 },
+            }),
+        )
+        .await
+        .expect("status.post");
+
+        let TypedReply::FleetList(after) = dispatch(&sup, TypedCall::FleetList(FleetList {}))
+            .await
+            .expect("fleet.list")
+        else {
+            panic!("wrong reply");
+        };
+        let row = after
+            .agents
+            .iter()
+            .find(|a| a.subject_id.as_str() == profile.identity_id)
+            .expect("the poster is now an agent, whatever its role");
+        assert!(
+            matches!(
+                row.latest_status,
+                LatestStatus::Present {
+                    label: StatusLabel::Working,
+                    ..
+                }
+            ),
+            "the fleet row carries the status that made it an agent: {:?}",
+            row.latest_status
+        );
     }
 
     /// A `"host:port"` string becomes a `target` by parsing, never by

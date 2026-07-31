@@ -1262,9 +1262,22 @@ async fn handle_stream_subscribe(
     .await
 }
 
+/// Validation-order step 2 for the operations this host resolves itself.
+///
+/// The engine applies it to everything it dispatches; the connection-scoped
+/// `stream.*` operations that never reach it need it applied here, or they
+/// answer their own semantic code on a daemon that has no subject at all.
+fn subject_precondition(state: &AppState) -> Result<(), jeliya_api::ApiError> {
+    match state.engine.subject_state()? {
+        jeliya_api::SubjectState::Present { .. } => Ok(()),
+        jeliya_api::SubjectState::Absent => Err(jeliya_api::ApiError::SubjectAbsent),
+    }
+}
+
 /// `stream.unsubscribe` — remove the room from this connection's set.
 async fn handle_stream_unsubscribe(
     out_tx: &tokio::sync::mpsc::Sender<Message>,
+    state: &AppState,
     request: &jeliya_codec::Request,
     subscriptions: &std::sync::Arc<
         tokio::sync::Mutex<std::collections::HashMap<String, SubscriptionState>>,
@@ -1279,6 +1292,20 @@ async fn handle_stream_unsubscribe(
         Some(r) => r.clone(),
         None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
     };
+    // Validation-order step 2. This operation is resolved from the
+    // connection's own subscription map rather than through the engine, so it
+    // is the one place the subject precondition has to be applied by hand — and
+    // without it a subject-less caller got `subscription_unknown` where every
+    // other operation answers `subject_absent`.
+    //
+    // Steps 4 and 5 deliberately do NOT run: a subscription is connection state,
+    // so a room this connection never subscribed to is `subscription_unknown`
+    // whether or not it exists, which is what its sibling cases settle. That
+    // answer is identical for an unknown room, a real one, and a room the
+    // caller is not in, so it is not an oracle.
+    if let Err(err) = subject_precondition(state) {
+        return send_api_err(out_tx, id, err).await;
+    }
     let mut subs = subscriptions.lock().await;
     if subs.remove(&req.room_id.to_string()).is_none() {
         return send_api_err(
@@ -1529,7 +1556,7 @@ async fn dispatch_inbound(
             return handle_stream_subscribe(out_tx, state, &request, subscriptions).await;
         }
         "stream.unsubscribe" => {
-            return handle_stream_unsubscribe(out_tx, &request, subscriptions).await;
+            return handle_stream_unsubscribe(out_tx, state, &request, subscriptions).await;
         }
         "stream.resync" => {
             return handle_stream_resync(out_tx, state, &request).await;
