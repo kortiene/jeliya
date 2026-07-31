@@ -300,7 +300,12 @@ export class Runner {
       cs.second && /second|outsider|principal_b|peer|remote/i.test(label)
         ? cs.second
         : cs.primary;
-    const s = new Session(label);
+    const clientId = vars.__case?.clientIds?.[label] || `cf-client-${opIdCounter++}`;
+    if (vars.__case) {
+      vars.__case.clientIds ||= Object.create(null);
+      vars.__case.clientIds[label] = clientId;
+    }
+    const s = new Session(label, clientId);
     await s.connect(
       daemon,
       { v: 2, sg: daemon.storageGeneration, token: daemon.token },
