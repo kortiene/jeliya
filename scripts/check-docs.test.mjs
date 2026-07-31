@@ -393,6 +393,7 @@ test('shortcut references navigate while images never satisfy reachability', () 
   for (const body of [
     '![Guide](guide.md)',
     '![Guide][guide]\n\n[guide]: guide.md',
+    '\\[Guide]\n\n[Guide]: guide.md',
     '[text] ordinary prose ](guide.md)',
   ]) {
     const imageRoot = repo({
@@ -403,6 +404,17 @@ test('shortcut references navigate while images never satisfy reachability', () 
       validateDocumentation({ repoRoot: imageRoot }).map((entry) => entry.code),
       ['document-orphan'],
     );
+  }
+
+  for (const body of [
+    '[Nested [label]](guide.md)',
+    '\\![Guide](guide.md)',
+  ]) {
+    const linkedRoot = repo({
+      'docs/index.md': `# Documentation\n\n${body}\n`,
+      'docs/guide.md': concept({ title: 'Guide' }),
+    });
+    assert.deepEqual(validateDocumentation({ repoRoot: linkedRoot }), []);
   }
 });
 
@@ -485,6 +497,15 @@ test('broken files, fragments, relative-link policy, and references are reported
     'docs/encoded#name.md': concept({ title: 'Encoded' }),
   });
   assert.deepEqual(validateDocumentation({ repoRoot: encodedDelimiterRoot }), []);
+
+  const malformedQueryRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Guide](guide.md?q=%ZZ)\n',
+    'docs/guide.md': concept({ title: 'Guide' }),
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: malformedQueryRoot }).map((entry) => entry.code),
+    ['document-orphan', 'link-format'],
+  );
 });
 
 test('local links cannot traverse a symlink outside the repository', () => {

@@ -356,10 +356,29 @@ function referenceDefinitions(source) {
   return definitions;
 }
 
+function isEscaped(source, index) {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+
+function isImageMarker(source, openBracket) {
+  const marker = openBracket - 1;
+  return marker >= 0 && source[marker] === '!' && !isEscaped(source, marker);
+}
+
 function openingBracket(source, closeBracket) {
+  let nested = 0;
   for (let index = closeBracket - 1; index >= 0 && source[index] !== '\n'; index -= 1) {
-    if (source[index] === ']' && source[index - 1] !== '\\') return -1;
-    if (source[index] === '[' && source[index - 1] !== '\\') return index;
+    if (isEscaped(source, index)) continue;
+    if (source[index] === ']') {
+      nested += 1;
+    } else if (source[index] === '[') {
+      if (nested === 0) return index;
+      nested -= 1;
+    }
   }
   return -1;
 }
@@ -433,7 +452,7 @@ function inlineLinks(source, bodyStartLine) {
       links.push({
         destination,
         line: lineAt(source, index, bodyStartLine),
-        navigation: source[open - 1] !== '!',
+        navigation: !isImageMarker(source, open),
       });
     }
     index = cursor;
@@ -462,6 +481,8 @@ function referenceLinks(source, bodyStartLine, definitions) {
   const occupied = [];
   const pattern = /!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g;
   for (const match of source.matchAll(pattern)) {
+    const open = match.index + (match[0].startsWith('!') ? 1 : 0);
+    if (isEscaped(source, open)) continue;
     if (
       /^ {0,3}\[[^\]]+\]:/.test(
         source.slice(source.lastIndexOf('\n', match.index) + 1),
@@ -479,12 +500,14 @@ function referenceLinks(source, bodyStartLine, definitions) {
     links.push({
       destination: definitions.get(label),
       line,
-      navigation: !match[0].startsWith('!'),
+      navigation: !isImageMarker(source, open),
     });
   }
 
   const shortcutPattern = /!?\[([^\]\n]+)\](?![(:\[])/g;
   for (const match of source.matchAll(shortcutPattern)) {
+    const open = match.index + (match[0].startsWith('!') ? 1 : 0);
+    if (isEscaped(source, open)) continue;
     if (occupied.some(([start, end]) => match.index >= start && match.index < end)) continue;
     if (
       /^ {0,3}\[[^\]]+\]:/.test(
@@ -498,7 +521,7 @@ function referenceLinks(source, bodyStartLine, definitions) {
     links.push({
       destination: definitions.get(label),
       line: lineAt(source, match.index, bodyStartLine),
-      navigation: !match[0].startsWith('!'),
+      navigation: !isImageMarker(source, open),
     });
   }
   return { links, missing };
@@ -773,10 +796,12 @@ function resolveLocalLink(sourcePath, destination) {
   const rawFragment = hash === -1 ? '' : unescaped.slice(hash + 1);
   const query = beforeHash.indexOf('?');
   const rawPath = query === -1 ? beforeHash : beforeHash.slice(0, query);
+  const rawQuery = query === -1 ? '' : beforeHash.slice(query + 1);
   let pathPart;
   let fragment;
   try {
     pathPart = decodeURIComponent(rawPath);
+    decodeURIComponent(rawQuery);
     fragment = decodeURIComponent(rawFragment);
   } catch {
     return { error: 'link contains invalid percent encoding' };
