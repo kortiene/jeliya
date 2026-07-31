@@ -96,9 +96,10 @@
             }
           },
           "save": {
-            "out1": "$whole_out",
+            "out1": "out",
             "inv1": "out.invite_id",
-            "cap1": "out.capability"
+            "cap1": "out.capability",
+            "exp1": "out.expires_at"
           },
           "expect": {
             "ok": true,
@@ -117,10 +118,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "expires_at": {
-              "$expires_in_ms": 3600000
-            }
+            "expires_at": "$exp1"
           },
+          "note": "a faithful replay reuses the ORIGINAL absolute expires_at: $expires_in_ms is evaluated per call, so recomputing it here could straddle a second boundary and make the dedup ledger see a divergent body (op_id_conflict) instead of returning the original capability",
           "on": "subject:authority",
           "op_id": "mint-replay-1"
         },
@@ -144,27 +144,24 @@
           "on": "subject:authority"
         },
         {
-          "call": "invite.list",
-          "in": {
-            "room_id": "$rid",
-            "cursor": {
-              "state": "start"
+          "assert": [
+            {
+              "path": "out.capability",
+              "op": "eq",
+              "value": "$cap1"
             },
-            "direction": "forward",
-            "limit": 50
-          },
-          "expect": {
-            "ok": true,
-            "out": {
-              "invites": {
-                "len": 1,
-                "contains_one": {
-                  "invite_id": "$inv1"
-                }
-              }
+            {
+              "path": "out.invite_id",
+              "op": "eq",
+              "value": "$inv1"
+            },
+            {
+              "path": "out.expires_at",
+              "op": "eq",
+              "value": "$exp1"
             }
-          },
-          "note": "exactly one grant exists, not two",
+          ],
+          "note": "the replay returned the original grant byte-for-byte and therefore performed no second mint",
           "on": "subject:authority"
         }
       ]
@@ -274,8 +271,9 @@
             }
           },
           "save": {
-            "out1": "$whole_out",
-            "inv1": "out.invite_id"
+            "out1": "out",
+            "inv1": "out.invite_id",
+            "exp1": "out.expires_at"
           },
           "on": "subject:authority",
           "op_id": "mint-reconnect-1"
@@ -301,10 +299,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "expires_at": {
-              "$expires_in_ms": 3600000
-            }
+            "expires_at": "$exp1"
           },
+          "note": "the reconnect retry reuses the ORIGINAL absolute expires_at so the replayed body is byte-identical; recomputing $expires_in_ms could cross a second boundary and be seen as a divergent payload (op_id_conflict)",
           "on": "subject:authority",
           "op_id": "mint-reconnect-1"
         },
@@ -328,26 +325,19 @@
           "on": "subject:authority"
         },
         {
-          "call": "invite.list",
-          "in": {
-            "room_id": "$rid",
-            "cursor": {
-              "state": "start"
+          "assert": [
+            {
+              "path": "out.invite_id",
+              "op": "eq",
+              "value": "$inv1"
             },
-            "direction": "forward",
-            "limit": 50
-          },
-          "expect": {
-            "ok": true,
-            "out": {
-              "invites": {
-                "len": 1,
-                "contains_one": {
-                  "invite_id": "$inv1"
-                }
-              }
+            {
+              "path": "out.expires_at",
+              "op": "eq",
+              "value": "$exp1"
             }
-          },
+          ],
+          "note": "the reconnect replay returned the original grant and did not mint a replacement",
           "on": "subject:authority"
         }
       ]
@@ -719,11 +709,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "expires_at": {
-              "$expires_in_ms": 86400000
-            }
+            "expires_at": null
           },
-          "note": "a null ttl must not be read as 'never expires'; unbounded-by-null is exactly the v1 shape v2 sheds",
+          "note": "a null expiry must not be read as 'never expires'; unbounded-by-null is exactly the v1 shape v2 sheds. The value stays JSON null so this keeps testing null rejection, not a valid future instant",
           "on": "subject:authority",
           "expect": {
             "ok": false,
@@ -743,23 +731,18 @@
           "on": "subject:authority"
         },
         {
-          "call": "invite.list",
-          "in": {
-            "room_id": "$rid",
-            "cursor": {
-              "state": "start"
+          "assert": [
+            {
+              "path": "err.code",
+              "op": "eq",
+              "value": "invalid_argument"
             },
-            "direction": "forward",
-            "limit": 50
-          },
-          "expect": {
-            "ok": true,
-            "out": {
-              "invites": {
-                "len": 0
-              }
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
             }
-          },
+          ],
+          "note": "the malformed null expiry was rejected before any invite could be authored",
           "on": "subject:authority"
         }
       ]
@@ -3498,7 +3481,8 @@
           "save": {
             "inv1": "out.invite_id",
             "cap1": "out.capability",
-            "first_mint": "out"
+            "first_mint": "out",
+            "exp1": "out.expires_at"
           },
           "expect": {
             "ok": true,
@@ -3628,11 +3612,9 @@
             "room_id": "$rid",
             "subject_id": "$sb",
             "role": "member",
-            "expires_at": {
-              "$expires_in_ms": 3600000
-            }
+            "expires_at": "$exp1"
           },
-          "note": "the ORIGINAL op_id, replayed after the invitee joined: the ledger answers first",
+          "note": "the ORIGINAL op_id, replayed after the invitee joined: the ledger answers first. The replay reuses the ORIGINAL absolute expires_at so the body is byte-identical — recomputing $expires_in_ms could straddle a second boundary and turn the intended dedup hit into op_id_conflict",
           "on": "subject:authority",
           "op_id": "already-member-mint-1"
         },
