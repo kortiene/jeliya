@@ -212,6 +212,14 @@ function computeNode(kind, operand, vars) {
       const n = num(resolveValue(operand, vars));
       return 'x'.repeat(Math.max(0, n));
     }
+    case '$expires_in_ms': {
+      // An absolute `<ts>` (RFC 3339, `Z` offset) N ms from now — the value
+      // `expires_at` takes where a v1 fixture used relative `ttl_ms`. Retain
+      // fractional seconds so the requested duration is neither shortened nor
+      // lengthened by rounding; the daemon accepts the RFC 3339 fractional form.
+      const ms = num(resolveValue(operand, vars));
+      return new Date(Date.now() + ms).toISOString();
+    }
     case '$unknown': {
       // A well-formed value of the named domain that names nothing real. The
       // operand is a type tag; produce a syntactically valid, definitely
@@ -225,7 +233,7 @@ function computeNode(kind, operand, vars) {
 }
 
 function num(v) {
-  if (typeof v === 'number') return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
