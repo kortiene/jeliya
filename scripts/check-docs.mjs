@@ -11,6 +11,7 @@
 
 import { existsSync, lstatSync, realpathSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -75,8 +76,38 @@ function toRepoPath(repoRoot, path) {
   return relative(repoRoot, path).split(sep).join('/');
 }
 
+function isWithin(root, path) {
+  const rel = relative(root, path);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function hasSymlinkComponent(root, path) {
+  const rel = relative(root, path);
+  if (!isWithin(root, path)) return false;
+  let current = root;
+  for (const part of rel.split(sep).filter(Boolean)) {
+    current = resolve(current, part);
+    if (lstatSync(current).isSymbolicLink()) return true;
+  }
+  return false;
+}
+
 function issue(file, line, code, message) {
   return { file, line, code, message };
+}
+
+function readUtf8Document(path, file, findings) {
+  const bytes = readFileSync(path);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    findings.push(
+      issue(file, 1, 'encoding-utf8', 'Markdown document must contain valid UTF-8'),
+    );
+    // Content has no reliable character boundaries, so do not manufacture
+    // secondary metadata, heading, or link findings from lossy replacement.
+    return null;
+  }
 }
 
 function scalarError(value) {
@@ -109,6 +140,7 @@ function parseScalar(raw) {
     throw new Error('invalid double-quoted string');
   }
   if (typeof parsed !== 'string') throw new Error('value must be a string');
+  if (!parsed.isWellFormed()) throw new Error('string must contain valid Unicode scalar values');
   return parsed;
 }
 
@@ -178,6 +210,7 @@ export function parseFrontmatter(source, file = '<document>') {
 
   const data = Object.create(null);
   const errors = [];
+  const seenKeys = new Set();
   for (let index = 1; index < close; index += 1) {
     const rawLine = lines[index];
     const trimmed = rawLine.trim();
@@ -203,12 +236,13 @@ export function parseFrontmatter(source, file = '<document>') {
       );
       continue;
     }
-    if (Object.hasOwn(data, key)) {
+    if (seenKeys.has(key)) {
       errors.push(
         issue(file, index + 1, 'frontmatter-duplicate', `duplicate key: ${key}`),
       );
       continue;
     }
+    seenKeys.add(key);
 
     if (rawValue.trim() === '') {
       errors.push(
@@ -237,14 +271,43 @@ export function parseFrontmatter(source, file = '<document>') {
   };
 }
 
-function markdownFiles(dir) {
+function markdownFiles(dir, repoRoot, findings) {
   const files = [];
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
     compareText(a.name, b.name),
   )) {
     const path = resolve(dir, entry.name);
-    if (entry.isDirectory()) files.push(...markdownFiles(path));
-    else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) files.push(path);
+    const file = toRepoPath(repoRoot, path);
+    const lowerName = entry.name.toLowerCase();
+    if ((lowerName === 'index.md' || lowerName === 'log.md') && entry.name !== lowerName) {
+      findings.push(
+        issue(
+          file,
+          1,
+          'reserved-name-case',
+          `reserved documentation filename must use exact lowercase spelling: ${lowerName}`,
+        ),
+      );
+    }
+    if (entry.isSymbolicLink()) {
+      findings.push(
+        issue(file, 1, 'docs-symlink', 'documentation entries must not be symbolic links'),
+      );
+    } else if (entry.isDirectory()) {
+      if (entry.name.toLowerCase().endsWith('.md')) {
+        findings.push(
+          issue(file, 1, 'docs-file-type', 'Markdown documents must be regular files'),
+        );
+      } else {
+        files.push(...markdownFiles(path, repoRoot, findings));
+      }
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      files.push(path);
+    } else if (!entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      findings.push(
+        issue(file, 1, 'docs-file-type', 'Markdown documents must be regular files'),
+      );
+    }
   }
   return files;
 }
@@ -282,28 +345,23 @@ function lineAt(source, index, bodyStartLine) {
   return line;
 }
 
-function referenceDefinitions(source, bodyStartLine) {
+function referenceDefinitions(source) {
   const definitions = new Map();
-  const links = [];
   const pattern = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))/gm;
   for (const match of source.matchAll(pattern)) {
     const label = match[1].trim().replace(/\s+/g, ' ').toLowerCase();
     const destination = match[2] ?? match[3];
-    definitions.set(label, destination);
-    links.push({
-      destination,
-      line: lineAt(source, match.index, bodyStartLine),
-      navigation: false,
-    });
+    if (!definitions.has(label)) definitions.set(label, destination);
   }
-  return { definitions, links };
+  return definitions;
 }
 
-function hasOpeningBracket(source, closeBracket) {
+function openingBracket(source, closeBracket) {
   for (let index = closeBracket - 1; index >= 0 && source[index] !== '\n'; index -= 1) {
-    if (source[index] === '[' && source[index - 1] !== '\\') return true;
+    if (source[index] === ']' && source[index - 1] !== '\\') return -1;
+    if (source[index] === '[' && source[index - 1] !== '\\') return index;
   }
-  return false;
+  return -1;
 }
 
 function destinationFromLinkContents(contents) {
@@ -331,11 +389,12 @@ function destinationFromLinkContents(contents) {
 function inlineLinks(source, bodyStartLine) {
   const links = [];
   for (let index = 0; index < source.length - 1; index += 1) {
+    const open = source[index] === ']' ? openingBracket(source, index) : -1;
     if (
       source[index] !== ']' ||
       source[index + 1] !== '(' ||
       source[index - 1] === '\\' ||
-      !hasOpeningBracket(source, index)
+      open === -1
     ) {
       continue;
     }
@@ -374,7 +433,7 @@ function inlineLinks(source, bodyStartLine) {
       links.push({
         destination,
         line: lineAt(source, index, bodyStartLine),
-        navigation: true,
+        navigation: source[open - 1] !== '!',
       });
     }
     index = cursor;
@@ -384,9 +443,12 @@ function inlineLinks(source, bodyStartLine) {
 
 function automaticLinks(source, bodyStartLine) {
   const links = [];
-  for (const match of source.matchAll(/<([A-Za-z][A-Za-z0-9+.-]*:[^<>\s]+)>/g)) {
+  const pattern = /<([A-Za-z][A-Za-z0-9+.-]*:[^<>\s]+|[^<>\s@]+@[^<>\s@]+)>/g;
+  for (const match of source.matchAll(pattern)) {
     links.push({
-      destination: match[1],
+      destination: match[1].includes('@') && !URI_SCHEME.test(match[1])
+        ? `mailto:${match[1]}`
+        : match[1],
       line: lineAt(source, match.index, bodyStartLine),
       navigation: false,
     });
@@ -397,6 +459,7 @@ function automaticLinks(source, bodyStartLine) {
 function referenceLinks(source, bodyStartLine, definitions) {
   const links = [];
   const missing = [];
+  const occupied = [];
   const pattern = /!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g;
   for (const match of source.matchAll(pattern)) {
     if (
@@ -408,22 +471,45 @@ function referenceLinks(source, bodyStartLine, definitions) {
     }
     const label = (match[2] || match[1]).trim().replace(/\s+/g, ' ').toLowerCase();
     const line = lineAt(source, match.index, bodyStartLine);
+    occupied.push([match.index, match.index + match[0].length]);
     if (!definitions.has(label)) {
       missing.push({ line, label });
       continue;
     }
-    links.push({ destination: definitions.get(label), line, navigation: true });
+    links.push({
+      destination: definitions.get(label),
+      line,
+      navigation: !match[0].startsWith('!'),
+    });
+  }
+
+  const shortcutPattern = /!?\[([^\]\n]+)\](?![(:\[])/g;
+  for (const match of source.matchAll(shortcutPattern)) {
+    if (occupied.some(([start, end]) => match.index >= start && match.index < end)) continue;
+    if (
+      /^ {0,3}\[[^\]]+\]:/.test(
+        source.slice(source.lastIndexOf('\n', match.index) + 1),
+      )
+    ) {
+      continue;
+    }
+    const label = match[1].trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!definitions.has(label)) continue;
+    links.push({
+      destination: definitions.get(label),
+      line: lineAt(source, match.index, bodyStartLine),
+      navigation: !match[0].startsWith('!'),
+    });
   }
   return { links, missing };
 }
 
 function markdownLinks(body, bodyStartLine) {
   const source = maskMarkdownCode(body);
-  const refs = referenceDefinitions(source, bodyStartLine);
-  const usages = referenceLinks(source, bodyStartLine, refs.definitions);
+  const definitions = referenceDefinitions(source);
+  const usages = referenceLinks(source, bodyStartLine, definitions);
   return {
     links: [
-      ...refs.links,
       ...inlineLinks(source, bodyStartLine),
       ...automaticLinks(source, bodyStartLine),
       ...usages.links,
@@ -504,6 +590,7 @@ function levelOneHeadings(frontmatter) {
 
 function validateMetadata(document, findings) {
   const { file, frontmatter, isIndex } = document;
+  if (frontmatter.errors.some((entry) => entry.code === 'frontmatter-unclosed')) return;
   const headings = levelOneHeadings(frontmatter);
   const firstBodyLine = frontmatter.body
     .split('\n')
@@ -666,7 +753,7 @@ function validateMetadata(document, findings) {
 function validateRawHtml(document, findings) {
   const source = maskMarkdownCode(document.frontmatter.body);
   const pattern =
-    /<(?:\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*?)?\/?|![^<>]*|\?[^<>]*\?)>/gi;
+    /<(?:\/?[A-Za-z][A-Za-z0-9-]*(?:\s(?:[^<>"']|"[^"]*"|'[^']*')*?)?\/?|![^<>]*|\?[^<>]*\?)>/gi;
   for (const match of source.matchAll(pattern)) {
     findings.push(
       issue(
@@ -680,26 +767,37 @@ function validateRawHtml(document, findings) {
 }
 
 function resolveLocalLink(sourcePath, destination) {
-  let decoded;
+  const unescaped = destination.replace(/\\([ ()])/g, '$1');
+  const hash = unescaped.indexOf('#');
+  const beforeHash = hash === -1 ? unescaped : unescaped.slice(0, hash);
+  const rawFragment = hash === -1 ? '' : unescaped.slice(hash + 1);
+  const query = beforeHash.indexOf('?');
+  const rawPath = query === -1 ? beforeHash : beforeHash.slice(0, query);
+  let pathPart;
+  let fragment;
   try {
-    decoded = decodeURIComponent(destination.replace(/\\([ ()])/g, '$1'));
+    pathPart = decodeURIComponent(rawPath);
+    fragment = decodeURIComponent(rawFragment);
   } catch {
     return { error: 'link contains invalid percent encoding' };
   }
-  if (decoded.includes('\\')) return { error: 'local links must use forward slashes' };
-  if (decoded.startsWith('/') || decoded.startsWith('//') || isAbsolute(decoded)) {
+  if (pathPart.includes('\\')) return { error: 'local links must use forward slashes' };
+  if (pathPart.startsWith('/') || pathPart.startsWith('//') || isAbsolute(pathPart)) {
     return { error: 'local links must be relative' };
   }
-  const hash = decoded.indexOf('#');
-  const beforeHash = hash === -1 ? decoded : decoded.slice(0, hash);
-  const fragment = hash === -1 ? '' : decoded.slice(hash + 1);
-  const query = beforeHash.indexOf('?');
-  const pathPart = query === -1 ? beforeHash : beforeHash.slice(0, query);
   const target = pathPart === '' ? sourcePath : resolve(dirname(sourcePath), pathPart);
   return { target, fragment };
 }
 
-function validateLinks(document, repoRoot, docsRoot, anchorsCache, graph, findings) {
+function validateLinks(
+  document,
+  repoRoot,
+  docsRoot,
+  anchorsCache,
+  graph,
+  invalidDocuments,
+  findings,
+) {
   const parsed = markdownLinks(document.frontmatter.body, document.frontmatter.bodyStartLine);
   for (const missing of parsed.missingReferences) {
     findings.push(
@@ -770,13 +868,16 @@ function validateLinks(document, repoRoot, docsRoot, anchorsCache, graph, findin
       );
       continue;
     }
-    if (lstatSync(local.target).isSymbolicLink()) {
+    if (
+      lstatSync(local.target).isSymbolicLink() ||
+      hasSymlinkComponent(repoRoot, local.target)
+    ) {
       findings.push(
         issue(
           document.file,
           link.line,
           'link-symlink',
-          `local target must not be a symlink: ${destination}`,
+          `local target path must not contain symbolic links: ${destination}`,
         ),
       );
       continue;
@@ -794,7 +895,11 @@ function validateLinks(document, repoRoot, docsRoot, anchorsCache, graph, findin
       );
       continue;
     }
-    if (local.fragment && extname(local.target).toLowerCase() === '.md') {
+    if (
+      local.fragment &&
+      extname(local.target).toLowerCase() === '.md' &&
+      !invalidDocuments.has(resolve(local.target))
+    ) {
       const expected = local.fragment.toLocaleLowerCase('en-US');
       if (!markdownAnchors(local.target, anchorsCache).has(expected)) {
         findings.push(
@@ -820,6 +925,16 @@ export function validateDocumentation({ repoRoot = DEFAULT_REPO_ROOT, docsDir = 
   const absoluteRoot = resolve(repoRoot);
   const docsRoot = resolve(absoluteRoot, docsDir);
   const findings = [];
+  if (!isWithin(absoluteRoot, docsRoot)) {
+    return [
+      issue(
+        toRepoPath(absoluteRoot, docsRoot),
+        1,
+        'docs-outside-repo',
+        'docs directory must stay inside the repository root',
+      ),
+    ];
+  }
   if (!existsSync(docsRoot)) {
     return [
       issue(
@@ -827,6 +942,36 @@ export function validateDocumentation({ repoRoot = DEFAULT_REPO_ROOT, docsDir = 
         1,
         'docs-missing',
         'docs directory does not exist',
+      ),
+    ];
+  }
+  if (lstatSync(docsRoot).isSymbolicLink()) {
+    return [
+      issue(
+        toRepoPath(absoluteRoot, docsRoot),
+        1,
+        'docs-symlink',
+        'docs directory must not be a symbolic link',
+      ),
+    ];
+  }
+  if (!lstatSync(docsRoot).isDirectory()) {
+    return [
+      issue(
+        toRepoPath(absoluteRoot, docsRoot),
+        1,
+        'docs-file-type',
+        'docs path must be a directory',
+      ),
+    ];
+  }
+  if (!isWithin(realpathSync(absoluteRoot), realpathSync(docsRoot))) {
+    return [
+      issue(
+        toRepoPath(absoluteRoot, docsRoot),
+        1,
+        'docs-outside-repo',
+        'docs directory resolves outside the repository root',
       ),
     ];
   }
@@ -841,9 +986,22 @@ export function validateDocumentation({ repoRoot = DEFAULT_REPO_ROOT, docsDir = 
         'root documentation index is missing',
       ),
     );
+  } else if (
+    lstatSync(rootIndex).isSymbolicLink() ||
+    !lstatSync(rootIndex).isFile() ||
+    hasSymlinkComponent(docsRoot, rootIndex)
+  ) {
+    findings.push(
+      issue(
+        toRepoPath(absoluteRoot, rootIndex),
+        1,
+        'index-file-type',
+        'root documentation index must be a regular non-symlink file',
+      ),
+    );
   }
 
-  const files = markdownFiles(docsRoot);
+  const files = markdownFiles(docsRoot, absoluteRoot, findings);
   for (const path of files) {
     if (path.split(sep).at(-1).toLowerCase() === 'log.md') {
       findings.push(
@@ -860,18 +1018,23 @@ export function validateDocumentation({ repoRoot = DEFAULT_REPO_ROOT, docsDir = 
     .filter((path) => path.split(sep).at(-1).toLowerCase() !== 'log.md')
     .map((path) => {
       const file = toRepoPath(absoluteRoot, path);
-      const source = readFileSync(path, 'utf8');
-      const frontmatter = parseFrontmatter(source, file);
+      const source = readUtf8Document(path, file, findings);
+      const validEncoding = source !== null;
+      const frontmatter = validEncoding
+        ? parseFrontmatter(source, file)
+        : { data: null, body: '', bodyStartLine: 1, errors: [] };
       findings.push(...frontmatter.errors);
       return {
         path,
         file,
         frontmatter,
+        validEncoding,
         isIndex: path.split(sep).at(-1).toLowerCase() === 'index.md',
       };
     });
 
   for (const document of documents) {
+    if (!document.validEncoding) continue;
     validateMetadata(document, findings);
     validateRawHtml(document, findings);
   }
@@ -900,19 +1063,39 @@ export function validateDocumentation({ repoRoot = DEFAULT_REPO_ROOT, docsDir = 
 
   const graph = new Map(documents.map((document) => [document.path, new Set()]));
   const anchorsCache = new Map();
+  const invalidDocuments = new Set(
+    documents.filter((document) => !document.validEncoding).map((document) => document.path),
+  );
   for (const document of documents) {
-    validateLinks(document, absoluteRoot, docsRoot, anchorsCache, graph, findings);
+    if (!document.validEncoding) continue;
+    validateLinks(
+      document,
+      absoluteRoot,
+      docsRoot,
+      anchorsCache,
+      graph,
+      invalidDocuments,
+      findings,
+    );
   }
   const reachable = new Set();
-  const pending = existsSync(rootIndex) ? [rootIndex] : [];
+  const rootIndexDocument = documents.find((document) => document.path === rootIndex);
+  const pending = rootIndexDocument ? [rootIndex] : [];
   while (pending.length > 0) {
     const path = pending.pop();
     if (reachable.has(path)) continue;
     reachable.add(path);
     for (const target of graph.get(path) ?? []) pending.push(target);
   }
+  // An undecodable reachable document may contain links we cannot discover, so
+  // descendants behind it have unknown reachability. An undecodable document
+  // that is itself unreachable cannot hide any path from the root, and definite
+  // orphans must still be reported.
+  const reachableInvalid = documents.some(
+    (document) => !document.validEncoding && reachable.has(document.path),
+  );
   for (const document of documents) {
-    if (!reachable.has(document.path)) {
+    if (!reachable.has(document.path) && !reachableInvalid) {
       findings.push(
         issue(
           document.file,
@@ -946,14 +1129,15 @@ function parseArgs(argv) {
 
 function main() {
   let options;
+  let findings;
   try {
     options = parseArgs(process.argv.slice(2));
+    findings = validateDocumentation(options);
   } catch (error) {
-    console.error(`docs-check: ${error.message}`);
+    console.error(`docs-check: ${error instanceof Error ? error.message : error}`);
     process.exitCode = 2;
     return;
   }
-  const findings = validateDocumentation(options);
   if (findings.length > 0) {
     console.error(`docs-check: ${findings.length} finding(s)\n`);
     for (const finding of findings) {
@@ -965,4 +1149,6 @@ function main() {
   console.log('docs-check: OK — profile, indexes, titles, and local links are valid.');
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) main();
+const isMain =
+  process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(SCRIPT_PATH);
+if (isMain) main();

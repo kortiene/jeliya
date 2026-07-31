@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
   mkdirSync,
@@ -110,6 +111,242 @@ tags: [docs]
   );
 });
 
+test('restricted frontmatter rejects lone surrogates and tracks duplicate invalid keys', () => {
+  const parsed = parseFrontmatter(`---
+title: "\\ud800"
+title: "Safe title"
+---
+`);
+
+  assert.deepEqual(
+    parsed.errors.map((entry) => entry.code),
+    ['frontmatter-value', 'frontmatter-duplicate'],
+  );
+  assert.equal(parsed.data.title, undefined);
+});
+
+test('OKF baseline requires closed frontmatter and a non-empty type', () => {
+  const unclosed = parseFrontmatter(`---
+type: "Guide"
+`);
+  assert.deepEqual(
+    unclosed.errors.map((entry) => entry.code),
+    ['frontmatter-unclosed'],
+  );
+
+  const unclosedRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Broken](broken.md)\n',
+    'docs/broken.md': '---\ntype: "Guide"\n# Hidden body\n',
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: unclosedRoot }).map((entry) => entry.code),
+    ['frontmatter-unclosed'],
+  );
+
+  const root = repo({
+    'docs/index.md': `# Documentation
+
+- [Empty type](empty-type.md)
+- [Missing type](missing-type.md)
+- [Missing frontmatter](missing-frontmatter.md)
+`,
+    'docs/empty-type.md': `---
+type: ""
+title: "Empty type"
+description: "Invalid OKF type value."
+tags: ["docs"]
+timestamp: "2026-07-18T00:00:00Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "verified"
+release_status: "not-applicable"
+audience: ["contributors"]
+---
+
+# Empty type
+`,
+    'docs/missing-type.md': `---
+title: "Missing type"
+description: "Missing the required OKF type field."
+tags: ["docs"]
+timestamp: "2026-07-18T00:00:00Z"
+status: "canonical"
+implementation_status: "implemented"
+verification_status: "verified"
+release_status: "not-applicable"
+audience: ["contributors"]
+---
+
+# Missing type
+`,
+    'docs/missing-frontmatter.md': '# Missing frontmatter\n',
+  });
+
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: root }).map((entry) => [entry.file, entry.code]),
+    [
+      ['docs/empty-type.md', 'field-type'],
+      ['docs/empty-type.md', 'type-vocabulary'],
+      ['docs/missing-frontmatter.md', 'frontmatter-required'],
+      ['docs/missing-type.md', 'field-required'],
+    ],
+  );
+});
+
+test('documentation decoding accepts Unicode and rejects malformed UTF-8', () => {
+  const validRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Guide](guide.md)\n',
+    'docs/guide.md': concept({
+      title: 'Guide',
+      body: 'Jeliya preserves the jeli tradition: jɛliya — a living record.\n',
+    }),
+  });
+  assert.deepEqual(validateDocumentation({ repoRoot: validRoot }), []);
+
+  const invalidConcept = concept({ title: 'Guide' });
+  const afterOpeningDelimiter = invalidConcept.indexOf('\n') + 1;
+  const invalidRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Guide](guide.md)\n',
+    'docs/guide.md': Buffer.concat([
+      Buffer.from(invalidConcept.slice(0, afterOpeningDelimiter), 'utf8'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from(invalidConcept.slice(afterOpeningDelimiter), 'utf8'),
+    ]),
+    'docs/orphan.md': concept({ title: 'Orphan' }),
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: invalidRoot }).map((entry) => entry.code),
+    ['encoding-utf8'],
+  );
+
+  const unrelatedInvalidRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Guide](guide.md)\n',
+    'docs/guide.md': concept({ title: 'Guide' }),
+    'docs/bad.md': Buffer.from([0xc3, 0x28]),
+    'docs/orphan.md': concept({ title: 'Orphan' }),
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: unrelatedInvalidRoot }).map((entry) => [
+      entry.file,
+      entry.code,
+    ]),
+    [
+      ['docs/bad.md', 'document-orphan'],
+      ['docs/bad.md', 'encoding-utf8'],
+      ['docs/orphan.md', 'document-orphan'],
+    ],
+  );
+
+  const invalidIndexRoot = repo({
+    'docs/index.md': Buffer.from([0xc3, 0x28]),
+    'docs/guide.md': concept({ title: 'Guide' }),
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: invalidIndexRoot }).map((entry) => entry.code),
+    ['encoding-utf8'],
+  );
+
+  const linkedInvalidRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Guide](guide.md)\n',
+    'docs/guide.md': concept({
+      title: 'Guide',
+      body: '[Malformed target](bad.md#missing-fragment)\n',
+    }),
+    'docs/bad.md': Buffer.from([0xc3, 0x28]),
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: linkedInvalidRoot }).map((entry) => entry.code),
+    ['encoding-utf8'],
+  );
+
+  const invalidParent = concept({
+    title: 'Parent',
+    body: '[Child](child.md)\n',
+  });
+  const afterParentDelimiter = invalidParent.indexOf('\n') + 1;
+  const incompleteGraphRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Parent](parent.md)\n',
+    'docs/parent.md': Buffer.concat([
+      Buffer.from(invalidParent.slice(0, afterParentDelimiter), 'utf8'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from(invalidParent.slice(afterParentDelimiter), 'utf8'),
+    ]),
+    'docs/child.md': concept({ title: 'Child' }),
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: incompleteGraphRoot }).map((entry) => entry.code),
+    ['encoding-utf8'],
+  );
+});
+
+test('Jeliya requires a root index for curated bundle navigation', () => {
+  const root = repo({
+    'docs/guide.md': concept({ title: 'Guide' }),
+  });
+
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: root })
+      .map((entry) => entry.code)
+      .sort(),
+    ['document-orphan', 'index-required'],
+  );
+});
+
+test('documentation roots, indexes, and concepts must be regular in-repo files', () => {
+  const external = mkdtempSync(join(tmpdir(), 'jeliya-docs-root-external-'));
+  tempRoots.push(external);
+  writeFileSync(join(external, 'index.md'), '# External docs\n');
+  const symlinkedRoot = repo({});
+  symlinkSync(external, join(symlinkedRoot, 'docs'));
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: symlinkedRoot }).map((entry) => entry.code),
+    ['docs-symlink'],
+  );
+
+  const symlinkedIndex = repo({
+    'real-index.md': '# Documentation\n',
+  });
+  mkdirSync(join(symlinkedIndex, 'docs'));
+  symlinkSync(join(symlinkedIndex, 'real-index.md'), join(symlinkedIndex, 'docs/index.md'));
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: symlinkedIndex }).map((entry) => entry.code),
+    ['docs-symlink', 'index-file-type'],
+  );
+
+  const directoryIndex = repo({});
+  mkdirSync(join(directoryIndex, 'docs/index.md'), { recursive: true });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: directoryIndex }).map((entry) => entry.code),
+    ['docs-file-type', 'index-file-type'],
+  );
+
+  const outsideRoot = repo({});
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: outsideRoot, docsDir: '../outside' }).map(
+      (entry) => entry.code,
+    ),
+    ['docs-outside-repo'],
+  );
+
+  const reservedCaseRoot = repo({
+    'docs/index.md': '# Documentation\n',
+    'docs/INDEX.MD': '# Wrong case\n',
+    'docs/LOG.MD': '# Wrong case\n',
+  });
+  assert.deepEqual(
+    validateDocumentation({ repoRoot: reservedCaseRoot }).map((entry) => [
+      entry.file,
+      entry.code,
+    ]),
+    [
+      ['docs/INDEX.MD', 'document-orphan'],
+      ['docs/INDEX.MD', 'reserved-name-case'],
+      ['docs/LOG.MD', 'log-prohibited'],
+      ['docs/LOG.MD', 'reserved-name-case'],
+    ],
+  );
+});
+
 test('valid profile, nested indexes, references, and fragments pass', () => {
   const root = repo({
     'docs/index.md': `# Documentation
@@ -139,6 +376,34 @@ Recover from a failed node.
   });
 
   assert.deepEqual(validateDocumentation({ repoRoot: root }), []);
+});
+
+test('shortcut references navigate while images never satisfy reachability', () => {
+  const shortcutRoot = repo({
+    'docs/index.md': `# Documentation
+
+[Guide]
+
+[Guide]: guide.md
+`,
+    'docs/guide.md': concept({ title: 'Guide' }),
+  });
+  assert.deepEqual(validateDocumentation({ repoRoot: shortcutRoot }), []);
+
+  for (const body of [
+    '![Guide](guide.md)',
+    '![Guide][guide]\n\n[guide]: guide.md',
+    '[text] ordinary prose ](guide.md)',
+  ]) {
+    const imageRoot = repo({
+      'docs/index.md': `# Documentation\n\n${body}\n`,
+      'docs/guide.md': concept({ title: 'Guide' }),
+    });
+    assert.deepEqual(
+      validateDocumentation({ repoRoot: imageRoot }).map((entry) => entry.code),
+      ['document-orphan'],
+    );
+  }
 });
 
 test('index pages need no concept frontmatter and code examples are not links', () => {
@@ -213,6 +478,13 @@ test('broken files, fragments, relative-link policy, and references are reported
     findings.map((entry) => entry.code).sort(),
     ['anchor-broken', 'link-broken', 'link-format', 'link-outside-repo', 'reference-missing'],
   );
+
+  const encodedDelimiterRoot = repo({
+    'docs/index.md': '# Documentation\n\n- [Guide](guide.md)\n- [Encoded](encoded%23name.md)\n',
+    'docs/guide.md': concept({ title: 'Guide' }),
+    'docs/encoded#name.md': concept({ title: 'Encoded' }),
+  });
+  assert.deepEqual(validateDocumentation({ repoRoot: encodedDelimiterRoot }), []);
 });
 
 test('local links cannot traverse a symlink outside the repository', () => {
@@ -230,7 +502,7 @@ test('local links cannot traverse a symlink outside the repository', () => {
 
   assert.deepEqual(
     validateDocumentation({ repoRoot: root }).map((entry) => entry.code),
-    ['link-outside-repo'],
+    ['docs-symlink', 'link-symlink'],
   );
 });
 
@@ -247,13 +519,14 @@ test('only credential-free HTTPS external links are accepted', () => {
 [opaque](https:example.com)
 [credentials](https://user:secret@example.com)
 <http://example.com/autolink>
+<docs@example.com>
 `,
     }),
   });
 
   const findings = validateDocumentation({ repoRoot: root });
-  assert.equal(findings.filter((entry) => entry.code === 'link-external').length, 6);
-  assert.equal(findings.length, 6);
+  assert.equal(findings.filter((entry) => entry.code === 'link-external').length, 7);
+  assert.equal(findings.length, 7);
 });
 
 test('unknown fields, invalid tokens, and repeated discovery tokens are rejected', () => {
@@ -346,6 +619,7 @@ title: "Not a concept"
       body: `<!-- comments are allowed -->
 
 <script>alert('no')</script>
+<x a="<">
 
 \`<span>code is allowed</span>\`
 `,
@@ -355,7 +629,7 @@ title: "Not a concept"
 
   assert.deepEqual(
     validateDocumentation({ repoRoot: root }).map((entry) => entry.code),
-    ['raw-html', 'raw-html', 'index-frontmatter', 'log-prohibited'],
+    ['raw-html', 'raw-html', 'raw-html', 'index-frontmatter', 'log-prohibited'],
   );
 });
 
@@ -374,6 +648,20 @@ test('duplicate titles and documents absent from every index are reported', () =
       ['docs/b.md', 'title-duplicate'],
     ],
   );
+});
+
+test('CLI runs through a symlink and reports argument errors without a stack trace', () => {
+  const root = repo({});
+  const link = join(root, 'check-docs-link.mjs');
+  symlinkSync(new URL('./check-docs.mjs', import.meta.url), link);
+
+  const invocation = spawnSync(process.execPath, [link, '--bad'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  assert.equal(invocation.status, 2);
+  assert.match(invocation.stderr, /^docs-check: unknown or incomplete argument: --bad\n$/);
+  assert.doesNotMatch(invocation.stderr, /\n\s+at /);
 });
 
 test('developer documentation matches the MSRV and complete CI job matrix', () => {
