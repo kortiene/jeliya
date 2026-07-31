@@ -147,11 +147,52 @@ Any step may additionally carry:
 | `on` | which session this step runs on |
 | `expect` | the reply matcher |
 | `save` | capture values from this step's result into variables |
+| `stream` | the bytes the operation streams, for `call` |
 | `note` | prose for a human; a harness ignores it |
 
 `save` is an **auxiliary key, not a verb**. It always captures from the step it
 sits on, so making it a verb would force every capture into a second step with
 nothing to capture from.
+
+### `stream` — the bytes an operation carries
+
+Two operations carry bytes beside their request, because the record folds v1's
+separate HTTP upload edge into the operation itself: `file.share` streams bytes
+**to** the daemon, and `file.read` streams them **back**.
+
+```json
+{ "call": "file.share",
+  "in": { "room_id": "$rid", "name": "design.pdf",
+          "declared_bytes": 4096, "declared_content_type": "application/pdf" },
+  "stream": { "send_bytes": 4096 } }
+
+{ "call": "file.read", "in": { "room_id": "$rid", "file_id": "$fid" },
+  "stream": { "receive_bytes": 4096 } }
+```
+
+`stream` is **auxiliary, not a verb**, for the same reason `save` is: the bytes
+and the declaration are one operation, so a separate verb would leave a step
+holding a stream with nothing to stream for — and it would let a fixture put
+them in the wrong order, which is exactly the ambiguity the record removes by
+combining the two edges.
+
+It takes exactly one key, fixed by the operation: `send_bytes` for `file.share`,
+`receive_bytes` for `file.read`. A `stream` on any other operation is invalid,
+because no other operation streams. The value is a `<uint>`, a `$variable`, or a
+computed node, so a boundary case can say "exactly the served limit" without
+compiling the number in.
+
+**`stream.send_bytes` is deliberately independent of `in.declared_bytes`.**
+Declaring one size and sending another is not a malformed fixture — it is the
+only way to reach `declared_size_mismatch`, and it is what separates the size
+policy's `stage_declared` enforcement point from `stage_stream`. A DSL that
+forced them equal would make three of the record's five daemon-side enforcement
+points untestable.
+
+Without this key the files domain is not transcribable: `stage_stream`,
+`fetch_stream`, `declared_size_mismatch`, and the never-render-inline
+obligations on `file.read` all describe what happens to bytes in flight, and
+`observe: bytes_streamed` can only assert the outcome, never cause it.
 
 `note` is the only annotation key. The committed corpus also uses `why`,
 `comment`, `intent_note`, and `meaning` for the same thing.
