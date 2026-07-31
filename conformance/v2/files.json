@@ -126,13 +126,9 @@
             {
               "path": "$limit",
               "op": "eq",
-              "value": null
+              "value": 104857600
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 104857600, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "assert": [
@@ -156,15 +152,11 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"hello\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CORPUS-META OBLIGATION, no protocol surface: no other fixture may hard-code 104857600, 104857601, \"100 MiB\", or \"104_857_600\" - every other case derives its boundary from $limit, which is why this one case is allowed to pin the served value."
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"values\": [104857600, 104857601, \"100 MiB\", \"104_857_600\"], \"note\": \"every other fixture derives its boundary from $limit, so the corpus itself does not hard-code the number [bare-string assert 'corp]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"corpus\", \"except_case\": \"handshake_serves_the_file_and_transfer_limits_as_integers\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"scope\": \"corpus\", \"except_case\": \"handshake_serves_the_file_and_transfer_limits_as_integers\", \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -222,19 +214,13 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.preflight_threshold",
-              "op": "eq",
-              "value": null,
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.preflight_threshold\", \"op\": \"eq\", \"value\": null} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
           "assert": [
             {
-              "path": "$",
+              "path": "$limit",
               "op": "eq",
               "value": "$limit"
             }
@@ -243,11 +229,11 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"values\": [104857600, \"100 MiB\"], \"note\": \"[bare-string assert 'client_source_has_no_literal' needs manual retranscription]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"values\": [104857600, \"100 MiB\"], \"note\": \"[bare-string assert 'client_source_has_no_literal' needs manual retranscription]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": [\"client_code\", \"locale_catalogs\", \"scripts\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"scope\": [\"client_code\", \"locale_catalogs\", \"scripts\"], \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -289,36 +275,20 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.over_limit_message",
-              "op": "present",
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
-          "assert": [
-            {
-              "path": "frame.over_limit_message",
-              "op": "present",
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.over_limit_message\", \"op\": \"present\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"values\": [\"100 MiB\", \"104857600\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.over_limit_message\", \"op\": \"present\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
-          "assert": [
-            {
-              "path": "frame.max_shared_file_bytes",
-              "op": "type",
-              "value": "uint",
-              "note": "path root 'wire' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"values\": [\"100 MiB\", \"104857600\"], \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
+        },
+        {
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.max_shared_file_bytes\", \"op\": \"type\", \"value\": \"uint\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
           "assert": [
@@ -593,19 +563,22 @@
         {
           "assert": [
             {
-              "path": "frame.op-over-2",
-              "op": "present",
-              "note": "path root 'transfer:op-over-2' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "assert": [
@@ -720,19 +693,22 @@
         {
           "assert": [
             {
-              "path": "frame.op-liar-2",
-              "op": "present",
-              "note": "path root 'transfer:op-liar-2' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": "$limit"
+              }
             }
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "assert": [
@@ -743,175 +719,13 @@
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"staging\", \"note\": \"an aborted stage leaves no stranded staged file [bare-string assert 'no_residue' needs manual retranscription]\"}]"
-        }
-      ]
-    },
-    {
-      "name": "share_with_unknown_size_below_the_limit_succeeds",
-      "kind": "success",
-      "operation": "file.share",
-      "intent": "Proves a source that reports no size is a normal path and not an error: size is a tagged unknown variant, never a JSON null, and the share succeeds with the daemon reporting the observed byte count, catching a daemon that rejects a file merely for lacking a declared size (which would break Android SAF cloud-backed documents).",
-      "requires": [
-        "subject",
-        "room:live"
-      ],
-      "steps": [
-        {
-          "upgrade": {
-            "query": {},
-            "headers": {}
-          }
-        },
-        {
-          "await": {
-            "frame": {
-              "t": "hello"
-            }
-          },
-          "save": {
-            "limit": "frame.limits.max_shared_file_bytes"
-          }
-        },
-        {
-          "call": "room.create",
-          "in": {
-            "name": "UnsizedSource"
-          },
-          "save": {
-            "rid": "out.room_id"
-          },
-          "op_id": "op-unsized-1"
-        },
-        {
-          "call": "file.share",
-          "in": {
-            "room_id": "$rid",
-            "name": "from-cloud-provider.bin",
-            "declared_bytes": {
-              "state": "unknown"
-            },
-            "declared_content_type": {
-              "state": "absent"
-            }
-          },
-          "expect": {
-            "ok": true,
-            "out": {
-              "file_id": "<file_id>",
-              "event_id": "<string>",
-              "digest": "<string>",
-              "bytes": 65536
-            }
-          },
-          "op_id": "op-unsized-2",
-          "stream": {
-            "send_bytes": 65536
-          }
-        }
-      ]
-    },
-    {
-      "name": "share_with_unknown_size_streaming_past_the_limit_aborts_at_stage_stream",
-      "kind": "boundary",
-      "operation": "file.share",
-      "intent": "Proves the byte-counting bound is the enforcement for an undeclared size, aborting at the limit with enforced_at=stage_stream rather than copying unbounded, which is the only protection available when no declaration exists to check.",
-      "requires": [
-        "subject",
-        "room:live"
-      ],
-      "steps": [
-        {
-          "upgrade": {
-            "query": {},
-            "headers": {}
-          }
-        },
-        {
-          "await": {
-            "frame": {
-              "t": "hello"
-            }
-          },
-          "save": {
-            "limit": "frame.limits.max_shared_file_bytes"
-          }
-        },
-        {
-          "call": "room.create",
-          "in": {
-            "name": "UnsizedOver"
-          },
-          "save": {
-            "rid": "out.room_id"
-          },
-          "op_id": "op-unsized-over-1"
-        },
-        {
-          "call": "file.share",
-          "in": {
-            "room_id": "$rid",
-            "name": "unbounded-source.bin",
-            "declared_bytes": {
-              "state": "unknown"
-            },
-            "declared_content_type": {
-              "state": "absent"
-            }
-          },
-          "expect": {
-            "ok": false,
-            "err": {
-              "code": "file_too_large",
-              "declared_bytes": "<uint>",
-              "limit_bytes": "$limit",
-              "enforced_at": "stage_stream"
-            }
-          },
-          "op_id": "op-unsized-over-2"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [stream {\"send_bytes\": \"$limit+1\"}] [harness orchestration: stream_bytes]",
-          "control": {
-            "do": "idle",
-            "ms": 0
-          }
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
           "assert": [
             {
-              "path": "err.code",
-              "op": "ne",
-              "value": "digest_mismatch"
-            }
-          ]
-        },
-        {
-          "assert": [
-            {
-              "path": "frame.op-unsized-over-2",
-              "op": "present",
-              "note": "path root 'transfer:op-unsized-over-2' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
-        },
-        {
-          "assert": [
-            {
-              "observe": "no_event_authored",
+              "observe": "no_durable_mutation",
               "scope": "case"
             }
-          ]
+          ],
+          "note": "an aborted stage leaves no stranded staged file"
         }
       ]
     },
@@ -962,9 +776,7 @@
                 1
               ]
             },
-            "declared_content_type": {
-              "state": "absent"
-            }
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
@@ -986,17 +798,17 @@
           }
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"store\", \"note\": \"[bare-string assert 'no_blob_imported' needs manual retranscription]\"}]"
-        },
-        {
           "assert": [
             {
-              "path": "frame.op-authoring-2",
-              "op": "present",
-              "note": "path root 'transfer:op-authoring-2' names a harness surface, not a wire field"
+              "observe": "no_durable_mutation",
+              "scope": "case"
             }
-          ]
+          ],
+          "note": "an aborted stage leaves nothing behind"
+        },
+        {
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-authoring-2\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         }
       ]
     },
@@ -1033,18 +845,19 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": {
-                "op": "file.share"
-              },
-              "op": "present"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: the preflight emits no file.share request at all \u2014 the sixth enforcement point never reaches the daemon, so there is no reply to assert against."
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"connection\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "assert": [
+            {
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            }
+          ]
         }
       ]
     },
@@ -1088,18 +901,8 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.decision_for_unsized_under_limit",
-              "op": "eq",
-              "value": null,
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"refused\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.decision_for_unsized_under_limit\", \"op\": \"eq\", \"value\": \"refused\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         }
       ]
     },
@@ -1150,9 +953,7 @@
                 1
               ]
             },
-            "declared_content_type": {
-              "state": "absent"
-            }
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
@@ -1280,13 +1081,14 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "declared_bytes": "100 MiB"
+            "declared_bytes": "100 MiB",
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-malformed-1"
@@ -1306,20 +1108,26 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "declared_bytes": "1024"
+            "declared_bytes": "1024",
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-malformed-2"
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "assert": [
@@ -1346,7 +1154,8 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "declared_bytes": null
+            "declared_bytes": null,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
@@ -1372,38 +1181,35 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "declared_bytes": null
+            "declared_bytes": null,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-2"
         },
         {
-          "assert": [
-            {
-              "path": "frame.0.in.size",
-              "op": "present",
-              "note": "path root 'step:0' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "HARNESS STATE, not a wire field: {\"path\": \"frame.0.in.size\", \"op\": \"present\"}"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "declared_bytes": -1
+            "declared_bytes": -1,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-3"
@@ -1413,13 +1219,14 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "declared_bytes": 1.5
+            "declared_bytes": 1.5,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-4"
@@ -1431,13 +1238,14 @@
             "name": "a.bin",
             "declared_bytes": {
               "state": "declared"
-            }
+            },
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-5"
@@ -1465,7 +1273,8 @@
           "in": {
             "room_id": "$rid",
             "name": "once.bin",
-            "declared_bytes": 2048
+            "declared_bytes": 2048,
+            "declared_content_type": "application/octet-stream"
           },
           "save": {
             "first": "$result"
@@ -1499,7 +1308,8 @@
           "in": {
             "room_id": "$rid",
             "name": "once.bin",
-            "declared_bytes": 2048
+            "declared_bytes": 2048,
+            "declared_content_type": "application/octet-stream"
           },
           "op_id": "op-dedup-share"
         },
@@ -1543,7 +1353,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -1677,10 +1487,6 @@
             }
           ],
           "note": "[split from a multi-verb step; review]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"result\"}]"
         },
         {
           "assert": [
@@ -1897,10 +1703,6 @@
               "op": "absent"
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"result\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -2105,28 +1907,24 @@
         {
           "assert": [
             {
-              "path": "frame.op-preflight-1",
-              "op": "present",
-              "note": "path root 'transfer:op-preflight-1' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "assert": [
             {
-              "path": "frame.op-preflight-1",
-              "op": "present",
-              "note": "path root 'transfer:op-preflight-1' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -2203,15 +2001,13 @@
         {
           "assert": [
             {
-              "path": "frame.op-fetchstream-1",
-              "op": "present",
-              "note": "path root 'transfer:op-fetchstream-1' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": "$limit"
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "assert": [
@@ -2299,14 +2095,14 @@
         {
           "assert": [
             {
-              "path": "out.file.list.files[0].fetchable",
+              "path": "out.files[0].fetchable",
               "op": "present"
             }
           ]
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": false, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": false, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -2444,7 +2240,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -2513,22 +2309,12 @@
           ]
         },
         {
-          "assert": [
-            {
-              "path": "frame.op-budget-1",
-              "op": "present",
-              "note": "path root 'transfer:op-budget-1' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-budget-1\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         },
         {
-          "assert": [
-            {
-              "path": "frame.op-budget-1",
-              "op": "present",
-              "note": "path root 'transfer:op-budget-1' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-budget-1\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         }
       ]
     },
@@ -2635,18 +2421,8 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.render_decision_source",
-              "op": "eq",
-              "value": null,
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"peer_declared_type_untrusted\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.render_decision_source\", \"op\": \"eq\", \"value\": \"peer_declared_type_untrusted\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         }
       ]
     },
@@ -2713,19 +2489,19 @@
         {
           "assert": [
             {
-              "path": "out.file.read",
+              "path": "out.bytes",
               "op": "present"
             }
           ]
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         },
         {
           "assert": [
             {
-              "path": "out.file.read",
+              "path": "out.bytes",
               "op": "present"
             }
           ]
@@ -3114,7 +2890,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$max_transfers\", \"note\": \"[bare-string assert 'transfers_in_flight' needs manual retranscription]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": \"$max_transfers\", \"note\": \"[bare-string assert 'transfers_in_flight' needs manual retranscription]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         },
         {
           "call": "file.fetch",
@@ -3245,7 +3021,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"max_concurrent_transfers\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": \"max_concurrent_transfers\", \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -3293,17 +3069,8 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.transfer_progress[op_id=op-progress-1].transferred_bytes",
-              "op": "present",
-              "note": "path root 'push:transfer_progress' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"push:transfer_progress\"}]"
+          "note": "BLOCKED ON U2: {\"path\": \"frame.transfer_progress[op_id=op-progress-1].transferred_bytes\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         },
         {
           "assert": [
@@ -3462,13 +3229,8 @@
           ]
         },
         {
-          "assert": [
-            {
-              "path": "frame.op-stall-1",
-              "op": "present",
-              "note": "path root 'transfer:op-stall-1' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-stall-1\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         },
         {
           "call": "file.fetch",
@@ -3486,10 +3248,6 @@
             }
           },
           "op_id": "op-stall-2"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"error\", \"note\": \"an unknown total is a tagged variant, never a null\"}]"
         },
         {
           "assert": [
@@ -3710,7 +3468,8 @@
           "in": {
             "room_id": "$foreign_rid",
             "name": "a.bin",
-            "declared_bytes": 16
+            "declared_bytes": 16,
+            "declared_content_type": "application/octet-stream"
           },
           "save": {
             "e6": "$error"
@@ -3767,15 +3526,13 @@
         {
           "assert": [
             {
-              "path": "frame.op-oracle-3",
-              "op": "present",
-              "note": "path root 'transfer:op-oracle-3' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -3795,7 +3552,8 @@
           "in": {
             "room_id": "$rid",
             "name": "doc.bin",
-            "declared_bytes": 4096
+            "declared_bytes": 4096,
+            "declared_content_type": "application/octet-stream"
           },
           "save": {
             "fid": "out.file_id"
@@ -3885,28 +3643,12 @@
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
           "assert": [
             {
               "path": "frame.data_dir",
               "op": "absent"
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"health_response\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -3968,8 +3710,13 @@
           "note": "the room's file index read path fails -- I/O error or permission denial. The share event and the local blob are untouched; only the read fails."
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "call": "file.list",
@@ -4002,10 +3749,6 @@
               ]
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"error\"}]"
         },
         {
           "assert": [

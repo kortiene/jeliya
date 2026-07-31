@@ -29,11 +29,16 @@ harness and may be cited as evidence for any adapter.
 
 | | |
 |---|---|
-| Cases | 344 |
-| Cases conforming to the DSL | **344** |
+| Cases | 342 |
+| Cases conforming to the DSL | **342** |
 | Distinct step verbs in use | 7, the closed set (`call`, `http`, `upgrade`, `send`, `await`, `control`, `assert`) |
 | Codes in the taxonomy without a case | **0** |
 | Blocked on upstream | 10 |
+
+Two cases were retired in the files pass-3 re-transcription: `declared_bytes` is a
+required `<uint>` and there are no optional request fields, so an *unknown*
+declared size is not expressible in v2, and both cases collapsed onto ones that
+already exist.
 
 Normalization was tracked as **#213** and landed with the promotion of the
 specification to canonical: the fourteen refused codes retired, the fixture

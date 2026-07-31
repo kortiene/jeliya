@@ -148,10 +148,18 @@ function checkAssertion(a, file, caseName, where) {
   if ("op" in a && !ASSERT_OPS.has(a.op)) {
     fail(file, caseName, where, `unknown assert op "${a.op}" (closed set of ${ASSERT_OPS.size})`);
   }
-  if ("path" in a && typeof a.path === "string") {
-    const root = a.path.split(/[.[]/)[0];
-    if (!["out", "err", "frame"].includes(root) && !root.startsWith("$")) {
-      fail(file, caseName, where, `assert path rooted at "${root}" (must be out/err/frame/$variable)`);
+  if ("path" in a) {
+    // `path` is "a dotted path rooted at out, err, frame, or a $variable"
+    // (README). A non-string path resolves against nothing, so an assertion
+    // carrying one asserts nothing while still reading as coverage.
+    if (typeof a.path !== "string") {
+      fail(file, caseName, where,
+        `assert path is ${Array.isArray(a.path) ? "an array" : typeof a.path} — must be a dotted string`);
+    } else {
+      const root = a.path.split(/[.[]/)[0];
+      if (!["out", "err", "frame"].includes(root) && !root.startsWith("$")) {
+        fail(file, caseName, where, `assert path rooted at "${root}" (must be out/err/frame/$variable)`);
+      }
     }
   }
 }
