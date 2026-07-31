@@ -34,8 +34,9 @@ export function requestId() {
 }
 
 export class Session {
-  constructor(label) {
+  constructor(label, clientId = null) {
     this.label = label;
+    this.clientId = clientId;
     this.ws = null;
     this.pending = new Map(); // id -> {resolve, reject}
     this.frameWaiters = []; // {predicate, resolve, reject, timer}
@@ -51,7 +52,9 @@ export class Session {
   /** Connect and wait for the hello frame. `query` is the v/sg/token map. */
   async connect(daemon, query, headers = {}) {
     const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(query)) params.set(k, String(v));
+    const connectQuery = { ...query };
+    if (this.clientId !== null && connectQuery.cid === undefined) connectQuery.cid = this.clientId;
+    for (const [k, v] of Object.entries(connectQuery)) params.set(k, String(v));
     const url = `${daemon.wsBase}?${params.toString()}`;
     const hdrs = { Host: `127.0.0.1:${daemon.port}`, ...headers };
     this.ws = new WebSocket(url, { headers: hdrs });
