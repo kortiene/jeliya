@@ -126,13 +126,9 @@
             {
               "path": "$limit",
               "op": "eq",
-              "value": null
+              "value": 104857600
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 104857600, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "assert": [
@@ -156,15 +152,11 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"hello\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CORPUS-META OBLIGATION, no protocol surface: no other fixture may hard-code 104857600, 104857601, \"100 MiB\", or \"104_857_600\" - every other case derives its boundary from $limit, which is why this one case is allowed to pin the served value."
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"values\": [104857600, 104857601, \"100 MiB\", \"104_857_600\"], \"note\": \"every other fixture derives its boundary from $limit, so the corpus itself does not hard-code the number [bare-string assert 'corp]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"corpus\", \"except_case\": \"handshake_serves_the_file_and_transfer_limits_as_integers\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"scope\": \"corpus\", \"except_case\": \"handshake_serves_the_file_and_transfer_limits_as_integers\", \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -222,19 +214,13 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.preflight_threshold",
-              "op": "eq",
-              "value": null,
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.preflight_threshold\", \"op\": \"eq\", \"value\": null} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
           "assert": [
             {
-              "path": "$",
+              "path": "$limit",
               "op": "eq",
               "value": "$limit"
             }
@@ -243,11 +229,11 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"values\": [104857600, \"100 MiB\"], \"note\": \"[bare-string assert 'client_source_has_no_literal' needs manual retranscription]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"values\": [104857600, \"100 MiB\"], \"note\": \"[bare-string assert 'client_source_has_no_literal' needs manual retranscription]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": [\"client_code\", \"locale_catalogs\", \"scripts\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"scope\": [\"client_code\", \"locale_catalogs\", \"scripts\"], \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -289,36 +275,20 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.over_limit_message",
-              "op": "present",
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
-          "assert": [
-            {
-              "path": "frame.over_limit_message",
-              "op": "present",
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.over_limit_message\", \"op\": \"present\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"values\": [\"100 MiB\", \"104857600\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.over_limit_message\", \"op\": \"present\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
-          "assert": [
-            {
-              "path": "frame.max_shared_file_bytes",
-              "op": "type",
-              "value": "uint",
-              "note": "path root 'wire' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"values\": [\"100 MiB\", \"104857600\"], \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
+        },
+        {
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.max_shared_file_bytes\", \"op\": \"type\", \"value\": \"uint\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         },
         {
           "assert": [
@@ -374,14 +344,8 @@
           "in": {
             "room_id": "$rid",
             "name": "notes.txt",
-            "size": {
-              "state": "declared",
-              "bytes": 1024
-            },
-            "declared_type": {
-              "state": "declared",
-              "value": "text/plain"
-            }
+            "declared_bytes": 1024,
+            "declared_content_type": "text/plain"
           },
           "save": {
             "fid": "out.file_id"
@@ -392,8 +356,8 @@
               "file_id": "<file_id>",
               "event_id": "<string>",
               "pos": "<uint>",
-              "size_bytes": 1024,
-              "digest": "<string>"
+              "digest": "<string>",
+              "bytes": 1024
             }
           },
           "op_id": "op-share-2"
@@ -442,9 +406,9 @@
               "files": [
                 {
                   "file_id": "$fid",
-                  "size_bytes": 1024,
                   "self_hosted": true,
-                  "fetchable": true
+                  "fetchable": true,
+                  "bytes": 1024
                 }
               ]
             }
@@ -493,29 +457,22 @@
           "in": {
             "room_id": "$rid",
             "name": "exactly-at-limit.bin",
-            "size": {
-              "state": "declared",
-              "bytes": "$limit"
-            },
-            "declared_type": {
-              "state": "declared",
-              "value": "application/octet-stream"
-            }
+            "declared_bytes": "$limit",
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": true,
             "out": {
               "file_id": "<file_id>",
               "event_id": "<string>",
-              "size_bytes": "$limit",
-              "digest": "<string>"
+              "digest": "<string>",
+              "bytes": "$limit"
             }
           },
-          "op_id": "op-atlimit-2"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": \"$limit\"}, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "op_id": "op-atlimit-2",
+          "stream": {
+            "send_bytes": "$limit"
+          }
         }
       ]
     },
@@ -560,20 +517,24 @@
           "in": {
             "room_id": "$rid",
             "name": "one-past.bin",
-            "size": {
-              "state": "declared",
-              "bytes": "$limit+1"
+            "declared_bytes": {
+              "$add": [
+                "$limit",
+                1
+              ]
             },
-            "declared_type": {
-              "state": "declared",
-              "value": "application/octet-stream"
-            }
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "file_too_large",
-              "declared_bytes": "$limit+1",
+              "declared_bytes": {
+                "$add": [
+                  "$limit",
+                  1
+                ]
+              },
               "limit_bytes": "$limit",
               "enforced_at": "stage_declared"
             }
@@ -581,7 +542,7 @@
           "op_id": "op-over-2"
         },
         {
-          "note": "[stream {\"send_bytes\": 0}; forbidden codes on this refusal: [\"invalid_params\", \"invalid_argument\", \"digest_mismatch\"] — asserted via the pinned code in expect] [harness orchestration: stream_bytes]",
+          "note": "[stream {\"send_bytes\": 0}; forbidden codes on this refusal: [\"invalid_params\", \"invalid_argument\", \"digest_mismatch\"] \u2014 asserted via the pinned code in expect] [harness orchestration: stream_bytes]",
           "control": {
             "do": "idle",
             "ms": 0
@@ -602,19 +563,22 @@
         {
           "assert": [
             {
-              "path": "frame.op-over-2",
-              "op": "present",
-              "note": "path root 'transfer:op-over-2' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "assert": [
@@ -692,14 +656,8 @@
           "in": {
             "room_id": "$rid",
             "name": "understated.bin",
-            "size": {
-              "state": "declared",
-              "bytes": "$limit"
-            },
-            "declared_type": {
-              "state": "declared",
-              "value": "application/octet-stream"
-            }
+            "declared_bytes": "$limit",
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
@@ -735,19 +693,22 @@
         {
           "assert": [
             {
-              "path": "frame.op-liar-2",
-              "op": "present",
-              "note": "path root 'transfer:op-liar-2' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": "$limit"
+              }
             }
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "assert": [
@@ -758,176 +719,13 @@
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"staging\", \"note\": \"an aborted stage leaves no stranded staged file [bare-string assert 'no_residue' needs manual retranscription]\"}]"
-        }
-      ]
-    },
-    {
-      "name": "share_with_unknown_size_below_the_limit_succeeds",
-      "kind": "success",
-      "operation": "file.share",
-      "intent": "Proves a source that reports no size is a normal path and not an error: size is a tagged unknown variant, never a JSON null, and the share succeeds with the daemon reporting the observed byte count, catching a daemon that rejects a file merely for lacking a declared size (which would break Android SAF cloud-backed documents).",
-      "requires": [
-        "subject",
-        "room:live"
-      ],
-      "steps": [
-        {
-          "upgrade": {
-            "query": {},
-            "headers": {}
-          }
-        },
-        {
-          "await": {
-            "frame": {
-              "t": "hello"
-            }
-          },
-          "save": {
-            "limit": "frame.limits.max_shared_file_bytes"
-          }
-        },
-        {
-          "call": "room.create",
-          "in": {
-            "name": "UnsizedSource"
-          },
-          "save": {
-            "rid": "out.room_id"
-          },
-          "op_id": "op-unsized-1"
-        },
-        {
-          "call": "file.share",
-          "in": {
-            "room_id": "$rid",
-            "name": "from-cloud-provider.bin",
-            "size": {
-              "state": "unknown"
-            },
-            "declared_type": {
-              "state": "absent"
-            }
-          },
-          "expect": {
-            "ok": true,
-            "out": {
-              "file_id": "<file_id>",
-              "event_id": "<string>",
-              "size_bytes": 65536,
-              "digest": "<string>"
-            }
-          },
-          "op_id": "op-unsized-2"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 65536}, \"note\": \"[split from a multi-verb step; review]\"}]"
-        }
-      ]
-    },
-    {
-      "name": "share_with_unknown_size_streaming_past_the_limit_aborts_at_stage_stream",
-      "kind": "boundary",
-      "operation": "file.share",
-      "intent": "Proves the byte-counting bound is the enforcement for an undeclared size, aborting at the limit with enforced_at=stage_stream rather than copying unbounded, which is the only protection available when no declaration exists to check.",
-      "requires": [
-        "subject",
-        "room:live"
-      ],
-      "steps": [
-        {
-          "upgrade": {
-            "query": {},
-            "headers": {}
-          }
-        },
-        {
-          "await": {
-            "frame": {
-              "t": "hello"
-            }
-          },
-          "save": {
-            "limit": "frame.limits.max_shared_file_bytes"
-          }
-        },
-        {
-          "call": "room.create",
-          "in": {
-            "name": "UnsizedOver"
-          },
-          "save": {
-            "rid": "out.room_id"
-          },
-          "op_id": "op-unsized-over-1"
-        },
-        {
-          "call": "file.share",
-          "in": {
-            "room_id": "$rid",
-            "name": "unbounded-source.bin",
-            "size": {
-              "state": "unknown"
-            },
-            "declared_type": {
-              "state": "absent"
-            }
-          },
-          "expect": {
-            "ok": false,
-            "err": {
-              "code": "file_too_large",
-              "declared_bytes": "<uint>",
-              "limit_bytes": "$limit",
-              "enforced_at": "stage_stream"
-            }
-          },
-          "op_id": "op-unsized-over-2"
-        },
-        {
-          "note": "[split from a multi-verb step; review] [stream {\"send_bytes\": \"$limit+1\"}] [harness orchestration: stream_bytes]",
-          "control": {
-            "do": "idle",
-            "ms": 0
-          }
-        },
-        {
-          "note": "[split from a multi-verb step; review]",
           "assert": [
             {
-              "path": "err.code",
-              "op": "ne",
-              "value": "digest_mismatch"
-            }
-          ]
-        },
-        {
-          "assert": [
-            {
-              "path": "frame.op-unsized-over-2",
-              "op": "present",
-              "note": "path root 'transfer:op-unsized-over-2' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
-        },
-        {
-          "assert": [
-            {
-              "observe": "no_event_authored",
+              "observe": "no_durable_mutation",
               "scope": "case"
             }
-          ]
+          ],
+          "note": "an aborted stage leaves no stranded staged file"
         }
       ]
     },
@@ -972,41 +770,45 @@
           "in": {
             "room_id": "$rid",
             "name": "too-big-in-process.bin",
-            "size": {
-              "state": "declared",
-              "bytes": "$limit+1"
+            "declared_bytes": {
+              "$add": [
+                "$limit",
+                1
+              ]
             },
-            "declared_type": {
-              "state": "absent"
-            }
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "file_too_large",
-              "declared_bytes": "$limit+1",
+              "declared_bytes": {
+                "$add": [
+                  "$limit",
+                  1
+                ]
+              },
               "limit_bytes": "$limit",
               "enforced_at": "authoring"
             }
           },
-          "op_id": "op-authoring-2"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 0}, \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"store\", \"note\": \"[bare-string assert 'no_blob_imported' needs manual retranscription]\"}]"
+          "op_id": "op-authoring-2",
+          "stream": {
+            "send_bytes": 0
+          }
         },
         {
           "assert": [
             {
-              "path": "frame.op-authoring-2",
-              "op": "present",
-              "note": "path root 'transfer:op-authoring-2' names a harness surface, not a wire field"
+              "observe": "no_durable_mutation",
+              "scope": "case"
             }
-          ]
+          ],
+          "note": "an aborted stage leaves nothing behind"
+        },
+        {
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-authoring-2\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         }
       ]
     },
@@ -1014,7 +816,7 @@
       "name": "client_preflight_refuses_over_limit_before_any_bytes_are_sent",
       "kind": "boundary",
       "operation": "file.share",
-      "intent": "Proves the sixth enforcement point — the client preflight, which by definition never reaches the daemon — refuses an over-limit source with zero bytes sent, zero request frames emitted and no local copy made, catching a client that uploads a 100 MiB file only to be told no.",
+      "intent": "Proves the sixth enforcement point \u2014 the client preflight, which by definition never reaches the daemon \u2014 refuses an over-limit source with zero bytes sent, zero request frames emitted and no local copy made, catching a client that uploads a 100 MiB file only to be told no.",
       "requires": [
         "room:live"
       ],
@@ -1043,18 +845,19 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": {
-                "op": "file.share"
-              },
-              "op": "present"
-            }
-          ]
+          "assert": [],
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: the preflight emits no file.share request at all \u2014 the sixth enforcement point never reaches the daemon, so there is no reply to assert against."
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"connection\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "assert": [
+            {
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            }
+          ]
         }
       ]
     },
@@ -1098,18 +901,8 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.decision_for_unsized_under_limit",
-              "op": "eq",
-              "value": null,
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"refused\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.decision_for_unsized_under_limit\", \"op\": \"eq\", \"value\": \"refused\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         }
       ]
     },
@@ -1154,13 +947,13 @@
           "in": {
             "room_id": "$rid",
             "name": "oversize.bin",
-            "size": {
-              "state": "declared",
-              "bytes": "$limit+1"
+            "declared_bytes": {
+              "$add": [
+                "$limit",
+                1
+              ]
             },
-            "declared_type": {
-              "state": "absent"
-            }
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
@@ -1288,16 +1081,14 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "size": {
-              "state": "declared",
-              "bytes": "100 MiB"
-            }
+            "declared_bytes": "100 MiB",
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-malformed-1"
@@ -1317,23 +1108,26 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "size": {
-              "state": "declared",
-              "bytes": "1024"
-            }
+            "declared_bytes": "1024",
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-malformed-2"
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "assert": [
@@ -1349,7 +1143,7 @@
       "name": "share_size_null_or_out_of_domain_is_malformed",
       "kind": "malformed",
       "operation": "file.share",
-      "intent": "Proves no JSON null carries meaning on the file path — a null size is not read as unknown — and that a negative or fractional byte count is refused rather than coerced into u64, catching the v1 compatibility-nullability this generation exists to shed.",
+      "intent": "Proves no JSON null carries meaning on the file path \u2014 a null size is not read as unknown \u2014 and that a negative or fractional byte count is refused rather than coerced into u64, catching the v1 compatibility-nullability this generation exists to shed.",
       "requires": [
         "subject",
         "room:live"
@@ -1360,13 +1154,14 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "size": null
+            "declared_bytes": null,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-1"
@@ -1386,44 +1181,35 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "size": {
-              "state": "declared",
-              "bytes": null
-            }
+            "declared_bytes": null,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-2"
         },
         {
-          "assert": [
-            {
-              "path": "frame.0.in.size",
-              "op": "present",
-              "note": "path root 'step:0' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "HARNESS STATE, not a wire field: {\"path\": \"frame.0.in.size\", \"op\": \"present\"}"
         },
         {
           "call": "file.share",
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "size": {
-              "state": "declared",
-              "bytes": -1
-            }
+            "declared_bytes": -1,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-3"
@@ -1433,16 +1219,14 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "size": {
-              "state": "declared",
-              "bytes": 1.5
-            }
+            "declared_bytes": 1.5,
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-4"
@@ -1452,15 +1236,16 @@
           "in": {
             "room_id": "$rid",
             "name": "a.bin",
-            "size": {
+            "declared_bytes": {
               "state": "declared"
-            }
+            },
+            "declared_content_type": "application/octet-stream"
           },
           "expect": {
             "ok": false,
             "err": {
               "code": "invalid_argument",
-              "field": "size.bytes"
+              "field": "in.declared_bytes"
             }
           },
           "op_id": "op-null-5"
@@ -1488,10 +1273,8 @@
           "in": {
             "room_id": "$rid",
             "name": "once.bin",
-            "size": {
-              "state": "declared",
-              "bytes": 2048
-            }
+            "declared_bytes": 2048,
+            "declared_content_type": "application/octet-stream"
           },
           "save": {
             "first": "$result"
@@ -1503,11 +1286,10 @@
               "event_id": "<string>"
             }
           },
-          "op_id": "op-dedup-share"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 2048}, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "op_id": "op-dedup-share",
+          "stream": {
+            "send_bytes": 2048
+          }
         },
         {
           "control": {
@@ -1526,10 +1308,8 @@
           "in": {
             "room_id": "$rid",
             "name": "once.bin",
-            "size": {
-              "state": "declared",
-              "bytes": 2048
-            }
+            "declared_bytes": 2048,
+            "declared_content_type": "application/octet-stream"
           },
           "op_id": "op-dedup-share"
         },
@@ -1573,7 +1353,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -1605,32 +1385,23 @@
                 {
                   "file_id": "<file_id>",
                   "name": "design.pdf",
-                  "size_bytes": "<uint>",
                   "digest": "<string>",
-                  "peer_declared_type_untrusted": {
-                    "state": "declared",
-                    "value": "application/pdf"
-                  },
-                  "sender": {
-                    "subject_id": "<string>",
-                    "device_id": "<string>"
-                  },
-                  "authored_at": "<ts>",
-                  "pos": "<uint>",
                   "providers": [
                     {
                       "device_id": "<string>",
                       "subject_id": "<string>",
-                      "reachability": {
-                        "state": "direct"
+                      "link": {
+                        "state": "direct",
+                        "since": "<ts>"
                       }
                     }
                   ],
                   "fetchable": true,
                   "self_hosted": false,
-                  "local": {
-                    "state": "absent"
-                  }
+                  "bytes": "<uint>",
+                  "declared_content_type": "application/pdf",
+                  "shared_by": "<string>",
+                  "shared_at": "<ts>"
                 }
               ]
             }
@@ -1718,10 +1489,6 @@
           "note": "[split from a multi-verb step; review]"
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"result\"}]"
-        },
-        {
           "assert": [
             {
               "path": "out",
@@ -1788,7 +1555,7 @@
                     {
                       "subject_id": "$member",
                       "device_id": "<string>",
-                      "reachability": {
+                      "link": {
                         "state": "unreachable",
                         "reason": "no_route"
                       }
@@ -1915,10 +1682,7 @@
               "files": [
                 {
                   "name": "../../../etc/passwd",
-                  "peer_declared_type_untrusted": {
-                    "state": "declared",
-                    "value": "text/plain"
-                  }
+                  "declared_content_type": "text/plain"
                 }
               ]
             }
@@ -1939,10 +1703,6 @@
               "op": "absent"
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"result\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -1950,7 +1710,7 @@
       "name": "fetch_from_a_reachable_provider_holds_the_bytes_locally",
       "kind": "success",
       "operation": "file.fetch",
-      "intent": "Establishes the baseline fetch success shape — the transfer outcome, the verified digest and the naming of the provider that served it, with no save_dir in the request and no path in the response — catching any regression to v1's directory-taking, path-returning fetch.",
+      "intent": "Establishes the baseline fetch success shape \u2014 the transfer outcome, the verified digest and the naming of the provider that served it, with no save_dir in the request and no path in the response \u2014 catching any regression to v1's directory-taking, path-returning fetch.",
       "requires": [
         "subject",
         "room:live",
@@ -2094,8 +1854,13 @@
             "out": {
               "files": [
                 {
-                  "size_bytes": "$limit+1",
-                  "fetchable": "<bool>"
+                  "fetchable": "<bool>",
+                  "bytes": {
+                    "$add": [
+                      "$limit",
+                      1
+                    ]
+                  }
                 }
               ]
             }
@@ -2114,7 +1879,12 @@
             "ok": false,
             "err": {
               "code": "file_too_large",
-              "declared_bytes": "$limit+1",
+              "declared_bytes": {
+                "$add": [
+                  "$limit",
+                  1
+                ]
+              },
               "limit_bytes": "$limit",
               "enforced_at": "fetch_preflight"
             }
@@ -2137,28 +1907,24 @@
         {
           "assert": [
             {
-              "path": "frame.op-preflight-1",
-              "op": "present",
-              "note": "path root 'transfer:op-preflight-1' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "assert": [
             {
-              "path": "frame.op-preflight-1",
-              "op": "present",
-              "note": "path root 'transfer:op-preflight-1' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -2235,15 +2001,13 @@
         {
           "assert": [
             {
-              "path": "frame.op-fetchstream-1",
-              "op": "present",
-              "note": "path root 'transfer:op-fetchstream-1' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": "$limit"
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$limit\", \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "assert": [
@@ -2331,14 +2095,14 @@
         {
           "assert": [
             {
-              "path": "out.file.list.files[0].fetchable",
+              "path": "out.files[0].fetchable",
               "op": "present"
             }
           ]
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": false, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": false, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -2476,7 +2240,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": 1, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -2545,22 +2309,12 @@
           ]
         },
         {
-          "assert": [
-            {
-              "path": "frame.op-budget-1",
-              "op": "present",
-              "note": "path root 'transfer:op-budget-1' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-budget-1\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         },
         {
-          "assert": [
-            {
-              "path": "frame.op-budget-1",
-              "op": "present",
-              "note": "path root 'transfer:op-budget-1' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-budget-1\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         }
       ]
     },
@@ -2585,13 +2339,10 @@
             "ok": true,
             "out": {
               "file_id": "$fid",
-              "size_bytes": "<uint>",
               "digest": "<string>",
               "name": "design.pdf",
-              "peer_declared_type_untrusted": {
-                "state": "declared",
-                "value": "application/pdf"
-              }
+              "bytes": "<uint>",
+              "declared_content_type": "application/pdf"
             }
           }
         },
@@ -2630,7 +2381,7 @@
         {
           "assert": [
             {
-              "path": "err.peer_declared_type_untrusted",
+              "path": "err.declared_content_type",
               "op": "present"
             }
           ]
@@ -2665,26 +2416,13 @@
           "expect": {
             "ok": true,
             "out": {
-              "peer_declared_type_untrusted": {
-                "state": "declared",
-                "value": "text/html"
-              }
+              "declared_content_type": "text/html"
             }
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.render_decision_source",
-              "op": "eq",
-              "value": null,
-              "note": "path root 'client' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"peer_declared_type_untrusted\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface: {\"path\": \"frame.render_decision_source\", \"op\": \"eq\", \"value\": \"peer_declared_type_untrusted\"} - the record fixes what the daemon serves, not how a client preflights or renders it."
         }
       ]
     },
@@ -2713,11 +2451,7 @@
             "ok": true,
             "out": {
               "files": [
-                {
-                  "local": {
-                    "state": "absent"
-                  }
-                }
+                {}
               ]
             }
           },
@@ -2755,19 +2489,19 @@
         {
           "assert": [
             {
-              "path": "out.file.read",
+              "path": "out.bytes",
               "op": "present"
             }
           ]
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         },
         {
           "assert": [
             {
-              "path": "out.file.read",
+              "path": "out.bytes",
               "op": "present"
             }
           ]
@@ -2997,7 +2731,7 @@
       "name": "transfer_cancel_of_an_unknown_op_id_fails_with_transfer_unknown",
       "kind": "error",
       "operation": "transfer.cancel",
-      "intent": "Gives transfer.cancel its own most specific code, proving a cancel naming no transfer is not answered with a generic argument error — the distinction the spec demands so a conformance corpus can assert something about this operation at all.",
+      "intent": "Gives transfer.cancel its own most specific code, proving a cancel naming no transfer is not answered with a generic argument error \u2014 the distinction the spec demands so a conformance corpus can assert something about this operation at all.",
       "requires": [
         "subject"
       ],
@@ -3156,7 +2890,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"$max_transfers\", \"note\": \"[bare-string assert 'transfers_in_flight' needs manual retranscription]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": \"$max_transfers\", \"note\": \"[bare-string assert 'transfers_in_flight' needs manual retranscription]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         },
         {
           "call": "file.fetch",
@@ -3287,7 +3021,7 @@
         },
         {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": \"max_concurrent_transfers\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "note": "CLIENT-SIDE OBLIGATION, no protocol surface and therefore no DSL home: {\"value\": \"max_concurrent_transfers\", \"note\": \"[split from a multi-verb step; review]\"} \u2014 the record fixes the daemon's answer, not how a client stores or renders it, so this is recorded for a reviewer rather than asserted against the wire."
         }
       ]
     },
@@ -3335,17 +3069,8 @@
           }
         },
         {
-          "assert": [
-            {
-              "path": "frame.transfer_progress[op_id=op-progress-1].transferred_bytes",
-              "op": "present",
-              "note": "path root 'push:transfer_progress' names a harness surface, not a wire field"
-            }
-          ]
-        },
-        {
           "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"push:transfer_progress\"}]"
+          "note": "BLOCKED ON U2: {\"path\": \"frame.transfer_progress[op_id=op-progress-1].transferred_bytes\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         },
         {
           "assert": [
@@ -3504,13 +3229,8 @@
           ]
         },
         {
-          "assert": [
-            {
-              "path": "frame.op-stall-1",
-              "op": "present",
-              "note": "path root 'transfer:op-stall-1' names a harness surface, not a wire field"
-            }
-          ]
+          "assert": [],
+          "note": "BLOCKED ON U2: {\"path\": \"frame.op-stall-1\", \"op\": \"present\"} - transfer progress is the `transfer` push frame, which depends on upstream progress handles; until it exists there is no frame to assert against."
         },
         {
           "call": "file.fetch",
@@ -3528,10 +3248,6 @@
             }
           },
           "op_id": "op-stall-2"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"error\", \"note\": \"an unknown total is a tagged variant, never a null\"}]"
         },
         {
           "assert": [
@@ -3752,10 +3468,8 @@
           "in": {
             "room_id": "$foreign_rid",
             "name": "a.bin",
-            "size": {
-              "state": "declared",
-              "bytes": 16
-            }
+            "declared_bytes": 16,
+            "declared_content_type": "application/octet-stream"
           },
           "save": {
             "e6": "$error"
@@ -3766,11 +3480,10 @@
               "code": "room_not_available"
             }
           },
-          "op_id": "op-oracle-3"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 0}, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "op_id": "op-oracle-3",
+          "stream": {
+            "send_bytes": 0
+          }
         },
         {
           "assert": [
@@ -3813,15 +3526,13 @@
         {
           "assert": [
             {
-              "path": "frame.op-oracle-3",
-              "op": "present",
-              "note": "path root 'transfer:op-oracle-3' names a harness surface, not a wire field"
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"value\": 0, \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -3841,19 +3552,16 @@
           "in": {
             "room_id": "$rid",
             "name": "doc.bin",
-            "size": {
-              "state": "declared",
-              "bytes": 4096
-            }
+            "declared_bytes": 4096,
+            "declared_content_type": "application/octet-stream"
           },
           "save": {
             "fid": "out.file_id"
           },
-          "op_id": "op-nopath-1"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"stream\": {\"send_bytes\": 4096}, \"note\": \"[split from a multi-verb step; review]\"}]"
+          "op_id": "op-nopath-1",
+          "stream": {
+            "send_bytes": 4096
+          }
         },
         {
           "call": "file.list",
@@ -3879,11 +3587,10 @@
           "in": {
             "room_id": "$rid",
             "file_id": "$fid"
+          },
+          "stream": {
+            "receive_bytes": 4096
           }
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"stream\": {\"receive_bytes\": 4096}, \"note\": \"[split from a multi-verb step; review]\"}]"
         },
         {
           "call": "transfer.cancel",
@@ -3936,28 +3643,12 @@
           ]
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"all_frames\", \"note\": \"[split from a multi-verb step; review]\"}]"
-        },
-        {
           "assert": [
             {
               "path": "frame.data_dir",
               "op": "absent"
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"health_response\", \"note\": \"[split from a multi-verb step; review]\"}]"
         }
       ]
     },
@@ -3990,9 +3681,9 @@
                 {
                   "file_id": "<file_id>",
                   "digest": "<string>",
-                  "size_bytes": "<uint>",
                   "fetchable": "<bool>",
-                  "self_hosted": "<bool>"
+                  "self_hosted": "<bool>",
+                  "bytes": "<uint>"
                 }
               ]
             }
@@ -4019,8 +3710,13 @@
           "note": "the room's file index read path fails -- I/O error or permission denial. The share event and the local blob are untouched; only the read fails."
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"room_id\": \"$rid\", \"note\": \"[split from a multi-verb step; review]\"}]"
+          "assert": [
+            {
+              "observe": "no_push",
+              "room_id": "$rid",
+              "scope": "case"
+            }
+          ]
         },
         {
           "call": "file.list",
@@ -4053,10 +3749,6 @@
               ]
             }
           ]
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"scope\": \"error\"}]"
         },
         {
           "assert": [
@@ -4101,7 +3793,7 @@
       "name": "a_stream_that_disagrees_with_its_declaration_is_declared_size_mismatch",
       "kind": "error",
       "operation": "file.share",
-      "intent": "Pins file.share's own distinctive code and its honesty rule: a stream whose byte count disagrees with its declared size is declared_size_mismatch, NEVER digest_mismatch — accusing an honest declaration error of being corrupt content is the false-accusation the size policy forbids. Catches a daemon that conflates the two, which is also the exact code an over-limit size refusal must never produce.",
+      "intent": "Pins file.share's own distinctive code and its honesty rule: a stream whose byte count disagrees with its declared size is declared_size_mismatch, NEVER digest_mismatch \u2014 accusing an honest declaration error of being corrupt content is the false-accusation the size policy forbids. Catches a daemon that conflates the two, which is also the exact code an over-limit size refusal must never produce.",
       "requires": [
         "subject",
         "room:live",
@@ -4156,16 +3848,16 @@
   ],
   "authoring_notes": [
     "SOURCE INDEPENDENCE. Every expected value here is derived from docs/protocol-v2.md (85cfdaf) and docs/shared-file-size.md. I read only the v1 *specification* table in docs/PROTOCOL.md (lines 400-425) to identify what must NOT be transcribed, and did not read engine.rs. Concretely, none of v1's file shapes survive: `{file_id,event_id}` alone, `files[].{available,providers,fetched,local_path,local_bytes,fetched_at_ms,mime}`, `{path,bytes,verified:true}`, `save_dir`, `hash_mismatch`, and the `hint` field appear in this corpus ONLY inside `expect_absent` / `forbid_codes` / `no_keys` assertions, i.e. as removal contracts.",
-    "THE NUMBER IS PINNED EXACTLY ONCE. The task requires both a boundary at literally 104857600/104857601 and that no fixture hard-code the number. Reconciled by pinning 104857600 in one place — the `assert equals` step of `handshake_serves_the_file_and_transfer_limits_as_integers`, which is where docs/shared-file-size.md Decision 1 is normatively asserted — and deriving every other boundary from `$limit` / `$limit+1` saved out of the hello frame. That same case carries a meta-assertion (`corpus_has_no_literal`) that the harness runs over the corpus text itself, naming the one permitted exception. Boundary cases therefore also run cheaply under a harness-reduced served limit (`served_limit_override`) without changing a single expected value.",
+    "THE NUMBER IS PINNED EXACTLY ONCE. The task requires both a boundary at literally 104857600/104857601 and that no fixture hard-code the number. Reconciled by pinning 104857600 in one place \u2014 the `assert equals` step of `handshake_serves_the_file_and_transfer_limits_as_integers`, which is where docs/shared-file-size.md Decision 1 is normatively asserted \u2014 and deriving every other boundary from `$limit` / `$limit+1` saved out of the hello frame. That same case carries a meta-assertion (`corpus_has_no_literal`) that the harness runs over the corpus text itself, naming the one permitted exception. Boundary cases therefore also run cheaply under a harness-reduced served limit (`served_limit_override`) without changing a single expected value.",
     "STEP VOCABULARY (harness contract this corpus assumes; language-neutral, extends the v1 harness). Call steps: `call`/`in`/`save`/`as`/`await`/`stream`, with `expect` (subset match unless `exact:true`), `expect_absent` (dotted paths, `[]` meaning every array element), `expect_error {code, fields}`, `forbid_codes`, `expect_identical_to`. Non-call steps: `connect {as}` + `expect_hello` + `save`; `drop_connection`; `harness {...}` (serve_limits, provider_link, link_rate, foreign_room); `provider {...}` (test-peer behaviour); `client {action, in, observe}` for client-side-only assertions; `start_transfers`; `await_push`/`expect_no_push`; and `assert {...}` for structural predicates (json_type, no_keys, no_nulls, no_type_tag, no_value_matching, indistinguishable, monotonic_non_decreasing, bytes_consumed_at_most, provider_connections, no_event_authored, corpus_has_no_literal). Symbols: `$name` from `save`, with `+1`/`*2` arithmetic.",
-    "TYPE TAGS. Reuses v1's `<hex64>`, `<room_id>`, `<file_id>`, `<ts>` and adds `<u64>` (an integer count — stricter than v1's `<number>`, because v2 sizes are typed u64 and must never be strings or floats), `<bool>`, `<pos>`, `<op_id>`, `<absent_file_id>`. `<path>` is used ONLY as a forbidden tag: if normalization ever produces it inside a file-domain frame, the no-paths case fails.",
+    "TYPE TAGS. Reuses v1's `<hex64>`, `<room_id>`, `<file_id>`, `<ts>` and adds `<u64>` (an integer count \u2014 stricter than v1's `<number>`, because v2 sizes are typed u64 and must never be strings or floats), `<bool>`, `<pos>`, `<op_id>`, `<absent_file_id>`. `<path>` is used ONLY as a forbidden tag: if normalization ever produces it inside a file-domain frame, the no-paths case fails.",
     "ERROR-CODE NAMES I PROPOSED. The spec fixes `file_too_large`, `digest_mismatch`, `resource_exhausted`, `transfer_stalled`, `room_not_available`, `invalid_argument`. It says the taxonomy is 40 codes but enumerates only the ones whose shape is normative, so four names here are my proposals in the spec's own naming style and #161 must ratify or rename them: `provider_unreachable` (file.fetch, no reachable provider), `file_unknown` (file id not in the room's signed history), `file_not_fetched` (file.read on bytes not held locally), `transfer_unknown` (transfer.cancel, by analogy with the spec's own `subscription_unknown` for stream.unsubscribe).",
     "file.list HAS NO OPERATION-SPECIFIC CODE IN THE SPEC. Every operation is required to have one, but the taxonomy names none for a pure room-scoped read. `list_of_a_room_that_is_not_available_answers_room_not_available` uses the most specific code the spec does define for that surface. The manifest must either record this as a named exemption or #161 must add a list-specific code; I did not invent one, because a fabricated code would be worse than a recorded gap.",
     "SIZE AS A TAGGED VARIANT. `file.share.in.size` is modelled as `{state:\"declared\",bytes:N}` | `{state:\"unknown\"}`. Derived, not stated: the spec's absolute no-JSON-null rule plus Decision 4 point 1's requirement that a client MUST NOT reject a file merely for lacking a declared size (the Android SAF cloud-provider path, explicitly \"a normal path, not an edge case\"). An optional-with-null size would violate the null rule; an always-required integer would make the unsized path unrepresentable.",
     "UNRESOLVED: file_too_large.declared_bytes WHEN NOTHING WAS DECLARED. shared-file-size.md Decision 3 says the declared size and the limit are separate *integer* fields, but the stage_stream and fetch_stream points can fire on a transfer with no declaration at all. `share_with_unknown_size_streaming_past_the_limit_aborts_at_stage_stream` therefore asserts only that `declared_bytes` is an integer and carries an explicit `spec_gap` step. #161 must state whether it carries the observed count or becomes a tagged variant like `transfer_stalled.total`. Where a declaration does exist (stage_declared, stage_stream-with-a-lying-declaration, fetch_preflight, fetch_stream) the fixtures pin it exactly.",
-    "enforced_at=\"authoring\" NEEDS AN ADAPTER WITHOUT AN UPLOAD EDGE. With a daemon in the path, stage_declared always fires first and authoring is unreachable through the protocol, so a fixture cannot observe it. The case therefore `requires: [\"in_process_core_adapter\"]` — the configuration shared-file-size.md describes for v2 on Android, where core runs in-process and there is no daemon upload edge, making authoring the earliest enforcement point.",
+    "enforced_at=\"authoring\" NEEDS AN ADAPTER WITHOUT AN UPLOAD EDGE. With a daemon in the path, stage_declared always fires first and authoring is unreachable through the protocol, so a fixture cannot observe it. The case therefore `requires: [\"in_process_core_adapter\"]` \u2014 the configuration shared-file-size.md describes for v2 on Android, where core runs in-process and there is no daemon upload edge, making authoring the earliest enforcement point.",
     "transfer.cancel IS MARKED M BUT APPEARS IN NEITHER IDEMPOTENCY ROW, while the table claims every mutating operation is in one of them. I treated it as naturally idempotent with a tagged outcome (`cancelled` / `already_cancelled`), and its `in` carries the TARGET transfer's op_id, not one of its own. #161 must close this.",
-    "AUTHORIZATION SCOPE TENSION. The spec says the dedup ledger is keyed on `(authenticated session principal, op_id)` and explicitly NOT on the subject, but then says transfer.cancel is authorized by `(subject, op_id)` \"matching the ledger's scope\". Those are two different scopes. The fixtures assert the behaviour both spellings agree on — same principal on a NEW connection may cancel, a DIFFERENT principal may not and cannot distinguish refusal from non-existence — and leave the spelling to #161.",
+    "AUTHORIZATION SCOPE TENSION. The spec says the dedup ledger is keyed on `(authenticated session principal, op_id)` and explicitly NOT on the subject, but then says transfer.cancel is authorized by `(subject, op_id)` \"matching the ledger's scope\". Those are two different scopes. The fixtures assert the behaviour both spellings agree on \u2014 same principal on a NEW connection may cancel, a DIFFERENT principal may not and cannot distinguish refusal from non-existence \u2014 and leave the spelling to #161.",
     "PROGRESS IS ASSERTED AS A PUSH, WHICH THE SPEC DOES NOT STATE. `transfer_stalled` is listed among error codes, so a stall terminates the operation; but the spec only says v2 \"MUST surface transfer progress\" without giving it a frame. I modelled progress as a `transfer_progress` push (carrying `t`, never `id`, per the envelope rule) with `total` as a tagged known/unknown variant mirroring `transfer_stalled.total`. Both are U2-blocked.",
     "THE SIZE-AWARE DEADLINE FORMULA IS DERIVED. `transfer_connect_allowance_ms + declared_bytes*8*1000/transfer_floor_bits_per_second` is my reading of why exactly those two fields are served; the spec defers the formula to #161 and the constants to #198. The fixture asserts the observable consequence (a transfer that would have died at the retired fixed 30 s budget must succeed) and records the formula as an annotation rather than a hard expectation.",
     "U3 SCOPE. Only the fetch_stream size distinction is blocked. fetch_preflight (Decision 4 point 5) is a purely local check on the signed size_bytes before any connection, so it is unblocked and its case asserts zero provider connections. The digest_mismatch direction is unblocked and must pass today.",

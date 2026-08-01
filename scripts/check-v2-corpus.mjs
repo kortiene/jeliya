@@ -17,7 +17,13 @@ import { fileURLToPath } from "node:url";
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "conformance", "v2");
 
 const DSL_VERBS = new Set(["call", "http", "upgrade", "send", "await", "control", "assert"]);
-const AUX_KEYS = new Set(["in", "op_id", "on", "expect", "save", "note"]);
+const AUX_KEYS = new Set(["in", "op_id", "on", "expect", "save", "note", "stream"]);
+// `stream` is legal only on the two operations the record streams bytes for,
+// and carries exactly one direction.
+const STREAMING_OPS = new Map([
+  ["file.share", "send_bytes"],
+  ["file.read", "receive_bytes"],
+]);
 const KINDS = new Set(["success", "error", "malformed", "boundary", "authorization", "handshake", "push", "ordering"]);
 const CONTROL_DO = new Set([
   "advance_clock", "idle", "disconnect", "reconnect", "inject_fault",
@@ -142,10 +148,18 @@ function checkAssertion(a, file, caseName, where) {
   if ("op" in a && !ASSERT_OPS.has(a.op)) {
     fail(file, caseName, where, `unknown assert op "${a.op}" (closed set of ${ASSERT_OPS.size})`);
   }
-  if ("path" in a && typeof a.path === "string") {
-    const root = a.path.split(/[.[]/)[0];
-    if (!["out", "err", "frame"].includes(root) && !root.startsWith("$")) {
-      fail(file, caseName, where, `assert path rooted at "${root}" (must be out/err/frame/$variable)`);
+  if ("path" in a) {
+    // `path` is "a dotted path rooted at out, err, frame, or a $variable"
+    // (README). A non-string path resolves against nothing, so an assertion
+    // carrying one asserts nothing while still reading as coverage.
+    if (typeof a.path !== "string") {
+      fail(file, caseName, where,
+        `assert path is ${Array.isArray(a.path) ? "an array" : typeof a.path} — must be a dotted string`);
+    } else {
+      const root = a.path.split(/[.[]/)[0];
+      if (!["out", "err", "frame"].includes(root) && !root.startsWith("$")) {
+        fail(file, caseName, where, `assert path rooted at "${root}" (must be out/err/frame/$variable)`);
+      }
     }
   }
 }
@@ -178,6 +192,35 @@ function checkStep(step, file, caseName, stepIdx) {
   }
   if (step.call !== undefined && !OPERATIONS.has(step.call)) {
     fail(file, caseName, where, `call names unknown operation "${step.call}"`);
+  }
+  if (step.stream !== undefined) {
+    // `stream` rides on the call it belongs to, like `in`. It is not a verb:
+    // the bytes and the declaration are one operation, and splitting them
+    // would leave a step with a stream and nothing to stream for.
+    if (step.call === undefined) {
+      fail(file, caseName, where, `stream is only legal on a call step`);
+    } else if (!STREAMING_OPS.has(step.call)) {
+      fail(file, caseName, where,
+        `stream on "${step.call}" — only ${[...STREAMING_OPS.keys()].join(" and ")} stream bytes`);
+    } else if (typeof step.stream !== "object" || step.stream === null || Array.isArray(step.stream)) {
+      fail(file, caseName, where, `stream is not an object`);
+    } else {
+      const direction = STREAMING_OPS.get(step.call);
+      const got = Object.keys(step.stream);
+      if (got.length !== 1 || got[0] !== direction) {
+        fail(file, caseName, where,
+          `stream on ${step.call} takes exactly {${direction}}, got {${got.join(", ")}}`);
+      } else {
+        const v = step.stream[direction];
+        const computed = v !== null && typeof v === "object" && Object.keys(v).length === 1
+          && Object.keys(v)[0].startsWith("$");
+        const variable = typeof v === "string" && v.startsWith("$");
+        if (!computed && !variable && !(Number.isInteger(v) && v >= 0)) {
+          fail(file, caseName, where,
+            `stream.${direction} must be a <uint>, a $variable, or a computed node`);
+        }
+      }
+    }
   }
   if (step.control !== undefined) {
     const c = step.control;
