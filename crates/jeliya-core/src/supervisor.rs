@@ -332,6 +332,10 @@ fn collect_committed(
     seen: &mut BTreeSet<EventId>,
     next_push_rank: &mut u64,
 ) -> Vec<CommittedEvent> {
+    // The pushed event's `author.standing` is the same derivation `room.members`
+    // and `room.timeline` serve, so it is folded from the same tail rather than
+    // assumed active. One pre-pass over rows already in hand.
+    let departures = crate::projection::Departures::from_rows(tail.iter());
     let mut out = Vec::new();
     let mut rank = 0u64;
     for se in tail {
@@ -343,7 +347,7 @@ fn collect_committed(
         if !seen.insert(se.event_id) {
             continue; // already pushed by an earlier batch or reconcile
         }
-        let event = crate::projection::materialize(se, 0, snapshot)
+        let event = crate::projection::materialize(se, 0, snapshot, &departures)
             .expect("is_committed implies materializable");
         if this_rank >= *next_push_rank {
             // In-order append at or past the high-water mark.
@@ -1198,9 +1202,15 @@ impl RoomSupervisor {
             let self_member = snapshot.member(&self_key);
             let role = snapshot.role(&self_key).map(role_label);
             let store = self.open_store()?;
-            let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
-            let status = self_member
-                .map(|member| status_label(member.status, &self_key, &removed_ids, &left_ids));
+            let departures = departure_sets(&store, &room_id)?;
+            let status = self_member.map(|member| {
+                status_label(
+                    member.status,
+                    &self_key,
+                    &departures.removed,
+                    &departures.left,
+                )
+            });
             // Recency projection (docs/room-attention.md decision 2): the
             // `created_at` the newest signed event's author actually signed —
             // never the wall clock, never render time. One bounded store read
@@ -1691,14 +1701,19 @@ impl RoomSupervisor {
         let room_id = parse_room_id(room_id_str)?;
         let snapshot = self.readable_snapshot(&room_id).await?;
         let store = self.open_store()?;
-        let (removed_ids, left_ids) = departure_sets(&store, &room_id)?;
+        let departures = departure_sets(&store, &room_id)?;
         Ok(snapshot
             .members()
             .map(|m| {
                 json!({
                     "identity_id": m.identity.to_string(),
                     "role": role_label(m.role),
-                    "status": status_label(m.status, &m.identity, &removed_ids, &left_ids),
+                    "status": status_label(
+                        m.status,
+                        &m.identity,
+                        &departures.removed,
+                        &departures.left,
+                    ),
                 })
             })
             .collect())
@@ -1711,12 +1726,45 @@ impl RoomSupervisor {
     /// `invite.create`: mint a key-bound invite ticket (owner only). When the
     /// room is open the `member.invited` publishes through the live node (so
     /// it also fans out); otherwise it persists directly, like the CLI.
+    /// [`Self::create_invite_at`] with a **relative** expiry spec
+    /// (`<int>{s|m|h|d}`), resolved against this call's clock.
+    ///
+    /// Test-only: protocol v2's `invite.mint` carries an absolute `<ts>`, so
+    /// the daemon path takes [`Self::create_invite_at`]. The relative form
+    /// survives because it is how the lifecycle tests express "an hour from
+    /// now" without pinning a clock.
+    #[cfg(test)]
     pub(crate) async fn create_invite(
         &self,
         room_id_str: &str,
         invitee_hex: &str,
         role: &str,
         expiry: Option<&str>,
+    ) -> CoreResult<String> {
+        let absolute = match expiry {
+            Some(spec) => Some(parse_expiry(spec, now_ms())?),
+            None => None,
+        };
+        self.create_invite_at(room_id_str, invitee_hex, role, absolute)
+            .await
+    }
+
+    /// Mint a key-bound invite ticket with an **absolute** expiry in ms since
+    /// the epoch, which is what protocol v2's `invite.mint` carries.
+    ///
+    /// The absolute form exists so the expiry the caller asked for is the
+    /// expiry the capability is signed with, exactly. Converting to a relative
+    /// spec and re-resolving it here against a later clock shifted the signed
+    /// instant off the requested one, so `invite.mint`'s reply, the
+    /// `invite.list` row, and the capability itself could all disagree — and a
+    /// faithful `op_id` retry that resent the reply's value became an
+    /// `op_id_conflict`.
+    pub(crate) async fn create_invite_at(
+        &self,
+        room_id_str: &str,
+        invitee_hex: &str,
+        role: &str,
+        expires_at_ms: Option<u64>,
     ) -> CoreResult<String> {
         let room_id = parse_room_id(room_id_str)?;
         if role != "member" && role != "agent" {
@@ -1740,9 +1788,13 @@ impl RoomSupervisor {
         getrandom::fill(secret_bytes.as_mut_slice())
             .map_err(|e| internal("OS CSPRNG unavailable", e))?;
         let cap_hash = capability_hash(&room_id, &invite_id, &secret_bytes);
-        let expires_at = expiry
-            .map(|spec| parse_expiry(spec, created_at))
-            .transpose()?;
+        // The absolute instant the caller named, signed verbatim.
+        let expires_at = expires_at_ms;
+        if expires_at.is_some_and(|at| at <= created_at) {
+            return Err(CoreError::invalid(
+                "expiry must be in the future at the moment the capability is signed",
+            ));
+        }
 
         let is_open = self.is_open(&room_id);
         // The whole store-backed authoring path lives in one sync scope so no
@@ -2472,14 +2524,25 @@ impl RoomSupervisor {
                     break;
                 }
                 O::HashMismatch => {
-                    return Err(CoreError::new(
+                    // The upstream mismatch arm still hands back the bytes it
+                    // rejected, so the digest they actually hash to is
+                    // computable here rather than unknowable. It travels as
+                    // the error's machine-readable detail so `file.fetch` can
+                    // serve `digest_mismatch { expected, observed }` with both
+                    // halves real, instead of an empty `observed`.
+                    let observed = data.map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+                    let error = CoreError::new(
                         ErrorKind::HashMismatch,
                         format!(
                             "integrity check FAILED: fetched bytes do not hash to the declared \
                              {}; refusing to save",
                             shared.blob_hash
                         ),
-                    ));
+                    );
+                    return Err(match observed {
+                        Some(observed) => error.with_detail(observed),
+                        None => error,
+                    });
                 }
                 O::DeniedAtConnect => {
                     denied_at_connect += 1;
@@ -2925,8 +2988,16 @@ impl RoomSupervisor {
         Ok(released)
     }
 
-    /// `pipe.close`: publish a signed `pipe.closed` (owner or room owner) and
-    /// tear down any local forwarder.
+    /// `pipe.close`: publish a signed `pipe.closed` and tear down any local
+    /// forwarder.
+    ///
+    /// **The publisher, and only the publisher.** The record makes revocation a
+    /// relation, not a role: "`pipe.revoke` is **not** on this list. It is
+    /// restricted to the pipe's publisher, which is a narrower relation than
+    /// role and answers `pipe_not_publisher`" (`docs/protocol-v2.md`). An
+    /// earlier revision also admitted the room's administrator, which let one
+    /// subject destroy another subject's published tunnel — a role bypassing a
+    /// relation the record deliberately made narrower than any role.
     pub(crate) async fn pipe_close(
         &self,
         room_id_str: &str,
@@ -2944,18 +3015,18 @@ impl RoomSupervisor {
         // Sync scope: no !Sync store borrow crosses the pipe_close await.
         {
             let store = self.open_store()?;
-            let opened = open_pipe(&store, &room_id, pipe_id)?;
-            let is_admin = snapshot.admin() == Some(&self_id);
-            let is_owner = opened.as_ref().is_some_and(|o| o.owner_id == self_id);
-            if opened.is_none() {
+            // Unknown-pipe first, so a pipe this daemon has never seen stays
+            // `pipe_unknown` rather than being reported as an authorization
+            // refusal that would confirm it exists.
+            let Some(opened) = open_pipe(&store, &room_id, pipe_id)? else {
                 return Err(CoreError::invalid(format!(
                     "no pipe {pipe_id_hex} known in room {room_id}"
                 )));
-            }
-            if !is_admin && !is_owner {
+            };
+            if opened.owner_id != self_id {
                 return Err(CoreError::new(
                     ErrorKind::PipeDenied,
-                    "only the pipe owner or the room owner can close a pipe",
+                    "only the pipe's publisher can close it",
                 ));
             }
         }
@@ -3683,32 +3754,11 @@ pub(crate) fn genesis_name(store: &EventStore, room_id: &RoomId) -> Option<Strin
 pub(crate) fn departure_sets(
     store: &EventStore,
     room_id: &RoomId,
-) -> CoreResult<(BTreeSet<IdentityKey>, BTreeSet<IdentityKey>)> {
-    let mut removed_ids = BTreeSet::new();
-    let mut left_ids = BTreeSet::new();
-    for stored in store
+) -> CoreResult<crate::projection::Departures> {
+    let rows = store
         .room_tail(room_id, u32::MAX)
-        .map_err(|e| internal("could not read member departure history", e))?
-    {
-        if let Ok(event) = SignedEvent::decode(&stored.wire.signed) {
-            match event.content {
-                Content::MemberJoined(_) => {
-                    removed_ids.remove(&event.sender_id);
-                    left_ids.remove(&event.sender_id);
-                }
-                Content::MemberRemoved(c) => {
-                    left_ids.remove(&c.member_id);
-                    removed_ids.insert(c.member_id);
-                }
-                Content::MemberLeft(c) => {
-                    removed_ids.remove(&c.member_id);
-                    left_ids.insert(c.member_id);
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok((removed_ids, left_ids))
+        .map_err(|e| internal("could not read member departure history", e))?;
+    Ok(crate::projection::Departures::from_rows(rows.iter()))
 }
 
 /// The removal among `subject`'s current causal heads.
@@ -3912,6 +3962,7 @@ fn open_pipe(
 
 /// Parse an expiry spec (`<int>{s|m|h|d}`, bare integer = seconds) into an
 /// absolute ms timestamp anchored at `now`.
+#[cfg(test)]
 fn parse_expiry(spec: &str, now: u64) -> CoreResult<u64> {
     let spec = spec.trim();
     if spec.is_empty() {
@@ -6028,6 +6079,94 @@ mod tests {
         assert_eq!(err.kind, ErrorKind::NotAMember);
 
         owner.close_room(&room_id).await.unwrap();
+    }
+
+    /// Revocation is a **relation**, not a role: the record restricts
+    /// `pipe.revoke` to the pipe's publisher, "a narrower relation than role",
+    /// and answers `pipe_not_publisher`. An earlier revision authorized
+    /// `is_admin || is_owner`, so the room's authority could destroy a tunnel
+    /// another member published — a role bypassing a relation the record
+    /// deliberately made narrower than any role. The authority here is even
+    /// inside the pipe's audience, and still may not close it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pipe_close_refuses_a_room_authority_that_did_not_publish() {
+        let owner_dir = tempdir().unwrap();
+        let owner_profile = crate::identity::create(owner_dir.path()).unwrap();
+        let owner = RoomSupervisor::new(owner_dir.path().to_path_buf(), true).unwrap();
+        let room_id_str = owner.create_room("Publisher Only").unwrap();
+        let room_id: RoomId = room_id_str.parse().unwrap();
+        let opened = owner.open_room(&room_id_str, &[]).await.unwrap();
+        let owner_addr = opened["endpoint"]["addr"].as_str().unwrap().to_owned();
+
+        let member_dir = tempdir().unwrap();
+        let member_profile = crate::identity::create(member_dir.path()).unwrap();
+        let member = RoomSupervisor::new(member_dir.path().to_path_buf(), true).unwrap();
+        let ticket = owner
+            .create_invite(&room_id_str, &member_profile.identity_id, "member", None)
+            .await
+            .unwrap();
+        member
+            .join_room(&ticket, None, std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        member
+            .open_room(&room_id_str, std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        wait_member_status(&owner, &room_id_str, &member_profile.identity_id, "active").await;
+
+        // The MEMBER publishes, authorizing the room's owner as its audience.
+        let owner_id: iroh_rooms::identity::IdentityKey =
+            owner_profile.identity_id.parse().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        let (pipe_id, _) = member
+            .pipe_expose_multi(
+                &room_id,
+                target,
+                &target.to_string(),
+                std::slice::from_ref(&owner_id),
+            )
+            .await
+            .unwrap();
+        let pipe_id_hex = hex::encode(pipe_id);
+
+        // Wait for the announcement to reach the owner's log, so the refusal
+        // below is the authorization one and not "no such pipe".
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let pipes = owner.pipe_list(&room_id_str).await.unwrap();
+            if pipes
+                .iter()
+                .any(|p| p["pipe_id"].as_str() == Some(pipe_id_hex.as_str()))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the member's pipe.opened to reach the owner"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // The room's authority, inside the audience, is still not the publisher.
+        let err = owner
+            .pipe_close(&room_id_str, &pipe_id_hex)
+            .await
+            .expect_err("a room authority that did not publish cannot revoke");
+        assert_eq!(
+            err.kind,
+            ErrorKind::PipeDenied,
+            "the authority earns the publisher-only refusal, which typed maps to \
+             pipe_not_publisher, never a silent success"
+        );
+
+        // The publisher itself can, so the refusal is about the relation and
+        // not about the pipe being unclosable.
+        member.pipe_close(&room_id_str, &pipe_id_hex).await.unwrap();
+
+        member.close_room(&room_id_str).await.unwrap();
+        owner.close_room(&room_id_str).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

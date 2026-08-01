@@ -2000,7 +2000,7 @@
       "name": "subject_absent_outranks_room_not_available_and_is_not_a_membership_oracle",
       "kind": "authorization",
       "operation": "room.timeline",
-      "intent": "The non-oracle property applied to the subject precondition. A subject-less caller MUST NOT be able to use error-code selection as a room probe: a well-formed unknown room id, a well-formed id the daemon might hold, and a malformed id all return the identical subject_absent object with identical fields and indistinguishable timing. Catches an implementation that validates or looks up the room first and thereby leaks room_not_available versus invalid_argument to an unauthenticated-by-subject caller.",
+      "intent": "The non-oracle property applied to the subject precondition. A subject-less caller MUST NOT be able to use error-code selection as a ROOM probe: a well-formed unknown room id, a well-formed id the daemon might hold, and a malformed id all return the identical subject_absent object with identical fields and indistinguishable timing. Catches an implementation that looks the room up first and thereby leaks room_not_available to an unauthenticated-by-subject caller. It does NOT assert that structural refusal is preempted: the validation-order table runs structural decode and bounds as step 1 and the subject precondition as step 2, and the record explains why that costs the property nothing. A step-1 refusal names only a value the caller sent and a limit hello already served, so the final step asserts invalid_argument and the room-lookup steps assert subject_absent — which is the distinction the property actually turns on.",
       "requires": [
         "daemon:fresh",
         "subject:none",
@@ -2121,14 +2121,44 @@
             "limit": 999999999,
             "direction": "forward"
           },
-          "note": "An over-limit page size also does not preempt the precondition.",
+          "note": "An over-limit page size is refused at step 1, AHEAD of the subject precondition. This step previously asserted subject_absent, which contradicted the validation-order table it was meant to cover: that table runs structural decode and bounds as step 1 and the subject precondition as step 2, and the record states outright that putting format and bounds first 'does not weaken the non-oracle property' because 'step 1 discloses only the value formats this record publishes, never any daemon state'. timeline_page_max is served in hello to this very connection before any subject exists, so refusing against it reveals nothing the client was not already told. The oracle this case exists to catch is a room LOOKUP preempting the precondition, which the three room_id spellings above still prove; a bound check on a value the caller sent is not one.",
           "on": "subject:A",
           "expect": {
             "ok": false,
             "err": {
-              "code": "subject_absent"
+              "code": "invalid_argument",
+              "field": "in.limit"
             }
           }
+        },
+        {
+          "note": "The bound arm carries min and max; the served maximum itself is pinned by the hello-limits case, so this one asserts the arm rather than restating a number.",
+          "assert": [
+            {
+              "path": "err.reason.state",
+              "op": "eq",
+              "value": "bound"
+            },
+            {
+              "path": "err.reason.min",
+              "op": "eq",
+              "value": 1
+            },
+            {
+              "path": "err.reason.max",
+              "op": "gte",
+              "value": 1
+            },
+            {
+              "path": "err.hint",
+              "op": "absent"
+            },
+            {
+              "path": "err",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:A"
         },
         {
           "note": "Timing is asserted as a repeated-sample distribution comparison, never as a single measurement, because 'indistinguishable timing' is normative and a single sample cannot establish it.",
