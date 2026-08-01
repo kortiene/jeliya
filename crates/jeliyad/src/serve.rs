@@ -1265,6 +1265,7 @@ async fn handle_stream_subscribe(
 /// `stream.unsubscribe` — remove the room from this connection's set.
 async fn handle_stream_unsubscribe(
     out_tx: &tokio::sync::mpsc::Sender<Message>,
+    state: &AppState,
     request: &jeliya_codec::Request,
     subscriptions: &std::sync::Arc<
         tokio::sync::Mutex<std::collections::HashMap<String, SubscriptionState>>,
@@ -1279,6 +1280,33 @@ async fn handle_stream_unsubscribe(
         Some(r) => r.clone(),
         None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
     };
+    // The room-access stages, before the connection-local semantics.
+    //
+    // This operation is resolved from the connection's own subscription map
+    // rather than through the engine, so the stages the engine applies to
+    // everything it dispatches have to be applied here by hand. They are not
+    // optional for it: the record makes step 4 "every operation whose `in`
+    // carries `room_id`" and step 5 the same set minus `room.archive` and
+    // `room.list`, and it enumerates its carve-outs exhaustively —
+    // `subject.ensure` at step 2, `invite.redeem` at 4, 5 and 6. There is no
+    // `stream.*` exception, `stream.unsubscribe`'s `in` is `{room_id}`, and
+    // `request_room` already declares it room-scoped for core dispatch.
+    //
+    // An earlier revision applied step 2 alone and argued the rest away as
+    // connection state. That left `subscribe R` → `leave R` → `unsubscribe R`
+    // answering `ok {unsubscribed: true}` to a caller whose membership the room
+    // had already ended — an answer neither the record nor the fixtures
+    // support, since nothing tears the map entry down when standing ends.
+    //
+    // `authorize_room` is the same call the two siblings in this file make, and
+    // it yields the stages in the record's order: `subject_absent`,
+    // `room_not_available`, then `membership_ended`. `subscription_unknown`
+    // stays what it always was — the step-7 answer for an active member holding
+    // no such subscription. None of it is an oracle: `room_not_available` is
+    // the record's own conflation of unknown-and-inaccessible.
+    if let Err(err) = authorize_room(state, &req.room_id).await {
+        return send_api_err(out_tx, id, err).await;
+    }
     let mut subs = subscriptions.lock().await;
     if subs.remove(&req.room_id.to_string()).is_none() {
         return send_api_err(
@@ -1529,7 +1557,7 @@ async fn dispatch_inbound(
             return handle_stream_subscribe(out_tx, state, &request, subscriptions).await;
         }
         "stream.unsubscribe" => {
-            return handle_stream_unsubscribe(out_tx, &request, subscriptions).await;
+            return handle_stream_unsubscribe(out_tx, state, &request, subscriptions).await;
         }
         "stream.resync" => {
             return handle_stream_resync(out_tx, state, &request).await;
