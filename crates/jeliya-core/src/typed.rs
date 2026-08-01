@@ -1338,8 +1338,21 @@ impl<'a> TypedSupervisor<'a> {
             //
             // Membership is still required: the subject must have joined, which
             // is the same device-binding test the roster uses.
+            //
+            // The evidence has to be a **committed** row, the same predicate
+            // `room.timeline` and `status.history` answer from. A peer upstream
+            // of v2 accepts any free-form label, so a room can hold an
+            // `agent.status` whose label is outside v2's vocabulary or whose
+            // instant is unrepresentable; the projection deliberately refuses
+            // such a row. Counting it as proof of agent-ness would put a member
+            // in the fleet on the strength of an event the daemon will not
+            // serve in either other projection — and a v2 `status.post` cannot
+            // author one, since an unknown label is refused with
+            // `status_label_unknown`, so the row is no evidence of a
+            // `status.post` at all. One rule, every projection.
             let agent_ids: BTreeSet<iroh_rooms::identity::IdentityKey> = rows
                 .iter()
+                .filter(|se| proj::is_committed(se))
                 .filter_map(|se| SignedEvent::decode(&se.wire.signed).ok())
                 .filter(|ev| matches!(ev.content, Content::AgentStatus(_)))
                 .map(|ev| ev.sender_id)

@@ -1262,18 +1262,6 @@ async fn handle_stream_subscribe(
     .await
 }
 
-/// Validation-order step 2 for the operations this host resolves itself.
-///
-/// The engine applies it to everything it dispatches; the connection-scoped
-/// `stream.*` operations that never reach it need it applied here, or they
-/// answer their own semantic code on a daemon that has no subject at all.
-fn subject_precondition(state: &AppState) -> Result<(), jeliya_api::ApiError> {
-    match state.engine.subject_state()? {
-        jeliya_api::SubjectState::Present { .. } => Ok(()),
-        jeliya_api::SubjectState::Absent => Err(jeliya_api::ApiError::SubjectAbsent),
-    }
-}
-
 /// `stream.unsubscribe` — remove the room from this connection's set.
 async fn handle_stream_unsubscribe(
     out_tx: &tokio::sync::mpsc::Sender<Message>,
@@ -1292,18 +1280,31 @@ async fn handle_stream_unsubscribe(
         Some(r) => r.clone(),
         None => return send_api_err(out_tx, id, jeliya_api::ApiError::MalformedFrame).await,
     };
-    // Validation-order step 2. This operation is resolved from the
-    // connection's own subscription map rather than through the engine, so it
-    // is the one place the subject precondition has to be applied by hand — and
-    // without it a subject-less caller got `subscription_unknown` where every
-    // other operation answers `subject_absent`.
+    // The room-access stages, before the connection-local semantics.
     //
-    // Steps 4 and 5 deliberately do NOT run: a subscription is connection state,
-    // so a room this connection never subscribed to is `subscription_unknown`
-    // whether or not it exists, which is what its sibling cases settle. That
-    // answer is identical for an unknown room, a real one, and a room the
-    // caller is not in, so it is not an oracle.
-    if let Err(err) = subject_precondition(state) {
+    // This operation is resolved from the connection's own subscription map
+    // rather than through the engine, so the stages the engine applies to
+    // everything it dispatches have to be applied here by hand. They are not
+    // optional for it: the record makes step 4 "every operation whose `in`
+    // carries `room_id`" and step 5 the same set minus `room.archive` and
+    // `room.list`, and it enumerates its carve-outs exhaustively —
+    // `subject.ensure` at step 2, `invite.redeem` at 4, 5 and 6. There is no
+    // `stream.*` exception, `stream.unsubscribe`'s `in` is `{room_id}`, and
+    // `request_room` already declares it room-scoped for core dispatch.
+    //
+    // An earlier revision applied step 2 alone and argued the rest away as
+    // connection state. That left `subscribe R` → `leave R` → `unsubscribe R`
+    // answering `ok {unsubscribed: true}` to a caller whose membership the room
+    // had already ended — an answer neither the record nor the fixtures
+    // support, since nothing tears the map entry down when standing ends.
+    //
+    // `authorize_room` is the same call the two siblings in this file make, and
+    // it yields the stages in the record's order: `subject_absent`,
+    // `room_not_available`, then `membership_ended`. `subscription_unknown`
+    // stays what it always was — the step-7 answer for an active member holding
+    // no such subscription. None of it is an oracle: `room_not_available` is
+    // the record's own conflation of unknown-and-inaccessible.
+    if let Err(err) = authorize_room(state, &req.room_id).await {
         return send_api_err(out_tx, id, err).await;
     }
     let mut subs = subscriptions.lock().await;

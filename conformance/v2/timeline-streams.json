@@ -1496,7 +1496,7 @@
       "name": "stream_unsubscribe_of_a_subscription_this_connection_does_not_hold_is_subscription_unknown",
       "kind": "error",
       "operation": "stream.unsubscribe",
-      "intent": "The distinctive code the spec adds precisely so this operation's conformance case asserts something other than a generic invalid_argument. Covers three ways to not hold one — never subscribed, already unsubscribed, and a well-formed id belonging to nobody — and asserts the same code for each, so the answer is never a subscription-existence oracle either. Catches a daemon that answers invalid_argument, not_found, or silently succeeds.",
+      "intent": "The distinctive code the spec adds precisely so this operation's conformance case asserts something other than a generic invalid_argument. Covers the two ways an authorized member holds no subscription — never subscribed and already unsubscribed — and asserts subscription_unknown for each, so the answer is never a subscription-existence oracle. A well-formed id belonging to nobody never reaches that lookup at all: stream.unsubscribe's in carries room_id, so the room-access stage refuses it as room_not_available first, the same conflation of unknown-and-inaccessible every room-scoped operation serves. Catches a daemon that answers invalid_argument, not_found, silently succeeds, or skips the room-access stages because the subscription is connection state.",
       "requires": [
         "subject",
         "room:live"
@@ -1507,7 +1507,7 @@
           "in": {
             "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
           },
-          "note": "a syntactically valid unknown room id reaches the subscription lookup rather than failing identifier parsing, and the error must echo that exact id",
+          "note": "a syntactically valid unknown room id is refused by the room-access stage before the subscription lookup is reached: stream.unsubscribe carries room_id, so step 4 runs for it as it does for every room-scoped operation, and the error must echo that exact id",
           "save": {
             "e1": "$err"
           },
@@ -1515,7 +1515,7 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "subscription_unknown",
+              "code": "room_not_available",
               "room_id": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
             }
           },
@@ -1565,8 +1565,9 @@
           "assert": [
             {
               "path": "$e1.code",
-              "op": "eq",
-              "value": "$e2.code"
+              "op": "ne",
+              "value": "$e2.code",
+              "note": "the unknown room is refused a stage earlier than the held-nothing lookup, so the two codes must differ — an implementation that answers subscription_unknown for both has skipped step 4"
             }
           ]
         },
@@ -3095,7 +3096,7 @@
       "name": "pushes_stop_when_membership_ends",
       "kind": "authorization",
       "operation": null,
-      "intent": "Delivery is to subscribers who are members, so losing membership must end delivery even though the subscription was validly created — otherwise a removed member keeps reading the room through a stale sink. Asserts no further frames after removal and that the now-dead subscription reports subscription_unknown rather than continuing to look alive. Catches a fan-out that snapshots membership at subscribe time.",
+      "intent": "Delivery is to subscribers who are members, so losing membership must end delivery even though the subscription was validly created — otherwise a removed member keeps reading the room through a stale sink. Asserts no further frames after removal and that the now-dead subscription reports membership_ended, the standing stage's answer, rather than continuing to look alive or reporting the subscription as merely unknown. Catches a fan-out that snapshots membership at subscribe time, and a stream.unsubscribe that skips the standing stage because it resolves the room from connection state.",
       "requires": [
         "subject",
         "room:live",
@@ -3191,11 +3192,13 @@
           "expect": {
             "ok": false,
             "err": {
-              "code": "subscription_unknown",
-              "room_id": "$s"
+              "code": "membership_ended",
+              "room_id": "$s",
+              "standing": "removed"
             }
           },
-          "op_id": "$o5"
+          "op_id": "$o5",
+          "note": "standing outranks the connection's own subscription map: the removed member earns the same membership_ended its stream.resync earns one step earlier, not a subscription_unknown that would describe the subscription rather than the membership that ended it"
         }
       ]
     },
