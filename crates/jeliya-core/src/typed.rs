@@ -74,6 +74,7 @@ use std::path::Path;
 use jeliya_api::*;
 use serde::{Deserialize, Serialize};
 
+use iroh_rooms::events::constants::SHORT_ID_LEN;
 use iroh_rooms::events::{capability_hash, Content, EventType, SignedEvent};
 use iroh_rooms::room::{MembershipSnapshot, RoomId as IrohRoomId};
 
@@ -406,15 +407,42 @@ impl<'a> TypedSupervisor<'a> {
     /// `subject.ensure` — establish the local subject exactly once; a second
     /// call returns the same subject with `created: false` (naturally
     /// idempotent, never an `identity_exists` refusal).
-    pub fn subject_ensure(&self) -> CoreResult<SubjectEnsureOut> {
-        if let Some(profile) = crate::identity::load_profile(self.sup.data_dir())? {
+    ///
+    /// A creation this daemon cannot persist is `subject_store_unwritable`, the
+    /// one operation error the record gives `subject.ensure`. It does not reach
+    /// the roomless fallback: that answers `room_index_unreadable`, which names
+    /// an index this operation never opened and denies the caller the only code
+    /// that tells them their fresh subject was not written to disk.
+    pub fn subject_ensure(&self) -> Result<SubjectEnsureOut, ApiError> {
+        let existing = crate::identity::load_profile(self.sup.data_dir())
+            .map_err(|_| ApiError::SubjectStoreUnwritable)?;
+        if let Some(profile) = existing {
             return Ok(SubjectEnsureOut {
                 subject_id: SubjectId::new(profile.identity_id),
                 device_id: DeviceId::new(profile.device_id),
                 created: false,
             });
         }
-        let profile = crate::identity::create(self.sup.data_dir())?;
+        let profile = match crate::identity::create(self.sup.data_dir()) {
+            Ok(profile) => profile,
+            // The TOCTOU loser: `create_new(true)` is the atomic guard, so a
+            // concurrent `subject.ensure` can win the race between the read
+            // above and this write. v2 removed `identity_exists`, and the
+            // operation is naturally idempotent, so the loser re-reads what the
+            // winner wrote and reports it as the existing subject it is.
+            Err(err) if err.kind == ErrorKind::IdentityExists => {
+                let profile = crate::identity::load_profile(self.sup.data_dir())
+                    .ok()
+                    .flatten()
+                    .ok_or(ApiError::SubjectStoreUnwritable)?;
+                return Ok(SubjectEnsureOut {
+                    subject_id: SubjectId::new(profile.identity_id),
+                    device_id: DeviceId::new(profile.device_id),
+                    created: false,
+                });
+            }
+            Err(_) => return Err(ApiError::SubjectStoreUnwritable),
+        };
         Ok(SubjectEnsureOut {
             subject_id: SubjectId::new(profile.identity_id),
             device_id: DeviceId::new(profile.device_id),
@@ -874,7 +902,18 @@ impl<'a> TypedSupervisor<'a> {
         // the caller asked for must be the expiry the capability is signed
         // with, or the reply, the `invite.list` row, and the capability itself
         // can all name different instants.
-        const TS_MAX_SECS: u64 = u32::MAX as u64;
+        //
+        // `max` is the largest instant a `<ts>` can carry — `time` is built
+        // without `large-dates`, so year 9999 is the ceiling. It is a
+        // **representability** ceiling, not a maximum invite TTL: the record
+        // defines no maximum TTL (`invites.json` records its absence as an open
+        // resource gap), so an invented threshold would refuse expiries v2
+        // permits. An earlier revision served `u32::MAX` here — borrowed from
+        // the unrelated `room_tail(_, u32::MAX)` idiom, with no basis in the
+        // timestamp domain — which advertised an "inclusive maximum" the daemon
+        // happily minted a thousand-fold past. A bound no two implementations
+        // can agree on is the thing this arm exists to prevent.
+        const TS_MAX_SECS: u64 = 253_402_300_799; // 9999-12-31T23:59:59Z
         let now_ms = crate::now_ms();
         // Milliseconds, not whole seconds: the instant is the caller's, and it
         // is signed verbatim so the reply, the `invite.list` row, and the
@@ -950,9 +989,13 @@ impl<'a> TypedSupervisor<'a> {
             .as_ref()
             .and_then(|t| t.expires_at)
             .and_then(proj::ts_millis);
+        // Keyed on the capability being redeemed, so "already a member" means
+        // "this capability already authored a join" and not "I have joined this
+        // room at some point" — the two differ for a subject that was removed
+        // and walked back in on a fresh capability.
         let joined_before = ticket
             .as_ref()
-            .and_then(|t| self.membership_event(&t.room_id));
+            .and_then(|t| self.membership_event(&t.room_id, Some(&t.invite_id)));
 
         let room_id_str = self
             .sup
@@ -981,12 +1024,19 @@ impl<'a> TypedSupervisor<'a> {
         let departures = crate::supervisor::departure_sets(&store, &room_id)
             .map_err(|_| ApiError::RoomIndexUnreadable)?;
         drop(store);
-        let (event_id, pos) =
-            self.membership_event(&room_id)
-                .ok_or_else(|| ApiError::MembershipUnresolved {
-                    room_id: api_room.clone(),
-                    subject_id: subject_id.clone(),
-                })?;
+        // The same key as the pre-call lookup, so the reply names the join
+        // *this* capability authored. Unkeyed, a rejoin would report the
+        // superseded pre-removal event — an `event_id` belonging to a
+        // membership the room already terminated, beside a `standing` of
+        // `active` the fold correctly derives from the new one.
+        let (event_id, pos) = ticket
+            .as_ref()
+            .and_then(|t| self.membership_event(&room_id, Some(&t.invite_id)))
+            .or_else(|| self.membership_event(&room_id, None))
+            .ok_or_else(|| ApiError::MembershipUnresolved {
+                room_id: api_room.clone(),
+                subject_id: subject_id.clone(),
+            })?;
         Ok(InviteRedeemOut {
             room_id: api_room,
             subject_id,
@@ -994,8 +1044,9 @@ impl<'a> TypedSupervisor<'a> {
             standing: departures.standing_of(member.status, &member.identity),
             event_id,
             pos,
-            // `false` when the membership event already existed before this
-            // call reached the runtime.
+            // `false` when a join authored by *this* capability already existed
+            // before the call reached the runtime — a replay. A rejoin after a
+            // departure carries a different capability and so reports `true`.
             joined: joined_before.is_none(),
         })
     }
@@ -1828,6 +1879,12 @@ impl<'a> TypedSupervisor<'a> {
     /// `pipe.connect` — connect to a pipe. Requires liveness. A caller outside
     /// the pipe's audience answers `pipe_unknown`, indistinguishable from no
     /// such pipe.
+    ///
+    /// A caller *inside* the audience is told the difference, because for them
+    /// it is not a disclosure: a pipe its publisher withdrew answers
+    /// `pipe_revoked` with the withdrawal's signed instant, so a client stops
+    /// retrying a tunnel that is never coming back rather than reading a
+    /// permanent withdrawal as a not-yet-synced announcement.
     pub async fn pipe_connect(
         &self,
         ctx: &RoomContext,
@@ -1876,8 +1933,11 @@ impl<'a> TypedSupervisor<'a> {
     /// Restricted to the pipe's **publisher**, which is a narrower relation
     /// than role: an authority that did not publish a pipe cannot revoke it
     /// either, and that refusal is `pipe_not_publisher`, not
-    /// `insufficient_standing`. `revoked_at` is the withdrawal event's signed
-    /// instant, not the wall clock at reply time.
+    /// `insufficient_standing`. The runtime enforces exactly that relation —
+    /// it admitted the room's administrator until this was corrected, which let
+    /// a role bypass a relation the record deliberately made narrower than any
+    /// role. `revoked_at` is the withdrawal event's signed instant, not the
+    /// wall clock at reply time.
     pub async fn pipe_revoke(
         &self,
         ctx: &RoomContext,
@@ -1971,7 +2031,24 @@ impl<'a> TypedSupervisor<'a> {
     /// canonical position — the event `invite.redeem` reports. Looking for the
     /// *membership* event specifically (not merely the newest event this
     /// subject authored) is what lets `joined` tell a fresh join from a replay.
-    fn membership_event(&self, room_id: &IrohRoomId) -> Option<(EventId, u64)> {
+    ///
+    /// The join is identified by **the capability that authored it**, not by
+    /// "any join by me". A subject that was removed and later redeemed a new
+    /// capability has two `member_joined` rows, and "have I ever joined this
+    /// room" cannot tell that rejoin from a replay: it would report the fresh
+    /// membership as `joined: false` and name the superseded, pre-removal event
+    /// — a reply whose `standing` says `active` while its `event_id` belongs to
+    /// a membership the room already terminated. Matching `via_invite_id`
+    /// against the ticket keeps a replay of one capability answering from its
+    /// own original join, which is what the record's idempotence requires.
+    ///
+    /// `via_invite_id` of `None` keeps the unkeyed "any join by me" behaviour,
+    /// for the callers that hold no ticket.
+    fn membership_event(
+        &self,
+        room_id: &IrohRoomId,
+        via_invite_id: Option<&[u8; SHORT_ID_LEN]>,
+    ) -> Option<(EventId, u64)> {
         let self_key = self.sup.local_identity_key().ok()?;
         let store = self.sup.open_store().ok()?;
         let rows = store.room_tail(room_id, u32::MAX).ok()?;
@@ -1982,10 +2059,13 @@ impl<'a> TypedSupervisor<'a> {
             }
             if let Ok(ev) = SignedEvent::decode(&se.wire.signed) {
                 let is_join = match &ev.content {
-                    Content::MemberJoined(c) => c.device_binding.identity_key == self_key,
+                    Content::MemberJoined(c) => {
+                        c.device_binding.identity_key == self_key
+                            && via_invite_id.is_none_or(|id| &c.via_invite_id == id)
+                    }
                     // The authority never authors a join: its membership is the
-                    // genesis it signed.
-                    Content::RoomCreated(_) => ev.sender_id == self_key,
+                    // genesis it signed, which no capability authorized.
+                    Content::RoomCreated(_) => via_invite_id.is_none() && ev.sender_id == self_key,
                     _ => false,
                 };
                 if is_join {
@@ -2122,14 +2202,75 @@ impl<'a> TypedSupervisor<'a> {
             ErrorKind::RoomNotOpen => ApiError::RoomNotLive {
                 room_id: req.room_id.clone(),
             },
-            // "No such pipe", "you are outside its audience", and "it was
-            // withdrawn while you connected" are all `pipe_unknown` to a caller
-            // that may not distinguish them.
-            ErrorKind::InvalidParams | ErrorKind::PipeDenied => ApiError::PipeUnknown {
-                pipe_id: req.pipe_id.clone(),
-            },
+            // A deliberate withdrawal is `pipe_revoked`, and only for a caller
+            // the publisher already admitted: the record lists it beside
+            // `pipe_unknown` among `pipe.connect`'s errors precisely so a
+            // client can stop retrying a tunnel that is never coming back.
+            //
+            // Entitlement is checked **first**, and the close event is only
+            // resolved for a caller inside the announcement's audience. An
+            // unconditional lookup would answer `pipe_revoked` to an outsider
+            // and so confirm the pipe ever existed, which is the existence
+            // oracle the record forbids — "a caller MUST NOT be able to
+            // distinguish a pipe it is not entitled to from one that does not
+            // exist". For everyone else "no such pipe" and "you are outside its
+            // audience" remain one indistinguishable answer.
+            ErrorKind::InvalidParams | ErrorKind::PipeDenied => {
+                match self.revoked_pipe_instant(ctx, &req.pipe_id) {
+                    Some(revoked_at) => ApiError::PipeRevoked {
+                        pipe_id: req.pipe_id.clone(),
+                        revoked_at,
+                    },
+                    None => ApiError::PipeUnknown {
+                        pipe_id: req.pipe_id.clone(),
+                    },
+                }
+            }
             _ => core_to_api_room(error, &req.room_id),
         }
+    }
+
+    /// The instant a withdrawn pipe was revoked — **only** for a caller the
+    /// publisher authorized, and `None` for everyone and everything else.
+    ///
+    /// Three facts must all hold, in this order, or the answer is `None` and
+    /// the caller keeps the indistinguishable `pipe_unknown`:
+    ///
+    /// 1. this daemon holds the governing `pipe.opened`;
+    /// 2. the caller is its publisher or is named in `allowed_members` — the
+    ///    audience resolved at publish time, which is what makes the disclosure
+    ///    a fact the caller was already entitled to;
+    /// 3. a `pipe.closed` for it is committed here.
+    ///
+    /// The instant is the one the close event's author **signed**, read exactly
+    /// as [`Self::committed_pos_and_instant`] reads it, so the `revoked_at` a
+    /// connector is told matches the `revoked_at` the publisher's own
+    /// `pipe.revoke` reply reported for the same event. A wall clock read at
+    /// reply time would name a different instant on every daemon.
+    fn revoked_pipe_instant(&self, ctx: &RoomContext, pipe_id: &PipeId) -> Option<Timestamp> {
+        let raw: [u8; SHORT_ID_LEN] = hex::decode(pipe_id.as_str()).ok()?.try_into().ok()?;
+        let store = self.sup.open_store().ok()?;
+        let opened = store
+            .by_type(&ctx.room_id, EventType::PipeOpened)
+            .ok()?
+            .into_iter()
+            .filter_map(|se| SignedEvent::decode(&se.wire.signed).ok())
+            .find_map(|ev| match ev.content {
+                Content::PipeOpened(p) if p.pipe_id == raw => Some(p),
+                _ => None,
+            })?;
+        if opened.owner_id != ctx.self_key && !opened.allowed_members.contains(&ctx.self_key) {
+            return None;
+        }
+        store
+            .by_type(&ctx.room_id, EventType::PipeClosed)
+            .ok()?
+            .into_iter()
+            .filter_map(|se| SignedEvent::decode(&se.wire.signed).ok())
+            .find_map(|ev| match &ev.content {
+                Content::PipeClosed(c) if c.pipe_id == raw => proj::ts(ev.created_at),
+                _ => None,
+            })
     }
 
     /// The observed link to a pipe's publisher device, for
@@ -2689,10 +2830,7 @@ pub(crate) async fn dispatch(
 
     // Step 7 — operation semantics.
     match call {
-        TypedCall::SubjectEnsure(_) => t
-            .subject_ensure()
-            .map(TypedReply::SubjectEnsure)
-            .map_err(core_to_api),
+        TypedCall::SubjectEnsure(_) => t.subject_ensure().map(TypedReply::SubjectEnsure),
         TypedCall::RoomCreate(r) => t.room_create(&r).await.map(TypedReply::RoomCreate),
         TypedCall::RoomList(_) => t.room_list().await.map(TypedReply::RoomList),
         TypedCall::RoomActivate(r) => t
@@ -4663,9 +4801,60 @@ mod tests {
             "min is whole seconds since the epoch, got {min} against {now_secs}"
         );
         assert_eq!(
-            max,
-            u64::from(u32::MAX),
-            "max is the same unit as min, not milliseconds"
+            max, 253_402_300_799,
+            "max is the same unit as min, not milliseconds, and is the largest \
+             instant a `<ts>` can represent rather than an invented ceiling"
+        );
+        // The advertised maximum has to be one the daemon honours: an expiry
+        // below it mints, so a client can trust the range it was handed.
+        assert!(
+            max > crate::now_ms() / 1000,
+            "an inclusive maximum in the past would refuse every expiry"
+        );
+    }
+
+    /// `subject.ensure` answers the one operation error the record gives it
+    /// when its store defeats it. An earlier revision passed the failure
+    /// through the roomless fallback, which named `room_index_unreadable` — an
+    /// index this operation never opens, and a code that says nothing about the
+    /// subject that could not be persisted. Both halves of the store are
+    /// covered, because either one defeats the operation on its own.
+    #[tokio::test]
+    async fn subject_ensure_reports_a_defeated_store_as_subject_store_unwritable() {
+        // The profile is present but unreadable: neither "no subject yet" nor a
+        // subject this daemon can name.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(crate::identity::IDENTITY_FILE)).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let err = dispatch(&sup, TypedCall::SubjectEnsure(SubjectEnsure {}))
+            .await
+            .expect_err("an unreadable subject store is refused");
+        assert!(
+            matches!(err, ApiError::SubjectStoreUnwritable),
+            "expected subject_store_unwritable, got {err:?}"
+        );
+
+        // The creation cannot complete: the secret half of the store is already
+        // taken, so no subject can be written even though none exists to serve.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(crate::identity::SECRET_FILE)).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let err = dispatch(&sup, TypedCall::SubjectEnsure(SubjectEnsure {}))
+            .await
+            .expect_err("a subject that cannot be persisted is refused");
+        assert!(
+            matches!(err, ApiError::SubjectStoreUnwritable),
+            "expected subject_store_unwritable, got {err:?}"
+        );
+
+        // And nothing was fabricated: a store that refused the write serves no
+        // subject afterwards either.
+        assert!(
+            crate::identity::load_profile(dir.path())
+                .ok()
+                .flatten()
+                .is_none(),
+            "a refused subject.ensure must not leave a subject behind"
         );
     }
 

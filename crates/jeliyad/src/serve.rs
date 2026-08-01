@@ -718,8 +718,19 @@ async fn share_upload(req: Request<Incoming>, state: AppState) -> Response<Full<
         // The typed refusal is already the record's error object; it is served
         // verbatim rather than flattened into a prose HTTP error, so the
         // legacy staging edge answers the same taxonomy the WS surface does.
+        //
+        // The `ok` discriminator stays, because it is the envelope and not the
+        // taxonomy: `json_ok` pairs every success with `ok: true` and every
+        // other refusal on this endpoint carries `ok: false`, so dropping it
+        // here would leave one response shape a consumer decoding the envelope
+        // before the status could not classify. Only the nested object changed
+        // generation — `message`/`hint` are gone from v2 deliberately and are
+        // not re-added.
         Err(err) => match serde_json::to_value(&err) {
-            Ok(body) => json_response(StatusCode::BAD_REQUEST, serde_json::json!({"error": body})),
+            Ok(body) => json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"ok": false, "error": body}),
+            ),
             Err(_) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &CoreError::internal("could not encode the typed refusal"),
