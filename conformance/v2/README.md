@@ -564,6 +564,7 @@ value may also be a single-key computed node:
 | `{"$bytes_of_len": "$max"}` | A string of exactly that many bytes |
 | `{"$concat": ["a", "$b"]}` | Concatenation |
 | `{"$expires_in_ms": 3600000}` | An absolute RFC 3339 `Z` timestamp that many milliseconds from run time |
+| `{"$transfer_budget_ms": ["$total", "$allowance", "$floor_bps"]}` | `allowance + ceil(total * 8 * 1000 / floor_bps)`, the record's size-aware transfer budget |
 | `{"$unknown": "<room_id>"}` | A well-formed value of that domain naming nothing that exists |
 
 Without these, **every case that probes a served limit would have to hard-code

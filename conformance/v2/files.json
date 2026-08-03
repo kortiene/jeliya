@@ -892,8 +892,7 @@
             }
           },
           "save": {
-            "limit": "frame.limits.max_shared_file_bytes",
-            "max_frame_bytes": "frame.limits.max_frame_bytes"
+            "limit": "frame.limits.max_shared_file_bytes"
           }
         },
         {
@@ -969,7 +968,7 @@
             {
               "path": "frame.peak_buffered_bytes",
               "op": "lte",
-              "value": "$max_frame_bytes"
+              "value": "$limit"
             }
           ]
         }
@@ -1317,6 +1316,12 @@
         },
         {
           "control": {
+            "do": "disconnect",
+            "on": "subject:self"
+          }
+        },
+        {
+          "control": {
             "do": "reconnect",
             "on": "subject:self"
           }
@@ -1345,7 +1350,7 @@
             },
             {
               "observe": "bytes_streamed",
-              "call": "step:4",
+              "call": "step:5",
               "value": {
                 "op": "eq",
                 "value": 0
@@ -2175,6 +2180,12 @@
         },
         {
           "control": {
+            "do": "disconnect",
+            "on": "subject:self"
+          }
+        },
+        {
+          "control": {
             "do": "reconnect",
             "on": "subject:self"
           }
@@ -2201,7 +2212,7 @@
             },
             {
               "observe": "bytes_streamed",
-              "call": "step:5",
+              "call": "step:6",
               "value": {
                 "op": "eq",
                 "value": 0
@@ -2215,7 +2226,7 @@
       "name": "fetch_deadline_scales_with_the_declared_size",
       "kind": "boundary",
       "operation": "file.fetch",
-      "intent": "Proves the absolute file.fetch deadline uses the declared total and served floor: progress at the floor succeeds, while progress below the required rate exhausts the fixed size-aware budget with a truthful accepted-byte count.",
+      "intent": "Proves the absolute file.fetch deadline uses the signed total and served floor: one transfer at the floor succeeds, while another reports the exact size-derived budget rather than any fixed timeout, with a truthful accepted-byte count.",
       "requires": [
         "subject",
         "room:live",
@@ -2303,6 +2314,7 @@
           },
           "op_id": "op-budget-floor"
         },
+
         {
           "control": {
             "do": "set_link_rate",
@@ -2328,7 +2340,13 @@
                 "state": "known",
                 "bytes": "$total_below_floor"
               },
-              "budget_ms": "<uint>"
+              "budget_ms": {
+                "$transfer_budget_ms": [
+                  "$total_below_floor",
+                  "$connect_ms",
+                  "$floor_bps"
+                ]
+              }
             }
           },
           "op_id": "op-budget-expiry"
