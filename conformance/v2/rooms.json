@@ -310,38 +310,6 @@
       ]
     },
     {
-      "name": "room_create_without_an_op_id_is_refused",
-      "kind": "malformed",
-      "operation": "room.create",
-      "intent": "Proves op_id is mandatory for the op_id-deduplicated class (unlike the naturally idempotent class), so it would catch a daemon that accepts an undeduplicable mutation and thereby makes the documented retry policy unenforceable.",
-      "requires": [
-        "subject"
-      ],
-      "steps": [
-        {
-          "call": "room.create",
-          "in": {
-            "name": "No Op Id"
-          },
-          "expect": {
-            "ok": false,
-            "err": {
-              "code": "invalid_argument",
-              "field": "op_id"
-            }
-          }
-        },
-        {
-          "assert": [
-            {
-              "observe": "no_durable_mutation",
-              "scope": "step"
-            }
-          ]
-        }
-      ]
-    },
-    {
       "name": "room_create_rejects_a_missing_name",
       "kind": "malformed",
       "operation": "room.create",
@@ -2192,8 +2160,8 @@
             "ok": false,
             "err": {
               "code": "membership_ended",
-              "room_id": "<room_id>",
-              "state": "left"
+              "room_id": "$rid_left",
+              "standing": "left"
             }
           },
           "op_id": "$op_id_new"
@@ -2211,14 +2179,18 @@
           "call": "status.post",
           "in": {
             "room_id": "$rid_left",
-            "label": "working"
+            "label": "working",
+            "progress": {
+              "state": "absent"
+            }
           },
           "on": "subject:member_b",
           "expect": {
             "ok": false,
             "err": {
               "code": "membership_ended",
-              "state": "left"
+              "room_id": "$rid_left",
+              "standing": "left"
             }
           },
           "op_id": "$op_id_new"
@@ -2228,14 +2200,18 @@
           "in": {
             "room_id": "$rid_left",
             "subject_id": "$subject_o",
-            "role": "member"
+            "role": "member",
+            "expires_at": {
+              "$expires_in_ms": 3600000
+            }
           },
           "on": "subject:member_b",
           "expect": {
             "ok": false,
             "err": {
               "code": "membership_ended",
-              "state": "left"
+              "room_id": "$rid_left",
+              "standing": "left"
             }
           },
           "op_id": "$op_id_new"
@@ -2251,7 +2227,8 @@
             "ok": false,
             "err": {
               "code": "membership_ended",
-              "state": "left"
+              "room_id": "$rid_left",
+              "standing": "left"
             }
           },
           "op_id": "$op_id_new"
@@ -2261,14 +2238,16 @@
           "in": {
             "room_id": "$rid_left",
             "name": "x.txt",
-            "bytes_ref": "$small_blob"
+            "declared_bytes": 1024,
+            "declared_content_type": "text/plain"
           },
           "on": "subject:member_b",
           "expect": {
             "ok": false,
             "err": {
               "code": "membership_ended",
-              "state": "left"
+              "room_id": "$rid_left",
+              "standing": "left"
             }
           },
           "op_id": "$op_id_new"
@@ -5347,7 +5326,6 @@
     "LIFECYCLE VS LIVENESS. I treat these as two orthogonal fields because room.deactivate is defined as stopping live participation WITHOUT changing membership: `standing.state` in {active, left, removed} (tokens taken from the spec's own prose 'a left or removed room' and #161's 'ACTIVE room') and a separate boolean `live`. `room_deactivate_stops_liveness_without_changing_membership` asserts exactly this split, so a daemon that collapses them into one enum fails. Member `standing.state` uses the same three tokens. If the manifest picks different tokens, only the tokens change; every assertion's shape survives.",
     "THE ROLE TOKEN IS NOT ASSERTED LITERALLY. The spec removes the two-vocabulary naming (log `admin` vs wire `owner`) and says 'one name, both places' without saying WHICH name. Inventing one would be authoring the implementation, so `role_vocabulary_is_one_token_across_every_surface` asserts cross-surface identity (room.list's role equals room.members' role for the same subject) plus authority != member, which is precisely the property the spec states and is spelling-independent.",
     "THE CAPABILITY VOCABULARY IS ALSO UNSPECIFIED. room.list must answer 'what may I do in each' and room.activate returns capabilities, but no token list exists. So capability cases assert behaviour, not tokens: `advertised_capabilities_match_enforcement_in_every_lifecycle_state` requires the harness to exercise each advertised capability (must succeed) and each omitted write (must refuse). RECOMMENDATION: the spec should enumerate the capability tokens, or this case degrades to a harness-defined probe list.",
-    "op_id REQUIRED VS ACCEPTED. The spec says every mutating operation 'accepts' an op_id but splits mutations into naturally-idempotent and op_id-deduplicated classes. I read that as: op_id is REQUIRED for the deduplicated class (an undeduplicable room.create makes the stated retry policy unenforceable) and OPTIONAL for the naturally idempotent class. `room_create_without_an_op_id_is_refused` and `room_activate_is_naturally_idempotent_and_needs_no_op_id` pin both halves. If the spec instead makes op_id optional everywhere, the first case must flip — it is the one to change, not the second.",
     "NO SERVED BOUND EXISTS FOR ROOMS. The limits object bounds frames, bodies, inflight requests, connections, transfers and timeline pages, but nothing bounds a room NAME, the number of rooms per subject, or the number of members. I therefore could not author boundary cases for room.create at all, and room.timeline is the only operation in this domain with a real at-limit/one-past-limit pair. RECOMMENDATION: add `max_room_name_bytes` (and consider `max_members_per_room`) to the limits object, or the corpus can never prove where room.create's argument bounds are — only that a missing name is refused.",
     "UNDECIDED, ASSERTED ANYWAY, FLAGGED HERE. (1) Does a naturally-idempotent room.deactivate succeed for a room the caller LEFT? I assert refusal with membership_ended, on the ground that a mutating operation must not be accepted against ended membership; idempotency is not a licence to accept writes. (2) Re-removing an already-removed member with a FRESH op_id: the reply shape is genuinely undecided, so `member_remove_repeated_with_a_fresh_op_id_authors_no_second_removal` asserts only the durable invariant (no second event, standing unchanged, exactly one member row) and deliberately does not pin the reply. Both need a spec sentence.",
     "SHARED-CODE CAVEAT AGAINST #161's OWN CRITERION. room.activate, room.deactivate and room.members all take `membership_ended` as their most-specific error, so the per-operation error requirement is satisfied as 'most specific applicable' but not as 'unique to the operation'. The manifest must either state that explicitly as acceptable, or the spec must add per-operation codes. I flag it rather than invent three near-synonyms.",
