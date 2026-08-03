@@ -3,7 +3,7 @@ type: "Reference"
 title: "Jeliya protocol v2"
 description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the generation gate, approved operations, byte-stream framing, errors, sequenced pushes, authoritative resync, and binding conformance corpus."
 tags: ["clean-slate", "conformance", "protocol", "security"]
-timestamp: "2026-08-03T06:40:08Z"
+timestamp: "2026-08-03T08:38:58Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "unverified"
@@ -424,10 +424,14 @@ compression, so a bounded compressed message cannot expand beyond the bound
 after admission.
 
 A DATA payload is at most `min(65_536, max_frame_bytes - 48)` bytes, with the
-subtraction checked before use. A served `max_frame_bytes <= 48` is invalid and
-the daemon MUST refuse readiness rather than advertise a stream it cannot
-frame. This fixed protocol bound keeps clients executable without adding a new
-served limit or hard-coding the shared-file maximum.
+subtraction checked before use. A served `max_frame_bytes` is valid for byte
+streaming only if it is greater than 48 **and** can carry the larger of the
+shortest structurally valid `file.share` and `file.read` Text request envelopes,
+computed from the codec's identifier and string lower bounds with no optional
+whitespace. A daemon that fails either check MUST refuse readiness rather than
+advertise a stream it cannot open. This fixed protocol bound keeps clients
+executable without adding a new served limit or hard-coding the shared-file
+maximum.
 
 The existing wire name `max_frame_bytes` is retained, but it means the payload
 length of one complete reassembled Text or Binary data message. The bound is
@@ -467,6 +471,7 @@ The kind byte is closed as follows:
 | `0x03` | CREDIT | receiver | `accepted_through` | `send_through` | none |
 | `0x04` | END | producer | total bytes sent | `0` | none |
 | `0x05` | ABORT | either endpoint | accepted-byte high-water mark | abort reason | none |
+| `0x06` | ACK | recipient of ABORT | final accepted-byte high-water mark | `0x05` | none |
 
 Every field not given a meaning in that row MUST be zero, and a non-DATA record
 MUST be exactly 48 bytes. An empty DATA record is malformed; END is the only
@@ -488,11 +493,19 @@ violation. A receiver's ABORT offset is its local `accepted_through`; a
 producer's is the greatest `accepted_through` it observed in CREDIT. A receiver
 accepts a producer ABORT offset when it equals any `accepted_through` value that
 receiver previously issued; the producer may not yet have observed the newest
-one. The daemon reports its authoritative locally accepted upload count or last
-credited download count in the terminal error; a producer's stale high-water
-mark cannot reduce it. `operation_error` never becomes `stream_abort_reason`; the daemon's following
-operation error is authoritative. `transport_lost` has no record
-value because it is synthesized locally when no record can arrive.
+one.
+
+The recipient stops producing or issuing credit as applicable, drains and
+discards DATA already in flight for that stream, and then sends ACK. ACK.offset
+is the final receiver-accepted count: when the ABORT recipient is the receiver
+it uses its local count; when
+the ABORT sender was the receiver, the producer validates and echoes
+ABORT.offset. Its `value` is exactly `0x05`, naming ABORT. The daemon uses that
+validated count as `transferred_bytes` for a download; for an upload it uses its
+own local receiver count. `operation_error` never becomes
+`stream_abort_reason`; the daemon's following operation error is authoritative.
+`transport_lost` has no record value because it is synthesized locally when no
+record can arrive.
 
 The numeric offsets exist to detect duplication, omission, and reordering. They
 are not chunk addresses: v2 defines no chunk identifier, range, per-record
@@ -626,14 +639,15 @@ keep downloaded bytes quarantined until END and the success reply agree on the
 byte count; otherwise it discards them.
 
 Either endpoint may send ABORT while the stream is active. The peer stops
-producing and granting credit, discards uncommitted bytes, and releases the
-transfer reservation locally. A daemon-originated ABORT is immediately followed
-by the request's exact error reply; a client-originated ABORT is followed by
-`stream_aborted`. ABORT needs no acknowledgement: once the daemon sequences a
-terminal reply, the `(request id, stream_id)` is retired and any later bound
-record is malformed. The `operation_error` wire reason is daemon-only and is
-resolved by the following typed error, for example `file_too_large` or
-`declared_size_mismatch`.
+producing and granting credit, discards uncommitted bytes, drains older in-flight
+records, and sends ACK. A daemon-originated ABORT is followed by the request's
+exact error reply only after ACK; a client-originated ABORT is ACKed by the
+daemon and then followed by `stream_aborted`. Transfer reservations are
+released at the local terminal decision, not held while waiting for ACK. The
+daemon waits at most `transfer_stall_ms`; on timeout it sends the terminal reply
+if possible and closes `4007`. Only ACK or that timeout retires the binding. The
+`operation_error` wire reason is daemon-only and is resolved by the following
+typed error, for example `file_too_large` or `declared_size_mismatch`.
 
 The daemon is the authoritative terminal sequencer. A stream is ACTIVE until
 the daemon receives upload END or sends download END; that action atomically
@@ -645,19 +659,23 @@ and produces success or its exact finalization error.
 |---|---|
 | client END wins while ACTIVE | FINALIZING runs to its recorded result |
 | daemon cancellation wins while ACTIVE | daemon ABORT; a later END is discarded |
-| ABORT crosses ABORT while ACTIVE | daemon's chosen ABORT is authoritative; it ignores the crossed duplicate |
+| ABORT crosses ABORT while ACTIVE | daemon's chosen ABORT is authoritative; both sides still complete the explicit ACK exchange |
 | client ABORT wins while ACTIVE | no event; original request is `stream_aborted` |
 | `transfer.cancel` wins while ACTIVE | no event; cancel reports `cancelled`; original request is `stream_aborted` |
 | cancel or ABORT arrives in FINALIZING or after completion | it cannot change the result; `transfer.cancel` reports `transfer_unknown` |
 
 A repeated cancel of the recorded cancellation reports `already_cancelled`.
-DATA already queued when ABORT wins is discarded until the terminal reply.
-DATA, CREDIT, END, or another terminal control after that reply is malformed.
+DATA already queued when ABORT wins is discarded until ACK. Because WebSocket
+message order is preserved in each direction, receiving ACK proves every older
+record from that sender has been seen; the binding may then retire without a
+time-based tombstone. Any later DATA, CREDIT, END, or terminal control for the
+retired stream is malformed.
 
 `stream_aborted.transferred_bytes` and `transfer.cancel.transferred_bytes` count
-bytes accepted by the receiver's sink, never bytes merely read from a source or
-queued to a socket. For `file.fetch` that is the verified bytes accepted into
-local storage; for an admitted `file.share` or `file.read`, their total is the
+bytes the daemon can prove the receiver accepted: its local accepted upload
+count, the download receiver's ABORT ACK offset, or verified `file.fetch` bytes
+accepted into local storage. They never count bytes merely read from a source or
+queued to a socket. For an admitted `file.share` or `file.read`, the total is the
 OPEN total. A source, sink, cancellation, or pre-END transport/framing failure
 never produces a success reply.
 
@@ -753,13 +771,12 @@ Byte at zero-based offset `i` is `i mod 251`; the harness generates it
 incrementally in DATA payloads no larger than the served record limit, sends
 END after all generated bytes are acknowledged, and then matches the terminal
 reply. `send_bytes` remains independent of `in.declared_bytes`, so short, long,
-and
-over-limit streams are expressible.
+and over-limit streams are expressible.
 
 For `stream: {receive_bytes: N}`, it grants a bounded window, counts and checks
 DATA without collecting the whole file, advances CREDIT only after sink
-acceptance, validates END, and requires OPEN, END, the terminal `out.bytes`,
-and `N` to agree. A browser adapter that has no streaming file sink
+acceptance, validates END, and, on ABORT, sends ACK with its final accepted
+count. It requires OPEN, END, the terminal `out.bytes`, and `N` to agree. A browser adapter that has no streaming file sink
 MAY preflight OPEN.total against an explicit bounded in-memory quarantine and
 grant only that capacity; if the total exceeds its local cap, it ABORTs with
 `sink_failed`. Native streaming sinks are an optimization, not a protocol
@@ -773,7 +790,7 @@ internal handle consisting of its case step index and envelope id.
 uses the most recent call on the same session. It means receiver-accepted
 payload bytes. A terminal pre-OPEN reply records zero without requiring OPEN;
 an admitted call requires OPEN and a terminal outcome. The harness exposes raw
-Binary-record send, credit pause/release, client ABORT, and transport-drop
+Binary-record send, credit pause/release, client ABORT/ACK, and transport-drop
 controls for malformed, crossed-terminal, cancellation, and backpressure cases;
 those cases drive this state machine rather than prose notes. Fixture
 corrections are transcribed from this section after it merges, never inferred
@@ -1895,7 +1912,7 @@ was ever written down.
 | `event` | `room_id`, and the [committed event](#the-committed-event) inline | A room event commits |
 | `gap` | `room_id`, `from_pos`, `to`, `reason` | A position discontinuity is detected or forced |
 | `peer` | `room_id`, `subject_id`, `device_id`, `link`, `generation` | A peer's link changes. **Depends on U1** |
-| `transfer` | `transfer_op_id`, `transferred_bytes`, `total` | A transfer makes progress. **Depends on U2** |
+| `transfer` | `transfer_op_id`, `transferred_bytes`, `total` | A `file.fetch` transfer makes progress. **Depends on U2** |
 
 A push carries `t` and never `id`; a reply carries `id` and never `t`. That is
 the whole of how the two JSON messages are told apart, so an envelope carrying
@@ -1903,13 +1920,17 @@ both, or neither, is `malformed_frame`.
 
 `peer.generation` is the connection generation U1 must supply, and it is what
 makes a stale teardown discardable from the frame alone rather than by
-inference. `transfer` frames go **only to the principal that started the
-transfer** — a progress frame is otherwise an oracle for another client's
-activity, exactly as `transfer.cancel` would be without its principal guard.
+inference. `transfer` progress pushes exist only for `file.fetch`, whose
+required `op_id` supplies `transfer_op_id`, and go **only to the principal that
+started the transfer**. `file.share` and `file.read` progress is already
+observable through connection-local CREDIT and never fabricates an absent
+`op_id`. A progress push is otherwise an oracle for another client's activity,
+exactly as `transfer.cancel` would be without its principal guard.
 
-**Every push carries a per-room monotonic position.** v1 had no sequence number
-and no cursor — only wall-clock timestamps — so a client could not tell that it
-had missed anything.
+Every **room-scoped** push carries a per-room monotonic position. The
+principal-scoped `transfer` push is not in a room position space. v1 had no
+sequence number and no cursor — only wall-clock timestamps — so a client could
+not tell that it had missed anything.
 
 A position is the **dense rank over the room's canonical `(lamport, event_id)`
 order**: the genesis is `0` and every later committed event is exactly one past
