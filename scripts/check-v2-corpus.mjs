@@ -36,6 +36,7 @@ const DOMAIN_BY_FILE = {
 };
 const COMPUTED_NODES = new Set([
   "$add", "$sub", "$bytes_of_len", "$concat", "$expires_in_ms", "$unknown",
+  "$transfer_budget_ms",
 ]);
 // `stream` is legal only on the two operations the record streams bytes for,
 // and carries exactly one direction.
@@ -189,6 +190,11 @@ function isComputedNode(value) {
       && operand.every((item) => typeof item === "string");
   }
   if (operator === "$expires_in_ms") return Number.isInteger(operand) && operand >= 0;
+  if (operator === "$transfer_budget_ms") {
+    return Array.isArray(operand) && operand.length === 3
+      && operand.every((item) => Number.isInteger(item)
+        || (typeof item === "string" && /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(item)));
+  }
   if (operator === "$bytes_of_len") {
     return Number.isInteger(operand) && operand >= 0
       || (typeof operand === "string" && /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(operand));
@@ -199,13 +205,15 @@ function isComputedNode(value) {
 function isValueNode(value, { positive = false } = {}) {
   if (Number.isInteger(value)) return positive ? value > 0 : value >= 0;
   if (typeof value === "string" && /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value)) return true;
-  return isComputedNode(value) && ["$add", "$sub"].includes(Object.keys(value)[0]);
+  return isComputedNode(value)
+    && ["$add", "$sub", "$transfer_budget_ms"].includes(Object.keys(value)[0]);
 }
 
 function isNumericAssertionValue(value) {
   if (typeof value === "number") return Number.isFinite(value);
   if (typeof value === "string" && /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value)) return true;
-  return isComputedNode(value) && ["$add", "$sub"].includes(Object.keys(value)[0]);
+  return isComputedNode(value)
+    && ["$add", "$sub", "$transfer_budget_ms"].includes(Object.keys(value)[0]);
 }
 
 function checkExactKeySet(value, required) {
@@ -331,9 +339,13 @@ function checkAssertion(a, file, caseName, where) {
       fail(file, caseName, where, `${a.observe} requires ${missing.join(" and ")}`);
     }
     if (a.observe === "bytes_streamed" && "value" in a) {
-      if (checkExactKeys(a.value, ["op", "value"], file, caseName, `${where} value`)
-          && !["eq", "ne", "lt", "lte", "gt", "gte"].includes(a.value.op)) {
-        fail(file, caseName, where, `bytes_streamed.value.op must be a numeric comparison`);
+      if (checkExactKeys(a.value, ["op", "value"], file, caseName, `${where} value`)) {
+        if (!["eq", "ne", "lt", "lte", "gt", "gte"].includes(a.value.op)) {
+          fail(file, caseName, where, `bytes_streamed.value.op must be a numeric comparison`);
+        }
+        if (!isNumericAssertionValue(a.value.value)) {
+          fail(file, caseName, where, `bytes_streamed.value.value must be numeric, a $variable, or an arithmetic computed node`);
+        }
       }
     }
     if (a.observe === "bytes_streamed" && "call" in a

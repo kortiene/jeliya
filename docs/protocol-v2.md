@@ -3,7 +3,7 @@ type: "Reference"
 title: "Jeliya protocol v2"
 description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the generation gate, approved operations, byte-stream framing, errors, sequenced pushes, authoritative resync, and binding conformance corpus."
 tags: ["clean-slate", "conformance", "protocol", "security"]
-timestamp: "2026-08-03T08:38:58Z"
+timestamp: "2026-08-03T17:54:45Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "unverified"
@@ -2398,10 +2398,10 @@ it.
 | `cursor_invalid` | → `cursor_unknown` for a pruned position, or `invalid_argument` with `reason: {"state": "format"}` for a malformed one. The single corpus code conflated the two |
 | `<the case's code>` | Not a code at all — an unsubstituted placeholder left in a fixture |
 
-`stream_aborted` and `transfer_deadline_exceeded` have no fixtures transcribed
-from this decision yet. That is a corpus gap, not permission to substitute
-another code; #233 owns their executable cases and the broader file-fixture
-correction.
+`stream_aborted` and `transfer_deadline_exceeded` now have declarative fixtures
+transcribed from this decision under #233. They remain blocked on U2 and are not
+live byte-stream evidence until the independent executor can produce truthful
+accepted-byte counts.
 
 ### The non-oracle property
 
