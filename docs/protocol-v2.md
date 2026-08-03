@@ -1,9 +1,9 @@
 ---
 type: "Reference"
 title: "Jeliya protocol v2"
-description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the three-layer handshake and generation gate, the 33 approved operations, the error taxonomy, the sequenced push stream with gap detection and authoritative resync, and the conformance corpus that binds them."
+description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the generation gate, approved operations, byte-stream framing, errors, sequenced pushes, authoritative resync, and binding conformance corpus."
 tags: ["clean-slate", "conformance", "protocol", "security"]
-timestamp: "2026-07-28T15:26:05Z"
+timestamp: "2026-08-03T08:38:58Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "unverified"
@@ -13,24 +13,22 @@ audience: ["client-authors", "contributors", "maintainers"]
 
 # Jeliya protocol v2
 
-**Status: CANONICAL 2026-07-29. The contract is complete and its corpus is
-normalized to it (#213). The typed core and v2-only daemon are implemented
-(#165/#166); the client runtime and platform adapters are not.** Protocol v2
-is the wire contract for the clean-slate client stack in the
+**Status: CANONICAL 2026-08-03. The contract includes the first-release
+byte-stream decision. Its JSON-envelope daemon half is partial, and the
+byte-stream codec/runtime and client adapters are not implemented (#233).**
+Protocol v2 is the wire contract for the clean-slate client stack in the
 [Dioxus clean-slate architecture](dioxus-architecture.md). It replaces
 [protocol v1](PROTOCOL.md) outright: one generation at a time, no dual support,
 no migration, no rollback artifact.
 
 The released `v0.6.x` line speaks v1 and keeps doing so until it is retired.
-The typed `jeliya-api` crate (#163), the codec (#164), the typed core
-projections and v2-only `jeliyad` (#165/#166) implement this record's daemon
-half: `jeliyad` is v2-only, refuses a v1 client `426 protocol_unsupported` at
-the pre-upgrade generation gate, and serves typed operations and pushes with
-no public JSON or compatibility facade. A v2 conformance-corpus replay harness
-against the live daemon is a follow-up; the corpus is today validated
-shape-wise by `scripts/check-v2-corpus.mjs`. This document satisfies #161; the
-typed `jeliya-api` crate (#163), the codec (#164), and the
-Engine cutover (#165/#166) implement it.
+The typed `jeliya-api` crate (#163), JSON-envelope codec (#164), and typed core
+and v2-only `jeliyad` slices (#165/#166) implement only part of this record's
+daemon half. `jeliyad` rejects v1 at the pre-upgrade generation gate and serves
+typed JSON operations and pushes, but it does not implement the Text/Binary
+message classes or byte-stream records decided below. The replay harness runs a
+small live slice; its corpus validation is shape-only, and its file-stream
+executor is #233 work.
 
 **v1 is inventory, not authority.** Its 24 methods were mined for the
 *requirement* each serves, then re-derived. v2 retains 11, renames 10, combines
@@ -42,18 +40,17 @@ null convention, event shape, or storage shape for its own sake.
 
 The record states
 [the shape of every request and reply](#operation-schemas), the
-[complete 60-code taxonomy](#errors), and — in
+[complete error taxonomy](#errors), the
+[byte-stream framing](#byte-stream-framing), and — in
 [the corpus's own README](../conformance/v2/README.md) — one normative fixture
 DSL. An independent adapter can implement from this document alone.
 
-The 344 hand-authored fixtures in
+The 342 hand-authored fixtures in
 [`conformance/v2/`](../conformance/v2/README.md) are normalized to that DSL
-(#213): every case conforms, every one of the 60 codes has at least one case,
-and the corpus is replayable by an independent harness. Where a fixture and
-this record disagree, **this record is right and the fixture is a bug** — the
-normalization retired fourteen refused codes and the field shapes this record
-deliberately does not define, and the corpus now asserts nothing this record
-does not state.
+(#213): every case conforms structurally and the corpus is replayable by an
+independent harness. Shape validation is not live byte-stream evidence. Where a
+fixture and this record disagree, **this record is right and the fixture is a
+bug**; #233 owns the file-fixture transcription from this decision.
 
 Everything is settled in substance — the operation set, the handshake and its
 gate, the removals, the push and resync model, the severity derivation, and the
@@ -74,7 +71,7 @@ upstream work, because `iroh-rooms` is Jeliya's own upstream.
 | # | Upstream change | Without it |
 |---|---|---|
 | U1 | `ConnEvent` must carry the connection generation and a typed offline reason | A stale-generation teardown can overwrite newer presence state. #79's core criterion is unverifiable |
-| U2 | A progress-observing or streaming blob-fetch API — a byte-count channel, or an incremental item consumer Jeliya drives | No `progress` or `transfer_stalled` frame is producible. A 100 MiB transfer is indistinguishable from a hang |
+| U2 | A progress-observing or streaming blob-fetch API — a byte-count channel, or an incremental item consumer Jeliya drives | No `transfer` progress push or truthful transferred-byte count for `transfer_stalled`, `transfer_deadline_exceeded`, cancellation, or abort is producible. A 100 MiB transfer is indistinguishable from a hang |
 | U3 | A size-distinguishable fetch outcome | An over-limit fetch reports as `digest_mismatch`, which [the shared-file size policy](shared-file-size.md) calls a false accusation against an honest peer |
 
 Until each lands, its conformance cases are declared `blocked_on_upstream` in
@@ -110,30 +107,21 @@ one definition is the fix, and no client may compile the value in.
 
 ### The limits object
 
-**Sixteen fields, every one an integer.** A client MUST read them and MUST NOT
-assume a compiled-in default.
-
-The count is stated because the corpus disagrees with itself about it:
-`health_limits_object_carries_all_eleven_named_integer_fields` asserts an exact
-key set of eleven, omitting `max_subscriptions_per_connection` and
-`idle_timeout_ms` — while `close_code_4004_is_emitted_on_idle_timeout` reads
-`idle_timeout_ms` out of the very object the other case says cannot contain it.
-Both cases cannot be right. The record is right and both fixtures are wrong: the
-two omitted fields are each load-bearing, one for `subscription_limit_reached`
-and one for a client that must produce activity to stay connected.
+Every field is an integer. A client MUST read them and MUST NOT assume a
+compiled-in default.
 
 | Field | Meaning |
 |---|---|
 | `max_shared_file_bytes` | `104_857_600`, from [the shared-file size policy](shared-file-size.md). This record owns the spelling and fixes it here |
 | `max_message_body_bytes` | Largest message body accepted |
-| `max_frame_bytes` | Largest single wire frame accepted before the connection is closed |
+| `max_frame_bytes` | Largest complete WebSocket data-message payload accepted before the connection is closed |
 | `max_inflight_requests` | Requests one connection may have outstanding |
 | `max_subscriptions_per_connection` | Room subscriptions one connection may hold. Exceeding it is `subscription_limit_reached`, never a silent drop |
 | `max_connections` | Connections one daemon accepts |
 | `max_concurrent_transfers` | File transfers in flight across the daemon |
 | `max_transfer_bytes_inflight` | Total transfer bytes the daemon will hold at once |
-| `transfer_connect_allowance_ms` | Per-provider connection allowance |
-| `transfer_floor_bits_per_second` | The floor the transfer deadline is computed from |
+| `transfer_connect_allowance_ms` | Fixed allowance included in an admitted transfer's absolute deadline |
+| `transfer_floor_bits_per_second` | The floor the size-aware absolute transfer budget is computed from |
 | `transfer_stall_ms` | Zero-forward-progress window before `transfer_stalled` |
 | `timeline_page_max` | Largest timeline page |
 | `idle_timeout_ms` | Inactivity after which the daemon closes with `4004`. Served because a long-lived client cannot otherwise know how often it must produce activity to stay connected |
@@ -141,12 +129,14 @@ and one for a client that must produce activity to stay connected.
 | `pairing_code_max_attempts` | Failed submissions against **one outstanding code** before that code is voided. Counted per code, never per connection |
 | `browser_session_ttl_ms` | Lifetime of a browser session credential minted by a pairing code |
 
-The last four exist because a bounded per-file limit is not by itself a bound
-on daemon memory. Fetch buffers roughly twice the file and upload holds one
-full body; 64 concurrent requests against a 100 MiB limit is a multi-gigabyte
-commitment. `max_concurrent_transfers` and `max_transfer_bytes_inflight` are
-the bound, and exceeding either is refused with `resource_exhausted` rather
-than absorbed.
+A bounded per-file limit is not by itself a daemon resource bound.
+`max_concurrent_transfers` bounds transfer count, while
+`max_transfer_bytes_inflight` bounds the sum of admitted logical file totals
+reserved across active transfers. Staging disk, source read-ahead, reassembled
+messages, and outbound queues remain separately byte-bounded; the logical
+reservation is not permission to allocate that total in memory. Exceeding
+either served transfer bound is refused with `resource_exhausted` rather than
+absorbed.
 
 ## Layer 1 — the generation gate
 
@@ -207,9 +197,11 @@ A rejection after the upgrade closes with a defined application close code:
 | `4006` | `storage_generation_mismatch` |
 | `4007` | `malformed_frame` |
 
-`4007` closes only when a frame's `id` cannot be recovered. A frame that decodes
-far enough to correlate always gets an error reply instead — closing a
-connection over one bad request would punish the other requests in flight on it.
+`4007` closes only when a data message cannot be bound safely: a JSON envelope
+has no recoverable request `id`, or a Binary record has no trustworthy
+outstanding request and stream binding. A message that decodes far enough to
+bind gets a stream-local abort or correlated error reply instead — closing a
+connection over one bad request would punish the others in flight.
 
 A client can therefore distinguish "you speak the wrong generation" from "the
 daemon died", and present the reset path instead of retrying forever.
@@ -356,7 +348,7 @@ the credential that could mint another code.
 
 ## Layer 2 — `hello`
 
-The daemon's first frame after upgrade is exactly one `hello`:
+The daemon's first Text message after upgrade is exactly one `hello`:
 
 ```json
 { "t": "hello",
@@ -381,10 +373,12 @@ adoption check that needs pid and port is Layer 0.
 { "id": 42, "ok": false, "err": { "code": "insufficient_standing", "…": "…" } }
 ```
 
-- `id` correlates a reply to its request and is unique per connection while
-  outstanding.
-- `op_id` is the **only** envelope field that is optional, and it deduplicates
-  the request rather than parameterising the operation. See
+- `id` is a JSON integer in `0..=9_007_199_254_740_991`, correlates a reply
+  to its request, and is unique per connection while outstanding. The bound is
+  the largest integer ordinary browser and Node JSON numbers preserve exactly.
+- `op_id` is the only envelope field that can be omitted. It is required for
+  `file.fetch`, whose progress and cancellation name it; elsewhere it
+  deduplicates the request rather than parameterising the operation. See
   [`op_id` is an envelope field](#request-deduplication-lives-in-the-envelope).
 - Replies MAY arrive out of order. A client MUST correlate by `id` and MUST NOT
   assume completion order. v1's socket dispatched strictly serially, forwarding
@@ -397,15 +391,410 @@ adoption check that needs pid and port is Layer 0.
 
 ### Bounded parsing
 
-A frame exceeding `max_frame_bytes` closes the connection with `4005` without
-being parsed. Nesting depth, `op` name length, and array lengths are bounded by
-the codec, and exceeding any is `invalid_argument` — never a panic and never an
-unbounded allocation.
+A complete WebSocket data message exceeding `max_frame_bytes` closes the
+connection with `4005` without being parsed. Nesting depth, `op` name length,
+and array lengths are bounded by the codec, and exceeding any is
+`invalid_argument` — never a panic and never an unbounded allocation.
 
 **No JSON `null` carries meaning anywhere in v2.** Absence is expressed as a
 tagged variant. This applies to the protocol's own frames, not only to
 operation payloads: a `null` that means "unbounded" or "unknown" is exactly the
 v1 compatibility-nullability this generation exists to shed.
+
+## Byte-stream framing
+
+This section decides the first-release framing tracked by #233. It carries one
+bounded, non-resumable byte sequence for `file.share` and `file.read`; the
+separate HTTP file routes are not protocol-v2 framing.
+
+### WebSocket messages, not WebSocket fragments
+
+An RFC 6455 **frame** is a transport fragment. A WebSocket **message** is the
+complete Text or Binary data message after those fragments have been
+reassembled. Jeliya gives frame boundaries no application meaning:
+fragmentation MUST NOT create records, terminate a stream, or reset a transfer
+stall timer.
+
+Every `hello`, request, reply, and push is exactly one UTF-8 **Text message**.
+Every byte-stream record is exactly one **Binary message**. JSON in a Binary
+message and a stream record in a Text message are malformed. Ping, Pong, and
+Close remain WebSocket controls; they carry no file bytes, grant no credit, and
+terminate no file successfully. The daemon MUST NOT negotiate WebSocket data
+compression, so a bounded compressed message cannot expand beyond the bound
+after admission.
+
+A DATA payload is at most `min(65_536, max_frame_bytes - 48)` bytes, with the
+subtraction checked before use. A served `max_frame_bytes` is valid for byte
+streaming only if it is greater than 48 **and** can carry the larger of the
+shortest structurally valid `file.share` and `file.read` Text request envelopes,
+computed from the codec's identifier and string lower bounds with no optional
+whitespace. A daemon that fails either check MUST refuse readiness rather than
+advertise a stream it cannot open. This fixed protocol bound keeps clients
+executable without adding a new served limit or hard-coding the shared-file
+maximum.
+
+The existing wire name `max_frame_bytes` is retained, but it means the payload
+length of one complete reassembled Text or Binary data message. The bound is
+checked before JSON or a binary header is parsed. This is why `4005` is a
+connection close rather than a correlated operation reply even when the prefix
+of an oversized message appears to contain an `id`.
+
+### The binary record
+
+One Binary message contains exactly one record. A record never spans messages,
+and one message never concatenates records. Every record begins with this
+48-byte header; all integers are unsigned, big-endian integers:
+
+| Offset | Width | Field |
+|---|---:|---|
+| `0` | 4 | ASCII magic `JBS2` (`4a 42 53 32`) |
+| `4` | 1 | Record kind |
+| `5` | 3 | Reserved; MUST be zero |
+| `8` | 8 | The request envelope's `id` |
+| `16` | 16 | The daemon-generated `stream_id` |
+| `32` | 8 | `offset` |
+| `40` | 8 | `value` |
+| `48` | remainder | Payload; present only on DATA |
+
+`stream_id` is an unpredictable, nonzero 128-bit value, unique and never reused
+within one WebSocket connection. It is invalid on every other connection. The
+pair `(request id, stream_id)` is the stream identity; neither value alone may
+bind a record. The request id remains outstanding and unavailable for reuse
+until the terminal reply.
+
+The kind byte is closed as follows:
+
+| Kind | Name | Sender | `offset` | `value` | Payload |
+|---:|---|---|---|---|---|
+| `0x01` | OPEN | daemon | `0` | expected total bytes | none |
+| `0x02` | DATA | producer | first byte's zero-based offset | `0` | `1..=min(65_536, max_frame_bytes - 48)` file bytes |
+| `0x03` | CREDIT | receiver | `accepted_through` | `send_through` | none |
+| `0x04` | END | producer | total bytes sent | `0` | none |
+| `0x05` | ABORT | either endpoint | accepted-byte high-water mark | abort reason | none |
+| `0x06` | ACK | recipient of ABORT | final accepted-byte high-water mark | `0x05` | none |
+
+Every field not given a meaning in that row MUST be zero, and a non-DATA record
+MUST be exactly 48 bytes. An empty DATA record is malformed; END is the only
+terminator. Offset arithmetic MUST be checked and MUST NOT wrap.
+
+The ABORT `value` is also closed:
+
+| Value | Meaning |
+|---:|---|
+| `0x01` | `cancelled` |
+| `0x02` | `source_failed` |
+| `0x03` | `sink_failed` |
+| `0x04` | `protocol_error` |
+| `0x05` | `operation_error`; daemon only, with the exact error in the terminal reply |
+
+ABORT reasons describe the sender's local failure: its source could not produce,
+its sink could not accept, it chose cancellation, or it detected a protocol
+violation. A receiver's ABORT offset is its local `accepted_through`; a
+producer's is the greatest `accepted_through` it observed in CREDIT. A receiver
+accepts a producer ABORT offset when it equals any `accepted_through` value that
+receiver previously issued; the producer may not yet have observed the newest
+one.
+
+The recipient stops producing or issuing credit as applicable, drains and
+discards DATA already in flight for that stream, and then sends ACK. ACK.offset
+is the final receiver-accepted count: when the ABORT recipient is the receiver
+it uses its local count; when
+the ABORT sender was the receiver, the producer validates and echoes
+ABORT.offset. Its `value` is exactly `0x05`, naming ABORT. The daemon uses that
+validated count as `transferred_bytes` for a download; for an upload it uses its
+own local receiver count. `operation_error` never becomes
+`stream_abort_reason`; the daemon's following operation error is authoritative.
+`transport_lost` has no record value because it is synthesized locally when no
+record can arrive.
+
+The numeric offsets exist to detect duplication, omission, and reordering. They
+are not chunk addresses: v2 defines no chunk identifier, range, per-record
+hash, checkpoint, retry, provider switch, or continuation token. A failed
+transfer restarts at byte zero. Chunked and resumable transfer remains the
+post-first-release design in #209.
+
+### Binding and operation lifecycle
+
+OPEN is an admission record, not a second reply. It is the one record validated
+against only an outstanding streaming request id: the daemon supplies a fresh
+nonzero stream id, and receipt of a valid OPEN installs the active pair. Every
+later record requires that exact pair. The daemon sends OPEN only after the
+request has passed the record's validation order, the source or bounded staging
+sink is open, and both transfer limits have been reserved. A refusal before that
+point is one ordinary terminal error reply and no OPEN. Resource reservation
+uses the declared total for `file.share` and the verified local total for
+`file.read`; `resource_exhausted` is therefore decided before any byte is
+accepted.
+
+The OPEN total equals `file.share.in.declared_bytes` for an upload and the
+verified `file.read` byte count for a download. The operation then has one of
+these two legal success sequences:
+
+```text
+file.share: Text request
+            < Binary OPEN < Binary CREDIT
+            > Binary DATA* < Binary CREDIT*
+            > Binary END
+            < Text success reply
+
+file.read:  Text request
+            < Binary OPEN > Binary CREDIT
+            < Binary DATA* > Binary CREDIT*
+            < Binary END
+            < Text success reply
+```
+
+`>` is client-to-daemon and `<` is daemon-to-client. JSON requests, replies,
+pushes, WebSocket controls, and records for other active streams MAY interleave
+between any two messages. Ordering exists only within one stream and is checked
+by its offsets. A scheduler MUST service JSON, CREDIT, and ABORT traffic between
+DATA messages; one file may not monopolize the connection.
+
+The request remains outstanding from its Text request through its terminal Text
+reply, and counts against `max_inflight_requests` for that entire interval. A
+fresh execution has exactly one OPEN and exactly one terminal reply. A faithful
+concurrent `op_id` replay joins the original `file.share`, opens no second
+stream, and receives the recorded terminal result. A completed faithful replay
+returns that result directly with no OPEN and no bytes. A different request
+body under the same `op_id` remains `op_id_conflict`. Streamed bytes are not
+part of that fingerprint because no bytes are accepted before admission; once
+an `op_id` has admitted its first upload, a caller MUST use a new `op_id` if the
+source content may differ, even when all metadata is equal.
+
+### Credit and bounded backpressure
+
+CREDIT is cumulative receiver-driven flow control. `accepted_through` is the
+exclusive end offset of the highest contiguous byte range delivered to the
+receiver's bounded sink; `send_through` is the exclusive cumulative offset
+through which the producer may send DATA. Both begin at zero and are monotonic,
+and `accepted_through <= send_through`. An identical repeated CREDIT is
+idempotent. Regression, acknowledgement beyond received data, or credit from
+the producer is malformed.
+
+The receiver sends initial CREDIT after OPEN and advances it only as its sink
+releases capacity. The producer MUST NOT send a DATA record for which
+`offset + payload length > send_through`; it pauses both source reads and
+WebSocket writes when it has no credit. DATA offsets are contiguous: each is
+exactly the end of the preceding DATA. The receiver accepts a DATA record
+atomically or not at all.
+
+Credit bounds memory independently of file size. Inbound storage, source
+read-ahead, and outbound queues MUST be byte-bounded; a message-count-only queue
+is insufficient. An implementation MUST NOT read or enqueue the whole file
+while waiting for socket capacity. The unaccepted window
+`send_through - accepted_through` may never exceed the receiver's available
+bounded capacity.
+
+For `file.share`, the daemon MUST make the cumulative credit reach
+`min(declared_bytes, max_shared_file_bytes) + 1` after it has accepted the
+preceding bytes. This mandatory one-byte probe exposes the first undeclared or
+over-limit byte when one exists; a source that has exactly the declared bytes
+instead sends END after those bytes are acknowledged. The daemon never stages
+the probe byte when it violates a bound. Upload `send_through` MUST NOT exceed
+`max_shared_file_bytes + 1`; that extra byte is an observation sentinel, not
+reserved or accepted storage. For `file.read`, client credit MUST NOT exceed the
+OPEN total.
+
+Forward progress is an increase in `accepted_through`. Ping, Pong, repeated
+CREDIT, bytes merely queued to a socket, and an unchanged transfer push are not
+progress. If accepted progress stops for `transfer_stall_ms`, the daemon aborts
+the stream and the operation terminates with `transfer_stalled`.
+
+Every transfer has an absolute budget starting when the daemon accepts the
+request into transfer-capacity accounting, before source or sink setup:
+
+```text
+budget_ms = transfer_connect_allowance_ms
+          + ceil(total_bytes * 8 * 1000 / transfer_floor_bits_per_second)
+```
+
+`total_bytes` is `file.share.declared_bytes`, the signed size for `file.fetch`,
+or the verified local size for `file.read`. Each provider attempt during
+`file.fetch` receives only the remaining budget, never a fresh one. All
+arithmetic is checked; a zero floor or a result not representable by the
+implementation's finite timer is an invalid served configuration and refuses
+readiness. Expiry is `transfer_deadline_exceeded` and, for an admitted byte
+stream, daemon ABORT `operation_error` precedes that reply. The stall timer may
+fire first, but accepted trickle progress cannot extend the absolute deadline.
+An active transfer counts as connection activity, so `idle_timeout_ms` does not
+race a producer correctly paused for credit. While ACTIVE, an already-sequenced
+explicit cancellation wins a tie, then deadline expiry, then the stall timer;
+FINALIZING is governed only by its already-sequenced result.
+
+### END, abort, and cancellation
+
+Receiving the declared number of bytes is not EOF. The producer sends END only
+after every DATA byte it sent has been acknowledged by CREDIT. END.offset is
+the producer's actual total and MUST equal the receiver's contiguous received
+and accepted total. A zero-byte stream is OPEN, CREDIT, END at offset zero, and
+a terminal reply; it never uses an empty DATA record.
+
+END is the producer's terminal commitment. For an upload, the daemon's receipt
+of END moves the stream to FINALIZING; it verifies and commits the staged bytes,
+then sends the success reply, or sends only its exact terminal error reply if
+finalization fails. For a download, the daemon's send of END moves the stream to
+FINALIZING; the client accepts it only after the complete byte sequence is in
+bounded quarantine, and the daemon then sends the success reply. A client MUST
+keep downloaded bytes quarantined until END and the success reply agree on the
+byte count; otherwise it discards them.
+
+Either endpoint may send ABORT while the stream is active. The peer stops
+producing and granting credit, discards uncommitted bytes, drains older in-flight
+records, and sends ACK. A daemon-originated ABORT is followed by the request's
+exact error reply only after ACK; a client-originated ABORT is ACKed by the
+daemon and then followed by `stream_aborted`. Transfer reservations are
+released at the local terminal decision, not held while waiting for ACK. The
+daemon waits at most `transfer_stall_ms`; on timeout it sends the terminal reply
+if possible and closes `4007`. Only ACK or that timeout retires the binding. The
+`operation_error` wire reason is daemon-only and is resolved by the following
+typed error, for example `file_too_large` or `declared_size_mismatch`.
+
+The daemon is the authoritative terminal sequencer. A stream is ACTIVE until
+the daemon receives upload END or sends download END; that action atomically
+moves it to FINALIZING. END, ABORT, `transfer.cancel`, deadline, and stall race
+only while ACTIVE. FINALIZING cannot be cancelled or aborted by a later control
+and produces success or its exact finalization error.
+
+| Race | Result |
+|---|---|
+| client END wins while ACTIVE | FINALIZING runs to its recorded result |
+| daemon cancellation wins while ACTIVE | daemon ABORT; a later END is discarded |
+| ABORT crosses ABORT while ACTIVE | daemon's chosen ABORT is authoritative; both sides still complete the explicit ACK exchange |
+| client ABORT wins while ACTIVE | no event; original request is `stream_aborted` |
+| `transfer.cancel` wins while ACTIVE | no event; cancel reports `cancelled`; original request is `stream_aborted` |
+| cancel or ABORT arrives in FINALIZING or after completion | it cannot change the result; `transfer.cancel` reports `transfer_unknown` |
+
+A repeated cancel of the recorded cancellation reports `already_cancelled`.
+DATA already queued when ABORT wins is discarded until ACK. Because WebSocket
+message order is preserved in each direction, receiving ACK proves every older
+record from that sender has been seen; the binding may then retire without a
+time-based tombstone. Any later DATA, CREDIT, END, or terminal control for the
+retired stream is malformed.
+
+`stream_aborted.transferred_bytes` and `transfer.cancel.transferred_bytes` count
+bytes the daemon can prove the receiver accepted: its local accepted upload
+count, the download receiver's ABORT ACK offset, or verified `file.fetch` bytes
+accepted into local storage. They never count bytes merely read from a source or
+queued to a socket. For an admitted `file.share` or `file.read`, the total is the
+OPEN total. A source, sink, cancellation, or pre-END transport/framing failure
+never produces a success reply.
+
+### Disconnects and retries
+
+No byte stream survives its WebSocket connection. On a disconnect before a
+valid upload END, the daemon aborts the share, removes all staging residue,
+releases its transfer reservation, and authors no event. A supplied `op_id`
+records `stream_aborted` with reason `transport_lost`; replaying that same key
+returns the recorded failure without opening a stream, and retrying the bytes
+requires a new `op_id` from offset zero. Stream state and staged bytes are
+always released at that terminal result; only the ordinary recorded reply
+remains in the dedup ledger.
+
+After the daemon has accepted a valid upload END, finalization may complete even
+if the connection drops. This is the lost-final-reply case the dedup ledger
+exists for: replaying the same `op_id` returns the committed success or the
+recorded finalization error without a second import or event. A client that
+omitted `op_id` deliberately has no replay guarantee.
+
+A download whose connection drops before its final success is discarded by the
+client and a later `file.read` starts from zero with a new request and stream
+identifier. `file.read` is connection-scoped and uses in-band ABORT rather than
+`transfer.cancel`; `file.share` without `op_id` likewise has no
+cross-reconnection cancel target. A daemon restart likewise resumes no stream;
+startup cleanup MUST remove abandoned staging state before accepting new work.
+
+### Size and record refusal
+
+`file.share.declared_bytes > max_shared_file_bytes` is refused before OPEN with
+`file_too_large` at `stage_declared`, so no CREDIT or file byte is sent. For each
+syntactically valid upload DATA record at the expected offset, the daemon
+computes `candidate = DATA.offset + payload length` with checked arithmetic and
+applies this order before copying any payload:
+
+1. `candidate > max_shared_file_bytes` → `file_too_large` at `stage_stream`.
+2. Otherwise `candidate > declared_bytes` → `declared_size_mismatch` with
+   `observed_bytes: candidate`.
+3. Otherwise enforce CREDIT and bounded sink capacity, then accept the whole
+   record.
+
+The global file policy deliberately precedes declaration mismatch and credit
+when one record violates several rules. The offending record is rejected whole,
+so accepted bytes never exceed the served maximum. END below the declaration is
+`declared_size_mismatch` with the accepted END offset; exact equality succeeds,
+including zero and `max_shared_file_bytes`.
+
+`frame_too_large` is different: a Text or Binary message over
+`max_frame_bytes` closes `4005` unparsed and aborts every still-active pre-END
+stream on that connection as `transport_lost`. An upload already finalizing
+from an accepted END keeps that atomic finalization result for `op_id` replay.
+A conforming producer therefore keeps every DATA payload at or below the DATA
+bound above; aggregate file-size refusal must not be manufactured by putting
+the whole file in one oversized message. A DATA payload over that bound but
+inside `max_frame_bytes` has a usable stream binding and is a correlated
+`malformed_frame`, not close `4005`.
+
+### Malformed stream records
+
+Validation is deterministic: complete-message size, Text/Binary class, fixed
+header and magic; then either fresh OPEN correlation or an active
+`(request id, stream_id)` binding; then kind, state, direction, reserved/value
+and payload rules, offset arithmetic and continuity, aggregate file policy,
+credit, and sink acceptance.
+
+A Binary message shorter than the header, with bad magic, or with no trustworthy
+outstanding request binding closes `4007`; there is no safe request to answer.
+For a client-to-daemon record whose full header names an active stream, a bad
+reserved byte, unknown kind, wrong sender, duplicate OPEN or terminal, invalid
+ABORT reason, forbidden payload, bad offset, oversized DATA record, or
+exceeded credit aborts only that stream and gets a correlated
+`malformed_frame` terminal reply. If the daemon sends a malformed nonterminal DATA or CREDIT on an active
+binding, the client sends ABORT `protocol_error`, discards the stream, and
+expects the terminal `stream_aborted` reply; a client cannot manufacture a
+reply to its own request. A malformed daemon OPEN, END, or ABORT is
+connection-fatal `4007`, because that terminal/binding failure cannot be
+recovered without making the required request outcome ambiguous. Other requests
+remain usable only on the request-local paths above. Standard WebSocket
+protocol failures retain their standard close codes; `1006` is a local
+observation and is never sent.
+
+### Executing `stream` in the conformance harness
+
+The fixture key is executable without buffering a corpus file; the harness's
+deterministic generator already knows `N`, unlike a platform's unknown-size
+source preflight. A call carrying `stream` is run as one duplex operation: the
+harness sends the Text request, keeps its reply promise pending, and routes
+Binary records by request id and stream id until the terminal Text reply.
+
+For `stream: {send_bytes: N}`, the harness begins the call without awaiting its
+reply, races a terminal pre-OPEN reply against OPEN, and then honours CREDIT.
+Byte at zero-based offset `i` is `i mod 251`; the harness generates it
+incrementally in DATA payloads no larger than the served record limit, sends
+END after all generated bytes are acknowledged, and then matches the terminal
+reply. `send_bytes` remains independent of `in.declared_bytes`, so short, long,
+and over-limit streams are expressible.
+
+For `stream: {receive_bytes: N}`, it grants a bounded window, counts and checks
+DATA without collecting the whole file, advances CREDIT only after sink
+acceptance, validates END, and, on ABORT, sends ACK with its final accepted
+count. It requires OPEN, END, the terminal `out.bytes`, and `N` to agree. A browser adapter that has no streaming file sink
+MAY preflight OPEN.total against an explicit bounded in-memory quarantine and
+grant only that capacity; if the total exceeds its local cap, it ABORTs with
+`sink_failed`. Native streaming sinks are an optimization, not a protocol
+requirement. The session layer must preserve the WebSocket Text/Binary bit
+instead of attempting `JSON.parse` on every message.
+
+Harness observations keep separate counters for generated, socket-sent,
+received, and receiver-accepted payload bytes. Each call step receives an
+internal handle consisting of its case step index and envelope id.
+`observe: bytes_streamed` takes optional `call: "step:<n>"`; when omitted it
+uses the most recent call on the same session. It means receiver-accepted
+payload bytes. A terminal pre-OPEN reply records zero without requiring OPEN;
+an admitted call requires OPEN and a terminal outcome. The harness exposes raw
+Binary-record send, credit pause/release, client ABORT/ACK, and transport-drop
+controls for malformed, crossed-terminal, cancellation, and backpressure cases;
+those cases drive this state machine rather than prose notes. Fixture
+corrections are transcribed from this section after it merges, never inferred
+from the implementation under test.
 
 ## Wire conventions
 
@@ -444,12 +833,17 @@ hold without a single exception.
 
 Because it sits in the envelope, **`op_id` is accepted on every operation and
 ignored by those that do not deduplicate** — including all three `stream.*`
-operations. It is never `unrecognised_field`.
+operations. It is never `unrecognised_field`; only `file.fetch` rejects its
+omission.
 
-`transfer.cancel` is the one operation that needs to *name* an `op_id` rather
-than carry one. Its request field is therefore `transfer_op_id`, and the
-envelope `op_id` on a `transfer.cancel` is ignored like any other
-naturally-idempotent operation. One wire name never means two things.
+An omitted `op_id` on `file.fetch` is `invalid_argument` with `field: "op_id"`
+and `reason: {"state": "missing"}` before room or provider work.
+
+`transfer.cancel` is the one operation that needs to *name* another request's
+`op_id` rather than use its own envelope field for that purpose. Its request
+field is therefore `transfer_op_id`, and the envelope `op_id` on a
+`transfer.cancel` is ignored like any other naturally-idempotent operation. One
+wire name never means two things.
 
 ### There are no optional request fields
 
@@ -493,7 +887,7 @@ convention:
 | 3 dedup | the operations in the `op_id` deduplicated row of [Idempotency](#idempotency-and-retry) |
 | 4 room index | every operation whose `in` carries `room_id` |
 | 5 standing | as step 4, minus `room.archive` and `room.list` |
-| 6 role | the four operations that [require `authority`](#room-and-membership--8) |
+| 6 role | the four operations that [require `authority`](#room-and-membership) |
 | 7 semantics | every operation |
 
 Two consequences are worth stating rather than deriving. `subject.ensure` skips
@@ -544,6 +938,7 @@ belongs to exactly one operation.
 | Type | Form |
 |---|---|
 | `<room_id>` `<subject_id>` `<device_id>` `<event_id>` `<invite_id>` `<file_id>` `<pipe_id>` `<op_id>` | opaque strings, each a distinct domain |
+| `<request_id>` | the request envelope's integer `id` in `0..=9_007_199_254_740_991`, echoed in stream records and the terminal reply |
 | `<ts>` | RFC 3339 UTC instant with a `Z` offset |
 | `<uint>` | JSON number, integral, `>= 0` |
 | `<bool>` | JSON `true` or `false` |
@@ -571,6 +966,7 @@ belongs to exactly one operation.
 | `latest_status` | variant: `present {label, at}`, `absent` |
 | `byte_total` | variant: `known {bytes}`, `unknown` |
 | `outcome` | variant: `cancelled`, `already_cancelled` — `transfer.cancel` only |
+| `stream_abort_reason` | bare enum: `cancelled`, `source_failed`, `sink_failed`, `transport_lost`, `protocol_error` |
 
 Every variant in this record appears in this table. A variant whose arms are not
 enumerated here does not exist — an arm set stated only by example is how an
@@ -1238,19 +1634,25 @@ contributes nothing, and its absence is indistinguishable from it not existing.
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "name": "<string>", "declared_bytes": "<uint>", "declared_content_type": "<string>" }` |
 | `out` | `{ "room_id": "<room_id>", "file_id": "<file_id>", "event_id": "<event_id>", "pos": "<uint>", "bytes": "<uint>", "digest": "<string>" }` |
-| Errors | `declared_size_mismatch`, `file_too_large` |
+| Errors | `declared_size_mismatch`, `file_too_large`, `transfer_stalled`, `transfer_deadline_exceeded`, `stream_aborted` |
 
-Bytes are **streamed**, combining v1's RPC and its separate HTTP upload edge.
+Bytes follow the [byte-stream framing](#byte-stream-framing), combining v1's
+RPC and its separate HTTP upload edge.
 **No filesystem path appears in the request**: v1's `path` is removed, because a
 protocol that takes a daemon path cannot serve a browser or an Android
 `content://` consumer. `PlatformServices` owns paths.
 
 `declared_bytes` is checked against `max_shared_file_bytes` before any byte is
 accepted (`enforced_at: "stage_declared"`) and against the streamed total after
-(`enforced_at: "stage_stream"`). A stream that does not match its declaration is
-`declared_size_mismatch`, never `digest_mismatch` — accusing an honest peer of
-corruption for a size disagreement is the false accusation
-[the size policy](shared-file-size.md) forbids.
+(`enforced_at: "stage_stream"`). A platform source that reports no size is not
+rejected: before opening `file.share`, the client counts it into bounded staging
+that stops at `max_shared_file_bytes + 1`, then sends the observed legal count as
+`declared_bytes` or refuses locally if the sentinel byte exists. This is the
+size policy's unknown-source path; it never copies or buffers without the served
+bound, and it does not invent an unknown-size wire arm. A stream that does not
+match its declaration is `declared_size_mismatch`, never `digest_mismatch` —
+accusing an honest peer of corruption for a size disagreement is the false
+accusation [the size policy](shared-file-size.md) forbids.
 
 The field is `declared_content_type` on **every** operation that carries it —
 `file.share`, `file.list`, and `file.read` alike. It is peer-declared and
@@ -1296,25 +1698,30 @@ expected value.
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "file_id": "<file_id>" }` |
 | `out` | `{ "room_id": "<room_id>", "file_id": "<file_id>", "bytes": "<uint>", "digest": "<string>", "provider": { "subject_id": "<subject_id>", "device_id": "<device_id>" } }` |
-| Errors | `provider_unreachable`, `file_unknown`, `file_too_large`, `digest_mismatch`, `transfer_stalled`, `room_not_live` |
+| Errors | `provider_unreachable`, `file_unknown`, `file_too_large`, `digest_mismatch`, `transfer_stalled`, `transfer_deadline_exceeded`, `stream_aborted`, `room_not_live` |
 
 **No `save_dir`.** v1's destination path is removed; the daemon holds the bytes
 and `file.read` streams them out.
 
 The reply does **not** report local hold state. Whether bytes are held is
 answered by `file.read` succeeding or by a `file.list` row's `self_hosted` — one
-fact, one place. Requires liveness.
+fact, one place. Requires liveness. `file.fetch` requires envelope `op_id`
+because its progress, cross-reconnect cancellation, and replay all name that
+value. If cancellation wins, the original fetch completes and is recorded as
+`stream_aborted` with reason `cancelled`, while `transfer.cancel` separately
+reports its cancellation outcome.
 
 ### `file.read`
 
 | | |
 |---|---|
 | `in` | `{ "room_id": "<room_id>", "file_id": "<file_id>" }` |
-| `out` | `{ "room_id": "<room_id>", "file_id": "<file_id>", "bytes": "<uint>", "declared_content_type": "<string>" }`, then the bytes streamed |
-| Errors | `file_not_fetched`, `file_unknown` |
+| `out` | `{ "room_id": "<room_id>", "file_id": "<file_id>", "bytes": "<uint>", "declared_content_type": "<string>" }` after byte-stream END |
+| Errors | `file_not_fetched`, `file_unknown`, `transfer_stalled`, `transfer_deadline_exceeded`, `stream_aborted` |
 
-Streams bytes rather than serving them over HTTP. v1's never-render-inline
-protections were all HTTP *response headers*, and headers do not exist here, so
+Uses the [byte-stream framing](#byte-stream-framing) rather than serving bytes
+over HTTP. v1's never-render-inline protections were all HTTP *response
+headers*, and headers do not exist here, so
 they become **data**: the peer-declared type is carried in an explicitly
 untrusted, distinctly named field — `declared_content_type`, never
 `content_type` — and **a client MUST NOT render peer-supplied bytes inline on
@@ -1325,7 +1732,7 @@ the strength of it.**
 | | |
 |---|---|
 | `in` | `{ "transfer_op_id": "<op_id>" }` |
-| `out` | `{ "transfer_op_id": "<op_id>", "outcome": { "state": "cancelled" }, "transferred_bytes": "<uint>", "total": { "state": "known", "bytes": "<uint>" } }` |
+| `out` | `{ "transfer_op_id": "<op_id>", "outcome": <outcome>, "transferred_bytes": "<uint>", "total": <byte_total> }` |
 | Errors | `transfer_unknown` |
 
 **The request field is `transfer_op_id`, not `op_id`.** It names the transfer
@@ -1494,7 +1901,7 @@ mechanism, there is no second value it can disagree with.
 
 ### The push frames
 
-`t` is closed at four. A frame type not listed here does not exist — the same
+`t` is closed at four. A push type not listed here does not exist — the same
 rule the [shared value types](#shared-value-types) apply to every variant, and
 for the same reason: the committed corpus contains two mutually incompatible
 spellings of the event push, `t: "event"` and `t: "room.event"`, because neither
@@ -1505,21 +1912,25 @@ was ever written down.
 | `event` | `room_id`, and the [committed event](#the-committed-event) inline | A room event commits |
 | `gap` | `room_id`, `from_pos`, `to`, `reason` | A position discontinuity is detected or forced |
 | `peer` | `room_id`, `subject_id`, `device_id`, `link`, `generation` | A peer's link changes. **Depends on U1** |
-| `transfer` | `transfer_op_id`, `transferred_bytes`, `total` | A transfer makes progress. **Depends on U2** |
+| `transfer` | `transfer_op_id`, `transferred_bytes`, `total` | A `file.fetch` transfer makes progress. **Depends on U2** |
 
 A push carries `t` and never `id`; a reply carries `id` and never `t`. That is
-the whole of how the two are told apart, so a frame carrying both, or neither, is
-`malformed_frame`.
+the whole of how the two JSON messages are told apart, so an envelope carrying
+both, or neither, is `malformed_frame`.
 
 `peer.generation` is the connection generation U1 must supply, and it is what
 makes a stale teardown discardable from the frame alone rather than by
-inference. `transfer` frames go **only to the principal that started the
-transfer** — a progress frame is otherwise an oracle for another client's
-activity, exactly as `transfer.cancel` would be without its principal guard.
+inference. `transfer` progress pushes exist only for `file.fetch`, whose
+required `op_id` supplies `transfer_op_id`, and go **only to the principal that
+started the transfer**. `file.share` and `file.read` progress is already
+observable through connection-local CREDIT and never fabricates an absent
+`op_id`. A progress push is otherwise an oracle for another client's activity,
+exactly as `transfer.cancel` would be without its principal guard.
 
-**Every push carries a per-room monotonic position.** v1 had no sequence number
-and no cursor — only wall-clock timestamps — so a client could not tell that it
-had missed anything.
+Every **room-scoped** push carries a per-room monotonic position. The
+principal-scoped `transfer` push is not in a room position space. v1 had no
+sequence number and no cursor — only wall-clock timestamps — so a client could
+not tell that it had missed anything.
 
 A position is the **dense rank over the room's canonical `(lamport, event_id)`
 order**: the genesis is `0` and every later committed event is exactly one past
@@ -1567,7 +1978,8 @@ U1** and its cases are `blocked_on_upstream` until that lands.
 ## Idempotency and retry
 
 Every mutating operation accepts an `op_id` — a client-generated unique
-identifier — and the daemon keeps a dedup ledger.
+identifier — and the daemon keeps a dedup ledger. `file.fetch` requires it
+because progress and cross-reconnect cancellation have no other stable name.
 
 ### The session principal
 
@@ -1639,7 +2051,9 @@ Every operation marked `M` appears in exactly one row above.
 A replayed `op_id` returns the **original** result and performs no second
 effect. `invite.mint` in particular MUST return the original capability, never
 a second grant. An `op_id` replayed with a *different* request body is
-`op_id_conflict`, not a silent second effect.
+`op_id_conflict`, not a silent second effect. For `file.share`, streamed content
+is not in that body fingerprint; after the first admission, a caller MUST use a
+new `op_id` if the source content may differ.
 
 `transfer.cancel` is authorized by **`(session principal, transfer_op_id)`** —
 the same key as the ledger, not `(subject, …)` and not the connection.
@@ -1672,16 +2086,9 @@ repeating its own withdrawal is not their audience.
 
 ## Errors
 
-**The taxonomy is 62 codes.** Every code is machine-readable, carries typed
-fields rather than prose, and carries no `hint`. The tables below are the whole
-of it — a code not listed here does not exist, and an implementation MUST NOT
-mint one.
-
-An earlier draft of this record said 55 without listing them, and the count was
-unverifiable in both directions: the same draft introduced its distinctive codes
-under a sentence saying "nine operations" above a table of fifteen rows. A
-stated count that no table supports is how a taxonomy drifts. Every code below
-is counted, and the group subtotals sum to the total.
+Every code is machine-readable, carries typed fields rather than prose, and
+carries no `hint`. The tables below are the whole taxonomy — a code not listed
+here does not exist, and an implementation MUST NOT mint one.
 
 ### The error object
 
@@ -1703,12 +2110,12 @@ alone, as the whole HTTP body:
 ```
 
 The two shapes are deliberately different rather than one shape with an optional
-`id`. An `id` is meaningful only for a frame that answers a request carrying one,
-and the gate runs before any frame is parsed — inventing an `id` there, or making
-it nullable, would put a meaningless key in the one place a client is most likely
-to be writing its first parser against.
+`id`. An `id` is meaningful only for a reply that answers a request carrying one,
+and the gate runs before any data message is parsed — inventing an `id` there,
+or making it nullable, would put a meaningless key in the one place a client is
+most likely to be writing its first parser against.
 
-### Gate and transport — 9
+### Gate and transport
 
 Returned as a JSON body on a refused upgrade, or as the application close code
 [the gate section](#rejections-are-machine-readable) tabulates.
@@ -1720,7 +2127,7 @@ Returned as a JSON body on a refused upgrade, or as the application close code
 | `storage_generation_mismatch` | `daemon`, `client` (variant: `declared {sg}` / `absent`) | `sg` is absent or does not equal the daemon's |
 | `unauthenticated` | — | The credential is absent, wrong, or a spent ticket |
 | `not_ready` | — | The daemon is not yet serving, or its subject store cannot be read |
-| `frame_too_large` | `limit_bytes` | A frame exceeds `max_frame_bytes`; the connection closes `4005` unparsed |
+| `frame_too_large` | `limit_bytes` | A complete data message exceeds `max_frame_bytes`; the connection closes `4005` unparsed |
 | `idle_timeout` | `idle_ms` | No activity within `idle_timeout_ms`; the connection closes `4004` |
 | `pairing_code_invalid` | `reason` (variant: `unknown`, `expired`, `spent`, `voided`) | A pairing code was submitted that is not currently redeemable |
 | `session_expired` | — | A browser session credential is past `browser_session_ttl_ms` or was revoked |
@@ -1730,16 +2137,16 @@ A `hello` cannot carry an error code, and a `hello` degraded into a third
 `subject.state` arm forces every client to branch on a condition it can do
 nothing about. Failing the connection closed is both simpler and more honest.
 
-### Envelope and structure — 3
+### Envelope and structure
 
 | Code | Fields | Raised when |
 |---|---|---|
-| `malformed_frame` | — | The frame is not JSON, or decodes to no envelope with a usable `id`. Closes `4007` |
+| `malformed_frame` | — | A JSON envelope or bound Binary stream record violates its closed framing rules; an unbound violation closes `4007`, while a bound one terminates only its request |
 | `unknown_operation` | `op` | `op` names no operation in this generation |
 | `invalid_argument` | `field`, `reason` | Step 1 of [validation order](#validation-order) refused |
 
 **`invalid_argument` carries exactly two fields.** `field` is a dotted path into
-the frame — `in.progress.percent`, not `percent` — so a nested violation is
+the JSON envelope — `in.progress.percent`, not `percent` — so a nested violation is
 nameable without a second convention. `reason` is a closed variant:
 
 | Arm | Payload | Meaning |
@@ -1756,18 +2163,19 @@ This is why an over-maximum `limit` is `invalid_argument` and never
 consumption*, whereas asking for a page larger than the served maximum is a
 malformed argument. It is refused, never silently clamped.
 
-A frame with a usable `id` always gets a correlated error reply. Only a frame
-whose `id` cannot be recovered closes the connection, because there is nothing
-to correlate a reply to. `4007` is added to the close-code table for it.
+A JSON envelope with a usable request `id`, or a Binary record with a
+trustworthy active binding, gets a request-local outcome. Only an unbound
+message closes the connection, because there is nothing safe to correlate a
+reply to. `4007` is the close-code table's representation of that condition.
 
-### Subject — 2
+### Subject
 
 | Code | Fields | Raised when |
 |---|---|---|
 | `subject_absent` | — | The operation needs a local subject and none exists |
 | `subject_store_unwritable` | — | `subject.ensure` cannot persist the subject it created |
 
-### Room and membership — 8
+### Room and membership
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1810,7 +2218,7 @@ authority who did not publish a pipe cannot revoke it either.
 guarantee is equality of the response across both causes, not fieldlessness; a
 value the caller supplied one frame earlier discloses nothing back to it.
 
-### Idempotency and capacity — 3
+### Idempotency and capacity
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1818,7 +2226,7 @@ value the caller supplied one frame earlier discloses nothing back to it.
 | `resource_exhausted` | `resource`, `limit` | A served limit was reached by consumption |
 | `shutdown_in_progress` | — | A `daemon.stop` is already sequenced |
 
-### Rooms — 5
+### Rooms
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1833,7 +2241,7 @@ structurally valid but names a pruned position is a fact about the store, not a
 defect in the request, and a client responds to it by resyncing rather than by
 fixing its code.
 
-### Invitations — 8
+### Invitations
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1865,7 +2273,7 @@ a different identity, and those must be indistinguishable for the same reason
 `room_not_available` is one code: `invite.redeem` is the only operation a
 non-member can reach, so it is the one place a membership oracle could be built.
 
-### Timeline — 4
+### Timeline
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1874,7 +2282,7 @@ non-member can reach, so it is the one place a membership oracle could be built.
 | `status_subject_unknown` | `room_id`, `subject_id` | The named agent has no status history |
 | `fleet_projection_unavailable` | — | The projection cannot be built |
 
-### Files and transfers — 9
+### Files and transfers
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1887,6 +2295,8 @@ non-member can reach, so it is the one place a membership oracle could be built.
 | `provider_unreachable` | `file_id`, `providers` | No provider holding the file could be reached |
 | `transfer_unknown` | `transfer_op_id` | No such in-flight transfer for this principal |
 | `transfer_stalled` | `transferred_bytes`, `total` (`<byte_total>`) | No forward progress within the stall window |
+| `transfer_deadline_exceeded` | `transferred_bytes`, `total` (`<byte_total>`), `budget_ms` | The size-aware absolute transfer budget expired |
+| `stream_aborted` | `transferred_bytes`, `total` (`<byte_total>`), `reason` (`stream_abort_reason`) | An admitted transfer ended without a more specific operation error |
 
 `provider_unreachable.providers` is an array of **the provider rows that were
 attempted**, each identical in shape to a `file.list` row's provider —
@@ -1903,7 +2313,7 @@ points of the six in [the shared-file size policy](shared-file-size.md):
 never reaches the daemon and is proven by a client-side case asserting zero
 bytes are sent.
 
-### Pipes — 8
+### Pipes
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1927,7 +2337,7 @@ publish-target case specifically, so a client can tell "your target is not
 allowed" from "you are not permitted to publish here" — two refusals a user
 must respond to differently.
 
-### Stream — 3
+### Stream
 
 | Code | Fields | Raised when |
 |---|---|---|
@@ -1988,19 +2398,10 @@ it.
 | `cursor_invalid` | → `cursor_unknown` for a pruned position, or `invalid_argument` with `reason: {"state": "format"}` for a malformed one. The single corpus code conflated the two |
 | `<the case's code>` | Not a code at all — an unsubstituted placeholder left in a fixture |
 
-Ten codes in the tables above have no corpus case yet:
-`authority_cannot_be_removed`, `capability_redeemed`, `cursor_unknown`,
-`declared_size_mismatch`, `malformed_frame`, `pipe_index_unreadable`,
-`pipe_not_publisher`, `room_still_active`, `subject_store_unwritable`, and
-`transport_unavailable`. They are real codes with no coverage, which is a corpus
-gap rather than a specification gap, and they are named in the manifest so the
-gap cannot read as coverage.
-
-`idle_timeout` is deliberately **not** on that list, though it has no fixture
-naming it directly. `close_code_4004_is_emitted_on_idle_timeout` already covers
-it through close code `4004`, which is that code's transport representation —
-and a coverage list that ignored the transport form would send the corpus work
-to duplicate an existing case rather than retranscribe it.
+`stream_aborted` and `transfer_deadline_exceeded` have no fixtures transcribed
+from this decision yet. That is a corpus gap, not permission to substitute
+another code; #233 owns their executable cases and the broader file-fixture
+correction.
 
 ### The non-oracle property
 
@@ -2113,7 +2514,8 @@ manifest names every exemption with its reason and its unblocking issue.
 ## What this record does not decide
 
 - The Rust type shapes — `jeliya-api` (#163) owns them.
-- The codec's framing details — #164.
+- The codec implementation of the framing decided above — #233 owns that
+  separate slice.
 - Transfer budget constants. `transfer_floor_bits_per_second` and
   `transfer_stall_ms` are served, so they are tunable without a wire change;
   #198 measures and sets them. The only samples that exist span 0.1–8.6 Mbit/s
