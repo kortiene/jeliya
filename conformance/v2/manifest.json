@@ -3,26 +3,197 @@
   "spec": "../../docs/protocol-v2.md",
   "dsl": "./README.md",
   "authored": "by hand, from the specification. NOT generated from any implementation.",
-  "replayable": true,
+  "replayable": {
+    "structural_validation": true,
+    "selected_json_envelope_subject_slice": {
+      "status": "partial",
+      "ci_selected_cases": 14
+    },
+    "binary_byte_stream_executor": "unimplemented",
+    "adapter_targeted_declarative_cases": "declarative_only"
+  },
   "rules": {
     "required_per_operation": "at least one success case, and at least one error case using that operation's OWN most specific code. A cross-cutting code such as subject_absent or room_not_available does NOT satisfy the error requirement.",
     "exemptions_fail": "a case marked blocked_on_upstream FAILS until the named upstream change lands. It is never skipped: a skipped case reads as coverage, a failing case reads as work.",
     "distinctive_code_exemption": "an operation may be exempt from the distinctive-code rule only with a stated reason in `exemptions`. An unexplained null is not an exemption.",
-    "counts_are_computed": "every count in this file is derived from the committed fixtures, not asserted alongside them. totals.cases equals the sum of coverage[].cases plus totals.not_operation_scoped."
+    "counts_are_computed": "every count in this file is derived from the current fixture JSON, not asserted alongside it. totals.cases equals the sum of coverage[].cases plus totals.not_operation_scoped."
   },
   "blocked_on_upstream": {
     "U1": "ConnEvent must carry the connection generation and a typed offline reason",
-    "U2": "a progress-observing or streaming blob-fetch API",
-    "U3": "a size-distinguishable fetch outcome"
+    "U2": "a progress-observing or streaming blob-fetch API (8 cases: 3 progress/stall, 1 deadline, 4 cancellation)",
+    "U3": "a size-distinguishable fetch outcome (1 fetch-stream size case)"
+  },
+  "blocked_case_counts": {
+    "U1": 5,
+    "U2": 8,
+    "U3": 1,
+    "blocked_on_record": 1
+  },
+  "blocked_on_upstream_cases": {
+    "U1": [
+      {
+        "file": "handshake.json",
+        "case": "peer_push_carries_t_no_id_a_generation_and_a_tagged_offline_reason"
+      },
+      {
+        "file": "pipes.json",
+        "case": "a_stale_generation_teardown_does_not_rewrite_presence_or_pipe_reachability"
+      },
+      {
+        "file": "rooms.json",
+        "case": "room_peers_ignores_a_stale_generation_teardown"
+      },
+      {
+        "file": "rooms.json",
+        "case": "room_peers_reports_a_typed_reason_for_a_device_it_cannot_reach"
+      },
+      {
+        "file": "timeline-streams.json",
+        "case": "peer_push_carries_the_connection_generation_and_a_typed_offline_reason"
+      }
+    ],
+    "U2": [
+      {
+        "file": "files.json",
+        "case": "a_transfer_with_no_forward_progress_fails_with_transfer_stalled"
+      },
+      {
+        "file": "files.json",
+        "case": "cancel_result_reports_bytes_transferred"
+      },
+      {
+        "file": "files.json",
+        "case": "fetch_deadline_scales_with_the_declared_size"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_cancel_after_the_originating_connection_dropped"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_cancel_by_a_different_principal_is_indistinguishable_from_unknown"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_cancel_releases_the_concurrent_transfer_slot"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_progress_is_delivered_only_to_the_initiating_principal"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_progress_pushes_report_monotonic_transferred_bytes"
+      }
+    ],
+    "U3": [
+      {
+        "file": "files.json",
+        "case": "fetch_stream_refuses_a_peer_serving_more_than_it_declared"
+      }
+    ]
+  },
+  "blocked_on_record_cases": [
+    {
+      "file": "timeline-streams.json",
+      "case": "message_send_omitting_op_id_is_refused_naming_the_field",
+      "record": "op_id_optional_but_deduplicated"
+    }
+  ],
+  "target_counts": {
+    "untargeted": 336,
+    "daemon": 0,
+    "in_process_core": 1,
+    "client_adapter": 5
   },
   "totals": {
     "cases": 342,
     "attributed_to_an_operation": 237,
     "not_operation_scoped": 105,
     "conforming_to_the_dsl": 342,
+    "distinct_step_verbs_in_use": 7,
     "quarantined": 0,
-    "blocked_on_upstream": 10,
+    "blocked_on_upstream": 14,
     "blocked_on_record": 1
+  },
+  "per_file_totals": {
+    "files.json": {
+      "cases": 44,
+      "attributed_to_an_operation": 41,
+      "not_operation_scoped": 3,
+      "blocked_on_upstream": {
+        "U1": 0,
+        "U2": 8,
+        "U3": 1
+      },
+      "blocked_on_record": 0
+    },
+    "handshake.json": {
+      "cases": 69,
+      "attributed_to_an_operation": 0,
+      "not_operation_scoped": 69,
+      "blocked_on_upstream": {
+        "U1": 1,
+        "U2": 0,
+        "U3": 0
+      },
+      "blocked_on_record": 0
+    },
+    "invites.json": {
+      "cases": 37,
+      "attributed_to_an_operation": 34,
+      "not_operation_scoped": 3,
+      "blocked_on_upstream": {
+        "U1": 0,
+        "U2": 0,
+        "U3": 0
+      },
+      "blocked_on_record": 0
+    },
+    "pipes.json": {
+      "cases": 43,
+      "attributed_to_an_operation": 37,
+      "not_operation_scoped": 6,
+      "blocked_on_upstream": {
+        "U1": 1,
+        "U2": 0,
+        "U3": 0
+      },
+      "blocked_on_record": 0
+    },
+    "rooms.json": {
+      "cases": 65,
+      "attributed_to_an_operation": 59,
+      "not_operation_scoped": 6,
+      "blocked_on_upstream": {
+        "U1": 2,
+        "U2": 0,
+        "U3": 0
+      },
+      "blocked_on_record": 0
+    },
+    "subject-daemon.json": {
+      "cases": 24,
+      "attributed_to_an_operation": 19,
+      "not_operation_scoped": 5,
+      "blocked_on_upstream": {
+        "U1": 0,
+        "U2": 0,
+        "U3": 0
+      },
+      "blocked_on_record": 0
+    },
+    "timeline-streams.json": {
+      "cases": 60,
+      "attributed_to_an_operation": 47,
+      "not_operation_scoped": 13,
+      "blocked_on_upstream": {
+        "U1": 1,
+        "U2": 0,
+        "U3": 0
+      },
+      "blocked_on_record": 1
+    }
   },
   "exemptions": {
     "room.deactivate": {
@@ -31,9 +202,20 @@
       "reviewed_in": "#212"
     }
   },
+  "taxonomy_code_count": 64,
   "codes_without_a_case": {
-    "note": "Every code in the taxonomy has at least one case. idle_timeout is covered via close code 4004 and malformed_frame via close code 4007, the protocol's transport representations of those codes.",
-    "codes": []
+    "note": "Computed from literal expect.err.code on a direct call matching case.operation, with canonical file-error validation; notes, intents, setup calls, generic nested objects, and authoring_notes do not count. frame_too_large, idle_timeout, malformed_frame, and not_ready count only through their verified named close/status fixtures.",
+    "codes": [
+      "forbidden_origin",
+      "pairing_code_invalid",
+      "protocol_unsupported",
+      "role_not_grantable",
+      "session_expired",
+      "storage_generation_mismatch",
+      "stream_aborted",
+      "unauthenticated",
+      "unknown_operation"
+    ]
   },
   "coverage": {
     "daemon.stop": {
@@ -44,7 +226,7 @@
       "satisfies_required_kinds": true
     },
     "file.fetch": {
-      "cases": 13,
+      "cases": 14,
       "success": true,
       "distinctive_code": "provider_unreachable",
       "distinctive_code_has_a_case": true,
@@ -170,7 +352,7 @@
       "satisfies_required_kinds": true
     },
     "room.create": {
-      "cases": 10,
+      "cases": 9,
       "success": true,
       "distinctive_code": "room_name_invalid",
       "distinctive_code_has_a_case": true,
@@ -329,7 +511,7 @@
         "gate_refusal_mutates_nothing",
         "gate_rejection_reveals_nothing_about_local_state",
         "gate_runs_before_the_upgrade_so_a_refusal_is_a_status_not_a_close_code",
-        "health_limits_object_carries_all_eleven_named_integer_fields",
+        "health_limits_object_carries_all_sixteen_named_integer_fields",
         "health_serves_the_version_object_and_no_data_dir",
         "hello_carries_no_pid_no_port_and_no_data_dir",
         "hello_is_the_first_frame_and_arrives_exactly_once",
