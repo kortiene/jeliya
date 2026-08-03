@@ -1,12 +1,13 @@
 # Protocol v2 conformance corpus
 
 Hand-authored, language-neutral fixtures for
-[protocol v2](../../docs/protocol-v2.md). Intended to be replayed by an
-independent harness against every adapter: the codec, the typed daemon, the
-Rust adapters, and the agent cutover.
+[protocol v2](../../docs/protocol-v2.md). They define cases that independent
+adapters can consume; the status matrix below states which execution slices
+actually exist.
 
-This directory is data. It contains no TypeScript, no Rust, and no test runner,
-because a corpus that only one language can replay is not a conformance corpus.
+The fixture JSON is language-neutral data. The repository also contains a Node
+structural validator and a partial live replay harness. Their existence is not
+evidence that every fixture or adapter is executable.
 
 ## The independence rule
 
@@ -21,33 +22,60 @@ conformance corpus is for. #161 states it as an acceptance criterion.
 
 The v1 surface was consulted **only** to know what to avoid transcribing.
 
-## Status — replayable
+## Status
 
-The specification is canonical and the fixtures are normalized to the DSL
-(#213). Every case conforms; the corpus can be replayed by an independent
-harness and may be cited as evidence for any adapter.
+The specification is canonical and the fixtures use the normative DSL. Shape
+validation, implemented execution, and adapter applicability are different
+claims:
 
-| | |
-|---|---|
+| Slice | Status | What the claim means |
+|---|---|---|
+| Structural validation | Implemented for all 342 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics, and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
+| Selected JSON-envelope/subject slice | Partial (14 CI-selected cases) | The Node harness runs this selected JSON-envelope and subject-lifecycle slice against `jeliyad`; this is neither corpus coverage nor file-stream evidence. It is not a smoke, E2E, or Dart execution claim. |
+| Binary byte-stream executor | Unimplemented | No harness codec/runtime executes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records, so file-stream cases are declarative, not live evidence. |
+| Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
+
+| Computed corpus fact | Value |
+|---|---:|
 | Cases | 342 |
-| Cases conforming to the DSL | **342** |
-| Distinct step verbs in use | 7, the closed set (`call`, `http`, `upgrade`, `send`, `await`, `control`, `assert`) |
-| Codes in the taxonomy without a case | **0** |
-| Blocked on upstream | 10 |
+| Attributed to an operation | 237 |
+| `operation: null` | 105 |
+| Untargeted / in-process-core / client-adapter targeted | 336 / 1 / 5 |
+| Distinct step verbs in use | 7 |
+| Taxonomy codes / without a direct canonical operation case or verified transport representation | 64 / 9 (`forbidden_origin`, `pairing_code_invalid`, `protocol_unsupported`, `role_not_grantable`, `session_expired`, `storage_generation_mismatch`, `stream_aborted`, `unauthenticated`, `unknown_operation`) |
+| Blocked on upstream | 14 (U1: 5, U2: 8, U3: 1) |
+| Blocked on a settled record contradiction | 1 |
 
-Two cases were retired in the files pass-3 re-transcription: `declared_bytes` is a
-required `<uint>` and there are no optional request fields, so an *unknown*
-declared size is not expressible in v2, and both cases collapsed onto ones that
-already exist.
+Per-file case totals are: `files.json` 44, `handshake.json` 69,
+`invites.json` 37, `pipes.json` 43, `rooms.json` 65,
+`subject-daemon.json` 24, and `timeline-streams.json` 60.
+
+Corpus values are recomputed by the validator from every fixture JSON and
+reconciled against `manifest.json`; they are not execution results. Distinctive
+code coverage requires a literal, canonical `expect.err.code` on a direct
+`call` whose operation equals the case's `operation`; notes, intents, setup
+calls, nested generic objects, and `authoring_notes` never count. The general
+codes-without-a-case ledger uses the same direct canonical operation-case rule,
+with only the four verified close/status fixture-name exceptions for
+`frame_too_large`, `idle_timeout`, `malformed_frame`, and `not_ready`. The selected live-slice count
+comes from every explicit CI `--case` selector, each of which must resolve
+exactly once; it is status metadata, not corpus coverage.
+
+The files pass-3 re-transcription retired cases about an unknown declared size:
+`declared_bytes` is a required `<uint>` and there are no optional request fields,
+so that state is not expressible in v2 and collapsed onto existing cases.
+
+Top-level `authoring_notes`, where retained in unchanged domains, are historical,
+non-normative transcription notes. Validators never use them as taxonomy-code
+or coverage evidence.
 
 Normalization was tracked as **#213** and landed with the promotion of the
-specification to canonical: the fourteen refused codes retired, the fixture
-bugs #212 catalogued fixed, every case retranscribed, the uncovered codes
-authored, and the manifest recomputed from the fixtures.
+specification to canonical: refused codes were retired, the fixture bugs #212
+catalogued were fixed, cases were retranscribed, uncovered codes were authored,
+and the manifest was recomputed from the fixtures.
 
-**Ten cases are blocked on upstream work** (U1, U2, U3 in the spec). They
-**fail**; they do not skip. A skipped case reads as coverage and quietly
-becomes permanent. A failing case reads as work.
+Blocked cases **fail**; they do not skip. A skipped case reads as coverage and
+quietly becomes permanent. A failing case reads as work.
 
 ### What normalization did not do
 
@@ -85,9 +113,8 @@ Normative. A harness implements exactly this, and a fixture that uses anything
 not defined here is invalid rather than interestingly extended.
 
 The design constraint is that it must lose no assertion the corpus currently
-expresses while replacing 178 ad-hoc verbs and three `assert` dialects — string,
-object, and array — with one language. Every construct below exists because some
-committed fixture needs it.
+expresses while replacing the earlier ad-hoc verbs and `assert` dialects with
+one language. Every construct below exists because some fixture needs it.
 
 ## The case object
 
@@ -98,6 +125,7 @@ committed fixture needs it.
   "operation": "room.list",
   "intent": "Proves room.list answers from local evidence with zero network activity, catching any change that makes the room list depend on liveness.",
   "requires": ["subject", "room:live", "observe:network"],
+  "targets": ["daemon"],
   "steps": [ … ],
   "blocked_on_upstream": "U1"
 }
@@ -106,13 +134,19 @@ committed fixture needs it.
 | Key | Required | Value |
 |---|---|---|
 | `name` | yes | `snake_case`, corpus-wide unique |
-| `kind` | yes | one of the eight below |
-| `operation` | yes | one of the 33 operation names, or `null` |
+| `kind` | yes | one of the closed values below |
+| `operation` | yes | one of the closed operation names, or `null` |
 | `intent` | yes | prose naming the breaking change this case would catch |
 | `requires` | yes | array of preconditions, closed vocabulary below |
+| `targets` | no | non-empty unique array whose values are from `daemon`, `in_process_core`, `client_adapter` |
 | `steps` | yes | non-empty array |
 | `blocked_on_upstream` | no | `"U1"`, `"U2"`, or `"U3"` |
 | `blocked_on_record` | no | Named settled record/corpus contradiction retained as an expected failure until the stale case is retired |
+
+Omitting `targets` means every adapter to which the case is applicable. An
+adapter executes cases whose `targets` contain it, plus applicable untargeted
+cases. A target mismatch is an applicability decision only: it is not a pass or
+skip and contributes no such claim to global coverage.
 
 Both block forms **fail, never skip**. A passing blocked case is reported as a
 surprise; a setup/runner error is still an error rather than an expected block.
@@ -121,17 +155,17 @@ surprise; a setup/runner error is still an error rather than an expected block.
 `handshake`, `push`, `ordering`.
 
 **`operation: null` is legal and means the case is not about one operation** —
-gate behaviour, envelope framing, cross-room ordering. 103 of the 335 committed
-cases are in this class, and the manifest's coverage table counts only the
-attributed ones, which is why its rows sum to 232 rather than 335. A case may
-not use `null` merely because attributing it is inconvenient.
+gate behaviour, envelope framing, and cross-room ordering are examples. The
+manifest lists every such case by file, and its coverage table counts only
+operation-attributed cases. A case may not use `null` merely because attributing
+it is inconvenient.
 
 `intent` is required and is not decoration: a case whose intent cannot name the
 breaking change it would catch is not worth running.
 
 ## Steps
 
-A step has **exactly one verb**. The verb set is closed at seven.
+A step has **exactly one verb**. The table below is the closed verb set.
 
 | Verb | Value | Meaning |
 |---|---|---|
@@ -153,11 +187,37 @@ Any step may additionally carry:
 | `expect` | the reply matcher |
 | `save` | capture values from this step's result into variables |
 | `stream` | the bytes the operation streams, for `call` |
+| `defer` | boolean `true`, for `call` only; send the request without awaiting its terminal reply |
 | `note` | prose for a human; a harness ignores it |
 
 `save` is an **auxiliary key, not a verb**. It always captures from the step it
 sits on, so making it a verb would force every capture into a second step with
 nothing to capture from.
+
+### `defer` — keep a call outstanding
+
+A deferred call has `"defer": true`, sends its request, and saves a request
+handle without waiting for the terminal reply:
+
+```json
+{ "call": "file.fetch", "in": { "room_id": "$rid", "file_id": "$fid" },
+  "op_id": "op-fetch", "defer": true,
+  "save": { "fetch_request": "$request" } }
+{ "await": { "reply": "$fetch_request" },
+  "expect": { "ok": false, "err": { "code": "stream_aborted" } } }
+```
+
+`defer` is legal only on `call`, has no false form, and the deferred call does
+not carry `expect`; its later `await {reply: "$handle"}` receives and matches the
+terminal reply. The special save path `$request` captures the harness request
+handle, not a protocol reply field.
+`save: {"handle": "$request"}` is legal only on a deferred call. Every saved
+handle has exactly one later terminal path on the same effective session: either
+one `await {"reply": "$handle"}`, or one `control.disconnect` that names that
+session and explicitly abandons its connection-local handles. A disconnect on a
+different session does not terminate the handle. Duplicate awaits, an await on
+the wrong session, and a live deferred handle at case end are invalid. This
+defines the DSL contract; the current live harness does not implement it.
 
 ### `stream` — the bytes an operation carries
 
@@ -179,13 +239,20 @@ separate HTTP upload edge into the operation itself: `file.share` streams bytes
 and the declaration are one operation, so a separate verb would leave a step
 holding a stream with nothing to stream for — and it would let a fixture put
 them in the wrong order, which is exactly the ambiguity the record removes by
-combining the two edges.
+combining the two edges. `stream` and `defer` cannot share a call step.
 
 It takes exactly one key, fixed by the operation: `send_bytes` for `file.share`,
 `receive_bytes` for `file.read`. A `stream` on any other operation is invalid,
 because no other operation streams. The value is a `<uint>`, a `$variable`, or a
 computed node, so a boundary case can say "exactly the served limit" without
 compiling the number in.
+
+A fresh admitted daemon `file.share` or `file.read` requires its matching stream.
+A terminal refusal before OPEN has no stream and records zero receiver-accepted
+bytes. A faithful replay of a completed result also has no stream and opens no
+second one. Validators may require stream presence only when admission is safely
+decidable from the case's explicit `expect` result or replay shape; they must not
+guess from prose or from operation name alone.
 
 **`stream.send_bytes` is deliberately independent of `in.declared_bytes`.**
 Declaring one size and sending another is not a malformed fixture — it is the
@@ -199,14 +266,17 @@ Without this key the files domain is not transcribable: `stage_stream`,
 obligations on `file.read` all describe what happens to bytes in flight, and
 `observe: bytes_streamed` can only assert the outcome, never cause it.
 
-`note` is the only annotation key. The committed corpus also uses `why`,
-`comment`, `intent_note`, and `meaning` for the same thing.
+`note` is the only annotation key. The retired forms `why`, `comment`,
+`intent_note`, and `meaning` are invalid. Domain files accept only `domain`,
+`note`, `cases`, and optional `authoring_notes`; case objects accept only the
+keys in the table above. `authoring_notes` are historical and non-normative and
+never count as coverage or error-code evidence.
 
 ### `control` — driving the harness
 
-`control` is discriminated by `do`, closed at ten. It is the one verb that does
-not touch the daemon's protocol surface, so leaving it as an open object would
-have let every harness invent its own dialect — which is what the committed
+`control` is discriminated by `do`; the table below is closed. It is the one
+verb that does not touch the daemon's protocol surface, so leaving it open
+would have let every harness invent its own dialect — which is what the committed
 corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
 `trigger`) split cleanly by authoring file.
 
@@ -218,10 +288,25 @@ corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
 | `reconnect` | `on` | Re-establish it, same principal |
 | `inject_fault` | `fault` | Force a named fault condition |
 | `set_limit` | `limit`, `value` | Override a served limit for this case |
+| `set_link_rate` | `between`, `bits_per_second` | Cap the harness link between exactly two session/provider labels; the rate is a positive value node |
+| `set_provider_response_bytes` | `file_id`, `bytes` | Make the named provider serve the nonnegative byte count |
+| `client_preflight` | `source_bytes`, `source_reports_size` | Exercise client preflight with a nonnegative byte-count value node and a boolean size-report flag |
+| `client_render_limit` | `served_bytes` | Render a limit from a nonnegative served-byte value node |
+| `client_render_file` | `declared_content_type`, `body_kind` | Exercise client rendering with two non-empty strings |
 | `stop_daemon` | `daemon` | Terminate a daemon process |
 | `start_daemon` | `daemon` | Start a previously stopped daemon — restart cases cannot be written without it; the pair expresses one restart, never a fresh daemon |
-| `start_transfers` | `count` | Begin N concurrent transfers |
+| `start_transfers` | `count`, `aggregate_bytes`, `op_id_prefix` | Begin a positive number of file transfers reserving a nonnegative aggregate byte count under a non-empty prefix |
+| `cancel_transfers` | `op_id_prefix` | Cancel the harness-started file-transfer set under a non-empty prefix |
 | `pause_link` | `between` | Suspend transport between two daemons |
+
+Each file-domain form above is closed and includes `do`: exactly
+`{do,file_id,bytes}`, `{do,source_bytes,source_reports_size}`,
+`{do,served_bytes}`, `{do,declared_content_type,body_kind}`,
+`{do,count,aggregate_bytes,op_id_prefix}`, or `{do,op_id_prefix}` respectively.
+The two pre-existing handshake request-concurrency fixtures retain their exact
+legacy `start_transfers` shape `{do,count}`; it drives requests rather than file
+transfers. `set_link_rate` remains exactly `{do,between,bits_per_second}`. These
+controls make fixtures declarative; they do not add a protocol or executor.
 
 `inject_fault`'s `fault` is a **taxonomy code**, so a fault a case wants that
 names no code is a signal the taxonomy is incomplete — that is how
@@ -234,6 +319,13 @@ to force in order to test gap detection at all.
 reach — `max_connections` and `max_subscriptions_per_connection` cannot be
 exercised against production values in a test.
 
+`set_link_rate` is harness control, not a protocol operation. Its object has
+exactly `do`, `between`, and `bits_per_second`; `between` contains exactly two
+distinct non-empty session/provider labels, and `bits_per_second` is a positive
+`<uint>`, a `$variable`, or a computed node. It makes the size-aware deadline
+cases declarative, but the U2 cases still fail until executable progress/rate
+support exists.
+
 ### `on` — which session
 
 `on` names a session established by `requires`, defaulting to `subject:self`'s
@@ -245,14 +337,15 @@ primary connection when omitted:
 { "call": "room.list",   "on": "subject:self#2", "in": {} }
 ```
 
-**Nothing else selects an actor**, and without this key roughly a third of the
-corpus is inexpressible. The committed fixtures spell the same idea four ways —
-`as` (504 uses, 25 distinct actor labels), `conn`, `session`, and `client` — and
-the cases that need it are not marginal: the non-oracle property needs a
-non-member, `op_ids_do_not_collide_across_session_principals` needs two
-principals on one daemon, and every reconnect case needs two connections for one
-subject. `#2` names a second connection for the same principal, which is what
-distinguishes a per-connection scope from a per-principal one.
+**Nothing else selects an actor.** `principal:self` and `principal:second`
+explicitly name distinct authenticated session principals — distinct
+`client_id`/session credentials — on one daemon and one cryptographic subject.
+They are the labels principal-isolation cases must use. By contrast,
+`subject:second` establishes another daemon/subject; it is not evidence of
+same-daemon principal isolation. The other cases that need actor selection are
+not marginal: the non-oracle property needs a non-member, reconnect cases need
+two connections for one subject, and `#2` names a second connection for the same
+principal, distinguishing per-connection from per-principal scope.
 
 ## `expect` — one reply matcher
 
@@ -262,6 +355,24 @@ distinguishes a per-connection scope from a per-principal one.
 { "expect": { "ok": true,  "out": { "room_id": "<room_id>", "live": true } } }
 { "expect": { "ok": false, "err": { "code": "room_not_available" } } }
 ```
+
+In `files.json`, a literal error code also closes the canonical error matcher:
+`invalid_argument` has exactly `code,field,reason`; `room_not_available`
+`code,room_id`; `membership_ended` `code,room_id,standing`; `file_unknown` and
+`file_not_fetched` `code,file_id`; `provider_unreachable`
+`code,file_id,providers`; `transfer_unknown` `code,transfer_op_id`;
+`declared_size_mismatch` `code,declared_bytes,observed_bytes`;
+`transfer_stalled` `code,transferred_bytes,total`; `transfer_deadline_exceeded`
+adds `budget_ms`; `stream_aborted` uses `code,transferred_bytes,total,reason`;
+`file_too_large` uses `code,declared_bytes,limit_bytes,enforced_at`;
+`resource_exhausted` uses `code,resource,limit`; `digest_mismatch` uses
+`code,expected,observed`; `room_not_live` uses `code,room_id`;
+`op_id_conflict` uses `code,op_id`; and `subject_absent` and
+`file_index_unreadable` are code-only. The non-empty
+`provider_unreachable.providers` array contains rows with exactly
+`subject_id,device_id,link`.
+Every `files.json` error matcher carries a literal code and uses one of these
+schemas; they never apply to prose notes.
 
 For `http` and `upgrade` steps the matcher instead carries `status`, `headers`,
 and `body`:
@@ -283,9 +394,8 @@ To pin a key set exactly, use the `exact_keys` assertion. To require a key be
 "asserted absent" — the distinction is load-bearing, and conflating the two is
 how a fixture starts passing against an implementation that leaks a field.
 
-`expect` replaces **all 42 `expect_*` verbs** the corpus currently uses. They
-divide three ways, and the division is the point — a flat list of replacements
-would hide that a third of them are not reply matchers at all:
+`expect` replaces the earlier `expect_*` forms. They divide into reply
+matchers, assertions, and frame/process observations; the division is the point:
 
 | Corpus verbs | Become |
 |---|---|
@@ -293,17 +403,16 @@ would hide that a third of them are not reply matchers at all:
 | `expect_absent`, `expect_no_null`, `expect_identical_to`, `expect_one_of`, `expect_any_of`, `expect_all`, `expect_each_subset`, `expect_every_element`, `expect_across`, `expect_at_least_one_error`, `expect_all_replies`, `expect_hello_assert`, `expect_rendering` | an `assert` predicate — they are assertions wearing an `expect_` prefix |
 | `expect_frame`, `expect_push`, `expect_no_push`, `expect_frame_order`, `expect_each_frame`, `expect_close`, `expect_no_further_frames_of_type`, `expect_transport`, `expect_process`, `expect_connect_failure`, `expect_timing_indistinguishable`, `expect_reply_for_id`, `expect_reply_for_id_2`, `expect_error_for_id`, `expect_no_reply_for_id` | `await` or an `observe` assertion — they are about frames and processes, not about one reply |
 
-`expect_reply_for_id` and its three siblings deserve their own note: they exist
-because **replies may arrive out of order**, which the record makes normative.
+The retired reply-by-id forms deserve their own note: they existed because
+**replies may arrive out of order**, which the record makes normative.
 A harness that could only match replies in request order would silently pass an
 implementation that violated it. `await {reply: "$id"}` is how a case names the
 reply it means.
 
 ## `assert` — one assertion form, two families
 
-`assert` is **always an array of objects**. It is never a bare string and never a
-single object; the committed corpus uses all three, which is the single largest
-source of the dialect problem.
+`assert` is **always an array of objects**. It is never a bare string or a
+single object.
 
 ### Value assertions
 
@@ -317,7 +426,7 @@ This is what lets one predicate replace the corpus's `every_row_has_fields`,
 `every_row_has_non_null`, `every_push_has_non_null`, `all_eq`, `every_has_key`,
 and `every_row_has_value`.
 
-`op` is closed at nineteen:
+`op` is closed:
 
 | `op` | `value` | Holds when |
 |---|---|---|
@@ -352,11 +461,21 @@ every multi-byte boundary case silently wrong.
 successive progress frames may legitimately repeat, and asserting strict
 increase there would fail a correct implementation.
 
+For `files.json`, value assertions are additionally shape-checked so they cannot
+be empty claims. `present`, `absent`, `unique`, `increasing`, `non_decreasing`,
+`contiguous`, and `no_nulls` take no `value`. `eq`, `ne`, numeric comparisons,
+`member_of`, `type`, `exact_keys`, `len`, `byte_len`, and `eq_except` require the
+value forms in the table; `ne` cannot take an array. A `type` value is one of the
+bare names in the type-tag vocabulary (for example `uint`, not `<uint>`).
+Assertion objects admit only `path`, `op`, `value`, and the optional historical
+`note` used by current file fixtures. These stronger file-domain checks are not
+a claim that every fixture's intended semantics have been proved.
+
 `no_nulls` deserves its own predicate rather than being a convention because
 [the specification's no-null rule](../../docs/protocol-v2.md#bounded-parsing) is
 normative for every frame, and a corpus that cannot assert it cannot test it.
 
-These fourteen replace the corpus's `eq`, `equals`, `equal_modulo`, `all_eq`,
+These predicates replace the corpus's `eq`, `equals`, `equal_modulo`, `all_eq`,
 `same_value_as`, `codes_equal`, `identical_to`, `errors_identical`, `ne`, `neq`,
 `not_equal`, `not_equals`, `distinct_from`, `len`, `len_eq`, `array_len`,
 `byte_len`, `len_lte`, `len_gte`, `no_null`, `no_nulls_deep`, `no_null_values`,
@@ -376,23 +495,36 @@ reply. Those are a separate family, because no path names them:
 { "observe": "timing_indistinguishable", "between": ["step:3", "step:5"] }
 ```
 
-`observe` is closed at ten. Each row states the keys it takes, because an
-observation with no slot for its argument cannot be written down:
+`observe` is closed. Each row states the keys it takes, because an observation
+with no slot for its argument cannot be written down:
 
 | `observe` | Additional keys | Holds when |
 |---|---|---|
 | `no_network_activity` | `scope` | No packet left the host during `scope` |
 | `no_durable_mutation` | `scope` | No byte of the data dir changed during `scope` |
 | `no_event_authored` | `scope` | No room event was written during `scope` |
-| `bytes_streamed` | `value` | Bytes sent satisfies a nested comparison |
+| `bytes_streamed` | `value`, optional `call` | Receiver-accepted payload bytes satisfy a nested comparison; `call` is `step:<n>` |
 | `connection_open` | `on` | That session is still open |
 | `close_code` | `value`, `on` | That connection closed with this code |
 | `push_count` | `value`, `room_id` | Pushes received for a room satisfies a comparison |
-| `no_push` | `room_id`, `scope` | No push arrived for that room |
+| `no_push` | either `room_id`, `scope`; or `on`, `match`, `scope` | No room-scoped push arrived, or no push matching a non-empty object arrived on the named principal |
 | `timing_indistinguishable` | `between` | Two named steps are not separable by latency |
 | `process_exited` | `value` | The daemon process exited with this status |
 
-`scope` is `step`, `case`, or `step:<n>..step:<m>`.
+The closed sets above are also enforced by the validator; their sizes are not
+coverage claims.
+
+`scope` is `step`, `case`, or `step:<n>..step:<m>`. `no_push` is exactly either
+the legacy room form `{observe,room_id,scope}` or the principal matcher form
+`{observe,on,match,scope}`. In the latter, `on` is non-empty and `match` is a
+non-empty object; `room_id` is neither required nor allowed.
+
+`bytes_streamed.value` is the nested comparison object. Its metric is bytes the
+receiver accepted into its bounded sink, never bytes merely generated, read, or
+queued to a socket. Optional `call: "step:<n>"` selects the call whose counter is
+observed; omission selects the most recent call on the same session. A terminal
+pre-OPEN refusal records zero accepted bytes, and a completed faithful replay
+has no stream and therefore also records zero.
 
 Steps are addressable as `step:<n>`, one-indexed within the case. That is what
 makes `timing_indistinguishable` writable at all — it is a claim about a *pair*
@@ -410,9 +542,11 @@ asserts only the code proves half the property.
 { "call": "room.timeline", "in": { "room_id": "$r", "…": "…" } }
 ```
 
-`save` maps variable names to paths and rides on the step that produces them. A
-`$name` reference resolves to the captured value anywhere a literal is legal.
-Variables are scoped to the case.
+`save` maps variable names to string paths and rides on the step that produces
+them. A `$name` reference resolves to the captured value anywhere a literal is
+legal. Variables are scoped to the case. Ordinary paths root at `out`, `err`,
+`frame`, or `$` for the whole step value; `$request` is the deferred-call handle
+capture. Retired `$result` and `$error` paths are invalid: use `out` and `err`.
 
 This replaces `save`, `save_out`, and `save_error`, which differed only in which
 root they read from — now expressed as the path's root.
@@ -430,12 +564,12 @@ value may also be a single-key computed node:
 | `{"$bytes_of_len": "$max"}` | A string of exactly that many bytes |
 | `{"$concat": ["a", "$b"]}` | Concatenation |
 | `{"$expires_in_ms": 3600000}` | An absolute RFC 3339 `Z` timestamp that many milliseconds from run time |
+| `{"$transfer_budget_ms": ["$total", "$allowance", "$floor_bps"]}` | `allowance + ceil(total * 8 * 1000 / floor_bps)`, the record's size-aware transfer budget |
 | `{"$unknown": "<room_id>"}` | A well-formed value of that domain naming nothing that exists |
 
 Without these, **every case that probes a served limit would have to hard-code
 the limit**, which is precisely the failure the record's served-limits object
-exists to prevent — and the corpus already embeds thirteen ad-hoc operators to
-avoid it.
+exists to prevent.
 
 `{"$unknown": …}` is separate from a literal because the non-oracle cases need a
 value that is syntactically valid and semantically absent, and a fixture cannot
@@ -449,16 +583,17 @@ pins a shape without pinning a clock or a random identifier.
 **A tag names a value domain, not an encoding.**
 
 `<room_id>` `<subject_id>` `<device_id>` `<event_id>` `<invite_id>` `<file_id>`
-`<pipe_id>` `<op_id>` `<ts>` `<uint>` `<bool>` `<string>` `<pos>` `<capability>`
-`<daemon_sg>` `<port>` `<object>` `<any>` `<version>` `<standing>` `<link_connected>`
+`<pipe_id>` `<op_id>` `<request_id>` `<ts>` `<uint>` `<bool>` `<string>` `<pos>`
+`<capability>` `<daemon_sg>` `<port>` `<object>` `<any>` `<version>` `<standing>` `<link_connected>`
 `<link_reason>`
 
-The second line is the domain additions #213's normalization minted, each named
-here in the same change that uses it, as the rule above requires:
+The table names the additional domains beyond the obvious identifier and scalar
+tags; each new tag is added here in the same change that uses it:
 
 | Tag | Domain |
 |---|---|
 | `<pos>` | a room position — stricter than `<uint>` because positions are per-room and monotonic |
+| `<request_id>` | the request envelope's exact integer correlation domain |
 | `<capability>` | an invite capability string |
 | `<daemon_sg>` | the daemon's storage generation, discovered at Layer 0 |
 | `<port>` | a TCP port |
@@ -469,10 +604,8 @@ here in the same change that uses it, as the rule above requires:
 | `<link_connected>` | a `link` variant in its `direct` or `relay` arm |
 | `<link_reason>` | the `link.reason` bare enum |
 
-- **`<hex64>` is not a tag.** It names an encoding shared by four distinct
-  domains, so asserting it where `<device_id>` belongs would pass against a
-  subject id. The corpus uses it 
-  in exactly that ambiguous way today.
+- **`<hex64>` is not a tag.** It names an encoding shared by distinct domains,
+  so asserting it where `<device_id>` belongs could pass against a subject id.
 - `<u64>`, `<number>`, and `<int>` all collapse into `<uint>`.
 - **`<variant>` and `<array>` are not tags.** `{"state": "<variant>"}` asserts
   that a discriminant exists without asserting which arms are legal — it asserts
@@ -482,12 +615,9 @@ here in the same change that uses it, as the rule above requires:
 
 ## `requires`
 
-A closed vocabulary of preconditions the harness must establish. The committed
-corpus uses **133 flat tokens**, many of them synonyms (`daemon`,
-`authority_daemon`, `member_daemon`, `fresh_daemon`, `disposable_daemon`), which
-no harness can implement as a closed set.
-
-The replacement is a `namespace:argument` form. Namespaces are closed at nine:
+A closed vocabulary of preconditions the harness must establish. Preconditions
+use a `namespace:argument` form rather than adapter-specific synonyms. The
+namespace table is closed:
 
 | Namespace | Arguments | Establishes |
 |---|---|---|
