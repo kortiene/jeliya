@@ -31,7 +31,10 @@ mod push;
 mod shared;
 mod types;
 
-pub use ids::{DeviceId, EventId, FileId, InviteId, OpId, PipeId, RoomId, SubjectId};
+pub use ids::{
+    DeviceId, EventId, FileId, InviteId, OpId, PipeId, RequestId, RequestIdOutOfRange, RoomId,
+    SubjectId, MAX_REQUEST_ID,
+};
 pub use ops::*;
 pub use push::*;
 pub use shared::*;
@@ -65,7 +68,7 @@ pub trait Operation: Serialize + DeserializeOwned + Sized {
 pub struct Envelope<O: Operation> {
     /// Correlates the reply to this request; unique per connection while
     /// outstanding.
-    pub id: u64,
+    pub id: RequestId,
     /// The operation's wire name — serialized as `op` so the envelope is
     /// dispatchable as-is. It is `O::PATH`, always.
     pub op: &'static str,
@@ -84,13 +87,13 @@ impl<O: Operation> Envelope<O> {
     pub const OP: &'static str = O::PATH;
 
     /// Builds an envelope for a request, pinning `op` to the operation's
-    /// wire name.
-    pub fn new(id: u64, op_id: Option<OpId>, input: O) -> Self {
-        Self {
-            id,
+    /// wire name and rejecting ids outside the browser-safe range.
+    pub fn new(id: u64, op_id: Option<OpId>, input: O) -> Result<Self, RequestIdOutOfRange> {
+        Ok(Self {
+            id: RequestId::new(id)?,
             op: O::PATH,
             op_id,
             input,
-        }
+        })
     }
 }

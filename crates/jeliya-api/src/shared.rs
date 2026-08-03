@@ -448,6 +448,26 @@ pub enum ByteTotal {
     Unknown,
 }
 
+/// `stream_abort_reason` — why an admitted transfer ended without a more
+/// specific operation error.
+///
+/// This JSON-facing vocabulary deliberately excludes the Binary ABORT value
+/// `operation_error` and includes locally synthesized `transport_lost`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamAbortReason {
+    /// The transfer was cancelled.
+    Cancelled,
+    /// The source could not produce bytes.
+    SourceFailed,
+    /// The sink could not accept bytes.
+    SinkFailed,
+    /// The transport ended before the stream could terminate.
+    TransportLost,
+    /// A protocol violation ended the stream.
+    ProtocolError,
+}
+
 /// `outcome` of `transfer.cancel` — closed on the two terminal results, so
 /// idempotence is observable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

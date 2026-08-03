@@ -5,7 +5,10 @@
 // cause unbounded work.
 
 use jeliya_api::ApiError;
-use jeliya_codec::{decode, CodecBounds, CodecError};
+use jeliya_codec::{
+    decode, decode_stream_record, max_stream_data_bytes, CodecBounds, CodecError, StreamCodecError,
+    StreamRecordBody, STREAM_HEADER_BYTES,
+};
 
 /// A structured fuzz corpus: byte sequences that probe every refusal path.
 /// Each must return a CodecError (never panic, never Ok-garbage), and each
@@ -144,4 +147,100 @@ fn out_of_vocabulary_values_are_refused() {
             ..
         }
     ));
+}
+
+fn binary_data(payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(STREAM_HEADER_BYTES + payload.len());
+    bytes.extend_from_slice(b"JBS2");
+    bytes.extend_from_slice(&[0x02, 0, 0, 0]);
+    bytes.extend_from_slice(&42_u64.to_be_bytes());
+    bytes.extend_from_slice(&1_u128.to_be_bytes());
+    bytes.extend_from_slice(&0_u64.to_be_bytes());
+    bytes.extend_from_slice(&0_u64.to_be_bytes());
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// Every prefix and single-byte mutation of a valid Binary DATA message is
+/// total. Successful mutations can allocate only the payload bytes admitted by
+/// the checked effective bound.
+#[test]
+fn mutated_binary_records_are_total_and_payload_bounded() {
+    let bounds = CodecBounds {
+        max_frame_bytes: 128,
+        ..CodecBounds::default()
+    };
+    let payload_limit = max_stream_data_bytes(bounds.max_frame_bytes).unwrap();
+    let valid = binary_data(&[0x5a; 64]);
+
+    for len in 0..valid.len() {
+        let _ = decode_stream_record(&valid[..len], &bounds);
+    }
+
+    for index in 0..valid.len() {
+        for replacement in [0x00, 0x01, 0x06, 0x4a, 0xff] {
+            let mut mutated = valid.clone();
+            mutated[index] = replacement;
+            if let Ok(record) = decode_stream_record(&mutated, &bounds) {
+                if let StreamRecordBody::Data { payload, .. } = record.body {
+                    assert!(!payload.is_empty());
+                    assert!(payload.len() <= payload_limit);
+                }
+            }
+        }
+    }
+}
+
+/// A deterministic pseudo-random byte corpus exercises all message lengths
+/// around a small configured ceiling without any panic, unbounded loop, or
+/// header-directed allocation.
+#[test]
+fn arbitrary_binary_input_fails_or_decodes_boundedly() {
+    let bounds = CodecBounds {
+        max_frame_bytes: 128,
+        ..CodecBounds::default()
+    };
+    let payload_limit = max_stream_data_bytes(bounds.max_frame_bytes).unwrap();
+    let mut state = 0x6a09_e667_f3bc_c909_u64;
+
+    for case in 0..4_096_usize {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let len = (state as usize) % 130;
+        let mut bytes = vec![0_u8; len];
+        for byte in &mut bytes {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+
+        match decode_stream_record(&bytes, &bounds) {
+            Ok(record) => {
+                if let StreamRecordBody::Data { payload, .. } = record.body {
+                    assert!(!payload.is_empty(), "case {case}");
+                    assert!(payload.len() <= payload_limit, "case {case}");
+                }
+            }
+            Err(
+                StreamCodecError::FrameLimitTooSmall { .. }
+                | StreamCodecError::FrameTooLarge { .. }
+                | StreamCodecError::HeaderTooShort { .. }
+                | StreamCodecError::BadMagic
+                | StreamCodecError::ReservedBytesNonzero
+                | StreamCodecError::UnknownKind { .. }
+                | StreamCodecError::RequestIdOutOfRange { .. }
+                | StreamCodecError::ZeroStreamId
+                | StreamCodecError::UnexpectedPayload { .. }
+                | StreamCodecError::EmptyData
+                | StreamCodecError::DataTooLarge { .. }
+                | StreamCodecError::InvalidField { .. }
+                | StreamCodecError::InvalidCredit { .. }
+                | StreamCodecError::InvalidAbortReason { .. }
+                | StreamCodecError::OffsetOverflow { .. }
+                | StreamCodecError::RecordLengthOverflow,
+            ) => {}
+        }
+    }
 }
