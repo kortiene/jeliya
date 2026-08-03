@@ -30,7 +30,7 @@ jeliya-codec = { path = "../jeliya-codec" }
 jeliya-api = { path = "../jeliya-api" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.30"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
