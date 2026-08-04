@@ -2620,10 +2620,26 @@ impl RoomSupervisor {
                 format!("no such file {file_id_str} in room {room_id}"),
             ));
         };
-        let file_id_handle = file_handle(&file_id);
+        self.local_file_for_shared(&room_id, &file_id, file_id_str, &shared)
+    }
+
+    /// Resolve the local copy for a signed `file.shared` fact after the caller
+    /// has already passed room authorization and looked that fact up.
+    ///
+    /// This is the shared no-second-scan seam used by protocol `file.read`.
+    /// The outer [`Self::local_file`] wrapper retains its established parsing
+    /// and authorization behavior for host-controlled HTTP responses.
+    pub(crate) fn local_file_for_shared(
+        &self,
+        room_id: &RoomId,
+        file_id: &[u8; SHORT_ID_LEN],
+        file_id_str: &str,
+        shared: &iroh_rooms::files::FileShared,
+    ) -> CoreResult<LocalFile> {
+        let file_id_handle = file_handle(file_id);
         let room_id_key = room_id.to_string();
         let Some(local) = localstate::fetched_file(&self.data_dir, &room_id_key, &file_id_handle)
-            .or_else(|| self.downloaded_file_meta(&file_id, &shared.name, shared.size_bytes))
+            .or_else(|| self.downloaded_file_meta(file_id, &shared.name, shared.size_bytes))
         else {
             return Err(CoreError::new(
                 ErrorKind::FileUnavailable,
@@ -2633,8 +2649,8 @@ impl RoomSupervisor {
         };
         Ok(LocalFile {
             path: local.path,
-            name: shared.name,
-            mime: shared.mime_type,
+            name: shared.name.clone(),
+            mime: shared.mime_type.clone(),
             bytes: local.bytes,
         })
     }
@@ -6310,6 +6326,24 @@ mod tests {
 
         let err = sup.fetch_file(&room_id, &file_id, None).await.unwrap_err();
         assert_eq!(err.kind, ErrorKind::FileUnavailable);
+
+        // The host-facing local-file API historically preserved the caller's
+        // valid spelling in its diagnostic, including a bare uppercase id.
+        // The shared resolver used by protocol file.read must not canonicalize
+        // that externally visible text.
+        let original_file_id = file_id
+            .strip_prefix("file_")
+            .expect("shared ids use the file_ prefix")
+            .to_uppercase();
+        let err = sup
+            .local_file(&room_id, &original_file_id)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::FileUnavailable);
+        assert_eq!(
+            err.message,
+            format!("file {original_file_id} has not been fetched on this daemon")
+        );
 
         let downloads = dir.path().join(super::DOWNLOADS_DIR);
         std::fs::create_dir_all(&downloads).unwrap();

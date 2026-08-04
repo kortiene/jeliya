@@ -21,7 +21,8 @@
 //!    `invalid_argument` with `unrecognised_field`.
 //! 4. **Typed Binary stream records** — the exact 48-byte `JBS2` header and
 //!    closed OPEN/DATA/CREDIT/END/ABORT/ACK bodies are encoded and decoded
-//!    with bounded allocation and checked arithmetic.
+//!    with staged identity/kind validation, bounded allocation, and checked
+//!    arithmetic.
 //! 5. **Bounded malformed-input handling** — a frame whose `id` cannot be
 //!    recovered closes `4007` (`malformed_frame`); a frame that decodes far
 //!    enough to correlate always gets a correlated error reply instead, so
@@ -50,9 +51,9 @@ mod gate;
 mod routing;
 
 pub use byte_stream::{
-    decode_stream_identity, decode_stream_record, encode_stream_record, max_stream_data_bytes,
-    BinaryAbortReason, StreamCodecError, StreamHeaderField, StreamIdentity, StreamRecord,
-    StreamRecordBody, StreamRecordKind, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
+    decode_stream_identity, decode_stream_kind, decode_stream_record, encode_stream_record,
+    max_stream_data_bytes, BinaryAbortReason, StreamCodecError, StreamHeaderField, StreamIdentity,
+    StreamRecord, StreamRecordBody, StreamRecordKind, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
 };
 pub use error::{CodecError, GateRejection};
 pub use frame::push_to_bytes;

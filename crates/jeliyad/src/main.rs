@@ -13,8 +13,11 @@
 //! and the WS auth token, graceful teardown on SIGTERM/SIGINT, and
 //! `--supervised` mode that exits when the parent closes stdin.
 
+mod file_read;
 mod lifecycle;
+mod outbound;
 mod serve;
+mod transfer;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -96,6 +99,10 @@ pub(crate) struct AppState {
     pub(crate) connect_tickets: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
     /// Live WebSocket connections, for the `max_connections` gate.
     pub(crate) connections: Arc<std::sync::atomic::AtomicU64>,
+    /// Host-checked framing, queue, stall, and absolute-deadline limits.
+    pub(crate) runtime_limits: transfer::RuntimeLimits,
+    /// Daemon-global transfer count and logical-byte admission pool.
+    pub(crate) transfer_pool: transfer::TransferPool,
 }
 
 #[tokio::main]
@@ -192,6 +199,14 @@ async fn main() {
         }
     };
     let engine_limits = engine.limits();
+    let runtime_limits = match transfer::RuntimeLimits::from_served(&engine_limits) {
+        Ok(limits) => limits,
+        Err(err) => {
+            error!("invalid served transfer limits: {err}");
+            std::process::exit(1);
+        }
+    };
+    let transfer_pool = transfer::TransferPool::from_runtime(&runtime_limits);
     let state = AppState {
         data_dir: data_dir.clone(),
         engine,
@@ -199,6 +214,8 @@ async fn main() {
         port: addr.port(),
         connect_tickets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        runtime_limits,
+        transfer_pool,
     };
 
     let portfile = lifecycle::Portfile {

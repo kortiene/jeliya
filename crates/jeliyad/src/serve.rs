@@ -11,7 +11,7 @@ use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{
@@ -489,7 +489,23 @@ fn ws_upgrade(req: &mut Request<Incoming>, state: AppState) -> Response<Full<Byt
             "expected a websocket upgrade; connect to /ws",
         );
     }
-    match hyper_tungstenite::upgrade(req, None) {
+    let max_frame_bytes = state.runtime_limits.max_frame_bytes();
+    let max_encoded_message_bytes = max_frame_bytes
+        .checked_add(14)
+        .expect("validated frame bound leaves WebSocket header headroom");
+    let websocket_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        // Jeliya checks the complete-message payload itself. Align both
+        // tungstenite guards with the served bound so its 64/16 MiB defaults
+        // cannot reject a conforming 128 MiB message below the application.
+        .max_message_size(Some(max_frame_bytes))
+        .max_frame_size(Some(max_frame_bytes))
+        // Each message is flushed eagerly; the runtime's own queue owns the
+        // explicit DATA byte permits and writer acknowledgement. Tungstenite's
+        // write buffer counts the encoded frame, so retain the maximum RFC
+        // 6455 header in addition to the application payload bound.
+        .write_buffer_size(0)
+        .max_write_buffer_size(max_encoded_message_bytes);
+    match hyper_tungstenite::upgrade(req, Some(websocket_config)) {
         Ok((response, websocket)) => {
             tokio::spawn(async move {
                 if let Ok(ws) = websocket.await {
@@ -905,12 +921,12 @@ fn serve_static(path: &str, ui: &UiSource) -> Response<Full<Bytes>> {
     text(StatusCode::NOT_FOUND, "not found")
 }
 
-/// One v2 WebSocket connection. The daemon's first frame is exactly one
-/// `hello`; thereafter each inbound text frame is decoded by the codec into a
+/// One v2 WebSocket connection. The daemon's first message is exactly one
+/// `hello`; thereafter each inbound Text message is decoded by the codec into a
 /// typed call, executed by the engine, and its typed reply encoded back —
-/// interleaved with typed pushes. A frame over the limit closes `4005`; a
-/// frame whose `id` cannot be recovered closes `4007`; any other malformed
-/// frame gets a correlated error reply so one bad request never strands the
+/// interleaved with typed pushes. A complete message over the limit closes
+/// `4005`; a message whose `id` cannot be recovered closes `4007`; any other
+/// malformed message gets a correlated error reply so one bad request never strands the
 /// others in flight. A lagged push receiver is told to resync (the one
 /// resync path), never silently continued.
 pub async fn serve_ws<S>(
@@ -922,9 +938,13 @@ pub async fn serve_ws<S>(
     // can own the socket and engine handles across threads.
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut sink, mut messages) = ws.split();
+    let (sink, mut messages) = ws.split();
     let mut push_rx = state.engine.subscribe_pushes();
-    let bounds = jeliya_codec::CodecBounds::default();
+    let bounds = jeliya_codec::CodecBounds {
+        max_frame_bytes: state.runtime_limits.max_frame_bytes(),
+        ..jeliya_codec::CodecBounds::default()
+    };
+    let served = state.engine.limits();
 
     // The authenticated session principal rendered as one ledger key:
     // `(credential, client_id)`. An omitted `client_id` yields a fresh
@@ -944,18 +964,29 @@ pub async fn serve_ws<S>(
         ),
     };
 
-    // All outbound frames flow through ONE writer task over an mpsc channel,
-    // so a slow request's execution never head-of-line blocks a push, a ping,
-    // or another request's reply. Replies may complete out of order — the
-    // record allows that and the client correlates by `id`.
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(256);
-    let writer = tokio::spawn(async move {
-        while let Some(msg) = out_rx.recv().await {
-            if sink.send(msg).await.is_err() {
-                break;
-            }
-        }
+    // One writer owns the sink. Its control queue is independent from the
+    // byte-permitted DATA queue and is selected first between bounded DATA
+    // records, so JSON, terminal control, Pong, and Close cannot sit behind a
+    // file-sized message-count backlog.
+    let (outbound, writer_queues) = crate::outbound::Outbound::new(
+        state.runtime_limits.control_queue_capacity_messages(),
+        state.runtime_limits.data_queue_capacity_messages(),
+        state.runtime_limits.control_queue_capacity_bytes(),
+        state.runtime_limits.data_queue_capacity_bytes(),
+        state.runtime_limits.max_frame_bytes(),
+    );
+    let (writer_done_tx, mut writer_done_rx) = tokio::sync::watch::channel(false);
+    let writer_timeout = state.runtime_limits.transfer_stall();
+    let mut writer = tokio::spawn(async move {
+        let _ = writer_queues.run(sink, writer_timeout).await;
+        let _ = writer_done_tx.send(true);
     });
+
+    let streams = crate::file_read::StreamRegistry::new();
+    let requests = crate::file_read::RequestTracker::new(served.max_inflight_requests);
+    let stream_ids = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::transfer::StreamIdGenerator::new(),
+    ));
 
     // This connection's room subscriptions: `stream.subscribe` adds a room
     // with the position the client's stream begins at; `stream.unsubscribe`
@@ -975,15 +1006,14 @@ pub async fn serve_ws<S>(
     let subject = match state.engine.subject_state() {
         Ok(s) => s,
         Err(_) => {
-            let _ = out_tx
-                .send(Message::Close(Some(
-                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                        code: 4003.into(),
-                        reason: "not_ready".into(),
-                    },
-                )))
+            let _ = outbound
+                .close(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: 4003.into(),
+                    reason: "not_ready".into(),
+                })
                 .await;
-            writer.abort();
+            drop(outbound);
+            let _ = writer.await;
             return;
         }
     };
@@ -996,16 +1026,21 @@ pub async fn serve_ws<S>(
     };
     match serde_json::to_vec(&hello) {
         Ok(bytes) => {
-            if out_tx.send(Message::Binary(bytes.into())).await.is_err() {
-                writer.abort();
+            if outbound.text(bytes).await != crate::outbound::WriteReceipt::Sent {
+                drop(outbound);
+                let _ = writer.await;
                 return;
             }
         }
         Err(_) => {
-            writer.abort();
+            drop(outbound);
+            let _ = writer.await;
             return;
         }
     }
+
+    let (closer, mut close_requested_rx, mut close_completed_rx) =
+        crate::file_read::ConnectionCloser::new(streams.clone(), outbound.clone());
 
     // Track in-flight request tasks so the loop never serializes on a slow
     // operation; a finished task's result is reaped without blocking.
@@ -1016,41 +1051,118 @@ pub async fn serve_ws<S>(
     let idle_ms = state.engine.limits().idle_timeout_ms;
     let idle_deadline = tokio::time::sleep(tokio::time::Duration::from_millis(idle_ms));
     tokio::pin!(idle_deadline);
+    let mut force_writer_abort = false;
 
     loop {
+        if closer.is_requested() {
+            break;
+        }
         tokio::select! {
+            biased;
+            changed = close_requested_rx.changed() => {
+                if changed.is_err() || *close_requested_rx.borrow() {
+                    break;
+                }
+            }
+            changed = writer_done_rx.changed() => {
+                if changed.is_err() || *writer_done_rx.borrow() {
+                    force_writer_abort = true;
+                    break;
+                }
+            }
             msg = messages.next() => match msg {
-                Some(Ok(Message::Text(text))) => {
+                Some(Ok(message)) => {
+                    // The Close owner publishes `claimed` before it may need
+                    // to wait on a stream sequencing lock. Linearize reader
+                    // admission here, after the socket future resolves: a
+                    // message that became ready in that interval must not be
+                    // parsed or allowed to spawn a mutating request.
+                    if closer.is_requested() {
+                        break;
+                    }
                     idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
-                    if !dispatch_inbound(text.as_bytes(), &state, &bounds, &subscriptions, &out_tx, &mut inflight, &principal_key).await {
+                    // Complete-message size wins before Text/Binary class or
+                    // any JSON/header/magic/binding inspection.
+                    if complete_data_message_len(&message).is_some_and(|len| len > bounds.max_frame_bytes) {
+                        closer.request(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                            code: 4005.into(),
+                            reason: "frame_too_large".into(),
+                        });
                         break;
                     }
-                }
-                Some(Ok(Message::Binary(bytes))) => {
-                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
-                    if !dispatch_inbound(&bytes, &state, &bounds, &subscriptions, &out_tx, &mut inflight, &principal_key).await {
-                        break;
+                    match message {
+                        Message::Text(text) => {
+                            if !dispatch_text(
+                                text.as_bytes(),
+                                &state,
+                                &bounds,
+                                &subscriptions,
+                                &outbound,
+                                &requests,
+                                &streams,
+                                &stream_ids,
+                                &closer,
+                                &mut inflight,
+                                &principal_key,
+                            ).await {
+                                break;
+                            }
+                        }
+                        Message::Binary(bytes) => match streams.route_binary(&bytes, &bounds) {
+                            crate::file_read::BinaryRoute::Delivered => {}
+                            crate::file_read::BinaryRoute::CloseTooLarge => {
+                                closer.request(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                    code: 4005.into(),
+                                    reason: "frame_too_large".into(),
+                                });
+                                break;
+                            }
+                            crate::file_read::BinaryRoute::CloseMalformed => {
+                                closer.malformed();
+                                break;
+                            }
+                        },
+                        Message::Ping(payload) => {
+                            if !outbound.pong(payload).await {
+                                break;
+                            }
+                        }
+                        Message::Close(_) => {
+                            force_writer_abort = true;
+                            break;
+                        }
+                        Message::Pong(_) | Message::Frame(_) => {}
                     }
                 }
-                Some(Ok(Message::Ping(payload))) => {
-                    if out_tx.send(Message::Pong(payload)).await.is_err() {
-                        break;
-                    }
+                Some(Err(tokio_tungstenite::tungstenite::Error::Capacity(
+                    tokio_tungstenite::tungstenite::error::CapacityError::MessageTooLong { .. },
+                ))) => {
+                    // The transport rejected an oversized reassembled message
+                    // before exposing its class/content; preserve the same
+                    // application close as the explicit complete-message gate.
+                    closer.request(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4005.into(),
+                        reason: "frame_too_large".into(),
+                    });
+                    break;
                 }
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                Some(Ok(_)) => {} // pong frames: ignored
+                Some(Err(_)) | None => {
+                    force_writer_abort = true;
+                    break;
+                }
             },
             () = &mut idle_deadline => {
-                // No inbound activity for the served idle window: close 4004.
-                let _ = out_tx
-                    .send(Message::Close(Some(
-                        tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                            code: 4004.into(),
-                            reason: "idle_timeout".into(),
-                        },
-                    )))
-                    .await;
-                break;
+                if streams.is_active() {
+                    // A correctly credit-paused transfer remains governed by
+                    // its stall and absolute timers, never ordinary idle.
+                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
+                } else {
+                    closer.request(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: 4004.into(),
+                        reason: "idle_timeout".into(),
+                    });
+                    break;
+                }
             }
             push = push_rx.recv() => match push {
                 Ok(push) => {
@@ -1075,7 +1187,7 @@ pub async fn serve_ws<S>(
                     };
                     if subscribed {
                         let bytes = jeliya_codec::push_to_bytes(&push);
-                        if out_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                        if outbound.text(bytes).await != crate::outbound::WriteReceipt::Sent {
                             break;
                         }
                     }
@@ -1107,7 +1219,7 @@ pub async fn serve_ws<S>(
                             reason: jeliya_api::GapReason::Backpressure,
                         };
                         let bytes = jeliya_codec::push_to_bytes(&gap);
-                        if out_tx.send(Message::Binary(bytes.into())).await.is_err() {
+                        if outbound.text(bytes).await != crate::outbound::WriteReceipt::Sent {
                             break;
                         }
                     }
@@ -1115,15 +1227,55 @@ pub async fn serve_ws<S>(
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             // Reap finished request tasks without blocking the loop.
-            Some(_) = inflight.join_next() => {}
+            Some(_) = inflight.join_next() => {
+                // Completion of a transfer counts as connection activity;
+                // restart ordinary idle after its binding/request retires.
+                idle_deadline.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_millis(idle_ms));
+            }
         }
     }
 
     // Teardown: stop accepting new work, drain in-flight replies, then drop
     // the writer task.
+    streams.invalidate_connection();
+    outbound.invalidate_connection();
     inflight.abort_all();
-    drop(out_tx);
-    let _ = writer.await;
+    while inflight.join_next().await.is_some() {}
+    let close_requested = closer.is_requested();
+    if close_requested && !*close_completed_rx.borrow() {
+        let wait_for_close = async {
+            while !*close_completed_rx.borrow() {
+                if close_completed_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        let _ =
+            tokio::time::timeout(tokio::time::Duration::from_millis(1_100), wait_for_close).await;
+    }
+    drop(closer);
+    drop(outbound);
+    if force_writer_abort && !close_requested {
+        writer.abort();
+        let _ = writer.await;
+    } else if tokio::time::timeout(tokio::time::Duration::from_secs(1), &mut writer)
+        .await
+        .is_err()
+    {
+        // A peer can keep TCP open while refusing to drain its receive
+        // window. Give a queued Close a short flush grace, then cancel the
+        // sole sink owner so connection teardown cannot hang indefinitely.
+        writer.abort();
+        let _ = writer.await;
+    }
+}
+
+fn complete_data_message_len(message: &Message) -> Option<usize> {
+    match message {
+        Message::Text(text) => Some(text.len()),
+        Message::Binary(bytes) => Some(bytes.len()),
+        Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => None,
+    }
 }
 
 /// The room a push is scoped to, for subscription gating. `transfer` frames
@@ -1164,7 +1316,7 @@ struct SubscriptionState {
 /// Naturally idempotent; exceeding the served limit is
 /// `subscription_limit_reached`, never a silent drop.
 async fn handle_stream_subscribe(
-    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    out_tx: &crate::outbound::Outbound,
     state: &AppState,
     request: &jeliya_codec::Request,
     subscriptions: &std::sync::Arc<
@@ -1264,7 +1416,7 @@ async fn handle_stream_subscribe(
 
 /// `stream.unsubscribe` — remove the room from this connection's set.
 async fn handle_stream_unsubscribe(
-    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    out_tx: &crate::outbound::Outbound,
     state: &AppState,
     request: &jeliya_codec::Request,
     subscriptions: &std::sync::Arc<
@@ -1332,7 +1484,7 @@ async fn handle_stream_unsubscribe(
 /// `stream.resync` — the authoritative recovery: events since `from_pos`, or
 /// `resync_required` naming a position to discard back to.
 async fn handle_stream_resync(
-    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    out_tx: &crate::outbound::Outbound,
     state: &AppState,
     request: &jeliya_codec::Request,
 ) -> bool {
@@ -1457,7 +1609,7 @@ fn stream_start_position(last_committed: Option<u64>) -> u64 {
 }
 
 /// Encode a typed output as a reply frame and send it.
-async fn send_typed<O>(out_tx: &tokio::sync::mpsc::Sender<Message>, id: u64, out: &O) -> bool
+async fn send_typed<O>(out_tx: &crate::outbound::Outbound, id: u64, out: &O) -> bool
 where
     O: serde::Serialize,
 {
@@ -1467,15 +1619,12 @@ where
         out: serde_json::to_value(out).ok(),
         err: None,
     };
-    out_tx
-        .send(Message::Binary(reply.to_bytes().into()))
-        .await
-        .is_ok()
+    out_tx.text(reply.to_bytes()).await == crate::outbound::WriteReceipt::Sent
 }
 
 /// Encode a typed API error as a reply frame and send it.
 async fn send_api_err(
-    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    out_tx: &crate::outbound::Outbound,
     id: u64,
     err: jeliya_api::ApiError,
 ) -> bool {
@@ -1485,10 +1634,7 @@ async fn send_api_err(
         out: None,
         err: Some(err),
     };
-    out_tx
-        .send(Message::Binary(reply.to_bytes().into()))
-        .await
-        .is_ok()
+    out_tx.text(reply.to_bytes()).await == crate::outbound::WriteReceipt::Sent
 }
 
 /// Decode one inbound frame and route it. Connection-terminating frames (over
@@ -1496,48 +1642,49 @@ async fn send_api_err(
 /// well-formed requests are executed on a spawned task so a slow operation
 /// never head-of-line blocks the push fan-out or other requests. Returns
 /// `false` when the connection must close.
-async fn dispatch_inbound(
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_text(
     bytes: &[u8],
     state: &AppState,
     bounds: &jeliya_codec::CodecBounds,
     subscriptions: &std::sync::Arc<
         tokio::sync::Mutex<std::collections::HashMap<String, SubscriptionState>>,
     >,
-    out_tx: &tokio::sync::mpsc::Sender<Message>,
+    out_tx: &crate::outbound::Outbound,
+    requests: &crate::file_read::RequestTracker,
+    streams: &crate::file_read::StreamRegistry,
+    stream_ids: &std::sync::Arc<std::sync::Mutex<crate::transfer::StreamIdGenerator>>,
+    closer: &crate::file_read::ConnectionCloser,
     inflight: &mut tokio::task::JoinSet<bool>,
     principal_key: &str,
 ) -> bool {
+    // This is the final request-admission linearization point. If it wins
+    // before a concurrent Close claim, the request was already in flight and
+    // teardown will cancel it; if the Close claim wins, no operation starts.
+    if closer.is_requested() {
+        return false;
+    }
     use jeliya_codec::CodecError;
     let frame = match jeliya_codec::decode(bytes, bounds) {
         Ok(frame) => frame,
         Err(CodecError::FrameTooLarge { .. }) => {
-            let _ = out_tx
-                .send(Message::Close(Some(
-                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                        code: 4005.into(),
-                        reason: "frame_too_large".into(),
-                    },
-                )))
-                .await;
+            closer.request(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: 4005.into(),
+                reason: "frame_too_large".into(),
+            });
             return false;
         }
         Err(CodecError::UnrecoverableId(_)) => {
-            let _ = out_tx
-                .send(Message::Close(Some(
-                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                        code: 4007.into(),
-                        reason: "malformed_frame".into(),
-                    },
-                )))
-                .await;
+            closer.malformed();
             return false;
         }
         Err(CodecError::Malformed { id, error }) => {
+            if requests.is_outstanding(id) {
+                closer.malformed();
+                return false;
+            }
             let reply = jeliya_codec::Reply::from_result::<jeliya_api::RoomList>(id, Err(error));
-            return out_tx
-                .send(Message::Binary(reply.to_bytes().into()))
-                .await
-                .is_ok();
+            return out_tx.text(reply.to_bytes()).await == crate::outbound::WriteReceipt::Sent;
         }
         Err(CodecError::GateRefused(_)) => {
             return false;
@@ -1549,20 +1696,75 @@ async fn dispatch_inbound(
         return true;
     };
 
+    let request_permit = match requests.acquire(request.id) {
+        Ok(permit) => permit,
+        Err(crate::file_read::RequestAdmissionError::Duplicate) => {
+            // Reusing an outstanding correlation id makes either reply
+            // ambiguous, so there is no trustworthy request to answer.
+            closer.malformed();
+            return false;
+        }
+        Err(crate::file_read::RequestAdmissionError::Exhausted(error)) => {
+            return send_api_err(out_tx, request.id, error).await;
+        }
+    };
+
     // The three stream operations are connection-scoped: they read and mutate
     // THIS connection's subscription set, never the supervisor. They are fast
     // (map ops plus one engine read), so run them inline.
     match request.call.op {
         "stream.subscribe" => {
+            let _request_permit = request_permit;
             return handle_stream_subscribe(out_tx, state, &request, subscriptions).await;
         }
         "stream.unsubscribe" => {
+            let _request_permit = request_permit;
             return handle_stream_unsubscribe(out_tx, state, &request, subscriptions).await;
         }
         "stream.resync" => {
+            let _request_permit = request_permit;
             return handle_stream_resync(out_tx, state, &request).await;
         }
         _ => {}
+    }
+
+    // `file.read` is the one producer-direction stream in this slice. Its
+    // request remains outstanding inside the actor through END/ABORT and the
+    // terminal Text writer acknowledgement. `file.share` deliberately stays
+    // on the ordinary engine path and continues returning `not_ready`.
+    if request.call.op == "file.read" {
+        let Some(file_read) = request
+            .call
+            .input_any()
+            .downcast_ref::<jeliya_api::FileRead>()
+            .cloned()
+        else {
+            return send_api_err(out_tx, request.id, jeliya_api::ApiError::MalformedFrame).await;
+        };
+        let engine = state.engine.clone();
+        let outbound = out_tx.clone();
+        let registry = streams.clone();
+        let stream_ids = stream_ids.clone();
+        let transfer_pool = state.transfer_pool.clone();
+        let limits = state.runtime_limits;
+        let closer = closer.clone();
+        let id = request.id;
+        inflight.spawn(async move {
+            crate::file_read::run_file_read(
+                engine,
+                file_read,
+                id,
+                request_permit,
+                outbound,
+                registry,
+                stream_ids,
+                transfer_pool,
+                limits,
+                closer,
+            )
+            .await
+        });
+        return true;
     }
 
     let Some(call) = jeliya_core::typed::resolve_call(request.call.op, request.call.input_any())
@@ -1571,10 +1773,7 @@ async fn dispatch_inbound(
             request.id,
             Err(jeliya_api::ApiError::MalformedFrame),
         );
-        return out_tx
-            .send(Message::Binary(reply.to_bytes().into()))
-            .await
-            .is_ok();
+        return out_tx.text(reply.to_bytes()).await == crate::outbound::WriteReceipt::Sent;
     };
 
     // Execute on a spawned task so a slow op (file.fetch, pipe.connect) does
@@ -1587,6 +1786,7 @@ async fn dispatch_inbound(
     let engine = state.engine.clone();
     let out_tx = out_tx.clone();
     inflight.spawn(async move {
+        let _request_permit = request_permit;
         let executed = engine.execute_with(call, op_id, &principal_key).await;
         let reply = match executed.reply {
             Ok(out) => jeliya_codec::Reply {
@@ -1602,10 +1802,7 @@ async fn dispatch_inbound(
                 err: Some(err),
             },
         };
-        out_tx
-            .send(Message::Binary(reply.to_bytes().into()))
-            .await
-            .is_ok()
+        out_tx.text(reply.to_bytes()).await == crate::outbound::WriteReceipt::Sent
     });
     true
 }
@@ -1667,8 +1864,174 @@ fn text(status: StatusCode, body: &'static str) -> Response<Full<Bytes>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, gate_refusal, safe_download_mime, stream_start_position};
+    use std::sync::Arc;
+
+    use futures_util::{SinkExt, StreamExt};
     use hyper::{header::CONTENT_TYPE, StatusCode};
+    use tempfile::TempDir;
+    use tokio_tungstenite::tungstenite::{protocol::Role, Message};
+    use tokio_tungstenite::WebSocketStream;
+
+    use super::{
+        complete_data_message_len, constant_time_eq, gate_refusal, safe_download_mime, serve_ws,
+        stream_start_position,
+    };
+
+    const SOCKET_FRAME_BYTES: usize = 4_096;
+
+    fn test_state(max_frame_bytes: u64) -> (TempDir, crate::AppState) {
+        let dir = TempDir::new().expect("server tempdir");
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::mpsc::channel(1);
+        let engine = jeliya_core::engine::Engine::new(
+            dir.path().to_path_buf(),
+            true,
+            jeliya_core::engine::EngineConfig {
+                port: 0,
+                version: "test".into(),
+                shutdown_tx,
+            },
+        )
+        .expect("test engine");
+        let mut limits = engine.limits();
+        limits.max_frame_bytes = max_frame_bytes;
+        let runtime_limits =
+            crate::transfer::RuntimeLimits::from_served(&limits).expect("test runtime limits");
+        let transfer_pool = crate::transfer::TransferPool::from_runtime(&runtime_limits);
+        let state = crate::AppState {
+            data_dir: dir.path().to_path_buf(),
+            engine,
+            auth_token: Arc::new("test-token".into()),
+            port: 0,
+            connect_tickets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            runtime_limits,
+            transfer_pool,
+        };
+        (dir, state)
+    }
+
+    async fn socket_pair(
+        state: crate::AppState,
+    ) -> (
+        WebSocketStream<tokio::io::DuplexStream>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (server_io, client_io) = tokio::io::duplex(1 << 20);
+        let server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let task = tokio::spawn(serve_ws(
+            server,
+            state,
+            jeliya_codec::SessionPrincipal {
+                credential: "test-token".into(),
+                client_id: Some("serve-test".into()),
+            },
+        ));
+        (client, task)
+    }
+
+    async fn file_state(
+        payload: &[u8],
+        max_frame_bytes: u64,
+    ) -> (TempDir, crate::AppState, jeliya_api::FileRead) {
+        let (dir, state) = test_state(max_frame_bytes);
+        state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::SubjectEnsure(
+                jeliya_api::SubjectEnsure {},
+            ))
+            .await
+            .reply
+            .expect("subject.ensure");
+        let created = state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::RoomCreate(
+                jeliya_api::RoomCreate {
+                    name: "socket file read".into(),
+                },
+            ))
+            .await
+            .reply
+            .expect("room.create");
+        let jeliya_core::typed::TypedReply::RoomCreate(created) = created else {
+            panic!("wrong room.create reply");
+        };
+        state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::RoomActivate(
+                jeliya_api::RoomActivate {
+                    room_id: created.room_id.clone(),
+                },
+            ))
+            .await
+            .reply
+            .expect("room.activate");
+        let staged = dir.path().join("socket-source.bin");
+        std::fs::write(&staged, payload).expect("write socket source");
+        let shared = state
+            .engine
+            .share_staged_file(
+                &jeliya_api::FileShare {
+                    room_id: created.room_id.clone(),
+                    name: "socket-source.bin".into(),
+                    declared_bytes: payload.len() as u64,
+                    declared_content_type: "application/octet-stream".into(),
+                },
+                &staged,
+            )
+            .await
+            .expect("host-staged share");
+        let state_path = dir.path().join("state.json");
+        let mut local_state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state_path).expect("read local state"))
+                .expect("decode local state");
+        local_state["rooms"][created.room_id.as_str()]["fetched_files"][shared.file_id.as_str()] = serde_json::json!({
+            "path": staged,
+            "bytes": payload.len(),
+            "fetched_at_ms": 0,
+        });
+        std::fs::write(
+            state_path,
+            serde_json::to_vec_pretty(&local_state).expect("encode local state"),
+        )
+        .expect("write local state");
+        let request = jeliya_api::FileRead {
+            room_id: created.room_id,
+            file_id: shared.file_id,
+        };
+        (dir, state, request)
+    }
+
+    fn stream_wire(kind: u8, request_id: u64, stream_id: u128, offset: u64, value: u64) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(jeliya_codec::STREAM_HEADER_BYTES);
+        bytes.extend_from_slice(b"JBS2");
+        bytes.push(kind);
+        bytes.extend_from_slice(&[0, 0, 0]);
+        bytes.extend_from_slice(&request_id.to_be_bytes());
+        bytes.extend_from_slice(&stream_id.to_be_bytes());
+        bytes.extend_from_slice(&offset.to_be_bytes());
+        bytes.extend_from_slice(&value.to_be_bytes());
+        bytes
+    }
+
+    async fn send_file_read(
+        client: &mut WebSocketStream<tokio::io::DuplexStream>,
+        id: u64,
+        request: &jeliya_api::FileRead,
+    ) {
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": id,
+                    "op": "file.read",
+                    "in": request,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send file.read");
+    }
 
     #[test]
     fn gate_refusal_is_bare_json_with_the_exact_media_type() {
@@ -1727,5 +2090,295 @@ mod tests {
             safe_download_mime("text/plain; charset=utf-8"),
             "text/plain"
         );
+    }
+
+    #[test]
+    fn complete_message_size_is_class_agnostic_and_excludes_controls() {
+        assert_eq!(
+            complete_data_message_len(&Message::Text("123".into())),
+            Some(3)
+        );
+        assert_eq!(
+            complete_data_message_len(&Message::Binary(vec![0; 4].into())),
+            Some(4)
+        );
+        assert_eq!(
+            complete_data_message_len(&Message::Ping(vec![0; 8].into())),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_enforces_text_json_binary_stream_and_size_before_parse() {
+        let (_dir, state) = test_state(SOCKET_FRAME_BYTES as u64);
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+        client
+            .send(Message::Text(
+                r#"{"id":1,"op":"subject.ensure","in":{}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let reply = client.next().await.expect("reply").expect("valid reply");
+        let Message::Text(reply) = reply else {
+            panic!("JSON reply must be Text");
+        };
+        let reply: jeliya_codec::Reply = serde_json::from_str(&reply).unwrap();
+        assert!(reply.ok);
+
+        // Valid JSON in Binary is never offered to the JSON decoder. It is
+        // shorter than JBS2's header and therefore closes unbound with 4007.
+        client
+            .send(Message::Binary(
+                br#"{"id":2,"op":"room.list","in":{}}"#.to_vec().into(),
+            ))
+            .await
+            .unwrap();
+        let close = client.next().await.expect("close").expect("close frame");
+        let Message::Close(Some(close)) = close else {
+            panic!("Binary JSON must close");
+        };
+        assert_eq!(u16::from(close.code), 4007);
+        let _ = server.await;
+
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        // Oversized and bad-magic: the complete-message bound wins without
+        // attempting header, magic, identity, or class-specific parsing.
+        client
+            .send(Message::Binary(vec![0; SOCKET_FRAME_BYTES + 1].into()))
+            .await
+            .unwrap();
+        let close = client.next().await.expect("close").expect("close frame");
+        let Message::Close(Some(close)) = close else {
+            panic!("oversized Binary must close");
+        };
+        assert_eq!(u16::from(close.code), 4005);
+        let _ = server.await;
+
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        client
+            .send(Message::Text("x".repeat(SOCKET_FRAME_BYTES + 1).into()))
+            .await
+            .unwrap();
+        let close = client.next().await.expect("close").expect("close frame");
+        let Message::Close(Some(close)) = close else {
+            panic!("oversized malformed Text must close");
+        };
+        assert_eq!(u16::from(close.code), 4005);
+        let _ = server.await;
+
+        let (mut client, server) = socket_pair(state).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        let mut stream_as_text = Vec::new();
+        stream_as_text.extend_from_slice(b"JBS2");
+        stream_as_text.resize(48, 0);
+        stream_as_text[31] = 1; // structurally nonzero stream id, still UTF-8
+        client
+            .send(Message::Text(
+                String::from_utf8(stream_as_text).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+        let close = client.next().await.expect("close").expect("close frame");
+        let Message::Close(Some(close)) = close else {
+            panic!("Text stream record must close");
+        };
+        assert_eq!(u16::from(close.code), 4007);
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn websocket_file_read_disconnects_cleanly_and_restarts_from_zero() {
+        let payload: Vec<u8> = (0..300).map(|value| (value % 251) as u8).collect();
+        let (_dir, state, request) = file_state(&payload, SOCKET_FRAME_BYTES as u64).await;
+
+        let (mut first, first_server) = socket_pair(state.clone()).await;
+        assert!(matches!(first.next().await, Some(Ok(Message::Text(_)))));
+        send_file_read(&mut first, 7, &request).await;
+        let Message::Binary(open) = first.next().await.unwrap().unwrap() else {
+            panic!("file.read must begin with Binary OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(
+            &open,
+            &jeliya_codec::CodecBounds {
+                max_frame_bytes: SOCKET_FRAME_BYTES,
+                ..jeliya_codec::CodecBounds::default()
+            },
+        )
+        .expect("decode first OPEN");
+        assert_eq!(
+            open.body,
+            jeliya_codec::StreamRecordBody::Open { total: 300 }
+        );
+
+        // The socket reader remains usable for ordinary Text requests while
+        // the download is correctly paused before initial CREDIT.
+        first
+            .send(Message::Text(r#"{"id":8,"op":"room.list","in":{}}"#.into()))
+            .await
+            .unwrap();
+        let Message::Text(ordinary) = first.next().await.unwrap().unwrap() else {
+            panic!("ordinary reply must interleave as Text");
+        };
+        let ordinary: jeliya_codec::Reply = serde_json::from_str(&ordinary).unwrap();
+        assert_eq!(ordinary.id, 8);
+        drop(first);
+        tokio::time::timeout(std::time::Duration::from_secs(1), first_server)
+            .await
+            .expect("disconnect teardown must finish")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+
+        let (mut second, second_server) = socket_pair(state.clone()).await;
+        assert!(matches!(second.next().await, Some(Ok(Message::Text(_)))));
+        send_file_read(&mut second, 7, &request).await;
+        let Message::Binary(open_again) = second.next().await.unwrap().unwrap() else {
+            panic!("retry must begin with a fresh OPEN");
+        };
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let open_again = jeliya_codec::decode_stream_record(&open_again, &bounds).unwrap();
+        assert!(matches!(
+            open_again.body,
+            jeliya_codec::StreamRecordBody::Open { total: 300 }
+        ));
+        assert_ne!(
+            open_again.identity.stream_id(),
+            open.identity.stream_id(),
+            "reconnect never resumes or reuses the prior stream"
+        );
+        let stream_id = open_again.identity.stream_id().get();
+        second
+            .send(Message::Binary(
+                stream_wire(0x03, 7, stream_id, 0, payload.len() as u64).into(),
+            ))
+            .await
+            .unwrap();
+
+        let mut accepted = 0_u64;
+        loop {
+            match second.next().await.unwrap().unwrap() {
+                Message::Binary(record) => {
+                    let record = jeliya_codec::decode_stream_record(&record, &bounds).unwrap();
+                    match record.body {
+                        jeliya_codec::StreamRecordBody::Data {
+                            offset,
+                            payload: data,
+                        } => {
+                            assert_eq!(offset, accepted);
+                            assert_eq!(
+                                data,
+                                payload[accepted as usize..accepted as usize + data.len()]
+                            );
+                            accepted += data.len() as u64;
+                            second
+                                .send(Message::Binary(
+                                    stream_wire(0x03, 7, stream_id, accepted, payload.len() as u64)
+                                        .into(),
+                                ))
+                                .await
+                                .unwrap();
+                        }
+                        jeliya_codec::StreamRecordBody::End { total } => {
+                            assert_eq!(total, payload.len() as u64);
+                            assert_eq!(accepted, total);
+                            break;
+                        }
+                        other => panic!("unexpected producer record: {other:?}"),
+                    }
+                }
+                other => panic!("success reply preceded END: {other:?}"),
+            }
+        }
+        let Message::Text(reply) = second.next().await.unwrap().unwrap() else {
+            panic!("terminal success must be Text");
+        };
+        let reply: jeliya_codec::Reply = serde_json::from_str(&reply).unwrap();
+        assert!(reply.ok);
+        assert_eq!(reply.id, 7);
+
+        second
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 9,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": request.room_id,
+                        "name": "still-not-streamed.bin",
+                        "declared_bytes": 0,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(share_reply) = second.next().await.unwrap().unwrap() else {
+            panic!("file.share refusal must remain an ordinary Text reply");
+        };
+        let share_reply: jeliya_codec::Reply = serde_json::from_str(&share_reply).unwrap();
+        assert_eq!(share_reply.err, Some(jeliya_api::ApiError::NotReady));
+        second.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), second_server)
+            .await
+            .expect("completed connection teardown")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn active_credit_pause_is_not_closed_by_ordinary_idle_timeout() {
+        let (_dir, mut state, request) = file_state(&[1], SOCKET_FRAME_BYTES as u64).await;
+        let mut limits = state.engine.limits();
+        limits.max_frame_bytes = SOCKET_FRAME_BYTES as u64;
+        limits.transfer_connect_allowance_ms = 700_000;
+        limits.transfer_stall_ms = 700_000;
+        state.runtime_limits = crate::transfer::RuntimeLimits::from_served(&limits).unwrap();
+        state.transfer_pool = crate::transfer::TransferPool::from_runtime(&state.runtime_limits);
+
+        tokio::time::pause();
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        send_file_read(&mut client, 11, &request).await;
+        let Message::Binary(open) = client.next().await.unwrap().unwrap() else {
+            panic!("expected OPEN");
+        };
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        client
+            .send(Message::Binary(
+                stream_wire(0x03, 11, open.identity.stream_id().get(), 0, 0).into(),
+            ))
+            .await
+            .unwrap();
+
+        tokio::time::advance(std::time::Duration::from_millis(600_000)).await;
+        tokio::task::yield_now().await;
+        client
+            .send(Message::Text(
+                r#"{"id":12,"op":"room.list","in":{}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(reply) = client.next().await.unwrap().unwrap() else {
+            panic!("active transfer lost to ordinary idle timeout");
+        };
+        let reply: jeliya_codec::Reply = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply.id, 12);
+        drop(client);
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("disconnect cleanup")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
     }
 }

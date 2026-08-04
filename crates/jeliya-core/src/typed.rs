@@ -80,7 +80,7 @@ use iroh_rooms::room::{MembershipSnapshot, RoomId as IrohRoomId};
 
 use crate::error::{CoreError, CoreResult, ErrorKind};
 use crate::projection::{self as proj, file_handle, Departures};
-use crate::supervisor::{RemoveMemberOutcome, RoomSupervisor};
+use crate::supervisor::{LocalFile as ResolvedLocalFile, RemoveMemberOutcome, RoomSupervisor};
 
 /// The daemon's served limits, surfaced in `hello`/`VersionInfo` and enforced
 /// here. Values are the record's served-limits object; the shared-file maximum
@@ -1683,29 +1683,41 @@ impl<'a> TypedSupervisor<'a> {
         ctx: &RoomContext,
         req: &FileRead,
     ) -> Result<FileReadOut, ApiError> {
+        self.resolve_file_read(ctx, req).map(|(out, _local)| out)
+    }
+
+    /// Resolve one authorized `file.read` into its protocol metadata and its
+    /// host-private local source in a single signed-index/local-state pass.
+    fn resolve_file_read(
+        &self,
+        ctx: &RoomContext,
+        req: &FileRead,
+    ) -> Result<(FileReadOut, ResolvedLocalFile), ApiError> {
         let unknown = || ApiError::FileUnknown {
             file_id: req.file_id.clone(),
         };
         let file_id = Self::parse_file(&req.file_id).map_err(|_| unknown())?;
-        {
+        let shared = {
             let store = self
                 .sup
                 .open_store()
                 .map_err(|_| ApiError::FileIndexUnreadable)?;
-            let shared = store
+            store
                 .by_type(&ctx.room_id, EventType::FileShared)
                 .map_err(|_| ApiError::FileIndexUnreadable)?
                 .iter()
                 .filter_map(|se| SignedEvent::decode(&se.wire.signed).ok())
-                .any(|ev| matches!(ev.content, Content::FileShared(f) if f.file_id == file_id));
-            if !shared {
-                return Err(unknown());
-            }
-        }
+                .find_map(|ev| match ev.content {
+                    Content::FileShared(file) if file.file_id == file_id => Some(file),
+                    _ => None,
+                })
+        };
+        let Some(shared) = shared else {
+            return Err(unknown());
+        };
         let local = self
             .sup
-            .local_file(req.room_id.as_ref(), req.file_id.as_str())
-            .await
+            .local_file_for_shared(&ctx.room_id, &file_id, req.file_id.as_str(), &shared)
             .map_err(|error| match error.kind {
                 // The share exists, so the only remaining cause is that this
                 // daemon holds no bytes for it.
@@ -1714,12 +1726,13 @@ impl<'a> TypedSupervisor<'a> {
                 },
                 _ => core_to_api_room(error, &req.room_id),
             })?;
-        Ok(FileReadOut {
+        let out = FileReadOut {
             room_id: req.room_id.clone(),
             file_id: req.file_id.clone(),
             bytes: local.bytes,
-            declared_content_type: local.mime,
-        })
+            declared_content_type: local.mime.clone(),
+        };
+        Ok((out, local))
     }
 
     /// `transfer.cancel` — cancel a transfer by the `op_id` that started it.
@@ -2797,9 +2810,58 @@ fn requires_authority(call: &TypedCall) -> bool {
     )
 }
 
+/// Run the shared validation-order stages that precede one operation's
+/// semantics and resolve its optional room context.
+async fn validated_context(
+    t: &TypedSupervisor<'_>,
+    call: &TypedCall,
+) -> Result<Option<RoomContext>, ApiError> {
+    // Step 1 — structural decode and bounds, for every operation.
+    validate_structure(call)?;
+
+    // Step 2 — subject precondition. `subject_absent` outranks
+    // `room_not_available` and every later stage, so a subject-less caller can
+    // never use error-code selection as a room probe.
+    //
+    // `subject.ensure` skips the stage because it exists to create a subject.
+    // `daemon.stop` also skips it because the engine sequences its effect
+    // before dispatch and a refusal that still stopped the daemon would lie.
+    let skips_subject = matches!(call, TypedCall::SubjectEnsure(_) | TypedCall::DaemonStop(_));
+    if !skips_subject && !t.subject_present()? {
+        return Err(ApiError::SubjectAbsent);
+    }
+
+    // Step 3 — dedup lives in `Engine::execute_with`. `file.read` is not in
+    // that class, so its preparation path proceeds directly to room access.
+
+    // Steps 4, 5, and 6 — room index, standing, role — in that order.
+    match request_room(call) {
+        Some(api_room) => Ok(Some(
+            t.room_context(api_room, standing_exempt(call), requires_authority(call))
+                .await?,
+        )),
+        None => Ok(None),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The typed dispatch table (the engine's v2 surface)
 // ---------------------------------------------------------------------------
+
+/// Prepare one `file.read` through the same validation and authorization path
+/// as ordinary typed dispatch, returning metadata and one private local source.
+pub(crate) async fn prepare_file_read(
+    sup: &RoomSupervisor,
+    req: &FileRead,
+) -> Result<(FileReadOut, ResolvedLocalFile), ApiError> {
+    let call = TypedCall::FileRead(req.clone());
+    let t = TypedSupervisor::new(sup);
+    let ctx = validated_context(&t, &call).await?;
+    let room = ctx
+        .as_ref()
+        .expect("file.read always resolves one room context");
+    t.resolve_file_read(room, req)
+}
 
 /// One typed operation in, its typed output out, or a typed error. This is
 /// the engine's v2 dispatch seam: the codec hands a decoded [`Call`] here and
@@ -2813,47 +2875,7 @@ pub(crate) async fn dispatch(
     call: TypedCall,
 ) -> Result<TypedReply, ApiError> {
     let t = TypedSupervisor::new(sup);
-
-    // Step 1 — structural decode and bounds, for every operation.
-    validate_structure(&call)?;
-
-    // Step 2 — subject precondition. `subject_absent` outranks
-    // `room_not_available` and every later stage, so a subject-less caller can
-    // never use error-code selection as a room probe.
-    //
-    // Two operations skip it, and the stage table's own rule is why: a stage
-    // "runs only where its precondition is meaningful". `subject.ensure` skips
-    // it because it exists to create the subject. `daemon.stop` skips it
-    // because its precondition is a running daemon, not a local subject — it
-    // reads and writes no subject state, and `daemon_stop_does_not_require_a_
-    // subject` in the corpus settles that it must succeed on a fresh daemon.
-    //
-    // Refusing it here would also be a **refusal that still acts**: the stop is
-    // sequenced by `Engine::execute_with` before dispatch runs (the reply must
-    // flush before teardown), so a step-2 refusal would tell the client the
-    // operation failed while the daemon exited anyway. The record's stage table
-    // names only `subject.ensure`, and this second exemption is recorded as a
-    // divergence on #165 rather than left as a contradiction between the reply
-    // and the effect.
-    let skips_subject = matches!(call, TypedCall::SubjectEnsure(_) | TypedCall::DaemonStop(_));
-    if !skips_subject && !t.subject_present()? {
-        return Err(ApiError::SubjectAbsent);
-    }
-
-    // Step 3 — dedup. It lives in `Engine::execute_with`, which consults the
-    // ledger after running steps 1 and 2 and before calling this function, so a
-    // structurally invalid or subject-less request never binds an `op_id` to a
-    // refusal a corrected retry would then replay.
-
-    // Steps 4, 5, and 6 — room index, standing, role — for every operation
-    // whose `in` carries a `room_id`, in one place with one ordering.
-    let ctx = match request_room(&call) {
-        Some(api_room) => Some(
-            t.room_context(api_room, standing_exempt(&call), requires_authority(&call))
-                .await?,
-        ),
-        None => None,
-    };
+    let ctx = validated_context(&t, &call).await?;
     // Every room-bearing arm below unwraps this; `request_room` and the match
     // are the same total enumeration, so the two cannot drift apart without a
     // compile error in `request_room`'s exhaustive match.

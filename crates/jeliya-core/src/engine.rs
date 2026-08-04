@@ -16,14 +16,18 @@
 //! any frame is parsed or any dispatch occurs.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jeliya_api::{
-    ApiError, FileRead, FileShare, FileShareOut, OpId, PeerRow, Push, RoomId, SubjectState,
+    ApiError, FileRead, FileReadOut, FileShare, FileShareOut, OpId, PeerRow, Push, RoomId,
+    SubjectState,
 };
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -81,6 +85,210 @@ pub struct LocalFile {
     pub declared_content_type: String,
     /// Verified byte count.
     pub bytes: u64,
+}
+
+/// The result of preparing one protocol-v2 `file.read` operation.
+///
+/// `out` is the eventual terminal reply body. `source` is deliberately still
+/// unopened: the connection runtime can reserve both served transfer limits
+/// and start its absolute deadline before it performs source setup. The source
+/// contains no public path or random-access API.
+pub struct PreparedFileRead {
+    /// Metadata returned only after the byte stream reaches its terminal END.
+    pub out: FileReadOut,
+    /// The resolved, unopened, sequential byte source.
+    pub source: FileReadSource,
+}
+
+/// A resolved but unopened `file.read` source.
+///
+/// The filesystem path is intentionally private. Opening consumes this handle,
+/// so it cannot be cloned, reopened, seeked, or used as resumability state.
+pub struct FileReadSource {
+    path: PathBuf,
+    expected_bytes: u64,
+}
+
+/// An opened, forward-only `file.read` source.
+///
+/// The only read operation is chunk-bounded and advances one private cursor.
+/// There is no path, seek, clone, or inner-reader escape hatch.
+pub struct OpenFileReadSource {
+    reader: Box<dyn AsyncRead + Send + Unpin>,
+    expected_bytes: u64,
+    cursor: u64,
+}
+
+/// A local source failure detected while opening or incrementally reading a
+/// prepared `file.read`.
+#[derive(Debug)]
+pub enum FileReadSourceError {
+    /// The resolved source could not be opened or inspected.
+    OpenFailed(std::io::Error),
+    /// The opened object is no longer a regular file.
+    NotAFile,
+    /// The opened file's current count disagrees with the verified count.
+    SizeChanged {
+        /// Count verified during preparation.
+        expected: u64,
+        /// Count observed from the opened file handle.
+        observed: u64,
+    },
+    /// EOF arrived before the verified count was produced.
+    Truncated,
+    /// An incremental source read failed for a reason other than early EOF.
+    ReadFailed(std::io::Error),
+    /// The source produced a byte after the verified count.
+    Grew,
+    /// Exact-EOF verification was requested before all verified bytes were read.
+    Incomplete {
+        /// Count the source was required to produce.
+        expected: u64,
+        /// Count read through the bounded source API.
+        observed: u64,
+    },
+    /// Private cursor arithmetic was inconsistent or unrepresentable.
+    Arithmetic,
+}
+
+impl fmt::Display for FileReadSourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenFailed(error) => write!(f, "could not open the prepared file source: {error}"),
+            Self::NotAFile => f.write_str("the prepared file source is not a regular file"),
+            Self::SizeChanged { expected, observed } => write!(
+                f,
+                "the prepared file source changed size (expected {expected}, observed {observed})"
+            ),
+            Self::Truncated => f.write_str("the prepared file source ended before its verified count"),
+            Self::ReadFailed(error) => write!(f, "the prepared file source read failed: {error}"),
+            Self::Grew => f.write_str("the prepared file source grew beyond its verified count"),
+            Self::Incomplete { expected, observed } => write!(
+                f,
+                "exact EOF was checked before the verified count (expected {expected}, observed {observed})"
+            ),
+            Self::Arithmetic => f.write_str("the prepared file source cursor is inconsistent"),
+        }
+    }
+}
+
+impl std::error::Error for FileReadSourceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::OpenFailed(error) | Self::ReadFailed(error) => Some(error),
+            Self::NotAFile
+            | Self::SizeChanged { .. }
+            | Self::Truncated
+            | Self::Grew
+            | Self::Incomplete { .. }
+            | Self::Arithmetic => None,
+        }
+    }
+}
+
+/// The protocol's absolute DATA payload ceiling. The connection runtime also
+/// applies the smaller served-frame, credit, and outbound-byte-permit bounds
+/// before asking the source for a chunk.
+const FILE_READ_CHUNK_MAX: usize = 65_536;
+
+impl FileReadSource {
+    /// Open the resolved source and revalidate its type and byte count through
+    /// the opened handle. Consuming `self` prevents reopening it as an implicit
+    /// resume mechanism.
+    pub async fn open(self) -> Result<OpenFileReadSource, FileReadSourceError> {
+        let file = tokio::fs::File::open(self.path)
+            .await
+            .map_err(FileReadSourceError::OpenFailed)?;
+        let metadata = file
+            .metadata()
+            .await
+            .map_err(FileReadSourceError::OpenFailed)?;
+        if !metadata.is_file() {
+            return Err(FileReadSourceError::NotAFile);
+        }
+        let observed = metadata.len();
+        if observed != self.expected_bytes {
+            return Err(FileReadSourceError::SizeChanged {
+                expected: self.expected_bytes,
+                observed,
+            });
+        }
+        Ok(OpenFileReadSource {
+            reader: Box::new(file),
+            expected_bytes: self.expected_bytes,
+            cursor: 0,
+        })
+    }
+}
+
+impl OpenFileReadSource {
+    /// Read the next contiguous source bytes.
+    ///
+    /// The returned chunk is nonempty and at most both `max_bytes` and 65,536
+    /// bytes. `None` means the verified count has been read; callers must still
+    /// consume the source with [`Self::verify_eof`] before sending END.
+    /// Callers must retain each read future through completion or discard the
+    /// source with it; cancelling a partially polled read and then resuming the
+    /// same source is deliberately not a checkpoint/resume API.
+    pub async fn read_chunk(
+        &mut self,
+        max_bytes: NonZeroUsize,
+    ) -> Result<Option<Vec<u8>>, FileReadSourceError> {
+        let remaining = self
+            .expected_bytes
+            .checked_sub(self.cursor)
+            .ok_or(FileReadSourceError::Arithmetic)?;
+        if remaining == 0 {
+            return Ok(None);
+        }
+        let requested = u64::try_from(max_bytes.get()).unwrap_or(u64::MAX);
+        let chunk_bytes = remaining.min(requested).min(FILE_READ_CHUNK_MAX as u64);
+        let chunk_len =
+            usize::try_from(chunk_bytes).map_err(|_| FileReadSourceError::Arithmetic)?;
+        let mut chunk = vec![0; chunk_len];
+        if let Err(error) = self.reader.read_exact(&mut chunk).await {
+            return if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                Err(FileReadSourceError::Truncated)
+            } else {
+                Err(FileReadSourceError::ReadFailed(error))
+            };
+        }
+        self.cursor = self
+            .cursor
+            .checked_add(chunk_bytes)
+            .ok_or(FileReadSourceError::Arithmetic)?;
+        Ok(Some(chunk))
+    }
+
+    /// Consume the source and prove that EOF occurs exactly at the verified
+    /// count. A byte beyond that point reports growth/count disagreement; an
+    /// error while probing remains a source read failure.
+    pub async fn verify_eof(mut self) -> Result<(), FileReadSourceError> {
+        if self.cursor != self.expected_bytes {
+            return Err(FileReadSourceError::Incomplete {
+                expected: self.expected_bytes,
+                observed: self.cursor,
+            });
+        }
+        let mut probe = [0_u8; 1];
+        match self.reader.read(&mut probe).await {
+            Ok(0) => Ok(()),
+            Ok(_) => Err(FileReadSourceError::Grew),
+            Err(error) => Err(FileReadSourceError::ReadFailed(error)),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_test_reader(
+        reader: impl AsyncRead + Send + Unpin + 'static,
+        expected_bytes: u64,
+    ) -> Self {
+        Self {
+            reader: Box::new(reader),
+            expected_bytes,
+            cursor: 0,
+        }
+    }
 }
 
 /// Whether `op` is in the record's **`op_id`-deduplicated** class: the
@@ -265,6 +473,24 @@ impl Engine {
             name: file.name,
             declared_content_type: file.mime,
             bytes: file.bytes,
+        })
+    }
+
+    /// Validate and authorize one protocol-v2 `file.read`, resolve its local
+    /// copy once, and return terminal metadata plus an opaque unopened source.
+    ///
+    /// Keeping the source unopened lets the connection runtime reserve its
+    /// transfer count and logical-byte capacity, and start the absolute
+    /// deadline, before source setup. Opening consumes the source and exposes
+    /// no filesystem path.
+    pub async fn prepare_file_read(&self, req: &FileRead) -> Result<PreparedFileRead, ApiError> {
+        let (out, local) = typed::prepare_file_read(&self.supervisor, req).await?;
+        Ok(PreparedFileRead {
+            source: FileReadSource {
+                path: local.path,
+                expected_bytes: local.bytes,
+            },
+            out,
         })
     }
 
@@ -736,7 +962,33 @@ async fn typed_peer_rows(engine: &Engine, room_id: &iroh_rooms::room::RoomId) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use tempfile::TempDir;
+    use tokio::io::ReadBuf;
+
+    struct FailingReader;
+
+    impl AsyncRead for FailingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::other("injected read failure")))
+        }
+    }
+
+    fn nonzero(value: usize) -> NonZeroUsize {
+        NonZeroUsize::new(value).expect("test read bound is nonzero")
+    }
+
+    async fn open_source(source: FileReadSource) -> OpenFileReadSource {
+        match source.open().await {
+            Ok(source) => source,
+            Err(error) => panic!("source should open: {error}"),
+        }
+    }
 
     fn test_engine(dir: &TempDir) -> Arc<Engine> {
         let (shutdown_tx, _shutdown_rx) = mpsc::channel(4);
@@ -763,6 +1015,211 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_read_source_handles_zero_one_and_bounded_multiple_chunks() {
+        let dir = TempDir::new().expect("tempdir");
+
+        let zero_path = dir.path().join("zero.bin");
+        std::fs::write(&zero_path, []).expect("write zero-byte source");
+        let mut zero = open_source(FileReadSource {
+            path: zero_path,
+            expected_bytes: 0,
+        })
+        .await;
+        assert!(zero
+            .read_chunk(nonzero(1))
+            .await
+            .expect("zero read")
+            .is_none());
+        zero.verify_eof().await.expect("zero-byte exact EOF");
+
+        let one_path = dir.path().join("one.bin");
+        std::fs::write(&one_path, [0x7a]).expect("write one-byte source");
+        let mut one = open_source(FileReadSource {
+            path: one_path,
+            expected_bytes: 1,
+        })
+        .await;
+        assert_eq!(
+            one.read_chunk(nonzero(FILE_READ_CHUNK_MAX))
+                .await
+                .expect("one-byte read")
+                .expect("one-byte chunk"),
+            vec![0x7a]
+        );
+        assert!(one
+            .read_chunk(nonzero(1))
+            .await
+            .expect("one-byte completion")
+            .is_none());
+        one.verify_eof().await.expect("one-byte exact EOF");
+
+        let payload: Vec<u8> = (0..FILE_READ_CHUNK_MAX + 17)
+            .map(|offset| (offset % 251) as u8)
+            .collect();
+        let multi_path = dir.path().join("multi.bin");
+        std::fs::write(&multi_path, &payload).expect("write multi-chunk source");
+        let mut multi = open_source(FileReadSource {
+            path: multi_path,
+            expected_bytes: payload.len() as u64,
+        })
+        .await;
+        let first = multi
+            .read_chunk(nonzero(usize::MAX))
+            .await
+            .expect("first bounded read")
+            .expect("first chunk");
+        assert_eq!(first.len(), FILE_READ_CHUNK_MAX);
+        assert_eq!(first, payload[..FILE_READ_CHUNK_MAX]);
+        let second = multi
+            .read_chunk(nonzero(usize::MAX))
+            .await
+            .expect("second bounded read")
+            .expect("second chunk");
+        assert_eq!(second, payload[FILE_READ_CHUNK_MAX..]);
+        assert!(multi
+            .read_chunk(nonzero(usize::MAX))
+            .await
+            .expect("multi completion")
+            .is_none());
+        multi.verify_eof().await.expect("multi exact EOF");
+    }
+
+    #[tokio::test]
+    async fn file_read_source_revalidates_opened_type_and_count() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("changed.bin");
+        std::fs::write(&path, b"three").expect("write source");
+        let size_error = match (FileReadSource {
+            path: path.clone(),
+            expected_bytes: 4,
+        })
+        .open()
+        .await
+        {
+            Ok(_) => panic!("a changed count must fail open"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            size_error,
+            FileReadSourceError::SizeChanged {
+                expected: 4,
+                observed: 5
+            }
+        ));
+
+        std::fs::remove_file(&path).expect("remove source before open");
+        let open_error = match (FileReadSource {
+            path,
+            expected_bytes: 5,
+        })
+        .open()
+        .await
+        {
+            Ok(_) => panic!("a missing source must fail open"),
+            Err(error) => error,
+        };
+        assert!(matches!(open_error, FileReadSourceError::OpenFailed(_)));
+
+        let directory_error = match (FileReadSource {
+            path: dir.path().to_path_buf(),
+            expected_bytes: 0,
+        })
+        .open()
+        .await
+        {
+            Ok(_) => panic!("a directory must not become a file source"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            directory_error,
+            FileReadSourceError::NotAFile | FileReadSourceError::OpenFailed(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_read_source_detects_truncation_growth_and_read_failure() {
+        let dir = TempDir::new().expect("tempdir");
+
+        let truncated_path = dir.path().join("truncated.bin");
+        std::fs::write(&truncated_path, b"12345678").expect("write source");
+        let mut truncated = open_source(FileReadSource {
+            path: truncated_path.clone(),
+            expected_bytes: 8,
+        })
+        .await;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&truncated_path)
+            .expect("open source for truncation")
+            .set_len(3)
+            .expect("truncate source");
+        let error = truncated
+            .read_chunk(nonzero(8))
+            .await
+            .expect_err("early EOF is truncation");
+        assert!(matches!(error, FileReadSourceError::Truncated));
+
+        let grown_path = dir.path().join("grown.bin");
+        std::fs::write(&grown_path, b"abc").expect("write source");
+        let mut grown = open_source(FileReadSource {
+            path: grown_path.clone(),
+            expected_bytes: 3,
+        })
+        .await;
+        assert_eq!(
+            grown
+                .read_chunk(nonzero(3))
+                .await
+                .expect("read verified bytes")
+                .expect("verified chunk"),
+            b"abc"
+        );
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&grown_path)
+            .expect("open source for growth")
+            .write_all(b"d")
+            .expect("grow source");
+        let error = grown
+            .verify_eof()
+            .await
+            .expect_err("a byte past the count is growth");
+        assert!(matches!(error, FileReadSourceError::Grew));
+
+        let mut failing = OpenFileReadSource::from_test_reader(FailingReader, 1);
+        let error = failing
+            .read_chunk(nonzero(1))
+            .await
+            .expect_err("injected failure must surface");
+        assert!(matches!(error, FileReadSourceError::ReadFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn file_read_source_checks_cursor_and_consuming_completion() {
+        let mut inconsistent = OpenFileReadSource::from_test_reader(tokio::io::empty(), 0);
+        inconsistent.cursor = 1;
+        let error = inconsistent
+            .read_chunk(nonzero(1))
+            .await
+            .expect_err("cursor subtraction must not wrap");
+        assert!(matches!(error, FileReadSourceError::Arithmetic));
+
+        let incomplete = OpenFileReadSource::from_test_reader(tokio::io::empty(), 1);
+        let error = incomplete
+            .verify_eof()
+            .await
+            .expect_err("completion before the verified count must fail");
+        assert!(matches!(
+            error,
+            FileReadSourceError::Incomplete {
+                expected: 1,
+                observed: 0
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn room_list_before_identity_is_subject_absent() {
         let dir = TempDir::new().expect("tempdir");
         let engine = test_engine(&dir);
@@ -785,6 +1242,98 @@ mod tests {
             .reply
             .expect("subject.ensure");
         engine
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepared_file_read_matches_metadata_dispatch_and_preserves_host_file_api() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let created = engine
+            .execute(TypedCall::RoomCreate(jeliya_api::RoomCreate {
+                name: "Prepared read".into(),
+            }))
+            .await
+            .reply
+            .expect("room.create");
+        let TypedReply::RoomCreate(created) = created else {
+            panic!("wrong room.create reply");
+        };
+        engine
+            .supervisor
+            .open_room(created.room_id.as_str(), &[])
+            .await
+            .expect("open room for host-staged share");
+
+        let bytes = b"prepared bytes";
+        let staged_path = dir.path().join("payload.bin");
+        std::fs::write(&staged_path, bytes).expect("write staged bytes");
+        let shared = engine
+            .supervisor
+            .share_file(
+                created.room_id.as_str(),
+                staged_path.to_str().expect("utf-8 temp path"),
+                Some("payload.bin"),
+                Some("text/plain"),
+            )
+            .await
+            .expect("host-staged share");
+        let downloads = dir.path().join("downloads");
+        std::fs::create_dir_all(&downloads).expect("create downloads");
+        let local_path = downloads.join("payload.bin");
+        std::fs::write(&local_path, bytes).expect("write local verified copy");
+
+        let request = FileRead {
+            room_id: created.room_id.clone(),
+            file_id: jeliya_api::FileId::new(shared.file_id),
+        };
+        let ordinary = engine
+            .execute(TypedCall::FileRead(request.clone()))
+            .await
+            .reply
+            .expect("ordinary metadata-only file.read");
+        let TypedReply::FileRead(ordinary) = ordinary else {
+            panic!("wrong file.read reply");
+        };
+        let prepared = engine
+            .prepare_file_read(&request)
+            .await
+            .expect("prepare file.read");
+        assert_eq!(prepared.out, ordinary);
+        assert_eq!(prepared.out.bytes, bytes.len() as u64);
+        assert_eq!(prepared.out.declared_content_type, "text/plain");
+
+        let mut source = open_source(prepared.source).await;
+        assert_eq!(
+            source
+                .read_chunk(nonzero(4))
+                .await
+                .expect("first incremental read")
+                .expect("first source chunk"),
+            &bytes[..4]
+        );
+        assert_eq!(
+            source
+                .read_chunk(nonzero(usize::MAX))
+                .await
+                .expect("remaining incremental read")
+                .expect("remaining source chunk"),
+            &bytes[4..]
+        );
+        source.verify_eof().await.expect("exact source EOF");
+
+        let host_file = engine
+            .local_file(&request)
+            .await
+            .expect("existing host local_file API remains available");
+        assert_eq!(host_file.path, local_path);
+        assert_eq!(host_file.name, "payload.bin");
+        assert_eq!(host_file.declared_content_type, "text/plain");
+        assert_eq!(host_file.bytes, bytes.len() as u64);
+        engine
+            .supervisor
+            .close_room(created.room_id.as_str())
+            .await
+            .expect("close room");
     }
 
     #[tokio::test]
