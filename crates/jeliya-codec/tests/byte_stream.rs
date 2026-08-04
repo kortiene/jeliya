@@ -1,10 +1,10 @@
 //! Spec-authored protocol-v2 Binary-record vectors and structural boundaries.
 
 use jeliya_codec::{
-    decode_stream_identity, decode_stream_record, encode_stream_record, max_stream_data_bytes,
-    BinaryAbortReason, CodecBounds, StreamCodecError, StreamHeaderField, StreamIdentity,
-    StreamRecord, StreamRecordBody, StreamRecordKind, MAX_REQUEST_ID, MAX_STREAM_DATA_BYTES,
-    STREAM_HEADER_BYTES,
+    decode_stream_identity, decode_stream_kind, decode_stream_record, encode_stream_record,
+    max_stream_data_bytes, BinaryAbortReason, CodecBounds, StreamCodecError, StreamHeaderField,
+    StreamIdentity, StreamRecord, StreamRecordBody, StreamRecordKind, MAX_REQUEST_ID,
+    MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
 };
 
 const REQUEST_ID: u64 = 0x0001_0203_0405_0607;
@@ -385,6 +385,128 @@ fn identity_can_be_validated_before_binding_and_body_parsing() {
         );
         assert!(decode_stream_record(&bytes, &bounds(1024)).is_err());
     }
+}
+
+#[test]
+fn kind_can_be_checked_after_binding_before_reserved_value_or_payload_rules() {
+    let bounds = bounds(1024);
+
+    // The kind vocabulary is checked only after the structurally trustworthy
+    // identity is available for the runtime's exact-pair lookup.
+    let unknown = wire(0xff, REQUEST_ID, STREAM_ID, 0, 0, &[]);
+    assert_eq!(
+        decode_stream_identity(&unknown, &bounds).unwrap(),
+        StreamIdentity::new(REQUEST_ID, STREAM_ID).unwrap()
+    );
+    assert_eq!(
+        decode_stream_kind(&unknown, &bounds),
+        Err(StreamCodecError::UnknownKind { kind: 0xff })
+    );
+
+    // Reserved bytes are deliberately deferred to the full decoder.
+    let mut bad_reserved = wire(0x03, REQUEST_ID, STREAM_ID, 0, 1, &[]);
+    bad_reserved[5] = 1;
+    assert_eq!(
+        decode_stream_kind(&bad_reserved, &bounds),
+        Ok(StreamRecordKind::Credit)
+    );
+    assert_eq!(
+        decode_stream_record(&bad_reserved, &bounds),
+        Err(StreamCodecError::ReservedBytesNonzero)
+    );
+
+    // Kind-specific fixed-field validation is also deliberately deferred.
+    let bad_value = wire(0x02, REQUEST_ID, STREAM_ID, 0, 1, &[0xaa]);
+    assert_eq!(
+        decode_stream_kind(&bad_value, &bounds),
+        Ok(StreamRecordKind::Data)
+    );
+    assert!(matches!(
+        decode_stream_record(&bad_value, &bounds),
+        Err(StreamCodecError::InvalidField {
+            kind: StreamRecordKind::Data,
+            field: StreamHeaderField::Value,
+            ..
+        })
+    ));
+
+    // Payload rules are deferred as well: this is still recognizably OPEN at
+    // the kind stage even though OPEN may not carry a payload.
+    let bad_payload = wire(0x01, REQUEST_ID, STREAM_ID, 0, 1, &[0xaa]);
+    assert_eq!(
+        decode_stream_kind(&bad_payload, &bounds),
+        Ok(StreamRecordKind::Open)
+    );
+    assert_eq!(
+        decode_stream_record(&bad_payload, &bounds),
+        Err(StreamCodecError::UnexpectedPayload {
+            kind: StreamRecordKind::Open,
+            payload_bytes: 1,
+        })
+    );
+}
+
+#[test]
+fn kind_stage_preserves_size_header_magic_and_identity_precedence() {
+    let bounds = bounds(64);
+
+    let mut oversized = vec![0; 65];
+    oversized[4] = 0xff;
+    assert_eq!(
+        decode_stream_kind(&oversized, &bounds),
+        Err(StreamCodecError::FrameTooLarge {
+            actual_bytes: 65,
+            limit_bytes: 64,
+        })
+    );
+
+    let short = [0_u8; STREAM_HEADER_BYTES - 1];
+    assert_eq!(
+        decode_stream_kind(&short, &bounds),
+        Err(StreamCodecError::HeaderTooShort {
+            actual_bytes: STREAM_HEADER_BYTES - 1,
+        })
+    );
+
+    let bad_magic = wire(0xff, REQUEST_ID, STREAM_ID, 0, 0, &[]);
+    let mut bad_magic = bad_magic;
+    bad_magic[..4].copy_from_slice(b"NOPE");
+    assert_eq!(
+        decode_stream_kind(&bad_magic, &bounds),
+        Err(StreamCodecError::BadMagic)
+    );
+
+    let bad_request_id = wire(0xff, MAX_REQUEST_ID + 1, STREAM_ID, 0, 0, &[]);
+    assert_eq!(
+        decode_stream_kind(&bad_request_id, &bounds),
+        Err(StreamCodecError::RequestIdOutOfRange {
+            request_id: MAX_REQUEST_ID + 1,
+        })
+    );
+
+    let zero_stream_id = wire(0xff, REQUEST_ID, 0, 0, 0, &[]);
+    assert_eq!(
+        decode_stream_kind(&zero_stream_id, &bounds),
+        Err(StreamCodecError::ZeroStreamId)
+    );
+}
+
+#[test]
+fn kind_stage_recognizes_data_without_materializing_its_payload() {
+    // The complete message lives on the stack, and the staged result is only a
+    // Copy kind enum: no owned DATA body exists until the full decoder is
+    // deliberately invoked after runtime state/direction validation.
+    let mut bytes = [0_u8; STREAM_HEADER_BYTES + 1];
+    bytes[..4].copy_from_slice(b"JBS2");
+    bytes[4] = 0x02;
+    bytes[8..16].copy_from_slice(&REQUEST_ID.to_be_bytes());
+    bytes[16..32].copy_from_slice(&STREAM_ID.to_be_bytes());
+    bytes[STREAM_HEADER_BYTES] = 0xaa;
+
+    assert_eq!(
+        decode_stream_kind(&bytes, &bounds(bytes.len())),
+        Ok(StreamRecordKind::Data)
+    );
 }
 
 #[test]

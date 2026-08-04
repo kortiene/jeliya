@@ -2103,6 +2103,7 @@ dependencies = [
 name = "jeliyad"
 version = "0.6.1"
 dependencies = [
+ "blake3",
  "clap",
  "dirs",
  "fd-lock",

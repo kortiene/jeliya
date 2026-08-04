@@ -353,12 +353,32 @@ pub fn decode_stream_identity(
     StreamIdentity::new(request_id, stream_id)
 }
 
+/// Validates one complete Binary message through its closed record kind.
+///
+/// Stateful runtimes call [`decode_stream_identity`] first, look up the exact
+/// active `(request id, stream id)` pair, and only then call this helper. The
+/// returned kind lets the runtime enforce stream state and sender direction
+/// before [`decode_stream_record`] validates reserved bytes, fixed fields, and
+/// payload rules. This helper deliberately repeats the size, header, magic, and
+/// structural-identity checks so it is also safe to call independently.
+///
+/// No payload byte is inspected or allocated by this stage, including for a
+/// DATA record.
+pub fn decode_stream_kind(
+    bytes: &[u8],
+    bounds: &CodecBounds,
+) -> Result<StreamRecordKind, StreamCodecError> {
+    decode_stream_identity(bytes, bounds)?;
+    StreamRecordKind::from_wire(bytes[4])
+}
+
 /// Decodes one complete Binary message into a typed byte-stream record.
 ///
 /// No allocation occurs until every header field and payload bound has been
 /// validated. The only input-dependent allocation is a DATA payload capped at
 /// 65,536 bytes. Stateful runtimes must retain the result of
-/// [`decode_stream_identity`] and perform active binding lookup before calling
+/// [`decode_stream_identity`], perform active binding lookup, call
+/// [`decode_stream_kind`] for direction/state validation, and only then call
 /// this full structural decoder.
 pub fn decode_stream_record(
     bytes: &[u8],
