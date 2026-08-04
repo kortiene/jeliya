@@ -5,7 +5,7 @@
 
 use crate::error::CodecError;
 use crate::routing;
-use crate::CodecBounds;
+use crate::{CodecBounds, MAX_REQUEST_ID};
 use jeliya_api::{ApiError, OpId, Operation, Push};
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +122,11 @@ pub(crate) fn decode_frame(bytes: &[u8], bounds: &CodecBounds) -> Result<Frame, 
             return Err(CodecError::UnrecoverableId("frame carries no id".into()));
         }
     };
+    if id > MAX_REQUEST_ID {
+        return Err(CodecError::UnrecoverableId(format!(
+            "frame id exceeds the browser-safe maximum {MAX_REQUEST_ID}"
+        )));
+    }
 
     // A frame with `t` is a push; pushes do not flow client-to-daemon. Its
     // id is already known usable, so this is the correlated path.
@@ -190,7 +195,7 @@ fn recover_id(bytes: &[u8]) -> Option<u64> {
     let end = rest
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(rest.len());
-    rest[..end].parse().ok()
+    rest[..end].parse().ok().filter(|id| *id <= MAX_REQUEST_ID)
 }
 
 /// Walks a decoded value enforcing depth and array-length bounds.

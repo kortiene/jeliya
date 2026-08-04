@@ -1,5 +1,5 @@
-//! Protocol-v2 JSON/WebSocket codec — the edge between wire frames and
-//! `jeliya-api` types.
+//! Protocol-v2 Text/Binary WebSocket codec — the edge between wire messages
+//! and `jeliya-api` types.
 //!
 //! The codec owns the protocol's *only* JSON. Everything wire-side of this
 //! crate is bytes; everything domain-side is a typed `jeliya-api` value. No
@@ -19,7 +19,10 @@
 //!    into its `jeliya-api` request type; an unknown `op` is
 //!    `unknown_operation`, and an unknown request field is
 //!    `invalid_argument` with `unrecognised_field`.
-//! 4. **Bounded malformed-input handling** — a frame whose `id` cannot be
+//! 4. **Typed Binary stream records** — the exact 48-byte `JBS2` header and
+//!    closed OPEN/DATA/CREDIT/END/ABORT/ACK bodies are encoded and decoded
+//!    with bounded allocation and checked arithmetic.
+//! 5. **Bounded malformed-input handling** — a frame whose `id` cannot be
 //!    recovered closes `4007` (`malformed_frame`); a frame that decodes far
 //!    enough to correlate always gets a correlated error reply instead, so
 //!    one bad request never strands the others in flight.
@@ -40,16 +43,23 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod byte_stream;
 mod error;
 mod frame;
 mod gate;
 mod routing;
 
+pub use byte_stream::{
+    decode_stream_identity, decode_stream_record, encode_stream_record, max_stream_data_bytes,
+    BinaryAbortReason, StreamCodecError, StreamHeaderField, StreamIdentity, StreamRecord,
+    StreamRecordBody, StreamRecordKind, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
+};
 pub use error::{CodecError, GateRejection};
 pub use frame::push_to_bytes;
 pub use frame::{Frame, Reply, Request};
 pub use gate::{gate, GateDecision, GateParams, SessionPrincipal};
 
+pub use jeliya_api::MAX_REQUEST_ID;
 use jeliya_api::{ApiError, Operation};
 
 /// The protocol generation this codec speaks. One generation at a time.

@@ -201,6 +201,10 @@ pub enum ErrorCode {
     DigestMismatch,
     /// No forward progress within `transfer_stall_ms`.
     TransferStalled,
+    /// The size-aware absolute transfer budget expired.
+    TransferDeadlineExceeded,
+    /// An admitted transfer ended without a more specific operation error.
+    StreamAborted,
     /// No such transfer for this principal.
     TransferUnknown,
 
@@ -507,6 +511,24 @@ pub enum ApiError {
         transferred_bytes: u64,
         /// The total, or genuinely unknown.
         total: ByteTotal,
+    },
+    /// The size-aware absolute transfer budget expired.
+    TransferDeadlineExceeded {
+        /// Bytes transferred before expiry.
+        transferred_bytes: u64,
+        /// The total, or genuinely unknown.
+        total: ByteTotal,
+        /// The admitted transfer's absolute budget in milliseconds.
+        budget_ms: u64,
+    },
+    /// An admitted transfer ended without a more specific operation error.
+    StreamAborted {
+        /// Bytes accepted before the abort.
+        transferred_bytes: u64,
+        /// The total, or genuinely unknown.
+        total: ByteTotal,
+        /// Why the stream ended.
+        reason: StreamAbortReason,
     },
     /// No such in-flight transfer for this principal.
     TransferUnknown {

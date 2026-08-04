@@ -4,7 +4,7 @@
 // malformed frame bounded.
 
 use jeliya_api::*;
-use jeliya_codec::{decode, encode_push, encode_reply, CodecBounds, Frame};
+use jeliya_codec::{decode, encode_push, encode_reply, CodecBounds, Frame, MAX_REQUEST_ID};
 
 fn default_bounds() -> CodecBounds {
     CodecBounds::default()
@@ -191,6 +191,46 @@ fn recoverable_id_gets_a_correlated_error() {
     )
     .unwrap_err();
     assert!(matches!(err, jeliya_codec::CodecError::Malformed { .. }));
+}
+
+/// #234 bounded JSON request ids to the largest integer ordinary browser and
+/// Node numbers preserve exactly. The same id is echoed in Binary records.
+#[test]
+fn json_request_id_browser_safe_boundary_is_enforced() {
+    for id in [0, MAX_REQUEST_ID] {
+        let frame = serde_json::json!({"id": id, "op": "room.list", "in": {}});
+        let decoded = decode(&serde_json::to_vec(&frame).unwrap(), &default_bounds()).unwrap();
+        match decoded {
+            Frame::Request(request) => assert_eq!(request.id, id),
+            Frame::Malformed(error) => panic!("valid id {id} was malformed: {error:?}"),
+        }
+    }
+
+    let one_past = serde_json::json!({
+        "id": MAX_REQUEST_ID + 1,
+        "op": "room.list",
+        "in": {}
+    });
+    assert!(matches!(
+        decode(&serde_json::to_vec(&one_past).unwrap(), &default_bounds()),
+        Err(jeliya_codec::CodecError::UnrecoverableId(_))
+    ));
+
+    // Best-effort recovery from malformed JSON must apply the same bound;
+    // an out-of-range prefix is not a trustworthy correlation id.
+    let recoverable = format!("{{\"id\":{MAX_REQUEST_ID},\"op\":");
+    assert!(matches!(
+        decode(recoverable.as_bytes(), &default_bounds()),
+        Err(jeliya_codec::CodecError::Malformed {
+            id: MAX_REQUEST_ID,
+            error: ApiError::MalformedFrame,
+        })
+    ));
+    let untrustworthy = format!("{{\"id\":{},\"op\":", MAX_REQUEST_ID + 1);
+    assert!(matches!(
+        decode(untrustworthy.as_bytes(), &default_bounds()),
+        Err(jeliya_codec::CodecError::UnrecoverableId(_))
+    ));
 }
 
 /// A frame carrying `t` is a push; pushes do not flow client-to-daemon.

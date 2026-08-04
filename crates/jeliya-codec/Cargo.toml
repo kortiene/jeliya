@@ -4,7 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Protocol-v2 JSON/WebSocket codec: the edge between wire frames and jeliya-api types. Generation gate, bounded envelopes, exhaustive request routing, bounded malformed-input handling. No v1 facade, no dual codec, no domain logic."
+description = "Protocol-v2 Text/Binary WebSocket codec: bounded JSON envelopes and JBS2 stream records at the jeliya-api edge. No v1 facade, no dual codec, no domain logic."
 
 [dependencies]
 jeliya-api = { path = "../jeliya-api" }

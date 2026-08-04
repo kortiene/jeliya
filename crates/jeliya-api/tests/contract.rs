@@ -284,13 +284,48 @@ fn op_id_is_envelope_level() {
         RoomCreate {
             name: "Build".into(),
         },
-    );
+    )
+    .unwrap();
     let json = serde_json::to_string(&env).unwrap();
     assert!(json.contains("\"op\":\"room.create\""));
     assert!(json.contains("\"op_id\":\"op-1\""));
     assert!(json.contains("\"in\":{\"name\":\"Build\"}"));
     // `in` carries no op_id key
     assert!(!json.contains("\"in\":{\"name\":\"Build\",\"op_id\""));
+}
+
+/// Typed clients cannot originate request ids that ordinary browser JSON
+/// numbers would round or alias.
+#[test]
+fn request_id_is_browser_safe_by_construction() {
+    let at_limit = Envelope::new(
+        MAX_REQUEST_ID,
+        None,
+        RoomCreate {
+            name: "Build".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(at_limit.id.get(), MAX_REQUEST_ID);
+    assert_eq!(
+        serde_json::to_value(&at_limit).unwrap()["id"],
+        serde_json::json!(MAX_REQUEST_ID)
+    );
+
+    assert_eq!(
+        Envelope::<RoomCreate>::new(
+            MAX_REQUEST_ID + 1,
+            None,
+            RoomCreate {
+                name: "Build".into(),
+            },
+        ),
+        Err(RequestIdOutOfRange {
+            value: MAX_REQUEST_ID + 1,
+        })
+    );
+    assert!(serde_json::from_str::<RequestId>(&MAX_REQUEST_ID.to_string()).is_ok());
+    assert!(serde_json::from_str::<RequestId>(&(MAX_REQUEST_ID + 1).to_string()).is_err());
 }
 
 /// A push carries `t` and never `id`.
@@ -342,6 +377,90 @@ fn error_payload_is_code_discriminated() {
     assert_eq!(
         serde_json::to_string(&err).unwrap(),
         "{\"code\":\"subject_absent\"}"
+    );
+}
+
+/// The two stream terminal errors carry exactly the fields added by the
+/// canonical byte-stream record.
+#[test]
+fn stream_terminal_errors_have_exact_wire_shapes() {
+    let deadline = ApiError::TransferDeadlineExceeded {
+        transferred_bytes: 1_024,
+        total: ByteTotal::Known { bytes: 4_096 },
+        budget_ms: 30_000,
+    };
+    assert_eq!(
+        serde_json::to_value(&deadline).unwrap(),
+        serde_json::json!({
+            "code": "transfer_deadline_exceeded",
+            "transferred_bytes": 1024,
+            "total": {"state": "known", "bytes": 4096},
+            "budget_ms": 30000
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<ApiError>(serde_json::to_value(deadline).unwrap()).unwrap(),
+        ApiError::TransferDeadlineExceeded {
+            transferred_bytes: 1_024,
+            total: ByteTotal::Known { bytes: 4_096 },
+            budget_ms: 30_000,
+        }
+    );
+
+    let aborted = ApiError::StreamAborted {
+        transferred_bytes: 512,
+        total: ByteTotal::Unknown,
+        reason: StreamAbortReason::TransportLost,
+    };
+    assert_eq!(
+        serde_json::to_value(&aborted).unwrap(),
+        serde_json::json!({
+            "code": "stream_aborted",
+            "transferred_bytes": 512,
+            "total": {"state": "unknown"},
+            "reason": "transport_lost"
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<ApiError>(serde_json::to_value(aborted).unwrap()).unwrap(),
+        ApiError::StreamAborted {
+            transferred_bytes: 512,
+            total: ByteTotal::Unknown,
+            reason: StreamAbortReason::TransportLost,
+        }
+    );
+}
+
+/// JSON stream-abort reasons are closed independently from Binary ABORT:
+/// `transport_lost` is local, while wire-only `operation_error` is forbidden.
+#[test]
+fn stream_abort_reason_is_closed() {
+    let cases = [
+        (StreamAbortReason::Cancelled, "cancelled"),
+        (StreamAbortReason::SourceFailed, "source_failed"),
+        (StreamAbortReason::SinkFailed, "sink_failed"),
+        (StreamAbortReason::TransportLost, "transport_lost"),
+        (StreamAbortReason::ProtocolError, "protocol_error"),
+    ];
+    for (reason, token) in cases {
+        assert_eq!(
+            serde_json::to_string(&reason).unwrap(),
+            format!("\"{token}\"")
+        );
+        assert_eq!(
+            serde_json::from_str::<StreamAbortReason>(&format!("\"{token}\"")).unwrap(),
+            reason
+        );
+    }
+    assert!(serde_json::from_str::<StreamAbortReason>("\"operation_error\"").is_err());
+    assert!(serde_json::from_str::<StreamAbortReason>("\"unknown\"").is_err());
+    assert_eq!(
+        serde_json::to_string(&ErrorCode::TransferDeadlineExceeded).unwrap(),
+        "\"transfer_deadline_exceeded\""
+    );
+    assert_eq!(
+        serde_json::to_string(&ErrorCode::StreamAborted).unwrap(),
+        "\"stream_aborted\""
     );
 }
 
