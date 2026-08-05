@@ -51,9 +51,10 @@ mod gate;
 mod routing;
 
 pub use byte_stream::{
-    decode_stream_identity, decode_stream_kind, decode_stream_record, encode_stream_record,
-    max_stream_data_bytes, BinaryAbortReason, StreamCodecError, StreamHeaderField, StreamIdentity,
-    StreamRecord, StreamRecordBody, StreamRecordKind, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
+    decode_stream_identity, decode_stream_kind, decode_stream_record, decode_stream_record_view,
+    encode_stream_record, max_stream_data_bytes, BinaryAbortReason, StreamCodecError,
+    StreamHeaderField, StreamIdentity, StreamRecord, StreamRecordBody, StreamRecordBodyView,
+    StreamRecordKind, StreamRecordView, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
 };
 pub use error::{CodecError, GateRejection};
 pub use frame::push_to_bytes;

@@ -621,11 +621,28 @@ pub(crate) enum BinaryRoute {
 #[derive(Clone)]
 pub(crate) struct StreamRegistry {
     inner: Arc<Mutex<StreamRegistryState>>,
+    invalidated: Arc<Notify>,
 }
 
 struct StreamRegistryState {
     accepting: bool,
-    bindings: HashMap<StreamIdentity, Arc<StreamIngress>>,
+    bindings: HashMap<StreamIdentity, StreamEndpoint>,
+}
+
+#[derive(Clone)]
+enum StreamEndpoint {
+    Download(Arc<StreamIngress>),
+    Upload(Arc<crate::file_share::UploadIngress>),
+}
+
+#[cfg(test)]
+impl StreamEndpoint {
+    fn download(self) -> Arc<StreamIngress> {
+        match self {
+            Self::Download(ingress) => ingress,
+            Self::Upload(_) => panic!("test expected a download binding"),
+        }
+    }
 }
 
 /// Single owner for a connection-fatal WebSocket Close.
@@ -715,6 +732,21 @@ pub(crate) struct StreamBinding {
     ingress: Arc<StreamIngress>,
 }
 
+/// RAII ownership of one consumer-direction upload binding in the unified
+/// connection-local registry.
+pub(crate) struct UploadStreamBinding {
+    registry: StreamRegistry,
+    identity: StreamIdentity,
+    ingress: Arc<crate::file_share::UploadIngress>,
+}
+
+#[derive(Clone)]
+pub(crate) struct UploadStreamRetirement {
+    registry: StreamRegistry,
+    identity: StreamIdentity,
+    ingress: Arc<crate::file_share::UploadIngress>,
+}
+
 #[derive(Clone)]
 struct StreamRetirement {
     registry: StreamRegistry,
@@ -729,6 +761,7 @@ impl StreamRegistry {
                 accepting: true,
                 bindings: HashMap::new(),
             })),
+            invalidated: Arc::new(Notify::new()),
         }
     }
 
@@ -740,7 +773,7 @@ impl StreamRegistry {
         }
         match registry.bindings.entry(identity) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(ingress.clone());
+                entry.insert(StreamEndpoint::Download(ingress.clone()));
             }
             std::collections::hash_map::Entry::Occupied(_) => return None,
         }
@@ -760,6 +793,22 @@ impl StreamRegistry {
             .is_empty()
     }
 
+    pub(crate) fn is_accepting(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("stream registry poisoned")
+            .accepting
+    }
+
+    pub(crate) async fn wait_invalidated(&self) {
+        while self.is_accepting() {
+            tokio::select! {
+                () = self.invalidated.notified() => {}
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    }
+
     /// Atomically makes every current or future stream on this connection
     /// unstartable before a connection-fatal Close is queued. The registry
     /// lock is acquired before each stream sequencing lock, matching
@@ -769,18 +818,27 @@ impl StreamRegistry {
         let mut registry = self.inner.lock().expect("stream registry poisoned");
         registry.accepting = false;
         for ingress in registry.bindings.values() {
-            let _sequencing = ingress
-                .sequencing
-                .lock()
-                .expect("stream sequencing poisoned");
-            ingress.opening_fatal.store(true, Ordering::Release);
-            ingress.set_phase_locked(BindingPhase::Retired);
-            ingress.mailbox.close();
-            ingress.data_live.store(false, Ordering::Release);
+            match ingress {
+                StreamEndpoint::Download(ingress) => {
+                    let _sequencing = ingress
+                        .sequencing
+                        .lock()
+                        .expect("stream sequencing poisoned");
+                    ingress.opening_fatal.store(true, Ordering::Release);
+                    ingress.set_phase_locked(BindingPhase::Retired);
+                    ingress.mailbox.close();
+                    ingress.data_live.store(false, Ordering::Release);
+                }
+                StreamEndpoint::Upload(ingress) => ingress.invalidate_connection_locked(),
+            }
         }
         registry.bindings.clear();
+        drop(registry);
+        self.invalidated.notify_waiters();
+        self.invalidated.notify_one();
     }
 
+    #[cfg(test)]
     pub(crate) fn route_binary(&self, bytes: &[u8], bounds: &CodecBounds) -> BinaryRoute {
         if bytes.len() > bounds.max_frame_bytes {
             return BinaryRoute::CloseTooLarge;
@@ -790,7 +848,7 @@ impl StreamRegistry {
             Err(StreamCodecError::FrameTooLarge { .. }) => return BinaryRoute::CloseTooLarge,
             Err(_) => return BinaryRoute::CloseMalformed,
         };
-        let ingress = {
+        let endpoint = {
             self.inner
                 .lock()
                 .expect("stream registry poisoned")
@@ -798,11 +856,76 @@ impl StreamRegistry {
                 .get(&identity)
                 .cloned()
         };
-        let Some(ingress) = ingress else {
+        let Some(endpoint) = endpoint else {
             return BinaryRoute::CloseMalformed;
         };
 
-        Self::route_bound(&ingress, bytes, bounds)
+        match endpoint {
+            StreamEndpoint::Download(ingress) => Self::route_bound(&ingress, bytes, bounds),
+            // The production WebSocket path uses `route_binary_message`,
+            // which can await bounded upload ingress capacity. This legacy
+            // borrowed entry point remains for the existing download unit
+            // harness and must never turn legal scheduling pressure into a
+            // protocol error.
+            StreamEndpoint::Upload(_) => BinaryRoute::CloseMalformed,
+        }
+    }
+
+    /// Route one owned complete Binary message through the unified exact-pair
+    /// registry. Upload DATA retains the transport-owned `Bytes` while it
+    /// waits for bounded staging capacity, so no payload copy is needed.
+    pub(crate) async fn route_binary_message(
+        &self,
+        bytes: tokio_tungstenite::tungstenite::Bytes,
+        bounds: &CodecBounds,
+    ) -> BinaryRoute {
+        if bytes.len() > bounds.max_frame_bytes {
+            return BinaryRoute::CloseTooLarge;
+        }
+        let identity = match decode_stream_identity(&bytes, bounds) {
+            Ok(identity) => identity,
+            Err(StreamCodecError::FrameTooLarge { .. }) => return BinaryRoute::CloseTooLarge,
+            Err(_) => return BinaryRoute::CloseMalformed,
+        };
+        let endpoint = {
+            self.inner
+                .lock()
+                .expect("stream registry poisoned")
+                .bindings
+                .get(&identity)
+                .cloned()
+        };
+        let Some(endpoint) = endpoint else {
+            return BinaryRoute::CloseMalformed;
+        };
+        match endpoint {
+            StreamEndpoint::Download(ingress) => Self::route_bound(&ingress, &bytes, bounds),
+            StreamEndpoint::Upload(ingress) => ingress.route_bound(bytes, bounds).await,
+        }
+    }
+
+    /// Install an upload binding in the same map downloads use. A duplicate
+    /// full pair cannot replace or cross either direction.
+    pub(crate) fn bind_upload(
+        &self,
+        identity: StreamIdentity,
+        ingress: Arc<crate::file_share::UploadIngress>,
+    ) -> Option<UploadStreamBinding> {
+        let mut registry = self.inner.lock().expect("stream registry poisoned");
+        if !registry.accepting {
+            return None;
+        }
+        match registry.bindings.entry(identity) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(StreamEndpoint::Upload(ingress.clone()));
+            }
+            std::collections::hash_map::Entry::Occupied(_) => return None,
+        }
+        Some(UploadStreamBinding {
+            registry: self.clone(),
+            identity,
+            ingress,
+        })
     }
 
     fn route_bound(
@@ -986,7 +1109,9 @@ impl StreamRetirement {
         if registry
             .bindings
             .get(&self.identity)
-            .is_some_and(|current| Arc::ptr_eq(current, &self.ingress))
+            .is_some_and(|current| {
+                matches!(current, StreamEndpoint::Download(current) if Arc::ptr_eq(current, &self.ingress))
+            })
         {
             registry.bindings.remove(&self.identity);
         }
@@ -1011,7 +1136,9 @@ impl StreamRetirement {
         if registry
             .bindings
             .get(&self.identity)
-            .is_some_and(|current| Arc::ptr_eq(current, &self.ingress))
+            .is_some_and(|current| {
+                matches!(current, StreamEndpoint::Download(current) if Arc::ptr_eq(current, &self.ingress))
+            })
         {
             registry.bindings.remove(&self.identity);
         }
@@ -1019,6 +1146,106 @@ impl StreamRetirement {
 }
 
 impl Drop for StreamBinding {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
+
+impl UploadStreamBinding {
+    pub(crate) fn retire(&self) {
+        let mut registry = self
+            .registry
+            .inner
+            .lock()
+            .expect("stream registry poisoned");
+        self.ingress.retire_locked();
+        if registry
+            .bindings
+            .get(&self.identity)
+            .is_some_and(|current| {
+                matches!(current, StreamEndpoint::Upload(current) if Arc::ptr_eq(current, &self.ingress))
+            })
+        {
+            registry.bindings.remove(&self.identity);
+        }
+    }
+
+    pub(crate) fn retirement(&self) -> UploadStreamRetirement {
+        UploadStreamRetirement {
+            registry: self.registry.clone(),
+            identity: self.identity,
+            ingress: self.ingress.clone(),
+        }
+    }
+
+    /// Retire the first semantically valid daemon-ABORT ACK only if no later
+    /// exact-pair record was already queued behind it.
+    pub(crate) fn retire_daemon_ack(&self) -> bool {
+        let mut registry = self
+            .registry
+            .inner
+            .lock()
+            .expect("stream registry poisoned");
+        if !self.ingress.daemon_ack_retire_locked() {
+            return false;
+        }
+        if registry
+            .bindings
+            .get(&self.identity)
+            .is_some_and(|current| {
+                matches!(current, StreamEndpoint::Upload(current) if Arc::ptr_eq(current, &self.ingress))
+            })
+        {
+            registry.bindings.remove(&self.identity);
+        }
+        true
+    }
+}
+
+impl UploadStreamRetirement {
+    pub(crate) fn retire(&self) {
+        let mut registry = self
+            .registry
+            .inner
+            .lock()
+            .expect("stream registry poisoned");
+        self.ingress.retire_locked();
+        if registry
+            .bindings
+            .get(&self.identity)
+            .is_some_and(|current| {
+                matches!(current, StreamEndpoint::Upload(current) if Arc::ptr_eq(current, &self.ingress))
+            })
+        {
+            registry.bindings.remove(&self.identity);
+        }
+    }
+
+    /// Retire at the successful ACK writer boundary unless a later exact-pair
+    /// record won the sequencing lock first. In that case the actor retains
+    /// the binding long enough to promote the duplicate into protocol_error.
+    pub(crate) fn retire_client_abort_ack(&self) {
+        let mut registry = self
+            .registry
+            .inner
+            .lock()
+            .expect("stream registry poisoned");
+        if !self.ingress.client_abort_ack_sent_locked() {
+            return;
+        }
+        if registry
+            .bindings
+            .get(&self.identity)
+            .is_some_and(|current| {
+                matches!(current, StreamEndpoint::Upload(current) if Arc::ptr_eq(current, &self.ingress))
+            })
+        {
+            registry.bindings.remove(&self.identity);
+        }
+    }
+}
+
+impl Drop for UploadStreamBinding {
     fn drop(&mut self) {
         self.retire();
     }
@@ -3874,7 +4101,8 @@ mod tests {
                     .bindings
                     .get(&identity)
                     .cloned()
-                    .expect("client-aborted pair remains bound");
+                    .expect("client-aborted pair remains bound")
+                    .download();
                 if BindingPhase::load(&ingress.phase) == BindingPhase::ClientAbortPending {
                     break ingress;
                 }
@@ -3961,7 +4189,8 @@ mod tests {
                 .bindings
                 .get(&identity)
                 .cloned()
-                .expect("ACK-in-flight pair remains bound");
+                .expect("ACK-in-flight pair remains bound")
+                .download();
             assert_eq!(
                 BindingPhase::load(&ingress.phase),
                 BindingPhase::ClientAbortAckCommitted
@@ -4106,7 +4335,8 @@ mod tests {
                 .bindings
                 .get(&identity)
                 .cloned()
-                .expect("active exact pair");
+                .expect("active exact pair")
+                .download();
             if BindingPhase::load(&ingress.phase) == BindingPhase::DaemonAbortQueued {
                 break ingress;
             }
@@ -4272,7 +4502,8 @@ mod tests {
             .bindings
             .get(&identity)
             .cloned()
-            .expect("daemon-ABORT pair remains bound");
+            .expect("daemon-ABORT pair remains bound")
+            .download();
         assert_eq!(
             route_body(
                 &harness,

@@ -80,7 +80,10 @@ use iroh_rooms::room::{MembershipSnapshot, RoomId as IrohRoomId};
 
 use crate::error::{CoreError, CoreResult, ErrorKind};
 use crate::projection::{self as proj, file_handle, Departures};
-use crate::supervisor::{LocalFile as ResolvedLocalFile, RemoveMemberOutcome, RoomSupervisor};
+use crate::supervisor::{
+    AuthorizedFileShare, LocalFile as ResolvedLocalFile, RemoveMemberOutcome, RoomSupervisor,
+    StagedFileShare,
+};
 
 /// The daemon's served limits, surfaced in `hello`/`VersionInfo` and enforced
 /// here. Values are the record's served-limits object; the shared-file maximum
@@ -1440,11 +1443,11 @@ impl<'a> TypedSupervisor<'a> {
 
     /// `file.share` — share bytes into a room.
     ///
-    /// **Not implemented on the typed WS surface in this build.** The record
-    /// streams the bytes alongside the declaration, and that framing is not
-    /// wired to the codec yet; the host-staged half below is what carries a
-    /// real share today. It is refused rather than fabricating an event for
-    /// bytes nobody sent.
+    /// Ordinary transport-free dispatch has no byte stream to consume, so it
+    /// remains `not_ready` rather than fabricating an event for bytes nobody
+    /// sent. `jeliyad` intercepts the typed WebSocket request and drives the
+    /// consumer-direction stream through the preparation API below; the
+    /// existing host-staged entry point remains separate as well.
     pub async fn file_share(
         &self,
         _ctx: &RoomContext,
@@ -2848,6 +2851,58 @@ async fn validated_context(
 // The typed dispatch table (the engine's v2 surface)
 // ---------------------------------------------------------------------------
 
+/// Run the post-ledger half of streamed `file.share` preparation.
+///
+/// The engine has already applied structural validation and the subject
+/// precondition before admitting an `op_id` owner. Repeating those checks here
+/// would obscure that ordering and could make a faithful join observe a new
+/// answer, so this function begins at the room/standing/role gate and then
+/// applies the operation's declared-size and live-session semantics.
+pub(crate) async fn authorize_file_share_after_gate(
+    sup: &RoomSupervisor,
+    req: &FileShare,
+) -> Result<AuthorizedFileShare, ApiError> {
+    let t = TypedSupervisor::new(sup);
+    let ctx = t.room_context(&req.room_id, false, false).await?;
+
+    let limit = limits().max_shared_file_bytes;
+    if req.declared_bytes > limit {
+        return Err(ApiError::FileTooLarge {
+            declared_bytes: req.declared_bytes,
+            limit_bytes: limit,
+            enforced_at: EnforcedAt::StageDeclared,
+        });
+    }
+
+    sup.authorize_file_share_once(
+        ctx.room_id,
+        ctx.snapshot,
+        req.name.clone(),
+        req.declared_content_type.clone(),
+        req.declared_bytes,
+    )
+    .map_err(|error| core_to_api_room(error, &req.room_id))
+}
+
+/// Project one already imported and authored streamed share onto its protocol
+/// result. The caller owns the post-END import/publication sequencing.
+pub(crate) fn project_streamed_file_share(
+    sup: &RoomSupervisor,
+    req: &FileShare,
+    shared: StagedFileShare,
+) -> Result<FileShareOut, ApiError> {
+    let room_id = TypedSupervisor::parse_room(&req.room_id)?;
+    let pos = TypedSupervisor::new(sup).pos_of_event(&room_id, &shared.event_id)?;
+    Ok(FileShareOut {
+        room_id: req.room_id.clone(),
+        file_id: FileId::new(shared.file_id),
+        event_id: EventId::new(shared.event_id),
+        pos,
+        bytes: shared.bytes,
+        digest: shared.digest,
+    })
+}
+
 /// Prepare one `file.read` through the same validation and authorization path
 /// as ordinary typed dispatch, returning metadata and one private local source.
 pub(crate) async fn prepare_file_read(
@@ -3063,14 +3118,13 @@ impl TypedCall {
         }
     }
 
-    /// A stable hash of the canonical request body, for telling a faithful
+    /// A stable digest of the canonical request body, for telling a faithful
     /// `op_id` retry from a conflicting reuse. The typed input serializes
     /// deterministically (serde field order is declaration order), so two
     /// calls with equal bodies hash alike and two with different bodies do
     /// not — which is exactly the fidelity the dedup ledger needs.
     #[must_use]
-    pub fn body_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
+    pub fn body_hash(&self) -> [u8; 32] {
         let body = match self {
             TypedCall::SubjectEnsure(r) => serde_json::to_vec(r),
             TypedCall::DaemonStop(r) => serde_json::to_vec(r),
@@ -3107,14 +3161,19 @@ impl TypedCall {
             TypedCall::StreamResync(r) => serde_json::to_vec(r),
         }
         .unwrap_or_default();
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = blake3::Hasher::new();
         // The operation path is part of the fingerprint: two operations with
         // structurally identical inputs (pipe.connect and pipe.revoke both
         // serialize as {room_id, pipe_id}) must not read as a faithful replay
         // of one another. Hash the path alongside the body.
-        self.path().hash(&mut hasher);
-        body.hash(&mut hasher);
-        hasher.finish()
+        let path = self.path().as_bytes();
+        let path_len = u64::try_from(path.len()).unwrap_or(u64::MAX);
+        let body_len = u64::try_from(body.len()).unwrap_or(u64::MAX);
+        hasher.update(&path_len.to_be_bytes());
+        hasher.update(path);
+        hasher.update(&body_len.to_be_bytes());
+        hasher.update(&body);
+        *hasher.finalize().as_bytes()
     }
 }
 

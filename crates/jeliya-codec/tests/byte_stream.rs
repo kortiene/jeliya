@@ -1,10 +1,10 @@
 //! Spec-authored protocol-v2 Binary-record vectors and structural boundaries.
 
 use jeliya_codec::{
-    decode_stream_identity, decode_stream_kind, decode_stream_record, encode_stream_record,
-    max_stream_data_bytes, BinaryAbortReason, CodecBounds, StreamCodecError, StreamHeaderField,
-    StreamIdentity, StreamRecord, StreamRecordBody, StreamRecordKind, MAX_REQUEST_ID,
-    MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
+    decode_stream_identity, decode_stream_kind, decode_stream_record, decode_stream_record_view,
+    encode_stream_record, max_stream_data_bytes, BinaryAbortReason, CodecBounds, StreamCodecError,
+    StreamHeaderField, StreamIdentity, StreamRecord, StreamRecordBody, StreamRecordBodyView,
+    StreamRecordKind, StreamRecordView, MAX_REQUEST_ID, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
 };
 
 const REQUEST_ID: u64 = 0x0001_0203_0405_0607;
@@ -125,6 +125,291 @@ fn every_record_kind_matches_the_record_and_round_trips() {
             expected_record
         );
     }
+}
+
+#[test]
+fn borrowed_record_view_decodes_every_spec_authored_kind() {
+    let bounds = bounds(1024);
+    let identity = StreamIdentity::new(REQUEST_ID, STREAM_ID).unwrap();
+
+    // These vectors are constructed directly from the normative kind table,
+    // not from `encode_stream_record` or an owned decode result.
+    let open = wire(0x01, REQUEST_ID, STREAM_ID, 0, 12, &[]);
+    assert_eq!(
+        decode_stream_record_view(&open, &bounds).unwrap(),
+        StreamRecordView {
+            identity,
+            body: StreamRecordBodyView::Open { total: 12 },
+        }
+    );
+
+    let data_payload = [0xde, 0xad, 0xbe, 0xef];
+    let data = wire(0x02, REQUEST_ID, STREAM_ID, 7, 0, &data_payload);
+    assert_eq!(
+        decode_stream_record_view(&data, &bounds).unwrap(),
+        StreamRecordView {
+            identity,
+            body: StreamRecordBodyView::Data {
+                offset: 7,
+                payload: &data_payload,
+            },
+        }
+    );
+
+    let credit = wire(0x03, REQUEST_ID, STREAM_ID, 8, 21, &[]);
+    assert_eq!(
+        decode_stream_record_view(&credit, &bounds).unwrap(),
+        StreamRecordView {
+            identity,
+            body: StreamRecordBodyView::Credit {
+                accepted_through: 8,
+                send_through: 21,
+            },
+        }
+    );
+
+    let end = wire(0x04, REQUEST_ID, STREAM_ID, 12, 0, &[]);
+    assert_eq!(
+        decode_stream_record_view(&end, &bounds).unwrap(),
+        StreamRecordView {
+            identity,
+            body: StreamRecordBodyView::End { total: 12 },
+        }
+    );
+
+    let abort = wire(0x05, REQUEST_ID, STREAM_ID, 8, 0x04, &[]);
+    assert_eq!(
+        decode_stream_record_view(&abort, &bounds).unwrap(),
+        StreamRecordView {
+            identity,
+            body: StreamRecordBodyView::Abort {
+                accepted_through: 8,
+                reason: BinaryAbortReason::ProtocolError,
+            },
+        }
+    );
+
+    let ack = wire(0x06, REQUEST_ID, STREAM_ID, 8, 0x05, &[]);
+    assert_eq!(
+        decode_stream_record_view(&ack, &bounds).unwrap(),
+        StreamRecordView {
+            identity,
+            body: StreamRecordBodyView::Ack {
+                accepted_through: 8,
+            },
+        }
+    );
+}
+
+#[test]
+fn borrowed_data_payload_is_the_exact_input_slice_and_owned_decode_matches() {
+    let expected_payload = [0x00, 0xff, 0x4a, 0x42, 0x53, 0x32, 0x7f];
+    let bytes = wire(
+        0x02,
+        REQUEST_ID,
+        STREAM_ID,
+        0x2021_2223_2425_2627,
+        0,
+        &expected_payload,
+    );
+    let bounds = bounds(bytes.len());
+    let view = decode_stream_record_view(&bytes, &bounds).unwrap();
+    assert_eq!(view.kind(), StreamRecordKind::Data);
+    let StreamRecordBodyView::Data { offset, payload } = view.body else {
+        panic!("raw DATA decoded as a control record");
+    };
+    assert_eq!(offset, 0x2021_2223_2425_2627);
+    assert_eq!(payload, expected_payload);
+    assert_eq!(payload.as_ptr(), bytes[STREAM_HEADER_BYTES..].as_ptr());
+    assert_eq!(payload.len(), bytes.len() - STREAM_HEADER_BYTES);
+
+    assert_eq!(
+        decode_stream_record(&bytes, &bounds).unwrap(),
+        StreamRecord {
+            identity: view.identity,
+            body: StreamRecordBody::Data {
+                offset,
+                payload: expected_payload.to_vec(),
+            },
+        }
+    );
+}
+
+#[test]
+fn borrowed_and_owned_decoders_have_identical_raw_wire_refusals() {
+    let ordinary = bounds(1024);
+    let protocol_payload_bounds = bounds(STREAM_HEADER_BYTES + MAX_STREAM_DATA_BYTES + 1);
+
+    let mut oversized_bad_magic = vec![0; 50];
+    oversized_bad_magic[..4].copy_from_slice(b"NOPE");
+    let mut bad_magic = wire(0x02, REQUEST_ID, STREAM_ID, 0, 0, &[1]);
+    bad_magic[..4].copy_from_slice(b"NOPE");
+    let mut bad_reserved = wire(0x02, REQUEST_ID, STREAM_ID, 0, 0, &[1]);
+    bad_reserved[6] = 1;
+
+    let cases = vec![
+        (
+            oversized_bad_magic,
+            bounds(49),
+            StreamCodecError::FrameTooLarge {
+                actual_bytes: 50,
+                limit_bytes: 49,
+            },
+        ),
+        (
+            b"JBS2".to_vec(),
+            ordinary,
+            StreamCodecError::HeaderTooShort { actual_bytes: 4 },
+        ),
+        (bad_magic, ordinary, StreamCodecError::BadMagic),
+        (
+            wire(0x02, MAX_REQUEST_ID + 1, STREAM_ID, 0, 0, &[1]),
+            ordinary,
+            StreamCodecError::RequestIdOutOfRange {
+                request_id: MAX_REQUEST_ID + 1,
+            },
+        ),
+        (
+            wire(0x02, REQUEST_ID, 0, 0, 0, &[1]),
+            ordinary,
+            StreamCodecError::ZeroStreamId,
+        ),
+        (
+            wire(0xff, REQUEST_ID, STREAM_ID, 0, 0, &[]),
+            ordinary,
+            StreamCodecError::UnknownKind { kind: 0xff },
+        ),
+        (
+            bad_reserved,
+            ordinary,
+            StreamCodecError::ReservedBytesNonzero,
+        ),
+        (
+            wire(0x02, REQUEST_ID, STREAM_ID, 0, 1, &[1]),
+            ordinary,
+            StreamCodecError::InvalidField {
+                kind: StreamRecordKind::Data,
+                field: StreamHeaderField::Value,
+                value: 1,
+                expected: 0,
+            },
+        ),
+        (
+            wire(0x02, REQUEST_ID, STREAM_ID, 0, 0, &[]),
+            ordinary,
+            StreamCodecError::EmptyData,
+        ),
+        (
+            wire(
+                0x02,
+                REQUEST_ID,
+                STREAM_ID,
+                0,
+                0,
+                &vec![0x5a; MAX_STREAM_DATA_BYTES + 1],
+            ),
+            protocol_payload_bounds,
+            StreamCodecError::DataTooLarge {
+                actual_bytes: MAX_STREAM_DATA_BYTES + 1,
+                limit_bytes: MAX_STREAM_DATA_BYTES,
+            },
+        ),
+        (
+            wire(0x02, REQUEST_ID, STREAM_ID, u64::MAX, 0, &[1]),
+            ordinary,
+            StreamCodecError::OffsetOverflow {
+                offset: u64::MAX,
+                payload_bytes: 1,
+            },
+        ),
+        (
+            wire(0x01, REQUEST_ID, STREAM_ID, 0, 0, &[1]),
+            ordinary,
+            StreamCodecError::UnexpectedPayload {
+                kind: StreamRecordKind::Open,
+                payload_bytes: 1,
+            },
+        ),
+        (
+            wire(0x03, REQUEST_ID, STREAM_ID, 8, 7, &[]),
+            ordinary,
+            StreamCodecError::InvalidCredit {
+                accepted_through: 8,
+                send_through: 7,
+            },
+        ),
+        (
+            wire(0x05, REQUEST_ID, STREAM_ID, 0, 6, &[]),
+            ordinary,
+            StreamCodecError::InvalidAbortReason { value: 6 },
+        ),
+        (
+            wire(0x06, REQUEST_ID, STREAM_ID, 0, 4, &[]),
+            ordinary,
+            StreamCodecError::InvalidField {
+                kind: StreamRecordKind::Ack,
+                field: StreamHeaderField::Value,
+                value: 4,
+                expected: 5,
+            },
+        ),
+    ];
+
+    for (bytes, bounds, expected) in cases {
+        assert_eq!(
+            decode_stream_record_view(&bytes, &bounds),
+            Err(expected.clone())
+        );
+        assert_eq!(decode_stream_record(&bytes, &bounds), Err(expected));
+    }
+}
+
+#[test]
+fn borrowed_data_view_checks_payload_and_candidate_boundaries() {
+    let one_byte = wire(0x02, REQUEST_ID, STREAM_ID, u64::MAX - 1, 0, &[0xaa]);
+    let view = decode_stream_record_view(&one_byte, &bounds(49)).unwrap();
+    let StreamRecordBodyView::Data { offset, payload } = view.body else {
+        panic!("boundary DATA decoded as control");
+    };
+    assert_eq!(offset, u64::MAX - 1);
+    assert_eq!(payload, [0xaa]);
+
+    let two_bytes = wire(0x02, REQUEST_ID, STREAM_ID, u64::MAX - 2, 0, &[0xaa, 0xbb]);
+    let two_view = decode_stream_record_view(&two_bytes, &bounds(50)).unwrap();
+    let StreamRecordBodyView::Data { offset, payload } = two_view.body else {
+        panic!("boundary DATA decoded as control");
+    };
+    assert_eq!(offset, u64::MAX - 2);
+    assert_eq!(payload, [0xaa, 0xbb]);
+
+    let overflow = wire(0x02, REQUEST_ID, STREAM_ID, u64::MAX - 1, 0, &[0xaa, 0xbb]);
+    assert_eq!(
+        decode_stream_record_view(&overflow, &bounds(50)),
+        Err(StreamCodecError::OffsetOverflow {
+            offset: u64::MAX - 1,
+            payload_bytes: 2,
+        })
+    );
+
+    let maximum_payload = vec![0x5a; MAX_STREAM_DATA_BYTES];
+    let maximum = wire(0x02, REQUEST_ID, STREAM_ID, 0, 0, &maximum_payload);
+    let maximum_bounds = bounds(STREAM_HEADER_BYTES + MAX_STREAM_DATA_BYTES);
+    let maximum_view = decode_stream_record_view(&maximum, &maximum_bounds).unwrap();
+    let StreamRecordBodyView::Data { payload, .. } = maximum_view.body else {
+        panic!("maximum DATA decoded as control");
+    };
+    assert_eq!(payload.len(), MAX_STREAM_DATA_BYTES);
+    assert_eq!(payload.as_ptr(), maximum[STREAM_HEADER_BYTES..].as_ptr());
+
+    let past_payload = vec![0x5a; MAX_STREAM_DATA_BYTES + 1];
+    let past = wire(0x02, REQUEST_ID, STREAM_ID, 0, 0, &past_payload);
+    assert_eq!(
+        decode_stream_record_view(&past, &bounds(past.len())),
+        Err(StreamCodecError::DataTooLarge {
+            actual_bytes: MAX_STREAM_DATA_BYTES + 1,
+            limit_bytes: MAX_STREAM_DATA_BYTES,
+        })
+    );
 }
 
 #[test]

@@ -35,6 +35,8 @@ pub(crate) struct RuntimeLimits {
     max_frame_bytes: usize,
     max_data_payload_bytes: usize,
     data_queue_capacity_bytes: usize,
+    upload_ingress_capacity_bytes: usize,
+    upload_ingress_capacity_messages: usize,
     control_queue_capacity_messages: usize,
     data_queue_capacity_messages: usize,
     max_concurrent_transfers: u64,
@@ -79,6 +81,8 @@ impl RuntimeLimits {
             limits.max_transfer_bytes_inflight,
             max_data_payload_bytes,
         )?;
+        let (upload_ingress_capacity_bytes, upload_ingress_capacity_messages) =
+            upload_ingress_capacity(limits.max_concurrent_transfers, max_data_payload_bytes)?;
         let control_queue_capacity_messages = writer_queue_capacity(
             "control",
             limits.max_inflight_requests,
@@ -96,6 +100,8 @@ impl RuntimeLimits {
             max_frame_bytes,
             max_data_payload_bytes,
             data_queue_capacity_bytes,
+            upload_ingress_capacity_bytes,
+            upload_ingress_capacity_messages,
             control_queue_capacity_messages,
             data_queue_capacity_messages,
             max_concurrent_transfers: limits.max_concurrent_transfers,
@@ -128,6 +134,19 @@ impl RuntimeLimits {
     /// Byte permits reserved for at most one queued DATA record per transfer.
     pub(crate) const fn data_queue_capacity_bytes(self) -> usize {
         self.data_queue_capacity_bytes
+    }
+
+    /// Complete inbound DATA bytes retained across every upload on one
+    /// connection. This covers the largest legal credit window even when it
+    /// is split into one-byte records, so a producer that obeys CREDIT cannot
+    /// block the socket reader before a following control message is read.
+    pub(crate) const fn upload_ingress_capacity_bytes(self) -> usize {
+        self.upload_ingress_capacity_bytes
+    }
+
+    /// Per-upload DATA record slots for the largest legal credit window.
+    pub(crate) const fn upload_ingress_capacity_messages(self) -> usize {
+        self.upload_ingress_capacity_messages
     }
 
     /// Aggregate queued Text/control bytes. One maximum-size message always
@@ -415,6 +434,13 @@ pub(crate) enum RuntimeConfigError {
         capacity_bytes: usize,
         maximum: usize,
     },
+    /// The legal upload credit window cannot be represented on this host.
+    UploadIngressCapacityNotRepresentable,
+    /// Tokio's byte semaphore cannot represent the legal upload window.
+    UploadIngressCapacityTooLarge {
+        capacity_bytes: usize,
+        maximum: usize,
+    },
     /// The advertised complete-message bound cannot back a byte semaphore.
     ControlQueueCapacityTooLarge {
         capacity_bytes: usize,
@@ -471,6 +497,16 @@ impl fmt::Display for RuntimeConfigError {
             } => write!(
                 f,
                 "DATA queue capacity {capacity_bytes} exceeds semaphore maximum {maximum}"
+            ),
+            Self::UploadIngressCapacityNotRepresentable => {
+                f.write_str("the bounded upload ingress capacity is not representable")
+            }
+            Self::UploadIngressCapacityTooLarge {
+                capacity_bytes,
+                maximum,
+            } => write!(
+                f,
+                "upload ingress capacity {capacity_bytes} exceeds semaphore maximum {maximum}"
             ),
             Self::ControlQueueCapacityTooLarge {
                 capacity_bytes,
@@ -647,6 +683,38 @@ fn data_queue_capacity(
     Ok(capacity_bytes)
 }
 
+fn upload_ingress_capacity(
+    max_concurrent_transfers: u64,
+    max_data_payload_bytes: usize,
+) -> Result<(usize, usize), RuntimeConfigError> {
+    // CREDIT grants at most one DATA-payload window per upload at a time.
+    // Because DATA is nonempty, splitting that window into one-byte records
+    // also maximizes its record count and complete-record header overhead.
+    // Reserving that full legal window keeps the sole WebSocket reader free to
+    // reach a following END, ABORT, ACK, JSON request, Ping, or Close. Records
+    // that fail receive-side policy, continuity, or CREDIT validation bypass
+    // this DATA lane as ordered terminal work.
+    let messages_per_upload = max_data_payload_bytes.max(1);
+    let complete_one_byte_record = STREAM_HEADER_BYTES
+        .checked_add(1)
+        .ok_or(RuntimeConfigError::UploadIngressCapacityNotRepresentable)?;
+    let per_upload_bytes = messages_per_upload
+        .checked_mul(complete_one_byte_record)
+        .ok_or(RuntimeConfigError::UploadIngressCapacityNotRepresentable)?;
+    let concurrent = usize::try_from(max_concurrent_transfers)
+        .map_err(|_| RuntimeConfigError::UploadIngressCapacityNotRepresentable)?;
+    let capacity_bytes = concurrent
+        .checked_mul(per_upload_bytes)
+        .ok_or(RuntimeConfigError::UploadIngressCapacityNotRepresentable)?;
+    if capacity_bytes > Semaphore::MAX_PERMITS {
+        return Err(RuntimeConfigError::UploadIngressCapacityTooLarge {
+            capacity_bytes,
+            maximum: Semaphore::MAX_PERMITS,
+        });
+    }
+    Ok((capacity_bytes, messages_per_upload))
+}
+
 fn deadline_budget_ms(
     connect_allowance_ms: u64,
     floor_bits_per_second: u64,
@@ -814,6 +882,11 @@ mod tests {
             2 * (STREAM_HEADER_BYTES + 65_536)
         );
         assert_eq!(
+            runtime.upload_ingress_capacity_bytes(),
+            2 * 65_536 * (STREAM_HEADER_BYTES + 1)
+        );
+        assert_eq!(runtime.upload_ingress_capacity_messages(), 65_536);
+        assert_eq!(
             runtime.control_queue_capacity_messages(),
             usize::try_from(limits.max_inflight_requests).unwrap() + CONTROL_QUEUE_ALLOWANCE
         );
@@ -894,12 +967,8 @@ mod tests {
             })
         ));
 
-        limits = served_limits();
-        limits.max_concurrent_transfers = maximum;
-        limits.max_transfer_bytes_inflight = 0;
-        let exact_data = RuntimeLimits::from_served(&limits).expect("exact channel maximum");
         assert_eq!(
-            exact_data.data_queue_capacity_messages(),
+            writer_queue_capacity("DATA", maximum, 0, 1).expect("exact channel maximum"),
             Semaphore::MAX_PERMITS
         );
 
@@ -909,16 +978,47 @@ mod tests {
         let one_past_maximum_usize = Semaphore::MAX_PERMITS
             .checked_add(1)
             .expect("Tokio reserves headroom below usize::MAX");
-        limits.max_concurrent_transfers = one_past_maximum;
-        limits.max_transfer_bytes_inflight = 0;
         assert_eq!(
-            RuntimeLimits::from_served(&limits),
+            writer_queue_capacity("DATA", one_past_maximum, 0, 1),
             Err(RuntimeConfigError::WriterQueueCapacityTooLarge {
                 queue: "DATA",
                 capacity_messages: one_past_maximum_usize,
                 maximum: Semaphore::MAX_PERMITS,
             })
         );
+
+        limits = served_limits();
+        limits.max_transfer_bytes_inflight = 0;
+        let ingress_bytes_per_upload = limits
+            .max_frame_bytes
+            .checked_sub(STREAM_HEADER_BYTES as u64)
+            .unwrap()
+            .min(65_536)
+            .checked_mul((STREAM_HEADER_BYTES + 1) as u64)
+            .unwrap();
+        let ingress_transfers_at_maximum =
+            u64::try_from(Semaphore::MAX_PERMITS).unwrap() / ingress_bytes_per_upload;
+        limits.max_concurrent_transfers = ingress_transfers_at_maximum;
+        let exact_ingress = RuntimeLimits::from_served(&limits)
+            .expect("largest complete upload ingress bound below semaphore maximum");
+        assert_eq!(
+            exact_ingress.upload_ingress_capacity_bytes(),
+            usize::try_from(ingress_transfers_at_maximum * ingress_bytes_per_upload).unwrap()
+        );
+
+        limits.max_concurrent_transfers = ingress_transfers_at_maximum + 1;
+        assert!(matches!(
+            RuntimeLimits::from_served(&limits),
+            Err(RuntimeConfigError::UploadIngressCapacityTooLarge { .. })
+        ));
+
+        limits.max_concurrent_transfers = maximum;
+        limits.max_transfer_bytes_inflight = 0;
+        assert!(matches!(
+            RuntimeLimits::from_served(&limits),
+            Err(RuntimeConfigError::UploadIngressCapacityNotRepresentable
+                | RuntimeConfigError::UploadIngressCapacityTooLarge { .. })
+        ));
     }
 
     #[test]

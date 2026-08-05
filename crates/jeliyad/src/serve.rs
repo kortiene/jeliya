@@ -983,6 +983,7 @@ pub async fn serve_ws<S>(
     });
 
     let streams = crate::file_read::StreamRegistry::new();
+    let upload_budget = crate::file_share::UploadIngressBudget::new(state.runtime_limits);
     let requests = crate::file_read::RequestTracker::new(served.max_inflight_requests);
     let stream_ids = std::sync::Arc::new(std::sync::Mutex::new(
         crate::transfer::StreamIdGenerator::new(),
@@ -1104,11 +1105,12 @@ pub async fn serve_ws<S>(
                                 &closer,
                                 &mut inflight,
                                 &principal_key,
+                                &upload_budget,
                             ).await {
                                 break;
                             }
                         }
-                        Message::Binary(bytes) => match streams.route_binary(&bytes, &bounds) {
+                        Message::Binary(bytes) => match streams.route_binary_message(bytes, &bounds).await {
                             crate::file_read::BinaryRoute::Delivered => {}
                             crate::file_read::BinaryRoute::CloseTooLarge => {
                                 closer.request(tokio_tungstenite::tungstenite::protocol::CloseFrame {
@@ -1657,6 +1659,7 @@ async fn dispatch_text(
     closer: &crate::file_read::ConnectionCloser,
     inflight: &mut tokio::task::JoinSet<bool>,
     principal_key: &str,
+    upload_budget: &crate::file_share::UploadIngressBudget,
 ) -> bool {
     // This is the final request-admission linearization point. If it wins
     // before a concurrent Close claim, the request was already in flight and
@@ -1728,10 +1731,54 @@ async fn dispatch_text(
         _ => {}
     }
 
-    // `file.read` is the one producer-direction stream in this slice. Its
-    // request remains outstanding inside the actor through END/ABORT and the
-    // terminal Text writer acknowledgement. `file.share` deliberately stays
-    // on the ordinary engine path and continues returning `not_ready`.
+    // Stream requests remain outstanding inside their actors through the
+    // terminal Text writer acknowledgement. Upload owners are detached from
+    // the connection task set so accepted-END finalization and ledger
+    // publication survive socket teardown; registry invalidation remains the
+    // pre-END transport-loss signal.
+    if request.call.op == "file.share" {
+        let Some(file_share) = request
+            .call
+            .input_any()
+            .downcast_ref::<jeliya_api::FileShare>()
+            .cloned()
+        else {
+            return send_api_err(out_tx, request.id, jeliya_api::ApiError::MalformedFrame).await;
+        };
+        let engine = state.engine.clone();
+        let outbound = out_tx.clone();
+        let registry = streams.clone();
+        let stream_ids = stream_ids.clone();
+        let transfer_pool = state.transfer_pool.clone();
+        let limits = state.runtime_limits;
+        let closer = closer.clone();
+        let cancellations = state.upload_cancellations.clone();
+        let upload_budget = upload_budget.clone();
+        let principal_key = principal_key.to_owned();
+        let op_id = request.op_id.clone();
+        let id = request.id;
+        tokio::spawn(async move {
+            let _ = crate::file_share::run_file_share(
+                engine,
+                file_share,
+                op_id,
+                principal_key,
+                id,
+                request_permit,
+                outbound,
+                registry,
+                stream_ids,
+                transfer_pool,
+                limits,
+                closer,
+                cancellations,
+                upload_budget,
+            )
+            .await;
+        });
+        return true;
+    }
+
     if request.call.op == "file.read" {
         let Some(file_read) = request
             .call
@@ -1763,6 +1810,38 @@ async fn dispatch_text(
                 closer,
             )
             .await
+        });
+        return true;
+    }
+
+    // Upload cancellation is transport-owned and principal-scoped. Its own
+    // envelope op_id is intentionally ignored; only transfer_op_id selects a
+    // cancellable upload. Structural decoding has already succeeded, and the
+    // subject precondition remains ahead of the live-transfer lookup.
+    if request.call.op == "transfer.cancel" {
+        let Some(cancel) = request
+            .call
+            .input_any()
+            .downcast_ref::<jeliya_api::TransferCancel>()
+            .cloned()
+        else {
+            return send_api_err(out_tx, request.id, jeliya_api::ApiError::MalformedFrame).await;
+        };
+        let id = request.id;
+        let engine = state.engine.clone();
+        let cancellations = state.upload_cancellations.clone();
+        let principal_key = principal_key.to_owned();
+        let out_tx = out_tx.clone();
+        inflight.spawn(async move {
+            let _request_permit = request_permit;
+            let result = match engine.validate_transfer_cancel() {
+                Ok(()) => cancellations.cancel(&principal_key, &cancel).await,
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(out) => send_typed(&out_tx, id, &out).await,
+                Err(error) => send_api_err(&out_tx, id, error).await,
+            }
         });
         return true;
     }
@@ -1866,7 +1945,7 @@ fn text(status: StatusCode, body: &'static str) -> Response<Full<Bytes>> {
 mod tests {
     use std::sync::Arc;
 
-    use futures_util::{SinkExt, StreamExt};
+    use futures_util::{FutureExt, SinkExt, StreamExt};
     use hyper::{header::CONTENT_TYPE, StatusCode};
     use tempfile::TempDir;
     use tokio_tungstenite::tungstenite::{protocol::Role, Message};
@@ -1897,6 +1976,8 @@ mod tests {
         let runtime_limits =
             crate::transfer::RuntimeLimits::from_served(&limits).expect("test runtime limits");
         let transfer_pool = crate::transfer::TransferPool::from_runtime(&runtime_limits);
+        let upload_cancellations =
+            crate::file_share::UploadCancellationRegistry::with_engine(&engine);
         let state = crate::AppState {
             data_dir: dir.path().to_path_buf(),
             engine,
@@ -1906,8 +1987,39 @@ mod tests {
             connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             runtime_limits,
             transfer_pool,
+            upload_cancellations,
         };
         (dir, state)
+    }
+
+    fn configure_transfer_pool(
+        state: &mut crate::AppState,
+        max_concurrent_transfers: u64,
+        max_transfer_bytes_inflight: u64,
+    ) {
+        let mut limits = state.engine.limits();
+        limits.max_frame_bytes = SOCKET_FRAME_BYTES as u64;
+        limits.max_concurrent_transfers = max_concurrent_transfers;
+        limits.max_transfer_bytes_inflight = max_transfer_bytes_inflight;
+        state.runtime_limits =
+            crate::transfer::RuntimeLimits::from_served(&limits).expect("test runtime limits");
+        state.transfer_pool = crate::transfer::TransferPool::from_runtime(&state.runtime_limits);
+    }
+
+    fn configure_transfer_timers(
+        state: &mut crate::AppState,
+        transfer_stall_ms: u64,
+        transfer_connect_allowance_ms: u64,
+        transfer_floor_bits_per_second: u64,
+    ) {
+        let mut limits = state.engine.limits();
+        limits.max_frame_bytes = SOCKET_FRAME_BYTES as u64;
+        limits.transfer_stall_ms = transfer_stall_ms;
+        limits.transfer_connect_allowance_ms = transfer_connect_allowance_ms;
+        limits.transfer_floor_bits_per_second = transfer_floor_bits_per_second;
+        state.runtime_limits =
+            crate::transfer::RuntimeLimits::from_served(&limits).expect("test runtime limits");
+        state.transfer_pool = crate::transfer::TransferPool::from_runtime(&state.runtime_limits);
     }
 
     async fn socket_pair(
@@ -1916,15 +2028,26 @@ mod tests {
         WebSocketStream<tokio::io::DuplexStream>,
         tokio::task::JoinHandle<()>,
     ) {
+        socket_pair_as(state, "serve-test").await
+    }
+
+    async fn socket_pair_as(
+        state: crate::AppState,
+        client_id: &str,
+    ) -> (
+        WebSocketStream<tokio::io::DuplexStream>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let (server_io, client_io) = tokio::io::duplex(1 << 20);
         let server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
         let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let client_id = client_id.to_owned();
         let task = tokio::spawn(serve_ws(
             server,
             state,
             jeliya_codec::SessionPrincipal {
                 credential: "test-token".into(),
-                client_id: Some("serve-test".into()),
+                client_id: Some(client_id),
             },
         ));
         (client, task)
@@ -2014,6 +2137,12 @@ mod tests {
         bytes
     }
 
+    fn stream_data_wire(request_id: u64, stream_id: u128, offset: u64, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = stream_wire(0x02, request_id, stream_id, offset, 0);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
     async fn send_file_read(
         client: &mut WebSocketStream<tokio::io::DuplexStream>,
         id: u64,
@@ -2031,6 +2160,166 @@ mod tests {
             ))
             .await
             .expect("send file.read");
+    }
+
+    async fn complete_open_file_read(
+        client: &mut WebSocketStream<tokio::io::DuplexStream>,
+        request_id: u64,
+        stream_id: u128,
+        expected: &[u8],
+        bounds: &jeliya_codec::CodecBounds,
+    ) -> jeliya_codec::Reply {
+        let total = u64::try_from(expected.len()).unwrap();
+        client
+            .send(Message::Binary(
+                stream_wire(0x03, request_id, stream_id, 0, total).into(),
+            ))
+            .await
+            .expect("grant file.read credit");
+
+        let mut accepted = 0_u64;
+        loop {
+            let Message::Binary(record) = client.next().await.unwrap().unwrap() else {
+                panic!("file.read success reply preceded END");
+            };
+            let record = jeliya_codec::decode_stream_record(&record, bounds).unwrap();
+            match record.body {
+                jeliya_codec::StreamRecordBody::Data { offset, payload } => {
+                    assert_eq!(offset, accepted);
+                    let start = usize::try_from(accepted).unwrap();
+                    assert_eq!(payload, expected[start..start + payload.len()]);
+                    accepted += u64::try_from(payload.len()).unwrap();
+                    client
+                        .send(Message::Binary(
+                            stream_wire(0x03, request_id, stream_id, accepted, total).into(),
+                        ))
+                        .await
+                        .expect("acknowledge file.read DATA");
+                }
+                jeliya_codec::StreamRecordBody::End { total: observed } => {
+                    assert_eq!(observed, total);
+                    assert_eq!(accepted, total);
+                    break;
+                }
+                other => panic!("unexpected file.read record: {other:?}"),
+            }
+        }
+
+        let Message::Text(reply) = client.next().await.unwrap().unwrap() else {
+            panic!("file.read terminal success must be Text");
+        };
+        let reply: jeliya_codec::Reply = serde_json::from_str(&reply).unwrap();
+        assert!(reply.ok);
+        assert_eq!(reply.id, request_id);
+        reply
+    }
+
+    async fn next_socket_message(client: &mut WebSocketStream<tokio::io::DuplexStream>) -> Message {
+        tokio::time::timeout(std::time::Duration::from_secs(10), client.next())
+            .await
+            .expect("WebSocket stream made progress")
+            .expect("WebSocket connection remained open")
+            .expect("WebSocket message was readable")
+    }
+
+    async fn upload_through_declared_boundary(
+        client: &mut WebSocketStream<tokio::io::DuplexStream>,
+        request_id: u64,
+        identity: jeliya_codec::StreamIdentity,
+        declared: u64,
+        chunk_bytes: usize,
+        bounds: &jeliya_codec::CodecBounds,
+    ) {
+        assert!(chunk_bytes > 0);
+        let chunk_bytes_u64 = u64::try_from(chunk_bytes).unwrap();
+        let payload = vec![0x5a; chunk_bytes];
+        let mut offset = 0_u64;
+        while offset < declared {
+            let remaining = declared - offset;
+            let payload_len = usize::try_from(remaining.min(chunk_bytes_u64)).unwrap();
+            client
+                .send(Message::Binary(
+                    stream_data_wire(
+                        request_id,
+                        identity.stream_id().get(),
+                        offset,
+                        &payload[..payload_len],
+                    )
+                    .into(),
+                ))
+                .await
+                .expect("send one bounded upload DATA record");
+            offset += u64::try_from(payload_len).unwrap();
+
+            let credit = tokio::time::timeout(std::time::Duration::from_secs(30), client.next())
+                .await
+                .expect("bounded upload must continue making sink progress")
+                .expect("bounded upload connection remains open")
+                .expect("bounded upload CREDIT is readable");
+            let Message::Binary(credit) = credit else {
+                panic!("accepted upload DATA must advance Binary CREDIT");
+            };
+            let credit = jeliya_codec::decode_stream_record(&credit, bounds).unwrap();
+            assert_eq!(credit.identity, identity);
+            let send_through = if offset == declared {
+                declared.checked_add(1).unwrap()
+            } else {
+                offset.checked_add(chunk_bytes_u64).unwrap().min(declared)
+            };
+            assert_eq!(
+                credit.body,
+                jeliya_codec::StreamRecordBody::Credit {
+                    accepted_through: offset,
+                    send_through,
+                }
+            );
+        }
+    }
+
+    async fn open_one_byte_file_share(
+        client: &mut WebSocketStream<tokio::io::DuplexStream>,
+        request_id: u64,
+        room_id: &str,
+        name: &str,
+        bounds: &jeliya_codec::CodecBounds,
+    ) -> jeliya_codec::StreamIdentity {
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": request_id,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": room_id,
+                        "name": name,
+                        "declared_bytes": 1,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send one-byte file.share");
+        let Message::Binary(open) = next_socket_message(client).await else {
+            panic!("admitted file.share must begin with Binary OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, bounds).expect("decode upload OPEN");
+        assert_eq!(open.body, jeliya_codec::StreamRecordBody::Open { total: 1 });
+
+        let Message::Binary(credit) = next_socket_message(client).await else {
+            panic!("upload OPEN must be followed by Binary CREDIT");
+        };
+        let credit =
+            jeliya_codec::decode_stream_record(&credit, bounds).expect("decode initial CREDIT");
+        assert_eq!(credit.identity, open.identity);
+        assert_eq!(
+            credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: 1,
+            }
+        );
+        open.identity
     }
 
     #[test]
@@ -2309,7 +2598,7 @@ mod tests {
                     "op": "file.share",
                     "in": {
                         "room_id": request.room_id,
-                        "name": "still-not-streamed.bin",
+                        "name": "empty.bin",
                         "declared_bytes": 0,
                         "declared_content_type": "application/octet-stream",
                     }
@@ -2319,15 +2608,2577 @@ mod tests {
             ))
             .await
             .unwrap();
+        let Message::Binary(share_open) = second.next().await.unwrap().unwrap() else {
+            panic!("file.share must begin with Binary OPEN");
+        };
+        let share_open = jeliya_codec::decode_stream_record(&share_open, &bounds).unwrap();
+        assert_eq!(
+            share_open.body,
+            jeliya_codec::StreamRecordBody::Open { total: 0 }
+        );
+        let Message::Binary(share_credit) = second.next().await.unwrap().unwrap() else {
+            panic!("OPEN must be followed by Binary CREDIT");
+        };
+        let share_credit = jeliya_codec::decode_stream_record(&share_credit, &bounds).unwrap();
+        assert_eq!(share_credit.identity, share_open.identity);
+        assert_eq!(
+            share_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: 1,
+            }
+        );
+        second
+            .send(Message::Binary(
+                stream_wire(0x04, 9, share_open.identity.stream_id().get(), 0, 0).into(),
+            ))
+            .await
+            .unwrap();
         let Message::Text(share_reply) = second.next().await.unwrap().unwrap() else {
-            panic!("file.share refusal must remain an ordinary Text reply");
+            panic!("file.share success must follow END as Text");
         };
         let share_reply: jeliya_codec::Reply = serde_json::from_str(&share_reply).unwrap();
-        assert_eq!(share_reply.err, Some(jeliya_api::ApiError::NotReady));
+        assert!(share_reply.ok);
+        assert_eq!(share_reply.id, 9);
         second.close(None).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), second_server)
             .await
             .expect("completed connection teardown")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_joins_replays_and_authors_once() {
+        let (_dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let room_id = existing.room_id;
+        let request = serde_json::json!({
+            "op_id": "op-socket-upload-join-1",
+            "op": "file.share",
+            "in": {
+                "room_id": room_id,
+                "name": "joined.bin",
+                "declared_bytes": 3,
+                "declared_content_type": "application/octet-stream",
+            }
+        });
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+
+        let (mut owner, owner_server) = socket_pair(state.clone()).await;
+        let (mut joiner, joiner_server) = socket_pair(state.clone()).await;
+        assert!(matches!(owner.next().await, Some(Ok(Message::Text(_)))));
+        assert!(matches!(joiner.next().await, Some(Ok(Message::Text(_)))));
+
+        let mut owner_request = request.clone();
+        owner_request["id"] = 31.into();
+        owner
+            .send(Message::Text(owner_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Binary(open) = owner.next().await.unwrap().unwrap() else {
+            panic!("fresh upload owner must receive OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        assert_eq!(open.body, jeliya_codec::StreamRecordBody::Open { total: 3 });
+        let identity = open.identity;
+        let Message::Binary(initial_credit) = owner.next().await.unwrap().unwrap() else {
+            panic!("OPEN must be followed by CREDIT");
+        };
+        let initial_credit = jeliya_codec::decode_stream_record(&initial_credit, &bounds).unwrap();
+        assert_eq!(initial_credit.identity, identity);
+        assert_eq!(
+            initial_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: 3,
+            }
+        );
+
+        let mut joined_request = request.clone();
+        joined_request["id"] = 32.into();
+        joiner
+            .send(Message::Text(joined_request.to_string().into()))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), joiner.next())
+                .await
+                .is_err(),
+            "faithful concurrent replay must neither open nor reply before its owner"
+        );
+
+        owner
+            .send(Message::Binary(
+                stream_data_wire(31, identity.stream_id().get(), 0, &[1, 2]).into(),
+            ))
+            .await
+            .unwrap();
+        owner
+            .send(Message::Binary(
+                stream_data_wire(31, identity.stream_id().get(), 2, &[3]).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(sentinel_credit) = owner.next().await.unwrap().unwrap() else {
+            panic!("accepted declaration must expose the sentinel CREDIT");
+        };
+        let sentinel_credit =
+            jeliya_codec::decode_stream_record(&sentinel_credit, &bounds).unwrap();
+        assert_eq!(sentinel_credit.identity, identity);
+        assert_eq!(
+            sentinel_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 3,
+                send_through: 4,
+            }
+        );
+        owner
+            .send(Message::Binary(
+                stream_wire(0x04, 31, identity.stream_id().get(), 3, 0).into(),
+            ))
+            .await
+            .unwrap();
+
+        let Message::Text(owner_reply) = owner.next().await.unwrap().unwrap() else {
+            panic!("owner terminal must be Text");
+        };
+        let owner_reply: jeliya_codec::Reply = serde_json::from_str(&owner_reply).unwrap();
+        assert!(owner_reply.ok);
+        let Message::Text(joined_reply) = joiner.next().await.unwrap().unwrap() else {
+            panic!("faithful join terminal must be Text only");
+        };
+        let joined_reply: jeliya_codec::Reply = serde_json::from_str(&joined_reply).unwrap();
+        assert!(joined_reply.ok);
+        assert_eq!(joined_reply.out, owner_reply.out);
+
+        let mut replay_request = request.clone();
+        replay_request["id"] = 33.into();
+        joiner
+            .send(Message::Text(replay_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Text(replayed) = joiner.next().await.unwrap().unwrap() else {
+            panic!("completed replay must not open a second stream");
+        };
+        let replayed: jeliya_codec::Reply = serde_json::from_str(&replayed).unwrap();
+        assert_eq!(replayed.out, owner_reply.out);
+
+        let mut divergent = request;
+        divergent["id"] = 34.into();
+        divergent["in"]["name"] = "different.bin".into();
+        joiner
+            .send(Message::Text(divergent.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Text(conflict) = joiner.next().await.unwrap().unwrap() else {
+            panic!("divergent replay refusal must be Text");
+        };
+        let conflict: jeliya_codec::Reply = serde_json::from_str(&conflict).unwrap();
+        assert!(matches!(
+            conflict.err,
+            Some(jeliya_api::ApiError::OpIdConflict { .. })
+        ));
+
+        let listed = state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::FileList(
+                jeliya_api::FileList {
+                    room_id: room_id.clone(),
+                    page: jeliya_api::Page {
+                        cursor: jeliya_api::Cursor::Start,
+                        direction: jeliya_api::Direction::Forward,
+                        limit: 100,
+                    },
+                },
+            ))
+            .await
+            .reply
+            .expect("file.list after streamed share");
+        let jeliya_core::typed::TypedReply::FileList(listed) = listed else {
+            panic!("wrong file.list reply");
+        };
+        assert_eq!(
+            listed
+                .files
+                .iter()
+                .filter(|file| file.name == "joined.bin")
+                .count(),
+            1,
+            "join and replay must not import or author again"
+        );
+
+        joiner
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 35,
+                    "op": "transfer.cancel",
+                    "in": { "transfer_op_id": "op-socket-upload-join-1" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(completed_cancel) = joiner.next().await.unwrap().unwrap() else {
+            panic!("completed transfer cancel refusal must be Text");
+        };
+        let completed_cancel: jeliya_codec::Reply =
+            serde_json::from_str(&completed_cancel).unwrap();
+        assert!(matches!(
+            completed_cancel.err,
+            Some(jeliya_api::ApiError::TransferUnknown { .. })
+        ));
+
+        owner.close(None).await.unwrap();
+        joiner.close(None).await.unwrap();
+        for server in [owner_server, joiner_server] {
+            tokio::time::timeout(std::time::Duration::from_secs(1), server)
+                .await
+                .expect("connection teardown")
+                .expect("serve task");
+        }
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_succeeds_at_served_maximum_with_sentinel_credit() {
+        const EXPECTED_MAX_SHARED_BYTES: u64 = 100 * 1024 * 1024;
+        const DATA_PAYLOAD_BYTES: usize = 65_536;
+        const DATA_PAYLOAD_BYTES_U64: u64 = 65_536;
+        const REQUEST_ID: u64 = 36;
+
+        // A complete DATA record is bounded to 64 KiB by RuntimeLimits. Keep
+        // exactly one such payload resident and wait for advancing CREDIT
+        // after each record, so the test never allocates or queues the whole
+        // 100 MiB upload.
+        let max_frame_bytes = jeliya_codec::STREAM_HEADER_BYTES + DATA_PAYLOAD_BYTES;
+        let (dir, state) = test_state(u64::try_from(max_frame_bytes).unwrap());
+        let declared = state.engine.limits().max_shared_file_bytes;
+        assert_eq!(declared, EXPECTED_MAX_SHARED_BYTES);
+        assert_eq!(
+            state.runtime_limits.max_data_payload_bytes(),
+            DATA_PAYLOAD_BYTES
+        );
+
+        state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::SubjectEnsure(
+                jeliya_api::SubjectEnsure {},
+            ))
+            .await
+            .reply
+            .expect("subject.ensure");
+        let created = state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::RoomCreate(
+                jeliya_api::RoomCreate {
+                    name: "maximum socket upload".into(),
+                },
+            ))
+            .await
+            .reply
+            .expect("room.create");
+        let jeliya_core::typed::TypedReply::RoomCreate(created) = created else {
+            panic!("wrong room.create reply");
+        };
+        state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::RoomActivate(
+                jeliya_api::RoomActivate {
+                    room_id: created.room_id.clone(),
+                },
+            ))
+            .await
+            .reply
+            .expect("room.activate");
+
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": REQUEST_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": created.room_id,
+                        "name": "served-maximum.bin",
+                        "declared_bytes": declared,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send maximum file.share");
+
+        let Message::Binary(open) = client.next().await.unwrap().unwrap() else {
+            panic!("maximum upload must begin with Binary OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        assert_eq!(
+            open.body,
+            jeliya_codec::StreamRecordBody::Open { total: declared }
+        );
+        let identity = open.identity;
+
+        let Message::Binary(initial_credit) = client.next().await.unwrap().unwrap() else {
+            panic!("OPEN must be followed by Binary CREDIT");
+        };
+        let initial_credit = jeliya_codec::decode_stream_record(&initial_credit, &bounds).unwrap();
+        assert_eq!(initial_credit.identity, identity);
+        assert_eq!(
+            initial_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: DATA_PAYLOAD_BYTES_U64,
+            }
+        );
+
+        upload_through_declared_boundary(
+            &mut client,
+            REQUEST_ID,
+            identity,
+            declared,
+            DATA_PAYLOAD_BYTES,
+            &bounds,
+        )
+        .await;
+
+        client
+            .send(Message::Binary(
+                stream_wire(0x04, REQUEST_ID, identity.stream_id().get(), declared, 0).into(),
+            ))
+            .await
+            .expect("send END at the served maximum");
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(120), client.next())
+            .await
+            .expect("maximum upload finalization completes")
+            .expect("maximum upload connection remains open")
+            .expect("maximum upload terminal is readable");
+        let Message::Text(terminal) = terminal else {
+            panic!("maximum upload terminal must be Text");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert!(terminal.ok, "maximum upload failed: {:?}", terminal.err);
+        let output: jeliya_api::FileShareOut =
+            serde_json::from_value(terminal.out.expect("maximum upload output")).unwrap();
+        assert_eq!(output.bytes, declared);
+        assert!(!output.digest.is_empty());
+
+        let listed = state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::FileList(
+                jeliya_api::FileList {
+                    room_id: created.room_id.clone(),
+                    page: jeliya_api::Page {
+                        cursor: jeliya_api::Cursor::Start,
+                        direction: jeliya_api::Direction::Forward,
+                        limit: 100,
+                    },
+                },
+            ))
+            .await
+            .reply
+            .expect("file.list after maximum upload");
+        let jeliya_core::typed::TypedReply::FileList(listed) = listed else {
+            panic!("wrong file.list reply");
+        };
+        assert_eq!(listed.files.len(), 1, "exactly one file_shared event");
+        assert_eq!(listed.files[0].file_id, output.file_id);
+        assert_eq!(listed.files[0].name, "served-maximum.bin");
+
+        let protocol_staging = dir.path().join("protocol-v2-stream-staging");
+        assert!(protocol_staging.is_dir());
+        assert_eq!(
+            std::fs::read_dir(protocol_staging).unwrap().count(),
+            0,
+            "successful maximum upload leaves no protocol staging residue"
+        );
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_declared_max_plus_one_refuses_before_open() {
+        const REQUEST_ID: u64 = 131;
+        const SURVIVAL_ID: u64 = 132;
+
+        let (dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let limit = state.engine.limits().max_shared_file_bytes;
+        let declared = limit.checked_add(1).unwrap();
+        let protocol_staging = dir.path().join("protocol-v2-stream-staging");
+        assert!(!protocol_staging.exists());
+
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": REQUEST_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": existing.room_id,
+                        "name": "declared-too-large.bin",
+                        "declared_bytes": declared,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let Message::Text(refused) = next_socket_message(&mut client).await else {
+            panic!("stage_declared refusal must be Text without OPEN");
+        };
+        let refused: jeliya_codec::Reply = serde_json::from_str(&refused).unwrap();
+        assert_eq!(refused.id, REQUEST_ID);
+        assert_eq!(
+            refused.err,
+            Some(jeliya_api::ApiError::FileTooLarge {
+                declared_bytes: declared,
+                limit_bytes: limit,
+                enforced_at: jeliya_api::EnforcedAt::StageDeclared,
+            })
+        );
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        assert!(
+            !protocol_staging.exists(),
+            "declared policy runs before reservation and staging"
+        );
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": SURVIVAL_ID,
+                    "op": "room.list",
+                    "in": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(survival) = next_socket_message(&mut client).await else {
+            panic!("stage_declared refusal must leave the connection usable");
+        };
+        let survival: jeliya_codec::Reply = serde_json::from_str(&survival).unwrap();
+        assert_eq!(survival.id, SURVIVAL_ID);
+        assert!(survival.ok);
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_declared_sentinel_data_aborts_then_replies_mismatch() {
+        const REQUEST_ID: u64 = 133;
+        const SURVIVAL_ID: u64 = 134;
+        const DECLARED: u64 = 3;
+
+        let (dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": REQUEST_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": existing.room_id,
+                        "name": "declared-sentinel-probe.bin",
+                        "declared_bytes": DECLARED,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(open) = next_socket_message(&mut client).await else {
+            panic!("ordinary upload must OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        assert_eq!(
+            open.body,
+            jeliya_codec::StreamRecordBody::Open { total: DECLARED }
+        );
+        let identity = open.identity;
+        let Message::Binary(initial_credit) = next_socket_message(&mut client).await else {
+            panic!("ordinary upload OPEN must be followed by CREDIT");
+        };
+        let initial_credit = jeliya_codec::decode_stream_record(&initial_credit, &bounds).unwrap();
+        assert_eq!(initial_credit.identity, identity);
+        assert_eq!(
+            initial_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: DECLARED,
+            }
+        );
+
+        client
+            .send(Message::Binary(
+                stream_data_wire(REQUEST_ID, identity.stream_id().get(), 0, b"abc").into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(sentinel_credit) = next_socket_message(&mut client).await else {
+            panic!("accepted declaration must expose sentinel CREDIT");
+        };
+        let sentinel_credit =
+            jeliya_codec::decode_stream_record(&sentinel_credit, &bounds).unwrap();
+        assert_eq!(sentinel_credit.identity, identity);
+        assert_eq!(
+            sentinel_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: DECLARED,
+                send_through: DECLARED + 1,
+            }
+        );
+
+        client
+            .send(Message::Binary(
+                stream_data_wire(REQUEST_ID, identity.stream_id().get(), DECLARED, b"x").into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(abort) = next_socket_message(&mut client).await else {
+            panic!("one-past declaration DATA must receive daemon ABORT");
+        };
+        let abort = jeliya_codec::decode_stream_record(&abort, &bounds).unwrap();
+        assert_eq!(abort.identity, identity);
+        assert_eq!(
+            abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: DECLARED,
+                reason: jeliya_codec::BinaryAbortReason::OperationError,
+            }
+        );
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        client
+            .send(Message::Binary(
+                stream_wire(0x06, REQUEST_ID, identity.stream_id().get(), DECLARED, 0x05).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(terminal) = next_socket_message(&mut client).await else {
+            panic!("declared mismatch terminal must follow client ACK as Text");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert_eq!(terminal.id, REQUEST_ID);
+        assert_eq!(
+            terminal.err,
+            Some(jeliya_api::ApiError::DeclaredSizeMismatch {
+                declared_bytes: DECLARED,
+                observed_bytes: DECLARED + 1,
+            })
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("protocol-v2-stream-staging"))
+                .unwrap()
+                .count(),
+            0
+        );
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": SURVIVAL_ID,
+                    "op": "room.list",
+                    "in": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(survival) = next_socket_message(&mut client).await else {
+            panic!("declared mismatch must leave the connection usable");
+        };
+        let survival: jeliya_codec::Reply = serde_json::from_str(&survival).unwrap();
+        assert_eq!(survival.id, SURVIVAL_ID);
+        assert!(survival.ok);
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_maximum_sentinel_data_aborts_then_replies_stage_stream() {
+        const EXPECTED_MAX_SHARED_BYTES: u64 = 100 * 1024 * 1024;
+        const DATA_PAYLOAD_BYTES: usize = 65_536;
+        const DATA_PAYLOAD_BYTES_U64: u64 = 65_536;
+        const REQUEST_ID: u64 = 135;
+        const SURVIVAL_ID: u64 = 136;
+
+        let max_frame_bytes = jeliya_codec::STREAM_HEADER_BYTES + DATA_PAYLOAD_BYTES;
+        let (dir, state, existing) =
+            file_state(b"seed", u64::try_from(max_frame_bytes).unwrap()).await;
+        let declared = state.engine.limits().max_shared_file_bytes;
+        assert_eq!(declared, EXPECTED_MAX_SHARED_BYTES);
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": REQUEST_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": existing.room_id,
+                        "name": "maximum-sentinel-probe.bin",
+                        "declared_bytes": declared,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(open) = next_socket_message(&mut client).await else {
+            panic!("maximum sentinel probe must OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        assert_eq!(
+            open.body,
+            jeliya_codec::StreamRecordBody::Open { total: declared }
+        );
+        let identity = open.identity;
+        let Message::Binary(initial_credit) = next_socket_message(&mut client).await else {
+            panic!("maximum OPEN must be followed by CREDIT");
+        };
+        let initial_credit = jeliya_codec::decode_stream_record(&initial_credit, &bounds).unwrap();
+        assert_eq!(initial_credit.identity, identity);
+        assert_eq!(
+            initial_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: DATA_PAYLOAD_BYTES_U64,
+            }
+        );
+        upload_through_declared_boundary(
+            &mut client,
+            REQUEST_ID,
+            identity,
+            declared,
+            DATA_PAYLOAD_BYTES,
+            &bounds,
+        )
+        .await;
+
+        client
+            .send(Message::Binary(
+                stream_data_wire(REQUEST_ID, identity.stream_id().get(), declared, b"x").into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(abort) = next_socket_message(&mut client).await else {
+            panic!("maximum+1 DATA must receive daemon ABORT");
+        };
+        let abort = jeliya_codec::decode_stream_record(&abort, &bounds).unwrap();
+        assert_eq!(abort.identity, identity);
+        assert_eq!(
+            abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: declared,
+                reason: jeliya_codec::BinaryAbortReason::OperationError,
+            }
+        );
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        client
+            .send(Message::Binary(
+                stream_wire(0x06, REQUEST_ID, identity.stream_id().get(), declared, 0x05).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(terminal) = next_socket_message(&mut client).await else {
+            panic!("stage_stream terminal must follow client ACK as Text");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert_eq!(terminal.id, REQUEST_ID);
+        assert_eq!(
+            terminal.err,
+            Some(jeliya_api::ApiError::FileTooLarge {
+                declared_bytes: declared,
+                limit_bytes: declared,
+                enforced_at: jeliya_api::EnforcedAt::StageStream,
+            })
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("protocol-v2-stream-staging"))
+                .unwrap()
+                .count(),
+            0,
+            "maximum sentinel is observed but never staged"
+        );
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": SURVIVAL_ID,
+                    "op": "room.list",
+                    "in": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(survival) = next_socket_message(&mut client).await else {
+            panic!("stage_stream refusal must leave the connection usable");
+        };
+        let survival: jeliya_codec::Reply = serde_json::from_str(&survival).unwrap();
+        assert_eq!(survival.id, SURVIVAL_ID);
+        assert!(survival.ok);
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_duplicate_end_closes_4007_but_preserves_one_replayable_finalization() {
+        const OWNER_ID: u64 = 37;
+        const REPLAY_ID: u64 = 38;
+
+        let (_dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let room_id = existing.room_id;
+        let request = serde_json::json!({
+            "op_id": "op-duplicate-end-finalization",
+            "op": "file.share",
+            "in": {
+                "room_id": room_id,
+                "name": "duplicate-end.bin",
+                "declared_bytes": 0,
+                "declared_content_type": "application/octet-stream",
+            }
+        });
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+
+        let (mut owner, owner_server) = socket_pair(state.clone()).await;
+        assert!(matches!(owner.next().await, Some(Ok(Message::Text(_)))));
+        let mut owner_request = request.clone();
+        owner_request["id"] = OWNER_ID.into();
+        owner
+            .send(Message::Text(owner_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Binary(open) = owner.next().await.unwrap().unwrap() else {
+            panic!("duplicate-END upload must open");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        let identity = open.identity;
+        assert_eq!(open.body, jeliya_codec::StreamRecordBody::Open { total: 0 });
+        let Message::Binary(credit) = owner.next().await.unwrap().unwrap() else {
+            panic!("duplicate-END upload must receive sentinel CREDIT");
+        };
+        assert_eq!(
+            jeliya_codec::decode_stream_record(&credit, &bounds)
+                .unwrap()
+                .body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: 1,
+            }
+        );
+
+        let end =
+            Message::Binary(stream_wire(0x04, OWNER_ID, identity.stream_id().get(), 0, 0).into());
+        owner.feed(end.clone()).await.unwrap();
+        owner.feed(end).await.unwrap();
+        owner.flush().await.unwrap();
+
+        let close = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match owner.next().await {
+                    Some(Ok(Message::Close(frame))) => break frame,
+                    Some(Ok(Message::Text(reply))) => {
+                        let reply: jeliya_codec::Reply = serde_json::from_str(&reply).unwrap();
+                        assert!(reply.ok, "accepted END result must not be rewritten");
+                    }
+                    Some(Ok(other)) => panic!("unexpected post-END message: {other:?}"),
+                    Some(Err(error)) => panic!("connection failed before Close: {error}"),
+                    None => panic!("connection ended without 4007 Close"),
+                }
+            }
+        })
+        .await
+        .expect("duplicate END must close promptly");
+        let close = close.expect("malformed close carries a frame");
+        assert_eq!(close.code, 4007.into());
+        tokio::time::timeout(std::time::Duration::from_secs(2), owner_server)
+            .await
+            .expect("duplicate-END connection teardown")
+            .expect("serve task");
+
+        let (mut replay, replay_server) = socket_pair(state.clone()).await;
+        assert!(matches!(replay.next().await, Some(Ok(Message::Text(_)))));
+        let mut replay_request = request;
+        replay_request["id"] = REPLAY_ID.into();
+        replay
+            .send(Message::Text(replay_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Text(replayed) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), replay.next())
+                .await
+                .expect("detached finalization publishes replay")
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("faithful replay must return Text without a second OPEN");
+        };
+        let replayed: jeliya_codec::Reply = serde_json::from_str(&replayed).unwrap();
+        assert!(replayed.ok);
+
+        let listed = state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::FileList(
+                jeliya_api::FileList {
+                    room_id,
+                    page: jeliya_api::Page {
+                        cursor: jeliya_api::Cursor::Start,
+                        direction: jeliya_api::Direction::Forward,
+                        limit: 100,
+                    },
+                },
+            ))
+            .await
+            .reply
+            .expect("file.list after duplicate END");
+        let jeliya_core::typed::TypedReply::FileList(listed) = listed else {
+            panic!("wrong file.list reply");
+        };
+        assert_eq!(
+            listed
+                .files
+                .iter()
+                .filter(|file| file.name == "duplicate-end.bin")
+                .count(),
+            1,
+            "duplicate END must not author a second event"
+        );
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+
+        replay.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), replay_server)
+            .await
+            .expect("replay connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_shared_transfer_count_exhaustion_crosses_upload_to_download() {
+        const UPLOAD_ID: u64 = 91;
+        const REFUSED_READ_ID: u64 = 92;
+        const ADMITTED_READ_ID: u64 = 93;
+
+        let download = b"read";
+        let (_dir, mut state, read_request) = file_state(download, SOCKET_FRAME_BYTES as u64).await;
+        configure_transfer_pool(&mut state, 1, 8);
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": UPLOAD_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": read_request.room_id,
+                        "name": "count-holder.bin",
+                        "declared_bytes": 1,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(upload_open) = client.next().await.unwrap().unwrap() else {
+            panic!("first upload must receive OPEN");
+        };
+        let upload_open = jeliya_codec::decode_stream_record(&upload_open, &bounds).unwrap();
+        assert_eq!(
+            upload_open.body,
+            jeliya_codec::StreamRecordBody::Open { total: 1 }
+        );
+        let upload_identity = upload_open.identity;
+        let Message::Binary(upload_credit) = client.next().await.unwrap().unwrap() else {
+            panic!("upload OPEN must be followed by CREDIT");
+        };
+        let upload_credit = jeliya_codec::decode_stream_record(&upload_credit, &bounds).unwrap();
+        assert_eq!(
+            upload_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: 1,
+            }
+        );
+        assert_eq!(state.transfer_pool.usage(), (1, 1));
+
+        send_file_read(&mut client, REFUSED_READ_ID, &read_request).await;
+        let Message::Text(refused) = client.next().await.unwrap().unwrap() else {
+            panic!("count exhaustion must reply as Text without a second OPEN");
+        };
+        let refused: jeliya_codec::Reply = serde_json::from_str(&refused).unwrap();
+        assert_eq!(
+            refused.err,
+            Some(jeliya_api::ApiError::ResourceExhausted {
+                resource: "max_concurrent_transfers".into(),
+                limit: 1,
+            })
+        );
+        assert_eq!(state.transfer_pool.usage(), (1, 1));
+
+        // The refused download cannot disturb the upload that owns the slot.
+        client
+            .send(Message::Binary(
+                stream_data_wire(UPLOAD_ID, upload_identity.stream_id().get(), 0, b"x").into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(sentinel) = client.next().await.unwrap().unwrap() else {
+            panic!("the active upload must remain usable");
+        };
+        let sentinel = jeliya_codec::decode_stream_record(&sentinel, &bounds).unwrap();
+        assert_eq!(
+            sentinel.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 1,
+                send_through: 2,
+            }
+        );
+        client
+            .send(Message::Binary(
+                stream_wire(0x04, UPLOAD_ID, upload_identity.stream_id().get(), 1, 0).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(upload_reply) = client.next().await.unwrap().unwrap() else {
+            panic!("active upload terminal must be Text");
+        };
+        let upload_reply: jeliya_codec::Reply = serde_json::from_str(&upload_reply).unwrap();
+        assert!(upload_reply.ok);
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+
+        // Releasing the upload slot makes the same-direction-independent
+        // download admission succeed on this connection.
+        send_file_read(&mut client, ADMITTED_READ_ID, &read_request).await;
+        let Message::Binary(read_open) = client.next().await.unwrap().unwrap() else {
+            panic!("released count capacity must admit file.read OPEN");
+        };
+        let read_open = jeliya_codec::decode_stream_record(&read_open, &bounds).unwrap();
+        assert_eq!(
+            read_open.body,
+            jeliya_codec::StreamRecordBody::Open {
+                total: download.len() as u64,
+            }
+        );
+        complete_open_file_read(
+            &mut client,
+            ADMITTED_READ_ID,
+            read_open.identity.stream_id().get(),
+            download,
+            &bounds,
+        )
+        .await;
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_shared_transfer_byte_exhaustion_crosses_download_to_upload() {
+        const READ_ID: u64 = 94;
+        const REFUSED_UPLOAD_ID: u64 = 95;
+        const ADMITTED_UPLOAD_ID: u64 = 96;
+
+        let download = b"read";
+        let (dir, mut state, read_request) = file_state(download, SOCKET_FRAME_BYTES as u64).await;
+        configure_transfer_pool(&mut state, 2, u64::try_from(download.len()).unwrap());
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+        send_file_read(&mut client, READ_ID, &read_request).await;
+        let Message::Binary(read_open) = client.next().await.unwrap().unwrap() else {
+            panic!("first download must receive OPEN");
+        };
+        let read_open = jeliya_codec::decode_stream_record(&read_open, &bounds).unwrap();
+        assert_eq!(
+            read_open.body,
+            jeliya_codec::StreamRecordBody::Open {
+                total: download.len() as u64,
+            }
+        );
+        let read_identity = read_open.identity;
+        assert_eq!(
+            state.transfer_pool.usage(),
+            (1, u64::try_from(download.len()).unwrap())
+        );
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": REFUSED_UPLOAD_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": read_request.room_id,
+                        "name": "byte-refused.bin",
+                        "declared_bytes": 1,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(refused) = client.next().await.unwrap().unwrap() else {
+            panic!("byte exhaustion must reply as Text without an upload OPEN");
+        };
+        let refused: jeliya_codec::Reply = serde_json::from_str(&refused).unwrap();
+        assert_eq!(
+            refused.err,
+            Some(jeliya_api::ApiError::ResourceExhausted {
+                resource: "max_transfer_bytes_inflight".into(),
+                limit: u64::try_from(download.len()).unwrap(),
+            })
+        );
+        assert!(
+            !dir.path().join("protocol-v2-stream-staging").exists(),
+            "byte refusal precedes upload staging creation"
+        );
+
+        // The refused upload cannot disturb the download holding the bytes.
+        complete_open_file_read(
+            &mut client,
+            READ_ID,
+            read_identity.stream_id().get(),
+            download,
+            &bounds,
+        )
+        .await;
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": ADMITTED_UPLOAD_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": read_request.room_id,
+                        "name": "byte-admitted.bin",
+                        "declared_bytes": 1,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(upload_open) = client.next().await.unwrap().unwrap() else {
+            panic!("released byte capacity must admit file.share OPEN");
+        };
+        let upload_open = jeliya_codec::decode_stream_record(&upload_open, &bounds).unwrap();
+        assert_eq!(
+            upload_open.body,
+            jeliya_codec::StreamRecordBody::Open { total: 1 }
+        );
+        let upload_identity = upload_open.identity;
+        let Message::Binary(upload_credit) = client.next().await.unwrap().unwrap() else {
+            panic!("admitted upload OPEN must be followed by CREDIT");
+        };
+        let upload_credit = jeliya_codec::decode_stream_record(&upload_credit, &bounds).unwrap();
+        assert_eq!(
+            upload_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: 1,
+            }
+        );
+        client
+            .send(Message::Binary(
+                stream_data_wire(
+                    ADMITTED_UPLOAD_ID,
+                    upload_identity.stream_id().get(),
+                    0,
+                    b"y",
+                )
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(sentinel) = client.next().await.unwrap().unwrap() else {
+            panic!("admitted upload must reach sentinel CREDIT");
+        };
+        let sentinel = jeliya_codec::decode_stream_record(&sentinel, &bounds).unwrap();
+        assert_eq!(
+            sentinel.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 1,
+                send_through: 2,
+            }
+        );
+        client
+            .send(Message::Binary(
+                stream_wire(
+                    0x04,
+                    ADMITTED_UPLOAD_ID,
+                    upload_identity.stream_id().get(),
+                    1,
+                    0,
+                )
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(upload_reply) = client.next().await.unwrap().unwrap() else {
+            panic!("admitted upload terminal must be Text");
+        };
+        let upload_reply: jeliya_codec::Reply = serde_json::from_str(&upload_reply).unwrap();
+        assert!(upload_reply.ok);
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("protocol-v2-stream-staging"))
+                .unwrap()
+                .count(),
+            0
+        );
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_full_tiny_record_credit_window_cannot_starve_controls_or_abort() {
+        const UPLOAD_ID: u64 = 118;
+        const ORDINARY_ID: u64 = 119;
+
+        let (_dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let window = state.runtime_limits.max_data_payload_bytes();
+        assert!(window > 4, "regression must exceed the former fixed lane");
+        let declared = u64::try_from(window).unwrap();
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": UPLOAD_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": existing.room_id,
+                        "name": "tiny-window.bin",
+                        "declared_bytes": declared,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(open) = next_socket_message(&mut client).await else {
+            panic!("upload must begin with OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        assert_eq!(
+            open.body,
+            jeliya_codec::StreamRecordBody::Open { total: declared }
+        );
+        let identity = open.identity;
+        let Message::Binary(credit) = next_socket_message(&mut client).await else {
+            panic!("OPEN must be followed by CREDIT");
+        };
+        let credit = jeliya_codec::decode_stream_record(&credit, &bounds).unwrap();
+        assert_eq!(credit.identity, identity);
+        assert_eq!(
+            credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 0,
+                send_through: declared,
+            }
+        );
+
+        // Fill the complete legal window with the maximum possible record
+        // count without reading staging progress. The next Ping, ordinary
+        // Text request, and producer ABORT must still reach their independent
+        // control paths through the real WebSocket reader.
+        for offset in 0..window {
+            client
+                .send(Message::Binary(
+                    stream_data_wire(
+                        UPLOAD_ID,
+                        identity.stream_id().get(),
+                        u64::try_from(offset).unwrap(),
+                        &[0x5a],
+                    )
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        }
+        let ping_payload = b"after-full-upload-window".to_vec();
+        client
+            .send(Message::Ping(ping_payload.clone().into()))
+            .await
+            .unwrap();
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": ORDINARY_ID,
+                    "op": "room.list",
+                    "in": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        client
+            .send(Message::Binary(
+                stream_wire(0x05, UPLOAD_ID, identity.stream_id().get(), 0, 0x01).into(),
+            ))
+            .await
+            .unwrap();
+
+        let mut saw_pong = false;
+        let mut ordinary_reply = false;
+        let mut acknowledged = None;
+        let mut upload_reply = None;
+        while !saw_pong || !ordinary_reply || acknowledged.is_none() || upload_reply.is_none() {
+            match next_socket_message(&mut client).await {
+                Message::Pong(payload) => {
+                    assert_eq!(payload.as_ref(), ping_payload.as_slice());
+                    saw_pong = true;
+                }
+                Message::Binary(bytes) => {
+                    let record = jeliya_codec::decode_stream_record(&bytes, &bounds).unwrap();
+                    assert_eq!(record.identity, identity);
+                    match record.body {
+                        jeliya_codec::StreamRecordBody::Credit { .. } => {}
+                        jeliya_codec::StreamRecordBody::Ack { accepted_through } => {
+                            assert!(acknowledged.replace(accepted_through).is_none());
+                        }
+                        other => panic!("unexpected upload control after client ABORT: {other:?}"),
+                    }
+                }
+                Message::Text(text) => {
+                    let reply: jeliya_codec::Reply = serde_json::from_str(&text).unwrap();
+                    if reply.id == ORDINARY_ID {
+                        assert!(reply.ok);
+                        ordinary_reply = true;
+                    } else if reply.id == UPLOAD_ID {
+                        assert!(!reply.ok);
+                        assert!(upload_reply.replace(reply).is_none());
+                    } else {
+                        panic!("unexpected reply id {}", reply.id);
+                    }
+                }
+                other => panic!("unexpected message while draining upload controls: {other:?}"),
+            }
+        }
+
+        let acknowledged = acknowledged.unwrap();
+        let upload_reply = upload_reply.unwrap();
+        assert!(matches!(
+            upload_reply.err,
+            Some(jeliya_api::ApiError::StreamAborted {
+                transferred_bytes,
+                total: jeliya_api::ByteTotal::Known { bytes },
+                reason: jeliya_api::StreamAbortReason::Cancelled,
+            }) if transferred_bytes == acknowledged && bytes == declared
+        ));
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn websocket_interleaves_multiple_uploads_download_requests_controls_and_pushes() {
+        const SUBSCRIBE_ID: u64 = 121;
+        const UPLOAD_ONE_ID: u64 = 122;
+        const UPLOAD_TWO_ID: u64 = 123;
+        const READ_ID: u64 = 124;
+        const ORDINARY_ID: u64 = 125;
+        const UPLOAD_ONE_NAME: &str = "interleaved-one.bin";
+        const UPLOAD_TWO_NAME: &str = "interleaved-two.bin";
+
+        let download = b"download";
+        let (dir, mut state, read_request) = file_state(download, SOCKET_FRAME_BYTES as u64).await;
+        let mut interleaved_limits = state.engine.limits();
+        interleaved_limits.max_frame_bytes = SOCKET_FRAME_BYTES as u64;
+        interleaved_limits.transfer_connect_allowance_ms = 60_000;
+        interleaved_limits.transfer_stall_ms = 60_000;
+        state.runtime_limits =
+            crate::transfer::RuntimeLimits::from_served(&interleaved_limits).unwrap();
+        state.transfer_pool = crate::transfer::TransferPool::from_runtime(&state.runtime_limits);
+        let push_loop = state.engine.start_push_loop();
+        let room_id = read_request.room_id.clone();
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": SUBSCRIBE_ID,
+                    "op": "stream.subscribe",
+                    "in": jeliya_api::StreamSubscribe {
+                        room_id: room_id.clone(),
+                        from: jeliya_api::Cursor::Start,
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        loop {
+            let Message::Text(text) = next_socket_message(&mut client).await else {
+                panic!("stream.subscribe must receive a Text reply");
+            };
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value.get("id").and_then(serde_json::Value::as_u64) == Some(SUBSCRIBE_ID) {
+                let reply: jeliya_codec::Reply = serde_json::from_value(value).unwrap();
+                assert!(reply.ok);
+                break;
+            }
+            let _: jeliya_api::Push = serde_json::from_value(value).unwrap();
+        }
+
+        for (id, name) in [
+            (UPLOAD_ONE_ID, UPLOAD_ONE_NAME),
+            (UPLOAD_TWO_ID, UPLOAD_TWO_NAME),
+        ] {
+            client
+                .send(Message::Text(
+                    serde_json::json!({
+                        "id": id,
+                        "op": "file.share",
+                        "in": {
+                            "room_id": room_id,
+                            "name": name,
+                            "declared_bytes": 1,
+                            "declared_content_type": "application/octet-stream",
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        }
+        send_file_read(&mut client, READ_ID, &read_request).await;
+
+        let mut upload_one = None;
+        let mut upload_two = None;
+        let mut read = None;
+        let mut upload_one_credit = false;
+        let mut upload_two_credit = false;
+        while upload_one.is_none()
+            || upload_two.is_none()
+            || read.is_none()
+            || !upload_one_credit
+            || !upload_two_credit
+        {
+            match next_socket_message(&mut client).await {
+                Message::Binary(bytes) => {
+                    let record = jeliya_codec::decode_stream_record(&bytes, &bounds).unwrap();
+                    match (record.identity.request_id().get(), record.body) {
+                        (UPLOAD_ONE_ID, jeliya_codec::StreamRecordBody::Open { total: 1 }) => {
+                            assert!(upload_one.replace(record.identity).is_none());
+                        }
+                        (
+                            UPLOAD_ONE_ID,
+                            jeliya_codec::StreamRecordBody::Credit {
+                                accepted_through: 0,
+                                send_through: 1,
+                            },
+                        ) => {
+                            assert_eq!(upload_one, Some(record.identity));
+                            upload_one_credit = true;
+                        }
+                        (UPLOAD_TWO_ID, jeliya_codec::StreamRecordBody::Open { total: 1 }) => {
+                            assert!(upload_two.replace(record.identity).is_none());
+                        }
+                        (
+                            UPLOAD_TWO_ID,
+                            jeliya_codec::StreamRecordBody::Credit {
+                                accepted_through: 0,
+                                send_through: 1,
+                            },
+                        ) => {
+                            assert_eq!(upload_two, Some(record.identity));
+                            upload_two_credit = true;
+                        }
+                        (READ_ID, jeliya_codec::StreamRecordBody::Open { total }) => {
+                            assert_eq!(total, u64::try_from(download.len()).unwrap());
+                            assert!(read.replace(record.identity).is_none());
+                        }
+                        (request_id, body) => {
+                            panic!("unexpected opening record for request {request_id}: {body:?}")
+                        }
+                    }
+                }
+                Message::Text(text) => {
+                    // A delayed push for the host-staged download source is
+                    // harmless; replies from these fresh stream requests are
+                    // forbidden before their terminal records.
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    assert!(value.get("id").is_none(), "stream replied before OPEN");
+                    let _: jeliya_api::Push = serde_json::from_value(value).unwrap();
+                }
+                other => panic!("unexpected opening message: {other:?}"),
+            }
+        }
+        let upload_one = upload_one.unwrap();
+        let upload_two = upload_two.unwrap();
+        let read = read.unwrap();
+        assert_ne!(upload_one, upload_two);
+        assert_ne!(upload_one, read);
+        assert_ne!(upload_two, read);
+        assert_eq!(
+            state.transfer_pool.usage(),
+            (3, u64::try_from(download.len()).unwrap() + 2)
+        );
+
+        // Control and ordinary Text work must remain schedulable while all
+        // three byte streams are paused and active.
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": ORDINARY_ID,
+                    "op": "room.list",
+                    "in": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let ping_payload = b"interleaved-control".to_vec();
+        client
+            .send(Message::Ping(ping_payload.clone().into()))
+            .await
+            .unwrap();
+        let mut ordinary_reply = false;
+        let mut pong = false;
+        while !ordinary_reply || !pong {
+            match next_socket_message(&mut client).await {
+                Message::Text(text) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value.get("id").and_then(serde_json::Value::as_u64) == Some(ORDINARY_ID) {
+                        let reply: jeliya_codec::Reply = serde_json::from_value(value).unwrap();
+                        assert!(reply.ok);
+                        ordinary_reply = true;
+                    } else {
+                        let _: jeliya_api::Push = serde_json::from_value(value).unwrap();
+                    }
+                }
+                Message::Pong(payload) => {
+                    assert_eq!(payload.as_ref(), ping_payload.as_slice());
+                    pong = true;
+                }
+                other => panic!("paused streams emitted unexpected work: {other:?}"),
+            }
+        }
+
+        // Complete the first upload while the second upload and download stay
+        // active. Its subscribed file_shared push and terminal reply may
+        // arrive in either order.
+        client
+            .send(Message::Binary(
+                stream_data_wire(UPLOAD_ONE_ID, upload_one.stream_id().get(), 0, b"a").into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(first_sentinel) = next_socket_message(&mut client).await else {
+            panic!("first upload must advance CREDIT");
+        };
+        let first_sentinel = jeliya_codec::decode_stream_record(&first_sentinel, &bounds).unwrap();
+        assert_eq!(first_sentinel.identity, upload_one);
+        assert_eq!(
+            first_sentinel.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 1,
+                send_through: 2,
+            }
+        );
+        client
+            .send(Message::Binary(
+                stream_wire(0x04, UPLOAD_ONE_ID, upload_one.stream_id().get(), 1, 0).into(),
+            ))
+            .await
+            .unwrap();
+
+        let mut first_reply = false;
+        let mut first_push = false;
+        while !first_reply || !first_push {
+            let message = next_socket_message(&mut client).await;
+            let Message::Text(text) = message else {
+                panic!("first upload completion must use Text reply/push frames, got {message:?}");
+            };
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value.get("id").and_then(serde_json::Value::as_u64) == Some(UPLOAD_ONE_ID) {
+                let reply: jeliya_codec::Reply = serde_json::from_value(value).unwrap();
+                assert!(reply.ok);
+                first_reply = true;
+                continue;
+            }
+            let push: jeliya_api::Push = serde_json::from_value(value).unwrap();
+            if let jeliya_api::Push::Event {
+                room_id: pushed,
+                event,
+            } = push
+            {
+                assert_eq!(pushed, room_id);
+                if let jeliya_api::EventKindContent::FileShared { name, .. } = event.kind {
+                    if name == UPLOAD_ONE_NAME {
+                        first_push = true;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            state.transfer_pool.usage(),
+            (2, u64::try_from(download.len()).unwrap() + 1),
+            "the other upload and download remain admitted across the push"
+        );
+
+        // Now progress the remaining upload and download together. Route every
+        // Binary message by the complete identity; their relative order is
+        // intentionally unconstrained.
+        client
+            .send(Message::Binary(
+                stream_data_wire(UPLOAD_TWO_ID, upload_two.stream_id().get(), 0, b"b").into(),
+            ))
+            .await
+            .unwrap();
+        client
+            .send(Message::Binary(
+                stream_wire(
+                    0x03,
+                    READ_ID,
+                    read.stream_id().get(),
+                    0,
+                    u64::try_from(download.len()).unwrap(),
+                )
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let mut second_end_sent = false;
+        let mut second_reply = false;
+        let mut second_push = false;
+        let mut read_accepted = 0_u64;
+        let mut read_end = false;
+        let mut read_reply = false;
+        while !second_reply || !second_push || !read_end || !read_reply {
+            match next_socket_message(&mut client).await {
+                Message::Binary(bytes) => {
+                    let record = jeliya_codec::decode_stream_record(&bytes, &bounds).unwrap();
+                    let request_id = record.identity.request_id().get();
+                    if request_id == UPLOAD_TWO_ID {
+                        assert_eq!(record.identity, upload_two);
+                        assert_eq!(
+                            record.body,
+                            jeliya_codec::StreamRecordBody::Credit {
+                                accepted_through: 1,
+                                send_through: 2,
+                            }
+                        );
+                        assert!(!second_end_sent);
+                        client
+                            .send(Message::Binary(
+                                stream_wire(
+                                    0x04,
+                                    UPLOAD_TWO_ID,
+                                    upload_two.stream_id().get(),
+                                    1,
+                                    0,
+                                )
+                                .into(),
+                            ))
+                            .await
+                            .unwrap();
+                        second_end_sent = true;
+                    } else if request_id == READ_ID {
+                        assert_eq!(record.identity, read);
+                        match record.body {
+                            jeliya_codec::StreamRecordBody::Data { offset, payload } => {
+                                assert_eq!(offset, read_accepted);
+                                let start = usize::try_from(read_accepted).unwrap();
+                                assert_eq!(payload, download[start..start + payload.len()]);
+                                read_accepted += u64::try_from(payload.len()).unwrap();
+                                client
+                                    .send(Message::Binary(
+                                        stream_wire(
+                                            0x03,
+                                            READ_ID,
+                                            read.stream_id().get(),
+                                            read_accepted,
+                                            u64::try_from(download.len()).unwrap(),
+                                        )
+                                        .into(),
+                                    ))
+                                    .await
+                                    .unwrap();
+                            }
+                            jeliya_codec::StreamRecordBody::End { total } => {
+                                assert_eq!(total, u64::try_from(download.len()).unwrap());
+                                assert_eq!(read_accepted, total);
+                                read_end = true;
+                            }
+                            other => panic!("unexpected download record: {other:?}"),
+                        }
+                    } else {
+                        panic!("Binary record crossed to request {request_id}");
+                    }
+                }
+                Message::Text(text) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
+                        let reply: jeliya_codec::Reply = serde_json::from_value(value).unwrap();
+                        assert!(reply.ok);
+                        match id {
+                            UPLOAD_TWO_ID => second_reply = true,
+                            READ_ID => read_reply = true,
+                            _ => panic!("unexpected terminal reply id {id}"),
+                        }
+                    } else {
+                        let push: jeliya_api::Push = serde_json::from_value(value).unwrap();
+                        if let jeliya_api::Push::Event {
+                            room_id: pushed,
+                            event,
+                        } = push
+                        {
+                            assert_eq!(pushed, room_id);
+                            if let jeliya_api::EventKindContent::FileShared { name, .. } =
+                                event.kind
+                            {
+                                if name == UPLOAD_TWO_NAME {
+                                    second_push = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                other => panic!("unexpected interleaved message: {other:?}"),
+            }
+        }
+        assert!(second_end_sent);
+        assert_eq!(read_accepted, u64::try_from(download.len()).unwrap());
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("protocol-v2-stream-staging"))
+                .unwrap()
+                .count(),
+            0
+        );
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+        push_loop.stop();
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_cancel_is_principal_scoped_and_idempotent() {
+        let (_dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let room_id = existing.room_id;
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let transfer_op_id = "op-socket-upload-cancel-1";
+
+        let (mut owner, owner_server) = socket_pair(state.clone()).await;
+        let (mut joiner, joiner_server) = socket_pair(state.clone()).await;
+        let (mut canceller, canceller_server) = socket_pair(state.clone()).await;
+        let (mut stranger, stranger_server) = socket_pair_as(state.clone(), "other-client").await;
+        for client in [&mut owner, &mut joiner, &mut canceller, &mut stranger] {
+            assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        }
+
+        owner
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 41,
+                    "op_id": transfer_op_id,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": room_id,
+                        "name": "cancelled.bin",
+                        "declared_bytes": 3,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(open) = owner.next().await.unwrap().unwrap() else {
+            panic!("upload owner must receive OPEN");
+        };
+        let open = jeliya_codec::decode_stream_record(&open, &bounds).unwrap();
+        let identity = open.identity;
+        assert!(matches!(
+            owner.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+
+        joiner
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 44,
+                    "op_id": transfer_op_id,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": room_id,
+                        "name": "cancelled.bin",
+                        "declared_bytes": 3,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), joiner.next())
+                .await
+                .is_err(),
+            "faithful join must receive neither OPEN nor an early reply"
+        );
+
+        stranger
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 51,
+                    "op": "transfer.cancel",
+                    "in": { "transfer_op_id": transfer_op_id }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(unknown) = stranger.next().await.unwrap().unwrap() else {
+            panic!("wrong-principal cancel refusal must be Text");
+        };
+        let unknown: jeliya_codec::Reply = serde_json::from_str(&unknown).unwrap();
+        assert!(matches!(
+            unknown.err,
+            Some(jeliya_api::ApiError::TransferUnknown { .. })
+        ));
+
+        canceller
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 42,
+                    "op_id": "ignored-cancel-envelope-id",
+                    "op": "transfer.cancel",
+                    "in": { "transfer_op_id": transfer_op_id }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(cancelled) = canceller.next().await.unwrap().unwrap() else {
+            panic!("cancel outcome must be Text");
+        };
+        let cancelled: jeliya_codec::Reply = serde_json::from_str(&cancelled).unwrap();
+        let cancelled: jeliya_api::TransferCancelOut =
+            serde_json::from_value(cancelled.out.expect("cancelled outcome")).unwrap();
+        assert_eq!(cancelled.outcome, jeliya_api::CancelOutcome::Cancelled);
+        assert_eq!(cancelled.transferred_bytes, 0);
+        assert_eq!(cancelled.total, jeliya_api::ByteTotal::Known { bytes: 3 });
+        assert_eq!(
+            state.transfer_pool.usage(),
+            (0, 0),
+            "cancel reply cannot outrun local reservation release"
+        );
+
+        let Message::Binary(abort) = owner.next().await.unwrap().unwrap() else {
+            panic!("winning cancellation must send daemon ABORT");
+        };
+        let abort = jeliya_codec::decode_stream_record(&abort, &bounds).unwrap();
+        assert_eq!(abort.identity, identity);
+        assert_eq!(
+            abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: 0,
+                reason: jeliya_codec::BinaryAbortReason::Cancelled,
+            }
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), joiner.next())
+                .await
+                .is_err(),
+            "ledger publication must wait for the owner's explicit ACK obligation"
+        );
+        owner
+            .send(Message::Binary(
+                stream_wire(0x06, 41, identity.stream_id().get(), 0, 0x05).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(original) = owner.next().await.unwrap().unwrap() else {
+            panic!("original upload terminal must follow ACK as Text");
+        };
+        let original: jeliya_codec::Reply = serde_json::from_str(&original).unwrap();
+        assert_eq!(
+            original.err,
+            Some(jeliya_api::ApiError::StreamAborted {
+                transferred_bytes: 0,
+                total: jeliya_api::ByteTotal::Known { bytes: 3 },
+                reason: jeliya_api::StreamAbortReason::Cancelled,
+            })
+        );
+        let Message::Text(joined) = joiner.next().await.unwrap().unwrap() else {
+            panic!("faithful join must receive the selected terminal Text result");
+        };
+        let joined: jeliya_codec::Reply = serde_json::from_str(&joined).unwrap();
+        assert_eq!(joined.err, original.err);
+
+        canceller
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 43,
+                    "op": "transfer.cancel",
+                    "in": { "transfer_op_id": transfer_op_id }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(already) = canceller.next().await.unwrap().unwrap() else {
+            panic!("repeat cancel outcome must be Text");
+        };
+        let already: jeliya_codec::Reply = serde_json::from_str(&already).unwrap();
+        let already: jeliya_api::TransferCancelOut =
+            serde_json::from_value(already.out.expect("already-cancelled outcome")).unwrap();
+        assert_eq!(already.outcome, jeliya_api::CancelOutcome::AlreadyCancelled);
+        assert_eq!(already.transferred_bytes, cancelled.transferred_bytes);
+        assert_eq!(already.total, cancelled.total);
+
+        owner.close(None).await.unwrap();
+        joiner.close(None).await.unwrap();
+        canceller.close(None).await.unwrap();
+        stranger.close(None).await.unwrap();
+        for server in [
+            owner_server,
+            joiner_server,
+            canceller_server,
+            stranger_server,
+        ] {
+            tokio::time::timeout(std::time::Duration::from_secs(1), server)
+                .await
+                .expect("connection teardown")
+                .expect("serve task");
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_crossed_abort_is_correlated_and_connection_survives() {
+        let (_dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 55,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": existing.room_id,
+                        "name": "crossed-abort.bin",
+                        "declared_bytes": 0,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(open) = client.next().await.unwrap().unwrap() else {
+            panic!("upload must open");
+        };
+        let identity = jeliya_codec::decode_stream_record(&open, &bounds)
+            .unwrap()
+            .identity;
+        assert!(matches!(
+            client.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+
+        // Empty DATA is an exact-bound request-local fault. Queue a valid
+        // producer ABORT immediately behind it so the daemon must preserve its
+        // selected protocol_error while discharging both ACK obligations.
+        client
+            .send(Message::Binary(
+                stream_wire(0x02, 55, identity.stream_id().get(), 0, 0).into(),
+            ))
+            .await
+            .unwrap();
+        client
+            .send(Message::Binary(
+                stream_wire(0x05, 55, identity.stream_id().get(), 0, 0x02).into(),
+            ))
+            .await
+            .unwrap();
+
+        let Message::Binary(daemon_abort) = client.next().await.unwrap().unwrap() else {
+            panic!("bound fault must send daemon ABORT");
+        };
+        let daemon_abort = jeliya_codec::decode_stream_record(&daemon_abort, &bounds).unwrap();
+        assert_eq!(daemon_abort.identity, identity);
+        assert_eq!(
+            daemon_abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: 0,
+                reason: jeliya_codec::BinaryAbortReason::ProtocolError,
+            }
+        );
+        let Message::Binary(client_abort_ack) = client.next().await.unwrap().unwrap() else {
+            panic!("daemon must ACK the crossed producer ABORT");
+        };
+        let client_abort_ack =
+            jeliya_codec::decode_stream_record(&client_abort_ack, &bounds).unwrap();
+        assert_eq!(client_abort_ack.identity, identity);
+        assert_eq!(
+            client_abort_ack.body,
+            jeliya_codec::StreamRecordBody::Ack {
+                accepted_through: 0,
+            }
+        );
+        client
+            .send(Message::Binary(
+                stream_wire(0x06, 55, identity.stream_id().get(), 0, 0x05).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(terminal) = client.next().await.unwrap().unwrap() else {
+            panic!("daemon terminal must follow the crossed ACK exchange");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert_eq!(terminal.err, Some(jeliya_api::ApiError::MalformedFrame));
+
+        client
+            .send(Message::Text(
+                r#"{"id":56,"op":"subject.ensure","in":{}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(unrelated) = client.next().await.unwrap().unwrap() else {
+            panic!("request-local upload fault must leave the connection usable");
+        };
+        let unrelated: jeliya_codec::Reply = serde_json::from_str(&unrelated).unwrap();
+        assert!(unrelated.ok);
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 57,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": existing.room_id,
+                        "name": "client-abort.bin",
+                        "declared_bytes": 0,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(second_open) = client.next().await.unwrap().unwrap() else {
+            panic!("unrelated upload must still open");
+        };
+        let second_identity = jeliya_codec::decode_stream_record(&second_open, &bounds)
+            .unwrap()
+            .identity;
+        assert!(matches!(
+            client.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+        client
+            .send(Message::Binary(
+                stream_wire(0x05, 57, second_identity.stream_id().get(), 0, 0x02).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(ack) = client.next().await.unwrap().unwrap() else {
+            panic!("producer ABORT must be ACKed");
+        };
+        let ack = jeliya_codec::decode_stream_record(&ack, &bounds).unwrap();
+        assert_eq!(ack.identity, second_identity);
+        assert_eq!(
+            ack.body,
+            jeliya_codec::StreamRecordBody::Ack {
+                accepted_through: 0,
+            }
+        );
+        let Message::Text(aborted) = client.next().await.unwrap().unwrap() else {
+            panic!("client ABORT must finish with Text stream_aborted");
+        };
+        let aborted: jeliya_codec::Reply = serde_json::from_str(&aborted).unwrap();
+        assert_eq!(
+            aborted.err,
+            Some(jeliya_api::ApiError::StreamAborted {
+                transferred_bytes: 0,
+                total: jeliya_api::ByteTotal::Known { bytes: 0 },
+                reason: jeliya_api::StreamAbortReason::SourceFailed,
+            })
+        );
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_daemon_abort_ack_timeout_replies_then_closes_4007() {
+        const REQUEST_ID: u64 = 71;
+        const STALL_MS: u64 = 200;
+
+        let (dir, mut state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        configure_transfer_timers(&mut state, STALL_MS, 5_000, 8_000);
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        let identity = open_one_byte_file_share(
+            &mut client,
+            REQUEST_ID,
+            existing.room_id.as_str(),
+            "ack-timeout.bin",
+            &bounds,
+        )
+        .await;
+
+        // Freeze only after staging and OPEN/CREDIT have completed. The
+        // malformed record then selects protocol_error without allowing a
+        // paused clock to race asynchronous staging setup.
+        tokio::time::pause();
+        client
+            .send(Message::Binary(
+                stream_wire(0x02, REQUEST_ID, identity.stream_id().get(), 0, 0).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(abort) = next_socket_message(&mut client).await else {
+            panic!("bound malformed DATA must receive daemon ABORT");
+        };
+        let abort = jeliya_codec::decode_stream_record(&abort, &bounds).unwrap();
+        assert_eq!(abort.identity, identity);
+        assert_eq!(
+            abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: 0,
+                reason: jeliya_codec::BinaryAbortReason::ProtocolError,
+            }
+        );
+
+        // The local terminal decision releases admission and discards the
+        // private stage before waiting for the producer's exact ACK.
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        let staging = dir.path().join("protocol-v2-stream-staging");
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+
+        assert!(
+            client.next().now_or_never().is_none(),
+            "terminal Text must wait for the ACK boundary"
+        );
+        tokio::time::advance(std::time::Duration::from_millis(STALL_MS - 1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            client.next().now_or_never().is_none(),
+            "ACK wait must remain open through transfer_stall_ms - 1"
+        );
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+
+        let Message::Text(terminal) = next_socket_message(&mut client).await else {
+            panic!("ACK timeout must publish the selected terminal Text result");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert_eq!(terminal.id, REQUEST_ID);
+        assert_eq!(terminal.err, Some(jeliya_api::ApiError::MalformedFrame));
+
+        let Message::Close(Some(close)) = next_socket_message(&mut client).await else {
+            panic!("ACK timeout terminal must be followed by a Close frame");
+        };
+        assert_eq!(u16::from(close.code), 4007);
+        assert_eq!(close.reason, "malformed_frame");
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("ACK-timeout connection teardown")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_no_progress_stalls_and_survives_exact_ack() {
+        const REQUEST_ID: u64 = 72;
+        const SURVIVAL_ID: u64 = 73;
+        const STALL_MS: u64 = 100;
+
+        let (dir, mut state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        configure_transfer_timers(&mut state, STALL_MS, 5_000, 8_000);
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        let identity = open_one_byte_file_share(
+            &mut client,
+            REQUEST_ID,
+            existing.room_id.as_str(),
+            "stalled-upload.bin",
+            &bounds,
+        )
+        .await;
+
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_millis(STALL_MS)).await;
+        tokio::task::yield_now().await;
+        let Message::Binary(abort) = next_socket_message(&mut client).await else {
+            panic!("zero accepted progress must receive daemon ABORT");
+        };
+        let abort = jeliya_codec::decode_stream_record(&abort, &bounds).unwrap();
+        assert_eq!(abort.identity, identity);
+        assert_eq!(
+            abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: 0,
+                reason: jeliya_codec::BinaryAbortReason::OperationError,
+            }
+        );
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        let staging = dir.path().join("protocol-v2-stream-staging");
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+
+        client
+            .send(Message::Binary(
+                stream_wire(0x06, REQUEST_ID, identity.stream_id().get(), 0, 0x05).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(terminal) = next_socket_message(&mut client).await else {
+            panic!("exact ACK must release the stalled terminal Text reply");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert_eq!(terminal.id, REQUEST_ID);
+        assert_eq!(
+            terminal.err,
+            Some(jeliya_api::ApiError::TransferStalled {
+                transferred_bytes: 0,
+                total: jeliya_api::ByteTotal::Known { bytes: 1 },
+            })
+        );
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": SURVIVAL_ID,
+                    "op": "room.list",
+                    "in": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(survival) = next_socket_message(&mut client).await else {
+            panic!("an exact daemon-ABORT ACK must preserve the connection");
+        };
+        let survival: jeliya_codec::Reply = serde_json::from_str(&survival).unwrap();
+        assert_eq!(survival.id, SURVIVAL_ID);
+        assert!(survival.ok);
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("stalled upload connection teardown")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_progress_resets_stall_but_not_absolute_deadline() {
+        const REQUEST_ID: u64 = 74;
+        const SURVIVAL_ID: u64 = 75;
+        const STALL_MS: u64 = 1_000;
+        const DEADLINE_BUDGET_MS: u64 = 1_600;
+
+        let (dir, mut state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        // One byte costs exactly 1 ms at 8,000 bits/s, so the admitted
+        // absolute budget is 1,599 + 1 = 1,600 ms. Accepting at about 800 ms
+        // moves the stall boundary to about 1,800 ms without moving the
+        // absolute deadline.
+        configure_transfer_timers(&mut state, STALL_MS, 1_599, 8_000);
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state.clone()).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+        let identity = open_one_byte_file_share(
+            &mut client,
+            REQUEST_ID,
+            existing.room_id.as_str(),
+            "deadline-upload.bin",
+            &bounds,
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        client
+            .send(Message::Binary(
+                stream_data_wire(REQUEST_ID, identity.stream_id().get(), 0, b"x").into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(sentinel_credit) = next_socket_message(&mut client).await else {
+            panic!("durably accepted progress must advance CREDIT");
+        };
+        let sentinel_credit =
+            jeliya_codec::decode_stream_record(&sentinel_credit, &bounds).unwrap();
+        assert_eq!(sentinel_credit.identity, identity);
+        assert_eq!(
+            sentinel_credit.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 1,
+                send_through: 2,
+            }
+        );
+
+        let Message::Binary(abort) = next_socket_message(&mut client).await else {
+            panic!("absolute deadline must receive daemon ABORT after progress");
+        };
+        let abort = jeliya_codec::decode_stream_record(&abort, &bounds).unwrap();
+        assert_eq!(abort.identity, identity);
+        assert_eq!(
+            abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: 1,
+                reason: jeliya_codec::BinaryAbortReason::OperationError,
+            }
+        );
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        let staging = dir.path().join("protocol-v2-stream-staging");
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+
+        client
+            .send(Message::Binary(
+                stream_wire(0x06, REQUEST_ID, identity.stream_id().get(), 1, 0x05).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(terminal) = next_socket_message(&mut client).await else {
+            panic!("exact ACK must release the deadline terminal Text reply");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert_eq!(terminal.id, REQUEST_ID);
+        assert_eq!(
+            terminal.err,
+            Some(jeliya_api::ApiError::TransferDeadlineExceeded {
+                transferred_bytes: 1,
+                total: jeliya_api::ByteTotal::Known { bytes: 1 },
+                budget_ms: DEADLINE_BUDGET_MS,
+            })
+        );
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": SURVIVAL_ID,
+                    "op": "room.list",
+                    "in": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(survival) = next_socket_message(&mut client).await else {
+            panic!("deadline terminal with exact ACK must preserve the connection");
+        };
+        let survival: jeliya_codec::Reply = serde_json::from_str(&survival).unwrap();
+        assert_eq!(survival.id, SURVIVAL_ID);
+        assert!(survival.ok);
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("deadline upload connection teardown")
+            .expect("serve task");
+        assert_eq!(state.transfer_pool.usage(), (0, 0));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn websocket_file_share_disconnect_replays_pre_and_post_end_results() {
+        let (_dir, state, existing) = file_state(b"seed", SOCKET_FRAME_BYTES as u64).await;
+        let room_id = existing.room_id;
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: SOCKET_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let pre_body = serde_json::json!({
+            "op_id": "op-socket-upload-pre-end-loss-1",
+            "op": "file.share",
+            "in": {
+                "room_id": room_id,
+                "name": "pre-end-lost.bin",
+                "declared_bytes": 1,
+                "declared_content_type": "application/octet-stream",
+            }
+        });
+
+        let (mut first, first_server) = socket_pair(state.clone()).await;
+        assert!(matches!(first.next().await, Some(Ok(Message::Text(_)))));
+        let mut first_request = pre_body.clone();
+        first_request["id"] = 61.into();
+        first
+            .send(Message::Text(first_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Binary(open) = first.next().await.unwrap().unwrap() else {
+            panic!("pre-END upload must open");
+        };
+        let identity = jeliya_codec::decode_stream_record(&open, &bounds)
+            .unwrap()
+            .identity;
+        assert!(matches!(
+            first.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+        first
+            .send(Message::Binary(
+                stream_data_wire(61, identity.stream_id().get(), 0, &[7]).into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Binary(accepted) = first.next().await.unwrap().unwrap() else {
+            panic!("accepted DATA must advance sentinel CREDIT");
+        };
+        let accepted = jeliya_codec::decode_stream_record(&accepted, &bounds).unwrap();
+        assert_eq!(
+            accepted.body,
+            jeliya_codec::StreamRecordBody::Credit {
+                accepted_through: 1,
+                send_through: 2,
+            }
+        );
+        drop(first);
+        tokio::time::timeout(std::time::Duration::from_secs(1), first_server)
+            .await
+            .expect("pre-END disconnect teardown")
+            .expect("serve task");
+
+        let (mut replay, replay_server) = socket_pair(state.clone()).await;
+        assert!(matches!(replay.next().await, Some(Ok(Message::Text(_)))));
+        let mut replay_request = pre_body;
+        replay_request["id"] = 62.into();
+        replay
+            .send(Message::Text(replay_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Text(pre_lost) = replay.next().await.unwrap().unwrap() else {
+            panic!("pre-END replay must return Text without OPEN");
+        };
+        let pre_lost: jeliya_codec::Reply = serde_json::from_str(&pre_lost).unwrap();
+        assert_eq!(
+            pre_lost.err,
+            Some(jeliya_api::ApiError::StreamAborted {
+                transferred_bytes: 1,
+                total: jeliya_api::ByteTotal::Known { bytes: 1 },
+                reason: jeliya_api::StreamAbortReason::TransportLost,
+            })
+        );
+
+        let post_body = serde_json::json!({
+            "op_id": "op-socket-upload-post-end-loss-1",
+            "op": "file.share",
+            "in": {
+                "room_id": room_id,
+                "name": "post-end-committed.bin",
+                "declared_bytes": 0,
+                "declared_content_type": "application/octet-stream",
+            }
+        });
+        let mut post_request = post_body.clone();
+        post_request["id"] = 63.into();
+        replay
+            .send(Message::Text(post_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Binary(post_open) = replay.next().await.unwrap().unwrap() else {
+            panic!("post-END owner must open");
+        };
+        let post_identity = jeliya_codec::decode_stream_record(&post_open, &bounds)
+            .unwrap()
+            .identity;
+        assert!(matches!(
+            replay.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+        replay
+            .send(Message::Binary(
+                stream_wire(0x04, 63, post_identity.stream_id().get(), 0, 0).into(),
+            ))
+            .await
+            .unwrap();
+        // Drop immediately after the END write: the actor must honor the
+        // already-routed terminal before connection invalidation can synthesize
+        // transport_lost.
+        drop(replay);
+        tokio::time::timeout(std::time::Duration::from_secs(1), replay_server)
+            .await
+            .expect("post-END disconnect teardown")
+            .expect("serve task");
+
+        let (mut final_replay, final_server) = socket_pair(state.clone()).await;
+        assert!(matches!(
+            final_replay.next().await,
+            Some(Ok(Message::Text(_)))
+        ));
+        let mut final_request = post_body;
+        final_request["id"] = 64.into();
+        final_replay
+            .send(Message::Text(final_request.to_string().into()))
+            .await
+            .unwrap();
+        let Message::Text(committed) = final_replay.next().await.unwrap().unwrap() else {
+            panic!("post-END replay must return the committed Text result");
+        };
+        let committed: jeliya_codec::Reply = serde_json::from_str(&committed).unwrap();
+        assert!(committed.ok);
+
+        let listed = state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::FileList(
+                jeliya_api::FileList {
+                    room_id: room_id.clone(),
+                    page: jeliya_api::Page {
+                        cursor: jeliya_api::Cursor::Start,
+                        direction: jeliya_api::Direction::Forward,
+                        limit: 100,
+                    },
+                },
+            ))
+            .await
+            .reply
+            .expect("file.list after disconnect races");
+        let jeliya_core::typed::TypedReply::FileList(listed) = listed else {
+            panic!("wrong file.list reply");
+        };
+        assert_eq!(
+            listed
+                .files
+                .iter()
+                .filter(|file| file.name == "pre-end-lost.bin")
+                .count(),
+            0
+        );
+        assert_eq!(
+            listed
+                .files
+                .iter()
+                .filter(|file| file.name == "post-end-committed.bin")
+                .count(),
+            1
+        );
+        final_replay.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), final_server)
+            .await
+            .expect("final replay teardown")
             .expect("serve task");
         assert_eq!(state.transfer_pool.usage(), (0, 0));
     }
