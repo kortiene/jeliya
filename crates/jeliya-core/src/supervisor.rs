@@ -166,6 +166,61 @@ pub(crate) struct StagedFileShare {
     pub digest: String,
 }
 
+/// A one-shot authorization capability for a protocol-streamed file share.
+///
+/// The typed validation pipeline creates this only after room visibility,
+/// standing, declared-size policy, and live-session checks have succeeded.
+/// It deliberately retains the exact live session and membership snapshot
+/// that won those checks: finalization consumes the capability and does not
+/// re-run authorization after a potentially long upload.
+pub(crate) struct AuthorizedFileShare {
+    room_id: RoomId,
+    session: Arc<RoomSession>,
+    secret: SecretKeys,
+    snapshot: MembershipSnapshot,
+    display_name: String,
+    mime_type: String,
+    declared_bytes: u64,
+}
+
+/// One imported blob paired with the authorization capability that may author
+/// its single `file.shared` event.
+///
+/// Protocol uploads deliberately split import from publication so their
+/// private staging name can be removed successfully before any event is
+/// authored. The capability is neither cloneable nor externally constructible,
+/// so publication can consume it at most once.
+pub(crate) struct ImportedAuthorizedFileShare {
+    authorized: AuthorizedFileShare,
+    size_bytes: u64,
+    hash: [u8; 32],
+}
+
+impl ImportedAuthorizedFileShare {
+    pub(crate) const fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    pub(crate) const fn hash(&self) -> [u8; 32] {
+        self.hash
+    }
+}
+
+/// A finalization failure that carries the one typed fact the supervisor can
+/// discover only while importing. Infrastructure failures retain the ordinary
+/// core taxonomy; a count disagreement is kept separate so the typed boundary
+/// can produce `declared_size_mismatch` without parsing prose.
+pub(crate) enum FinalizeFileShareError {
+    CountDisagreement { observed_bytes: u64 },
+    Core(CoreError),
+}
+
+impl From<CoreError> for FinalizeFileShareError {
+    fn from(error: CoreError) -> Self {
+        Self::Core(error)
+    }
+}
+
 /// Semantic result of `member.remove`; infrastructure failures remain
 /// [`CoreError`]s, while the typed boundary maps these closed outcomes to the
 /// protocol's exact errors.
@@ -2246,6 +2301,141 @@ impl RoomSupervisor {
     // Files
     // ------------------------------------------------------------------
 
+    /// Capture the one live-session capability needed to finish a streamed
+    /// upload whose typed room gate has already succeeded.
+    ///
+    /// This method intentionally does not re-fold membership or re-check
+    /// standing. The supplied snapshot is the exact authorization decision
+    /// made by the typed pipeline; retaining it and the live session makes the
+    /// later consuming finalization a continuation of that decision rather
+    /// than a second operation with a new authorization instant.
+    pub(crate) fn authorize_file_share_once(
+        &self,
+        room_id: RoomId,
+        snapshot: MembershipSnapshot,
+        display_name: String,
+        mime_type: String,
+        declared_bytes: u64,
+    ) -> CoreResult<AuthorizedFileShare> {
+        let session = self.session(&room_id)?;
+        let secret = self.secrets()?;
+        Ok(AuthorizedFileShare {
+            room_id,
+            session,
+            secret,
+            snapshot,
+            display_name,
+            mime_type,
+            declared_bytes,
+        })
+    }
+
+    /// Consume one previously authorized share capability and import its
+    /// sealed source without authoring an event yet.
+    pub(crate) async fn import_authorized_file_share(
+        &self,
+        authorized: AuthorizedFileShare,
+        path: &Path,
+    ) -> Result<ImportedAuthorizedFileShare, FinalizeFileShareError> {
+        let meta = std::fs::metadata(path).map_err(|error| {
+            CoreError::internal(format!(
+                "could not inspect protocol upload staging: {error}"
+            ))
+        })?;
+        if !meta.is_file() {
+            return Err(
+                CoreError::internal("protocol upload staging is no longer a regular file").into(),
+            );
+        }
+        if meta.len() != authorized.declared_bytes {
+            return Err(FinalizeFileShareError::CountDisagreement {
+                observed_bytes: meta.len(),
+            });
+        }
+        let import_path = std::fs::canonicalize(path).map_err(|error| {
+            CoreError::internal(format!(
+                "could not resolve protocol upload staging: {error}"
+            ))
+        })?;
+        self.assert_shareable_path(&import_path)?;
+
+        let import = authorized
+            .session
+            .node
+            .blob_import(&import_path)
+            .await
+            .map_err(|error| internal("could not import the file into the blob store", error))?;
+        if import.size_bytes != authorized.declared_bytes {
+            return Err(FinalizeFileShareError::CountDisagreement {
+                observed_bytes: import.size_bytes,
+            });
+        }
+
+        Ok(ImportedAuthorizedFileShare {
+            authorized,
+            size_bytes: import.size_bytes,
+            hash: import.hash,
+        })
+    }
+
+    /// Consume one imported capability and author exactly one `file.shared`
+    /// event for it.
+    pub(crate) async fn publish_imported_file_share(
+        &self,
+        imported: ImportedAuthorizedFileShare,
+    ) -> Result<StagedFileShare, FinalizeFileShareError> {
+        let ImportedAuthorizedFileShare {
+            authorized,
+            size_bytes,
+            hash,
+        } = imported;
+
+        let mut file_id = [0u8; SHORT_ID_LEN];
+        getrandom::fill(&mut file_id).map_err(|error| internal("OS CSPRNG unavailable", error))?;
+        let room_device = self.authoring_device_key(
+            &authorized.snapshot,
+            &authorized.secret,
+            &authorized.room_id,
+        );
+        let heads = Self::node_heads(&authorized.session.node).await?;
+        let digest = iroh_rooms::files::HashRef::from_bytes(hash);
+        let wire = build_file_shared(
+            &authorized.secret.identity,
+            &room_device,
+            &authorized.room_id,
+            file_id,
+            &authorized.display_name,
+            &authorized.mime_type,
+            size_bytes,
+            digest,
+            Some("raw"),
+            &[room_device.device_key()],
+            &heads,
+            now_ms(),
+        );
+
+        let event_id =
+            Self::publish_authored(&authorized.session.node, &authorized.room_id, &wire).await?;
+        Ok(StagedFileShare {
+            file_id: file_handle(&file_id),
+            event_id: bare_event_hex(&event_id),
+            bytes: size_bytes,
+            digest: digest.to_string(),
+        })
+    }
+
+    /// Preserve the host-staged API's combined import-and-publish operation.
+    /// Protocol streams use the two capabilities separately so cleanup can be
+    /// made a pre-publication condition.
+    pub(crate) async fn finalize_authorized_file_share(
+        &self,
+        authorized: AuthorizedFileShare,
+        path: &Path,
+    ) -> Result<StagedFileShare, FinalizeFileShareError> {
+        let imported = self.import_authorized_file_share(authorized, path).await?;
+        self.publish_imported_file_share(imported).await
+    }
+
     /// `file.share`: import the file into the room's durable blob store and
     /// author + publish the signed `file.shared` reference.
     ///
@@ -2303,18 +2493,6 @@ impl RoomSupervisor {
             ));
         }
 
-        // Import into the room's durable blob store on the LIVE session (issue
-        // #84): the node reuses the store handle it already owns, so there is no
-        // second FsStore open (no lock contention), no session cycle, and no
-        // endpoint rebind — the dial address stays valid and peers see no churn.
-        let import = session
-            .node
-            .blob_import(&import_path)
-            .await
-            .map_err(|e| internal("could not import the file into the blob store", e))?;
-
-        let mut file_id = [0u8; SHORT_ID_LEN];
-        getrandom::fill(&mut file_id).map_err(|e| internal("OS CSPRNG unavailable", e))?;
         let display_name = match name {
             Some(n) if !n.is_empty() => n.to_owned(),
             _ => path
@@ -2326,31 +2504,26 @@ impl RoomSupervisor {
         let mime_type = mime
             .filter(|m| !m.is_empty())
             .map_or_else(|| guess_mime(path), str::to_owned);
-
-        let room_device = self.authoring_device_key(&snapshot, &secret, &room_id);
-        let heads = Self::node_heads(&session.node).await?;
-        let digest = iroh_rooms::files::HashRef::from_bytes(import.hash);
-        let wire = build_file_shared(
-            &secret.identity,
-            &room_device,
-            &room_id,
-            file_id,
-            &display_name,
-            &mime_type,
-            import.size_bytes,
-            digest,
-            Some("raw"),
-            &[room_device.device_key()],
-            &heads,
-            now_ms(),
-        );
-        let event_id = Self::publish_authored(&session.node, &room_id, &wire).await?;
-        Ok(StagedFileShare {
-            file_id: file_handle(&file_id),
-            event_id: bare_event_hex(&event_id),
-            bytes: import.size_bytes,
-            digest: digest.to_string(),
-        })
+        let authorized = AuthorizedFileShare {
+            room_id,
+            session,
+            secret,
+            snapshot,
+            display_name,
+            mime_type,
+            declared_bytes: meta.len(),
+        };
+        self.finalize_authorized_file_share(authorized, &import_path)
+            .await
+            .map_err(|error| match error {
+                FinalizeFileShareError::Core(error) => error,
+                FinalizeFileShareError::CountDisagreement { observed_bytes } => {
+                    CoreError::invalid(format!(
+                        "file changed while it was imported (expected {} bytes, observed {observed_bytes})",
+                        meta.len()
+                    ))
+                }
+            })
     }
 
     /// `file.list`: the room's `file.shared` references with honest

@@ -27,6 +27,7 @@ pub mod localstate;
 #[cfg(test)]
 mod materializer;
 mod projection;
+mod protocol_upload;
 mod supervisor;
 pub mod typed;
 

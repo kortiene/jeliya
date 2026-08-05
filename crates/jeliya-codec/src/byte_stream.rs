@@ -83,6 +83,28 @@ impl StreamRecord {
     }
 }
 
+/// A decoded byte-stream record borrowing any DATA payload from its input.
+///
+/// This is the stateful runtime's full structural-decode surface after it has
+/// validated the identity, bound the exact active pair, and checked the
+/// record's kind against stream state and endpoint direction. Unlike
+/// [`StreamRecord`], decoding this view never copies or allocates a DATA
+/// payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamRecordView<'a> {
+    /// The request-id/stream-id pair this record belongs to.
+    pub identity: StreamIdentity,
+    /// The record's kind-specific structural fields.
+    pub body: StreamRecordBodyView<'a>,
+}
+
+impl StreamRecordView<'_> {
+    /// Returns this record's closed kind.
+    pub fn kind(&self) -> StreamRecordKind {
+        self.body.kind()
+    }
+}
+
 /// The kind-specific body of a byte-stream record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamRecordBody {
@@ -133,6 +155,90 @@ impl StreamRecordBody {
             Self::End { .. } => StreamRecordKind::End,
             Self::Abort { .. } => StreamRecordKind::Abort,
             Self::Ack { .. } => StreamRecordKind::Ack,
+        }
+    }
+}
+
+/// The kind-specific body of a borrowed byte-stream record.
+///
+/// Every control record is represented by the same values as
+/// [`StreamRecordBody`]. DATA instead borrows its opaque bytes directly from
+/// the complete Binary message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamRecordBodyView<'a> {
+    /// Admission, carrying the expected total byte count.
+    Open {
+        /// Expected total bytes for the admitted transfer.
+        total: u64,
+    },
+    /// A nonempty contiguous payload beginning at `offset`.
+    Data {
+        /// Zero-based offset of the payload's first byte.
+        offset: u64,
+        /// File bytes borrowed from the complete Binary message.
+        payload: &'a [u8],
+    },
+    /// Cumulative receiver credit.
+    Credit {
+        /// Exclusive end of bytes accepted by the receiver's sink.
+        accepted_through: u64,
+        /// Exclusive end through which the producer may send.
+        send_through: u64,
+    },
+    /// The producer's explicit end marker.
+    End {
+        /// Total bytes sent by the producer.
+        total: u64,
+    },
+    /// A stream abort.
+    Abort {
+        /// Sender's accepted-byte high-water mark.
+        accepted_through: u64,
+        /// The sender's local abort reason.
+        reason: BinaryAbortReason,
+    },
+    /// Acknowledgement of an ABORT.
+    Ack {
+        /// Final receiver-accepted byte count.
+        accepted_through: u64,
+    },
+}
+
+impl StreamRecordBodyView<'_> {
+    fn kind(&self) -> StreamRecordKind {
+        match self {
+            Self::Open { .. } => StreamRecordKind::Open,
+            Self::Data { .. } => StreamRecordKind::Data,
+            Self::Credit { .. } => StreamRecordKind::Credit,
+            Self::End { .. } => StreamRecordKind::End,
+            Self::Abort { .. } => StreamRecordKind::Abort,
+            Self::Ack { .. } => StreamRecordKind::Ack,
+        }
+    }
+
+    fn into_owned(self) -> StreamRecordBody {
+        match self {
+            Self::Open { total } => StreamRecordBody::Open { total },
+            Self::Data { offset, payload } => StreamRecordBody::Data {
+                offset,
+                payload: payload.to_vec(),
+            },
+            Self::Credit {
+                accepted_through,
+                send_through,
+            } => StreamRecordBody::Credit {
+                accepted_through,
+                send_through,
+            },
+            Self::End { total } => StreamRecordBody::End { total },
+            Self::Abort {
+                accepted_through,
+                reason,
+            } => StreamRecordBody::Abort {
+                accepted_through,
+                reason,
+            },
+            Self::Ack { accepted_through } => StreamRecordBody::Ack { accepted_through },
         }
     }
 }
@@ -372,18 +478,18 @@ pub fn decode_stream_kind(
     StreamRecordKind::from_wire(bytes[4])
 }
 
-/// Decodes one complete Binary message into a typed byte-stream record.
+/// Decodes one complete Binary message into a borrowed byte-stream record.
 ///
-/// No allocation occurs until every header field and payload bound has been
-/// validated. The only input-dependent allocation is a DATA payload capped at
-/// 65,536 bytes. Stateful runtimes must retain the result of
+/// No input-dependent allocation occurs. In particular, DATA payload bytes
+/// remain a slice of `bytes`. Stateful runtimes must retain the result of
 /// [`decode_stream_identity`], perform active binding lookup, call
 /// [`decode_stream_kind`] for direction/state validation, and only then call
-/// this full structural decoder.
-pub fn decode_stream_record(
-    bytes: &[u8],
+/// this full structural decoder. All fixed fields, payload bounds, and DATA
+/// offset arithmetic are checked before the view is returned.
+pub fn decode_stream_record_view<'a>(
+    bytes: &'a [u8],
     bounds: &CodecBounds,
-) -> Result<StreamRecord, StreamCodecError> {
+) -> Result<StreamRecordView<'a>, StreamCodecError> {
     let identity = decode_stream_identity(bytes, bounds)?;
     let max_payload = max_stream_data_bytes(bounds.max_frame_bytes)?;
 
@@ -400,7 +506,7 @@ pub fn decode_stream_record(
         StreamRecordKind::Open => {
             require_no_payload(kind, payload)?;
             require_field(kind, StreamHeaderField::Offset, offset, 0)?;
-            StreamRecordBody::Open { total: value }
+            StreamRecordBodyView::Open { total: value }
         }
         StreamRecordKind::Data => {
             require_field(kind, StreamHeaderField::Value, value, 0)?;
@@ -414,10 +520,7 @@ pub fn decode_stream_record(
                 });
             }
             checked_data_end(offset, payload.len())?;
-            StreamRecordBody::Data {
-                offset,
-                payload: payload.to_vec(),
-            }
+            StreamRecordBodyView::Data { offset, payload }
         }
         StreamRecordKind::Credit => {
             require_no_payload(kind, payload)?;
@@ -427,7 +530,7 @@ pub fn decode_stream_record(
                     send_through: value,
                 });
             }
-            StreamRecordBody::Credit {
+            StreamRecordBodyView::Credit {
                 accepted_through: offset,
                 send_through: value,
             }
@@ -435,12 +538,12 @@ pub fn decode_stream_record(
         StreamRecordKind::End => {
             require_field(kind, StreamHeaderField::Value, value, 0)?;
             require_no_payload(kind, payload)?;
-            StreamRecordBody::End { total: offset }
+            StreamRecordBodyView::End { total: offset }
         }
         StreamRecordKind::Abort => {
             let reason = BinaryAbortReason::from_wire(value)?;
             require_no_payload(kind, payload)?;
-            StreamRecordBody::Abort {
+            StreamRecordBodyView::Abort {
                 accepted_through: offset,
                 reason,
             }
@@ -448,13 +551,31 @@ pub fn decode_stream_record(
         StreamRecordKind::Ack => {
             require_field(kind, StreamHeaderField::Value, value, 0x05)?;
             require_no_payload(kind, payload)?;
-            StreamRecordBody::Ack {
+            StreamRecordBodyView::Ack {
                 accepted_through: offset,
             }
         }
     };
 
-    Ok(StreamRecord { identity, body })
+    Ok(StreamRecordView { identity, body })
+}
+
+/// Decodes one complete Binary message into an owned byte-stream record.
+///
+/// This uses [`decode_stream_record_view`] for all validation, then copies only
+/// a valid DATA payload. The only input-dependent allocation is therefore a
+/// DATA payload capped at 65,536 bytes. Stateful runtimes that can consume a
+/// payload before the complete message is released should prefer the borrowed
+/// decoder.
+pub fn decode_stream_record(
+    bytes: &[u8],
+    bounds: &CodecBounds,
+) -> Result<StreamRecord, StreamCodecError> {
+    let view = decode_stream_record_view(bytes, bounds)?;
+    Ok(StreamRecord {
+        identity: view.identity,
+        body: view.body.into_owned(),
+    })
 }
 
 /// Encodes one typed byte-stream record as one complete Binary message.

@@ -14,6 +14,7 @@
 //! `--supervised` mode that exits when the parent closes stdin.
 
 mod file_read;
+mod file_share;
 mod lifecycle;
 mod outbound;
 mod serve;
@@ -103,6 +104,8 @@ pub(crate) struct AppState {
     pub(crate) runtime_limits: transfer::RuntimeLimits,
     /// Daemon-global transfer count and logical-byte admission pool.
     pub(crate) transfer_pool: transfer::TransferPool,
+    /// Principal-scoped cancellation state for protocol-v2 streamed uploads.
+    pub(crate) upload_cancellations: file_share::UploadCancellationRegistry,
 }
 
 #[tokio::main]
@@ -198,6 +201,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    let upload_cancellations = file_share::UploadCancellationRegistry::with_engine(&engine);
     let engine_limits = engine.limits();
     let runtime_limits = match transfer::RuntimeLimits::from_served(&engine_limits) {
         Ok(limits) => limits,
@@ -216,6 +220,7 @@ async fn main() {
         connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         runtime_limits,
         transfer_pool,
+        upload_cancellations,
     };
 
     let portfile = lifecycle::Portfile {

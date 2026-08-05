@@ -19,13 +19,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jeliya_api::{
-    ApiError, FileRead, FileReadOut, FileShare, FileShareOut, OpId, PeerRow, Push, RoomId,
-    SubjectState,
+    ApiError, ByteTotal, FileRead, FileReadOut, FileShare, FileShareOut, OpId, PeerRow, Push,
+    RoomId, StreamAbortReason, SubjectState,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -35,6 +35,10 @@ use tracing::{info, warn};
 use crate::error::{CoreResult, ErrorKind};
 use crate::supervisor::RoomSupervisor;
 use crate::typed::{self, TypedCall, TypedReply};
+
+pub use crate::protocol_upload::{
+    FileShareFinalizer, FileShareSinkError, OpenFileShareSink, PreparedFileShare,
+};
 
 /// The protocol generation this engine serves. One generation at a time, no
 /// dual support: v2's generation. Part of the supervision contract — an app
@@ -323,6 +327,122 @@ fn is_dedup_op(op: &str) -> bool {
 /// execution and every faithful replay. Clone-cheap (`Arc`).
 type LedgerReply = Arc<Result<TypedReply, ApiError>>;
 
+/// A single-use publisher for one newly-owned deduplicated operation.
+///
+/// Keeping publication separate from operation execution lets ordinary typed
+/// calls and streamed operations share the same owner/join/replay ledger. A
+/// streamed owner can therefore retain this capability through byte transfer
+/// and publish only its eventual terminal result.
+struct LedgerOwner {
+    ledger: Arc<Mutex<DedupLedger>>,
+    key: (String, OpId),
+    body_hash: [u8; 32],
+    done: watch::Sender<Option<LedgerReply>>,
+    completed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileShareCancellation {
+    transferred_bytes: u64,
+    total_bytes: u64,
+}
+
+impl LedgerOwner {
+    fn complete(mut self, reply: Result<TypedReply, ApiError>) {
+        self.publish(Arc::new(reply));
+    }
+
+    fn record_file_share_cancellation(&self, cancellation: FileShareCancellation) {
+        let mut ledger = self.ledger.lock().expect("dedup ledger poisoned");
+        let entry = ledger
+            .entries
+            .get_mut(&self.key)
+            .expect("owned dedup entry remains present until publication");
+        match entry {
+            LedgerEntry::InFlight {
+                body_hash,
+                cancellation: recorded,
+                ..
+            } => {
+                assert_eq!(
+                    *body_hash, self.body_hash,
+                    "owned dedup fingerprint changed before publication"
+                );
+                assert!(
+                    recorded.is_none_or(|existing| existing == cancellation),
+                    "streamed cancellation result changed after selection"
+                );
+                *recorded = Some(cancellation);
+            }
+            LedgerEntry::Done { .. } => {
+                panic!("owned streamed operation completed before its owner")
+            }
+        }
+    }
+
+    fn publish(&mut self, reply: LedgerReply) {
+        if self.completed {
+            return;
+        }
+        self.completed = true;
+        let mut ledger = self.ledger.lock().expect("dedup ledger poisoned");
+        let cancellation = match ledger.entries.get(&self.key) {
+            Some(
+                LedgerEntry::InFlight { cancellation, .. } | LedgerEntry::Done { cancellation, .. },
+            ) => *cancellation,
+            None => None,
+        };
+        ledger.entries.insert(
+            self.key.clone(),
+            LedgerEntry::Done {
+                body_hash: self.body_hash,
+                reply: reply.clone(),
+                cancellation,
+            },
+        );
+        drop(ledger);
+        // Retain the terminal value even when the owner had no concurrent
+        // waiter.  A plain `send` discards it when the channel's initial
+        // receiver has already been dropped, which could strand a faithful
+        // replay that subscribed at the completion boundary.
+        let _ = self.done.send_replace(Some(reply));
+    }
+}
+
+impl Drop for LedgerOwner {
+    fn drop(&mut self) {
+        // Never strand faithful joiners if an owning task panics or is
+        // cancelled before it can choose a more exact terminal result.
+        if !self.completed {
+            self.publish(Arc::new(Err(ApiError::NotReady)));
+        }
+    }
+}
+
+struct LedgerWaiter {
+    done: watch::Receiver<Option<LedgerReply>>,
+}
+
+impl LedgerWaiter {
+    async fn wait(mut self) -> LedgerReply {
+        loop {
+            if let Some(reply) = self.done.borrow().clone() {
+                return reply;
+            }
+            if self.done.changed().await.is_err() {
+                return Arc::new(Err(ApiError::NotReady));
+            }
+        }
+    }
+}
+
+enum OperationGate {
+    Owner(LedgerOwner),
+    Await(LedgerWaiter),
+    Done(LedgerReply),
+    Conflict,
+}
+
 /// A dedup-ledger entry in one of two states. `InFlight` reserves the key
 /// BEFORE the effect runs and carries a [`watch`] the original execution
 /// publishes its reply into; a concurrent duplicate of the same key subscribes
@@ -335,16 +455,22 @@ enum LedgerEntry {
     InFlight {
         /// The request fingerprint (operation path + canonical body), to tell
         /// a faithful retry from a conflicting reuse of the same `op_id`.
-        body_hash: u64,
+        body_hash: [u8; 32],
         /// Publishes the reply the moment the original execution completes.
         done: watch::Sender<Option<LedgerReply>>,
+        /// Explicit daemon-selected streamed-upload cancellation provenance.
+        /// This is distinct from a client ABORT that happens to use the same
+        /// public terminal reason.
+        cancellation: Option<FileShareCancellation>,
     },
     /// The effect completed; the reply is recorded for faithful replays.
     Done {
         /// The request fingerprint.
-        body_hash: u64,
+        body_hash: [u8; 32],
         /// The recorded reply.
         reply: LedgerReply,
+        /// Cancellation provenance retained for `transfer.cancel` replay.
+        cancellation: Option<FileShareCancellation>,
     },
 }
 
@@ -394,13 +520,228 @@ pub struct Executed {
     pub stop_after_reply: bool,
 }
 
+/// Result of the pre-stream `file.share` ledger gate.
+///
+/// Only [`Self::Owner`] may prepare staging and emit OPEN. [`Self::Replay`]
+/// covers a faithful in-flight join, a completed replay, a divergent-body
+/// conflict, and validation refusals that precede the ledger.
+pub enum FileShareLedgerGate {
+    /// This request owns the one upload execution.
+    Owner(FileShareLedgerOwner),
+    /// Return this exact result without opening a byte stream.
+    Replay(Result<FileShareOut, ApiError>),
+}
+
+/// Single-use completion capability for an owned streamed `file.share`.
+///
+/// The capability is deliberately independent of a WebSocket task. Moving it
+/// into detached finalization guarantees the ledger can publish after a lost
+/// connection. Dropping it before an explicit terminal decision records the
+/// required pre-END `transport_lost` result for uploads carrying `op_id`.
+pub struct FileShareLedgerOwner {
+    publisher: Option<LedgerOwner>,
+    declared_bytes: u64,
+    accepted_bytes: Arc<AtomicU64>,
+    selected_cancellation: Option<FileShareCancellation>,
+    completed: bool,
+}
+
+/// Cloneable accepted-byte counter retained by a streamed ledger owner.
+///
+/// The upload sink advances this only after a complete DATA record is durably
+/// accepted. If connection teardown drops the owner before it can explicitly
+/// publish `transport_lost`, the owner's destructor still records the exact
+/// proven count rather than zero.
+#[derive(Clone)]
+pub struct FileShareLedgerProgress {
+    accepted_bytes: Arc<AtomicU64>,
+}
+
+impl FileShareLedgerProgress {
+    /// Advance the proven receiver-accepted high-water mark monotonically.
+    pub fn record_accepted(&self, accepted_bytes: u64) {
+        self.accepted_bytes
+            .fetch_max(accepted_bytes, Ordering::AcqRel);
+    }
+
+    /// Return the current proven receiver-accepted count.
+    #[must_use]
+    pub fn accepted_bytes(&self) -> u64 {
+        self.accepted_bytes.load(Ordering::Acquire)
+    }
+}
+
+impl FileShareLedgerOwner {
+    /// A progress handle for the bounded staging sink.
+    #[must_use]
+    pub fn progress(&self) -> FileShareLedgerProgress {
+        FileShareLedgerProgress {
+            accepted_bytes: self.accepted_bytes.clone(),
+        }
+    }
+
+    /// Publish and return one terminal upload result.
+    pub fn complete(
+        mut self,
+        result: Result<FileShareOut, ApiError>,
+    ) -> Result<FileShareOut, ApiError> {
+        let result = self
+            .selected_cancellation
+            .map(file_share_cancellation_error)
+            .unwrap_or(result);
+        if let Some(publisher) = self.publisher.take() {
+            publisher.complete(result.clone().map(TypedReply::FileShare));
+        }
+        self.completed = true;
+        result
+    }
+
+    /// Record the daemon's atomic ACTIVE cancellation selection.
+    ///
+    /// The compact annotation is stored on the existing dedup entry before
+    /// the transport removes its live target. Repeated `transfer.cancel`
+    /// requests can therefore return `already_cancelled` during ABORT/ACK and
+    /// after publication without a second permanent registry.
+    pub fn record_cancel_selected(&mut self, transferred_bytes: u64, total_bytes: u64) {
+        assert_eq!(
+            total_bytes, self.declared_bytes,
+            "streamed cancellation total disagrees with its owned declaration"
+        );
+        assert!(
+            transferred_bytes <= total_bytes,
+            "streamed cancellation progress exceeds its declaration"
+        );
+        let cancellation = FileShareCancellation {
+            transferred_bytes,
+            total_bytes,
+        };
+        assert!(
+            self.selected_cancellation
+                .is_none_or(|existing| existing == cancellation),
+            "streamed cancellation result changed after selection"
+        );
+        let publisher = self
+            .publisher
+            .as_ref()
+            .expect("only an op_id upload can be registered for cancellation");
+        publisher.record_file_share_cancellation(cancellation);
+        self.selected_cancellation = Some(cancellation);
+    }
+
+    /// Record the exact pre-END transport-loss result.
+    pub fn transport_lost(self, transferred_bytes: u64) -> Result<FileShareOut, ApiError> {
+        self.accepted_bytes
+            .fetch_max(transferred_bytes, Ordering::AcqRel);
+        let total = ByteTotal::Known {
+            bytes: self.declared_bytes,
+        };
+        let transferred_bytes = self.accepted_bytes.load(Ordering::Acquire);
+        self.complete(Err(ApiError::StreamAborted {
+            transferred_bytes,
+            total,
+            reason: StreamAbortReason::TransportLost,
+        }))
+    }
+}
+
+impl Drop for FileShareLedgerOwner {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let Some(publisher) = self.publisher.take() {
+            let result = self.selected_cancellation.map_or_else(
+                || {
+                    Err(ApiError::StreamAborted {
+                        transferred_bytes: self.accepted_bytes.load(Ordering::Acquire),
+                        total: ByteTotal::Known {
+                            bytes: self.declared_bytes,
+                        },
+                        reason: StreamAbortReason::TransportLost,
+                    })
+                },
+                file_share_cancellation_error,
+            );
+            publisher.complete(result.map(TypedReply::FileShare));
+        }
+        self.completed = true;
+    }
+}
+
+fn file_share_cancellation_error(
+    cancellation: FileShareCancellation,
+) -> Result<FileShareOut, ApiError> {
+    Err(ApiError::StreamAborted {
+        transferred_bytes: cancellation.transferred_bytes,
+        total: ByteTotal::Known {
+            bytes: cancellation.total_bytes,
+        },
+        reason: StreamAbortReason::Cancelled,
+    })
+}
+
 impl Engine {
+    fn gate_operation(
+        &self,
+        principal_key: &str,
+        op_id: OpId,
+        body_hash: [u8; 32],
+    ) -> OperationGate {
+        let key = (principal_key.to_owned(), op_id);
+        let mut ledger = self.ledger.lock().expect("dedup ledger poisoned");
+        match ledger.entries.get(&key) {
+            Some(LedgerEntry::Done {
+                body_hash: recorded,
+                reply,
+                ..
+            }) => {
+                if *recorded == body_hash {
+                    OperationGate::Done(reply.clone())
+                } else {
+                    OperationGate::Conflict
+                }
+            }
+            Some(LedgerEntry::InFlight {
+                body_hash: recorded,
+                done,
+                ..
+            }) => {
+                if *recorded == body_hash {
+                    OperationGate::Await(LedgerWaiter {
+                        done: done.subscribe(),
+                    })
+                } else {
+                    OperationGate::Conflict
+                }
+            }
+            None => {
+                let (done, _unused_rx) = watch::channel(None);
+                ledger.entries.insert(
+                    key.clone(),
+                    LedgerEntry::InFlight {
+                        body_hash,
+                        done: done.clone(),
+                        cancellation: None,
+                    },
+                );
+                OperationGate::Owner(LedgerOwner {
+                    ledger: self.ledger.clone(),
+                    key,
+                    body_hash,
+                    done,
+                    completed: false,
+                })
+            }
+        }
+    }
+
     /// Create an engine owning a fresh supervisor over `data_dir` (created if
     /// missing, then canonicalized). Synchronous; the engine never creates a
     /// runtime, it assumes an ambient one for its spawned work.
     pub fn new(data_dir: PathBuf, loopback: bool, config: EngineConfig) -> CoreResult<Arc<Self>> {
         crate::identity::ensure_dir(&data_dir)?;
         let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
+        crate::protocol_upload::cleanup_abandoned_protocol_uploads(&data_dir)?;
         let supervisor = Arc::new(RoomSupervisor::new(data_dir, loopback)?);
         Ok(Self::with_supervisor(supervisor, config))
     }
@@ -494,12 +835,111 @@ impl Engine {
         })
     }
 
+    /// Reserve or join the streamed-operation ledger for `file.share`.
+    ///
+    /// Structural validation and the subject precondition run before this
+    /// method touches the ledger. Room/standing/role authorization and upload
+    /// semantics intentionally run only after it returns [`FileShareLedgerGate::Owner`],
+    /// so a faithful concurrent replay opens no second sink or stream.
+    pub async fn gate_file_share(
+        &self,
+        req: &FileShare,
+        op_id: Option<OpId>,
+        principal_key: &str,
+    ) -> FileShareLedgerGate {
+        let call = TypedCall::FileShare(req.clone());
+        if let Err(error) = typed::validate_structure(&call) {
+            return FileShareLedgerGate::Replay(Err(error));
+        }
+        let typed = typed::TypedSupervisor::new(&self.supervisor);
+        match typed.subject_present() {
+            Ok(true) => {}
+            Ok(false) => return FileShareLedgerGate::Replay(Err(ApiError::SubjectAbsent)),
+            Err(error) => return FileShareLedgerGate::Replay(Err(error)),
+        }
+
+        let Some(op_id) = op_id else {
+            return FileShareLedgerGate::Owner(FileShareLedgerOwner {
+                publisher: None,
+                declared_bytes: req.declared_bytes,
+                accepted_bytes: Arc::new(AtomicU64::new(0)),
+                selected_cancellation: None,
+                completed: false,
+            });
+        };
+        let result = match self.gate_operation(principal_key, op_id.clone(), call.body_hash()) {
+            OperationGate::Owner(publisher) => {
+                return FileShareLedgerGate::Owner(FileShareLedgerOwner {
+                    publisher: Some(publisher),
+                    declared_bytes: req.declared_bytes,
+                    accepted_bytes: Arc::new(AtomicU64::new(0)),
+                    selected_cancellation: None,
+                    completed: false,
+                });
+            }
+            OperationGate::Await(waiter) => waiter.wait().await,
+            OperationGate::Done(reply) => reply,
+            OperationGate::Conflict => {
+                return FileShareLedgerGate::Replay(Err(ApiError::OpIdConflict { op_id }));
+            }
+        };
+        FileShareLedgerGate::Replay(match (*result).clone() {
+            Ok(TypedReply::FileShare(out)) => Ok(out),
+            Err(error) => Err(error),
+            Ok(_) => Err(ApiError::NotReady),
+        })
+    }
+
+    /// Return the daemon-selected cancellation recorded for one streamed
+    /// upload, whether its original ABORT/ACK exchange is still in flight or
+    /// its terminal result has already been published.
+    #[must_use]
+    pub fn recorded_file_share_cancellation(
+        &self,
+        principal_key: &str,
+        op_id: &OpId,
+    ) -> Option<(u64, u64)> {
+        let ledger = self.ledger.lock().expect("dedup ledger poisoned");
+        let cancellation = match ledger
+            .entries
+            .get(&(principal_key.to_owned(), op_id.clone()))?
+        {
+            LedgerEntry::InFlight { cancellation, .. } | LedgerEntry::Done { cancellation, .. } => {
+                *cancellation
+            }
+        }?;
+        Some((cancellation.transferred_bytes, cancellation.total_bytes))
+    }
+
+    /// Run the owner-only post-ledger `file.share` validation and
+    /// authorization, without creating staging yet.
+    ///
+    /// The daemon reserves transfer count and declared logical bytes after
+    /// this returns, then calls [`PreparedFileShare::open_sink`] before OPEN.
+    pub async fn prepare_file_share_after_gate(
+        &self,
+        req: &FileShare,
+    ) -> Result<PreparedFileShare, ApiError> {
+        crate::protocol_upload::prepare_file_share_after_gate(self.supervisor.clone(), req).await
+    }
+
     /// The `hello` `subject` fact: present with ids, its stated absence, or
     /// `not_ready` when the subject store cannot be read (the connection must
     /// be refused rather than invited to run `subject.ensure` against
     /// unreadable existing state).
     pub fn subject_state(&self) -> Result<SubjectState, ApiError> {
         typed::TypedSupervisor::new(&self.supervisor).subject_state()
+    }
+
+    /// Apply the validation-order subject precondition for daemon-managed
+    /// `transfer.cancel` before the transport consults its principal-scoped
+    /// live upload registry. The codec has already performed structural
+    /// decoding, and the cancel request's own envelope `op_id` is ignored.
+    pub fn validate_transfer_cancel(&self) -> Result<(), ApiError> {
+        match typed::TypedSupervisor::new(&self.supervisor).subject_present()? {
+            true => Ok(()),
+            false => Err(ApiError::SubjectAbsent),
+        }
     }
 
     /// Execute one typed call with no request context. Equivalent to
@@ -594,87 +1034,28 @@ impl Engine {
             }
 
             let body_hash = call.body_hash();
-            let key = (principal_key.to_owned(), op_id.clone());
-            // Reserve or join under the lock; never held across the await.
-            enum Gate {
-                /// We own the effect: it is already spawned (below) and we
-                /// await its completion here.
-                Run(watch::Receiver<Option<LedgerReply>>),
-                /// A faithful replay: await the in-flight/recorded reply.
-                Await(watch::Receiver<Option<LedgerReply>>),
-                /// A recorded reply to return directly.
-                Done(LedgerReply),
-                /// The same `op_id` with a different body.
-                Conflict,
-            }
-            let gate = {
-                let mut ledger = self.ledger.lock().expect("dedup ledger poisoned");
-                match ledger.entries.get(&key) {
-                    Some(LedgerEntry::Done {
-                        body_hash: h,
-                        reply,
-                    }) => {
-                        if *h == body_hash {
-                            Gate::Done(reply.clone())
-                        } else {
-                            Gate::Conflict
-                        }
-                    }
-                    Some(LedgerEntry::InFlight { body_hash: h, done }) => {
-                        if *h == body_hash {
-                            Gate::Await(done.subscribe())
-                        } else {
-                            Gate::Conflict
-                        }
-                    }
-                    None => {
-                        // First sighting: reserve the key, then run the effect
-                        // in a DETACHED task so it completes and records the
-                        // reply even if this connection's reply task is
-                        // aborted on disconnect (the record's motivating case
-                        // is a reply lost to a dropped connection). Publish to
-                        // the watch, then mark Done.
-                        let (tx, rx) = watch::channel(None);
-                        ledger.entries.insert(
-                            key.clone(),
-                            LedgerEntry::InFlight {
-                                body_hash,
-                                done: tx.clone(),
-                            },
-                        );
-                        let sup = self.supervisor.clone();
-                        let ledger = self.ledger.clone();
-                        tokio::spawn(async move {
-                            let reply: LedgerReply = Arc::new(typed::dispatch(&sup, call).await);
-                            let _ = tx.send(Some(reply.clone()));
-                            let mut ledger = ledger.lock().expect("dedup ledger poisoned");
-                            ledger
-                                .entries
-                                .insert(key, LedgerEntry::Done { body_hash, reply });
-                        });
-                        Gate::Run(rx)
-                    }
-                }
-            };
-            let reply = match gate {
-                Gate::Done(reply) => reply,
-                Gate::Conflict => {
+            let reply = match self.gate_operation(principal_key, op_id.clone(), body_hash) {
+                OperationGate::Done(reply) => reply,
+                OperationGate::Conflict => {
                     return Executed {
                         reply: Err(ApiError::OpIdConflict { op_id }),
                         stop_after_reply: false,
                     };
                 }
-                Gate::Run(mut rx) | Gate::Await(mut rx) => loop {
-                    if let Some(reply) = rx.borrow().clone() {
-                        break reply;
-                    }
-                    if rx.changed().await.is_err() {
-                        // The publisher dropped without a reply (the spawned
-                        // effect panicked): report not_ready rather than hang
-                        // the caller forever.
-                        break Arc::new(Err(ApiError::NotReady));
-                    }
-                },
+                OperationGate::Await(waiter) => waiter.wait().await,
+                OperationGate::Owner(owner) => {
+                    // The effect is detached from the requesting connection:
+                    // a lost reply must still become a completed replay, and a
+                    // faithful concurrent request joins the same publisher.
+                    let waiter = LedgerWaiter {
+                        done: owner.done.subscribe(),
+                    };
+                    let sup = self.supervisor.clone();
+                    tokio::spawn(async move {
+                        owner.complete(typed::dispatch(&sup, call).await);
+                    });
+                    waiter.wait().await
+                }
             };
             return Executed {
                 reply: (*reply).clone(),
@@ -1398,6 +1779,232 @@ mod tests {
             .reply
             .expect_err("a divergent body conflicts");
         assert!(matches!(err, ApiError::OpIdConflict { .. }), "got {err:?}");
+    }
+
+    fn streamed_share(name: &str, declared_bytes: u64) -> FileShare {
+        FileShare {
+            room_id: RoomId::new("room-for-ledger-gate"),
+            name: name.into(),
+            declared_bytes,
+            declared_content_type: "application/octet-stream".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_share_gate_joins_and_replays_one_exact_result() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let request = streamed_share("one.bin", 7);
+        let op_id = OpId::new("streamed-share-owner");
+
+        let FileShareLedgerGate::Owner(owner) = engine
+            .gate_file_share(&request, Some(op_id.clone()), "principal:a")
+            .await
+        else {
+            panic!("first execution must own the stream");
+        };
+        let progress = owner.progress();
+        progress.record_accepted(3);
+
+        let joining_engine = engine.clone();
+        let joining_request = request.clone();
+        let joining_op_id = op_id.clone();
+        let join = tokio::spawn(async move {
+            joining_engine
+                .gate_file_share(&joining_request, Some(joining_op_id), "principal:a")
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!join.is_finished(), "faithful replay waits for its owner");
+
+        let terminal = ApiError::StreamAborted {
+            transferred_bytes: 3,
+            total: ByteTotal::Known { bytes: 7 },
+            reason: StreamAbortReason::TransportLost,
+        };
+        // Connection-task cancellation drops the owner; the detached progress
+        // handle makes that destructor publish the exact proven count.
+        drop(owner);
+
+        let FileShareLedgerGate::Replay(joined) = join.await.expect("join task") else {
+            panic!("join must never own a second stream");
+        };
+        assert_eq!(joined, Err(terminal.clone()));
+        let FileShareLedgerGate::Replay(replayed) = engine
+            .gate_file_share(&request, Some(op_id), "principal:a")
+            .await
+        else {
+            panic!("completed replay must not own a stream");
+        };
+        assert_eq!(replayed, Err(terminal));
+    }
+
+    #[tokio::test]
+    async fn streamed_share_cancellation_annotation_survives_join_publication_and_owner_drop() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let request = streamed_share("cancelled.bin", 7);
+        let op_id = OpId::new("streamed-share-cancelled");
+
+        let FileShareLedgerGate::Owner(mut owner) = engine
+            .gate_file_share(&request, Some(op_id.clone()), "principal:a")
+            .await
+        else {
+            panic!("first execution must own the stream");
+        };
+        owner.record_cancel_selected(3, 7);
+        assert_eq!(
+            engine.recorded_file_share_cancellation("principal:a", &op_id),
+            Some((3, 7))
+        );
+        assert_eq!(
+            engine.recorded_file_share_cancellation("principal:b", &op_id),
+            None,
+            "cancellation annotations remain principal-scoped"
+        );
+
+        let joining_engine = engine.clone();
+        let joining_request = request.clone();
+        let joining_op_id = op_id.clone();
+        let join = tokio::spawn(async move {
+            joining_engine
+                .gate_file_share(&joining_request, Some(joining_op_id), "principal:a")
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !join.is_finished(),
+            "ledger annotation must not publish before ABORT/ACK completion"
+        );
+
+        // Even an unexpected owner drop after selection preserves the
+        // authoritative cancellation rather than synthesizing transport_lost.
+        drop(owner);
+        let terminal = ApiError::StreamAborted {
+            transferred_bytes: 3,
+            total: ByteTotal::Known { bytes: 7 },
+            reason: StreamAbortReason::Cancelled,
+        };
+        let FileShareLedgerGate::Replay(joined) = join.await.expect("join task") else {
+            panic!("faithful join must not own another stream");
+        };
+        assert_eq!(joined, Err(terminal.clone()));
+
+        let FileShareLedgerGate::Replay(replayed) = engine
+            .gate_file_share(&request, Some(op_id.clone()), "principal:a")
+            .await
+        else {
+            panic!("completed cancellation must replay");
+        };
+        assert_eq!(replayed, Err(terminal));
+        assert_eq!(
+            engine.recorded_file_share_cancellation("principal:a", &op_id),
+            Some((3, 7)),
+            "publication retains the compact cancellation annotation"
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_share_completion_without_waiter_replays_exact_result() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let request = streamed_share("completion-boundary.bin", 0);
+        let op_id = OpId::new("streamed-share-no-initial-waiter");
+        let FileShareLedgerGate::Owner(owner) = engine
+            .gate_file_share(&request, Some(op_id.clone()), "principal:a")
+            .await
+        else {
+            panic!("first execution must own the stream");
+        };
+        let terminal = ApiError::StreamAborted {
+            transferred_bytes: 0,
+            total: ByteTotal::Known { bytes: 0 },
+            reason: StreamAbortReason::Cancelled,
+        };
+        assert_eq!(owner.complete(Err(terminal.clone())), Err(terminal.clone()));
+
+        let FileShareLedgerGate::Replay(replayed) = engine
+            .gate_file_share(&request, Some(op_id), "principal:a")
+            .await
+        else {
+            panic!("completion-boundary replay must not own a second stream");
+        };
+        assert_eq!(replayed, Err(terminal));
+    }
+
+    #[tokio::test]
+    async fn streamed_share_gate_conflict_principal_and_omitted_key_are_isolated() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = engine_with_subject(&dir).await;
+        let request = streamed_share("one.bin", 1);
+        let op_id = OpId::new("streamed-share-scope");
+        let FileShareLedgerGate::Owner(owner) = engine
+            .gate_file_share(&request, Some(op_id.clone()), "principal:a")
+            .await
+        else {
+            panic!("first execution must own");
+        };
+
+        let divergent = streamed_share("different.bin", 1);
+        let FileShareLedgerGate::Replay(conflict) = engine
+            .gate_file_share(&divergent, Some(op_id.clone()), "principal:a")
+            .await
+        else {
+            panic!("divergent body cannot own");
+        };
+        assert_eq!(
+            conflict,
+            Err(ApiError::OpIdConflict {
+                op_id: op_id.clone()
+            })
+        );
+
+        let FileShareLedgerGate::Owner(other_principal) = engine
+            .gate_file_share(&request, Some(op_id), "principal:b")
+            .await
+        else {
+            panic!("a different principal has an isolated keyspace");
+        };
+        let FileShareLedgerGate::Owner(untracked_one) =
+            engine.gate_file_share(&request, None, "principal:a").await
+        else {
+            panic!("an omitted op_id runs untracked");
+        };
+        let FileShareLedgerGate::Owner(untracked_two) =
+            engine.gate_file_share(&request, None, "principal:a").await
+        else {
+            panic!("each omitted op_id is a fresh owner");
+        };
+
+        drop((owner, other_principal, untracked_one, untracked_two));
+    }
+
+    #[tokio::test]
+    async fn streamed_share_preledger_refusal_does_not_consume_the_key() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = test_engine(&dir);
+        let request = streamed_share("one.bin", 0);
+        let op_id = OpId::new("preledger-share");
+        let FileShareLedgerGate::Replay(refused) = engine
+            .gate_file_share(&request, Some(op_id.clone()), "principal:a")
+            .await
+        else {
+            panic!("subject precondition must refuse before ownership");
+        };
+        assert_eq!(refused, Err(ApiError::SubjectAbsent));
+
+        engine
+            .execute(TypedCall::SubjectEnsure(jeliya_api::SubjectEnsure {}))
+            .await
+            .reply
+            .expect("subject.ensure");
+        let FileShareLedgerGate::Owner(owner) = engine
+            .gate_file_share(&request, Some(op_id), "principal:a")
+            .await
+        else {
+            panic!("the same key remains unused after a preledger refusal");
+        };
+        drop(owner);
     }
 
     #[tokio::test]
