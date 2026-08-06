@@ -410,6 +410,13 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
             `daemon CREDIT acknowledged ${rec.offset}, inside a DATA record rather than on a record boundary`,
           );
         }
+        if (rec.offset > tracker.openTotal) {
+          // The probe byte may be sent but never accepted: acknowledged
+          // bytes can never exceed the admitted OPEN total.
+          throw new AssertFailure(
+            `daemon CREDIT acknowledged ${rec.offset} beyond the OPEN total ${tracker.openTotal}`,
+          );
+        }
         if (rec.value > limit + 1) {
           // The wire bound on upload credit is max_shared_file_bytes + 1;
           // min(declared, limit) + 1 is the mandatory probe TARGET, not a
@@ -548,6 +555,12 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         // byte to be acknowledged.
         if (tracker.queue.some((r) => r.kind === KIND.END)) {
           throw new AssertFailure('daemon sent END before receiving the final cumulative CREDIT');
+        }
+        // An ABORT already on the wire ends crediting: the recipient stops
+        // granting, and the new accepted offset is NOT issued — the producer
+        // cannot have observed it, so an ABORT echoing it stays invalid.
+        if (tracker.queue.some((r) => r.kind === KIND.ABORT)) {
+          break;
         }
         sendThrough = grant(tracker.accepted);
         break;

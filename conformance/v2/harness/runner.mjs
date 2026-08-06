@@ -649,6 +649,10 @@ export class Runner {
     // same-principal reconnect (op_id replay cases) silently miss the ledger.
     // A probing upgrade (any expect) sends exactly what the fixture wrote.
     const label = step.on || 'subject:self';
+    // A same-label upgrade replaces the registered session; a sticky
+    // violation on the outgoing connection must not vanish with it.
+    const outgoing = sessions.get(label);
+    if (outgoing && outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
     let clientId = null;
     if (!step.expect && query.cid === undefined && query.ct === undefined && vars.__case) {
       vars.__case.clientIds ||= Object.create(null);
