@@ -296,10 +296,12 @@ export class Runner {
         const reply = await this.#streamCall(authority, 'file.share', input, { send_bytes: 4096 }, {
           opId: `cf-seed-${opIdCounter++}`,
         });
-        if (!reply.ok) {
-          throw new Error(`resource:shared_file setup failed: ${JSON.stringify(reply.err)}`);
+        if (!reply.ok || !reply.out?.file_id) {
+          throw new Error(
+            `resource:shared_file setup failed: ${JSON.stringify(reply.ok ? reply.out : reply.err)}`,
+          );
         }
-        vars.fid = reply.out?.file_id;
+        vars.fid = reply.out.file_id;
       }
     }
 
