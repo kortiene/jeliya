@@ -368,6 +368,14 @@ export class Runner {
       if (existing.stickyBinaryViolation) throw existing.stickyBinaryViolation;
       return existing;
     }
+    // The case authored an upgrade for this label and the daemon refused it;
+    // auto-connecting here would silently substitute a different admission.
+    const refused = vars.__case?.refusedUpgrades?.[label];
+    if (refused !== undefined) {
+      throw new AssertFailure(
+        `the authored upgrade for ${label} was refused (status ${refused}); refusing to substitute an auto-connected session`,
+      );
+    }
     // Route to the second daemon for labels that clearly name a distinct
     // subject (a daemon holds one subject, so second/outsider/peer subjects
     // live on the second daemon).
@@ -575,6 +583,11 @@ export class Runner {
         const rel = path.startsWith('$') ? path.slice(1) : path;
         const { found, value } = resolvePath(root, rel);
         vars[varName] = found ? value : undefined;
+        if (this.verbose) {
+          let shown;
+          try { shown = JSON.stringify(value)?.slice(0, 60); } catch { shown = '[unserializable]'; }
+          this.log(`save ${varName} <- ${path} = ${shown} (found=${found})`);
+        }
       }
     }
   }
@@ -656,7 +669,13 @@ export class Runner {
     const daemon = (vars.__case||{}).primary;
     const u = step.upgrade;
     const query = {};
-    for (const [k, v] of Object.entries(u.query || {})) query[k] = resolveValue(v, vars);
+    for (const [k, v] of Object.entries(u.query || {})) {
+      const resolved = resolveValue(v, vars);
+      // Query values carry the same portfile placeholders headers do
+      // (<daemon_sg>, <token>, …) — substitute them, or an authored admission
+      // silently becomes a refusal.
+      query[k] = typeof resolved === 'string' ? this.#resolveHeaderValue(resolved, daemon, vars) : resolved;
+    }
     const headers = {};
     for (const [k, v] of Object.entries(u.headers || {})) {
       headers[k] = this.#resolveHeaderValue(v, daemon, vars);
@@ -696,6 +715,18 @@ export class Runner {
 
     if (step.expect) {
       this.#matchUpgradeExpect(step.expect, result, vars);
+    } else if (vars.__case) {
+      // A refused no-expect upgrade must not silently degrade into
+      // #sessionFor's auto-connection: mark the label, and the next step
+      // that DEPENDS on this session fails with the refusal. Probe upgrades
+      // and post-stop reachability checks (which never use the session
+      // afterwards) stay expressible.
+      vars.__case.refusedUpgrades ||= Object.create(null);
+      if (result.status === 101) {
+        delete vars.__case.refusedUpgrades[label];
+      } else {
+        vars.__case.refusedUpgrades[label] = result.status;
+      }
     }
     if (step.save) {
       for (const [varName, path] of Object.entries(step.save)) {
@@ -712,6 +743,7 @@ export class Runner {
     return v
       .replace('<bearer_from_portfile>', daemon.token)
       .replace('<token>', daemon.token)
+      .replace('<daemon_sg>', String(daemon.storageGeneration))
       .replace('<port>', String(daemon.port))
       .replace(/\$([A-Za-z_][A-Za-z0-9_.]*)/g, (m, name) => {
         const { found, value } = resolvePath(vars, name);
@@ -886,8 +918,15 @@ export class Runner {
     if (step.expect) this.#matchUpgradeExpect(step.expect, result, vars);
     if (step.save) {
       for (const [varName, p] of Object.entries(step.save)) {
-        const { found, value } = resolvePath({ body, ...body }, p);
+        // The corpus roots http captures at `out` (and sometimes `body`);
+        // both alias the response body.
+        const { found, value } = resolvePath({ body, out: body, ...body }, p);
         vars[varName] = found ? value : undefined;
+        if (this.verbose) {
+          let shown;
+          try { shown = JSON.stringify(value)?.slice(0, 60); } catch { shown = '[unserializable]'; }
+          this.log(`save ${varName} <- ${p} = ${shown} (found=${found})`);
+        }
       }
     }
   }

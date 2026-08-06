@@ -299,9 +299,21 @@ function validateAbort(rec, sentBound, allowedReasons) {
 export function streamWaitMs(spec, servedLimits = {}, timeoutScale = 1) {
   const allowance = servedLimits.transfer_connect_allowance_ms;
   const floor = servedLimits.transfer_floor_bits_per_second;
+  // A zero (or non-integer) served floor is an invalid configuration the
+  // daemon must refuse readiness over — deadline arithmetic divides by it.
+  if (typeof floor !== 'number' || !Number.isInteger(floor) || floor <= 0) {
+    throw new AssertFailure(
+      `served transfer_floor_bits_per_second ${JSON.stringify(floor)} is an invalid configuration`,
+    );
+  }
+  if (typeof allowance !== 'number' || !Number.isInteger(allowance) || allowance < 0) {
+    throw new AssertFailure(
+      `served transfer_connect_allowance_ms ${JSON.stringify(allowance)} is an invalid configuration`,
+    );
+  }
   const total = Number(spec.send_bytes ?? spec.receive_bytes);
   let waitMs = 60_000;
-  if (Number.isInteger(allowance) && Number.isInteger(floor) && floor > 0 && Number.isFinite(total)) {
+  if (Number.isFinite(total)) {
     const budgetMs = allowance + Math.ceil((total * 8 * 1000) / floor);
     waitMs = Math.max(waitMs, Math.ceil(budgetMs * 1.2));
   }
