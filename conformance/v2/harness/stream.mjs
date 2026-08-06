@@ -290,17 +290,25 @@ function validateAbort(rec, sentBound, allowedReasons) {
  * pick the legal-END discipline, never to bound the generator). Returns the
  * terminal reply envelope; the tracker carries the byte accounting.
  */
-export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, connectAllowanceMs, floorBitsPerSecond, timeoutScale = 1 }) {
-  // Harness patience: at least 60 s, or the served absolute budget (with
-  // headroom) when the legal budget for this total is longer — a conforming
-  // slow-floor transfer must not lose its reply promise early. Enforcement
-  // of the deadline itself belongs to deadline-designed fixtures.
+/** Harness patience for one streaming call: at least 60 s, extended toward
+ * the served absolute budget (with headroom) when the legal budget for this
+ * total is longer, and capped under the 90 s case watchdog — the watchdog is
+ * the harness's deliberate anti-hang bound and reports ERROR, never a
+ * conformance verdict. Deadline ENFORCEMENT belongs to deadline-designed
+ * fixtures. */
+export function streamWaitMs(spec, servedLimits = {}, timeoutScale = 1) {
+  const allowance = servedLimits.transfer_connect_allowance_ms;
+  const floor = servedLimits.transfer_floor_bits_per_second;
   const total = Number(spec.send_bytes ?? spec.receive_bytes);
-  let waitMs = 60_000 * timeoutScale;
-  if (Number.isInteger(connectAllowanceMs) && Number.isInteger(floorBitsPerSecond) && floorBitsPerSecond > 0 && Number.isFinite(total)) {
-    const budgetMs = connectAllowanceMs + Math.ceil((total * 8 * 1000) / floorBitsPerSecond);
+  let waitMs = 60_000;
+  if (Number.isInteger(allowance) && Number.isInteger(floor) && floor > 0 && Number.isFinite(total)) {
+    const budgetMs = allowance + Math.ceil((total * 8 * 1000) / floor);
     waitMs = Math.max(waitMs, Math.ceil(budgetMs * 1.2));
   }
+  return Math.min(waitMs, 80_000) * timeoutScale;
+}
+
+export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs = 60_000 }) {
   if (spec.send_bytes !== undefined) {
     return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs });
   }
@@ -314,7 +322,14 @@ export async function runStreamingCall({ session, tracker, replyState, spec, dec
  * budget before admission — an OPEN beyond the sole-active budget proves an
  * admission its own limits forbid. */
 function checkInflightBudget(openTotal, inflightBytes) {
-  if (Number.isInteger(inflightBytes) && openTotal > inflightBytes) {
+  // The limits contract serves JSON integers; a non-integer bound is a
+  // nonconforming configuration, never treated as no bound.
+  if (typeof inflightBytes !== 'number' || !Number.isInteger(inflightBytes) || inflightBytes < 0) {
+    throw new AssertFailure(
+      `served max_transfer_bytes_inflight ${JSON.stringify(inflightBytes)} is unusable for byte streaming`,
+    );
+  }
+  if (openTotal > inflightBytes) {
     throw new AssertFailure(
       `daemon admitted an OPEN total ${openTotal} beyond its served max_transfer_bytes_inflight ${inflightBytes}`,
     );

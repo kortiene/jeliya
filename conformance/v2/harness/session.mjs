@@ -172,6 +172,9 @@ export class Session {
       if (waiter) {
         this.pending.delete(frame.id);
         clearTimeout(waiter.timer);
+        // Retire the id SYNCHRONOUSLY — a second reply later in this same
+        // receive batch must find the tombstone, not a microtask gap.
+        (this.retiredCallIds ||= new Set()).add(frame.id);
         waiter.resolve(frame);
       }
       this.#notifyFrame(frame);
@@ -204,6 +207,13 @@ export class Session {
     // must still fail the next daemon interaction on this connection.
     this.stickyBinaryViolation ||= err;
     for (const t of this.streams.values()) t.fail(err);
+    // Direct calls (setup/observation) fail NOW as the conformance verdict,
+    // not later as a reply-timeout transport error.
+    for (const [, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(err);
+    }
+    this.pending.clear();
   }
 
   #failAll(err) {
@@ -224,12 +234,9 @@ export class Session {
    * completed call tombstones its id, so a late duplicate terminal reply is
    * a violation even for setup and observation calls with no tracker. */
   async call(op, input, { opId, timeoutMs = 10_000 } = {}) {
-    const { id, reply } = this.startCall(op, input, { opId, timeoutMs });
-    const result = await reply;
-    // Tombstone only on a RECEIVED reply — a timed-out call's late first
-    // reply is not a duplicate.
-    (this.retiredCallIds ||= new Set()).add(id);
-    return result;
+    // Retirement happens synchronously in #onMessage when the reply is
+    // delivered, so a same-batch duplicate always finds the tombstone.
+    return this.startCall(op, input, { opId, timeoutMs }).reply;
   }
 
   /** Send one request envelope, returning its id and pending reply promise —

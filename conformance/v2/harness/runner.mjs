@@ -12,7 +12,7 @@ import { startDaemon } from './daemon.mjs';
 import { Session } from './session.mjs';
 import { AssertContext, AssertFailure, TransportFailure, evalAssert, subsetMatch } from './assert.mjs';
 import { resolvePath, resolveValue } from './values.mjs';
-import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall } from './stream.mjs';
+import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall, streamWaitMs } from './stream.mjs';
 
 /** The outcome of one case. */
 export const Outcome = {
@@ -536,7 +536,6 @@ export class Runner {
         tracker.wake();
         recordWatcher.catch(() => {});
         s.streams.delete(id);
-        if (tracker.replySeq !== undefined) (s.retiredCallIds ||= new Set()).add(id);
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;
       }
@@ -585,9 +584,10 @@ export class Runner {
     const hello = s.lastHello || {};
     const frameLimit = hello.limits?.max_frame_bytes;
     const maxPayload = maxDataPayloadBytes(frameLimit);
+    const waitMs = streamWaitMs(spec, hello.limits || {}, this.timeoutScale);
     const { id, reply: replyPromise, requestBytes } = s.startCall(op, input, {
       opId,
-      timeoutMs: 60_000 * this.timeoutScale,
+      timeoutMs: waitMs,
     });
     const tracker = new CallStreamTracker(id);
     s.streams.set(id, tracker);
@@ -618,17 +618,10 @@ export class Runner {
         limitBytes: hello.limits?.max_shared_file_bytes,
         inflightBytes: hello.limits?.max_transfer_bytes_inflight,
         stallMs: hello.limits?.transfer_stall_ms,
-        connectAllowanceMs: hello.limits?.transfer_connect_allowance_ms,
-        floorBitsPerSecond: hello.limits?.transfer_floor_bits_per_second,
-        timeoutScale: this.timeoutScale,
+        waitMs,
       });
     } finally {
       s.streams.delete(id);
-      // Tombstone the id so a late duplicate terminal reply still violates
-      // exactly-one-terminal after the tracker retires — only when a reply
-      // was actually received (a timed-out call's late first reply is not a
-      // duplicate).
-      if (tracker.replySeq !== undefined) (s.retiredCallIds ||= new Set()).add(id);
       if (record) {
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;
@@ -1093,9 +1086,14 @@ export class Runner {
       }
       case 'reconnect': {
         const label = c.on || step.on || 'subject:self';
-        const s = await this.#sessionFor(label, env.daemons, sessions, vars);
-        s.close();
-        sessions.delete(label);
+        const s = sessions.get(label);
+        if (s) {
+          s.close();
+          sessions.delete(label);
+          // A violation delivered to the outgoing connection while the
+          // replacement is awaited must survive to the case-end scan.
+          if (vars.__case) (vars.__case.replacedSessions ||= []).push(s);
+        }
         await this.#sessionFor(label, env.daemons, sessions, vars);
         return;
       }
