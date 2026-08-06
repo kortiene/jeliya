@@ -63,7 +63,10 @@ export class Session {
     for (const [k, v] of Object.entries(connectQuery)) params.set(k, String(v));
     const url = `${daemon.wsBase}?${params.toString()}`;
     const hdrs = { Host: `127.0.0.1:${daemon.port}`, ...headers };
-    this.ws = new WebSocket(url, { headers: hdrs });
+    // Never offer per-message compression: the daemon must not negotiate it,
+    // and a compressed transport would decouple max_frame_bytes from the
+    // actual message payload the harness measures.
+    this.ws = new WebSocket(url, { headers: hdrs, perMessageDeflate: false });
     this.ws.binaryType = 'nodebuffer';
     this.ws.on('message', (data, isBinary) => this.#onMessage(data, isBinary));
     this.ws.on('close', (code) => {

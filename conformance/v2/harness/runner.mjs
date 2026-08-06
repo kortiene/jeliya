@@ -700,6 +700,7 @@ export class Runner {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url, {
         headers: { Host: `127.0.0.1:${daemon.port}`, ...headers },
+        perMessageDeflate: false,
       });
       ws.binaryType = 'nodebuffer';
       let settled = false;

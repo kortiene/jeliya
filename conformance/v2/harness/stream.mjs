@@ -35,13 +35,14 @@ export const ABORT_REASON = {
  * checked before use. A served limit that cannot carry a record is an invalid
  * configuration the daemon must refuse readiness over — never papered over. */
 export function maxDataPayloadBytes(maxFrameBytes) {
-  const frame = Number(maxFrameBytes);
-  if (!Number.isFinite(frame) || frame <= STREAM_HEADER_BYTES) {
+  // The limits contract serves JSON integers — a numeric string or fraction
+  // is a nonconforming configuration, never coerced.
+  if (typeof maxFrameBytes !== 'number' || !Number.isInteger(maxFrameBytes) || maxFrameBytes <= STREAM_HEADER_BYTES) {
     throw new AssertFailure(
       `served max_frame_bytes ${JSON.stringify(maxFrameBytes)} cannot carry a byte-stream record`,
     );
   }
-  return Math.min(65_536, frame - STREAM_HEADER_BYTES);
+  return Math.min(65_536, maxFrameBytes - STREAM_HEADER_BYTES);
 }
 
 /** Encode one record. `streamId` is a 16-byte Buffer (zeros before OPEN). */
@@ -300,8 +301,12 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     // Terminal before admission: zero bytes, no stream. A `stream`-carrying
     // step is a fresh execution (the corpus runs faithful replays as
     // non-streaming calls), so a pre-OPEN SUCCESS is a daemon violation —
-    // a fresh execution has exactly one OPEN.
+    // a fresh execution has exactly one OPEN. Anything still queued was
+    // sequenced AFTER the terminal reply and violates the settled refusal.
     const reply = await settleReply(replyState);
+    if (tracker.queue.length) {
+      throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after its pre-OPEN terminal reply`);
+    }
     if (reply && reply.ok) {
       throw new AssertFailure('file.share replied success before OPEN on a streamed call');
     }
@@ -327,12 +332,12 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   // The served shared-file limit is load-bearing for the sentinel math; a
   // daemon that fails to serve it as a usable integer fails, never gets an
   // invented cap.
-  const limit = Number(limitBytes);
-  if (!Number.isFinite(limit) || limit < 0) {
+  if (typeof limitBytes !== 'number' || !Number.isInteger(limitBytes) || limitBytes < 0) {
     throw new AssertFailure(
       `served max_shared_file_bytes ${JSON.stringify(limitBytes)} is unusable for byte streaming`,
     );
   }
+  const limit = limitBytes;
   // The daemon may not extend send_through past min(declared, limit) + 1 (the
   // observation sentinel).
   const sentinelCap = Math.min(Number.isFinite(declared) ? declared : Infinity, limit) + 1;
@@ -498,6 +503,9 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     const reply = await settleReply(replyState);
+    if (tracker.queue.length) {
+      throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after its pre-OPEN terminal reply`);
+    }
     // file.read has no op_id dedup, so there is no legal streamless success.
     if (reply && reply.ok) {
       throw new AssertFailure('file.read replied success without OPEN or any streamed byte');
