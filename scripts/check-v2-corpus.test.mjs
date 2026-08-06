@@ -242,6 +242,56 @@ test('a malformed $-prefixed value the harness cannot resolve is invalid', () =>
   );
 });
 
+test('a $-rooted path whose root is not a bare variable name is invalid', () => {
+  const output = runValidator([
+    fileCase({
+      steps: [
+        { call: 'file.list', in: { room_id: '$rid', ...LIST_IN } },
+        { assert: [{ path: '$rid[0].secret', op: 'absent' }] },
+      ],
+    }),
+  ]);
+  assert.ok(
+    output.includes('"$rid[0].secret" (assert[0].path) is not a well-formed $variable reference'),
+    output,
+  );
+});
+
+test('the await reply builtin $id is not treated as a variable', () => {
+  const output = runValidator([
+    fileCase({
+      operation: 'room.create',
+      steps: [
+        { call: 'room.create', in: { name: 'Reply' }, op_id: 'op-b-11' },
+        { await: { reply: '$id' }, expect: { ok: true, out: { room_id: '<room_id>' } } },
+      ],
+    }),
+  ]);
+  assert.ok(!output.includes('"$id"'), output);
+});
+
+test('references embedded inside http and upgrade strings are checked', () => {
+  const output = runValidator([
+    fileCase({
+      kind: 'handshake',
+      steps: [
+        {
+          http: {
+            method: 'GET',
+            path: '/files/$ghost_http',
+            headers: { authorization: 'Bearer $ghost_header' },
+            body: null,
+          },
+        },
+        { upgrade: { query: { sg: '$daemon_sg' }, headers: {} } },
+      ],
+    }),
+  ]);
+  assert.ok(output.includes('"$ghost_http" (http.path) is never bound'), output);
+  assert.ok(output.includes('"$ghost_header" (http.headers.authorization) is never bound'), output);
+  assert.ok(!output.includes('"$daemon_sg"'), output);
+});
+
 test('nested expectation, assertion-path, and observation references are checked', () => {
   const output = runValidator([
     fileCase({

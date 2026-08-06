@@ -352,14 +352,39 @@ function fileErrorIsCanonical(err) {
       checkExactKeySet(provider, ["subject_id", "device_id", "link"]));
 }
 
-/** The variable a "$name"-rooted path reads, or null for the non-variable
- * roots: out/err/frame, "$" (the whole step value), and the deferred-call
- * capture "$request". */
+/** The variable a "$name"-rooted path reads. Returns null for the
+ * non-variable roots (out/err/frame, "$" the whole step value, the
+ * deferred-call capture "$request"), {name} for a well-formed variable root,
+ * or {malformed: true} when the root segment is not a bare "$name" — the
+ * assert engine splits paths on "." only, so "$rid[0].secret" looks up the
+ * nonexistent variable "rid[0]" and an absent assertion on it silently
+ * passes. */
 function pathRootReference(path) {
-  if (typeof path !== "string" || path === "$request") return null;
+  if (typeof path !== "string" || !path.startsWith("$") || path === "$request") return null;
   if (path === "$" || path.startsWith("$.")) return null;
-  const m = path.match(VARIABLE_REFERENCE);
-  return m ? m[1] : null;
+  const m = path.match(/^\$([A-Za-z_][A-Za-z0-9_]*)(?:$|\.)/);
+  return m ? { name: m[1] } : { malformed: true };
+}
+
+/** Collect $name references embedded ANYWHERE in http/upgrade strings — the
+ * harness's header/path resolution substitutes them mid-string ("Bearer
+ * $token", "/files/$fid"), so whole-string scanning is not enough there. */
+function collectInterpolatedReferences(node, at, refs) {
+  if (typeof node === "string") {
+    for (const m of node.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      refs.push({ name: m[1], at });
+    }
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((el, i) => collectInterpolatedReferences(el, `${at}[${i}]`, refs));
+    return;
+  }
+  if (isObject(node)) {
+    for (const [k, v] of Object.entries(node)) {
+      collectInterpolatedReferences(v, `${at}.${k}`, refs);
+    }
+  }
 }
 
 /** Collect every $variable read from a value node, recursing through arrays,
@@ -398,13 +423,20 @@ function collectValueReferences(node, at, refs) {
 function collectStepVariableReferences(step) {
   const refs = [];
   if (!isObject(step)) return refs;
-  for (const key of ["in", "op_id", "expect", "stream", "send", "http", "upgrade"]) {
+  for (const key of ["in", "op_id", "expect", "stream", "send"]) {
     if (key in step) collectValueReferences(step[key], key, refs);
   }
+  for (const key of ["http", "upgrade"]) {
+    if (key in step) collectInterpolatedReferences(step[key], key, refs);
+  }
   if (isObject(step.await)) {
-    if (typeof step.await.reply === "string") {
-      const name = pathRootReference(step.await.reply);
-      if (name) refs.push({ name, at: "await.reply" });
+    // `$id` is the reply-position builtin naming the connection's most
+    // recent request id (runner.mjs) — not a variable.
+    if (typeof step.await.reply === "string" && step.await.reply.startsWith("$")
+        && step.await.reply !== "$id") {
+      const m = step.await.reply.match(VALUE_REFERENCE);
+      if (m) refs.push({ name: m[1], at: "await.reply" });
+      else refs.push({ name: null, raw: step.await.reply, at: "await.reply" });
     }
     for (const key of ["push", "frame"]) {
       if (key in step.await) collectValueReferences(step.await[key], `await.${key}`, refs);
@@ -431,10 +463,10 @@ function collectStepVariableReferences(step) {
         return;
       }
       const root = pathRootReference(a.path);
-      if (root) refs.push({ name: root, at: `${at}.path` });
+      if (root) refs.push({ name: root.name ?? null, raw: a.path, at: `${at}.path` });
       if (a.op === "eq_except" && isObject(a.value)) {
         const targetRoot = pathRootReference(a.value.path);
-        if (targetRoot) refs.push({ name: targetRoot, at: `${at}.value.path` });
+        if (targetRoot) refs.push({ name: targetRoot.name ?? null, raw: a.value.path, at: `${at}.value.path` });
       } else if (["len", "byte_len"].includes(a.op) && isObject(a.value)) {
         collectValueReferences(a.value.value, `${at}.value.value`, refs);
       } else if (!["exact_keys", "type"].includes(a.op) && "value" in a) {
@@ -445,7 +477,7 @@ function collectStepVariableReferences(step) {
   if (isObject(step.save)) {
     for (const [name, path] of Object.entries(step.save)) {
       const root = pathRootReference(path);
-      if (root) refs.push({ name: root, at: `save.${name}` });
+      if (root) refs.push({ name: root.name ?? null, raw: path, at: `save.${name}` });
     }
   }
   return refs;
@@ -1055,7 +1087,7 @@ function checkCase(c, file) {
         const { name: variable, at } = reference;
         if (variable === null) {
           fail(file, name, `step ${i + 1}`,
-            `${JSON.stringify(reference.raw)} (${at}) is not a well-formed $variable reference — the harness cannot resolve it, so it degrades to a literal string`);
+            `${JSON.stringify(reference.raw)} (${at}) is not a well-formed $variable reference — it resolves against nothing (a value degrades to a literal string; a path names a variable that cannot exist), so it asserts nothing`);
           continue;
         }
         if (RUNNER_PROVIDED_VARIABLES.has(variable)) continue;

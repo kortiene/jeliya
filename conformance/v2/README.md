@@ -596,7 +596,13 @@ documented name alone is never evidence, because the historical failure was
 exactly a `requires` rewrite that dropped a binding while the reference
 survived. A whole-string `$`-prefixed value that is not a well-formed
 reference (`$fid-2`, `$fid[0]` — shapes the harness cannot resolve) is
-invalid outright. An unknown reference is invalid rather than an
+invalid outright, and a `$`-rooted assertion or save path must open with the
+bare variable name followed by `.` or nothing (`$rid[0].secret` looks up the
+nonexistent variable `rid[0]`, so an `absent` on it would silently pass).
+`http` and `upgrade` strings are scanned for embedded references too, since
+the harness substitutes `$name` mid-string there (`Bearer $token`). One
+reply-position builtin exists: `await {reply: "$id"}` names the connection's
+most recent request id and is not a variable. An unknown reference is invalid rather than an
 interestingly-named literal: the harness resolves an unbound `$name` to its
 literal string form, which satisfies subset matching and quietly turns the
 step into no evidence at all. Two pre-existing U2-blocked fixtures
