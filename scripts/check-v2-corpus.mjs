@@ -185,6 +185,11 @@ const PRECONDITION_GAP_CASES = new Map([
 // which splits on "." only — "$fid-2" or "$fid[0]" resolve to nothing and
 // degrade to literal strings, so they are malformed rather than clever).
 const VALUE_REFERENCE = /^\$([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_]+)*$/;
+// A $variable-rooted assertion/save path the assert engine can resolve: the
+// bare root, then dot segments, each optionally carrying the [*] wildcard.
+// The engine splits on "." and rewrites only [*], so "$rid..secret",
+// "$rid.", and "$rid.foo[0]" all resolve against nothing.
+const VARIABLE_PATH = /^\$([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_]+(?:\[\*\])?)*$/;
 const VARIABLE_REFERENCE = /^\$([A-Za-z_][A-Za-z0-9_]*)/;
 
 const OPERATIONS = new Set([
@@ -362,7 +367,7 @@ function fileErrorIsCanonical(err) {
 function pathRootReference(path) {
   if (typeof path !== "string" || !path.startsWith("$") || path === "$request") return null;
   if (path === "$" || path.startsWith("$.")) return null;
-  const m = path.match(/^\$([A-Za-z_][A-Za-z0-9_]*)(?:$|\.)/);
+  const m = path.match(VARIABLE_PATH);
   return m ? { name: m[1] } : { malformed: true };
 }
 
@@ -426,8 +431,19 @@ function collectStepVariableReferences(step) {
   for (const key of ["in", "op_id", "expect", "stream", "send"]) {
     if (key in step) collectValueReferences(step[key], key, refs);
   }
-  for (const key of ["http", "upgrade"]) {
-    if (key in step) collectInterpolatedReferences(step[key], key, refs);
+  // The runner interpolates $name mid-string in http/upgrade HEADERS and the
+  // http PATH (#resolveHeaderValue), but resolves http BODY and upgrade QUERY
+  // values whole (resolveValue) — so "$rid[0]" in a body is not a read of
+  // $rid, it is an unresolvable literal.
+  if (isObject(step.http)) {
+    for (const key of ["path", "headers"]) {
+      if (key in step.http) collectInterpolatedReferences(step.http[key], `http.${key}`, refs);
+    }
+    if ("body" in step.http) collectValueReferences(step.http.body, "http.body", refs);
+  }
+  if (isObject(step.upgrade)) {
+    if ("headers" in step.upgrade) collectInterpolatedReferences(step.upgrade.headers, "upgrade.headers", refs);
+    if ("query" in step.upgrade) collectValueReferences(step.upgrade.query, "upgrade.query", refs);
   }
   if (isObject(step.await)) {
     // `$id` is the reply-position builtin naming the connection's most
@@ -1078,6 +1094,14 @@ function checkCase(c, file) {
     const savedAt = new Map();
     c.steps.forEach((step, i) => {
       if (!isObject(step?.save)) return;
+      // The runner never applies a save on a send or control step (it
+      // returns before the capture logic), so such a save binds nothing at
+      // replay time and must not count as a binding here.
+      if ("send" in step || "control" in step) {
+        fail(file, name, `step ${i + 1}`,
+          `save on a ${"send" in step ? "send" : "control"} step captures nothing — the runner applies captures only where a step produces a result (call, http, upgrade, await, assert, or a verbless capture step)`);
+        return;
+      }
       for (const variable of Object.keys(step.save)) {
         if (!savedAt.has(variable)) savedAt.set(variable, i);
       }

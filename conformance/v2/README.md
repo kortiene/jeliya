@@ -585,9 +585,11 @@ resource preconditions (`resource:shared_file`, `resource:fetched_file`,
 `resource:large_file`) bind `$fid`, with the large-file companions
 `$fid_unsized` and `$fid_one_byte` bound by `resource:large_file`. Like the
 deferred-call contract, this states the DSL contract; the current live
-harness pre-seeds the unconditional set and implements the room, member,
-subject, and tcp-service bindings, while the file-resource and foreign-room
-bindings await their executor.
+harness pre-seeds the unconditional set and implements the
+`room:plain`/`live`/`quiescent`/`with_history`/`left`, single-letter member
+(`member:b`/`member:c`), second-subject/outsider, and tcp-service bindings,
+while `room:removed`, the agent-member variants, and the file-resource and
+foreign-room bindings await their executor.
 
 In `files.json` the validator enforces the contract: every `$name` a step
 reads must be captured by a `save` on an **earlier** step of the same case,
@@ -596,11 +598,15 @@ documented name alone is never evidence, because the historical failure was
 exactly a `requires` rewrite that dropped a binding while the reference
 survived. A whole-string `$`-prefixed value that is not a well-formed
 reference (`$fid-2`, `$fid[0]` — shapes the harness cannot resolve) is
-invalid outright, and a `$`-rooted assertion or save path must open with the
-bare variable name followed by `.` or nothing (`$rid[0].secret` looks up the
-nonexistent variable `rid[0]`, so an `absent` on it would silently pass).
-`http` and `upgrade` strings are scanned for embedded references too, since
-the harness substitutes `$name` mid-string there (`Bearer $token`). One
+invalid outright, and a `$`-rooted assertion or save path must be the bare
+variable name followed by well-formed dot segments, each optionally carrying
+`[*]` (`$rid[0].secret`, `$rid..secret`, and `$rid.` all resolve against
+nothing, so an `absent` on them would silently pass). `http`/`upgrade`
+header values and the `http` path are scanned for embedded references, since
+the harness substitutes `$name` mid-string there (`Bearer $token`); `http`
+bodies and `upgrade` query values resolve whole, so only whole-string
+references count there. A `save` on a `send` or `control` step is invalid —
+the runner applies captures only where a step produces a result. One
 reply-position builtin exists: `await {reply: "$id"}` names the connection's
 most recent request id and is not a variable. An unknown reference is invalid rather than an
 interestingly-named literal: the harness resolves an unbound `$name` to its

@@ -242,12 +242,19 @@ test('a malformed $-prefixed value the harness cannot resolve is invalid', () =>
   );
 });
 
-test('a $-rooted path whose root is not a bare variable name is invalid', () => {
+test('a $-rooted path must be a bare root plus well-formed dot segments', () => {
   const output = runValidator([
     fileCase({
       steps: [
-        { call: 'file.list', in: { room_id: '$rid', ...LIST_IN } },
+        {
+          call: 'file.list',
+          in: { room_id: '$rid', ...LIST_IN },
+          save: { first: 'out' },
+        },
         { assert: [{ path: '$rid[0].secret', op: 'absent' }] },
+        { assert: [{ path: '$rid..secret', op: 'absent' }] },
+        { assert: [{ path: '$rid.foo[0]', op: 'absent' }] },
+        { assert: [{ path: '$first.files[*].file_id', op: 'present' }] },
       ],
     }),
   ]);
@@ -255,6 +262,53 @@ test('a $-rooted path whose root is not a bare variable name is invalid', () => 
     output.includes('"$rid[0].secret" (assert[0].path) is not a well-formed $variable reference'),
     output,
   );
+  assert.ok(
+    output.includes('"$rid..secret" (assert[0].path) is not a well-formed $variable reference'),
+    output,
+  );
+  assert.ok(
+    output.includes('"$rid.foo[0]" (assert[0].path) is not a well-formed $variable reference'),
+    output,
+  );
+  assert.ok(!output.includes('"$first.files[*].file_id"'), output);
+});
+
+test('http bodies and upgrade queries resolve whole, unlike headers and paths', () => {
+  const output = runValidator([
+    fileCase({
+      kind: 'handshake',
+      steps: [
+        {
+          http: {
+            method: 'POST',
+            path: '/api/session',
+            headers: {},
+            body: { room_id: '$rid[0]' },
+          },
+        },
+      ],
+    }),
+  ]);
+  assert.ok(
+    output.includes('"$rid[0]" (http.body.room_id) is not a well-formed $variable reference'),
+    output,
+  );
+});
+
+test('a save on a send or control step captures nothing and is invalid', () => {
+  const output = runValidator([
+    fileCase({
+      steps: [
+        {
+          control: { do: 'idle', ms: 0 },
+          save: { ghost_capture: 'out.value' },
+        },
+        { call: 'file.list', in: { room_id: '$rid', ...LIST_IN, limit: '$ghost_capture' } },
+      ],
+    }),
+  ]);
+  assert.ok(output.includes('save on a control step captures nothing'), output);
+  assert.ok(output.includes('"$ghost_capture"'), output);
 });
 
 test('the await reply builtin $id is not treated as a variable', () => {
