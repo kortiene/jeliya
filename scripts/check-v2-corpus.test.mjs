@@ -337,12 +337,24 @@ test('references embedded inside http and upgrade strings are checked', () => {
             body: null,
           },
         },
+        {
+          http: {
+            method: 'GET',
+            path: '/files/$rid..secret',
+            headers: {},
+            body: null,
+          },
+        },
         { upgrade: { query: { sg: '$daemon_sg' }, headers: {} } },
       ],
     }),
   ]);
   assert.ok(output.includes('"$ghost_http" (http.path) is never bound'), output);
   assert.ok(output.includes('"$ghost_header" (http.headers.authorization) is never bound'), output);
+  assert.ok(
+    output.includes('"$rid..secret" (http.path) is not a well-formed $variable reference'),
+    output,
+  );
   assert.ok(!output.includes('"$daemon_sg"'), output);
 });
 

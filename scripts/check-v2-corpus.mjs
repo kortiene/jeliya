@@ -376,8 +376,17 @@ function pathRootReference(path) {
  * $token", "/files/$fid"), so whole-string scanning is not enough there. */
 function collectInterpolatedReferences(node, at, refs) {
   if (typeof node === "string") {
-    for (const m of node.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
-      refs.push({ name: m[1], at });
+    // Mirror #resolveHeaderValue's capture exactly: its name grammar
+    // consumes dots ([A-Za-z0-9_.]*), so "$rid..secret" is one unresolvable
+    // reference — not a read of $rid followed by text — and the literal
+    // stays in the request when resolution fails.
+    for (const m of node.matchAll(/\$([A-Za-z_][A-Za-z0-9_.]*)/g)) {
+      const name = m[1];
+      if (/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/.test(name)) {
+        refs.push({ name: name.split(".")[0], at });
+      } else {
+        refs.push({ name: null, raw: `$${name}`, at });
+      }
     }
     return;
   }
