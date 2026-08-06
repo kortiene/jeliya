@@ -354,8 +354,15 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       }
       case KIND.ABORT: {
         // The daemon (the upload's receiver) aborted: its offset is its local
-        // accepted count. Stop producing and echo it in ACK (value 0x05).
+        // accepted count — which, with atomic DATA acceptance, must be zero
+        // or an emitted record endpoint. Stop producing and echo it in ACK
+        // (value 0x05).
         validateAbort(rec, sent);
+        if (!dataEndpoints.has(rec.offset)) {
+          throw new AssertFailure(
+            `daemon ABORT accepted count ${rec.offset} is inside a DATA record rather than on a record boundary`,
+          );
+        }
         abortSeen = rec;
         tracker.accepted = rec.offset;
         session.sendBinary(
