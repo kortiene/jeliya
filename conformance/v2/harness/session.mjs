@@ -154,6 +154,11 @@ export class Session {
           return;
         }
         tracker.replySeq = ++tracker.seq;
+      } else if (this.retiredStreamCallIds && this.retiredStreamCallIds.has(frame.id)) {
+        // A late duplicate for a COMPLETED streaming call — the tracker is
+        // gone, but exactly-one-terminal still binds the request id.
+        this.#binaryViolation(`daemon sent a late duplicate terminal reply for streaming request ${frame.id}`);
+        return;
       }
       const waiter = this.pending.get(frame.id);
       if (waiter) {

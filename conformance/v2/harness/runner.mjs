@@ -593,6 +593,11 @@ export class Runner {
       });
     } finally {
       s.streams.delete(id);
+      // Tombstone the id so a late duplicate terminal reply still violates
+      // exactly-one-terminal after the tracker retires. Streaming ids only —
+      // harness-issued and never reused, so raw-send id-reuse fixtures are
+      // unaffected.
+      (s.retiredStreamCallIds ||= new Set()).add(id);
       if (record) {
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;
