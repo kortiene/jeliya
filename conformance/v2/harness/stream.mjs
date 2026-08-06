@@ -154,7 +154,7 @@ function checkBinding(tracker, rec) {
   }
 }
 
-function validateOpen(tracker, rec) {
+function validateOpen(tracker, rec, session) {
   if (rec.kind !== KIND.OPEN) {
     throw new AssertFailure(`daemon sent ${rec.kindName} before OPEN on request ${rec.id}`);
   }
@@ -162,8 +162,39 @@ function validateOpen(tracker, rec) {
     throw new AssertFailure('daemon OPEN is malformed (nonzero offset/reserved or zero stream id)');
   }
   if (rec.payload) throw new AssertFailure('daemon OPEN carried a payload');
+  // Stream ids are unique and never reused within one WebSocket connection.
+  const sidHex = rec.streamId.toString('hex');
+  session.seenStreamIds ||= new Set();
+  if (session.seenStreamIds.has(sidHex)) {
+    throw new AssertFailure(`daemon reused stream id ${sidHex} on this connection`);
+  }
+  session.seenStreamIds.add(sidHex);
   tracker.streamId = rec.streamId;
   tracker.openTotal = rec.value;
+}
+
+const ABORT_REASON_NAME = { 1: 'cancelled', 2: 'source_failed', 3: 'sink_failed', 4: 'protocol_error' };
+
+/** A daemon ABORT's reason binds the terminal reply: 0x01-0x03 resolve to
+ * stream_aborted with the matching reason, 0x04 to malformed_frame, and 0x05
+ * (operation_error) to the authoritative typed operation error — never
+ * stream_aborted. */
+function checkAbortReplyCorrelation(abortRec, reply) {
+  if (!reply || reply.ok) return;
+  const code = reply.err?.code;
+  if (abortRec.value === ABORT_REASON.operation_error) {
+    if (code === 'stream_aborted') {
+      throw new AssertFailure('daemon ABORT operation_error must resolve to a typed operation error, got stream_aborted');
+    }
+  } else if (abortRec.value === ABORT_REASON.protocol_error) {
+    if (code !== 'malformed_frame') {
+      throw new AssertFailure(`daemon ABORT protocol_error must resolve to malformed_frame, got ${JSON.stringify(code)}`);
+    }
+  } else if (code !== 'stream_aborted' || reply.err?.reason !== ABORT_REASON_NAME[abortRec.value]) {
+    throw new AssertFailure(
+      `daemon ABORT ${ABORT_REASON_NAME[abortRec.value]} must resolve to stream_aborted with that reason, got ${JSON.stringify(reply.err)}`,
+    );
+  }
 }
 
 async function settleReply(replyState) {
@@ -230,7 +261,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     }
     return reply;
   }
-  validateOpen(tracker, first.record);
+  validateOpen(tracker, first.record, session);
   if (Number.isFinite(Number(declaredBytes)) && tracker.openTotal !== Number(declaredBytes)) {
     throw new AssertFailure(
       `upload OPEN total ${tracker.openTotal} disagrees with declared_bytes ${declaredBytes}`,
@@ -257,6 +288,9 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   let creditSeen = false;
   let endSent = false;
   let abortSeen = null;
+  // DATA acceptance is atomic, so a CREDIT acknowledgement may only land on
+  // an emitted record boundary (or stay at zero).
+  const dataEndpoints = new Set([0]);
 
   for (;;) {
     // One DATA record per pass, yielding after each so interleaved CREDIT,
@@ -272,6 +306,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       );
       tracker.socketSent += len;
       sent += len;
+      dataEndpoints.add(sent);
       await yieldAfterSend(session, tracker);
       continue;
     }
@@ -299,6 +334,11 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
         if (rec.offset > sent) {
           throw new AssertFailure(
             `daemon CREDIT acknowledged ${rec.offset} bytes beyond the ${sent} actually sent`,
+          );
+        }
+        if (!dataEndpoints.has(rec.offset)) {
+          throw new AssertFailure(
+            `daemon CREDIT acknowledged ${rec.offset}, inside a DATA record rather than on a record boundary`,
           );
         }
         if (rec.value > sentinelCap) {
@@ -340,6 +380,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       `file.share replied ${JSON.stringify(reply.err?.code)} on an active stream with no daemon ABORT`,
     );
   }
+  if (abortSeen) checkAbortReplyCorrelation(abortSeen, reply);
   return reply;
 }
 
@@ -357,7 +398,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
     }
     return reply;
   }
-  validateOpen(tracker, first.record);
+  validateOpen(tracker, first.record, session);
   const total = tracker.openTotal;
   if (total !== receiveBytes) {
     throw new AssertFailure(`file.read OPEN total ${total} disagrees with the fixture's receive_bytes ${receiveBytes}`);
@@ -433,6 +474,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         if (reply && reply.ok) {
           throw new AssertFailure('download stream was ABORTed but the request replied success');
         }
+        checkAbortReplyCorrelation(rec, reply);
         return reply;
       }
       default:

@@ -133,11 +133,19 @@ export class Runner {
       // Execute the steps.
       for (let i = 0; i < fixture.steps.length; i++) {
         const step = fixture.steps[i];
+        ctxState.lastCallOk = undefined;
         await this.#runStep(step, i, { daemons, sessions, vars, ctx, ctxState, name });
-        // A `step`-scoped observation compares against the state just before
-        // this step; refresh the baseline after each step completes.
-        ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
-        ctxState.dirSnapshot = this.#dirStateSignature(daemons);
+        // An observation compares against the state just before the observed
+        // operation. A SUCCESSFUL step advances the baselines; a REFUSED one
+        // (an error-replied call, or a raw `send` probe) must not — a refused
+        // operation authors nothing legally, so refreshing after it would
+        // absorb exactly the violation a following no_event_authored /
+        // no_durable_mutation observation exists to catch.
+        const refused = (step.call && ctxState.lastCallOk === false) || step.send !== undefined;
+        if (!refused) {
+          ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
+          ctxState.dirSnapshot = this.#dirStateSignature(daemons);
+        }
       }
 
       // A case that ran all steps without a failing assertion passes. A block
@@ -495,6 +503,7 @@ export class Runner {
     vars.err = reply.err;
     vars.frame = reply;
     if (reply.err) vars.last_error = reply.err;
+    ctxState.lastCallOk = !!reply.ok;
 
     if (mutating && reply.ok) ctxState.eventAuthored++;
     ctxState.networkActivity++;
@@ -1090,8 +1099,9 @@ export class Runner {
     switch (obs) {
       case 'no_event_authored': {
         // Real check: the room's committed event total must not have grown
-        // since the baseline snapshot (case start for `case` scope, the prior
-        // step for `step` scope).
+        // since the last SUCCESSFUL step's baseline — the refresh skips
+        // refused operations, so the observed refusal cannot absorb an
+        // illegally authored event.
         if (ctxState.eventSnapshot === null || ctxState.eventSnapshot === undefined) return;
         const now = await this.#roomEventTotal(vars, sessions);
         if (now !== null && now > ctxState.eventSnapshot) {
