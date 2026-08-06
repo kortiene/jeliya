@@ -233,6 +233,26 @@ function checkAbortReplyCorrelation(abortRec, reply, { accepted, total } = {}) {
   }
 }
 
+/** Error codes only determinable on an ADMITTED stream — a pre-OPEN reply
+ * carrying one is fabricated: the daemon never observed the bytes that
+ * outcome describes. */
+const STREAM_ONLY_ERRORS = new Set([
+  'declared_size_mismatch',
+  'transfer_stalled',
+  'transfer_deadline_exceeded',
+  'stream_aborted',
+]);
+
+function checkPreOpenError(reply, op) {
+  if (!reply || reply.ok) return;
+  const err = reply.err || {};
+  if (STREAM_ONLY_ERRORS.has(err.code) || (err.code === 'file_too_large' && err.enforced_at === 'stage_stream')) {
+    throw new AssertFailure(
+      `${op} replied ${err.code}${err.enforced_at ? `@${err.enforced_at}` : ''} before OPEN — that outcome requires an admitted stream`,
+    );
+  }
+}
+
 async function settleReply(replyState) {
   if (replyState.error) {
     throw new TransportFailure(`streaming call failed to get a terminal reply: ${replyState.error.message}`);
@@ -310,6 +330,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     if (reply && reply.ok) {
       throw new AssertFailure('file.share replied success before OPEN on a streamed call');
     }
+    checkPreOpenError(reply, 'file.share');
     return reply;
   }
   validateOpen(tracker, first.record, session);
@@ -517,6 +538,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
     if (reply && reply.ok) {
       throw new AssertFailure('file.read replied success without OPEN or any streamed byte');
     }
+    checkPreOpenError(reply, 'file.read');
     return reply;
   }
   validateOpen(tracker, first.record, session);
