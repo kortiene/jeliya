@@ -229,6 +229,58 @@ test('the named ledger exempts the pre-existing U2 fixtures, and only them', () 
   assert.ok(unexempted.includes('"$fid_unsized" (in.file_id) names a precondition variable'), unexempted);
 });
 
+test('a dotted tail on a documented scalar binding is invalid', () => {
+  const output = runValidator([
+    fileCase({
+      steps: [
+        { call: 'file.list', in: { room_id: '$rid', ...LIST_IN } },
+        { assert: [{ path: '$rid.secret', op: 'absent' }] },
+        { upgrade: { query: { sg: '$daemon.storage_generation' }, headers: {} } },
+      ],
+    }),
+  ]);
+  assert.ok(
+    output.includes(
+      '"$rid" (assert[0].path) carries a dotted tail, but the documented rid binding is a scalar',
+    ),
+    output,
+  );
+  assert.ok(!output.includes('"$daemon"'), output);
+});
+
+test('$request is a save-source token only, never an assertable path', () => {
+  const output = runValidator([
+    fileCase({
+      operation: 'file.fetch',
+      requires: ['subject', 'room:live', 'link:up', 'resource:large_file'],
+      steps: [
+        {
+          call: 'file.fetch',
+          in: { room_id: '$rid', file_id: '$fid' },
+          op_id: 'op-b-12',
+          defer: true,
+          save: { fetch_request: '$request' },
+        },
+        {
+          await: { reply: '$fetch_request' },
+          expect: {
+            ok: false,
+            err: {
+              code: 'stream_aborted',
+              transferred_bytes: 0,
+              total: { state: 'unknown' },
+              reason: 'cancelled',
+            },
+          },
+        },
+        { assert: [{ path: '$request', op: 'absent' }] },
+      ],
+    }),
+  ]);
+  assert.ok(output.includes('"$request" (assert[0].path) is never bound'), output);
+  assert.ok(!output.includes('"$fetch_request"'), output);
+});
+
 test('a malformed $-prefixed value the harness cannot resolve is invalid', () => {
   const output = runValidator([
     fileCase({

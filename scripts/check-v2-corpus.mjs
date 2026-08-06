@@ -180,6 +180,13 @@ const PRECONDITION_GAP_CASES = new Map([
   ["a_transfer_with_no_forward_progress_fails_with_transfer_stalled", new Set(["fid", "fid_unsized"])],
   ["fetch_completed_result_replays_without_a_second_transfer", new Set(["fid"])],
 ]);
+// Every documented binding except $limits and $daemon is a scalar id or
+// port, so a dotted tail on one is statically unresolvable — an absent
+// assertion on "$rid.secret" would silently pass.
+const SCALAR_PROVIDED_VARIABLES = new Set([
+  "op_id_new", "op_id_fixed", "daemon_sg",
+  ...PRECONDITION_BINDINGS.keys(),
+]);
 // A whole-string value reference the harness can resolve: "$name" plus
 // optional dot segments (values.mjs resolves the tail with resolvePath,
 // which splits on "." only — "$fid-2" or "$fid[0]" resolve to nothing and
@@ -358,17 +365,18 @@ function fileErrorIsCanonical(err) {
 }
 
 /** The variable a "$name"-rooted path reads. Returns null for the
- * non-variable roots (out/err/frame, "$" the whole step value, the
- * deferred-call capture "$request"), {name} for a well-formed variable root,
- * or {malformed: true} when the root segment is not a bare "$name" — the
- * assert engine splits paths on "." only, so "$rid[0].secret" looks up the
- * nonexistent variable "rid[0]" and an absent assertion on it silently
- * passes. */
+ * non-variable roots (out/err/frame, "$" the whole step value), {name,
+ * hasTail} for a well-formed variable path, or {malformed: true} when the
+ * shape cannot resolve — the assert engine splits paths on "." only, so
+ * "$rid[0].secret" looks up the nonexistent variable "rid[0]" and an absent
+ * assertion on it silently passes. "$request" is NOT special here: the DSL
+ * reserves it solely as a deferred call's save source, which its scan site
+ * skips; anywhere else it is an ordinary, never-bound name. */
 function pathRootReference(path) {
-  if (typeof path !== "string" || !path.startsWith("$") || path === "$request") return null;
+  if (typeof path !== "string" || !path.startsWith("$")) return null;
   if (path === "$" || path.startsWith("$.")) return null;
   const m = path.match(VARIABLE_PATH);
-  return m ? { name: m[1] } : { malformed: true };
+  return m ? { name: m[1], hasTail: path.length > m[1].length + 1 } : { malformed: true };
 }
 
 /** Collect $name references embedded ANYWHERE in http/upgrade strings — the
@@ -383,7 +391,8 @@ function collectInterpolatedReferences(node, at, refs) {
     for (const m of node.matchAll(/\$([A-Za-z_][A-Za-z0-9_.]*)/g)) {
       const name = m[1];
       if (/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/.test(name)) {
-        refs.push({ name: name.split(".")[0], at });
+        const root = name.split(".")[0];
+        refs.push({ name: root, at, hasTail: root !== name });
       } else {
         refs.push({ name: null, raw: `$${name}`, at });
       }
@@ -409,7 +418,7 @@ function collectValueReferences(node, at, refs) {
   if (typeof node === "string") {
     if (!node.startsWith("$")) return;
     const m = node.match(VALUE_REFERENCE);
-    if (m) refs.push({ name: m[1], at });
+    if (m) refs.push({ name: m[1], at, hasTail: node.length > m[1].length + 1 });
     else refs.push({ name: null, raw: node, at });
     return;
   }
@@ -460,7 +469,7 @@ function collectStepVariableReferences(step) {
     if (typeof step.await.reply === "string" && step.await.reply.startsWith("$")
         && step.await.reply !== "$id") {
       const m = step.await.reply.match(VALUE_REFERENCE);
-      if (m) refs.push({ name: m[1], at: "await.reply" });
+      if (m) refs.push({ name: m[1], at: "await.reply", hasTail: step.await.reply.length > m[1].length + 1 });
       else refs.push({ name: null, raw: step.await.reply, at: "await.reply" });
     }
     for (const key of ["push", "frame"]) {
@@ -488,10 +497,10 @@ function collectStepVariableReferences(step) {
         return;
       }
       const root = pathRootReference(a.path);
-      if (root) refs.push({ name: root.name ?? null, raw: a.path, at: `${at}.path` });
+      if (root) refs.push({ name: root.name ?? null, raw: a.path, at: `${at}.path`, hasTail: root.hasTail });
       if (a.op === "eq_except" && isObject(a.value)) {
         const targetRoot = pathRootReference(a.value.path);
-        if (targetRoot) refs.push({ name: targetRoot.name ?? null, raw: a.value.path, at: `${at}.value.path` });
+        if (targetRoot) refs.push({ name: targetRoot.name ?? null, raw: a.value.path, at: `${at}.value.path`, hasTail: targetRoot.hasTail });
       } else if (["len", "byte_len"].includes(a.op) && isObject(a.value)) {
         collectValueReferences(a.value.value, `${at}.value.value`, refs);
       } else if (!["exact_keys", "type"].includes(a.op) && "value" in a) {
@@ -501,8 +510,11 @@ function collectStepVariableReferences(step) {
   }
   if (isObject(step.save)) {
     for (const [name, path] of Object.entries(step.save)) {
+      // "$request" is legal only here, as a deferred call's save source;
+      // checkStep validates that pairing separately.
+      if (path === "$request") continue;
       const root = pathRootReference(path);
-      if (root) refs.push({ name: root.name ?? null, raw: path, at: `save.${name}` });
+      if (root) refs.push({ name: root.name ?? null, raw: path, at: `save.${name}`, hasTail: root.hasTail });
     }
   }
   return refs;
@@ -1123,9 +1135,18 @@ function checkCase(c, file) {
             `${JSON.stringify(reference.raw)} (${at}) is not a well-formed $variable reference — it resolves against nothing (a value degrades to a literal string; a path names a variable that cannot exist), so it asserts nothing`);
           continue;
         }
-        if (RUNNER_PROVIDED_VARIABLES.has(variable)) continue;
         const saved = savedAt.get(variable);
-        if (saved !== undefined && saved < i) continue;
+        const savedEarlier = saved !== undefined && saved < i;
+        // A save shadows the documented binding with a value of unknown
+        // shape; without one, a dotted tail into a documented scalar id
+        // resolves against nothing.
+        if (!savedEarlier && reference.hasTail && SCALAR_PROVIDED_VARIABLES.has(variable)) {
+          fail(file, name, `step ${i + 1}`,
+            `"$${variable}" (${at}) carries a dotted tail, but the documented ${variable} binding is a scalar — the tail resolves against nothing`);
+          continue;
+        }
+        if (savedEarlier) continue;
+        if (RUNNER_PROVIDED_VARIABLES.has(variable)) continue;
         const binder = PRECONDITION_BINDINGS.get(variable);
         if (binder) {
           if (binder(requires) || exempt.has(variable)) continue;

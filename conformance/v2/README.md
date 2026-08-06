@@ -608,7 +608,15 @@ bodies and `upgrade` query values resolve whole, so only whole-string
 references count there. A `save` on a `send` or `control` step is invalid —
 the runner applies captures only where a step produces a result. One
 reply-position builtin exists: `await {reply: "$id"}` names the connection's
-most recent request id and is not a variable. An unknown reference is invalid rather than an
+most recent request id and is not a variable. `$request` is likewise
+positional — legal only as a deferred call's save source, and an ordinary,
+never-bound name anywhere else. A dotted tail on a documented binding other
+than `$limits`/`$daemon` is invalid: those bindings are scalar identifiers,
+so the tail resolves against nothing. Binding validation proves the capture
+statement exists and gates which names a step may read; whether a save's
+*source path* resolves at replay is executor behavior — the corpus-wide
+bracket-index notation (`out.files[0].file_id`) predates this contract and
+is settled with the executor work, not here. An unknown reference is invalid rather than an
 interestingly-named literal: the harness resolves an unbound `$name` to its
 literal string form, which satisfies subset matching and quietly turns the
 step into no evidence at all. Two pre-existing U2-blocked fixtures
