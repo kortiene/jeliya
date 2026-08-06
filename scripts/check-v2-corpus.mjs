@@ -1355,7 +1355,13 @@ if (isObject(manifest)) {
       status: "partial",
       ci_selected_cases: ciSelectedCases,
     },
-    binary_byte_stream_executor: "unimplemented",
+    binary_byte_stream_executor: {
+      status: "partial",
+      send_bytes: "implemented",
+      receive_bytes: "implemented_no_executable_case",
+      bytes_streamed_observation: "implemented",
+      raw_record_and_fault_controls: "unimplemented",
+    },
     adapter_targeted_declarative_cases: "declarative_only",
   };
   if (!sameJson(manifest.replayable, replayability)) {

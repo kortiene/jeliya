@@ -72,10 +72,12 @@ export function matchesTypeTag(tag, value) {
   }
 }
 
-/** Resolve a dotted path against a root object. Returns {found, value}. */
+/** Resolve a dotted path against a root object. Returns {found, value}.
+ * Numeric bracket indices (`files[0].file_id`) normalize to dot segments;
+ * `[*]` wildcards stay with the caller (collectWildcard). */
 export function resolvePath(root, path) {
   if (path === '' || path === undefined || path === null) return { found: true, value: root };
-  const parts = String(path).split('.');
+  const parts = String(path).replace(/\[(\d+)\]/g, '.$1').split('.');
   let cur = root;
   for (const part of parts) {
     if (cur === null || cur === undefined) return { found: false, value: undefined };

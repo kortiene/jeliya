@@ -31,8 +31,8 @@ claims:
 | Slice | Status | What the claim means |
 |---|---|---|
 | Structural validation | Implemented for all 341 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
-| Selected JSON-envelope/subject slice | Partial (14 CI-selected cases) | The Node harness runs this selected JSON-envelope and subject-lifecycle slice against `jeliyad`; this is neither corpus coverage nor file-stream evidence. It is not a smoke, E2E, or Dart execution claim. |
-| Binary byte-stream executor | Unimplemented | No harness codec/runtime executes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records, so file-stream cases are declarative, not live evidence. |
+| Selected JSON-envelope/subject slice | Partial (22 CI-selected cases) | The Node harness runs this selected JSON-envelope, subject-lifecycle, and executable-file slice against `jeliyad`; this is not corpus coverage. It is not a smoke, E2E, or Dart execution claim. |
+| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. The download path has no executable fixture yet (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the raw-record, credit-pause, client-ABORT, and transport-drop fault controls remain unimplemented, so malformed/backpressure stream cases are still declarative. |
 | Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
 
 | Computed corpus fact | Value |
@@ -588,8 +588,13 @@ deferred-call contract, this states the DSL contract; the current live
 harness pre-seeds the unconditional set and implements the
 `room:plain`/`live`/`quiescent`/`with_history`/`left`, single-letter member
 (`member:b`/`member:c`), second-subject/outsider, and tcp-service bindings,
-while `room:removed`, the agent-member variants, and the file-resource and
-foreign-room bindings await their executor.
+while `room:removed`, the agent-member variants, the remaining file-resource
+bindings, and the foreign-room bindings await their executor.
+`resource:shared_file` is implemented: the harness genuinely streams a
+4096-byte seed file into the required room through the byte-stream executor
+and binds `$fid` from the daemon's reply; `resource:fetched_file` and
+`resource:large_file` stay unestablished because a fetched file needs a
+provider peer the single-subject harness cannot honestly supply.
 
 In `files.json` the validator enforces the contract: every `$name` a step
 reads must be captured by a `save` on an **earlier** step of the same case,
@@ -615,8 +620,10 @@ than `$limits`/`$daemon` is invalid: those bindings are scalar identifiers,
 so the tail resolves against nothing. Binding validation proves the capture
 statement exists and gates which names a step may read; whether a save's
 *source path* resolves at replay is executor behavior — the corpus-wide
-bracket-index notation (`out.files[0].file_id`) predates this contract and
-is settled with the executor work, not here. An unknown reference is invalid rather than an
+bracket-index notation (`out.files[0].file_id`) is RESOLVED by the executor:
+both path engines (`values.mjs` `resolvePath` and the assertion engine's
+wildcard collector) normalize a numeric `[n]` segment to a dot segment, with
+`[*]` keeping its wildcard meaning. An unknown reference is invalid rather than an
 interestingly-named literal: the harness resolves an unbound `$name` to its
 literal string form, which satisfies subset matching and quietly turns the
 step into no evidence at all. Two pre-existing U2-blocked fixtures

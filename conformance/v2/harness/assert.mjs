@@ -84,6 +84,14 @@ export function subsetMatch(expected, actual, vars) {
     const resolved = resolveValue(expected, vars);
     return deepEqual(resolved, actual);
   }
+  // A computed node (`{$add: …}`, `{$unknown: …}`) resolves to its value —
+  // reply matchers name computed sizes and well-formed-but-unknown ids.
+  if (expected !== null && typeof expected === 'object' && !Array.isArray(expected)) {
+    const keys = Object.keys(expected);
+    if (keys.length === 1 && keys[0].startsWith('$')) {
+      return deepEqual(resolveValue(expected, vars), actual);
+    }
+  }
   if (Array.isArray(expected)) {
     if (!Array.isArray(actual) || actual.length < expected.length) return false;
     return expected.every((el, i) => subsetMatch(el, actual[i], vars));
@@ -95,9 +103,10 @@ export function subsetMatch(expected, actual, vars) {
   return deepEqual(expected, actual);
 }
 
-/** Collect every value at a wildcard path (`a.b[*].c`). Returns array of values. */
+/** Collect every value at a wildcard path (`a.b[*].c`). Returns array of values.
+ * Numeric bracket indices normalize to dot segments alongside the wildcard. */
 export function collectWildcard(root, path) {
-  const parts = String(path).split('.');
+  const parts = String(path).replace(/\[(\d+)\]/g, '.$1').split('.');
   let frontier = [root];
   for (const part of parts) {
     const next = [];
@@ -142,7 +151,7 @@ export function evalValueAssertion(a, ctx) {
   const rawPath = a.path;
   const op = a.op;
   const hasWildcard = String(rawPath).includes('[*]') || String(rawPath).includes('.*');
-  const path = String(rawPath).replace(/\[\*\]/g, '.*');
+  const path = String(rawPath).replace(/\[\*\]/g, '.*').replace(/\[(\d+)\]/g, '.$1');
 
   // Resolve the root: `out`, `err`, `frame`, or a `$var`.
   const [rootName, ...rest] = path.split('.');
@@ -192,10 +201,14 @@ export function evalValueAssertion(a, ctx) {
         if (!expected.some((e) => matchOrEqual(e, v, ctx.vars)))
           throw new AssertFailure(`${label}: ${rawPath} ${JSON.stringify(v)} not in ${JSON.stringify(expected)}`);
         break;
-      case 'type':
-        if (!matchesTypeTag(expected, v))
+      case 'type': {
+        // The DSL writes `type` values bracketless (`"uint"`); accept the
+        // bracketed spelling too so the tag matcher sees one form.
+        const tag = typeof expected === 'string' && !expected.startsWith('<') ? `<${expected}>` : expected;
+        if (!matchesTypeTag(tag, v))
           throw new AssertFailure(`${label}: ${rawPath} not of domain ${expected}`, { got: v });
         break;
+      }
       case 'exact_keys': {
         const want = [...expected].sort();
         const got = v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v).sort() : null;

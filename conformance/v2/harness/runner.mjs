@@ -12,6 +12,7 @@ import { startDaemon } from './daemon.mjs';
 import { Session } from './session.mjs';
 import { AssertContext, AssertFailure, TransportFailure, evalAssert, subsetMatch } from './assert.mjs';
 import { resolvePath, resolveValue } from './values.mjs';
+import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall } from './stream.mjs';
 
 /** The outcome of one case. */
 export const Outcome = {
@@ -86,6 +87,9 @@ export class Runner {
       eventAuthored: 0,
       durableMutation: 0,
       pushesByRoom: new Map(),
+      // One record per `call` step: {step (1-based), label, accepted, opened}.
+      // `bytes_streamed` observations read receiver-accepted bytes from here.
+      callRecords: [],
     };
 
     const cleanup = async () => {
@@ -251,6 +255,39 @@ export class Runner {
         const left = await authority.call('room.create', { name: 'left room' });
         vars.rid_left = left.out?.room_id;
       }
+
+      // `resource:shared_file` — a real file genuinely streamed into the room
+      // through the byte-stream executor; binds `$fid`. This is live setup
+      // evidence, not a stub: the daemon stages, digests, and authors the
+      // share exactly as any client upload.
+      if (requires.includes('resource:shared_file')) {
+        const input = {
+          room_id: vars.rid,
+          name: 'seed.bin',
+          declared_bytes: 4096,
+          declared_content_type: 'application/octet-stream',
+        };
+        const reply = await this.#streamCall(authority, 'file.share', input, { send_bytes: 4096 }, {
+          opId: `cf-seed-${opIdCounter++}`,
+        });
+        if (!reply.ok) {
+          throw new Error(`resource:shared_file setup failed: ${JSON.stringify(reply.err)}`);
+        }
+        vars.fid = reply.out?.file_id;
+      }
+    }
+
+    // Bare `subject` means the daemon's one subject exists (`subject:none` is
+    // the absence form). Room/member setup ensures it as a side effect. A case
+    // whose own steps call subject.ensure manages the lifecycle itself (some
+    // assert on the `created` flag); otherwise ensure it here so a
+    // subject-requiring error case observes its intended error rather than
+    // subject_absent.
+    const caseEnsuresSubject = (fixture.steps || []).some((st) => st.call === 'subject.ensure');
+    if (requires.includes('subject') && !caseEnsuresSubject && !(wantsRoom || wantsLeftRoom || wantsMembers)) {
+      const authority = await this.#sessionFor('subject:authority', daemons, sessions, vars);
+      const ensured = await authority.call('subject.ensure', {});
+      vars.self_sid = ensured.out?.subject_id;
     }
 
     // `resource:tcp_service` — a loopback TCP echo service a pipe can target;
@@ -346,7 +383,7 @@ export class Runner {
       return;
     }
     if (step.call) {
-      await this.#doCall(step, env);
+      await this.#doCall(step, index, env);
       return;
     }
     if (step.send !== undefined) {
@@ -389,8 +426,12 @@ export class Runner {
     // no-op for the runner.
   }
 
-  /** A `call` step: invoke an operation, match the reply, save captures. */
-  async #doCall(step, env) {
+  /** A `call` step: invoke an operation, match the reply, save captures. A
+   * step carrying `stream` runs as one duplex operation via the byte-stream
+   * executor; every call (streaming or not) gets a tracker so
+   * `bytes_streamed` observes real receiver-accepted counts and an
+   * unexpected OPEN on a stream-less call is caught, not dropped. */
+  async #doCall(step, index, env) {
     const { sessions, vars, ctxState } = env;
     const s = await this.#sessionFor(step.on, env.daemons, sessions, vars);
     const input = step.in !== undefined ? resolveValue(step.in, vars) : {};
@@ -414,16 +455,38 @@ export class Runner {
       step.call,
     );
 
+    const streamSpec = step.stream !== undefined ? resolveValue(step.stream, vars) : null;
+    const record = { step: index + 1, label: step.on || 'subject:self', accepted: 0, opened: false };
+    ctxState.callRecords.push(record);
+
     let reply;
-    try {
-      reply = await s.call(step.call, input, { opId });
-      this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)}`);
-    } catch (err) {
-      // Never a reply — a timeout, a closed socket, or a crash. This is a
-      // transport/runner failure, not a matcher verdict: raise a
-      // TransportFailure (not an AssertFailure) so a blocked case cannot count
-      // a dead daemon as its expected blocked assertion.
-      throw new TransportFailure(`call ${step.call} failed to get a reply: ${err.message}`);
+    if (streamSpec) {
+      reply = await this.#streamCall(s, step.call, input, streamSpec, { opId, record });
+      this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)} (accepted ${record.accepted})`);
+    } else {
+      const { id, reply: replyPromise } = s.startCall(step.call, input, { opId });
+      const tracker = new CallStreamTracker(id);
+      s.streams.set(id, tracker);
+      try {
+        reply = await replyPromise;
+        this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)}`);
+      } catch (err) {
+        // Never a reply — a timeout, a closed socket, or a crash. This is a
+        // transport/runner failure, not a matcher verdict: raise a
+        // TransportFailure (not an AssertFailure) so a blocked case cannot count
+        // a dead daemon as its expected blocked assertion.
+        const openNote = tracker.opened ? ' after the daemon opened an unexpected byte stream' : '';
+        throw new TransportFailure(`call ${step.call} failed to get a reply${openNote}: ${err.message}`);
+      } finally {
+        s.streams.delete(id);
+        record.accepted = tracker.accepted;
+        record.opened = tracker.opened;
+      }
+      if (tracker.opened) {
+        throw new AssertFailure(
+          `call ${step.call} received an OPEN for a stream the fixture declares it must not open`,
+        );
+      }
     }
 
     // Expose the reply under the assertion roots.
@@ -447,6 +510,40 @@ export class Runner {
         const rel = path.startsWith('$') ? path.slice(1) : path;
         const { found, value } = resolvePath(root, rel);
         vars[varName] = found ? value : undefined;
+      }
+    }
+  }
+
+  /** Run one duplex streaming call through the byte-stream executor. */
+  async #streamCall(s, op, input, spec, { opId, record } = {}) {
+    const hello = s.lastHello || {};
+    const maxPayload = maxDataPayloadBytes(hello.limits?.max_frame_bytes);
+    const { id, reply: replyPromise } = s.startCall(op, input, {
+      opId,
+      timeoutMs: 60_000 * this.timeoutScale,
+    });
+    const tracker = new CallStreamTracker(id);
+    s.streams.set(id, tracker);
+    const replyState = { done: false, value: undefined, error: undefined };
+    replyPromise.then(
+      (v) => { replyState.done = true; replyState.value = v; tracker.wake(); },
+      (e) => { replyState.done = true; replyState.error = e; tracker.wake(); },
+    );
+    try {
+      return await runStreamingCall({
+        session: s,
+        tracker,
+        replyState,
+        spec,
+        declaredBytes: input?.declared_bytes,
+        maxPayload,
+        timeoutScale: this.timeoutScale,
+      });
+    } finally {
+      s.streams.delete(id);
+      if (record) {
+        record.accepted = tracker.accepted;
+        record.opened = tracker.opened;
       }
     }
   }
@@ -488,8 +585,21 @@ export class Runner {
     // Perform the upgrade; it may be refused (non-101). A successful upgrade
     // becomes the `on` session's live connection so a following `await` reads
     // THIS connection's hello, not a stale one from before the upgrade.
+    // A setup upgrade (no expect) is the label's ordinary admitted
+    // connection, so it presents the label's STABLE client id exactly as
+    // #sessionFor does — an omitted `cid` is an ephemeral per-connection
+    // dedup principal on the daemon, which would make every later
+    // same-principal reconnect (op_id replay cases) silently miss the ledger.
+    // A probing upgrade (any expect) sends exactly what the fixture wrote.
     const label = step.on || 'subject:self';
-    const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions);
+    let clientId = null;
+    if (!step.expect && query.cid === undefined && query.ct === undefined && vars.__case) {
+      vars.__case.clientIds ||= Object.create(null);
+      vars.__case.clientIds[label] ||= `cf-client-${opIdCounter++}`;
+      clientId = vars.__case.clientIds[label];
+      query.cid = clientId;
+    }
+    const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions, clientId);
     vars.frame = result.frame || {};
     vars.out = result.body;
     vars.err = result.body;
@@ -521,7 +631,7 @@ export class Runner {
 
   /** Attempt a WS upgrade, returning {status, body, frame}. On admission the
    * socket stays open and is registered as the `label` session's connection. */
-  async #attemptUpgrade(daemon, query, headers, label, sessions) {
+  async #attemptUpgrade(daemon, query, headers, label, sessions, clientId = null) {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) params.set(k, String(v));
     const url = `${daemon.wsBase}?${params.toString()}`;
@@ -543,13 +653,12 @@ export class Runner {
       };
       ws.once('open', () => {
         opened = true;
-        const session = new Session(label);
+        const session = new Session(label, clientId);
         session.ws = ws;
         session.open = true;
-        ws.on('message', (data) => session.__onMessage(data));
+        ws.on('message', (data, isBinary) => session.__onMessage(data, isBinary));
         ws.on('close', (code) => {
-          session.open = false;
-          session.closeCode = code;
+          session.__onClose(code);
           if (!settled) fail(`upgrade connection closed before hello (${code})`);
         });
         ws.on('error', (err) => {
@@ -1080,8 +1189,43 @@ export class Runner {
         // A timing assertion needs sub-step latency instrumentation; treated
         // as non-blocking here (recorded, not asserted).
         return;
-      case 'bytes_streamed':
+      case 'bytes_streamed': {
+        // Receiver-ACCEPTED payload bytes for one call: the daemon's
+        // cumulative CREDIT/ABORT acknowledgement for an upload, the harness
+        // sink's accepted count for a download. A pre-OPEN terminal refusal
+        // (and a faithful replay, which opens no stream) records zero.
+        const records = ctxState.callRecords;
+        let rec;
+        if (a.call !== undefined) {
+          const m = /^step:([1-9][0-9]*)$/.exec(String(a.call));
+          if (!m) throw new AssertFailure(`bytes_streamed selector ${JSON.stringify(a.call)} is not step:<n>`);
+          rec = records.find((r) => r.step === Number(m[1]));
+        } else {
+          // Default: the most recent call on the same session.
+          const pool = a.on ? records.filter((r) => r.label === a.on) : records;
+          rec = pool[pool.length - 1];
+        }
+        if (!rec) {
+          throw new AssertFailure(`bytes_streamed: no call recorded for ${a.call ?? 'the most recent call'}`);
+        }
+        const cmp = a.value;
+        const want = Number(resolveValue(cmp.value, vars));
+        const got = rec.accepted;
+        const ok =
+          cmp.op === 'eq' ? got === want
+          : cmp.op === 'ne' ? got !== want
+          : cmp.op === 'lt' ? got < want
+          : cmp.op === 'lte' ? got <= want
+          : cmp.op === 'gt' ? got > want
+          : cmp.op === 'gte' ? got >= want
+          : false;
+        if (!ok) {
+          throw new AssertFailure(
+            `bytes_streamed ${got} !${cmp.op} ${want}${a.call ? ` (${a.call})` : ''}`,
+          );
+        }
         return;
+      }
       default:
         throw new AssertFailure(`unsupported observe ${obs}`);
     }

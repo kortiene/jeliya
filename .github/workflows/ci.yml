@@ -331,17 +331,21 @@ jobs:
           node --test scripts/check-v2-corpus.test.mjs
           node scripts/check-v2-corpus.mjs
 
-      - name: Protocol-v2 conformance replay (handshake + subject lifecycle)
+      - name: Protocol-v2 conformance replay (handshake + subject lifecycle + file streams)
         run: |
           set -euo pipefail
           cd conformance/v2/harness
           npm ci --ignore-scripts
-          # Run the handshake and subject-daemon files. The replay harness
-          # exits non-zero on any unexpected failure or error; the corpus's
-          # current coverage is tracked in the PR and grows as the
-          # implementation fills the remaining v2 features. For now this gate
-          # pins the reliably-green slice so a regression in the implemented
-          # surface goes red.
+          # Run the handshake, subject-daemon, and executable file cases. The
+          # replay harness exits non-zero on any unexpected failure or error;
+          # the corpus's current coverage is tracked in the PR and grows as
+          # the implementation fills the remaining v2 features. For now this
+          # gate pins the reliably-green slice so a regression in the
+          # implemented surface goes red. The file cases exercise the binary
+          # byte-stream executor (upload streaming, pre-OPEN refusals with
+          # bytes_streamed 0, and a declared-size-mismatch stream); the
+          # at-limit and over-limit cases stream the served 100 MiB bound and
+          # stay local-only.
           node main.mjs ../../../target/debug/jeliyad \
             --case subject_ensure_creates_the_subject_on_a_fresh_daemon \
             --case subject_ensure_never_returns_secret_material \
@@ -356,7 +360,15 @@ jobs:
             --case daemon_stop_does_not_require_a_subject \
             --case room_list_without_a_subject_returns_subject_absent_not_an_empty_list \
             --case subject_absent_is_returned_before_any_effect_is_performed \
-            --case subject_absent_outranks_room_not_available_and_is_not_a_membership_oracle
+            --case subject_absent_outranks_room_not_available_and_is_not_a_membership_oracle \
+            --case handshake_serves_the_file_and_transfer_limits_as_integers \
+            --case share_one_byte_past_the_served_limit_is_refused_at_stage_declared \
+            --case share_size_refusal_is_never_reported_as_digest_mismatch \
+            --case share_completed_result_replays_without_a_second_stream_and_authors_once \
+            --case a_stream_that_disagrees_with_its_declaration_is_declared_size_mismatch \
+            --case list_of_a_room_that_is_not_available_answers_room_not_available \
+            --case fetch_of_a_file_id_not_in_this_rooms_history_fails_with_file_unknown \
+            --case transfer_cancel_of_an_unknown_op_id_fails_with_transfer_unknown
 
       # The network evidence harness (scripts/realnet-*.mjs) drove the retired
       # v1 WS protocol (`room.create`, `invite.create`, `message.send` over v1

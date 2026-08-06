@@ -8,6 +8,7 @@
 // each in-flight request has its own waiter.
 
 import WebSocket from 'ws';
+import { decodeRecord } from './stream.mjs';
 
 /** Serialize a value, splicing any `{__rawJson}` subtrees in verbatim. */
 function serializeWithRaw(value) {
@@ -47,6 +48,10 @@ export class Session {
     this.open = false;
     // How many received pushes have been consumed by `await push` steps.
     this.pushCursor = 0;
+    // Byte-stream routing: request id -> CallStreamTracker. Binary records
+    // are routed by envelope id; the (id, stream_id) pair is validated by the
+    // executor once OPEN installs it.
+    this.streams = new Map();
   }
 
   /** Connect and wait for the hello frame. `query` is the v/sg/token map. */
@@ -59,7 +64,7 @@ export class Session {
     const hdrs = { Host: `127.0.0.1:${daemon.port}`, ...headers };
     this.ws = new WebSocket(url, { headers: hdrs });
     this.ws.binaryType = 'nodebuffer';
-    this.ws.on('message', (data) => this.#onMessage(data));
+    this.ws.on('message', (data, isBinary) => this.#onMessage(data, isBinary));
     this.ws.on('close', (code) => {
       this.open = false;
       this.closeCode = code;
@@ -76,11 +81,28 @@ export class Session {
   }
 
   /** Public wrapper so the upgrade path can attach an externally-opened socket. */
-  __onMessage(data) {
-    this.#onMessage(data);
+  __onMessage(data, isBinary) {
+    this.#onMessage(data, isBinary);
   }
 
-  #onMessage(data) {
+  /** Public close hook for externally-attached sockets: mirror the connect()
+   * close path so pending replies and active streams fail fast. */
+  __onClose(code) {
+    this.open = false;
+    this.closeCode = code;
+    this.#failAll(new Error(`connection closed (${code})`));
+  }
+
+  #onMessage(data, isBinary) {
+    // The session layer preserves the WebSocket Text/Binary bit: a Binary
+    // message is exactly one byte-stream record, never JSON.
+    if (isBinary) {
+      const record = decodeRecord(data);
+      if (record.malformed) return; // nothing correlatable; executors time out
+      const tracker = this.streams.get(record.id);
+      if (tracker) tracker.deliver(record);
+      return;
+    }
     let frame;
     try {
       frame = JSON.parse(data.toString());
@@ -141,15 +163,23 @@ export class Session {
       p.reject(err);
     }
     this.pending.clear();
+    for (const t of this.streams.values()) t.fail(err);
   }
 
   /** Send one request envelope and wait for its correlated reply. */
   async call(op, input, { opId, timeoutMs = 10_000 } = {}) {
+    return this.startCall(op, input, { opId, timeoutMs }).reply;
+  }
+
+  /** Send one request envelope, returning its id and pending reply promise —
+   * the duplex form a streaming call needs (the reply stays pending while
+   * Binary records flow). */
+  startCall(op, input, { opId, timeoutMs = 10_000 } = {}) {
     const id = requestId();
     this.lastRequestId = id;
     const env = { id, op, in: input };
     if (opId !== undefined) env.op_id = opId;
-    const replyPromise = new Promise((resolve, reject) => {
+    const reply = new Promise((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error(`reply for ${op} (id ${id}) timed out`)),
         timeoutMs,
@@ -157,7 +187,12 @@ export class Session {
       this.pending.set(id, { resolve, reject, timer });
     });
     this.ws.send(JSON.stringify(env));
-    return replyPromise;
+    return { id, reply };
+  }
+
+  /** Send one Binary byte-stream record. */
+  sendBinary(buf) {
+    this.ws.send(buf, { binary: true });
   }
 
   /** Send raw bytes/text that may not be a valid frame. A `{__rawJson}` marker
