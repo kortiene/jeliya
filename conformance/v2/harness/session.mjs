@@ -28,7 +28,10 @@ function serializeWithRaw(value) {
   return text;
 }
 
-let nextRequestId = 1;
+// Harness-issued envelope ids start far above any hand-authored fixture id
+// (raw `send` steps use small integers), so completed-call tombstones can
+// never collide with a fixture's deliberate id reuse.
+let nextRequestId = 1_000_000;
 
 /** Allocate a process-unique envelope id. */
 export function requestId() {
@@ -157,10 +160,12 @@ export class Session {
           return;
         }
         tracker.replySeq = ++tracker.seq;
-      } else if (this.retiredStreamCallIds && this.retiredStreamCallIds.has(frame.id)) {
-        // A late duplicate for a COMPLETED streaming call — the tracker is
+      } else if (this.retiredCallIds && this.retiredCallIds.has(frame.id)) {
+        // A late duplicate for a COMPLETED harness call — the tracker is
         // gone, but exactly-one-terminal still binds the request id.
-        this.#binaryViolation(`daemon sent a late duplicate terminal reply for streaming request ${frame.id}`);
+        // Harness ids never collide with fixture-authored raw-send ids
+        // (disjoint ranges), so deliberate id-reuse probes are unaffected.
+        this.#binaryViolation(`daemon sent a late duplicate terminal reply for request ${frame.id}`);
         return;
       }
       const waiter = this.pending.get(frame.id);

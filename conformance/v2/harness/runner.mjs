@@ -510,6 +510,7 @@ export class Runner {
         throw new TransportFailure(`call ${step.call} failed to get a reply${openNote}: ${err.message}`);
       } finally {
         s.streams.delete(id);
+        (s.retiredCallIds ||= new Set()).add(id);
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;
       }
@@ -594,10 +595,8 @@ export class Runner {
     } finally {
       s.streams.delete(id);
       // Tombstone the id so a late duplicate terminal reply still violates
-      // exactly-one-terminal after the tracker retires. Streaming ids only —
-      // harness-issued and never reused, so raw-send id-reuse fixtures are
-      // unaffected.
-      (s.retiredStreamCallIds ||= new Set()).add(id);
+      // exactly-one-terminal after the tracker retires.
+      (s.retiredCallIds ||= new Set()).add(id);
       if (record) {
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;
