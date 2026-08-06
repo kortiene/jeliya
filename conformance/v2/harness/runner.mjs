@@ -159,6 +159,12 @@ export class Runner {
         }
       }
 
+      // A connection-fatal binary violation observed after the last tracker
+      // retired must not be outlived by a green verdict.
+      for (const s of sessions.values()) {
+        if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
+      }
+
       // A case that ran all steps without a failing assertion passes. A block
       // may name an upstream dependency or a settled record/corpus
       // contradiction awaiting fixture retirement (e.g. the old "op_id is
@@ -550,19 +556,31 @@ export class Runner {
   /** Run one duplex streaming call through the byte-stream executor. */
   async #streamCall(s, op, input, spec, { opId, record } = {}) {
     const hello = s.lastHello || {};
-    const maxPayload = maxDataPayloadBytes(hello.limits?.max_frame_bytes);
-    const { id, reply: replyPromise } = s.startCall(op, input, {
+    const frameLimit = hello.limits?.max_frame_bytes;
+    const maxPayload = maxDataPayloadBytes(frameLimit);
+    const { id, reply: replyPromise, requestBytes } = s.startCall(op, input, {
       opId,
       timeoutMs: 60_000 * this.timeoutScale,
     });
     const tracker = new CallStreamTracker(id);
     s.streams.set(id, tracker);
     const replyState = { done: false, value: undefined, error: undefined, seq: Infinity };
+    // The wire-order stamp is taken synchronously in Session.#onMessage
+    // (tracker.replySeq); the fallback covers settle-without-a-wire-message
+    // (a timeout), which correctly sequences after every delivered record.
     replyPromise.then(
-      (v) => { replyState.seq = ++tracker.seq; replyState.done = true; replyState.value = v; tracker.wake(); },
-      (e) => { replyState.seq = ++tracker.seq; replyState.done = true; replyState.error = e; tracker.wake(); },
+      (v) => { replyState.seq = tracker.replySeq ?? ++tracker.seq; replyState.done = true; replyState.value = v; tracker.wake(); },
+      (e) => { replyState.seq = tracker.replySeq ?? ++tracker.seq; replyState.done = true; replyState.error = e; tracker.wake(); },
     );
     try {
+      // The spec's second readiness condition: a stream-valid max_frame_bytes
+      // must carry the streaming Text request envelope. A daemon serving a
+      // limit this request exceeds must have refused readiness, not answered.
+      if (requestBytes > Number(frameLimit)) {
+        throw new AssertFailure(
+          `served max_frame_bytes ${frameLimit} cannot carry the ${op} request envelope (${requestBytes} bytes)`,
+        );
+      }
       return await runStreamingCall({
         session: s,
         tracker,
@@ -1160,6 +1178,12 @@ export class Runner {
   /** Evaluate an `observe` assertion against recorded behaviour. */
   async #evalObserve(a, { sessions, vars, ctxState, name, daemons }) {
     const primary = (vars.__case || {}).primary;
+    // A sticky binary violation outranks whatever this observation would
+    // have concluded — assertion-only steps never resolve a session, so
+    // this is their surfacing point.
+    for (const s of sessions.values()) {
+      if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
+    }
     const obs = a.observe;
     switch (obs) {
       case 'no_event_authored': {

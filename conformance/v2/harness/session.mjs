@@ -142,7 +142,12 @@ export class Session {
       return;
     }
     if (frame.id !== undefined) {
-      // A reply.
+      // A reply. Stamp its wire-order sequence SYNCHRONOUSLY — the promise
+      // .then that consumes it runs as a microtask, after any Binary record
+      // delivered later in this same receive batch would otherwise have
+      // taken a smaller sequence number.
+      const tracker = this.streams.get(frame.id);
+      if (tracker) tracker.replySeq = ++tracker.seq;
       const waiter = this.pending.get(frame.id);
       if (waiter) {
         this.pending.delete(frame.id);
@@ -215,8 +220,9 @@ export class Session {
       );
       this.pending.set(id, { resolve, reject, timer });
     });
-    this.ws.send(JSON.stringify(env));
-    return { id, reply };
+    const payload = JSON.stringify(env);
+    this.ws.send(payload);
+    return { id, reply, requestBytes: Buffer.byteLength(payload, 'utf8') };
   }
 
   /** Send one Binary byte-stream record. */
