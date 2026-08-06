@@ -45,10 +45,6 @@ export class Runner {
     this.timeoutScale = timeoutScale;
   }
 
-  __pd() {
-    return this.__pdCurrent;
-  }
-
   log(...args) {
     if (this.verbose) console.log('   ', ...args);
   }
@@ -128,7 +124,7 @@ export class Runner {
       // each step) so no_event_authored / no_durable_mutation compare a real
       // before/after delta instead of passing unconditionally.
       ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
-      ctxState.dirSnapshot = this.#dirStateSignature(daemons);
+      ctxState.dirSnapshot = await this.#stableDirSignature(daemons);
 
       // Execute the steps.
       for (let i = 0; i < fixture.steps.length; i++) {
@@ -136,15 +132,30 @@ export class Runner {
         ctxState.lastCallOk = undefined;
         await this.#runStep(step, i, { daemons, sessions, vars, ctx, ctxState, name });
         // An observation compares against the state just before the observed
-        // operation. A SUCCESSFUL step advances the baselines; a REFUSED one
-        // (an error-replied call, or a raw `send` probe) must not — a refused
-        // operation authors nothing legally, so refreshing after it would
-        // absorb exactly the violation a following no_event_authored /
-        // no_durable_mutation observation exists to catch.
+        // operation. A SUCCESSFUL daemon-interacting step advances the
+        // baselines; a REFUSED one (an error-replied call, or a raw `send`
+        // probe) must not — a refused operation authors nothing legally, so
+        // refreshing after it would absorb exactly the violation a following
+        // no_event_authored / no_durable_mutation observation exists to
+        // catch. Assertion-only (and save-only) steps touch no daemon state
+        // and never refresh, so the pre-refusal baseline survives through
+        // intervening assertions.
         const refused = (step.call && ctxState.lastCallOk === false) || step.send !== undefined;
-        if (!refused) {
-          ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
-          ctxState.dirSnapshot = this.#dirStateSignature(daemons);
+        const interactsWithDaemon =
+          step.call || step.http || step.upgrade || step.send !== undefined || step.await || step.control;
+        if (interactsWithDaemon) {
+          // The DIRECTORY baseline advances after every daemon interaction,
+          // refused or not: a refused op_id operation legally performs one
+          // durable write (its recorded reply in the dedup ledger), so a
+          // strict pre-refusal dir baseline would fail a conformant daemon.
+          // The capture settles first — staging cleanup is asynchronous, and
+          // a baseline taken mid-deletion would read as a later "mutation".
+          ctxState.dirSnapshot = await this.#stableDirSignature(daemons, ctxState.dirSnapshot);
+          // The EVENT baseline is strict: a refused operation may author
+          // nothing, so it never advances past a refusal.
+          if (!refused) {
+            ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
+          }
         }
       }
 
@@ -1036,11 +1047,11 @@ export class Runner {
     }
   }
 
-  /** Whether the primary daemon still accepts TCP connections. */
-  async #daemonReachable() {
+  /** Whether the case's primary daemon still accepts TCP connections. */
+  async #daemonReachable(primary) {
     const net = await import('node:net');
     return new Promise((resolve) => {
-      const sock = net.createConnection(this.__pd().port, '127.0.0.1');
+      const sock = net.createConnection(primary.port, '127.0.0.1');
       sock.once('connect', () => {
         sock.destroy();
         resolve(true);
@@ -1076,8 +1087,31 @@ export class Runner {
     }
   }
 
+  /** The dir signature once it stops changing: two consecutive identical
+   * reads a beat apart, bounded. Asynchronous persistence (staging cleanup,
+   * a lagging ledger fsync under IO load) otherwise races the baseline
+   * capture and reads as a later mutation. An unchanged-from-prior read
+   * returns immediately — settling only costs time when something moved. */
+  async #stableDirSignature(daemons, prior) {
+    let cur = this.#dirStateSignature(daemons);
+    if (prior !== undefined && cur === prior) return cur;
+    const deadline = Date.now() + 4_000 * this.timeoutScale;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 250));
+      const next = this.#dirStateSignature(daemons);
+      if (next === cur || Date.now() > deadline) return next;
+      cur = next;
+    }
+  }
+
   /** A signature of the data dir's contents (file count + total bytes +
-   * newest mtime), the observable signal for no_durable_mutation. */
+   * newest mtime), the observable signal for no_durable_mutation. Two kinds
+   * of transient state are excluded: the byte-stream staging directory
+   * (cleanup is asynchronous and races the capture; stranded residue is
+   * asserted explicitly by the observation) and `-wal`/`-shm` journal
+   * sidecars (the harness's own observation reads append to the WAL, and a
+   * WAL-resident event mutation is what no_event_authored observes — the
+   * signature tracks committed content files). */
   #dirStateSignature(daemons) {
     try {
       const walk = (dir) => {
@@ -1087,23 +1121,41 @@ export class Runner {
         for (const e of entries) {
           const p = join(dir, e.name);
           if (e.isDirectory()) {
+            if (e.name === 'protocol-v2-stream-staging') continue;
             const sub = walk(p);
             files += sub.files; bytes += sub.bytes; newest = Math.max(newest, sub.newest);
           } else {
+            if (e.name.endsWith('-wal') || e.name.endsWith('-shm')) continue;
             try { const st = statSync(p); files++; bytes += st.size; newest = Math.max(newest, st.mtimeMs); } catch { /* ignore */ }
           }
         }
         return { files, bytes, newest };
       };
-      return JSON.stringify(walk(this.__pd().dataDir));
+      return JSON.stringify(walk(daemons[0].dataDir));
     } catch {
       return null;
     }
   }
 
+  /** Whether the staging directory still holds any file, settled: cleanup is
+   * asynchronous, so residue is only a violation if it persists past a
+   * bounded wait. */
+  async #stagingResidue(daemons) {
+    const dir = join(daemons[0].dataDir, 'protocol-v2-stream-staging');
+    const residue = () => {
+      try { return readdirSync(dir).length > 0; } catch { return false; }
+    };
+    const deadline = Date.now() + 2_000 * this.timeoutScale;
+    while (residue()) {
+      if (Date.now() > deadline) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  }
+
   /** Evaluate an `observe` assertion against recorded behaviour. */
   async #evalObserve(a, { sessions, vars, ctxState, name, daemons }) {
-    this.__pdCurrent = (vars.__case || {}).primary;
+    const primary = (vars.__case || {}).primary;
     const obs = a.observe;
     switch (obs) {
       case 'no_event_authored': {
@@ -1121,12 +1173,18 @@ export class Runner {
         return;
       }
       case 'no_durable_mutation': {
-        // Real check: the data dir's content signature must be unchanged.
+        // Real check: the data dir's content signature (staging excluded)
+        // must be unchanged, and the transient staging directory must have
+        // cleaned itself up — an aborted stage leaves no stranded file.
         const before = ctxState.dirSnapshot;
-        if (before === null || before === undefined) return;
-        const now = this.#dirStateSignature(daemons);
-        if (now !== null && now !== before) {
-          throw new AssertFailure(`no_durable_mutation violated: data dir changed`);
+        if (before !== null && before !== undefined) {
+          const now = this.#dirStateSignature(daemons);
+          if (now !== null && now !== before) {
+            throw new AssertFailure(`no_durable_mutation violated: data dir changed ${before} -> ${now}`);
+          }
+        }
+        if (await this.#stagingResidue(daemons)) {
+          throw new AssertFailure('no_durable_mutation violated: stranded byte-stream staging file');
         }
         return;
       }
@@ -1142,7 +1200,7 @@ export class Runner {
         // `on: "none"` asserts the daemon is unreachable (connection refused)
         // — used after daemon.stop to prove it no longer accepts connections.
         if (label === 'none') {
-          const reachable = await this.#daemonReachable();
+          const reachable = await this.#daemonReachable(primary);
           if (reachable) throw new AssertFailure('expected none to be open (daemon still reachable)');
           return;
         }
@@ -1199,10 +1257,10 @@ export class Runner {
         // `daemon.stop` replies first, then tears down after a beat — poll for
         // the exit rather than demanding it be already observed.
         const deadline = Date.now() + 5_000 * this.timeoutScale;
-        while (!this.__pd().exited && Date.now() < deadline) {
+        while (!primary.exited && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 50));
         }
-        if (!this.__pd().exited)
+        if (!primary.exited)
           throw new AssertFailure(`expected daemon process to have exited`);
         return;
       }

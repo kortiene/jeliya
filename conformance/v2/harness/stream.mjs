@@ -188,10 +188,13 @@ const ABORT_REASON_NAME = { 1: 'cancelled', 2: 'source_failed', 3: 'sink_failed'
 /** A daemon ABORT's reason binds the terminal reply: 0x01-0x03 resolve to
  * stream_aborted with the matching reason, 0x04 to malformed_frame, and 0x05
  * (operation_error) to the authoritative typed operation error — never
- * stream_aborted. */
-function checkAbortReplyCorrelation(abortRec, reply) {
+ * stream_aborted. The reply's byte accounting is bound too: any
+ * transferred_bytes must equal the proven receiver-accepted count and a
+ * known total must equal the OPEN total. */
+function checkAbortReplyCorrelation(abortRec, reply, { accepted, total } = {}) {
   if (!reply || reply.ok) return;
-  const code = reply.err?.code;
+  const err = reply.err || {};
+  const code = err.code;
   if (abortRec.value === ABORT_REASON.operation_error) {
     if (code === 'stream_aborted') {
       throw new AssertFailure('daemon ABORT operation_error must resolve to a typed operation error, got stream_aborted');
@@ -200,10 +203,24 @@ function checkAbortReplyCorrelation(abortRec, reply) {
     if (code !== 'malformed_frame') {
       throw new AssertFailure(`daemon ABORT protocol_error must resolve to malformed_frame, got ${JSON.stringify(code)}`);
     }
-  } else if (code !== 'stream_aborted' || reply.err?.reason !== ABORT_REASON_NAME[abortRec.value]) {
+  } else if (code !== 'stream_aborted' || err.reason !== ABORT_REASON_NAME[abortRec.value]) {
     throw new AssertFailure(
       `daemon ABORT ${ABORT_REASON_NAME[abortRec.value]} must resolve to stream_aborted with that reason, got ${JSON.stringify(reply.err)}`,
     );
+  }
+  if (accepted !== undefined && err.transferred_bytes !== undefined && err.transferred_bytes !== accepted) {
+    throw new AssertFailure(
+      `terminal transferred_bytes ${err.transferred_bytes} disagrees with the receiver-accepted ${accepted}`,
+    );
+  }
+  if (
+    total !== undefined &&
+    err.total &&
+    typeof err.total === 'object' &&
+    err.total.state === 'known' &&
+    err.total.bytes !== total
+  ) {
+    throw new AssertFailure(`terminal total ${err.total.bytes} disagrees with the OPEN total ${total}`);
   }
 }
 
@@ -331,7 +348,16 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       await yieldAfterSend(session, tracker);
       continue;
     }
-    if (!abortSeen && !endSent && sent === sendBytes && (shortStream || (creditSeen && acceptedThrough >= sendBytes))) {
+    // The exact-length path also requires the daemon's mandatory one-byte
+    // probe: cumulative credit must have reached min(declared, limit) + 1
+    // before END, or a daemon omitting the probe would pass unnoticed.
+    const probeSatisfied = !Number.isFinite(declared) || sendThrough >= sentinelCap;
+    if (
+      !abortSeen &&
+      !endSent &&
+      sent === sendBytes &&
+      (shortStream || (creditSeen && acceptedThrough >= sendBytes && probeSatisfied))
+    ) {
       session.sendBinary(
         encodeRecord({ kind: KIND.END, id: tracker.id, streamId: tracker.streamId, offset: sendBytes }),
       );
@@ -423,7 +449,9 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       `file.share replied ${JSON.stringify(reply.err?.code)} on an active stream with no daemon ABORT`,
     );
   }
-  if (abortSeen) checkAbortReplyCorrelation(abortSeen, reply);
+  if (abortSeen) {
+    checkAbortReplyCorrelation(abortSeen, reply, { accepted: abortSeen.offset, total: tracker.openTotal });
+  }
   return reply;
 }
 
@@ -517,7 +545,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         if (reply && reply.ok) {
           throw new AssertFailure('download stream was ABORTed but the request replied success');
         }
-        checkAbortReplyCorrelation(rec, reply);
+        checkAbortReplyCorrelation(rec, reply, { accepted: tracker.accepted, total });
         return reply;
       }
       default:
