@@ -320,12 +320,12 @@ export function streamWaitMs(spec, servedLimits = {}, timeoutScale = 1) {
   return Math.min(waitMs, 80_000) * timeoutScale;
 }
 
-export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs = 60_000 }) {
+export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs = 60_000 }) {
   if (spec.send_bytes !== undefined) {
-    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs });
+    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs });
   }
   if (spec.receive_bytes !== undefined) {
-    return runDownload({ session, tracker, replyState, receiveBytes: Number(spec.receive_bytes), maxPayload, inflightBytes, stallMs, waitMs });
+    return runDownload({ session, tracker, replyState, receiveBytes: Number(spec.receive_bytes), maxPayload, inflightBytes, concurrentLimit, stallMs, waitMs });
   }
   throw new Error(`stream spec has neither send_bytes nor receive_bytes: ${JSON.stringify(spec)}`);
 }
@@ -333,12 +333,24 @@ export async function runStreamingCall({ session, tracker, replyState, spec, dec
 /** The daemon reserves the OPEN total against its served aggregate inflight
  * budget before admission — an OPEN beyond the sole-active budget proves an
  * admission its own limits forbid. */
-function checkInflightBudget(openTotal, inflightBytes) {
+function checkInflightBudget(openTotal, inflightBytes, concurrentLimit) {
   // The limits contract serves JSON integers; a non-integer bound is a
   // nonconforming configuration, never treated as no bound.
   if (typeof inflightBytes !== 'number' || !Number.isInteger(inflightBytes) || inflightBytes < 0) {
     throw new AssertFailure(
       `served max_transfer_bytes_inflight ${JSON.stringify(inflightBytes)} is unusable for byte streaming`,
+    );
+  }
+  if (typeof concurrentLimit !== 'number' || !Number.isInteger(concurrentLimit) || concurrentLimit < 0) {
+    throw new AssertFailure(
+      `served max_concurrent_transfers ${JSON.stringify(concurrentLimit)} is unusable for byte streaming`,
+    );
+  }
+  if (concurrentLimit < 1) {
+    // This sole active transfer already exceeds the advertised count budget;
+    // admission should have been refused pre-OPEN.
+    throw new AssertFailure(
+      `daemon admitted a stream with served max_concurrent_transfers ${concurrentLimit}`,
     );
   }
   if (openTotal > inflightBytes) {
@@ -353,6 +365,13 @@ function checkInflightBudget(openTotal, inflightBytes) {
  * observed gap of more than twice that budget proves the timer never ran.
  * The 2x slack absorbs harness-side scheduling pauses. */
 function makeStallGauge(stallMs) {
+  // The served stall budget must be a positive JSON integer — a malformed
+  // value is an invalid configuration, never a disabled check.
+  if (typeof stallMs !== 'number' || !Number.isInteger(stallMs) || stallMs <= 0) {
+    throw new AssertFailure(
+      `served transfer_stall_ms ${JSON.stringify(stallMs)} is an invalid configuration`,
+    );
+  }
   let last = Date.now();
   let maxGap = 0;
   return {
@@ -367,7 +386,7 @@ function makeStallGauge(stallMs) {
       maxGap = Math.max(maxGap, Date.now() - last);
     },
     checkOnSuccess() {
-      if (Number.isInteger(stallMs) && maxGap > 2 * stallMs) {
+      if (maxGap > 2 * stallMs) {
         throw new AssertFailure(
           `stream succeeded after an accepted-progress gap of ${maxGap}ms, over twice the served transfer_stall_ms ${stallMs}`,
         );
@@ -390,7 +409,7 @@ async function yieldAfterSend(session, tracker) {
 }
 
 /** Upload: race a pre-OPEN terminal reply against OPEN, then honour CREDIT. */
-async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs }) {
+async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs }) {
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     // Terminal before admission: zero bytes, no stream. A `stream`-carrying
@@ -414,7 +433,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       `upload OPEN total ${tracker.openTotal} disagrees with declared_bytes ${declaredBytes}`,
     );
   }
-  checkInflightBudget(tracker.openTotal, inflightBytes);
+  checkInflightBudget(tracker.openTotal, inflightBytes, concurrentLimit);
   const stallGauge = makeStallGauge(stallMs);
 
   // Producer state. `acceptedThrough`/`sendThrough` mirror the daemon's
@@ -607,7 +626,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
  * on sink acceptance, validate END, and ACK a daemon ABORT with the final
  * accepted count. Requires OPEN.total, END.offset, the terminal `out.bytes`,
  * and the fixture's N to agree. */
-async function runDownload({ session, tracker, replyState, receiveBytes, maxPayload, inflightBytes, stallMs, waitMs }) {
+async function runDownload({ session, tracker, replyState, receiveBytes, maxPayload, inflightBytes, concurrentLimit, stallMs, waitMs }) {
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     const reply = await settleReply(replyState);
@@ -626,7 +645,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
   if (total !== receiveBytes) {
     throw new AssertFailure(`file.read OPEN total ${total} disagrees with the fixture's receive_bytes ${receiveBytes}`);
   }
-  checkInflightBudget(total, inflightBytes);
+  checkInflightBudget(total, inflightBytes, concurrentLimit);
   const stallGauge = makeStallGauge(stallMs);
 
   // Bounded window; the sink is a counter (the harness never collects the

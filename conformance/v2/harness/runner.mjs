@@ -630,6 +630,7 @@ export class Runner {
         maxPayload,
         limitBytes: hello.limits?.max_shared_file_bytes,
         inflightBytes: hello.limits?.max_transfer_bytes_inflight,
+        concurrentLimit: hello.limits?.max_concurrent_transfers,
         stallMs: hello.limits?.transfer_stall_ms,
         waitMs,
       });
