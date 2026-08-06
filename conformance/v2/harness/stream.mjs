@@ -108,10 +108,14 @@ export class CallStreamTracker {
     this.queue = [];
     this.failure = null;
     this.wakers = [];
+    // Delivery sequence, shared by records and the terminal reply, so their
+    // wire order survives batched delivery.
+    this.seq = 0;
   }
 
   deliver(record) {
     if (record.kind === KIND.OPEN) this.opened = true;
+    record.seq = ++this.seq;
     this.queue.push(record);
     this.wake();
   }
@@ -129,11 +133,15 @@ export class CallStreamTracker {
   async next(replyState, timeoutMs, what) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      // Order matters: drain records first (delivery order is evidence), then
-      // surface a recorded violation, and only then honour the settled reply —
-      // a connection-fatal violation must not be laundered by a reply that
-      // arrived in the same batch.
-      if (this.queue.length) return { record: this.queue.shift() };
+      // Order matters: deliver records and the reply in WIRE order (both are
+      // sequence-stamped), and surface a recorded violation before honouring
+      // the settled reply — a connection-fatal violation must not be
+      // laundered by a reply that arrived in the same batch. A record
+      // delivered AFTER the reply stays queued for the post-terminal checks.
+      const head = this.queue[0];
+      if (head && (!replyState.done || head.seq < replyState.seq)) {
+        return { record: this.queue.shift() };
+      }
       if (this.failure) throw this.failure;
       if (replyState.done) return { reply: replyState };
       const remain = deadline - Date.now();
@@ -316,10 +324,18 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   // WebSocket ordering makes the daemon's observed_bytes deterministic.
   const declared = Number(declaredBytes);
   const shortStream = Number.isFinite(declared) && sendBytes < declared;
+  // The served shared-file limit is load-bearing for the sentinel math; a
+  // daemon that fails to serve it as a usable integer fails, never gets an
+  // invented cap.
+  const limit = Number(limitBytes);
+  if (!Number.isFinite(limit) || limit < 0) {
+    throw new AssertFailure(
+      `served max_shared_file_bytes ${JSON.stringify(limitBytes)} is unusable for byte streaming`,
+    );
+  }
   // The daemon may not extend send_through past min(declared, limit) + 1 (the
   // observation sentinel).
-  const sentinelCap =
-    Math.min(Number.isFinite(declared) ? declared : Infinity, Number.isFinite(Number(limitBytes)) ? Number(limitBytes) : Infinity) + 1;
+  const sentinelCap = Math.min(Number.isFinite(declared) ? declared : Infinity, limit) + 1;
   let acceptedThrough = 0;
   let sendThrough = 0;
   let sent = 0;
@@ -431,6 +447,9 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       default:
         throw new AssertFailure(`daemon sent unexpected ${rec.kindName} on an upload stream`);
     }
+  }
+  if (tracker.queue.length) {
+    throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after the terminal reply`);
   }
   const reply = await settleReply(replyState);
   if (reply && reply.ok && abortSeen) {
@@ -587,6 +606,9 @@ async function settleReplyAfter(tracker, replyState, waitMs) {
   const ev = await tracker.next(replyState, waitMs, 'the terminal reply');
   if (ev.record) {
     throw new AssertFailure(`daemon sent ${ev.record.kindName} after the stream concluded`);
+  }
+  if (tracker.queue.length) {
+    throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after the terminal reply`);
   }
   return settleReply(replyState);
 }

@@ -348,10 +348,16 @@ export class Runner {
     await bindSubject('subject:outsider', 'subject:outsider', 'sc', true);
   }
 
-  /** The session for an `on` label, connecting lazily. */
+  /** The session for an `on` label, connecting lazily. Every step path
+   * resolves its session here, so a sticky binary violation recorded on the
+   * connection surfaces before the next interaction of any kind. */
   async #sessionFor(onLabel, daemons, sessions, vars) {
     const label = onLabel || 'subject:self';
-    if (sessions.has(label)) return sessions.get(label);
+    if (sessions.has(label)) {
+      const existing = sessions.get(label);
+      if (existing.stickyBinaryViolation) throw existing.stickyBinaryViolation;
+      return existing;
+    }
     // Route to the second daemon for labels that clearly name a distinct
     // subject (a daemon holds one subject, so second/outsider/peer subjects
     // live on the second daemon).
@@ -453,9 +459,6 @@ export class Runner {
   async #doCall(step, index, env) {
     const { sessions, vars, ctxState } = env;
     const s = await this.#sessionFor(step.on, env.daemons, sessions, vars);
-    // A Binary violation recorded while no tracker was installed poisons the
-    // connection; the next daemon interaction surfaces it.
-    if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
     const input = step.in !== undefined ? resolveValue(step.in, vars) : {};
     // CORPUS/SPEC DISCREPANCY: every committed fixture calls stream.subscribe
     // without the spec-required `from` cursor (50/50). The spec (canonical)
@@ -554,10 +557,10 @@ export class Runner {
     });
     const tracker = new CallStreamTracker(id);
     s.streams.set(id, tracker);
-    const replyState = { done: false, value: undefined, error: undefined };
+    const replyState = { done: false, value: undefined, error: undefined, seq: Infinity };
     replyPromise.then(
-      (v) => { replyState.done = true; replyState.value = v; tracker.wake(); },
-      (e) => { replyState.done = true; replyState.error = e; tracker.wake(); },
+      (v) => { replyState.seq = ++tracker.seq; replyState.done = true; replyState.value = v; tracker.wake(); },
+      (e) => { replyState.seq = ++tracker.seq; replyState.done = true; replyState.error = e; tracker.wake(); },
     );
     try {
       return await runStreamingCall({
@@ -925,6 +928,7 @@ export class Runner {
     // Race every open session's next matching frame, plus the frames already
     // in each one's history.
     for (const s of sessions.values()) {
+      if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
       for (const f of s.pushes) {
         if (locate(f)) return f;
       }
