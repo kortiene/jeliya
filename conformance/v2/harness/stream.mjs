@@ -192,10 +192,10 @@ function validateAbort(rec, sentBound = null) {
  * pick the legal-END discipline, never to bound the generator). Returns the
  * terminal reply envelope; the tracker carries the byte accounting.
  */
-export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, timeoutScale = 1 }) {
+export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, timeoutScale = 1 }) {
   const waitMs = 60_000 * timeoutScale;
   if (spec.send_bytes !== undefined) {
-    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, waitMs });
+    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, waitMs });
   }
   if (spec.receive_bytes !== undefined) {
     return runDownload({ session, tracker, replyState, receiveBytes: Number(spec.receive_bytes), maxPayload, waitMs });
@@ -203,8 +203,21 @@ export async function runStreamingCall({ session, tracker, replyState, spec, dec
   throw new Error(`stream spec has neither send_bytes nor receive_bytes: ${JSON.stringify(spec)}`);
 }
 
+/** Byte-bound on the local outbound socket queue; sends pause above it so an
+ * upload never enqueues unbounded data while waiting for the peer. */
+const OUTBOUND_QUEUE_BOUND = 4 * 65_536;
+
+/** Yield to the event loop after a DATA write (so interleaved CREDIT, ABORT,
+ * and the reply are serviced between records) and apply socket backpressure. */
+async function yieldAfterSend(session, tracker) {
+  await new Promise((resolve) => setImmediate(resolve));
+  while (session.ws && session.ws.bufferedAmount > OUTBOUND_QUEUE_BOUND && !tracker.failure) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /** Upload: race a pre-OPEN terminal reply against OPEN, then honour CREDIT. */
-async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, waitMs }) {
+async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, waitMs }) {
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     // Terminal before admission: zero bytes, no stream. A `stream`-carrying
@@ -234,6 +247,10 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   // WebSocket ordering makes the daemon's observed_bytes deterministic.
   const declared = Number(declaredBytes);
   const shortStream = Number.isFinite(declared) && sendBytes < declared;
+  // The daemon may not extend send_through past min(declared, limit) + 1 (the
+  // observation sentinel).
+  const sentinelCap =
+    Math.min(Number.isFinite(declared) ? declared : Infinity, Number.isFinite(Number(limitBytes)) ? Number(limitBytes) : Infinity) + 1;
   let acceptedThrough = 0;
   let sendThrough = 0;
   let sent = 0;
@@ -242,7 +259,11 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   let abortSeen = null;
 
   for (;;) {
-    while (!abortSeen && !replyState.done && sent < sendBytes && sendThrough > sent) {
+    // One DATA record per pass, yielding after each so interleaved CREDIT,
+    // ABORT, and the terminal reply are serviced between records and the
+    // outbound queue stays byte-bounded — a queued record is processed
+    // before the next send.
+    if (!abortSeen && !replyState.done && sent < sendBytes && sendThrough > sent && tracker.queue.length === 0) {
       const len = Math.min(maxPayload, sendBytes - sent, sendThrough - sent);
       const payload = patternChunk(sent, len);
       tracker.generated += len;
@@ -251,6 +272,8 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       );
       tracker.socketSent += len;
       sent += len;
+      await yieldAfterSend(session, tracker);
+      continue;
     }
     if (!abortSeen && !endSent && sent === sendBytes && (shortStream || (creditSeen && acceptedThrough >= sendBytes))) {
       session.sendBinary(
@@ -276,6 +299,11 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
         if (rec.offset > sent) {
           throw new AssertFailure(
             `daemon CREDIT acknowledged ${rec.offset} bytes beyond the ${sent} actually sent`,
+          );
+        }
+        if (rec.value > sentinelCap) {
+          throw new AssertFailure(
+            `daemon CREDIT send_through ${rec.value} exceeds the sentinel cap ${sentinelCap}`,
           );
         }
         creditSeen = true;
@@ -304,6 +332,14 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     // Success is only sent after the daemon receives and finalizes END.
     throw new AssertFailure('file.share replied success before the client sent END');
   }
+  if (reply && !reply.ok && !endSent && !abortSeen) {
+    // While the stream is ACTIVE, a daemon terminal error must be preceded
+    // by daemon ABORT and our ACK; only a post-END finalization error may
+    // arrive bare.
+    throw new AssertFailure(
+      `file.share replied ${JSON.stringify(reply.err?.code)} on an active stream with no daemon ABORT`,
+    );
+  }
   return reply;
 }
 
@@ -328,10 +364,14 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
   }
 
   // Bounded window; the sink is a counter (the harness never collects the
-  // whole file). Client credit MUST NOT exceed the OPEN total.
+  // whole file). Client credit MUST NOT exceed the OPEN total. Every
+  // accepted_through we issue is remembered: a producer ABORT offset must
+  // equal one of them.
   const window = maxPayload;
+  const issuedAccepted = new Set();
   const grant = (accepted) => {
     const send = Math.min(accepted + window, total);
+    issuedAccepted.add(accepted);
     session.sendBinary(
       encodeRecord({ kind: KIND.CREDIT, id: tracker.id, streamId: tracker.streamId, offset: accepted, value: send }),
     );
@@ -378,12 +418,21 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         break;
       }
       case KIND.ABORT: {
-        // We are the receiver: ACK carries OUR final accepted count.
+        // We are the receiver: ACK carries OUR final accepted count. The
+        // producer's ABORT offset must echo an accepted_through we issued.
         validateAbort(rec);
+        if (!issuedAccepted.has(rec.offset)) {
+          throw new AssertFailure(
+            `daemon ABORT offset ${rec.offset} matches no accepted_through this receiver issued`,
+          );
+        }
         session.sendBinary(
           encodeRecord({ kind: KIND.ACK, id: tracker.id, streamId: tracker.streamId, offset: tracker.accepted, value: 0x05 }),
         );
         const reply = await settleReplyAfter(tracker, replyState, waitMs);
+        if (reply && reply.ok) {
+          throw new AssertFailure('download stream was ABORTed but the request replied success');
+        }
         return reply;
       }
       default:
@@ -402,17 +451,24 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         `terminal out.bytes ${reply.out?.bytes} disagrees with the streamed total ${total}`,
       );
     }
+  } else if (reply && !reply.ok && !endSeen) {
+    // While the stream is ACTIVE, a daemon terminal error must be preceded
+    // by daemon ABORT and our ACK.
+    throw new AssertFailure(
+      `file.read replied ${JSON.stringify(reply.err?.code)} on an active stream with no daemon ABORT`,
+    );
   }
   return reply;
 }
 
-/** Wait for the reply to settle after the stream's binary side concluded. */
+/** Wait for the reply to settle after the stream's binary side concluded.
+ * `next` prefers queued records over the settled reply, so a record that
+ * arrived batched with (or after) the reply is still examined — any record
+ * after END/ACK is a daemon violation of the retired binding. */
 async function settleReplyAfter(tracker, replyState, waitMs) {
-  while (!replyState.done) {
-    await tracker.next(replyState, waitMs, 'the terminal reply');
-    if (replyState.done) break;
-    // A late record after END/ACK is a daemon violation of the retired binding.
-    throw new AssertFailure('daemon sent a record after the stream concluded');
+  const ev = await tracker.next(replyState, waitMs, 'the terminal reply');
+  if (ev.record) {
+    throw new AssertFailure(`daemon sent ${ev.record.kindName} after the stream concluded`);
   }
   return settleReply(replyState);
 }

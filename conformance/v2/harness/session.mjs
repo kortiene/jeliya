@@ -8,6 +8,7 @@
 // each in-flight request has its own waiter.
 
 import WebSocket from 'ws';
+import { AssertFailure } from './assert.mjs';
 import { decodeRecord } from './stream.mjs';
 
 /** Serialize a value, splicing any `{__rawJson}` subtrees in verbatim. */
@@ -95,12 +96,24 @@ export class Session {
 
   #onMessage(data, isBinary) {
     // The session layer preserves the WebSocket Text/Binary bit: a Binary
-    // message is exactly one byte-stream record, never JSON.
+    // message is exactly one byte-stream record, never JSON. An unparseable
+    // message or a record with no outstanding streaming binding is the
+    // connection-fatal-4007 class of daemon violation — fail the active
+    // streams loudly rather than forgetting it.
     if (isBinary) {
       const record = decodeRecord(data);
-      if (record.malformed) return; // nothing correlatable; executors time out
+      if (record.malformed) {
+        this.#binaryViolation(`daemon sent an unparseable Binary message (${record.malformed})`);
+        return;
+      }
       const tracker = this.streams.get(record.id);
-      if (tracker) tracker.deliver(record);
+      if (!tracker) {
+        this.#binaryViolation(
+          `daemon sent ${record.kindName} for request ${record.id} with no outstanding streaming binding`,
+        );
+        return;
+      }
+      tracker.deliver(record);
       return;
     }
     let frame;
@@ -150,6 +163,13 @@ export class Session {
         w.resolve(frame);
       }
     }
+  }
+
+  #binaryViolation(message) {
+    this.binaryViolations ||= [];
+    this.binaryViolations.push(message);
+    const err = new AssertFailure(message);
+    for (const t of this.streams.values()) t.fail(err);
   }
 
   #failAll(err) {

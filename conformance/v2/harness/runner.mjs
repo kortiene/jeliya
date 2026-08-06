@@ -482,9 +482,10 @@ export class Runner {
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;
       }
-      if (tracker.opened) {
+      if (tracker.opened || tracker.queue.length) {
+        const what = tracker.opened ? 'an OPEN' : `a ${tracker.queue[0].kindName} record`;
         throw new AssertFailure(
-          `call ${step.call} received an OPEN for a stream the fixture declares it must not open`,
+          `call ${step.call} received ${what} for a stream the fixture declares it must not open`,
         );
       }
     }
@@ -537,6 +538,7 @@ export class Runner {
         spec,
         declaredBytes: input?.declared_bytes,
         maxPayload,
+        limitBytes: hello.limits?.max_shared_file_bytes,
         timeoutScale: this.timeoutScale,
       });
     } finally {
