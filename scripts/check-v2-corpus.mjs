@@ -130,6 +130,63 @@ const BARE_REQUIRES = new Set(["subject", "daemon"]);
 // The retired tags the README names explicitly.
 const RETIRED_TAGS = new Set(["hex64", "u64", "number", "int", "variant", "array"]);
 
+// The variable-binding contract for files.json (README "Runner-provided
+// variables"). The harness resolves a whole-string "$name" anywhere a literal
+// is legal, and conformance/v2/harness/values.mjs deliberately lets an
+// unresolved reference degrade to its literal string form — which satisfies
+// subset matching and turns the step into no evidence at all. Structural
+// validation therefore proves every reference is either captured by an
+// earlier save on the same case or documented below; otherwise a case can
+// reference a never-established "$fid2" and still read as coverage.
+const RUNNER_PROVIDED_VARIABLES = new Set([
+  // Pre-seeded for every case before step 1 (conformance/v2/harness/runner.mjs).
+  "op_id_new", "op_id_fixed", "limits", "daemon", "daemon_sg",
+]);
+// Which DECLARED precondition binds each documented variable (README
+// "Runner-provided variables"). The historical $fid2 regression was a
+// requires rewrite that lost a binding while the reference survived, so a
+// documented name alone is never evidence — the case must declare the
+// precondition that binds it, or capture the value itself with a save.
+const FILE_RESOURCE_REQUIRES = new Set([
+  "resource:shared_file", "resource:fetched_file", "resource:large_file",
+]);
+// A file exists only in a room, so a file resource precondition establishes
+// the room (and its authority subject) along with the file.
+const bindsOwnRoom = (requires) => requires.some((token) =>
+  /^room:(plain|live|quiescent|left|removed|with_history)$/.test(token)
+  || /^member:/.test(token) || FILE_RESOURCE_REQUIRES.has(token));
+const PRECONDITION_BINDINGS = new Map([
+  ["rid", bindsOwnRoom],
+  ["self_sid", bindsOwnRoom],
+  ["rid_left", (requires) => requires.includes("room:left")],
+  ["foreign_rid", (requires) => requires.includes("room:foreign")],
+  ["foreign_fid", (requires) => requires.includes("room:foreign")],
+  ["member_b_sid", (requires) => requires.includes("member:b")],
+  ["member_c_sid", (requires) => requires.includes("member:c")],
+  ["sb", (requires) => requires.includes("subject:second")],
+  ["sc", (requires) => requires.includes("subject:outsider")],
+  ["svc_port", (requires) => requires.includes("resource:tcp_service")],
+  ["svc_port_v6", (requires) => requires.includes("resource:tcp_service")],
+  ["fid", (requires) => requires.some((token) => FILE_RESOURCE_REQUIRES.has(token))],
+  ["fid_unsized", (requires) => requires.includes("resource:large_file")],
+  ["fid_one_byte", (requires) => requires.includes("resource:large_file")],
+]);
+// Two pre-existing U2-blocked fixtures read the fid family without declaring
+// a file resource precondition; their requires predate that vocabulary.
+// Exempting them BY NAME lets the conditional check land without editing
+// fixtures this change does not own — #233 tracks the requires repair, and
+// deleting an entry here is how its exemption closes.
+const PRECONDITION_GAP_CASES = new Map([
+  ["a_transfer_with_no_forward_progress_fails_with_transfer_stalled", new Set(["fid", "fid_unsized"])],
+  ["fetch_completed_result_replays_without_a_second_transfer", new Set(["fid"])],
+]);
+// A whole-string value reference the harness can resolve: "$name" plus
+// optional dot segments (values.mjs resolves the tail with resolvePath,
+// which splits on "." only — "$fid-2" or "$fid[0]" resolve to nothing and
+// degrade to literal strings, so they are malformed rather than clever).
+const VALUE_REFERENCE = /^\$([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_]+)*$/;
+const VARIABLE_REFERENCE = /^\$([A-Za-z_][A-Za-z0-9_]*)/;
+
 const OPERATIONS = new Set([
   "subject.ensure", "daemon.stop",
   "room.create", "room.list", "room.activate", "room.deactivate", "room.leave",
@@ -293,6 +350,105 @@ function fileErrorIsCanonical(err) {
   return Array.isArray(err.providers) && err.providers.length > 0
     && err.providers.every((provider) =>
       checkExactKeySet(provider, ["subject_id", "device_id", "link"]));
+}
+
+/** The variable a "$name"-rooted path reads, or null for the non-variable
+ * roots: out/err/frame, "$" (the whole step value), and the deferred-call
+ * capture "$request". */
+function pathRootReference(path) {
+  if (typeof path !== "string" || path === "$request") return null;
+  if (path === "$" || path.startsWith("$.")) return null;
+  const m = path.match(VARIABLE_REFERENCE);
+  return m ? m[1] : null;
+}
+
+/** Collect every $variable read from a value node, recursing through arrays,
+ * objects, and computed-node operands ($unknown takes a type tag, never a
+ * reference). A whole-string "$…" value that is not a well-formed reference
+ * is collected as malformed ({name: null, raw}). */
+function collectValueReferences(node, at, refs) {
+  if (typeof node === "string") {
+    if (!node.startsWith("$")) return;
+    const m = node.match(VALUE_REFERENCE);
+    if (m) refs.push({ name: m[1], at });
+    else refs.push({ name: null, raw: node, at });
+    return;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((el, i) => collectValueReferences(el, `${at}[${i}]`, refs));
+    return;
+  }
+  if (isObject(node)) {
+    const keys = Object.keys(node);
+    if (keys.length === 1 && keys[0].startsWith("$")) {
+      if (keys[0] !== "$unknown") collectValueReferences(node[keys[0]], `${at}.${keys[0]}`, refs);
+      return;
+    }
+    for (const [k, v] of Object.entries(node)) collectValueReferences(v, `${at}.${k}`, refs);
+  }
+}
+
+/** Every $variable a step reads: nested inputs, the envelope op_id, stream
+ * counts, expectations, await matchers and reply handles, control value
+ * fields, assertion paths / comparison values / observation arguments, raw
+ * frames, http/upgrade requests, and save source paths. Label and vocabulary
+ * positions (`on`, control `do`/`between`/`limit`/`fault`/`daemon`/
+ * `op_id_prefix`, observation `scope`/`on`/`between`/`call`, `exact_keys`
+ * key names, `type` tag names) never carry references. */
+function collectStepVariableReferences(step) {
+  const refs = [];
+  if (!isObject(step)) return refs;
+  for (const key of ["in", "op_id", "expect", "stream", "send", "http", "upgrade"]) {
+    if (key in step) collectValueReferences(step[key], key, refs);
+  }
+  if (isObject(step.await)) {
+    if (typeof step.await.reply === "string") {
+      const name = pathRootReference(step.await.reply);
+      if (name) refs.push({ name, at: "await.reply" });
+    }
+    for (const key of ["push", "frame"]) {
+      if (key in step.await) collectValueReferences(step.await[key], `await.${key}`, refs);
+    }
+  }
+  if (isObject(step.control)) {
+    for (const [key, value] of Object.entries(step.control)) {
+      if (["do", "on", "between", "limit", "fault", "daemon", "op_id_prefix"].includes(key)) continue;
+      collectValueReferences(value, `control.${key}`, refs);
+    }
+  }
+  if (Array.isArray(step.assert)) {
+    step.assert.forEach((a, i) => {
+      if (!isObject(a)) return;
+      const at = `assert[${i}]`;
+      if ("observe" in a) {
+        if ("room_id" in a) collectValueReferences(a.room_id, `${at}.room_id`, refs);
+        if (isObject(a.value) && "value" in a.value) {
+          collectValueReferences(a.value.value, `${at}.value.value`, refs);
+        } else if (typeof a.value === "string") {
+          collectValueReferences(a.value, `${at}.value`, refs);
+        }
+        if (isObject(a.match)) collectValueReferences(a.match, `${at}.match`, refs);
+        return;
+      }
+      const root = pathRootReference(a.path);
+      if (root) refs.push({ name: root, at: `${at}.path` });
+      if (a.op === "eq_except" && isObject(a.value)) {
+        const targetRoot = pathRootReference(a.value.path);
+        if (targetRoot) refs.push({ name: targetRoot, at: `${at}.value.path` });
+      } else if (["len", "byte_len"].includes(a.op) && isObject(a.value)) {
+        collectValueReferences(a.value.value, `${at}.value.value`, refs);
+      } else if (!["exact_keys", "type"].includes(a.op) && "value" in a) {
+        collectValueReferences(a.value, `${at}.value`, refs);
+      }
+    });
+  }
+  if (isObject(step.save)) {
+    for (const [name, path] of Object.entries(step.save)) {
+      const root = pathRootReference(path);
+      if (root) refs.push({ name: root, at: `save.${name}` });
+    }
+  }
+  return refs;
 }
 
 function checkAssertion(a, file, caseName, where) {
@@ -878,6 +1034,47 @@ function checkCase(c, file) {
       fail(file, name, `step ${deferred.step + 1}`,
         `deferred handle ${handle} has ${deferred.terminals} terminal paths; exactly one later await or same-session disconnect is required`);
     }
+  }
+  // Variable-binding contract (files.json): every $name a step reads must be
+  // captured by a save on an EARLIER step of this case, or be a documented
+  // variable whose binding precondition the case DECLARES in requires.
+  // Bindings are case-scoped, so nothing carries over from other cases.
+  if (file === "files.json" && Array.isArray(c.steps)) {
+    const requires = Array.isArray(c.requires)
+      ? c.requires.filter((token) => typeof token === "string") : [];
+    const exempt = PRECONDITION_GAP_CASES.get(c.name) ?? new Set();
+    const savedAt = new Map();
+    c.steps.forEach((step, i) => {
+      if (!isObject(step?.save)) return;
+      for (const variable of Object.keys(step.save)) {
+        if (!savedAt.has(variable)) savedAt.set(variable, i);
+      }
+    });
+    c.steps.forEach((step, i) => {
+      for (const reference of collectStepVariableReferences(step)) {
+        const { name: variable, at } = reference;
+        if (variable === null) {
+          fail(file, name, `step ${i + 1}`,
+            `${JSON.stringify(reference.raw)} (${at}) is not a well-formed $variable reference — the harness cannot resolve it, so it degrades to a literal string`);
+          continue;
+        }
+        if (RUNNER_PROVIDED_VARIABLES.has(variable)) continue;
+        const saved = savedAt.get(variable);
+        if (saved !== undefined && saved < i) continue;
+        const binder = PRECONDITION_BINDINGS.get(variable);
+        if (binder) {
+          if (binder(requires) || exempt.has(variable)) continue;
+          fail(file, name, `step ${i + 1}`,
+            `"$${variable}" (${at}) names a precondition variable, but this case declares no precondition that binds it and no earlier save captures it`);
+        } else if (saved === undefined) {
+          fail(file, name, `step ${i + 1}`,
+            `"$${variable}" (${at}) is never bound: no save captures it and it is not a documented runner/precondition variable — the harness degrades an unbound reference to a literal string, so the step asserts nothing`);
+        } else {
+          fail(file, name, `step ${i + 1}`,
+            `"$${variable}" (${at}) is used before its save on step ${saved + 1} — a capture binds later steps only`);
+        }
+      }
+    });
   }
   if (PRINCIPAL_ISOLATION_CASES.has(name)) {
     if (c.requires.includes("subject:second")) {

@@ -414,6 +414,26 @@
             {
               "path": "out.data_dir",
               "op": "absent"
+            },
+            {
+              "path": "out.dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.directory",
+              "op": "absent"
+            },
+            {
+              "path": "out.download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.uri",
+              "op": "absent"
+            },
+            {
+              "path": "out.file_url",
+              "op": "absent"
             }
           ]
         },
@@ -1465,6 +1485,78 @@
             {
               "path": "out.files[*].path",
               "op": "absent"
+            },
+            {
+              "path": "out.files[*].save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[*].data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[*].dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[*].directory",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[*].staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[*].download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[*].uri",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[*].file_url",
+              "op": "absent"
+            },
+            {
+              "path": "out.path",
+              "op": "absent"
+            },
+            {
+              "path": "out.local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.directory",
+              "op": "absent"
+            },
+            {
+              "path": "out.staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.uri",
+              "op": "absent"
+            },
+            {
+              "path": "out.file_url",
+              "op": "absent"
             }
           ]
         },
@@ -1759,6 +1851,30 @@
             },
             {
               "path": "out.dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.directory",
+              "op": "absent"
+            },
+            {
+              "path": "out.staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.uri",
+              "op": "absent"
+            },
+            {
+              "path": "out.file_url",
               "op": "absent"
             },
             {
@@ -2414,6 +2530,38 @@
               "op": "absent"
             },
             {
+              "path": "out.save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.directory",
+              "op": "absent"
+            },
+            {
+              "path": "out.staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.uri",
+              "op": "absent"
+            },
+            {
+              "path": "out.file_url",
+              "op": "absent"
+            },
+            {
               "path": "out.mime",
               "op": "absent"
             },
@@ -2807,6 +2955,50 @@
               "transfer_op_id": "op-does-not-exist"
             }
           }
+        },
+        {
+          "assert": [
+            {
+              "path": "err.path",
+              "op": "absent"
+            },
+            {
+              "path": "err.local_path",
+              "op": "absent"
+            },
+            {
+              "path": "err.save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "err.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "err.dir",
+              "op": "absent"
+            },
+            {
+              "path": "err.directory",
+              "op": "absent"
+            },
+            {
+              "path": "err.staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "err.download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "err.uri",
+              "op": "absent"
+            },
+            {
+              "path": "err.file_url",
+              "op": "absent"
+            }
+          ]
         }
       ]
     },
@@ -3453,6 +3645,46 @@
               "path": "out.transferred_bytes",
               "op": "lte",
               "value": "$cancel_total"
+            },
+            {
+              "path": "out.path",
+              "op": "absent"
+            },
+            {
+              "path": "out.local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.save_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.directory",
+              "op": "absent"
+            },
+            {
+              "path": "out.staged_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.download_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.uri",
+              "op": "absent"
+            },
+            {
+              "path": "out.file_url",
+              "op": "absent"
             }
           ],
           "on": "subject:self"
@@ -3749,122 +3981,6 @@
                 "op": "eq",
                 "value": 0
               }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "no_file_operation_carries_a_filesystem_path_in_any_direction",
-      "kind": "success",
-      "operation": null,
-      "intent": "Proves filesystem paths have left the protocol on the file surface: across a full share, list, fetch and read cycle no request or response contains a path-typed key or any value that normalizes to a path, which is what lets the same corpus serve a browser and an Android content:// consumer.",
-      "requires": [
-        "subject",
-        "room:live",
-        "link:up"
-      ],
-      "steps": [
-        {
-          "call": "file.share",
-          "in": {
-            "room_id": "$rid",
-            "name": "doc.bin",
-            "declared_bytes": 4096,
-            "declared_content_type": "application/octet-stream"
-          },
-          "save": {
-            "fid": "out.file_id"
-          },
-          "op_id": "op-nopath-1",
-          "stream": {
-            "send_bytes": 4096
-          }
-        },
-        {
-          "call": "file.list",
-          "in": {
-            "room_id": "$rid",
-            "cursor": {
-              "state": "start"
-            },
-            "direction": "forward",
-            "limit": 50
-          }
-        },
-        {
-          "call": "file.fetch",
-          "in": {
-            "room_id": "$rid",
-            "file_id": "$fid2"
-          },
-          "op_id": "op-nopath-2"
-        },
-        {
-          "call": "file.read",
-          "in": {
-            "room_id": "$rid",
-            "file_id": "$fid"
-          },
-          "stream": {
-            "receive_bytes": 4096
-          }
-        },
-        {
-          "call": "transfer.cancel",
-          "in": {
-            "transfer_op_id": "op-nopath-2"
-          }
-        },
-        {
-          "assert": [
-            {
-              "path": "frame.path",
-              "op": "absent"
-            },
-            {
-              "path": "frame.local_path",
-              "op": "absent"
-            },
-            {
-              "path": "frame.save_dir",
-              "op": "absent"
-            },
-            {
-              "path": "frame.data_dir",
-              "op": "absent"
-            },
-            {
-              "path": "frame.dir",
-              "op": "absent"
-            },
-            {
-              "path": "frame.directory",
-              "op": "absent"
-            },
-            {
-              "path": "frame.staged_path",
-              "op": "absent"
-            },
-            {
-              "path": "frame.download_dir",
-              "op": "absent"
-            },
-            {
-              "path": "frame.uri",
-              "op": "absent"
-            },
-            {
-              "path": "frame.file_url",
-              "op": "absent"
-            }
-          ]
-        },
-        {
-          "assert": [
-            {
-              "path": "frame.data_dir",
-              "op": "absent"
             }
           ]
         }

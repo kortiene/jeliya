@@ -30,23 +30,23 @@ claims:
 
 | Slice | Status | What the claim means |
 |---|---|---|
-| Structural validation | Implemented for all 342 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics, and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
+| Structural validation | Implemented for all 341 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
 | Selected JSON-envelope/subject slice | Partial (14 CI-selected cases) | The Node harness runs this selected JSON-envelope and subject-lifecycle slice against `jeliyad`; this is neither corpus coverage nor file-stream evidence. It is not a smoke, E2E, or Dart execution claim. |
 | Binary byte-stream executor | Unimplemented | No harness codec/runtime executes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records, so file-stream cases are declarative, not live evidence. |
 | Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
 
 | Computed corpus fact | Value |
 |---|---:|
-| Cases | 342 |
+| Cases | 341 |
 | Attributed to an operation | 237 |
-| `operation: null` | 105 |
-| Untargeted / in-process-core / client-adapter targeted | 336 / 1 / 5 |
+| `operation: null` | 104 |
+| Untargeted / in-process-core / client-adapter targeted | 335 / 1 / 5 |
 | Distinct step verbs in use | 7 |
 | Taxonomy codes / without a direct canonical operation case or verified transport representation | 64 / 9 (`forbidden_origin`, `pairing_code_invalid`, `protocol_unsupported`, `role_not_grantable`, `session_expired`, `storage_generation_mismatch`, `stream_aborted`, `unauthenticated`, `unknown_operation`) |
 | Blocked on upstream | 14 (U1: 5, U2: 8, U3: 1) |
 | Blocked on a settled record contradiction | 1 |
 
-Per-file case totals are: `files.json` 44, `handshake.json` 69,
+Per-file case totals are: `files.json` 43, `handshake.json` 69,
 `invites.json` 37, `pipes.json` 43, `rooms.json` 65,
 `subject-daemon.json` 24, and `timeline-streams.json` 60.
 
@@ -64,6 +64,24 @@ exactly once; it is status metadata, not corpus coverage.
 The files pass-3 re-transcription retired cases about an unknown declared size:
 `declared_bytes` is a required `<uint>` and there are no optional request fields,
 so that state is not expressible in v2 and collapsed onto existing cases.
+
+The aggregate no-path case
+(`no_file_operation_carries_a_filesystem_path_in_any_direction`) was retired
+as inexecutable evidence. Its original transcription required
+`remote_provider` — the precondition that would have established the second,
+remotely provided file its `$fid2` named — and asserted over `all_frames`, a
+scope the normative DSL does not carry. Normalization replaced
+`remote_provider` with `link:up` and folded the assertions onto the final
+frame, so the fetch step named a file no surviving precondition or save
+established, the read step read the freshly shared `$fid` rather than a
+fetched file, and the path assertions ran only against the `transfer.cancel`
+reply. Its obligations live in the operation-specific share, list, fetch,
+read, and cancel cases, which assert the forbidden path-bearing keys `absent`
+on their actual reply roots. The validator now rejects an unbound `$name` in
+`files.json` — including a documented precondition variable whose binding
+precondition the case does not declare — closing this regression class apart
+from the two U2-blocked fixtures named in the validator's exemption ledger
+(see "Runner-provided variables").
 
 Top-level `authoring_notes`, where retained in unchanged domains, are historical,
 non-normative transcription notes. Validators never use them as taxonomy-code
@@ -550,6 +568,45 @@ capture. Retired `$result` and `$error` paths are invalid: use `out` and `err`.
 
 This replaces `save`, `save_out`, and `save_error`, which differed only in which
 root they read from — now expressed as the path's root.
+
+### Runner-provided variables
+
+`save` is the only in-case binder. Beyond it, the replay runner pre-seeds a
+small documented set before step 1 — `$op_id_new`, `$op_id_fixed`, `$limits`,
+`$daemon`, `$daemon_sg` — and the preconditions a case **declares** in
+`requires` bind the fixture identifiers the case operates on: room, member,
+or file-resource setup binds the case's `$rid` and `$self_sid` (a file exists
+only in a room, so a file resource establishes the room too; `room:left`
+additionally binds `$rid_left`); `room:foreign` binds `$foreign_rid` and
+`$foreign_fid`; `member:b`/`member:c` bind `$member_b_sid`/`$member_c_sid`;
+`subject:second` binds `$sb` and `subject:outsider` `$sc`;
+`resource:tcp_service` binds `$svc_port` and `$svc_port_v6`; and the file
+resource preconditions (`resource:shared_file`, `resource:fetched_file`,
+`resource:large_file`) bind `$fid`, with the large-file companions
+`$fid_unsized` and `$fid_one_byte` bound by `resource:large_file`. Like the
+deferred-call contract, this states the DSL contract; the current live
+harness pre-seeds the unconditional set and implements the room, member,
+subject, and tcp-service bindings, while the file-resource and foreign-room
+bindings await their executor.
+
+In `files.json` the validator enforces the contract: every `$name` a step
+reads must be captured by a `save` on an **earlier** step of the same case,
+or be documented above **with its binding precondition declared** — a
+documented name alone is never evidence, because the historical failure was
+exactly a `requires` rewrite that dropped a binding while the reference
+survived. A whole-string `$`-prefixed value that is not a well-formed
+reference (`$fid-2`, `$fid[0]` — shapes the harness cannot resolve) is
+invalid outright. An unknown reference is invalid rather than an
+interestingly-named literal: the harness resolves an unbound `$name` to its
+literal string form, which satisfies subset matching and quietly turns the
+step into no evidence at all. Two pre-existing U2-blocked fixtures
+(`a_transfer_with_no_forward_progress_fails_with_transfer_stalled` and
+`fetch_completed_result_replays_without_a_second_transfer`) read the `$fid`
+family without declaring a file resource precondition; they are exempted by
+name in the validator's ledger until their `requires` are repaired under
+#233. The legacy domains still carry pre-normalization placeholder
+conventions (`$op1`-style tokens), so enforcement extends to them only with
+their own re-transcription pass.
 
 ### Computed values
 

@@ -45,7 +45,7 @@ The record states
 [the corpus's own README](../conformance/v2/README.md) — one normative fixture
 DSL. An independent adapter can implement from this document alone.
 
-The 342 hand-authored fixtures in
+The 341 hand-authored fixtures in
 [`conformance/v2/`](../conformance/v2/README.md) are normalized to that DSL
 (#213): every case conforms structurally and the corpus is replayable by an
 independent harness. Shape validation is not live byte-stream evidence. Where a
