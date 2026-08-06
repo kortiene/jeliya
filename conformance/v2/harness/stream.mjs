@@ -290,15 +290,49 @@ function validateAbort(rec, sentBound, allowedReasons) {
  * pick the legal-END discipline, never to bound the generator). Returns the
  * terminal reply envelope; the tracker carries the byte accounting.
  */
-export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, timeoutScale = 1 }) {
+export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, timeoutScale = 1 }) {
   const waitMs = 60_000 * timeoutScale;
   if (spec.send_bytes !== undefined) {
-    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, waitMs });
+    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs });
   }
   if (spec.receive_bytes !== undefined) {
-    return runDownload({ session, tracker, replyState, receiveBytes: Number(spec.receive_bytes), maxPayload, waitMs });
+    return runDownload({ session, tracker, replyState, receiveBytes: Number(spec.receive_bytes), maxPayload, inflightBytes, stallMs, waitMs });
   }
   throw new Error(`stream spec has neither send_bytes nor receive_bytes: ${JSON.stringify(spec)}`);
+}
+
+/** The daemon reserves the OPEN total against its served aggregate inflight
+ * budget before admission — an OPEN beyond the sole-active budget proves an
+ * admission its own limits forbid. */
+function checkInflightBudget(openTotal, inflightBytes) {
+  if (Number.isInteger(inflightBytes) && openTotal > inflightBytes) {
+    throw new AssertFailure(
+      `daemon admitted an OPEN total ${openTotal} beyond its served max_transfer_bytes_inflight ${inflightBytes}`,
+    );
+  }
+}
+
+/** Accepted-progress stall tracking: the daemon must abort a stream whose
+ * accepted progress stops for transfer_stall_ms, so a SUCCESS after an
+ * observed gap of more than twice that budget proves the timer never ran.
+ * The 2x slack absorbs harness-side scheduling pauses. */
+function makeStallGauge(stallMs) {
+  let last = Date.now();
+  let maxGap = 0;
+  return {
+    progress() {
+      const now = Date.now();
+      maxGap = Math.max(maxGap, now - last);
+      last = now;
+    },
+    checkOnSuccess() {
+      if (Number.isInteger(stallMs) && maxGap > 2 * stallMs) {
+        throw new AssertFailure(
+          `stream succeeded after an accepted-progress gap of ${maxGap}ms, over twice the served transfer_stall_ms ${stallMs}`,
+        );
+      }
+    },
+  };
 }
 
 /** Byte-bound on the local outbound socket queue; sends pause above it so an
@@ -315,7 +349,7 @@ async function yieldAfterSend(session, tracker) {
 }
 
 /** Upload: race a pre-OPEN terminal reply against OPEN, then honour CREDIT. */
-async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, waitMs }) {
+async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs }) {
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     // Terminal before admission: zero bytes, no stream. A `stream`-carrying
@@ -339,6 +373,8 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       `upload OPEN total ${tracker.openTotal} disagrees with declared_bytes ${declaredBytes}`,
     );
   }
+  checkInflightBudget(tracker.openTotal, inflightBytes);
+  const stallGauge = makeStallGauge(stallMs);
 
   // Producer state. `acceptedThrough`/`sendThrough` mirror the daemon's
   // cumulative CREDIT; `sent` is our contiguous DATA high-water mark. A
@@ -452,6 +488,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
           );
         }
         creditSeen = true;
+        if (rec.offset > acceptedThrough) stallGauge.progress();
         acceptedThrough = rec.offset;
         sendThrough = rec.value;
         tracker.accepted = acceptedThrough;
@@ -509,6 +546,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     // Success is only sent after the daemon receives and finalizes END.
     throw new AssertFailure('file.share replied success before the client sent END');
   }
+  if (reply && reply.ok) stallGauge.checkOnSuccess();
   if (reply && !reply.ok && !endSent && !abortSeen) {
     // While the stream is ACTIVE, a daemon terminal error must be preceded
     // by daemon ABORT and our ACK; only a post-END finalization error may
@@ -527,7 +565,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
  * on sink acceptance, validate END, and ACK a daemon ABORT with the final
  * accepted count. Requires OPEN.total, END.offset, the terminal `out.bytes`,
  * and the fixture's N to agree. */
-async function runDownload({ session, tracker, replyState, receiveBytes, maxPayload, waitMs }) {
+async function runDownload({ session, tracker, replyState, receiveBytes, maxPayload, inflightBytes, stallMs, waitMs }) {
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     const reply = await settleReply(replyState);
@@ -546,6 +584,8 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
   if (total !== receiveBytes) {
     throw new AssertFailure(`file.read OPEN total ${total} disagrees with the fixture's receive_bytes ${receiveBytes}`);
   }
+  checkInflightBudget(total, inflightBytes);
+  const stallGauge = makeStallGauge(stallMs);
 
   // Bounded window; the sink is a counter (the harness never collects the
   // whole file). Client credit MUST NOT exceed the OPEN total. Every
@@ -587,6 +627,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         }
         if (rec.value !== 0) throw new AssertFailure('daemon DATA carried a nonzero value field');
         tracker.accepted += len;
+        stallGauge.progress();
         // An END already queued at grant time was sent before this CREDIT
         // could possibly arrive — the producer did not wait for every DATA
         // byte to be acknowledged.
@@ -646,6 +687,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
     // the fixture's N must agree — a success with a missing or disagreeing
     // leg is a conformance failure, never a pass.
     if (!endSeen) throw new AssertFailure('file.read replied success without a daemon END');
+    stallGauge.checkOnSuccess();
     if (!reply.out || reply.out.bytes !== total) {
       throw new AssertFailure(
         `terminal out.bytes ${reply.out?.bytes} disagrees with the streamed total ${total}`,

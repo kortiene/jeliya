@@ -160,8 +160,9 @@ export class Runner {
       }
 
       // A connection-fatal binary violation observed after the last tracker
-      // retired must not be outlived by a green verdict.
-      for (const s of sessions.values()) {
+      // retired must not be outlived by a green verdict — replaced (upgraded
+      // away) sessions included.
+      for (const s of [...sessions.values(), ...(vars.__case?.replacedSessions || [])]) {
         if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
       }
 
@@ -612,6 +613,8 @@ export class Runner {
         declaredBytes: input?.declared_bytes,
         maxPayload,
         limitBytes: hello.limits?.max_shared_file_bytes,
+        inflightBytes: hello.limits?.max_transfer_bytes_inflight,
+        stallMs: hello.limits?.transfer_stall_ms,
         timeoutScale: this.timeoutScale,
       });
     } finally {
@@ -682,6 +685,11 @@ export class Runner {
       query.cid = clientId;
     }
     const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions, clientId);
+    // The precheck ran before the await; a violation recorded on the
+    // outgoing connection during the upgrade must still surface, and the
+    // replaced session stays scanned at case end.
+    if (outgoing && outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
+    if (outgoing && vars.__case) (vars.__case.replacedSessions ||= []).push(outgoing);
     vars.frame = result.frame || {};
     vars.out = result.body;
     vars.err = result.body;
