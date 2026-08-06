@@ -326,7 +326,10 @@ jobs:
       # (conformance/v2) is validated shape-wise by scripts/check-v2-corpus.mjs,
       # and the live replay harness runs against the real daemon.
       - name: Protocol-v2 conformance corpus shape validation
-        run: node scripts/check-v2-corpus.mjs
+        run: |
+          set -euo pipefail
+          node --test scripts/check-v2-corpus.test.mjs
+          node scripts/check-v2-corpus.mjs
 
       - name: Protocol-v2 conformance replay (handshake + subject lifecycle)
         run: |

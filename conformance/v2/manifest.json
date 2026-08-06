@@ -101,16 +101,16 @@
     }
   ],
   "target_counts": {
-    "untargeted": 336,
+    "untargeted": 335,
     "daemon": 0,
     "in_process_core": 1,
     "client_adapter": 5
   },
   "totals": {
-    "cases": 342,
+    "cases": 341,
     "attributed_to_an_operation": 237,
-    "not_operation_scoped": 105,
-    "conforming_to_the_dsl": 342,
+    "not_operation_scoped": 104,
+    "conforming_to_the_dsl": 341,
     "distinct_step_verbs_in_use": 7,
     "quarantined": 0,
     "blocked_on_upstream": 14,
@@ -118,9 +118,9 @@
   },
   "per_file_totals": {
     "files.json": {
-      "cases": 44,
+      "cases": 43,
       "attributed_to_an_operation": 41,
-      "not_operation_scoped": 3,
+      "not_operation_scoped": 2,
       "blocked_on_upstream": {
         "U1": 0,
         "U2": 8,
@@ -468,8 +468,7 @@
     "by_file": {
       "files.json": [
         "file_operations_are_not_a_membership_oracle",
-        "handshake_serves_the_file_and_transfer_limits_as_integers",
-        "no_file_operation_carries_a_filesystem_path_in_any_direction"
+        "handshake_serves_the_file_and_transfer_limits_as_integers"
       ],
       "handshake.json": [
         "a_duplicate_in_flight_id_is_refused_and_executes_only_once",
@@ -586,7 +585,7 @@
         "the_push_stream_is_not_a_membership_oracle"
       ]
     },
-    "count": 105
+    "count": 104
   },
   "normalization": "Normalized in #213; `files.json` re-transcribed in pass 3, which added the `stream` DSL key (the files domain is not expressible without it), restored the record's file request and reply shapes, repaired the split assertion fragments, and retired two cases whose subject - an unknown declared size - v2 does not represent."
 }
