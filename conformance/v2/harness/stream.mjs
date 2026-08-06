@@ -410,9 +410,12 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
             `daemon CREDIT acknowledged ${rec.offset}, inside a DATA record rather than on a record boundary`,
           );
         }
-        if (rec.value > sentinelCap) {
+        if (rec.value > limit + 1) {
+          // The wire bound on upload credit is max_shared_file_bytes + 1;
+          // min(declared, limit) + 1 is the mandatory probe TARGET, not a
+          // ceiling — a conforming daemon may grant a larger bounded window.
           throw new AssertFailure(
-            `daemon CREDIT send_through ${rec.value} exceeds the sentinel cap ${sentinelCap}`,
+            `daemon CREDIT send_through ${rec.value} exceeds max_shared_file_bytes + 1 (${limit + 1})`,
           );
         }
         creditSeen = true;
@@ -436,6 +439,11 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
           throw new AssertFailure(
             `daemon ABORT accepted count ${rec.offset} regressed below the credited ${acceptedThrough}`,
           );
+        }
+        if (tracker.replySeq !== undefined) {
+          // The reply was already on the wire when we processed ABORT — the
+          // daemon did not wait for our ACK (reply only after ACK).
+          throw new AssertFailure('daemon sent its terminal reply before receiving the ABORT acknowledgement');
         }
         abortSeen = rec;
         tracker.accepted = rec.offset;
@@ -535,6 +543,12 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         }
         if (rec.value !== 0) throw new AssertFailure('daemon DATA carried a nonzero value field');
         tracker.accepted += len;
+        // An END already queued at grant time was sent before this CREDIT
+        // could possibly arrive — the producer did not wait for every DATA
+        // byte to be acknowledged.
+        if (tracker.queue.some((r) => r.kind === KIND.END)) {
+          throw new AssertFailure('daemon sent END before receiving the final cumulative CREDIT');
+        }
         sendThrough = grant(tracker.accepted);
         break;
       }
@@ -557,6 +571,9 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
           throw new AssertFailure(
             `daemon ABORT offset ${rec.offset} matches no accepted_through this receiver issued`,
           );
+        }
+        if (tracker.replySeq !== undefined) {
+          throw new AssertFailure('daemon sent its terminal reply before receiving the ABORT acknowledgement');
         }
         session.sendBinary(
           encodeRecord({ kind: KIND.ACK, id: tracker.id, streamId: tracker.streamId, offset: tracker.accepted, value: 0x05 }),

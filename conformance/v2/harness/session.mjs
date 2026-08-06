@@ -145,9 +145,16 @@ export class Session {
       // A reply. Stamp its wire-order sequence SYNCHRONOUSLY — the promise
       // .then that consumes it runs as a microtask, after any Binary record
       // delivered later in this same receive batch would otherwise have
-      // taken a smaller sequence number.
+      // taken a smaller sequence number. A second terminal reply for a
+      // still-tracked request violates exactly-one-terminal.
       const tracker = this.streams.get(frame.id);
-      if (tracker) tracker.replySeq = ++tracker.seq;
+      if (tracker) {
+        if (tracker.replySeq !== undefined) {
+          this.#binaryViolation(`daemon sent a second terminal reply for request ${frame.id}`);
+          return;
+        }
+        tracker.replySeq = ++tracker.seq;
+      }
       const waiter = this.pending.get(frame.id);
       if (waiter) {
         this.pending.delete(frame.id);
