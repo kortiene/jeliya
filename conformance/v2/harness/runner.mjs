@@ -498,10 +498,29 @@ export class Runner {
       const { id, reply: replyPromise } = s.startCall(step.call, input, { opId });
       const tracker = new CallStreamTracker(id);
       s.streams.set(id, tracker);
+      // Race the reply against Binary delivery: a stream-less call that
+      // receives OPEN (a daemon awaiting bytes that will never come) must
+      // fail as the conformance verdict NOW, not as a reply timeout later.
+      let watcherDone = false;
+      const recordWatcher = (async () => {
+        for (;;) {
+          if (watcherDone) return null;
+          if (tracker.failure) throw tracker.failure;
+          if (tracker.opened || tracker.queue.length) {
+            const what = tracker.opened ? 'an OPEN' : `a ${tracker.queue[0].kindName} record`;
+            throw new AssertFailure(
+              `call ${step.call} received ${what} for a stream the fixture declares it must not open`,
+            );
+          }
+          await new Promise((resolve) => tracker.wakers.push(resolve));
+        }
+      })();
       try {
-        reply = await replyPromise;
+        reply = await Promise.race([replyPromise, recordWatcher]);
         this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)}`);
       } catch (err) {
+        if (err instanceof AssertFailure) throw err;
+        if (err === tracker.failure) throw err;
         // Never a reply — a timeout, a closed socket, or a crash. This is a
         // transport/runner failure, not a matcher verdict: raise a
         // TransportFailure (not an AssertFailure) so a blocked case cannot count
@@ -509,6 +528,9 @@ export class Runner {
         const openNote = tracker.opened ? ' after the daemon opened an unexpected byte stream' : '';
         throw new TransportFailure(`call ${step.call} failed to get a reply${openNote}: ${err.message}`);
       } finally {
+        watcherDone = true;
+        tracker.wake();
+        recordWatcher.catch(() => {});
         s.streams.delete(id);
         (s.retiredCallIds ||= new Set()).add(id);
         record.accepted = tracker.accepted;

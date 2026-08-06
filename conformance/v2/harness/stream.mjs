@@ -452,6 +452,13 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
             `daemon ABORT accepted count ${rec.offset} regressed below the credited ${acceptedThrough}`,
           );
         }
+        if (rec.offset > tracker.openTotal) {
+          // The probe byte may be sent but never accepted — same bound as
+          // CREDIT acknowledgments.
+          throw new AssertFailure(
+            `daemon ABORT accepted count ${rec.offset} exceeds the OPEN total ${tracker.openTotal}`,
+          );
+        }
         if (tracker.replySeq !== undefined) {
           // The reply was already on the wire when we processed ABORT — the
           // daemon did not wait for our ACK (reply only after ACK).
