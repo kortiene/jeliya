@@ -355,6 +355,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     if (
       !abortSeen &&
       !endSent &&
+      !replyState.done &&
       sent === sendBytes &&
       (shortStream || (creditSeen && acceptedThrough >= sendBytes && probeSatisfied))
     ) {

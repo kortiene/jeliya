@@ -9,7 +9,7 @@
 
 import WebSocket from 'ws';
 import { AssertFailure } from './assert.mjs';
-import { decodeRecord } from './stream.mjs';
+import { MAGIC, decodeRecord } from './stream.mjs';
 
 /** Serialize a value, splicing any `{__rawJson}` subtrees in verbatim. */
 function serializeWithRaw(value) {
@@ -120,7 +120,13 @@ export class Session {
     try {
       frame = JSON.parse(data.toString());
     } catch {
-      return; // undeliverable frame; nothing to correlate
+      // A stream record in a Text message is malformed by class. Anything
+      // else unparseable is undeliverable with nothing to correlate.
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      if (buf.length >= MAGIC.length && buf.subarray(0, MAGIC.length).equals(MAGIC)) {
+        this.#binaryViolation('daemon sent a byte-stream record as a Text message');
+      }
+      return;
     }
     if (frame.t === 'hello') {
       this.lastHello = frame;
