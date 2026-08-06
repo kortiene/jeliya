@@ -313,7 +313,10 @@ export class Runner {
     if (requires.includes('subject') && !caseEnsuresSubject && !(wantsRoom || wantsLeftRoom || wantsMembers)) {
       const authority = await this.#sessionFor('subject:authority', daemons, sessions, vars);
       const ensured = await authority.call('subject.ensure', {});
-      vars.self_sid = ensured.out?.subject_id;
+      if (!ensured.ok || !ensured.out?.subject_id) {
+        throw new Error(`requires subject: subject.ensure failed: ${JSON.stringify(ensured.err)}`);
+      }
+      vars.self_sid = ensured.out.subject_id;
     }
 
     // `resource:tcp_service` — a loopback TCP echo service a pipe can target;
@@ -533,7 +536,7 @@ export class Runner {
         tracker.wake();
         recordWatcher.catch(() => {});
         s.streams.delete(id);
-        (s.retiredCallIds ||= new Set()).add(id);
+        if (tracker.replySeq !== undefined) (s.retiredCallIds ||= new Set()).add(id);
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;
       }
@@ -615,13 +618,17 @@ export class Runner {
         limitBytes: hello.limits?.max_shared_file_bytes,
         inflightBytes: hello.limits?.max_transfer_bytes_inflight,
         stallMs: hello.limits?.transfer_stall_ms,
+        connectAllowanceMs: hello.limits?.transfer_connect_allowance_ms,
+        floorBitsPerSecond: hello.limits?.transfer_floor_bits_per_second,
         timeoutScale: this.timeoutScale,
       });
     } finally {
       s.streams.delete(id);
       // Tombstone the id so a late duplicate terminal reply still violates
-      // exactly-one-terminal after the tracker retires.
-      (s.retiredCallIds ||= new Set()).add(id);
+      // exactly-one-terminal after the tracker retires — only when a reply
+      // was actually received (a timed-out call's late first reply is not a
+      // duplicate).
+      if (tracker.replySeq !== undefined) (s.retiredCallIds ||= new Set()).add(id);
       if (record) {
         record.accepted = tracker.accepted;
         record.opened = tracker.opened;

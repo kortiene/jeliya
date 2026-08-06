@@ -290,8 +290,17 @@ function validateAbort(rec, sentBound, allowedReasons) {
  * pick the legal-END discipline, never to bound the generator). Returns the
  * terminal reply envelope; the tracker carries the byte accounting.
  */
-export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, timeoutScale = 1 }) {
-  const waitMs = 60_000 * timeoutScale;
+export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, connectAllowanceMs, floorBitsPerSecond, timeoutScale = 1 }) {
+  // Harness patience: at least 60 s, or the served absolute budget (with
+  // headroom) when the legal budget for this total is longer — a conforming
+  // slow-floor transfer must not lose its reply promise early. Enforcement
+  // of the deadline itself belongs to deadline-designed fixtures.
+  const total = Number(spec.send_bytes ?? spec.receive_bytes);
+  let waitMs = 60_000 * timeoutScale;
+  if (Number.isInteger(connectAllowanceMs) && Number.isInteger(floorBitsPerSecond) && floorBitsPerSecond > 0 && Number.isFinite(total)) {
+    const budgetMs = connectAllowanceMs + Math.ceil((total * 8 * 1000) / floorBitsPerSecond);
+    waitMs = Math.max(waitMs, Math.ceil(budgetMs * 1.2));
+  }
   if (spec.send_bytes !== undefined) {
     return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, stallMs, waitMs });
   }
@@ -324,6 +333,11 @@ function makeStallGauge(stallMs) {
       const now = Date.now();
       maxGap = Math.max(maxGap, now - last);
       last = now;
+    },
+    /** Measure the trailing interval at the action that ends ACTIVE, without
+     * counting it as progress (FINALIZING time stays excluded). */
+    mark() {
+      maxGap = Math.max(maxGap, Date.now() - last);
     },
     checkOnSuccess() {
       if (Number.isInteger(stallMs) && maxGap > 2 * stallMs) {
@@ -437,6 +451,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       sent === sendBytes &&
       (shortStream || (creditSeen && acceptedThrough >= sendBytes && probeSatisfied))
     ) {
+      stallGauge.mark();
       session.sendBinary(
         encodeRecord({ kind: KIND.END, id: tracker.id, streamId: tracker.streamId, offset: sendBytes }),
       );
@@ -651,6 +666,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
             `daemon END at ${rec.offset} disagrees with OPEN total ${total} / accepted ${tracker.accepted}`,
           );
         }
+        stallGauge.mark();
         endSeen = true;
         break;
       }

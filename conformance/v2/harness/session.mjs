@@ -220,9 +220,16 @@ export class Session {
     for (const t of this.streams.values()) t.fail(err);
   }
 
-  /** Send one request envelope and wait for its correlated reply. */
+  /** Send one request envelope and wait for its correlated reply. Every
+   * completed call tombstones its id, so a late duplicate terminal reply is
+   * a violation even for setup and observation calls with no tracker. */
   async call(op, input, { opId, timeoutMs = 10_000 } = {}) {
-    return this.startCall(op, input, { opId, timeoutMs }).reply;
+    const { id, reply } = this.startCall(op, input, { opId, timeoutMs });
+    const result = await reply;
+    // Tombstone only on a RECEIVED reply — a timed-out call's late first
+    // reply is not a duplicate.
+    (this.retiredCallIds ||= new Set()).add(id);
+    return result;
   }
 
   /** Send one request envelope, returning its id and pending reply promise —
