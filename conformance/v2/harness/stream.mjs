@@ -31,11 +31,17 @@ export const ABORT_REASON = {
   operation_error: 0x05,
 };
 
-/** The DATA payload bound: `min(65_536, max_frame_bytes - 48)`. */
+/** The DATA payload bound: `min(65_536, max_frame_bytes - 48)`, subtraction
+ * checked before use. A served limit that cannot carry a record is an invalid
+ * configuration the daemon must refuse readiness over — never papered over. */
 export function maxDataPayloadBytes(maxFrameBytes) {
   const frame = Number(maxFrameBytes);
-  const cap = Number.isFinite(frame) && frame > STREAM_HEADER_BYTES ? frame - STREAM_HEADER_BYTES : 65_536;
-  return Math.min(65_536, cap);
+  if (!Number.isFinite(frame) || frame <= STREAM_HEADER_BYTES) {
+    throw new AssertFailure(
+      `served max_frame_bytes ${JSON.stringify(maxFrameBytes)} cannot carry a byte-stream record`,
+    );
+  }
+  return Math.min(65_536, frame - STREAM_HEADER_BYTES);
 }
 
 /** Encode one record. `streamId` is a 16-byte Buffer (zeros before OPEN). */
@@ -123,9 +129,13 @@ export class CallStreamTracker {
   async next(replyState, timeoutMs, what) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
+      // Order matters: drain records first (delivery order is evidence), then
+      // surface a recorded violation, and only then honour the settled reply —
+      // a connection-fatal violation must not be laundered by a reply that
+      // arrived in the same batch.
       if (this.queue.length) return { record: this.queue.shift() };
-      if (replyState.done) return { reply: replyState };
       if (this.failure) throw this.failure;
+      if (replyState.done) return { reply: replyState };
       const remain = deadline - Date.now();
       if (remain <= 0) {
         const openNote = this.opened ? '' : ' (no OPEN was received)';
@@ -204,12 +214,23 @@ async function settleReply(replyState) {
   return replyState.value;
 }
 
-/** A daemon ABORT must be a bare record with a closed reason and a plausible
- * accepted count (never beyond what this side sent, for an upload). */
-function validateAbort(rec, sentBound = null) {
+/** Reasons a daemon may claim, by its role: an upload receiver has no source
+ * (never 0x02); a download producer has no sink (never 0x03). */
+const UPLOAD_DAEMON_ABORT_REASONS = new Set([0x01, 0x03, 0x04, 0x05]);
+const DOWNLOAD_DAEMON_ABORT_REASONS = new Set([0x01, 0x02, 0x04, 0x05]);
+
+/** A daemon ABORT must be a bare record with a closed, directionally possible
+ * reason and a plausible accepted count (never beyond what this side sent,
+ * for an upload). */
+function validateAbort(rec, sentBound, allowedReasons) {
   if (rec.payload) throw new AssertFailure('daemon ABORT carried a payload');
   if (rec.value < 0x01 || rec.value > 0x05) {
     throw new AssertFailure(`daemon ABORT reason ${rec.value} is outside the closed 0x01..0x05 set`);
+  }
+  if (!allowedReasons.has(rec.value)) {
+    throw new AssertFailure(
+      `daemon ABORT reason ${ABORT_REASON_NAME[rec.value] || rec.value} is impossible for this stream direction`,
+    );
   }
   if (sentBound !== null && rec.offset > sentBound) {
     throw new AssertFailure(`daemon ABORT accepted count ${rec.offset} exceeds the ${sentBound} bytes sent`);
@@ -323,6 +344,11 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     if (ev.reply) break;
     const rec = ev.record;
     checkBinding(tracker, rec);
+    // Per-direction ordering means nothing delivered after the daemon's ABORT
+    // can be an older in-flight record — the binding is retired.
+    if (abortSeen) {
+      throw new AssertFailure(`daemon sent ${rec.kindName} after its ABORT retired the stream`);
+    }
     switch (rec.kind) {
       case KIND.CREDIT: {
         if (rec.payload) throw new AssertFailure('daemon CREDIT carried a payload');
@@ -354,13 +380,18 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
       }
       case KIND.ABORT: {
         // The daemon (the upload's receiver) aborted: its offset is its local
-        // accepted count — which, with atomic DATA acceptance, must be zero
-        // or an emitted record endpoint. Stop producing and echo it in ACK
-        // (value 0x05).
-        validateAbort(rec, sent);
+        // accepted count — which, with atomic DATA acceptance, must be an
+        // emitted record endpoint at or above the CREDIT high-water it
+        // already acknowledged. Stop producing and echo it in ACK (0x05).
+        validateAbort(rec, sent, UPLOAD_DAEMON_ABORT_REASONS);
         if (!dataEndpoints.has(rec.offset)) {
           throw new AssertFailure(
             `daemon ABORT accepted count ${rec.offset} is inside a DATA record rather than on a record boundary`,
+          );
+        }
+        if (rec.offset < acceptedThrough) {
+          throw new AssertFailure(
+            `daemon ABORT accepted count ${rec.offset} regressed below the credited ${acceptedThrough}`,
           );
         }
         abortSeen = rec;
@@ -375,6 +406,11 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     }
   }
   const reply = await settleReply(replyState);
+  if (reply && reply.ok && abortSeen) {
+    // ABORT is the daemon's terminal failure selection — even when our END
+    // was already in flight, an ABORT means the failure path won the race.
+    throw new AssertFailure('file.share replied success after the daemon ABORTed the stream');
+  }
   if (reply && reply.ok && !endSent) {
     // Success is only sent after the daemon receives and finalizes END.
     throw new AssertFailure('file.share replied success before the client sent END');
@@ -468,7 +504,7 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
       case KIND.ABORT: {
         // We are the receiver: ACK carries OUR final accepted count. The
         // producer's ABORT offset must echo an accepted_through we issued.
-        validateAbort(rec);
+        validateAbort(rec, null, DOWNLOAD_DAEMON_ABORT_REASONS);
         if (!issuedAccepted.has(rec.offset)) {
           throw new AssertFailure(
             `daemon ABORT offset ${rec.offset} matches no accepted_through this receiver issued`,
@@ -500,7 +536,11 @@ async function runDownload({ session, tracker, replyState, receiveBytes, maxPayl
         `terminal out.bytes ${reply.out?.bytes} disagrees with the streamed total ${total}`,
       );
     }
-  } else if (reply && !reply.ok && !endSeen) {
+  } else if (reply && !reply.ok) {
+    if (endSeen) {
+      // A valid END commits the completed download; only success may follow.
+      throw new AssertFailure('file.read completed its byte stream with END but replied an error');
+    }
     // While the stream is ACTIVE, a daemon terminal error must be preceded
     // by daemon ABORT and our ACK.
     throw new AssertFailure(

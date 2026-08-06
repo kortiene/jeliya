@@ -442,6 +442,9 @@ export class Runner {
   async #doCall(step, index, env) {
     const { sessions, vars, ctxState } = env;
     const s = await this.#sessionFor(step.on, env.daemons, sessions, vars);
+    // A Binary violation recorded while no tracker was installed poisons the
+    // connection; the next daemon interaction surfaces it.
+    if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
     const input = step.in !== undefined ? resolveValue(step.in, vars) : {};
     // CORPUS/SPEC DISCREPANCY: every committed fixture calls stream.subscribe
     // without the spec-required `from` cursor (50/50). The spec (canonical)
@@ -1219,8 +1222,10 @@ export class Runner {
           if (!m) throw new AssertFailure(`bytes_streamed selector ${JSON.stringify(a.call)} is not step:<n>`);
           rec = records.find((r) => r.step === Number(m[1]));
         } else {
-          // Default: the most recent call on the same session.
-          const pool = a.on ? records.filter((r) => r.label === a.on) : records;
+          // Default: the most recent call on the same session (the
+          // observation's session label, subject:self when unnamed).
+          const label = a.on || 'subject:self';
+          const pool = records.filter((r) => r.label === label);
           rec = pool[pool.length - 1];
         }
         if (!rec) {

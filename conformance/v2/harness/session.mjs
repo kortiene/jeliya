@@ -169,6 +169,9 @@ export class Session {
     this.binaryViolations ||= [];
     this.binaryViolations.push(message);
     const err = new AssertFailure(message);
+    // Sticky: a violation observed with no tracker installed (between calls)
+    // must still fail the next daemon interaction on this connection.
+    this.stickyBinaryViolation ||= err;
     for (const t of this.streams.values()) t.fail(err);
   }
 
