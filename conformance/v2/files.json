@@ -13,8 +13,13 @@
       "steps": [
         {
           "upgrade": {
-            "query": {},
-            "headers": {}
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
@@ -342,8 +347,13 @@
       "steps": [
         {
           "upgrade": {
-            "query": {},
-            "headers": {}
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
@@ -365,6 +375,15 @@
             "rid": "out.room_id"
           },
           "op_id": "op-share-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
         },
         {
           "call": "file.share",
@@ -475,8 +494,13 @@
       "steps": [
         {
           "upgrade": {
-            "query": {},
-            "headers": {}
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
@@ -498,6 +522,15 @@
             "rid": "out.room_id"
           },
           "op_id": "op-atlimit-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
         },
         {
           "call": "file.share",
@@ -537,8 +570,13 @@
       "steps": [
         {
           "upgrade": {
-            "query": {},
-            "headers": {}
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
@@ -560,6 +598,15 @@
             "rid": "out.room_id"
           },
           "op_id": "op-over-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
         },
         {
           "call": "file.share",
@@ -606,7 +653,7 @@
           "assert": [
             {
               "observe": "bytes_streamed",
-              "call": "step:4",
+              "call": "step:5",
               "value": {
                 "op": "eq",
                 "value": 0
@@ -669,8 +716,13 @@
       "steps": [
         {
           "upgrade": {
-            "query": {},
-            "headers": {}
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
@@ -692,6 +744,15 @@
             "rid": "out.room_id"
           },
           "op_id": "op-liar-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
         },
         {
           "call": "file.share",
@@ -724,7 +785,7 @@
           "assert": [
             {
               "observe": "bytes_streamed",
-              "call": "step:4",
+              "call": "step:5",
               "value": {
                 "op": "eq",
                 "value": "$limit"
@@ -828,7 +889,7 @@
       "targets": [
         "client_adapter"
       ],
-      "intent": "Proves the sixth enforcement point \u2014 the client preflight, which by definition never reaches the daemon \u2014 refuses a source above the served limit with zero bytes sent, zero request frames emitted and no local copy made.",
+      "intent": "Proves the sixth enforcement point — the client preflight, which by definition never reaches the daemon — refuses a source above the served limit with zero bytes sent, zero request frames emitted and no local copy made.",
       "requires": [
         "room:live"
       ],
@@ -1006,8 +1067,13 @@
       "steps": [
         {
           "upgrade": {
-            "query": {},
-            "headers": {}
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
@@ -1029,6 +1095,15 @@
             "rid": "out.room_id"
           },
           "op_id": "op-pairA-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
         },
         {
           "call": "file.share",
@@ -1195,7 +1270,7 @@
       "name": "share_size_null_or_out_of_domain_is_malformed",
       "kind": "malformed",
       "operation": "file.share",
-      "intent": "Proves no JSON null carries meaning on the file path \u2014 a null size is not read as unknown \u2014 and that a negative or fractional byte count is refused rather than coerced into u64, catching the v1 compatibility-nullability this generation exists to shed.",
+      "intent": "Proves no JSON null carries meaning on the file path — a null size is not read as unknown — and that a negative or fractional byte count is refused rather than coerced into u64, catching the v1 compatibility-nullability this generation exists to shed.",
       "requires": [
         "subject",
         "room:live"
@@ -1302,8 +1377,13 @@
       "steps": [
         {
           "upgrade": {
-            "query": {},
-            "headers": {}
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
           }
         },
         {
@@ -1793,7 +1873,7 @@
       "name": "fetch_from_a_reachable_provider_holds_the_bytes_locally",
       "kind": "success",
       "operation": "file.fetch",
-      "intent": "Establishes the baseline fetch success shape \u2014 the transfer outcome, the verified digest and the naming of the provider that served it, with no save_dir in the request and no path in the response \u2014 catching any regression to v1's directory-taking, path-returning fetch.",
+      "intent": "Establishes the baseline fetch success shape — the transfer outcome, the verified digest and the naming of the provider that served it, with no save_dir in the request and no path in the response — catching any regression to v1's directory-taking, path-returning fetch.",
       "requires": [
         "subject",
         "room:live",
@@ -2430,7 +2510,6 @@
           },
           "op_id": "op-budget-floor"
         },
-
         {
           "control": {
             "do": "set_link_rate",
@@ -2938,7 +3017,7 @@
       "name": "transfer_cancel_of_an_unknown_op_id_fails_with_transfer_unknown",
       "kind": "error",
       "operation": "transfer.cancel",
-      "intent": "Gives transfer.cancel its own most specific code, proving a cancel naming no transfer is not answered with a generic argument error \u2014 the distinction the spec demands so a conformance corpus can assert something about this operation at all.",
+      "intent": "Gives transfer.cancel its own most specific code, proving a cancel naming no transfer is not answered with a generic argument error — the distinction the spec demands so a conformance corpus can assert something about this operation at all.",
       "requires": [
         "subject"
       ],
@@ -4108,7 +4187,7 @@
       "name": "a_stream_that_disagrees_with_its_declaration_is_declared_size_mismatch",
       "kind": "error",
       "operation": "file.share",
-      "intent": "Pins file.share's own distinctive code and its honesty rule: a stream whose byte count disagrees with its declared size is declared_size_mismatch, NEVER digest_mismatch \u2014 accusing an honest declaration error of being corrupt content is the false-accusation the size policy forbids. Catches a daemon that conflates the two, which is also the exact code an over-limit size refusal must never produce.",
+      "intent": "Pins file.share's own distinctive code and its honesty rule: a stream whose byte count disagrees with its declared size is declared_size_mismatch, NEVER digest_mismatch — accusing an honest declaration error of being corrupt content is the false-accusation the size policy forbids. Catches a daemon that conflates the two, which is also the exact code an over-limit size refusal must never produce.",
       "requires": [
         "subject",
         "room:live",

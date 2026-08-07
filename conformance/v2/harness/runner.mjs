@@ -12,6 +12,7 @@ import { startDaemon } from './daemon.mjs';
 import { Session } from './session.mjs';
 import { AssertContext, AssertFailure, TransportFailure, evalAssert, subsetMatch } from './assert.mjs';
 import { resolvePath, resolveValue } from './values.mjs';
+import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall, streamWaitMs } from './stream.mjs';
 
 /** The outcome of one case. */
 export const Outcome = {
@@ -42,10 +43,6 @@ export class Runner {
     this.binary = binary;
     this.verbose = verbose;
     this.timeoutScale = timeoutScale;
-  }
-
-  __pd() {
-    return this.__pdCurrent;
   }
 
   log(...args) {
@@ -86,6 +83,9 @@ export class Runner {
       eventAuthored: 0,
       durableMutation: 0,
       pushesByRoom: new Map(),
+      // One record per `call` step: {step (1-based), label, accepted, opened}.
+      // `bytes_streamed` observations read receiver-accepted bytes from here.
+      callRecords: [],
     };
 
     const cleanup = async () => {
@@ -124,16 +124,46 @@ export class Runner {
       // each step) so no_event_authored / no_durable_mutation compare a real
       // before/after delta instead of passing unconditionally.
       ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
-      ctxState.dirSnapshot = this.#dirStateSignature(daemons);
+      ctxState.dirSnapshot = await this.#stableDirSignature(daemons);
 
       // Execute the steps.
       for (let i = 0; i < fixture.steps.length; i++) {
         const step = fixture.steps[i];
+        ctxState.lastCallOk = undefined;
         await this.#runStep(step, i, { daemons, sessions, vars, ctx, ctxState, name });
-        // A `step`-scoped observation compares against the state just before
-        // this step; refresh the baseline after each step completes.
-        ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
-        ctxState.dirSnapshot = this.#dirStateSignature(daemons);
+        // An observation compares against the state just before the observed
+        // operation. A SUCCESSFUL daemon-interacting step advances the
+        // baselines; a REFUSED one (an error-replied call, or a raw `send`
+        // probe) must not — a refused operation authors nothing legally, so
+        // refreshing after it would absorb exactly the violation a following
+        // no_event_authored / no_durable_mutation observation exists to
+        // catch. Assertion-only (and save-only) steps touch no daemon state
+        // and never refresh, so the pre-refusal baseline survives through
+        // intervening assertions.
+        const refused = (step.call && ctxState.lastCallOk === false) || step.send !== undefined;
+        const interactsWithDaemon =
+          step.call || step.http || step.upgrade || step.send !== undefined || step.await || step.control;
+        if (interactsWithDaemon) {
+          // The DIRECTORY baseline advances after every daemon interaction,
+          // refused or not: a refused op_id operation legally performs one
+          // durable write (its recorded reply in the dedup ledger), so a
+          // strict pre-refusal dir baseline would fail a conformant daemon.
+          // The capture settles first — staging cleanup is asynchronous, and
+          // a baseline taken mid-deletion would read as a later "mutation".
+          ctxState.dirSnapshot = await this.#stableDirSignature(daemons, ctxState.dirSnapshot);
+          // The EVENT baseline is strict: a refused operation may author
+          // nothing, so it never advances past a refusal.
+          if (!refused) {
+            ctxState.eventSnapshot = await this.#roomEventTotal(vars, sessions);
+          }
+        }
+      }
+
+      // A connection-fatal binary violation observed after the last tracker
+      // retired must not be outlived by a green verdict — replaced (upgraded
+      // away) sessions included.
+      for (const s of [...sessions.values(), ...(vars.__case?.replacedSessions || [])]) {
+        if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
       }
 
       // A case that ran all steps without a failing assertion passes. A block
@@ -251,6 +281,44 @@ export class Runner {
         const left = await authority.call('room.create', { name: 'left room' });
         vars.rid_left = left.out?.room_id;
       }
+
+      // `resource:shared_file` — a real file genuinely streamed into the room
+      // through the byte-stream executor; binds `$fid`. This is live setup
+      // evidence, not a stub: the daemon stages, digests, and authors the
+      // share exactly as any client upload.
+      if (requires.includes('resource:shared_file')) {
+        const input = {
+          room_id: vars.rid,
+          name: 'seed.bin',
+          declared_bytes: 4096,
+          declared_content_type: 'application/octet-stream',
+        };
+        const reply = await this.#streamCall(authority, 'file.share', input, { send_bytes: 4096 }, {
+          opId: `cf-seed-${opIdCounter++}`,
+        });
+        if (!reply.ok || !reply.out?.file_id) {
+          throw new Error(
+            `resource:shared_file setup failed: ${JSON.stringify(reply.ok ? reply.out : reply.err)}`,
+          );
+        }
+        vars.fid = reply.out.file_id;
+      }
+    }
+
+    // Bare `subject` means the daemon's one subject exists (`subject:none` is
+    // the absence form). Room/member setup ensures it as a side effect. A case
+    // whose own steps call subject.ensure manages the lifecycle itself (some
+    // assert on the `created` flag); otherwise ensure it here so a
+    // subject-requiring error case observes its intended error rather than
+    // subject_absent.
+    const caseEnsuresSubject = (fixture.steps || []).some((st) => st.call === 'subject.ensure');
+    if (requires.includes('subject') && !caseEnsuresSubject && !(wantsRoom || wantsLeftRoom || wantsMembers)) {
+      const authority = await this.#sessionFor('subject:authority', daemons, sessions, vars);
+      const ensured = await authority.call('subject.ensure', {});
+      if (!ensured.ok || !ensured.out?.subject_id) {
+        throw new Error(`requires subject: subject.ensure failed: ${JSON.stringify(ensured.err)}`);
+      }
+      vars.self_sid = ensured.out.subject_id;
     }
 
     // `resource:tcp_service` — a loopback TCP echo service a pipe can target;
@@ -292,10 +360,24 @@ export class Runner {
     await bindSubject('subject:outsider', 'subject:outsider', 'sc', true);
   }
 
-  /** The session for an `on` label, connecting lazily. */
+  /** The session for an `on` label, connecting lazily. Every step path
+   * resolves its session here, so a sticky binary violation recorded on the
+   * connection surfaces before the next interaction of any kind. */
   async #sessionFor(onLabel, daemons, sessions, vars) {
     const label = onLabel || 'subject:self';
-    if (sessions.has(label)) return sessions.get(label);
+    if (sessions.has(label)) {
+      const existing = sessions.get(label);
+      if (existing.stickyBinaryViolation) throw existing.stickyBinaryViolation;
+      return existing;
+    }
+    // The case authored an upgrade for this label and the daemon refused it;
+    // auto-connecting here would silently substitute a different admission.
+    const refused = vars.__case?.refusedUpgrades?.[label];
+    if (refused !== undefined) {
+      throw new AssertFailure(
+        `the authored upgrade for ${label} was refused (status ${refused}); refusing to substitute an auto-connected session`,
+      );
+    }
     // Route to the second daemon for labels that clearly name a distinct
     // subject (a daemon holds one subject, so second/outsider/peer subjects
     // live on the second daemon).
@@ -346,7 +428,7 @@ export class Runner {
       return;
     }
     if (step.call) {
-      await this.#doCall(step, env);
+      await this.#doCall(step, index, env);
       return;
     }
     if (step.send !== undefined) {
@@ -389,8 +471,12 @@ export class Runner {
     // no-op for the runner.
   }
 
-  /** A `call` step: invoke an operation, match the reply, save captures. */
-  async #doCall(step, env) {
+  /** A `call` step: invoke an operation, match the reply, save captures. A
+   * step carrying `stream` runs as one duplex operation via the byte-stream
+   * executor; every call (streaming or not) gets a tracker so
+   * `bytes_streamed` observes real receiver-accepted counts and an
+   * unexpected OPEN on a stream-less call is caught, not dropped. */
+  async #doCall(step, index, env) {
     const { sessions, vars, ctxState } = env;
     const s = await this.#sessionFor(step.on, env.daemons, sessions, vars);
     const input = step.in !== undefined ? resolveValue(step.in, vars) : {};
@@ -414,16 +500,67 @@ export class Runner {
       step.call,
     );
 
+    const streamSpec = step.stream !== undefined ? resolveValue(step.stream, vars) : null;
+    const record = { step: index + 1, label: step.on || 'subject:self', accepted: 0, opened: false };
+    ctxState.callRecords.push(record);
+
     let reply;
-    try {
-      reply = await s.call(step.call, input, { opId });
-      this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)}`);
-    } catch (err) {
-      // Never a reply — a timeout, a closed socket, or a crash. This is a
-      // transport/runner failure, not a matcher verdict: raise a
-      // TransportFailure (not an AssertFailure) so a blocked case cannot count
-      // a dead daemon as its expected blocked assertion.
-      throw new TransportFailure(`call ${step.call} failed to get a reply: ${err.message}`);
+    if (streamSpec) {
+      reply = await this.#streamCall(s, step.call, input, streamSpec, { opId, record });
+      this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)} (accepted ${record.accepted})`);
+    } else {
+      const { id, reply: replyPromise } = s.startCall(step.call, input, { opId });
+      const tracker = new CallStreamTracker(id);
+      s.streams.set(id, tracker);
+      // Race the reply against Binary delivery: a stream-less call that
+      // receives OPEN (a daemon awaiting bytes that will never come) must
+      // fail as the conformance verdict NOW, not as a reply timeout later.
+      let watcherDone = false;
+      const recordWatcher = (async () => {
+        for (;;) {
+          if (watcherDone) return null;
+          if (tracker.failure) throw tracker.failure;
+          if (tracker.opened || tracker.queue.length) {
+            const what = tracker.opened ? 'an OPEN' : `a ${tracker.queue[0].kindName} record`;
+            throw new AssertFailure(
+              `call ${step.call} received ${what} for a stream the fixture declares it must not open`,
+            );
+          }
+          await new Promise((resolve) => tracker.wakers.push(resolve));
+        }
+      })();
+      try {
+        reply = await Promise.race([replyPromise, recordWatcher]);
+        this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)}`);
+      } catch (err) {
+        if (err instanceof AssertFailure) throw err;
+        if (err === tracker.failure) throw err;
+        // Never a reply — a timeout, a closed socket, or a crash. This is a
+        // transport/runner failure, not a matcher verdict: raise a
+        // TransportFailure (not an AssertFailure) so a blocked case cannot count
+        // a dead daemon as its expected blocked assertion.
+        const openNote = tracker.opened ? ' after the daemon opened an unexpected byte stream' : '';
+        throw new TransportFailure(`call ${step.call} failed to get a reply${openNote}: ${err.message}`);
+      } finally {
+        watcherDone = true;
+        tracker.wake();
+        recordWatcher.catch(() => {});
+        s.streams.delete(id);
+        record.accepted = tracker.accepted;
+        record.opened = tracker.opened;
+      }
+      if (tracker.failure) {
+        // A binary-routing violation (unparseable message, unbindable record)
+        // observed during this call is connection-fatal class — the Text
+        // reply arriving anyway must not launder it.
+        throw tracker.failure;
+      }
+      if (tracker.opened || tracker.queue.length) {
+        const what = tracker.opened ? 'an OPEN' : `a ${tracker.queue[0].kindName} record`;
+        throw new AssertFailure(
+          `call ${step.call} received ${what} for a stream the fixture declares it must not open`,
+        );
+      }
     }
 
     // Expose the reply under the assertion roots.
@@ -431,6 +568,7 @@ export class Runner {
     vars.err = reply.err;
     vars.frame = reply;
     if (reply.err) vars.last_error = reply.err;
+    ctxState.lastCallOk = !!reply.ok;
 
     if (mutating && reply.ok) ctxState.eventAuthored++;
     ctxState.networkActivity++;
@@ -447,6 +585,62 @@ export class Runner {
         const rel = path.startsWith('$') ? path.slice(1) : path;
         const { found, value } = resolvePath(root, rel);
         vars[varName] = found ? value : undefined;
+        if (this.verbose) {
+          let shown;
+          try { shown = JSON.stringify(value)?.slice(0, 60); } catch { shown = '[unserializable]'; }
+          this.log(`save ${varName} <- ${path} = ${shown} (found=${found})`);
+        }
+      }
+    }
+  }
+
+  /** Run one duplex streaming call through the byte-stream executor. */
+  async #streamCall(s, op, input, spec, { opId, record } = {}) {
+    const hello = s.lastHello || {};
+    const frameLimit = hello.limits?.max_frame_bytes;
+    const maxPayload = maxDataPayloadBytes(frameLimit);
+    const waitMs = streamWaitMs(spec, hello.limits || {}, this.timeoutScale);
+    const { id, reply: replyPromise, requestBytes } = s.startCall(op, input, {
+      opId,
+      timeoutMs: waitMs,
+    });
+    const tracker = new CallStreamTracker(id);
+    s.streams.set(id, tracker);
+    const replyState = { done: false, value: undefined, error: undefined, seq: Infinity };
+    // The wire-order stamp is taken synchronously in Session.#onMessage
+    // (tracker.replySeq); the fallback covers settle-without-a-wire-message
+    // (a timeout), which correctly sequences after every delivered record.
+    replyPromise.then(
+      (v) => { replyState.seq = tracker.replySeq ?? ++tracker.seq; replyState.done = true; replyState.value = v; tracker.wake(); },
+      (e) => { replyState.seq = tracker.replySeq ?? ++tracker.seq; replyState.done = true; replyState.error = e; tracker.wake(); },
+    );
+    try {
+      // The spec's second readiness condition: a stream-valid max_frame_bytes
+      // must carry the streaming Text request envelope. A daemon serving a
+      // limit this request exceeds must have refused readiness, not answered.
+      if (requestBytes > Number(frameLimit)) {
+        throw new AssertFailure(
+          `served max_frame_bytes ${frameLimit} cannot carry the ${op} request envelope (${requestBytes} bytes)`,
+        );
+      }
+      return await runStreamingCall({
+        session: s,
+        tracker,
+        replyState,
+        spec,
+        declaredBytes: input?.declared_bytes,
+        maxPayload,
+        limitBytes: hello.limits?.max_shared_file_bytes,
+        inflightBytes: hello.limits?.max_transfer_bytes_inflight,
+        concurrentLimit: hello.limits?.max_concurrent_transfers,
+        stallMs: hello.limits?.transfer_stall_ms,
+        waitMs,
+      });
+    } finally {
+      s.streams.delete(id);
+      if (record) {
+        record.accepted = tracker.accepted;
+        record.opened = tracker.opened;
       }
     }
   }
@@ -478,7 +672,13 @@ export class Runner {
     const daemon = (vars.__case||{}).primary;
     const u = step.upgrade;
     const query = {};
-    for (const [k, v] of Object.entries(u.query || {})) query[k] = resolveValue(v, vars);
+    for (const [k, v] of Object.entries(u.query || {})) {
+      const resolved = resolveValue(v, vars);
+      // Query values carry the same portfile placeholders headers do
+      // (<daemon_sg>, <token>, …) — substitute them, or an authored admission
+      // silently becomes a refusal.
+      query[k] = typeof resolved === 'string' ? this.#resolveHeaderValue(resolved, daemon, vars) : resolved;
+    }
     const headers = {};
     for (const [k, v] of Object.entries(u.headers || {})) {
       headers[k] = this.#resolveHeaderValue(v, daemon, vars);
@@ -488,14 +688,48 @@ export class Runner {
     // Perform the upgrade; it may be refused (non-101). A successful upgrade
     // becomes the `on` session's live connection so a following `await` reads
     // THIS connection's hello, not a stale one from before the upgrade.
+    // A setup upgrade (no expect) is the label's ordinary admitted
+    // connection, so it presents the label's STABLE client id exactly as
+    // #sessionFor does — an omitted `cid` is an ephemeral per-connection
+    // dedup principal on the daemon, which would make every later
+    // same-principal reconnect (op_id replay cases) silently miss the ledger.
+    // A probing upgrade (any expect) sends exactly what the fixture wrote.
     const label = step.on || 'subject:self';
-    const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions);
+    // A same-label upgrade replaces the registered session; a sticky
+    // violation on the outgoing connection must not vanish with it.
+    const outgoing = sessions.get(label);
+    if (outgoing && outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
+    let clientId = null;
+    if (!step.expect && query.cid === undefined && query.ct === undefined && vars.__case) {
+      vars.__case.clientIds ||= Object.create(null);
+      vars.__case.clientIds[label] ||= `cf-client-${opIdCounter++}`;
+      clientId = vars.__case.clientIds[label];
+      query.cid = clientId;
+    }
+    const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions, clientId);
+    // The precheck ran before the await; a violation recorded on the
+    // outgoing connection during the upgrade must still surface, and the
+    // replaced session stays scanned at case end.
+    if (outgoing && outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
+    if (outgoing && vars.__case) (vars.__case.replacedSessions ||= []).push(outgoing);
     vars.frame = result.frame || {};
     vars.out = result.body;
     vars.err = result.body;
 
     if (step.expect) {
       this.#matchUpgradeExpect(step.expect, result, vars);
+    } else if (vars.__case) {
+      // A refused no-expect upgrade must not silently degrade into
+      // #sessionFor's auto-connection: mark the label, and the next step
+      // that DEPENDS on this session fails with the refusal. Probe upgrades
+      // and post-stop reachability checks (which never use the session
+      // afterwards) stay expressible.
+      vars.__case.refusedUpgrades ||= Object.create(null);
+      if (result.status === 101) {
+        delete vars.__case.refusedUpgrades[label];
+      } else {
+        vars.__case.refusedUpgrades[label] = result.status;
+      }
     }
     if (step.save) {
       for (const [varName, path] of Object.entries(step.save)) {
@@ -512,6 +746,7 @@ export class Runner {
     return v
       .replace('<bearer_from_portfile>', daemon.token)
       .replace('<token>', daemon.token)
+      .replace('<daemon_sg>', String(daemon.storageGeneration))
       .replace('<port>', String(daemon.port))
       .replace(/\$([A-Za-z_][A-Za-z0-9_.]*)/g, (m, name) => {
         const { found, value } = resolvePath(vars, name);
@@ -521,7 +756,7 @@ export class Runner {
 
   /** Attempt a WS upgrade, returning {status, body, frame}. On admission the
    * socket stays open and is registered as the `label` session's connection. */
-  async #attemptUpgrade(daemon, query, headers, label, sessions) {
+  async #attemptUpgrade(daemon, query, headers, label, sessions, clientId = null) {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) params.set(k, String(v));
     const url = `${daemon.wsBase}?${params.toString()}`;
@@ -529,6 +764,7 @@ export class Runner {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url, {
         headers: { Host: `127.0.0.1:${daemon.port}`, ...headers },
+        perMessageDeflate: false,
       });
       ws.binaryType = 'nodebuffer';
       let settled = false;
@@ -543,13 +779,12 @@ export class Runner {
       };
       ws.once('open', () => {
         opened = true;
-        const session = new Session(label);
+        const session = new Session(label, clientId);
         session.ws = ws;
         session.open = true;
-        ws.on('message', (data) => session.__onMessage(data));
+        ws.on('message', (data, isBinary) => session.__onMessage(data, isBinary));
         ws.on('close', (code) => {
-          session.open = false;
-          session.closeCode = code;
+          session.__onClose(code);
           if (!settled) fail(`upgrade connection closed before hello (${code})`);
         });
         ws.on('error', (err) => {
@@ -686,8 +921,15 @@ export class Runner {
     if (step.expect) this.#matchUpgradeExpect(step.expect, result, vars);
     if (step.save) {
       for (const [varName, p] of Object.entries(step.save)) {
-        const { found, value } = resolvePath({ body, ...body }, p);
+        // The corpus roots http captures at `out` (and sometimes `body`);
+        // both alias the response body.
+        const { found, value } = resolvePath({ body, out: body, ...body }, p);
         vars[varName] = found ? value : undefined;
+        if (this.verbose) {
+          let shown;
+          try { shown = JSON.stringify(value)?.slice(0, 60); } catch { shown = '[unserializable]'; }
+          this.log(`save ${varName} <- ${p} = ${shown} (found=${found})`);
+        }
       }
     }
   }
@@ -785,6 +1027,7 @@ export class Runner {
     // Race every open session's next matching frame, plus the frames already
     // in each one's history.
     for (const s of sessions.values()) {
+      if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
       for (const f of s.pushes) {
         if (locate(f)) return f;
       }
@@ -885,9 +1128,14 @@ export class Runner {
       }
       case 'reconnect': {
         const label = c.on || step.on || 'subject:self';
-        const s = await this.#sessionFor(label, env.daemons, sessions, vars);
-        s.close();
-        sessions.delete(label);
+        const s = sessions.get(label);
+        if (s) {
+          s.close();
+          sessions.delete(label);
+          // A violation delivered to the outgoing connection while the
+          // replacement is awaited must survive to the case-end scan.
+          if (vars.__case) (vars.__case.replacedSessions ||= []).push(s);
+        }
         await this.#sessionFor(label, env.daemons, sessions, vars);
         return;
       }
@@ -907,11 +1155,11 @@ export class Runner {
     }
   }
 
-  /** Whether the primary daemon still accepts TCP connections. */
-  async #daemonReachable() {
+  /** Whether the case's primary daemon still accepts TCP connections. */
+  async #daemonReachable(primary) {
     const net = await import('node:net');
     return new Promise((resolve) => {
-      const sock = net.createConnection(this.__pd().port, '127.0.0.1');
+      const sock = net.createConnection(primary.port, '127.0.0.1');
       sock.once('connect', () => {
         sock.destroy();
         resolve(true);
@@ -947,8 +1195,31 @@ export class Runner {
     }
   }
 
+  /** The dir signature once it stops changing: two consecutive identical
+   * reads a beat apart, bounded. Asynchronous persistence (staging cleanup,
+   * a lagging ledger fsync under IO load) otherwise races the baseline
+   * capture and reads as a later mutation. An unchanged-from-prior read
+   * returns immediately — settling only costs time when something moved. */
+  async #stableDirSignature(daemons, prior) {
+    let cur = this.#dirStateSignature(daemons);
+    if (prior !== undefined && cur === prior) return cur;
+    const deadline = Date.now() + 4_000 * this.timeoutScale;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 250));
+      const next = this.#dirStateSignature(daemons);
+      if (next === cur || Date.now() > deadline) return next;
+      cur = next;
+    }
+  }
+
   /** A signature of the data dir's contents (file count + total bytes +
-   * newest mtime), the observable signal for no_durable_mutation. */
+   * newest mtime), the observable signal for no_durable_mutation. Two kinds
+   * of transient state are excluded: the byte-stream staging directory
+   * (cleanup is asynchronous and races the capture; stranded residue is
+   * asserted explicitly by the observation) and `-wal`/`-shm` journal
+   * sidecars (the harness's own observation reads append to the WAL, and a
+   * WAL-resident event mutation is what no_event_authored observes — the
+   * signature tracks committed content files). */
   #dirStateSignature(daemons) {
     try {
       const walk = (dir) => {
@@ -958,29 +1229,54 @@ export class Runner {
         for (const e of entries) {
           const p = join(dir, e.name);
           if (e.isDirectory()) {
+            if (e.name === 'protocol-v2-stream-staging') continue;
             const sub = walk(p);
             files += sub.files; bytes += sub.bytes; newest = Math.max(newest, sub.newest);
           } else {
+            if (e.name.endsWith('-wal') || e.name.endsWith('-shm')) continue;
             try { const st = statSync(p); files++; bytes += st.size; newest = Math.max(newest, st.mtimeMs); } catch { /* ignore */ }
           }
         }
         return { files, bytes, newest };
       };
-      return JSON.stringify(walk(this.__pd().dataDir));
+      return JSON.stringify(walk(daemons[0].dataDir));
     } catch {
       return null;
     }
   }
 
+  /** Whether the staging directory still holds any file, settled: cleanup is
+   * asynchronous, so residue is only a violation if it persists past a
+   * bounded wait. */
+  async #stagingResidue(daemons) {
+    const dir = join(daemons[0].dataDir, 'protocol-v2-stream-staging');
+    const residue = () => {
+      try { return readdirSync(dir).length > 0; } catch { return false; }
+    };
+    const deadline = Date.now() + 2_000 * this.timeoutScale;
+    while (residue()) {
+      if (Date.now() > deadline) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  }
+
   /** Evaluate an `observe` assertion against recorded behaviour. */
   async #evalObserve(a, { sessions, vars, ctxState, name, daemons }) {
-    this.__pdCurrent = (vars.__case || {}).primary;
+    const primary = (vars.__case || {}).primary;
+    // A sticky binary violation outranks whatever this observation would
+    // have concluded — assertion-only steps never resolve a session, so
+    // this is their surfacing point.
+    for (const s of sessions.values()) {
+      if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
+    }
     const obs = a.observe;
     switch (obs) {
       case 'no_event_authored': {
         // Real check: the room's committed event total must not have grown
-        // since the baseline snapshot (case start for `case` scope, the prior
-        // step for `step` scope).
+        // since the last SUCCESSFUL step's baseline — the refresh skips
+        // refused operations, so the observed refusal cannot absorb an
+        // illegally authored event.
         if (ctxState.eventSnapshot === null || ctxState.eventSnapshot === undefined) return;
         const now = await this.#roomEventTotal(vars, sessions);
         if (now !== null && now > ctxState.eventSnapshot) {
@@ -991,12 +1287,18 @@ export class Runner {
         return;
       }
       case 'no_durable_mutation': {
-        // Real check: the data dir's content signature must be unchanged.
+        // Real check: the data dir's content signature (staging excluded)
+        // must be unchanged, and the transient staging directory must have
+        // cleaned itself up — an aborted stage leaves no stranded file.
         const before = ctxState.dirSnapshot;
-        if (before === null || before === undefined) return;
-        const now = this.#dirStateSignature(daemons);
-        if (now !== null && now !== before) {
-          throw new AssertFailure(`no_durable_mutation violated: data dir changed`);
+        if (before !== null && before !== undefined) {
+          const now = this.#dirStateSignature(daemons);
+          if (now !== null && now !== before) {
+            throw new AssertFailure(`no_durable_mutation violated: data dir changed ${before} -> ${now}`);
+          }
+        }
+        if (await this.#stagingResidue(daemons)) {
+          throw new AssertFailure('no_durable_mutation violated: stranded byte-stream staging file');
         }
         return;
       }
@@ -1012,7 +1314,7 @@ export class Runner {
         // `on: "none"` asserts the daemon is unreachable (connection refused)
         // — used after daemon.stop to prove it no longer accepts connections.
         if (label === 'none') {
-          const reachable = await this.#daemonReachable();
+          const reachable = await this.#daemonReachable(primary);
           if (reachable) throw new AssertFailure('expected none to be open (daemon still reachable)');
           return;
         }
@@ -1069,10 +1371,10 @@ export class Runner {
         // `daemon.stop` replies first, then tears down after a beat — poll for
         // the exit rather than demanding it be already observed.
         const deadline = Date.now() + 5_000 * this.timeoutScale;
-        while (!this.__pd().exited && Date.now() < deadline) {
+        while (!primary.exited && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 50));
         }
-        if (!this.__pd().exited)
+        if (!primary.exited)
           throw new AssertFailure(`expected daemon process to have exited`);
         return;
       }
@@ -1080,8 +1382,45 @@ export class Runner {
         // A timing assertion needs sub-step latency instrumentation; treated
         // as non-blocking here (recorded, not asserted).
         return;
-      case 'bytes_streamed':
+      case 'bytes_streamed': {
+        // Receiver-ACCEPTED payload bytes for one call: the daemon's
+        // cumulative CREDIT/ABORT acknowledgement for an upload, the harness
+        // sink's accepted count for a download. A pre-OPEN terminal refusal
+        // (and a faithful replay, which opens no stream) records zero.
+        const records = ctxState.callRecords;
+        let rec;
+        if (a.call !== undefined) {
+          const m = /^step:([1-9][0-9]*)$/.exec(String(a.call));
+          if (!m) throw new AssertFailure(`bytes_streamed selector ${JSON.stringify(a.call)} is not step:<n>`);
+          rec = records.find((r) => r.step === Number(m[1]));
+        } else {
+          // Default: the most recent call on the same session (the
+          // observation's session label, subject:self when unnamed).
+          const label = a.on || 'subject:self';
+          const pool = records.filter((r) => r.label === label);
+          rec = pool[pool.length - 1];
+        }
+        if (!rec) {
+          throw new AssertFailure(`bytes_streamed: no call recorded for ${a.call ?? 'the most recent call'}`);
+        }
+        const cmp = a.value;
+        const want = Number(resolveValue(cmp.value, vars));
+        const got = rec.accepted;
+        const ok =
+          cmp.op === 'eq' ? got === want
+          : cmp.op === 'ne' ? got !== want
+          : cmp.op === 'lt' ? got < want
+          : cmp.op === 'lte' ? got <= want
+          : cmp.op === 'gt' ? got > want
+          : cmp.op === 'gte' ? got >= want
+          : false;
+        if (!ok) {
+          throw new AssertFailure(
+            `bytes_streamed ${got} !${cmp.op} ${want}${a.call ? ` (${a.call})` : ''}`,
+          );
+        }
         return;
+      }
       default:
         throw new AssertFailure(`unsupported observe ${obs}`);
     }
