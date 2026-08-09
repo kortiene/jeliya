@@ -17,6 +17,19 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # The React UI stays on 18.x: a React 19 migration is not planned for
+      # this legacy client (superseded by the Dioxus rewrite), and partial
+      # react-dom/@types bumps produce an unresolvable npm tree (see #142).
+      # Minors and patches still flow.
+      - dependency-name: react
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pub
     directory: /app
