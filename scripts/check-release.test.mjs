@@ -62,7 +62,7 @@ test("Android build tools are pinned and verified before execution", () => {
   }
 
   const setupJava = ciWorkflow.indexOf(
-    "actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654",
+    "actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961",
   );
   const download = ciWorkflow.indexOf("https://services.gradle.org/distributions/$archive");
   const verify = ciWorkflow.indexOf("sha256sum -c -", download);
