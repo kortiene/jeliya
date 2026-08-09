@@ -137,7 +137,7 @@ jobs:
           cargo -V
 
       - name: Cache Cargo build
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.2
         with:
           key: release-${{ matrix.target }}
 
