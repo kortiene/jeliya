@@ -251,6 +251,11 @@ impl EventBus {
     /// broadcast again.
     pub(crate) fn subscribe(&self) -> EventSubscription {
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
+        // Prune dead entries at registration too: broadcasts prune, but a
+        // quiet client (Idle, or Ready with no events) whose components
+        // repeatedly subscribe and drop would otherwise grow the registry
+        // without bound (AC-7).
+        subscribers.retain(|weak| weak.strong_count() > 0);
         let closed = self.closed.load(Ordering::Relaxed);
         let state = Arc::new(Mutex::new(SubscriberState {
             buffer: VecDeque::new(),
@@ -620,5 +625,22 @@ mod tests {
             ),
             "the accumulated loss count is honest"
         );
+    }
+
+    /// AC-7: subscribe/drop churn on a quiet bus cannot grow the subscriber
+    /// registry without bound — registration prunes dead entries.
+    #[test]
+    fn subscribe_churn_on_a_quiet_bus_stays_bounded() {
+        let bus = EventBus::new();
+        for _ in 0..1_000 {
+            drop(bus.subscribe());
+        }
+        let live = bus.subscribe();
+        let registered = bus.subscribers.lock().expect("event bus poisoned").len();
+        assert!(
+            registered <= 2,
+            "dead subscriptions are pruned at registration, got {registered}"
+        );
+        drop(live);
     }
 }

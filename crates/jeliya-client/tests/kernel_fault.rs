@@ -432,6 +432,40 @@ fn an_ephemeral_principal_never_auto_replays() {
     );
 }
 
+/// §K7: a delayed close callback from a replaced connection is fenced by its
+/// generation — it must not tear down the successor connection it races.
+#[test]
+fn a_stale_generation_loss_cannot_tear_down_the_successor() {
+    let (handle, controller) = ready(KernelLimits {
+        backoff_base: TickDelta::from_ticks(1),
+        backoff_cap: TickDelta::from_ticks(1),
+        ..KernelLimits::default()
+    });
+    let old_generation = controller.generation();
+    // The connection is lost and replaced: generation bumps.
+    controller.interrupt();
+    controller.advance(1);
+    let new_generation = controller.connect();
+    assert_eq!(new_generation, old_generation + 1);
+    assert_eq!(handle.state(), State::Ready);
+    // A call is live on the successor.
+    let fut = handle.call::<RoomList>(RoomList {}, Dedup::None);
+    let sent = controller.take_outbound();
+    assert_eq!(sent.len(), 1);
+    // The retired reader's close finally arrives, tagged with its own
+    // generation: it must be dropped whole.
+    controller.interrupt_at_generation(old_generation);
+    assert_eq!(
+        handle.state(),
+        State::Ready,
+        "a stale loss cannot interrupt the successor"
+    );
+    // The live call still settles normally on the successor.
+    controller.deliver_reply(sent[0].id, "{}");
+    let _ = block_on(fut);
+    assert_eq!(controller.outstanding(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // In-flight throttle invariant (AC-1 / AC-7)
 // ---------------------------------------------------------------------------

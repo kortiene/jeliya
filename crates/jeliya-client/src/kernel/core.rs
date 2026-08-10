@@ -41,8 +41,14 @@ pub(crate) enum Input {
     Stop,
     /// A live connection was established and passed the generation gate.
     Connected,
-    /// The connection was lost but may be recoverable via backoff (§K6, §K10).
-    Interrupted,
+    /// The connection was lost but may be recoverable via backoff (§K6,
+    /// §K10). Tagged with the generation the lost transport was connected
+    /// under (the pre-connect value for a failed dial), so a delayed close
+    /// callback from a replaced connection cannot tear down its successor.
+    Interrupted {
+        /// The originating transport's connection generation.
+        generation: u64,
+    },
     /// A terminal generation-gate refusal that carries no auto-retry (§K7).
     GateRefused,
     /// One inbound frame arrived, tagged with its generation (§K7).
@@ -180,7 +186,7 @@ impl Core {
             Input::Start => self.on_start(&mut actions),
             Input::Stop => self.on_stop(&mut actions),
             Input::Connected => self.on_connected(now, &mut actions),
-            Input::Interrupted => self.on_interrupted(now, &mut actions),
+            Input::Interrupted { generation } => self.on_interrupted(generation, now, &mut actions),
             Input::GateRefused => self.on_gate_refused(now, &mut actions),
             Input::Inbound(frame) => self.on_inbound(frame, now, &mut actions),
             Input::TimerFired(id) => self.on_timer_fired(id, now, &mut actions),
@@ -242,11 +248,19 @@ impl Core {
         self.flush(now, actions);
     }
 
-    fn on_interrupted(&mut self, now: Tick, actions: &mut Vec<Action>) {
+    fn on_interrupted(&mut self, generation: u64, now: Tick, actions: &mut Vec<Action>) {
         if !matches!(
             self.state,
             State::Connecting | State::Ready | State::Interrupted
         ) {
+            return;
+        }
+        // Fence stale losses to their originating connection: a delayed
+        // close from generation N arriving after generation N+1 is live
+        // must not reclassify the successor's calls (§K7). Frames are
+        // fenced the same way; this closes the equivalent hole for the
+        // loss input itself.
+        if generation != self.generation.current() {
             return;
         }
         // Coalesce duplicate loss signals while the reconnect backoff is
@@ -996,7 +1010,12 @@ mod tests {
             Tick::ZERO,
         );
 
-        let lost = core.step(Input::Interrupted, Tick::ZERO);
+        let lost = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         assert!(
             matches!(
                 find_settle(&lost, sent),
@@ -1045,7 +1064,12 @@ mod tests {
         let wire1 = first_send_id(&first_send).expect("sent on generation 1");
 
         // Lose the connection: the replayable call is held, not settled.
-        let lost = core.step(Input::Interrupted, Tick::ZERO);
+        let lost = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         assert_eq!(
             settle_count(&lost, call),
             0,
@@ -1108,7 +1132,12 @@ mod tests {
             },
             Tick::ZERO,
         );
-        let lost = core.step(Input::Interrupted, Tick::ZERO);
+        let lost = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         // Sent, non-replayable → settled Unknown, not held.
         assert!(
             matches!(
@@ -1301,17 +1330,32 @@ mod tests {
                                              // the next loss (duplicate losses while a backoff is armed coalesce
                                              // and consume no attempt). Two scheduled retries fit the budget; the
                                              // failure after the second retry exhausts it.
-        let loss = core.step(Input::Interrupted, Tick::ZERO);
+        let loss = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         assert_eq!(core.state(), State::Interrupted);
         let t1 = first_armed_timer(&loss).expect("first retry scheduled");
         let dial = core.step(Input::TimerFired(t1), Tick(1_000));
         assert!(dial.iter().any(|a| matches!(a, Action::Dial)));
-        let loss = core.step(Input::Interrupted, Tick(1_001));
+        let loss = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick(1_001),
+        );
         assert_eq!(core.state(), State::Interrupted);
         let t2 = first_armed_timer(&loss).expect("second retry scheduled");
         let dial = core.step(Input::TimerFired(t2), Tick(2_000));
         assert!(dial.iter().any(|a| matches!(a, Action::Dial)));
-        let exhausted = core.step(Input::Interrupted, Tick(2_001));
+        let exhausted = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick(2_001),
+        );
         assert!(
             exhausted.iter().any(|a| matches!(a, Action::CancelDial)),
             "exhaustion cancels the dial"
@@ -1511,7 +1555,12 @@ mod tests {
             actions.iter().any(|a| matches!(a, Action::Send(_))),
             "sent on generation 1"
         );
-        core.step(Input::Interrupted, Tick::ZERO);
+        core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         // Dispatched while Interrupted: admitted, never sent.
         let queued = core.alloc_call_id();
         core.step(
@@ -1790,10 +1839,20 @@ mod tests {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
-        let first = core.step(Input::Interrupted, Tick::ZERO);
+        let first = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         let backoff = first_armed_timer(&first).expect("the first loss arms the backoff");
         // Several sends observed the same closed transport: duplicates arrive.
-        let dup = core.step(Input::Interrupted, Tick::ZERO);
+        let dup = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         assert!(
             dup.is_empty(),
             "a duplicate loss while the backoff is armed is coalesced whole"
@@ -1805,7 +1864,12 @@ mod tests {
             "the scheduled dial proceeds"
         );
         // A failure AFTER the dial began is a real new attempt.
-        let redial_failed = core.step(Input::Interrupted, Tick(51));
+        let redial_failed = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick(51),
+        );
         assert!(
             first_armed_timer(&redial_failed).is_some(),
             "a post-dial failure schedules the next backoff"
@@ -1898,7 +1962,12 @@ mod tests {
         );
         // The close arrives exactly at the shared deadline, before the timers.
         let at = Tick::ZERO.saturating_add(limits().default_call_deadline);
-        let interrupted = core.step(Input::Interrupted, at);
+        let interrupted = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            at,
+        );
         assert!(
             matches!(
                 find_settle(&interrupted, replayable),
@@ -1946,7 +2015,12 @@ mod tests {
             ready.iter().any(|a| matches!(a, Action::Emit(_))),
             "a Ready, matching-generation push is emitted"
         );
-        core.step(Input::Interrupted, Tick::ZERO);
+        core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         let retired = core.step(push(core.generation()), Tick::ZERO);
         assert!(
             retired.iter().all(|a| !matches!(a, Action::Emit(_))),
@@ -1964,7 +2038,12 @@ mod tests {
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let generation = core.generation();
-        let lost = core.step(Input::Interrupted, Tick::ZERO);
+        let lost = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         let backoff = first_armed_timer(&lost).expect("backoff armed");
         // The retired dial's straggler arrives before the timer fires.
         let straggler = core.step(Input::Connected, Tick::ZERO);
@@ -2002,7 +2081,12 @@ mod tests {
             );
             assert!(actions.iter().any(|a| matches!(a, Action::Send(_))));
         }
-        let lost = core.step(Input::Interrupted, Tick::ZERO);
+        let lost = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
         assert_eq!(core.replay_hold_len(), 8);
         // Fire the backoff so the retry dial is live before the completion.
         let backoff = first_armed_timer(&lost).expect("backoff armed");

@@ -165,31 +165,37 @@ struct Shared {
 /// another dispatch, a future drop — re-acquiring the same mutex and
 /// deadlocking. Every `drive` returns one of these; the caller delivers it
 /// with the lock already dropped.
-/// One reply delivery deferred past the lock: the sender and its result.
-type DeferredSettle = (
-    oneshot::Sender<Result<RawJson, CallError>>,
-    Result<RawJson, CallError>,
-);
+/// One wake-producing unit of deferred work, in the core's action order —
+/// partitioning by type would reorder cross-surface effects (e.g. a
+/// settlement waker running before the `Stopping` transition it follows in
+/// `on_stop`'s documented sequence).
+enum DeferredWake {
+    Settle(
+        oneshot::Sender<Result<RawJson, CallError>>,
+        Result<RawJson, CallError>,
+    ),
+    Emit(ClientEvent),
+    CloseBus,
+}
 
 #[must_use]
 struct Deferred {
     bus: Arc<EventBus>,
-    settles: Vec<DeferredSettle>,
-    events: Vec<ClientEvent>,
-    close_bus: bool,
+    work: Vec<DeferredWake>,
 }
 
 impl Deferred {
     fn deliver(self) {
-        for (sender, result) in self.settles {
-            // The receiver may already be dropped; a no-op send is harmless.
-            let _ = sender.send(result);
-        }
-        for event in self.events {
-            self.bus.broadcast(event);
-        }
-        if self.close_bus {
-            self.bus.close();
+        for wake in self.work {
+            match wake {
+                DeferredWake::Settle(sender, result) => {
+                    // The receiver may already be dropped; a no-op send is
+                    // harmless.
+                    let _ = sender.send(result);
+                }
+                DeferredWake::Emit(event) => self.bus.broadcast(event),
+                DeferredWake::CloseBus => self.bus.close(),
+            }
         }
     }
 }
@@ -229,7 +235,7 @@ impl Shared {
                 if let Some(sender) = self.senders.remove(&call_id) {
                     // Delivered after the Shared lock drops (§K12 wake
                     // hygiene): sending invokes the receiver's waker.
-                    deferred.settles.push((sender, result));
+                    deferred.work.push(DeferredWake::Settle(sender, result));
                 }
             }
             Action::DropSender(call_id) => {
@@ -240,8 +246,8 @@ impl Shared {
                 // already settled) finds nothing and is a harmless no-op.
                 self.senders.remove(&call_id);
             }
-            Action::Emit(event) => deferred.events.push(event),
-            Action::CloseBus => deferred.close_bus = true,
+            Action::Emit(event) => deferred.work.push(DeferredWake::Emit(event)),
+            Action::CloseBus => deferred.work.push(DeferredWake::CloseBus),
         }
     }
 
@@ -250,18 +256,18 @@ impl Shared {
     fn drive(&mut self, input: Input) -> Deferred {
         let mut deferred = Deferred {
             bus: self.bus.clone(),
-            settles: Vec::new(),
-            events: Vec::new(),
-            close_bus: false,
+            work: Vec::new(),
         };
         let now = self.now;
         let actions = self.core.step(input, now);
         self.apply(actions, &mut deferred);
         // A scripted send failure is a connection loss observed at write
-        // time: report it to the core exactly as a real driver would (§K14).
+        // time: report it to the core exactly as a real driver would (§K14) —
+        // tagged with the generation of the transport that broke.
         while std::mem::take(&mut self.send_failed) {
             let now = self.now;
-            let actions = self.core.step(Input::Interrupted, now);
+            let generation = self.core.generation();
+            let actions = self.core.step(Input::Interrupted { generation }, now);
             self.apply(actions, &mut deferred);
         }
         deferred
@@ -495,7 +501,19 @@ mod in_memory {
         /// Report a recoverable connection loss (a dropped connection or a
         /// send/close race).
         pub fn interrupt(&self) {
-            let deferred = self.lock().drive(Input::Interrupted);
+            let deferred = {
+                let mut shared = self.lock();
+                let generation = shared.core.generation();
+                shared.drive(Input::Interrupted { generation })
+            };
+            deferred.deliver();
+        }
+
+        /// Report a loss tagged with the generation the (possibly retired)
+        /// transport was connected under — used to prove a stale teardown
+        /// from a replaced connection is fenced.
+        pub fn interrupt_at_generation(&self, generation: u64) {
+            let deferred = self.lock().drive(Input::Interrupted { generation });
             deferred.deliver();
         }
 
