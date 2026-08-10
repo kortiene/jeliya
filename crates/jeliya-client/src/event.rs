@@ -264,10 +264,13 @@ impl EventBus {
     /// `dropped` counter incremented, surfaced as a [`ClientEvent::Lagged`]
     /// that occupies the position in the sequence where the loss occurred —
     /// never a silent loss, and never reported *after* later events. Lifecycle
-    /// transitions ([`ClientEvent::StateChanged`]) are control events: they are
-    /// never dropped, so a subscriber always observes the final
-    /// `StateChanged { to: Stopped }` (the mailbox may exceed capacity by at
-    /// most the handful of lifecycle transitions plus their `Lagged` markers).
+    /// transitions ([`ClientEvent::StateChanged`]) are control events: they
+    /// always reach the subscriber, but under backpressure they **coalesce**
+    /// rather than grow the mailbox without bound — at capacity, a new
+    /// transition merges into the last undelivered `StateChanged` (its `from`
+    /// stays, its `to` advances), so a stalled subscriber still observes the
+    /// honest final state (`StateChanged { to: Stopped }` included) while a
+    /// flapping connection cannot grow the buffer indefinitely (AC-7/§K12).
     pub(crate) fn broadcast(&self, event: ClientEvent) {
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
         subscribers.retain(|weak| weak.strong_count() > 0);
@@ -280,12 +283,29 @@ impl EventBus {
             if state.closed {
                 continue;
             }
+            // At capacity, a control event coalesces into the last undelivered
+            // StateChanged instead of appending (endpoints stay honest: the
+            // merged transition spans old.from → new.to).
+            let mut merged = false;
+            if is_control && state.buffer.len() >= state.capacity {
+                if let ClientEvent::StateChanged { to: new_to, .. } = &event {
+                    merged = state.buffer.iter_mut().rev().any(|queued| match queued {
+                        ClientEvent::StateChanged { to, .. } => {
+                            *to = *new_to;
+                            true
+                        }
+                        _ => false,
+                    });
+                }
+            }
             // Materialize any pending drop count as a `Lagged` marker before
             // appending, so the marker keeps its position in the sequence: a
             // consumer learns about the loss before it sees anything broadcast
-            // after the loss. Control events flush unconditionally (they bypass
-            // capacity); ordinary pushes flush when a slot is free.
-            if state.dropped > 0 && (is_control || state.buffer.len() < state.capacity) {
+            // after the loss. An appending control event flushes it
+            // unconditionally; ordinary pushes flush when a slot is free. A
+            // coalescing control event appends nothing, so the marker waits.
+            if state.dropped > 0 && ((is_control && !merged) || state.buffer.len() < state.capacity)
+            {
                 let dropped = std::mem::take(&mut state.dropped);
                 state.buffer.push_back(ClientEvent::Lagged {
                     room_id: None,
@@ -293,7 +313,9 @@ impl EventBus {
                 });
             }
             if is_control {
-                state.buffer.push_back(event.clone());
+                if !merged {
+                    state.buffer.push_back(event.clone());
+                }
             } else if state.buffer.len() >= state.capacity {
                 state.dropped = state.dropped.saturating_add(1);
             } else {
@@ -360,5 +382,49 @@ impl Stream for EventSubscription {
         }
         state.waker = Some(cx.waker().clone());
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AC-7/§K12: a stalled subscriber under a flapping connection cannot
+    /// grow its mailbox without bound — at capacity, lifecycle transitions
+    /// coalesce into the last undelivered `StateChanged`, and the honest
+    /// final state (`Stopped` included) survives the coalescing.
+    #[test]
+    fn flapping_lifecycle_coalesces_for_a_stalled_subscriber() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        for _ in 0..(DEFAULT_FANOUT_CAPACITY * 3) {
+            bus.broadcast(ClientEvent::StateChanged {
+                from: State::Ready,
+                to: State::Interrupted,
+            });
+            bus.broadcast(ClientEvent::StateChanged {
+                from: State::Interrupted,
+                to: State::Ready,
+            });
+        }
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Stopped,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert!(
+            state.buffer.len() <= DEFAULT_FANOUT_CAPACITY,
+            "the mailbox is bounded under flapping, got {}",
+            state.buffer.len()
+        );
+        let last_transition = state.buffer.iter().rev().find_map(|event| match event {
+            ClientEvent::StateChanged { to, .. } => Some(*to),
+            _ => None,
+        });
+        assert_eq!(
+            last_transition,
+            Some(State::Stopped),
+            "the honest final state survives coalescing"
+        );
     }
 }

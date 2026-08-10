@@ -296,6 +296,46 @@ fn gate_refusal_after_stop_is_ignored() {
     assert_eq!(controller.outstanding(), 0);
 }
 
+/// §K14/§11 send/close race: the transport breaks exactly as the kernel
+/// writes. The frame never reaches the wire, the loss surfaces as an
+/// interruption, the replayable call is held, and the reconnect re-sends it.
+#[test]
+fn send_failure_at_flush_interrupts_and_replays() {
+    let (handle, controller) = ready(KernelLimits {
+        max_reconnect_attempts: 4,
+        backoff_base: TickDelta::from_ticks(1),
+        backoff_cap: TickDelta::from_ticks(1),
+        ..KernelLimits::default()
+    });
+    controller.fail_send();
+    let fut = handle.call::<RoomCreate>(
+        RoomCreate {
+            name: "send-race".into(),
+        },
+        Dedup::Key(OpId::new("op-send-race")),
+    );
+    assert_eq!(
+        controller.take_outbound().len(),
+        0,
+        "the frame never reached the wire"
+    );
+    assert_eq!(handle.state(), State::Interrupted);
+    assert_eq!(
+        controller.replay_held(),
+        1,
+        "the sent-at-failure call is held"
+    );
+
+    // Reconnect: the held call re-sends and settles normally.
+    controller.advance(1);
+    controller.connect();
+    let resent = controller.take_outbound();
+    assert_eq!(resent.len(), 1, "re-sent on the new connection");
+    controller.deliver_reply(resent[0].id, "{}");
+    let _ = block_on(fut);
+    assert_eq!(controller.outstanding(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // In-flight throttle invariant (AC-1 / AC-7)
 // ---------------------------------------------------------------------------

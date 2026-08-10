@@ -142,6 +142,13 @@ struct Shared {
     outbound: Vec<WireFrame>,
     /// Whether a dial/backoff is in progress.
     dialing: bool,
+    /// Scripted send/close race (§K14 `fail_send`): when set, the next
+    /// `Action::Send` drops its frame and records `send_failed` instead of
+    /// reaching the transport.
+    fail_next_send: bool,
+    /// A send observed the broken transport during the current apply batch;
+    /// `drive` surfaces it as `Input::Interrupted` after the batch.
+    send_failed: bool,
 }
 
 impl Shared {
@@ -154,7 +161,17 @@ impl Shared {
 
     fn apply_one(&mut self, action: Action) {
         match action {
-            Action::Send(frame) => self.outbound.push(frame),
+            Action::Send(frame) => {
+                if self.fail_next_send {
+                    // The scripted send/close race: the pipe breaks exactly as
+                    // the kernel writes (§K14). The frame never reaches the
+                    // transport; the loss surfaces after this apply batch.
+                    self.fail_next_send = false;
+                    self.send_failed = true;
+                } else {
+                    self.outbound.push(frame);
+                }
+            }
             Action::ArmTimer { id, at } => {
                 self.timers.insert(id, at);
             }
@@ -188,6 +205,13 @@ impl Shared {
         let now = self.now;
         let actions = self.core.step(input, now);
         self.apply(actions);
+        // A scripted send failure is a connection loss observed at write
+        // time: report it to the core exactly as a real driver would (§K14).
+        while std::mem::take(&mut self.send_failed) {
+            let now = self.now;
+            let actions = self.core.step(Input::Interrupted, now);
+            self.apply(actions);
+        }
     }
 }
 
@@ -318,6 +342,8 @@ mod in_memory {
                 timers: HashMap::new(),
                 outbound: Vec::new(),
                 dialing: false,
+                fail_next_send: false,
+                send_failed: false,
             }));
             let handle = ClientHandle::from_backend(Arc::new(KernelBackend {
                 shared: Arc::clone(&shared),
@@ -359,6 +385,14 @@ mod in_memory {
         pub fn is_dialing(&self) -> bool {
             let shared = self.lock();
             shared.dialing || shared.core.backoff_armed()
+        }
+
+        /// Script the next `Action::Send` to fail at the transport — the
+        /// send/close race §K14 names: the pipe breaks exactly as the kernel
+        /// writes. The frame is dropped and the loss surfaces to the core as
+        /// `Interrupted` after the current step's actions apply.
+        pub fn fail_send(&self) {
+            self.lock().fail_next_send = true;
         }
 
         /// Take the frames the kernel has asked the transport to send since the

@@ -319,6 +319,12 @@ jobs:
       - name: jeliya-client seam behaviour suite (mock)
         run: cargo test --locked -p jeliya-client --features mock
 
+      # The #168 kernel fault suite (and the kernel's feature-gated unit
+      # tests) sit behind the default-off `test-transport` feature for the
+      # same reason; the workspace run skips them, so run them explicitly.
+      - name: jeliya-client kernel fault suite (test-transport)
+        run: cargo test --locked -p jeliya-client --features test-transport
+
       # AC-6: the minimal shared Dioxus component compiles against the mock for
       # both a native target and wasm32-unknown-unknown, with no per-component
       # cfg. The `example` feature enables the mock and pulls in the optional

@@ -70,7 +70,7 @@ pub enum CallError {
     /// [`Execution::DefinitelyNot`]: a typed refusal commits no effect (a
     /// pre-`END` stream failure authors no `file.share` event, an
     /// `op_id_conflict` performed no second effect, and so on).
-    #[error("daemon returned a typed error: {0:?}")]
+    #[error("daemon returned a typed error: {}", wire_code(.0))]
     Wire(ApiError),
     /// The bounded outbound queue refused the request before it was sent
     /// (#168's backpressure, surfaced rather than absorbed). `execution()` is
@@ -106,6 +106,23 @@ pub enum CallError {
     /// A client-local failure that never reached a daemon verdict.
     #[error("local failure: {0}")]
     Local(LocalError),
+}
+
+/// The wire error's protocol `code` tag, extracted through its serde
+/// representation so the rendered string carries the discriminant and **no
+/// payload** — an `op_id_conflict` must not print the conflicting `OpId`, and
+/// no identifier-bearing field ever enters an error string (§K15). The typed
+/// payload stays available programmatically via [`CallError::as_wire`].
+fn wire_code(error: &ApiError) -> String {
+    serde_json::to_value(error)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("code")
+                .and_then(|code| code.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| String::from("unrenderable"))
 }
 
 impl CallError {
@@ -145,5 +162,29 @@ impl CallError {
 impl From<LocalError> for CallError {
     fn from(error: LocalError) -> Self {
         CallError::Local(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jeliya_api::OpId;
+
+    /// §K15: the rendered error carries the protocol code and no payload —
+    /// an `op_id_conflict` must not print the conflicting key.
+    #[test]
+    fn wire_error_display_redacts_identifier_payloads() {
+        let rendered = CallError::Wire(ApiError::OpIdConflict {
+            op_id: OpId::new("secret-dedup-key"),
+        })
+        .to_string();
+        assert!(
+            rendered.contains("op_id_conflict"),
+            "the protocol code is present: {rendered}"
+        );
+        assert!(
+            !rendered.contains("secret-dedup-key"),
+            "the dedup key leaked into the error string: {rendered}"
+        );
     }
 }
