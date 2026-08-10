@@ -5232,4 +5232,127 @@ mod tests {
             .expect("serve task");
         assert_eq!(state.transfer_pool.usage(), (0, 0));
     }
+
+    /// AC-5: a DATA payload that exceeds `MAX_STREAM_DATA_BYTES` (65 536) but whose
+    /// total frame fits within `max_frame_bytes` must produce a stream-local malformed
+    /// fault (ABORT + correlated `MalformedFrame` reply) — NOT the connection-closing
+    /// `CloseTooLarge` (4005) that an over-limit frame triggers.
+    ///
+    /// Concretely: 65 537-byte payload + 48-byte header = 65 585-byte frame < 100 000
+    /// max_frame_bytes, so the connection-level guard passes.  `decode_stream_record_view`
+    /// then returns `DataTooLarge`, which routes to `UploadIngress::malformed()`, not 4005.
+    #[tokio::test]
+    async fn websocket_data_too_large_within_frame_limit_aborts_stream_not_connection() {
+        const REQUEST_ID: u64 = 60;
+        const LARGE_FRAME_BYTES: usize = 100_000;
+        // 65 537 bytes payload + 48-byte header = 65 585-byte frame; fits in LARGE_FRAME_BYTES.
+        let over_limit_payload = vec![0_u8; jeliya_codec::MAX_STREAM_DATA_BYTES + 1];
+
+        let (_dir, state, existing) = file_state(b"seed", LARGE_FRAME_BYTES as u64).await;
+        let bounds = jeliya_codec::CodecBounds {
+            max_frame_bytes: LARGE_FRAME_BYTES,
+            ..jeliya_codec::CodecBounds::default()
+        };
+        let (mut client, server) = socket_pair(state).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": REQUEST_ID,
+                    "op": "file.share",
+                    "in": {
+                        "room_id": existing.room_id,
+                        "name": "data-too-large.bin",
+                        "declared_bytes": 1,
+                        "declared_content_type": "application/octet-stream",
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let Message::Binary(open) = client.next().await.unwrap().unwrap() else {
+            panic!("upload must open");
+        };
+        let identity = jeliya_codec::decode_stream_record(&open, &bounds)
+            .unwrap()
+            .identity;
+        // Consume the initial CREDIT without inspecting it.
+        assert!(matches!(
+            client.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+
+        // Send a DATA record whose payload is MAX_STREAM_DATA_BYTES + 1 bytes.
+        // Frame total (65 585) < LARGE_FRAME_BYTES (100 000): the connection-level
+        // FrameTooLarge guard MUST pass.  The codec's DataTooLarge check fires inside
+        // decode_stream_record_view → UploadIngress::malformed() → stream-local abort.
+        client
+            .send(Message::Binary(
+                stream_data_wire(
+                    REQUEST_ID,
+                    identity.stream_id().get(),
+                    0,
+                    &over_limit_payload,
+                )
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        // Daemon must emit a stream-local ABORT(ProtocolError), NOT close 4005 or 4007.
+        let Message::Binary(daemon_abort) = client.next().await.unwrap().unwrap() else {
+            panic!("DataTooLarge must produce daemon ABORT, not a connection close");
+        };
+        let daemon_abort = jeliya_codec::decode_stream_record(&daemon_abort, &bounds).unwrap();
+        assert_eq!(daemon_abort.identity, identity);
+        assert_eq!(
+            daemon_abort.body,
+            jeliya_codec::StreamRecordBody::Abort {
+                accepted_through: 0,
+                reason: jeliya_codec::BinaryAbortReason::ProtocolError,
+            }
+        );
+
+        // Client acknowledges the daemon's ABORT (accepted_through=0; ACK value sentinel 0x05).
+        client
+            .send(Message::Binary(
+                stream_wire(0x06, REQUEST_ID, identity.stream_id().get(), 0, 0x05).into(),
+            ))
+            .await
+            .unwrap();
+
+        // Daemon must send a correlated MalformedFrame Text reply on the JSON channel.
+        let Message::Text(terminal) = client.next().await.unwrap().unwrap() else {
+            panic!("stream-local malformed must produce a correlated Text MalformedFrame reply");
+        };
+        let terminal: jeliya_codec::Reply = serde_json::from_str(&terminal).unwrap();
+        assert_eq!(terminal.id, REQUEST_ID);
+        assert_eq!(terminal.err, Some(jeliya_api::ApiError::MalformedFrame));
+
+        // The connection must remain alive after a stream-local fault.
+        client
+            .send(Message::Text(
+                r#"{"id":61,"op":"subject.ensure","in":{}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(unrelated) = client.next().await.unwrap().unwrap() else {
+            panic!("stream-local fault must leave the connection usable, not trigger 4005/4007");
+        };
+        let unrelated: jeliya_codec::Reply = serde_json::from_str(&unrelated).unwrap();
+        assert!(
+            unrelated.ok,
+            "connection must serve unrelated requests after stream-local fault"
+        );
+
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("connection teardown")
+            .expect("serve task");
+    }
 }
