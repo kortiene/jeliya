@@ -13,7 +13,9 @@ audience: ["contributors", "maintainers", "release-engineers"]
 
 # Dioxus clean-slate architecture
 
-**Status: DECIDED 2026-07-27. M1 is complete; M2 entry is implemented.** Jeliya
+**Status: DECIDED 2026-07-27. M1's typed-API slices have landed (the #165,
+#166, and #233 remainders stay open); the M2 entry seam (#167) is
+implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
 stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
 protocol and storage generation, and retires React, Flutter, the Dart
