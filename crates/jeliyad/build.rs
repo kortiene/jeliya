@@ -50,6 +50,29 @@ fn main() {
     if !index.contains(".wasm") {
         fail("the embedded index.html does not load a wasm module — it is not the Dioxus shell");
     }
+    // The HTML referencing a wasm URL is not the same as the module being
+    // there: a marked-but-incomplete directory (wasm or JS glue deleted,
+    // marker and index intact) must fail the build, not ship a UI that 404s
+    // on every load. Require at least one non-empty .wasm and .js file.
+    let mut has_wasm = false;
+    let mut has_js = false;
+    if let Ok(entries) = std::fs::read_dir(&dist) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let nonempty = entry.metadata().map(|m| m.len() > 0).unwrap_or(false);
+            match path.extension().and_then(|e| e.to_str()) {
+                Some("wasm") if nonempty => has_wasm = true,
+                Some("js") if nonempty => has_js = true,
+                _ => {}
+            }
+        }
+    }
+    if !has_wasm {
+        fail("the embedded UI has no non-empty .wasm module — the artifact is incomplete");
+    }
+    if !has_js {
+        fail("the embedded UI has no non-empty .js bindgen glue — the artifact is incomplete");
+    }
     // Reject a React/Vite signature outright: a Vite dev entry, a Vite HMR
     // client, or a React source module must never be the embedded artifact.
     for signature in [

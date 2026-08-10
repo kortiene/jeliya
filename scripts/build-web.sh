@@ -56,8 +56,11 @@ fi
 # Honor an externally-set CARGO_TARGET_DIR (the determinism check builds each
 # sample in its own fresh dir); wasm-bindgen must read from the same one, or a
 # caller-set target dir would silently make it consume a stale default-path
-# artifact.
+# artifact. Exporting it also pins cargo itself: a user-level
+# `[build] target-dir` in $CARGO_HOME/config.toml would otherwise send the
+# compile elsewhere while this script reads the default path.
 target_dir="${CARGO_TARGET_DIR:-$repo/target}"
+export CARGO_TARGET_DIR="$target_dir"
 
 echo "==> cargo build --locked --release -p jeliya-ui --features web (wasm32)"
 cargo build --locked --release -p jeliya-ui --features web \
@@ -88,6 +91,13 @@ EOF
 
 echo
 echo "==> artifact ($out)"
-LC_ALL=C find "$out" -type f -printf '%10s  %P\n' | LC_ALL=C sort -k2
-total=$(find "$out" -type f -printf '%s\n' | awk '{t+=$1} END{print t}')
+# Portable size report: BSD find has no -printf, and stat's size flag differs
+# between GNU (-c%s) and BSD (-f%z); `wc -c` is POSIX everywhere.
+total=0
+while IFS= read -r file; do
+  size=$(wc -c < "$file" | tr -d ' ')
+  rel=${file#"$out"/}
+  printf '%10d  %s\n' "$size" "$rel"
+  total=$((total + size))
+done < <(LC_ALL=C find "$out" -type f | LC_ALL=C sort)
 printf '%10d  TOTAL\n' "$total"

@@ -97,6 +97,13 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
         // `app pane-${pane}`; so does this.
         div { class: "app pane-rooms", id: "app-root",
             nav { class: "sidebar", id: "sidebar",
+                // On compact viewports `pane-rooms` shows ONLY the sidebar
+                // (`.center` is hidden), so an empty room list must render an
+                // empty state here or a phone lands on a blank main area.
+                // Mirrors the React shell's `rooms-empty muted` element.
+                if snapshot.rooms.is_empty() {
+                    div { class: "rooms-empty muted", id: "rooms-empty", "No rooms yet" }
+                }
                 for room in snapshot.rooms.iter() {
                     RoomListItem {
                         key: "{room.room_id}",

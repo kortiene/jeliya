@@ -3,7 +3,7 @@ type: "Guide"
 title: "Dioxus web build and reproducibility"
 description: "The reproducible-build contract for the shared jeliya-ui crate (#176): the pinned toolchain, the deterministic wasm recipe, the single canonical artifact the daemon embeds, the build-time guard that rejects React output, and the development and production commands."
 tags: ["dioxus", "web", "build", "reproducibility", "clean-slate"]
-timestamp: "2026-08-10T00:00:00Z"
+timestamp: "2026-08-10T20:00:00Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "verified"
@@ -118,10 +118,22 @@ cargo build --release -p jeliyad --features embed-ui
 
 - `jeliya-ui`'s `PlatformServices` is a **provisional seam pending #174**; when
   #174 lands, the local seam is replaced by a re-export.
-- The **release-line cutover** (rewriting `scripts/check-release.mjs`'s
-  `embedded_ui` npm contract and the release `Build UI` job wholesale onto the
-  Dioxus toolchain) is **not** done here. #176 delivers the CI-canonical,
-  daemon-embeddable Dioxus build and the build-time guard; the sealed-manifest
-  schema is #183 and the React removal / release-line cutover is #200 (Open
-  Question O-2). `ui/` (React) stays intact and its per-client gates keep
-  running until then — no React artifact or build is *required* by #176.
+- The release `Build UI` step (`.github/workflows/release.yml`) **is** flipped
+  here to `scripts/build-web.sh` — required, because the fail-closed `embed-ui`
+  guard in `crates/jeliyad/build.rs` would otherwise abort every release daemon
+  build. What is **not** done here is the rest of the release-line cutover:
+  `scripts/check-release.mjs`'s `embedded_ui` npm contract and the
+  `scripts/realnet-evidence.mjs` fresh-source evidence build still record the
+  React `ui/dist` npm path — a fresh evidence run now fails closed at the embed
+  guard rather than signing evidence that mis-attests the embedded artifact —
+  and rewriting them onto the Dioxus toolchain is #183 (sealed-manifest and
+  attestation schema) / #200 (React removal, release-line cutover; Open
+  Question O-2). A release cut from `main` therefore embeds the mock-composed
+  foundation shell: it reaches `Ready` against the deterministic mock and
+  performs no daemon operation. That does not regress the release line — since
+  the protocol-v2 cutover the daemon is v2-only and refuses the v1 React UI
+  with `426 protocol_unsupported` at the handshake — and release-from-main
+  stays a non-functional product until the live browser transport (#168/#171)
+  and the sealed artifact (#183) land. `v0.6.0`, cut from its own tag, is
+  unaffected. `ui/` (React) stays intact and its per-client gates keep running
+  until #200 — no React artifact or build is *required* by #176.
