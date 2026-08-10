@@ -497,6 +497,59 @@ fn an_undrained_outbound_log_stays_bounded() {
     );
 }
 
+/// §K2/§K12: payloads held for replay across a reconnect re-enter the byte
+/// bound — new admissions during the backoff see the held bytes and refuse,
+/// so held work cannot retain memory outside every configured limit.
+#[test]
+fn replay_held_payloads_stay_within_the_byte_bound() {
+    let (handle, controller) = ready(KernelLimits {
+        outbound_bytes: 64,
+        in_flight: 4,
+        backoff_base: TickDelta::from_ticks(1),
+        backoff_cap: TickDelta::from_ticks(1),
+        ..KernelLimits::default()
+    });
+    // A replayable call with a large payload is sent (its admission charge
+    // was released at send time).
+    let held = handle.call::<RoomCreate>(
+        RoomCreate {
+            name: "x".repeat(40),
+        },
+        Dedup::Key(OpId::new("op-held")),
+    );
+    assert_eq!(controller.take_outbound().len(), 1);
+    // The connection drops: the call is held for replay and its bytes
+    // re-enter the bound.
+    controller.interrupt();
+    assert_eq!(controller.replay_held(), 1);
+    // A payload that would fit an empty bound is refused: held bytes count.
+    let refused = handle.call::<RoomCreate>(
+        RoomCreate {
+            name: "y".repeat(40),
+        },
+        Dedup::None,
+    );
+    let err = block_on(refused).expect_err("held bytes back-pressure new work");
+    assert!(
+        matches!(
+            err,
+            CallError::QueueFull {
+                resource: "outbound_bytes",
+                ..
+            }
+        ),
+        "expected the byte bound to refuse, got {err:?}"
+    );
+    // The reconnect re-sends the held call and releases its charge again.
+    controller.advance(1);
+    controller.connect();
+    let resent = controller.take_outbound();
+    assert_eq!(resent.len(), 1, "the held call re-sends");
+    controller.deliver_reply(resent[0].id, "{}");
+    let _ = block_on(held);
+    assert_eq!(controller.outstanding(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // In-flight throttle invariant (AC-1 / AC-7)
 // ---------------------------------------------------------------------------

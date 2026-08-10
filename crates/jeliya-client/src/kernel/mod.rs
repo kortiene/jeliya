@@ -413,7 +413,12 @@ impl ClientBackend for KernelBackend {
     }
 
     fn subscribe(&self) -> EventSubscription {
-        self.lock().bus.subscribe()
+        // Clone the bus under the Shared lock, register OUTSIDE it:
+        // broadcast holds the subscriber lock while invoking wakers that may
+        // re-enter Shared, so holding Shared while taking the subscriber
+        // lock would be an ABBA inversion.
+        let bus = { self.lock().bus.clone() };
+        bus.subscribe()
     }
 
     fn state(&self) -> State {

@@ -340,8 +340,21 @@ impl Core {
             }
         }
         for call_id in hold {
+            let mut recharge = None;
             if let Some(entry) = self.ledger.get_mut(call_id) {
                 entry.phase = Phase::Queued;
+                // A held payload re-enters the byte-bounded queue: re-charge
+                // its admission accounting (unchecked — held work cannot be
+                // refused) so new admissions during the backoff see the held
+                // bytes and the documented bound holds; without this, up to
+                // in_flight payloads escape the cap entirely.
+                if !entry.holds_charge {
+                    entry.holds_charge = true;
+                    recharge = Some(entry.payload_bytes);
+                }
+            }
+            if let Some(bytes) = recharge {
+                self.admission.charge_unchecked(bytes);
             }
             self.replay_hold.push_back(call_id);
         }
@@ -460,8 +473,11 @@ impl Core {
         }
         // 2. Stopping — new calls are refused from here (see on_dispatch).
         self.transition(State::Stopping, actions);
-        // 3. Drain queue and in-flight, settling each exactly once.
-        for (call_id, entry) in self.ledger.drain() {
+        // 3. Drain queue and in-flight, settling each exactly once, in
+        // CallId order so the reference trace is deterministic (§K13).
+        let mut drained = self.ledger.drain();
+        drained.sort_unstable_by_key(|(call_id, _)| *call_id);
+        for (call_id, entry) in drained {
             actions.push(Action::CancelTimer(entry.deadline_timer));
             if !entry.cancelled {
                 let execution = if entry.ever_sent {
@@ -556,6 +572,7 @@ impl Core {
                 replay,
                 deadline_timer,
                 deadline_at,
+                holds_charge: true,
                 phase: Phase::Queued,
                 ever_sent: false,
                 cancelled: false,
@@ -575,14 +592,15 @@ impl Core {
         };
         match entry.phase {
             Phase::Queued => {
-                let ever_sent = entry.ever_sent;
+                let holds_charge = entry.holds_charge;
                 let payload_bytes = entry.payload_bytes;
                 let deadline_timer = entry.deadline_timer;
                 self.ledger.take(call_id);
                 self.queue.retain(|&queued| queued != call_id);
                 self.replay_hold.retain(|&held| held != call_id);
-                // A never-sent queued call still holds its admission charge.
-                if !ever_sent {
+                // A queued call (never-sent, or held for replay) still holds
+                // its admission charge.
+                if holds_charge {
                     self.admission.release(payload_bytes);
                 }
                 actions.push(Action::CancelTimer(deadline_timer));
@@ -629,13 +647,13 @@ impl Core {
             // now, mirroring the queued-timeout branch of `on_timer_fired`.
             if let Some(entry) = self.ledger.get(call_id) {
                 if entry.deadline_at <= now {
-                    let ever_sent = entry.ever_sent;
+                    let holds_charge = entry.holds_charge;
                     let payload_bytes = entry.payload_bytes;
                     let deadline_timer = entry.deadline_timer;
                     let cancelled = entry.cancelled;
                     self.ledger.take(call_id);
                     self.replay_hold.retain(|&held| held != call_id);
-                    if !ever_sent {
+                    if holds_charge {
                         self.admission.release(payload_bytes);
                     }
                     actions.push(Action::CancelTimer(deadline_timer));
@@ -654,7 +672,7 @@ impl Core {
                     .request_id()
             };
             let generation = self.generation.current();
-            let (frame, first_send) = match self.ledger.get(call_id) {
+            let (frame, holds_charge, payload_bytes) = match self.ledger.get(call_id) {
                 Some(entry) => (
                     WireFrame {
                         id: request_id,
@@ -662,18 +680,22 @@ impl Core {
                         op_id: entry.op_id.clone(),
                         input: entry.input.clone(),
                     },
-                    !entry.ever_sent,
+                    entry.holds_charge,
+                    entry.payload_bytes,
                 ),
                 None => continue,
             };
             self.ledger.mark_sent(call_id, request_id, generation);
-            // On its first send a call leaves the queue: release its admission
-            // charge so the byte cap tracks queued-outbound only. A held
-            // replayable re-send (ever_sent already true) was released before.
-            if first_send {
-                if let Some(entry) = self.ledger.get(call_id) {
-                    self.admission.release(entry.payload_bytes);
+            // On send a call leaves the byte-bounded queue: release its
+            // admission charge so the cap tracks queued-outbound only. The
+            // charge flag covers both the first send and a held-replay
+            // re-send (re-charged at hold time), so the accounting is exact
+            // in both directions.
+            if holds_charge {
+                if let Some(entry) = self.ledger.get_mut(call_id) {
+                    entry.holds_charge = false;
                 }
+                self.admission.release(payload_bytes);
             }
             self.in_flight_count += 1;
             actions.push(Action::Send(frame));
@@ -758,12 +780,12 @@ impl Core {
         let Some(call_id) = self.ledger.find_by_deadline(timer) else {
             return; // already cancelled
         };
-        let (is_sent, cancelled, ever_sent, payload_bytes) = {
+        let (is_sent, cancelled, holds_charge, payload_bytes) = {
             let entry = self.ledger.get(call_id).expect("found by deadline");
             (
                 entry.is_sent(),
                 entry.cancelled,
-                entry.ever_sent,
+                entry.holds_charge,
                 entry.payload_bytes,
             )
         };
@@ -799,7 +821,7 @@ impl Core {
             self.ledger.take(call_id);
             self.queue.retain(|&queued| queued != call_id);
             self.replay_hold.retain(|&held| held != call_id);
-            if !ever_sent {
+            if holds_charge {
                 self.admission.release(payload_bytes);
             }
             if !cancelled {

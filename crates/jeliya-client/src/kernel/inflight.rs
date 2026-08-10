@@ -65,6 +65,11 @@ pub(crate) struct Entry {
     pub(crate) deadline_at: Tick,
     /// Queued vs sent, with the sent stamp.
     pub(crate) phase: Phase,
+    /// Whether the admission accountant currently carries this call's byte
+    /// charge: true from admission until the (re-)send releases it, and set
+    /// again when a sent call is held for replay across a reconnect, so held
+    /// payloads never escape the byte bound (§K2/§K12).
+    pub(crate) holds_charge: bool,
     /// Set once the call has been on the wire at least once — the
     /// never-sent/may-have-executed discriminant for disconnect and stop
     /// settlement (§K6).
@@ -222,6 +227,7 @@ mod tests {
             replay: ReplayPolicy::Never,
             deadline_timer: TimerId(0),
             deadline_at: Tick(u64::MAX),
+            holds_charge: true,
             phase: Phase::Queued,
             ever_sent: false,
             cancelled: false,
