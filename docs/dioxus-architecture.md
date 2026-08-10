@@ -3,7 +3,7 @@ type: "Decision"
 title: "Dioxus clean-slate architecture"
 description: "Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, the protocol and storage generation it defines, the single embedded web artifact every daemon target ships, and the retirement of React, Flutter, the Dart protocol package, and the C ABI."
 tags: ["architecture", "clean-slate", "dioxus", "protocol", "release"]
-timestamp: "2026-07-28T02:20:00Z"
+timestamp: "2026-08-10T00:00:00Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -378,7 +378,8 @@ record, a new threat model, and a separately approved backlog** (#113,
 - **Performance budgets** — #198.
 - **Legal, privacy, and compliance gates for public distribution** — #118.
 - **Native update channels, signing trust, and anti-rollback policy** —
-  #121.
+  #121, now decided in the
+  [native update, signing, and anti-rollback policy](native-update-policy.md).
 - **What replaces the retired cross-client design-token, localization, and
   accessibility gates** — #177, #197. Retiring React and Flutter removes
   working enforcement before its replacement exists; that verification loss

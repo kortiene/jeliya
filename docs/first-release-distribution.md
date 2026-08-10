@@ -180,7 +180,7 @@ the two that survive are reframed rather than inherited.
 | #122 | Closed — filesystem confinement is fixed, and protocol v2 removed daemon paths from the wire entirely |
 | #126 | Closed — the surviving unsafe-boundary criterion moved to #203 |
 | **#118** | **Retained** as the public-publication legal and compliance gate |
-| **#121** | **Retained, reframed** around native update-channel trust, signing, and anti-rollback — with no compatibility window, mixed-version period, or N/N-1 behavior, none of which a single-generation clean slate has |
+| **#121** | **Retained, reframed** around native update-channel trust, signing, and anti-rollback — with no compatibility window, mixed-version period, or N/N-1 behavior, none of which a single-generation clean slate has. Now decided in the [native update, signing, and anti-rollback policy](native-update-policy.md). |
 
 ## What this record does not decide
 

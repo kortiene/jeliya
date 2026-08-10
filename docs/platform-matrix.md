@@ -3,7 +3,7 @@ type: "Status Report"
 title: "Platform matrix"
 description: "Implementation, verification, packaging, and release status for every Jeliya runtime and target platform."
 tags: ["dioxus", "packaging", "platforms", "release", "verification"]
-timestamp: "2026-07-27T22:58:56Z"
+timestamp: "2026-08-10T00:00:00Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "partial"
@@ -94,6 +94,15 @@ extending the certified v0.6.0 rows above.
 | Linux | WebKitGTK | minimum glibc and WebKitGTK floors to be enforced, build and runtime dependencies pinned, and the actual linked system libraries recorded in package evidence | planned, unverified, unreleased (#187) |
 | Windows | WebView2 | **not yet a committed target** — #188 must explicitly include *or formally defer* Windows, and the supported Windows versions plus the evergreen or fixed-runtime policy are recorded only there | scope undecided; planned, unverified, unreleased (#188) |
 | Android | system WebView, with `DirectClient` running `jeliya-core` in process — no socket, token, or portfile on that path | **none decided** — the WebView version is captured as device evidence only, and no floor or evergreen policy exists | planned, unverified, unreleased; open gap (#160, #194) |
+
+The published native channel for every target row above — its updater or
+no-updater decision, signing trust, anti-rollback rule, and fail-closed update
+UX — is governed by the
+[native update, signing, and anti-rollback policy](native-update-policy.md). Its
+per-channel update-case evidence (current, older, newer, revoked, tampered,
+offline, interrupted, downgrade) is **enforced evidence, not certification**,
+and a missing per-channel update gate blocks only that channel's publication row
+(#199); it withholds no other row.
 
 Treating Windows as a supported target because a bundle command runs is an
 explicit non-goal, and the desktop qualification matrix is blocked on #188
