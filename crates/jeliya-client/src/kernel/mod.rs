@@ -317,6 +317,21 @@ struct Runtime {
 }
 
 impl Runtime {
+    /// Enqueue one deferred batch for serialized delivery — called while the
+    /// `Shared` lock is held so queue order equals drive order. An empty
+    /// batch (no wakes, no completion notification) is skipped on EVERY
+    /// path, so no input shape can grow the queue behind an active drainer
+    /// without deliverable work.
+    fn enqueue(&self, deferred: Deferred) {
+        if deferred.is_empty() {
+            return;
+        }
+        self.delivery
+            .lock()
+            .expect("delivery queue poisoned")
+            .push_back(deferred);
+    }
+
     /// Drain the delivery queue as the single drainer. If another thread is
     /// already draining, it will deliver our batch too (it re-checks after
     /// clearing the flag), preserving FIFO order.
@@ -371,15 +386,7 @@ impl KernelBackend {
         {
             let mut shared = self.lock();
             let deferred = shared.drive(input);
-            // An empty batch delivers nothing: skip the queue so idempotent
-            // no-op inputs cannot grow it behind a stalled drainer.
-            if !deferred.is_empty() {
-                self.runtime
-                    .delivery
-                    .lock()
-                    .expect("delivery queue poisoned")
-                    .push_back(deferred);
-            }
+            self.runtime.enqueue(deferred);
         }
         self.runtime.drain_delivery();
     }
@@ -395,11 +402,7 @@ impl ClientBackend for KernelBackend {
             // (QueueFull, post-stop) settles into a live channel.
             shared.senders.insert(call_id, sender);
             let deferred = shared.drive(Input::Dispatch { call_id, call });
-            self.runtime
-                .delivery
-                .lock()
-                .expect("delivery queue poisoned")
-                .push_back(deferred);
+            self.runtime.enqueue(deferred);
             (receiver, call_id)
         };
         self.runtime.drain_delivery();
@@ -433,11 +436,7 @@ impl ClientBackend for KernelBackend {
             let mut shared = self.lock();
             let mut deferred = shared.drive(Input::Stop);
             deferred.done = Some(done_tx);
-            self.runtime
-                .delivery
-                .lock()
-                .expect("delivery queue poisoned")
-                .push_back(deferred);
+            self.runtime.enqueue(deferred);
         }
         self.runtime.drain_delivery();
         Box::pin(async move {
@@ -487,11 +486,7 @@ impl Drop for DispatchFuture {
                 let drove = match runtime.shared.lock() {
                     Ok(mut shared) => {
                         let deferred = shared.drive(Input::Cancel(call_id));
-                        runtime
-                            .delivery
-                            .lock()
-                            .expect("delivery queue poisoned")
-                            .push_back(deferred);
+                        runtime.enqueue(deferred);
                         true
                     }
                     Err(_) => false,
@@ -582,11 +577,7 @@ mod in_memory {
             {
                 let mut shared = self.lock();
                 let deferred = shared.drive(input);
-                self.runtime
-                    .delivery
-                    .lock()
-                    .expect("delivery queue poisoned")
-                    .push_back(deferred);
+                self.runtime.enqueue(deferred);
             }
             self.runtime.drain_delivery();
         }
@@ -645,11 +636,7 @@ mod in_memory {
                     .pending_dial()
                     .expect("connect() with no dial in progress");
                 let deferred = shared.drive(Input::Connected { token });
-                self.runtime
-                    .delivery
-                    .lock()
-                    .expect("delivery queue poisoned")
-                    .push_back(deferred);
+                self.runtime.enqueue(deferred);
                 shared.core.generation()
             };
             self.runtime.drain_delivery();
@@ -667,11 +654,7 @@ mod in_memory {
                     shared.dialing = false;
                 }
                 let deferred = shared.drive(Input::Connected { token });
-                self.runtime
-                    .delivery
-                    .lock()
-                    .expect("delivery queue poisoned")
-                    .push_back(deferred);
+                self.runtime.enqueue(deferred);
             }
             self.runtime.drain_delivery();
         }
@@ -800,11 +783,7 @@ mod in_memory {
                         Some(id) => {
                             shared.timers.remove(&id);
                             let deferred = shared.drive(Input::TimerFired(id));
-                            self.runtime
-                                .delivery
-                                .lock()
-                                .expect("delivery queue poisoned")
-                                .push_back(deferred);
+                            self.runtime.enqueue(deferred);
                             true
                         }
                         None => false,
