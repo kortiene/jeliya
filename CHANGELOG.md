@@ -39,9 +39,14 @@
   - **Exactly-once settlement.** A take-once in-flight ledger makes duplicate,
     late, and malformed replies structurally unable to strand a call or
     double-settle it.
-  - **Replay only where guaranteed.** Only `mutating && op_id.is_some()` calls
-    earn `ReplayPolicy::ReplayableUnderOpId`; every other call is
-    `ReplayPolicy::Never` and never auto-replays across a reconnect.
+  - **Replay only where guaranteed.** Four gates, ALL required: the call is
+    mutating, carries a caller `op_id`, names an operation in the protocol's
+    13-operation `op_id`-deduplicated set, and the driver certifies dedup-scope
+    continuity (`KernelConfig::stable_principal` — stable `client_id` AND same
+    daemon incarnation; **default off**). Everything else is
+    `ReplayPolicy::Never` and settles a disconnect honestly as
+    `Disconnected { Unknown }` — a keyed `daemon.stop` never replays, and
+    nothing replays under the default configuration.
   - **Honest post-send uncertainty.** Connection loss classifies outstanding
     work as `Execution::DefinitelyNot` (never-sent) or `Execution::Unknown`
     (may-have-executed) by consulting each call's `sent` state in the ledger.

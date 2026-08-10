@@ -227,14 +227,14 @@ Every internal collection has a static or configured bound:
 
 | Structure | Bound |
 |---|---|
-| outbound queue (count, incl. sent-replayable reservations) | `queue_depth` |
+| outbound queue (count) | `queue_depth` for admissions; a sent replayable frees its count slot (in-flight throttles, never rejects) and a hold restores it, so during a backoff the unsent count may transiently reach `queue_depth` + held replayables (≤ `in_flight`) — held work cannot be refused; new admissions are |
 | outbound queue (bytes, incl. sent-replayable reservations) | `outbound_bytes` — a replayable call retains its charge while sent (the requeue reservation), released at settle |
 | sent-and-awaiting calls (the in-flight throttle) | `in_flight` |
 | ledger (queued + sent + tombstones) | ≤ `queue_depth` + 2·`in_flight` — every queued call holds a ledger entry from admission, so the ledger is a composite, not `in_flight` alone |
 | tombstones (cancelled-but-id-reserved) | ≤ `in_flight` (a FIFO budget: creating one past it evicts the oldest; reclaimed on reply/deadline) |
 | replay-hold set | ≤ `in_flight` (only replayable sent calls) |
 | armed timers | ≤ `queue_depth` + 2·`in_flight` + 1 — one deadline/reclaim timer per ledger entry (queued calls arm theirs at dispatch), plus the single backoff timer |
-| per-subscription event buffer | `DEFAULT_FANOUT_CAPACITY` (existing, with `Lagged` overflow) |
+| per-subscription event buffer | `DEFAULT_FANOUT_CAPACITY` + a small additive control/loss allowance: one bypass `StateChanged`, the at-most-once terminal transitions (`Stopping`/`Stopped`/`Failed`), and their adjacent `Lagged` markers — the flapping test pins ≤ capacity + 3 |
 | reconnect attempts | `max_attempts` |
 
 There is no map keyed by an unbounded external input (no per-room, per-push, or per-generation accumulation). A fault test drives saturation + repeated flap + cancel churn and asserts no collection exceeds its bound across thousands of `step`s.
