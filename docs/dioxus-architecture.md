@@ -15,7 +15,7 @@ audience: ["contributors", "maintainers", "release-engineers"]
 
 **Status: DECIDED 2026-07-27. M1's typed-API slices have landed (the #165,
 #166, and #233 remainders stay open); the M2 entry seam (#167) is
-implemented.** Jeliya
+implemented; the M3 web foundation (#176) is implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
 stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
 protocol and storage generation, and retires React, Flutter, the Dart
@@ -342,6 +342,25 @@ That costs nothing on loopback and is a real input to #183 and #113 wherever
 the same artifact travels further, since compressing this spike's wasm alone
 removed 61% of it.
 
+**What #176 landed (the M3 web foundation).** The production `crates/jeliya-ui`
+crate now exists as a workspace member, with `dioxus` pinned (`=0.7.9`) and the
+renderer kept optional and feature-gated so the default and MSRV `--workspace`
+builds carry no Dioxus and no OpenSSL. It consumes `jeliya-api` view models,
+`jeliya-client::ClientHandle` (driven by the deterministic mock — it opens no
+socket), an injected `PlatformServices` seam, and the canonical `ui/src/styles.css`,
+composing per target only at the crate root. The one reproducible artifact
+(`crates/jeliya-ui/dist`) is built by `scripts/build-web.sh` and byte-identical
+across two clean builds; its wasm graph excludes Iroh and every native crate at
+the lockfile level; the daemon embeds it through `embed-ui` behind a build-time
+guard that fails closed on React/Vite output. The reproducible-build contract,
+pinned versions, and commands are `docs/dioxus-web-build.md`. Two boundaries
+stay honest here: `jeliya-ui`'s `PlatformServices` is a **provisional seam
+pending #174** (adopted mechanically when #174's trait lands), and #176 does
+**not** remove React or flip the tagged-release line — the sealed content-addressed
+manifest is #183, the Dioxus-side token gate is #177, and React removal / the
+release-line cutover is #200. `ui/` and its per-client gates stay intact until
+then (Decision 5).
+
 Two further open questions are decisions rather than measurements, and neither
 waits on a spike. #92 selects the v2 shared-file maximum in M0 so that #161 can
 specify the protocol — the 100 MiB v1 limit is a reference, and deferring the
@@ -413,6 +432,7 @@ The slices that carry this record:
 | #162 | The required cross-platform product behavior contract — recorded as the [product behavior contract](product-behavior-contract.md). | Landed |
 | #163 | The Iroh-free `jeliya-api` contract. | Landed |
 | #167 | The lifecycle-aware client seam (`crates/jeliya-client`) and its deterministic mock. | Landed |
+| #176 | The shared `jeliya-ui` crate: pinned Dioxus 0.7, reproducible wasm artifact, daemon embed guard, and Iroh-free dependency graph. Documented in [Dioxus web build and reproducibility](dioxus-web-build.md). | Landed |
 | #174 | Injectable `PlatformServices`. | Planned |
 | #183 | The one content-addressed embedded artifact. | Planned |
 | #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |

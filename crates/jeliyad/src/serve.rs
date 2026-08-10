@@ -32,11 +32,18 @@ use tokio_tungstenite::WebSocketStream;
 
 use crate::{host_header_is_loopback, is_local_origin, AppState};
 
-/// UI assets embedded at build time from `ui/dist`. Only compiled for the
-/// `embed-ui` (packaged) build; a plain `cargo build` daemon bundles no UI.
+/// UI assets embedded at build time from the ONE canonical Dioxus artifact
+/// (`crates/jeliya-ui/dist`, produced by `scripts/build-web.sh`) — **not**
+/// `ui/dist` (React), so the two outputs can never be confused and React has no
+/// path into the daemon (#176 §9). Only compiled for the `embed-ui` (packaged)
+/// build; a plain `cargo build` daemon bundles no UI. `build.rs` runs a
+/// build-time guard first: it fails the `embed-ui` build if the embedded folder
+/// is missing the Dioxus artifact marker or carries a React/Vite signature.
+/// #183 later hardens this into a content-addressed sealed manifest with a
+/// runtime legacy-rejection.
 #[cfg(feature = "embed-ui")]
 #[derive(rust_embed::RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../ui/dist"]
+#[folder = "$CARGO_MANIFEST_DIR/../jeliya-ui/dist"]
 struct UiAssets;
 
 /// Where the daemon serves the web UI from.

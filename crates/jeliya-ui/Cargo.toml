@@ -1,0 +1,77 @@
+[package]
+name = "jeliya-ui"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared Dioxus 0.7 UI crate for the Jeliya clean-slate stack (#176): the production-shaped, system-WebView-targeted component library and application root that consumes jeliya-api view models, the jeliya-client ClientHandle seam, and an injected PlatformServices boundary, with target composition selected only at the crate root. The browser (wasm32) graph is Iroh-free and native-free; the renderer is optional and feature-gated so the default build carries no Dioxus, no OpenSSL, and compiles on the workspace MSRV."
+
+[features]
+# Deliberately empty. The default build is host-compilable on the workspace
+# MSRV (1.91), renderer-free and OpenSSL-free: it pulls no Dioxus, so the
+# `cargo check --locked --workspace --all-targets` MSRV job and every existing
+# host-target job compile `jeliya-ui` to (essentially) nothing and never need
+# `libssl-dev`. The shared component library, the app root, and the state
+# model all live behind the `ui` feature — exactly the discipline
+# `jeliya-client` uses for its verification component (`example`).
+default = []
+
+# The shared, renderer-agnostic UI surface: RSX components, `app_root`, the
+# view-model state fold, and the provisional `PlatformServices` seam. It pulls
+# the OPTIONAL `dioxus` dependency with only `minimal` (macro + signals +
+# hooks + html) so the components link on native and wasm32 alike WITHOUT a
+# renderer, `tao`/`wry`, or OpenSSL. It also enables `jeliya-client`'s
+# deterministic mock, because #176 renders against the mock (the reference
+# behaviour) — the real browser transport (`WsWeb`) is #168 and slots in
+# behind the same `ClientHandle` later.
+ui = ["dep:dioxus", "dioxus/minimal", "dep:futures", "jeliya-client/mock"]
+
+# The browser DOM renderer. Built ONLY for `wasm32-unknown-unknown`, in the
+# dedicated web job. It adds `dioxus/web` on top of `ui`; it must never pull
+# `dioxus-desktop`/`wry`/`tao`/`tokio`/`openssl-sys` (asserted by
+# `scripts/check-jeliya-ui-wasm-graph.sh`).
+web = ["ui", "dioxus/web"]
+
+# The system-WebView shell target (M4: #186-#189). This slice defines the
+# layering seam — a `native` composition exists and is selected at the root —
+# but does NOT build or ship it. The concrete system-WebView renderer
+# (`dioxus-desktop`, which declares `tungstenite` with `native-tls` and so
+# links `openssl-sys` non-optionally for every non-Android target) is wired in
+# by the M4 packaging slices, deliberately kept out of the default and
+# CI-workspace graphs so no host job regresses or needs system OpenSSL headers.
+native = ["ui"]
+
+[dependencies]
+# All request/output/push/error/view-model types come from jeliya-api. This
+# crate defines no second spelling of any wire type. jeliya-api is already
+# wasm32-clean (no Iroh/WebSocket/Dioxus, no `serde_json::Value` in public
+# types), so it links in the browser graph by construction.
+jeliya-api = { path = "../jeliya-api" }
+# The single UI-facing client contract: the cloneable, lifecycle-aware
+# `ClientHandle`. Transport-independent and wasm32-safe; `#176` drives it with
+# the deterministic mock (enabled by the `ui` feature). No Iroh, no WebSocket,
+# no native transport enters through it.
+jeliya-client = { path = "../jeliya-client" }
+# Optional and feature-gated, exactly like `jeliya-client`'s example dep, so a
+# bare `cargo check --all-targets` (MSRV + clippy) never compiles a renderer.
+# `default-features = false` keeps the base graph minimal; the `ui`/`web`
+# features select `minimal`/`web` explicitly. Pinned to the 0.7.9 line the
+# architecture record selects and the root `Cargo.lock` already resolves.
+dioxus = { version = "=0.7.9", default-features = false, optional = true }
+# Executor-agnostic, wasm32-safe async primitives for the app root's event
+# consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
+# graph (already carrying `futures` via `jeliya-client`) is unchanged.
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
+
+# Underscored so the cargo artifact, the wasm-bindgen module, and the import in
+# `index.html` all agree on one name (the #158 spike's convention).
+[[bin]]
+name = "jeliya_ui_web"
+path = "src/bin/web.rs"
+# The browser entry point launches the DOM renderer, so it only exists when the
+# `web` feature (and thus `dioxus/web`) is enabled. `--all-targets` on the MSRV
+# and clippy jobs skips it because its required feature is off there.
+required-features = ["web"]
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Jeliya</title>
+    <!-- The one canonical stylesheet, consumed from `ui/src/styles.css` (§7).
+         `scripts/build-web.sh` injects it as `./styles.css`; a CI byte-equality
+         guard keeps the served copy identical to its single source so it cannot
+         drift. This replaces `ui/index.html`'s React `<script src=.../main.tsx>`;
+         a Vite/React signature here would fail the daemon embed guard (§9). -->
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="main"></div>
+    <script type="module">
+      import init from './jeliya_ui_web.js';
+      init({ module_or_path: './jeliya_ui_web_bg.wasm' });
+    </script>
+  </body>
+</html>
