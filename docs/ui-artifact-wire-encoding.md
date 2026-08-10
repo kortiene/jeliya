@@ -49,6 +49,27 @@ compressor at request time.** When the client offers no encoding whose variant i
 sealed, the daemon serves the canonical uncompressed bytes; this is ordinary
 negotiation, not degradation.
 
+Two negotiation corners are decided deliberately, so neither reads as an
+oversight:
+
+- **Nonzero quality weights do not reorder the daemon's preference.** `q=0`
+  excludes a coding; among the codings that remain acceptable, the daemon's own
+  order — Brotli, then gzip, then identity — decides, even for a request such as
+  `Accept-Encoding: gzip;q=1, br;q=0.1`. RFC 9110 §12.1 permits an origin server
+  to serve against the client's stated preference, this is the established
+  behavior of pre-compressed static serving (nginx `gzip_static`/`ngx_brotli`),
+  and weight-ranking would be underspecified anyway: canonical bytes are usually
+  *unlisted* and acceptable only by default, so they carry no weight to rank
+  against.
+- **A request that excludes identity is still served canonical.** For
+  `Accept-Encoding: identity;q=0` or `*;q=0` with no sealed coding acceptable,
+  the daemon deliberately exercises RFC 9110 §12.4.1's option to **disregard the
+  header** rather than send 406. A 406 branch would serve no shipped client (no
+  browser or WebView emits this shape), would fork behavior between a sealed
+  daemon and the manifest-less dev directory (which has nothing sealed and would
+  406 on everything), and would blur the line this record draws: a negotiation
+  shortfall serves canonical; only a sealed-but-corrupt variant refuses.
+
 Why sealing rather than on-the-fly, which is the crux the issue names: #183
 requires the artifact to be **content-addressed and byte-identical across every
 target**. Compressing at request time makes the served bytes a function of the
@@ -96,7 +117,8 @@ built artifact directory (the one `dx`/#183 produces, manifest included) behaves
 **byte-for-byte identically** to an `embed-ui` daemon. This is the property that
 keeps a development build from masking a packaging bug: the negotiation, the
 `Content-Encoding`, and the fail-closed hash check are exercised on every source,
-not just the packaged one.
+not just the packaged one. (What the hash check *proves* differs by source — see
+[Fail-closed integrity](#fail-closed-integrity).)
 
 A `--ui-dir` pointed at a bare directory that carries **no manifest** is a
 distinct, dev-only state: it has no sealed variants and no sealed digests, so the
@@ -134,16 +156,30 @@ is the honest "nothing was sealed" answer.
   and sealed at build; for `Dir`, the variant file is read from disk and a
   developer could have edited it, so the read bytes are hashed against the
   manifest **before** serving.
+- **What that check proves differs by source, stated rather than implied.** For
+  `Embedded`, the manifest is authenticated transitively by the integrity of the
+  daemon binary, so a mismatch is genuine tamper or packaging evidence. For
+  `Dir`, the manifest is read from the same operator-supplied directory as the
+  variants, so the check detects **corruption and manifest-file skew** (a partial
+  copy, a stale variant, a hand-edited file) — not adversarial tampering: a
+  writer who can edit the directory can rewrite a variant *and* its manifest
+  entry together, exactly as they could rewrite the canonical bytes themselves.
+  `--ui-dir` is an operator-trusted source. If a deployment ever requires an
+  *authenticated* directory artifact, the manifest itself must first be verified
+  against an externally pinned digest — a future decision under #183's
+  provenance remit, not a property this record claims.
 - A requested-and-sealed encoding whose variant is **missing, or whose bytes do
   not match the sealed digest**, is a fail-closed error (a 5xx with an
   `internal`-class body) — **not** a silent fall-through to the uncompressed bytes
-  and **not** a fall-through to a different encoding. This is the same posture
+  and **not** a fall-through to a different encoding. This borrows the posture
   [#113 already requires](first-release-distribution.md) of a legacy artifact
-  ("fails closed; it does not fall back, and it does not serve what it has"),
-  applied to the variant.
+  ("fails closed; it does not fall back, and it does not serve what it has");
+  the trust root behind the check is build-pinned for `Embedded` and
+  operator-supplied for `Dir`, per the previous bullet.
 - The distinction drawn sharply: *no offered encoding is sealed* → serve canonical
   (normal negotiation). *An offered encoding is sealed but its bytes are
-  corrupt/absent* → fail closed (tamper/packaging detection).
+  corrupt/absent* → fail closed (tamper/packaging detection for `Embedded`,
+  corruption/skew detection for `Dir`).
 
 ## Measured sizes for the bundle budget
 
@@ -233,8 +269,10 @@ its sealed variants, and the manifest carries shared provenance:
 - Give `UiSource` access to the parsed manifest for both variants — compiled-in
   for `Embedded`, loaded from the `--ui-dir` for `Dir`.
 - Change the load/serve path so `serve_static` negotiates: parse `Accept-Encoding`
-  (honour `q=0` to exclude a coding; ignore unknown codings), pick Brotli, then
-  gzip, then identity among **sealed** codings, hash the chosen variant against
+  (`q=0` excludes a coding; unknown codings are ignored; nonzero weights do
+  **not** reorder), pick Brotli, then gzip, then identity among **sealed**
+  codings the client accepts — an empty acceptable set serves canonical, never
+  406 — hash the chosen variant against
   the sealed digest, and build the response with `Content-Type` (decoded type),
   `Content-Encoding` (when not identity), the encoded `Content-Length` (set
   automatically from the served in-memory bytes), and `Vary: Accept-Encoding`.
@@ -259,6 +297,21 @@ directory — request the **root document, the wasm, the JS, and the stylesheet*
 - No `Accept-Encoding` → assert **no** `Content-Encoding`, body equals the
   canonical bytes, SHA-256 equals `identity.digest`.
 - `Accept-Encoding: br;q=0, gzip` → assert gzip chosen, not br.
+- `Accept-Encoding: gzip;q=1, br;q=0.5` → assert **br** chosen: nonzero weights
+  do not reorder the daemon's preference (the recorded RFC 9110 §12.1 stance).
+- `Accept-Encoding: identity;q=0` (no sealed coding offered) → assert `200`,
+  canonical bytes, **no** `Content-Encoding`: the recorded RFC 9110 §12.4.1
+  disregard-the-header stance, pinned so an implementer does not "helpfully"
+  add a 406.
+- **Every entry, every coding:** iterate the manifest's **own entry list** (never
+  a hard-coded path set) and, for each asset entry and each sealed coding **plus
+  identity**, on **both** sources, request the asset over HTTP and assert the
+  decoded body's SHA-256 equals `identity.digest`. The four named types above
+  stay the behavioral subset (headers, weights, fail-closed); this row proves the
+  universal claim that every sealed variant decodes to its canonical identity —
+  which neither the served-bytes-vs-variant-digest check (self-consistent even
+  when the sealed variant is wrong) nor #183's cross-target diff (a deterministic
+  generation defect passes identically everywhere) proves on its own.
 - **Fail-closed:** with a variant deliberately corrupted or removed from the
   source, a request offering that sealed encoding returns a **5xx**, never a
   `200` with uncompressed bytes and never a different encoding.
