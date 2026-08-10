@@ -323,7 +323,6 @@ mod in_memory {
     use super::*;
     use jeliya_api::{ApiError, RequestId};
 
-    use crate::event::ClientEvent;
     use crate::handle::ClientHandle;
     use crate::kernel::transport::{Inbound, WireReply};
 
@@ -472,17 +471,20 @@ mod in_memory {
             }));
         }
 
-        /// Deliver a live push on the current generation.
-        pub fn deliver_push(&self, event: ClientEvent) {
+        /// Deliver a live wire push on the current generation. Takes the
+        /// **protocol shape** (`jeliya_api::Push`): the wire can only produce
+        /// protocol pushes, so lifecycle transitions and local-overflow
+        /// signals cannot be fabricated through this path even in tests.
+        pub fn deliver_push(&self, push: jeliya_api::Push) {
             let generation = self.generation();
-            self.deliver_push_at_generation(event, generation);
+            self.deliver_push_at_generation(push, generation);
         }
 
         /// Deliver a push tagged with an explicit generation — used to prove a
         /// stale-generation push is fenced.
-        pub fn deliver_push_at_generation(&self, event: ClientEvent, generation: u64) {
+        pub fn deliver_push_at_generation(&self, push: jeliya_api::Push, generation: u64) {
             self.lock()
-                .drive(Input::Inbound(Inbound::Push { generation, event }));
+                .drive(Input::Inbound(Inbound::Push { generation, push }));
         }
 
         /// Deliver a frame that parses to no envelope: it must strand nothing.

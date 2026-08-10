@@ -14,7 +14,6 @@ use std::task::{Context, Poll};
 use jeliya_api::{ApiError, OpId, RequestId};
 
 use crate::backend::RawJson;
-use crate::event::ClientEvent;
 use crate::kernel::diag::Redacted;
 use crate::kernel::timing::Tick;
 
@@ -62,6 +61,13 @@ pub(crate) enum WireReply {
 /// One inbound frame the driver hands the core, tagged with the connection
 /// generation it arrived on so the core can fence stale-generation traffic
 /// (§K7).
+///
+/// **Runtime scope (§K13):** the kernel defines this seam and ships only the
+/// deterministic in-memory driver behind `test-transport`; the async runtime
+/// loop that binds a real `Driver`'s transport, clock, and dialer to the core
+/// — and the public construction path for it — lands with the first adapter
+/// slice (#171), which consumes these types. The kernel deliberately
+/// implements none of the three real transports.
 pub(crate) enum Inbound {
     /// A reply correlated by `id`.
     Reply {
@@ -72,12 +78,18 @@ pub(crate) enum Inbound {
         /// The reply body.
         result: WireReply,
     },
-    /// A live push (already lifted into the seam's [`ClientEvent`] model).
+    /// A live push, still in its **protocol shape** (`jeliya_api::Push`). The
+    /// lift into the seam's [`crate::event::ClientEvent`] model happens
+    /// inside the core: the
+    /// wire can only produce protocol pushes, so lifecycle transitions and
+    /// local-overflow signals are unrepresentable through this path — a driver
+    /// or test controller cannot fabricate a `StateChanged` or `Lagged` that
+    /// contradicts the core's own state.
     Push {
         /// The generation the delivering connection is on.
         generation: u64,
-        /// The push event.
-        event: ClientEvent,
+        /// The wire push.
+        push: jeliya_api::Push,
     },
     /// A frame that could not be parsed to an envelope with a usable `id`. It
     /// correlates to nothing, so it is dropped with a diagnostic and can strand

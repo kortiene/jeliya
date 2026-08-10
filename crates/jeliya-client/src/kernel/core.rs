@@ -177,7 +177,7 @@ impl Core {
             Input::Stop => self.on_stop(&mut actions),
             Input::Connected => self.on_connected(now, &mut actions),
             Input::Interrupted => self.on_interrupted(now, &mut actions),
-            Input::GateRefused => self.on_gate_refused(&mut actions),
+            Input::GateRefused => self.on_gate_refused(now, &mut actions),
             Input::Inbound(frame) => self.on_inbound(frame, now, &mut actions),
             Input::TimerFired(id) => self.on_timer_fired(id, now, &mut actions),
             Input::Cancel(call_id) => self.on_cancel(call_id, now, &mut actions),
@@ -315,7 +315,7 @@ impl Core {
     fn schedule_reconnect_or_fail(&mut self, now: Tick, actions: &mut Vec<Action>) {
         if self.attempt >= self.limits.max_reconnect_attempts {
             // Budget exhausted: settle everything honestly, no infinite spin.
-            self.fail_all(actions);
+            self.fail_all(now, actions);
             return;
         }
         let delay = self.backoff.delay(self.attempt);
@@ -329,7 +329,7 @@ impl Core {
         self.transition(State::Interrupted, actions);
     }
 
-    fn on_gate_refused(&mut self, actions: &mut Vec<Action>) {
+    fn on_gate_refused(&mut self, now: Tick, actions: &mut Vec<Action>) {
         // Stop wins (§K11): a refusal from a dial that `stop` already
         // cancelled must not flip a stopped (or already failed) client to
         // `Failed` after the bus closed.
@@ -341,26 +341,34 @@ impl Core {
         // have executed there — this generation's gate refusal says nothing
         // about that one. `fail_all` classifies by `ever_sent` exactly as
         // §K6 requires, so the barrier delegates to it.
-        self.fail_all(actions);
+        self.fail_all(now, actions);
     }
 
-    fn fail_all(&mut self, actions: &mut Vec<Action>) {
+    fn fail_all(&mut self, now: Tick, actions: &mut Vec<Action>) {
         actions.push(Action::CancelDial);
         if let Some(timer) = self.backoff_timer.take() {
             actions.push(Action::CancelTimer(timer));
         }
-        for (call_id, entry) in self.ledger.drain() {
+        let mut drained = self.ledger.drain();
+        drained.sort_unstable_by_key(|(call_id, _)| *call_id);
+        for (call_id, entry) in drained {
             actions.push(Action::CancelTimer(entry.deadline_timer));
             if !entry.cancelled {
-                let execution = if entry.ever_sent {
-                    Execution::Unknown
+                // The absolute deadline binds here exactly as it does for
+                // replies and interrupts: a call whose budget already elapsed
+                // settles Timeout regardless of whether the terminal failure
+                // or its due timer processes first.
+                let settled = if entry.deadline_at <= now {
+                    Err(CallError::Timeout)
                 } else {
-                    Execution::DefinitelyNot
+                    let execution = if entry.ever_sent {
+                        Execution::Unknown
+                    } else {
+                        Execution::DefinitelyNot
+                    };
+                    Err(CallError::Disconnected { execution })
                 };
-                actions.push(Action::Settle(
-                    call_id,
-                    Err(CallError::Disconnected { execution }),
-                ));
+                actions.push(Action::Settle(call_id, settled));
             }
         }
         self.reset_work();
@@ -607,16 +615,19 @@ impl Core {
                 id,
                 result,
             } => self.on_reply(generation, id, result, now, actions),
-            Inbound::Push { generation, event } => {
+            Inbound::Push { generation, push } => {
                 // Fence pushes twice over (§K7): the generation must match —
                 // a teardown from a prior connection cannot overwrite newer
                 // presence state — AND the connection must be Ready. Before
                 // the first connect both sides sit at generation 0, and after
                 // an interrupt the generation is unchanged until reconnect,
                 // so equality alone would admit pre-gate traffic or a retired
-                // transport's stragglers.
+                // transport's stragglers. The lift from the wire shape happens
+                // here, inside the boundary: only protocol pushes exist past
+                // the transport, so no driver can fabricate a lifecycle or
+                // local-overflow event.
                 if self.state == State::Ready && generation == self.generation.current() {
-                    actions.push(Action::Emit(event));
+                    actions.push(Action::Emit(ClientEvent::from(push)));
                 }
             }
             // A frame that parses to no envelope correlates to nothing: drop it
@@ -1425,14 +1436,15 @@ mod tests {
         let mut core = Core::new(limits(), 1);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO); // generation 1
-        let event = ClientEvent::ResyncRequired {
-            room_id: jeliya_api::RoomId::new("r"),
-            from_pos: 0,
+        let push = || jeliya_api::Push::Transfer {
+            transfer_op_id: jeliya_api::OpId::new("t"),
+            transferred_bytes: 1,
+            total: jeliya_api::ByteTotal::Unknown,
         };
         let stale = core.step(
             Input::Inbound(Inbound::Push {
                 generation: 0, // older than the live generation
-                event: event.clone(),
+                push: push(),
             }),
             Tick::ZERO,
         );
@@ -1443,7 +1455,7 @@ mod tests {
         let live = core.step(
             Input::Inbound(Inbound::Push {
                 generation: 1,
-                event,
+                push: push(),
             }),
             Tick::ZERO,
         );
@@ -1804,6 +1816,31 @@ mod tests {
         );
     }
 
+    /// The absolute deadline binds at a gate refusal exactly as it does for
+    /// replies and interrupts: an expired call settles `Timeout`, never
+    /// `Disconnected`, regardless of refusal-vs-timer processing order.
+    #[test]
+    fn a_gate_refusal_at_the_deadline_settles_timeout() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        // Queued while Connecting; the gate resolves only at the deadline.
+        let call = core.alloc_call_id();
+        core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        let at = Tick::ZERO.saturating_add(limits().default_call_deadline);
+        let refused = core.step(Input::GateRefused, at);
+        assert!(
+            matches!(find_settle(&refused, call), Some(Err(CallError::Timeout))),
+            "an expired call settles Timeout even through the terminal gate path"
+        );
+        assert_eq!(core.state(), State::Failed);
+    }
+
     /// The absolute deadline binds at an interrupt exactly as it does for a
     /// reply: a close processed at or past `deadline_at` settles the expired
     /// call `Timeout` — never `Disconnected`, never held for a replay past
@@ -1860,9 +1897,10 @@ mod tests {
         let push = |generation| {
             Input::Inbound(Inbound::Push {
                 generation,
-                event: crate::event::ClientEvent::ResyncRequired {
-                    room_id: jeliya_api::RoomId::new("r"),
-                    from_pos: 0,
+                push: jeliya_api::Push::Transfer {
+                    transfer_op_id: jeliya_api::OpId::new("t"),
+                    transferred_bytes: 1,
+                    total: jeliya_api::ByteTotal::Unknown,
                 },
             })
         };
