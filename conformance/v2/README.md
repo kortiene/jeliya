@@ -30,19 +30,19 @@ claims:
 
 | Slice | Status | What the claim means |
 |---|---|---|
-| Structural validation | Implemented for all 341 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
+| Structural validation | Implemented for all 342 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
 | Selected JSON-envelope/subject slice | Partial (22 CI-selected cases) | The Node harness runs this selected JSON-envelope, subject-lifecycle, and executable-file slice against `jeliyad`; this is not corpus coverage. It is not a smoke, E2E, or Dart execution claim. |
-| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. The download path has no executable fixture yet (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the raw-record, credit-pause, client-ABORT, and transport-drop fault controls remain unimplemented, so malformed/backpressure stream cases are still declarative. |
+| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the one client-originated fault the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes. The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the raw-record, credit-pause, and transport-drop fault controls remain unimplemented, so malformed/backpressure stream cases are still declarative. |
 | Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
 
 | Computed corpus fact | Value |
 |---|---:|
-| Cases | 341 |
-| Attributed to an operation | 237 |
+| Cases | 342 |
+| Attributed to an operation | 238 |
 | `operation: null` | 104 |
-| Untargeted / in-process-core / client-adapter targeted | 335 / 1 / 5 |
+| Untargeted / in-process-core / client-adapter targeted | 336 / 1 / 5 |
 | Distinct step verbs in use | 7 |
-| Taxonomy codes / without a direct canonical operation case or verified transport representation | 64 / 9 (`forbidden_origin`, `pairing_code_invalid`, `protocol_unsupported`, `role_not_grantable`, `session_expired`, `storage_generation_mismatch`, `stream_aborted`, `unauthenticated`, `unknown_operation`) |
+| Taxonomy codes / without a direct canonical operation case or verified transport representation | 64 / 8 (`forbidden_origin`, `pairing_code_invalid`, `protocol_unsupported`, `role_not_grantable`, `session_expired`, `storage_generation_mismatch`, `unauthenticated`, `unknown_operation`) |
 | Blocked on upstream | 14 (U1: 5, U2: 8, U3: 1) |
 | Blocked on a settled record contradiction | 1 |
 
@@ -259,11 +259,24 @@ holding a stream with nothing to stream for — and it would let a fixture put
 them in the wrong order, which is exactly the ambiguity the record removes by
 combining the two edges. `stream` and `defer` cannot share a call step.
 
-It takes exactly one key, fixed by the operation: `send_bytes` for `file.share`,
-`receive_bytes` for `file.read`. A `stream` on any other operation is invalid,
-because no other operation streams. The value is a `<uint>`, a `$variable`, or a
-computed node, so a boundary case can say "exactly the served limit" without
-compiling the number in.
+It takes exactly one direction key, fixed by the operation: `send_bytes` for
+`file.share`, `receive_bytes` for `file.read`. A `stream` on any other operation
+is invalid, because no other operation streams. The value is a `<uint>`, a
+`$variable`, or a computed node, so a boundary case can say "exactly the served
+limit" without compiling the number in.
+
+An upload may carry an optional **`fault`** beside `send_bytes` to make the
+*client* misbehave on purpose. The vocabulary is closed. The only value the
+single-subject harness executes today is `client_abort`: after the daemon admits
+the stream (OPEN) but before any DATA is sent, the client issues
+`ABORT(cancelled)`; the daemon must acknowledge the ABORT and then reply
+`stream_aborted{cancelled}` accounting for zero receiver-accepted bytes — the
+"client ABORT wins" leg of the race table. `fault` is legal only on `file.share`,
+because `file.read` has no executable download fixture at all (it needs a
+peer-fetched file the single-subject harness cannot stage). The record's other
+client faults — raw-record injection, credit-pause, and transport-drop — remain
+declarative until the executor drives them, and adding a value here without the
+executor to run it is not permitted.
 
 A fresh admitted daemon `file.share` or `file.read` requires its matching stream.
 A terminal refusal before OPEN has no stream and records zero receiver-accepted
@@ -630,8 +643,10 @@ step into no evidence at all. Two pre-existing U2-blocked fixtures
 (`a_transfer_with_no_forward_progress_fails_with_transfer_stalled` and
 `fetch_completed_result_replays_without_a_second_transfer`) read the `$fid`
 family without declaring a file resource precondition; they are exempted by
-name in the validator's ledger until their `requires` are repaired under
-#233. The legacy domains still carry pre-normalization placeholder
+name in the validator's ledger. Adding `resource:fetched_file` to their
+`requires` is blocked on U2 — a fetched file needs a provider peer the
+single-subject harness cannot supply until the streaming/progress fetch API
+unblocks. The legacy domains still carry pre-normalization placeholder
 conventions (`$op1`-style tokens), so enforcement extends to them only with
 their own re-transcription pass.
 

@@ -559,6 +559,81 @@
       ]
     },
     {
+      "name": "share_cancelled_by_the_client_before_any_bytes_aborts_as_cancelled",
+      "kind": "error",
+      "operation": "file.share",
+      "intent": "Proves a client can cancel an admitted upload before sending any DATA by issuing ABORT(cancelled): the daemon acknowledges the ABORT and then replies stream_aborted{cancelled} accounting for zero receiver-accepted bytes -- the 'client ABORT wins' leg of the race table. Catches a daemon that ignores a producer ABORT, replies success, or sends its terminal reply without first acknowledging the ABORT, and a harness whose byte counter could pass without the daemon proving it accepted nothing.",
+      "requires": [
+        "subject",
+        "room:live"
+      ],
+      "steps": [
+        {
+          "upgrade": {
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "call": "room.create",
+          "in": {
+            "name": "ClientCancel"
+          },
+          "save": {
+            "rid": "out.room_id"
+          },
+          "op_id": "op-clientcancel-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
+        },
+        {
+          "call": "file.share",
+          "in": {
+            "room_id": "$rid",
+            "name": "cancelled.bin",
+            "declared_bytes": 1024,
+            "declared_content_type": "application/octet-stream"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "stream_aborted",
+              "transferred_bytes": 0,
+              "total": {
+                "state": "known",
+                "bytes": 1024
+              },
+              "reason": "cancelled"
+            }
+          },
+          "op_id": "op-clientcancel-2",
+          "stream": {
+            "send_bytes": 1024,
+            "fault": "client_abort"
+          }
+        }
+      ]
+    },
+    {
       "name": "share_one_byte_past_the_served_limit_is_refused_at_stage_declared",
       "kind": "boundary",
       "operation": "file.share",

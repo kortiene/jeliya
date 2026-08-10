@@ -14,8 +14,8 @@ audience: ["client-authors", "contributors", "maintainers"]
 # Jeliya protocol v2
 
 **Status: CANONICAL 2026-08-03. The contract includes the first-release
-byte-stream decision. Its JSON-envelope daemon half is partial, and the
-byte-stream codec/runtime and client adapters are not implemented (#233).**
+byte-stream decision. Its JSON-envelope daemon half is partial. The
+byte-stream codec/runtime is implemented (#233); client adapters are not.**
 Protocol v2 is the wire contract for the clean-slate client stack in the
 [Dioxus clean-slate architecture](dioxus-architecture.md). It replaces
 [protocol v1](PROTOCOL.md) outright: one generation at a time, no dual support,
@@ -25,10 +25,11 @@ The released `v0.6.x` line speaks v1 and keeps doing so until it is retired.
 The typed `jeliya-api` crate (#163), JSON-envelope codec (#164), and typed core
 and v2-only `jeliyad` slices (#165/#166) implement only part of this record's
 daemon half. `jeliyad` rejects v1 at the pre-upgrade generation gate and serves
-typed JSON operations and pushes, but it does not implement the Text/Binary
-message classes or byte-stream records decided below. The replay harness runs a
-small live slice; its corpus validation is shape-only, and its file-stream
-executor is #233 work.
+typed JSON operations, pushes, and the byte-stream framing for `file.share`
+and `file.read` (#233). The replay harness runs a small live slice; the
+`files.json` byte-stream executor drives real uploads and observes
+receiver-accepted bytes. The download path has no executable corpus fixture
+(a fetched file needs a provider peer the single-subject harness cannot stage).
 
 **v1 is inventory, not authority.** Its 24 methods were mined for the
 *requirement* each serves, then re-derived. v2 retains 11, renames 10, combines
@@ -45,12 +46,13 @@ The record states
 [the corpus's own README](../conformance/v2/README.md) — one normative fixture
 DSL. An independent adapter can implement from this document alone.
 
-The 341 hand-authored fixtures in
+The 342 hand-authored fixtures in
 [`conformance/v2/`](../conformance/v2/README.md) are normalized to that DSL
 (#213): every case conforms structurally and the corpus is replayable by an
 independent harness. Shape validation is not live byte-stream evidence. Where a
 fixture and this record disagree, **this record is right and the fixture is a
-bug**; #233 owns the file-fixture transcription from this decision.
+bug**; the `file.share` and `file.read` fixture transcription from this
+decision landed in #233.
 
 Everything is settled in substance — the operation set, the handshake and its
 gate, the removals, the push and resync model, the severity derivation, and the
@@ -2398,10 +2400,12 @@ it.
 | `cursor_invalid` | → `cursor_unknown` for a pruned position, or `invalid_argument` with `reason: {"state": "format"}` for a malformed one. The single corpus code conflated the two |
 | `<the case's code>` | Not a code at all — an unsubstituted placeholder left in a fixture |
 
-`stream_aborted` and `transfer_deadline_exceeded` now have declarative fixtures
-transcribed from this decision under #233. They remain blocked on U2 and are not
-live byte-stream evidence until the independent executor can produce truthful
-accepted-byte counts.
+`stream_aborted` and `transfer_deadline_exceeded` have fixtures transcribed from
+this decision (#233). `stream_aborted{cancelled}` is executable: the harness
+drives a client `ABORT` from offset zero and verifies the daemon's `ACK` and
+zero receiver-accepted accounting. The remaining `stream_aborted` reasons and
+`transfer_deadline_exceeded` remain blocked on U2 and are declarative until that
+upstream dependency resolves.
 
 ### The non-oracle property
 
@@ -2514,8 +2518,8 @@ manifest names every exemption with its reason and its unblocking issue.
 ## What this record does not decide
 
 - The Rust type shapes — `jeliya-api` (#163) owns them.
-- The codec implementation of the framing decided above — #233 owns that
-  separate slice.
+- The codec implementation of the framing decided above — #233 implemented the
+  codec types, daemon runtime, and harness executor as a separate slice.
 - Transfer budget constants. `transfer_floor_bits_per_second` and
   `transfer_stall_ms` are served, so they are tunable without a wire change;
   #198 measures and sets them. The only samples that exist span 0.1–8.6 Mbit/s

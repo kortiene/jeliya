@@ -322,9 +322,17 @@ export function streamWaitMs(spec, servedLimits = {}, timeoutScale = 1) {
 
 export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs = 60_000 }) {
   if (spec.send_bytes !== undefined) {
-    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs });
+    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs, fault: spec.fault });
   }
   if (spec.receive_bytes !== undefined) {
+    // Client-originated download faults (credit-pause, receiver ABORT) are not
+    // executed yet — the download producer has no executable corpus fixture at
+    // all (it needs a peer-fetched file the single-subject harness cannot
+    // stage), so a `fault` here would have nothing to drive. Reject it loudly
+    // rather than silently ignore a fixture's intent.
+    if (spec.fault !== undefined) {
+      throw new Error(`stream fault ${JSON.stringify(spec.fault)} is not executable on file.read yet`);
+    }
     return runDownload({ session, tracker, replyState, receiveBytes: Number(spec.receive_bytes), maxPayload, inflightBytes, concurrentLimit, stallMs, waitMs });
   }
   throw new Error(`stream spec has neither send_bytes nor receive_bytes: ${JSON.stringify(spec)}`);
@@ -409,7 +417,7 @@ async function yieldAfterSend(session, tracker) {
 }
 
 /** Upload: race a pre-OPEN terminal reply against OPEN, then honour CREDIT. */
-async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs }) {
+async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs, fault }) {
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     // Terminal before admission: zero bytes, no stream. A `stream`-carrying
@@ -434,6 +442,21 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
     );
   }
   checkInflightBudget(tracker.openTotal, inflightBytes, concurrentLimit);
+
+  // Client-originated fault injection (the producer misbehaving on purpose).
+  // `client_abort` is a user cancel: after admission but before any DATA, the
+  // client sends ABORT(cancelled); the daemon (receiver) is obliged to ACK and
+  // then reply stream_aborted{cancelled} with a zero receiver-accepted count —
+  // the "client ABORT wins" leg of the race table. This is the one client
+  // fault the single-subject harness can execute end-to-end, because it needs
+  // only an admitted upload, no peer-fetched file.
+  if (fault === 'client_abort') {
+    return await driveClientAbortUpload({ session, tracker, replyState, waitMs });
+  }
+  if (fault !== undefined) {
+    throw new Error(`unknown stream fault ${JSON.stringify(fault)} on file.share`);
+  }
+
   const stallGauge = makeStallGauge(stallMs);
 
   // Producer state. `acceptedThrough`/`sendThrough` mirror the daemon's
@@ -618,6 +641,87 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   }
   if (abortSeen) {
     checkAbortReplyCorrelation(abortSeen, reply, { accepted: abortSeen.offset, total: tracker.openTotal });
+  }
+  return reply;
+}
+
+/**
+ * Drive a client-originated upload cancel. After admission but before any DATA,
+ * the client sends ABORT(cancelled) at offset 0 (its accepted high-water is
+ * zero — nothing has been sent). The daemon (the receiver) must ACK (kind 0x06,
+ * value 0x05, offset 0) and then reply stream_aborted{cancelled} accounting for
+ * zero receiver-accepted bytes — the "client ABORT wins" leg of the race table.
+ * A send window (CREDIT) the daemon granted before it observed our ABORT is
+ * tolerated; it may not acknowledge bytes we never sent.
+ */
+async function driveClientAbortUpload({ session, tracker, replyState, waitMs }) {
+  const accepted = 0;
+  session.sendBinary(
+    encodeRecord({ kind: KIND.ABORT, id: tracker.id, streamId: tracker.streamId, offset: accepted, value: ABORT_REASON.cancelled }),
+  );
+  let ackSeen = false;
+  for (;;) {
+    if (replyState.done && tracker.queue.length === 0) break;
+    const ev = await tracker.next(replyState, waitMs, ackSeen ? 'the terminal reply' : 'the ABORT acknowledgement');
+    if (ev.reply) break;
+    const rec = ev.record;
+    checkBinding(tracker, rec);
+    if (rec.kind === KIND.CREDIT) {
+      // The ACK retires the binding (protocol: "Only ACK or that timeout
+      // retires the binding"; a record on a retired stream is malformed) — a
+      // CREDIT emitted after the ACK certifies a daemon still speaking on a
+      // dead stream.
+      if (ackSeen) {
+        throw new AssertFailure(
+          'daemon sent CREDIT after acknowledging the ABORT — the binding retired at ACK',
+        );
+      }
+      // A send window granted before the daemon saw our ABORT. It can never
+      // acknowledge bytes we never sent.
+      if (rec.offset > accepted) {
+        throw new AssertFailure(
+          `daemon CREDIT acknowledged ${rec.offset} bytes after a zero-progress client ABORT`,
+        );
+      }
+      continue;
+    }
+    if (rec.kind === KIND.ACK) {
+      if (ackSeen) throw new AssertFailure('daemon sent a second ACK for one client ABORT');
+      if (rec.payload) throw new AssertFailure('daemon ACK carried a payload');
+      if (rec.value !== 0x05) {
+        throw new AssertFailure(`daemon ACK value ${rec.value} is not 0x05 (the ABORT it acknowledges)`);
+      }
+      if (rec.offset !== accepted) {
+        throw new AssertFailure(
+          `daemon ACK accepted count ${rec.offset} disagrees with the ${accepted} bytes it accepted`,
+        );
+      }
+      ackSeen = true;
+      tracker.accepted = accepted;
+      continue;
+    }
+    throw new AssertFailure(`daemon sent unexpected ${rec.kindName} after a client ABORT`);
+  }
+  if (tracker.queue.length) {
+    throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after the terminal reply`);
+  }
+  if (!ackSeen) {
+    throw new AssertFailure('daemon replied to a client ABORT without first acknowledging it');
+  }
+  const reply = await settleReply(replyState);
+  if (reply && reply.ok) {
+    throw new AssertFailure('file.share replied success after a client ABORT');
+  }
+  const err = (reply && reply.err) || {};
+  if (err.code !== 'stream_aborted' || err.reason !== 'cancelled') {
+    throw new AssertFailure(
+      `client ABORT must resolve to stream_aborted{cancelled}, got ${JSON.stringify(reply.err)}`,
+    );
+  }
+  if (err.transferred_bytes !== undefined && err.transferred_bytes !== accepted) {
+    throw new AssertFailure(
+      `terminal transferred_bytes ${err.transferred_bytes} disagrees with the ${accepted} receiver-accepted bytes`,
+    );
   }
   return reply;
 }

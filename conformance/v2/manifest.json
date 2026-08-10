@@ -14,7 +14,8 @@
       "send_bytes": "implemented",
       "receive_bytes": "implemented_no_executable_case",
       "bytes_streamed_observation": "implemented",
-      "raw_record_and_fault_controls": "unimplemented"
+      "client_abort_fault": "implemented",
+      "raw_record_credit_pause_transport_drop_faults": "unimplemented"
     },
     "adapter_targeted_declarative_cases": "declarative_only"
   },
@@ -107,16 +108,16 @@
     }
   ],
   "target_counts": {
-    "untargeted": 335,
+    "untargeted": 336,
     "daemon": 0,
     "in_process_core": 1,
     "client_adapter": 5
   },
   "totals": {
-    "cases": 341,
-    "attributed_to_an_operation": 237,
+    "cases": 342,
+    "attributed_to_an_operation": 238,
     "not_operation_scoped": 104,
-    "conforming_to_the_dsl": 341,
+    "conforming_to_the_dsl": 342,
     "distinct_step_verbs_in_use": 7,
     "quarantined": 0,
     "blocked_on_upstream": 14,
@@ -124,8 +125,8 @@
   },
   "per_file_totals": {
     "files.json": {
-      "cases": 43,
-      "attributed_to_an_operation": 41,
+      "cases": 44,
+      "attributed_to_an_operation": 42,
       "not_operation_scoped": 2,
       "blocked_on_upstream": {
         "U1": 0,
@@ -218,7 +219,6 @@
       "role_not_grantable",
       "session_expired",
       "storage_generation_mismatch",
-      "stream_aborted",
       "unauthenticated",
       "unknown_operation"
     ]
@@ -253,7 +253,7 @@
       "satisfies_required_kinds": true
     },
     "file.share": {
-      "cases": 14,
+      "cases": 15,
       "success": true,
       "distinctive_code": "declared_size_mismatch",
       "distinctive_code_has_a_case": true,

@@ -44,6 +44,14 @@ const STREAMING_OPS = new Map([
   ["file.share", "send_bytes"],
   ["file.read", "receive_bytes"],
 ]);
+// Client-originated stream faults expressible alongside a direction on an
+// upload's `stream` key. The vocabulary is closed so a misspelling fails loudly.
+// Only `client_abort` (a producer cancel after admission but before any DATA)
+// is executed by the harness today; the daemon must ACK it and reply
+// stream_aborted{cancelled}. The other client faults named by the framing
+// record (raw-record injection, credit-pause, transport-drop) and every
+// download-side fault remain declarative until the executor drives them.
+const STREAM_FAULTS = new Set(["client_abort"]);
 const KINDS = new Set(["success", "error", "malformed", "boundary", "authorization", "handshake", "push", "ordering"]);
 const PRE_OPEN_STREAM_CODES = new Set([
   "invalid_argument", "subject_absent", "room_not_available", "membership_ended",
@@ -739,14 +747,24 @@ function checkStep(step, file, caseName, stepIdx) {
     } else {
       const direction = STREAMING_OPS.get(step.call);
       const got = Object.keys(step.stream);
-      if (got.length !== 1 || got[0] !== direction) {
+      const extra = got.filter((k) => k !== direction && k !== "fault");
+      if (!got.includes(direction) || extra.length > 0) {
         fail(file, caseName, where,
-          `stream on ${step.call} takes exactly {${direction}}, got {${got.join(", ")}}`);
+          `stream on ${step.call} takes {${direction}} and an optional {fault}, got {${got.join(", ")}}`);
       } else {
         const v = step.stream[direction];
         if (!isValueNode(v)) {
           fail(file, caseName, where,
             `stream.${direction} must be a <uint>, a $variable, or a computed node`);
+        }
+        if ("fault" in step.stream) {
+          if (direction !== "send_bytes") {
+            fail(file, caseName, where,
+              `stream.fault is only legal on file.share (upload); file.read has no executable client fault yet`);
+          } else if (!STREAM_FAULTS.has(step.stream.fault)) {
+            fail(file, caseName, where,
+              `stream.fault "${step.stream.fault}" is not in the closed set {${[...STREAM_FAULTS].join(", ")}}`);
+          }
         }
       }
     }
@@ -1360,7 +1378,8 @@ if (isObject(manifest)) {
       send_bytes: "implemented",
       receive_bytes: "implemented_no_executable_case",
       bytes_streamed_observation: "implemented",
-      raw_record_and_fault_controls: "unimplemented",
+      client_abort_fault: "implemented",
+      raw_record_credit_pause_transport_drop_faults: "unimplemented",
     },
     adapter_targeted_declarative_cases: "declarative_only",
   };
