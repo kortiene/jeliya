@@ -239,6 +239,16 @@ Every internal collection has a static or configured bound:
 
 There is no map keyed by an unbounded external input (no per-room, per-push, or per-generation accumulation). A fault test drives saturation + repeated flap + cancel churn and asserts no collection exceeds its bound across thousands of `step`s.
 
+> **Peer payload-generation reconciliation is deliberately not the kernel's.**
+> The `peer` push carries its own `generation` so a stale teardown is
+> discardable (protocol §Presence — truthful data depends on upstream U1,
+> and the conformance cases for it are `blocked_on_upstream`). Discarding by
+> payload generation requires last-seen state per `(room, device)` — exactly
+> the unbounded-external-key map this table forbids. The kernel forwards the
+> push verbatim, fenced only by the transport generation (§K7); the
+> presence-folding consumer, whose per-member state is already bounded by
+> room membership, compares `peer.generation` when folding.
+
 ### K13 — The Transport/driver seam (what #171/#172/#173 implement)
 
 The kernel drives an abstract transport. The seam is **object-safe and I/O-shaped**, mirroring how `ClientBackend` erases the four adapters:

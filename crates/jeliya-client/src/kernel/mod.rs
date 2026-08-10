@@ -162,10 +162,12 @@ impl Shared {
     fn apply_one(&mut self, action: Action) {
         match action {
             Action::Send(frame) => {
-                if self.fail_next_send {
-                    // The scripted send/close race: the pipe breaks exactly as
-                    // the kernel writes (§K14). The frame never reaches the
-                    // transport; the loss surfaces after this apply batch.
+                if self.fail_next_send || self.send_failed {
+                    // The scripted send/close race (§K14): the pipe breaks at
+                    // the first write, and a broken transport fails every
+                    // later write in the same batch too — no frame after the
+                    // failure reaches the wire. The loss surfaces to the core
+                    // after this apply batch.
                     self.fail_next_send = false;
                     self.send_failed = true;
                 } else {

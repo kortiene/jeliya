@@ -336,6 +336,57 @@ fn send_failure_at_flush_interrupts_and_replays() {
     assert_eq!(controller.outstanding(), 0);
 }
 
+/// §K14: a broken transport fails EVERY write in the batch — when one flush
+/// emits several sends, no frame after the first failure reaches the wire,
+/// so the driver never falsely claims later requests were sent.
+#[test]
+fn send_failure_drops_every_frame_in_the_batch() {
+    let (handle, controller) = ClientHandle::with_kernel(KernelConfig {
+        limits: KernelLimits {
+            max_reconnect_attempts: 4,
+            backoff_base: TickDelta::from_ticks(1),
+            backoff_cap: TickDelta::from_ticks(1),
+            ..KernelLimits::default()
+        },
+        jitter_seed: 42,
+    });
+    handle.start(); // Connecting: dispatches queue, nothing sends
+    let fut_a = handle.call::<RoomCreate>(
+        RoomCreate { name: "a".into() },
+        Dedup::Key(OpId::new("op-batch-a")),
+    );
+    let fut_b = handle.call::<RoomCreate>(
+        RoomCreate { name: "b".into() },
+        Dedup::Key(OpId::new("op-batch-b")),
+    );
+    controller.fail_send();
+    // Connected flushes both queued calls in ONE batch; the first write
+    // breaks the pipe, so the second must not reach the wire either.
+    controller.connect();
+    assert_eq!(
+        controller.take_outbound().len(),
+        0,
+        "no frame in the failed batch reaches the wire"
+    );
+    assert_eq!(handle.state(), State::Interrupted);
+    assert_eq!(
+        controller.replay_held(),
+        2,
+        "both sent-at-failure calls are held for replay"
+    );
+    // The reconnect re-sends both and they settle normally.
+    controller.advance(1);
+    controller.connect();
+    let resent = controller.take_outbound();
+    assert_eq!(resent.len(), 2, "both held calls re-send");
+    for frame in &resent {
+        controller.deliver_reply(frame.id, "{}");
+    }
+    let _ = block_on(fut_a);
+    let _ = block_on(fut_b);
+    assert_eq!(controller.outstanding(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // In-flight throttle invariant (AC-1 / AC-7)
 // ---------------------------------------------------------------------------

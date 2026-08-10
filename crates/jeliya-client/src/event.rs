@@ -129,7 +129,13 @@ pub enum RoomPush {
         device_id: DeviceId,
         /// The new link state.
         link: Link,
-        /// The connection generation that makes a stale teardown discardable.
+        /// The connection generation that makes a stale teardown discardable
+        /// (protocol §Presence; truthful data depends on upstream U1). The
+        /// kernel forwards it verbatim: discarding by payload generation
+        /// needs last-seen state per `(room, device)` — exactly the
+        /// unbounded-external-key map §K12 forbids in the kernel — so the
+        /// comparison belongs to the presence-folding consumer, whose
+        /// per-member state is already bounded by room membership.
         generation: u64,
     },
     /// A transfer made progress (the wire `transfer` push). Goes only to the
@@ -302,21 +308,18 @@ impl EventBus {
                         State::Connecting | State::Ready | State::Interrupted
                     );
                     if non_terminal {
-                        if let Some(last_to) =
-                            state
-                                .buffer
-                                .iter_mut()
-                                .rev()
-                                .find_map(|queued| match queued {
-                                    ClientEvent::StateChanged { to, .. } => Some(to),
-                                    _ => None,
-                                })
+                        // Only a TRAILING transition may coalesce: merging
+                        // into a StateChanged with ordinary events queued
+                        // after it would move the newer transition before
+                        // events broadcast earlier, breaking ordering. At
+                        // capacity ordinary events no longer append, so the
+                        // tail stays a StateChanged once flapping begins and
+                        // the bound holds.
+                        if let Some(ClientEvent::StateChanged { to, .. }) = state.buffer.back_mut()
                         {
-                            if matches!(
-                                *last_to,
-                                State::Connecting | State::Ready | State::Interrupted
-                            ) {
-                                *last_to = *new_to;
+                            if matches!(*to, State::Connecting | State::Ready | State::Interrupted)
+                            {
+                                *to = *new_to;
                                 merged = true;
                             }
                         }
@@ -451,6 +454,66 @@ mod tests {
             last_transition,
             Some(State::Stopped),
             "the terminal transition appends distinctly and is observable"
+        );
+    }
+
+    /// Coalescing must not reorder: a transition with ordinary events queued
+    /// after it keeps its position — only a TRAILING transition merges.
+    #[test]
+    fn coalescing_never_reorders_across_queued_pushes() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        // Ordinary events queue AFTER the transition, up to capacity.
+        for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64) {
+            bus.broadcast(ClientEvent::ResyncRequired {
+                room_id: RoomId::new("r"),
+                from_pos: pos,
+            });
+        }
+        // At capacity, a new transition must NOT merge into the older,
+        // non-trailing one (that would move the reconnect before events
+        // broadcast earlier); it appends.
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Interrupted,
+            to: State::Ready,
+        });
+        {
+            let state = sub.state.lock().expect("subscriber poisoned");
+            let first_transition = state.buffer.iter().find_map(|event| match event {
+                ClientEvent::StateChanged { to, .. } => Some(*to),
+                _ => None,
+            });
+            assert_eq!(
+                first_transition,
+                Some(State::Interrupted),
+                "the older transition keeps its original value and position"
+            );
+            assert!(
+                matches!(
+                    state.buffer.back(),
+                    Some(ClientEvent::StateChanged {
+                        to: State::Ready,
+                        ..
+                    })
+                ),
+                "the new transition appended at the tail"
+            );
+        }
+        // With the tail now a transition, further flapping coalesces there.
+        let len_before = sub.state.lock().expect("subscriber poisoned").buffer.len();
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert_eq!(
+            state.buffer.len(),
+            len_before,
+            "a trailing transition coalesces without growth"
         );
     }
 }
