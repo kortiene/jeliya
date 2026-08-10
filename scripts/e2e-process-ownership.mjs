@@ -17,10 +17,12 @@ export function linuxProcessIdentity(
 ) {
   try {
     const fieldsFromState = parseProcState(readStat(pid));
-    // A zombie has already exited, so its PID can no longer be recycled until
-    // the parent reaps it. Treat the leader as absent and let the caller probe
-    // the still-existing process group for any surviving children.
-    if (fieldsFromState[0] === "Z") return null;
+    // A dead leader has already exited: a zombie (Z) cannot have its PID
+    // recycled until the parent reaps it, and the kernel dead states (X, x)
+    // are the final instants of the same exit path. Treat the leader as absent
+    // and let the caller probe the still-existing process group for any
+    // surviving children.
+    if (fieldsFromState[0] === "Z" || fieldsFromState[0] === "X" || fieldsFromState[0] === "x") return null;
     const startTime = fieldsFromState[19]; // proc(5) field 22, with state at index 0.
     const bootId = readBootId().trim();
     const command = readCmdline(pid)
@@ -30,16 +32,22 @@ export function linuxProcessIdentity(
       .join(" ");
     if (!startTime || !bootId) throw new Error("incomplete proc identity");
     if (!command) {
-      // The stat read passed the zombie guard, but the cmdline came back empty.
-      // A process we own always has a cmdline while it is alive, so an empty one
-      // means the leader vanished in the ~20 ms between the two reads: it was
-      // reaped (ENOENT on re-read -> caught below as absence), became a zombie
-      // (state Z), or its PID was recycled (start time changed). In each case the
-      // recorded leader is gone: report absence and let the caller probe the
-      // still-existing process group. A live process that keeps the SAME identity
-      // yet exposes no cmdline is a genuine inspection failure and stays loud.
+      // The stat read passed the dead-state guard, but the cmdline came back
+      // empty. A process we own always has a cmdline while it is alive, so an
+      // empty one means the leader vanished in the ~20 ms between the two
+      // reads. Disambiguate with a second stat read:
+      //  - reaped: ENOENT/ESRCH -> caught below as absence;
+      //  - zombie or kernel dead state (Z, X, x): exited, PID not yet
+      //    recyclable -> absence;
+      //  - start time changed: the PID was RECYCLED to a new task, so -pid now
+      //    names an unrelated process group. Absence would invite the caller
+      //    to probe and signal it; surface the new occupant's identity instead
+      //    so the caller's recycled-leader guard refuses to signal.
+      //  - same live identity yet no cmdline: a genuine inspection failure,
+      //    stays loud.
       const recheck = parseProcState(readStat(pid));
-      if (recheck[0] === "Z" || recheck[19] !== startTime) return null;
+      if (recheck[0] === "Z" || recheck[0] === "X" || recheck[0] === "x") return null;
+      if (recheck[19] !== startTime) return `linux:${bootId}:${recheck[19]}:`;
       throw new Error("incomplete proc identity");
     }
     return `linux:${bootId}:${startTime}:${command}`;

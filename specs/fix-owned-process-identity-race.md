@@ -80,12 +80,21 @@ logic the function already trusts at the top:
 
 - **Re-read `stat` throws `ENOENT`/`ESRCH`** → the process was reaped between reads → `null`
   (this already falls through to the existing catch at line 24; no special-casing needed).
-- **Re-read `stat` state is `Z`** → the process became a zombie after the first read → `null`
-  (same reasoning as the line-13 guard, applied to the current instant).
-- **Re-read `stat` start-time differs from the first read** → the PID was recycled to a new task
-  mid-read; the original leader is gone → `null` (safe: the signal side then probes the *old*
-  process group with signal `0`; the new occupant lives in a different group).
-- **Re-read `stat` is still the same live, non-`Z` process (same start-time) yet `cmdline` is
+- **Re-read `stat` state is `Z`, `X`, or `x`** → the process became a zombie or reached the
+  kernel's dead states after the first read → `null` (same reasoning as the top-of-function dead
+  guard, applied to the current instant; `X`/`x` sit on the same exit path as `Z` and were added
+  after review — recognizing only `Z` reproduced the original intermittent throw for a task that
+  advanced to `X` inside the window).
+- **Re-read `stat` start-time differs from the first read** → the PID was **recycled** to a new
+  task mid-read. Absence would be unsafe here: `signalOwnedProcessGroup` responds to absence by
+  probing and then signalling `-pid`, and nothing prevents the new occupant from being a group
+  leader with `pgid == pid` (a fresh leader mid-`exec` even exposes the same empty `cmdline`), so
+  an unrelated group could be killed. Instead the reader **surfaces the new occupant's identity**
+  (`linux:<bootId>:<newStartTime>:` — the command segment may still be empty mid-`exec`), which
+  can never equal a recorded identity (records are only created from live processes with a
+  non-empty command), so the caller's recycled-leader guard refuses to signal. Fail closed, not
+  silent.
+- **Re-read `stat` is still the same live, non-dead process (same start-time) yet `cmdline` is
   still empty** → a genuine inspection failure → **throw** `incomplete proc identity` (stays loud
   via the existing catch rethrow).
 

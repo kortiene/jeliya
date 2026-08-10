@@ -28,14 +28,15 @@
   on a still-readable but vanishing `/proc` entry; that error carried no `.code`,
   so the absence guard did not catch it and the caller died — observed as an
   intermittent teardown failure 21 ms after a healthy check on the same pid. The
-  fix re-reads `stat` after an empty `cmdline`: if the leader is now a zombie
-  (`Z`) or its start-time changed (PID recycled), return `null`; if the re-read
-  itself throws `ENOENT`/`ESRCH`, fall through to the existing catch and return
-  `null`. A live process that keeps the same identity yet exposes an empty
-  `cmdline` still throws, as do `EACCES` and malformed `stat`. The recycled-PID
-  guard in `signalOwnedProcessGroup` is unaffected: a live recycled leader has a
-  non-empty `cmdline` and returns its own differing identity string, so the guard
-  still fires. Issue #206.
+  fix re-reads `stat` after an empty `cmdline`: if the leader is now in a dead
+  state (`Z`, or the kernel's `X`/`x` on the same exit path), return `null`; if
+  the re-read itself throws `ENOENT`/`ESRCH`, fall through to the existing catch
+  and return `null`; if the start-time changed (PID **recycled**), surface the
+  new occupant's identity instead of absence, so
+  `signalOwnedProcessGroup`'s recycled-leader guard refuses to signal — absence
+  would have probed and signalled `-pid`, which may now name an unrelated
+  process group. A live process that keeps the same identity yet exposes an
+  empty `cmdline` still throws, as do `EACCES` and malformed `stat`. Issue #206.
 
 ### Added
 

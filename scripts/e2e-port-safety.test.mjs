@@ -221,11 +221,48 @@ test("exit-during-read window: leader becomes zombie between stat and cmdline �
   assert.equal(statCalls, 2, "recheck stat must be issued");
 });
 
-test("exit-during-read window: leader PID recycled (starttime changed) between stat and cmdline → null", () => {
+test("exit-during-read window: leader PID recycled (starttime changed) → mismatching identity, never absence", () => {
+  let statCalls = 0;
+  const identity = linuxProcessIdentity(999, {
+    readStat: () => fakeStat("S", ++statCalls === 1 ? "12345" : "99999"),
+    readCmdline: () => Buffer.from(""),
+    readBootId: () => `${BOOT_ID}\n`,
+  });
+  assert.equal(statCalls, 2, "recheck stat must be issued");
+  // Absence would invite the caller to probe and signal -pid, which may now
+  // name an unrelated group; the new occupant's identity must be surfaced.
+  assert.equal(identity, `linux:${BOOT_ID}:99999:`);
+  // And that surfaced identity must trip the caller's recycled-leader guard.
+  assert.throws(
+    () =>
+      signalOwnedProcessGroup(
+        Object.freeze({ pid: 999, identity: `linux:${BOOT_ID}:12345:node server.mjs` }),
+        "SIGKILL",
+        {
+          readIdentity: () => identity,
+          signalProcess: () => assert.fail("a recycled process group must not be probed or signalled"),
+        },
+      ),
+    /recycled process-group leader/,
+  );
+});
+
+test("kernel dead state X at the first stat read → null (absent)", () => {
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => fakeStat("X", "12345"),
+      readCmdline: () => assert.fail("cmdline must not be read for a dead leader"),
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    null,
+  );
+});
+
+test("exit-during-read window: leader reaches kernel dead state X between stat and cmdline → null", () => {
   let statCalls = 0;
   assert.equal(
     linuxProcessIdentity(999, {
-      readStat: () => fakeStat("S", ++statCalls === 1 ? "12345" : "99999"),
+      readStat: () => fakeStat(++statCalls === 1 ? "S" : "X", "12345"),
       readCmdline: () => Buffer.from(""),
       readBootId: () => `${BOOT_ID}\n`,
     }),
