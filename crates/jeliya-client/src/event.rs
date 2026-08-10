@@ -265,12 +265,15 @@ impl EventBus {
     /// that occupies the position in the sequence where the loss occurred —
     /// never a silent loss, and never reported *after* later events. Lifecycle
     /// transitions ([`ClientEvent::StateChanged`]) are control events: they
-    /// always reach the subscriber, but under backpressure they **coalesce**
-    /// rather than grow the mailbox without bound — at capacity, a new
-    /// transition merges into the last undelivered `StateChanged` (its `from`
-    /// stays, its `to` advances), so a stalled subscriber still observes the
-    /// honest final state (`StateChanged { to: Stopped }` included) while a
-    /// flapping connection cannot grow the buffer indefinitely (AC-7/§K12).
+    /// always reach the subscriber, but under backpressure the **flapping
+    /// family coalesces** rather than grow the mailbox without bound — at
+    /// capacity, a new `Connecting`/`Ready`/`Interrupted` transition merges
+    /// into the last undelivered non-terminal `StateChanged` (its `from`
+    /// stays, its `to` advances). Terminal transitions (`Stopping`,
+    /// `Stopped`, `Failed`) always append **distinctly** — the seam
+    /// guarantees a subscriber observes each of them, and they occur at most
+    /// once per lifetime, so the mailbox stays bounded while a flapping
+    /// connection cannot grow it indefinitely (AC-7/§K12).
     pub(crate) fn broadcast(&self, event: ClientEvent) {
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
         subscribers.retain(|weak| weak.strong_count() > 0);
@@ -283,19 +286,41 @@ impl EventBus {
             if state.closed {
                 continue;
             }
-            // At capacity, a control event coalesces into the last undelivered
-            // StateChanged instead of appending (endpoints stay honest: the
-            // merged transition spans old.from → new.to).
+            // At capacity, a NON-TERMINAL control event coalesces into the
+            // last undelivered non-terminal StateChanged instead of appending
+            // (endpoints stay honest: the merged transition spans old.from →
+            // new.to). Terminal transitions (Stopping/Stopped/Failed) always
+            // append distinctly — the seam guarantees a subscriber observes
+            // them individually, and they occur at most once per lifetime, so
+            // they cannot unbound the mailbox; only the flapping family
+            // (Connecting/Ready/Interrupted) repeats without limit.
             let mut merged = false;
             if is_control && state.buffer.len() >= state.capacity {
                 if let ClientEvent::StateChanged { to: new_to, .. } = &event {
-                    merged = state.buffer.iter_mut().rev().any(|queued| match queued {
-                        ClientEvent::StateChanged { to, .. } => {
-                            *to = *new_to;
-                            true
+                    let non_terminal = matches!(
+                        new_to,
+                        State::Connecting | State::Ready | State::Interrupted
+                    );
+                    if non_terminal {
+                        if let Some(last_to) =
+                            state
+                                .buffer
+                                .iter_mut()
+                                .rev()
+                                .find_map(|queued| match queued {
+                                    ClientEvent::StateChanged { to, .. } => Some(to),
+                                    _ => None,
+                                })
+                        {
+                            if matches!(
+                                *last_to,
+                                State::Connecting | State::Ready | State::Interrupted
+                            ) {
+                                *last_to = *new_to;
+                                merged = true;
+                            }
                         }
-                        _ => false,
-                    });
+                    }
                 }
             }
             // Materialize any pending drop count as a `Lagged` marker before
@@ -413,8 +438,9 @@ mod tests {
         });
         let state = sub.state.lock().expect("subscriber poisoned");
         assert!(
-            state.buffer.len() <= DEFAULT_FANOUT_CAPACITY,
-            "the mailbox is bounded under flapping, got {}",
+            state.buffer.len() <= DEFAULT_FANOUT_CAPACITY + 3,
+            "the mailbox is bounded under flapping (capacity plus the at-most-\
+             once terminal transitions), got {}",
             state.buffer.len()
         );
         let last_transition = state.buffer.iter().rev().find_map(|event| match event {
@@ -424,7 +450,7 @@ mod tests {
         assert_eq!(
             last_transition,
             Some(State::Stopped),
-            "the honest final state survives coalescing"
+            "the terminal transition appends distinctly and is observable"
         );
     }
 }
