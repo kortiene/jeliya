@@ -184,6 +184,11 @@ distinct, dev-only state: it has no sealed variants and no sealed digests, so th
 daemon serves canonical uncompressed bytes with no `Content-Encoding`. That is
 not a silent degrade of a sealed variant (there is nothing sealed to degrade); it
 is the honest "nothing was sealed" answer, and the doc must say so explicitly.
+*Review amendment:* the unsealed state is entered **only on a definite
+not-found** of the manifest; a manifest that is present but unreadable,
+unparsable, or schema-invalid **fails closed on both sources** — a compiled-in
+manifest that fails to parse is a packaging defect (binary integrity proves the
+shipped bytes are intact, not that they parse).
 
 ### 4.4 Security boundary — what may and may not be compressed
 
@@ -210,21 +215,30 @@ is the honest "nothing was sealed" answer, and the doc must say so explicitly.
 
 ### 4.5 Fail-closed integrity
 
-- When the daemon selects a sealed variant, the served bytes **must hash to the
-  variant digest the manifest seals**. For `Embedded`, the bytes are compiled in
-  and sealed at build; for `Dir`, the variant file is read from disk and a
-  developer could have edited it, so the read bytes are hashed against the
-  manifest **before** serving.
-- A requested-and-sealed encoding whose variant is **missing or whose bytes do
-  not match the sealed digest** is a fail-closed error (a 5xx, e.g. a
-  `500`/`503` with an `internal`-class body), **not** a silent fall-through to the
-  uncompressed bytes and **not** a fall-through to a different encoding. This is
-  the same posture #113 already requires of a legacy artifact ("fails closed; it
-  does not fall back, and it does not serve what it has"), applied to the variant.
-- The distinction the doc must draw sharply: *no offered encoding is sealed* →
-  serve canonical (normal). *An offered encoding is sealed but its bytes are
-  corrupt/absent* → fail closed. The first is negotiation; the second is
-  tamper/packaging detection.
+- When a manifest is present, **every representation the daemon serves must
+  hash to its sealed digest before serving** — a chosen variant to the sealed
+  variant digest, and bytes served as identity (negotiation shortfall, or an
+  asset with no sealed variants such as `png`/`woff2`) to `identity.digest`.
+  For `Embedded` this holds transitively via binary integrity; for `Dir` the
+  read bytes are hashed **before** serving. Canonical-corrupt fails exactly as
+  variant-corrupt.
+- A representation whose bytes are **missing or do not match the sealed digest**
+  is a fail-closed error (a 5xx, e.g. a `500`/`503` with an `internal`-class
+  body), **not** a silent fall-through to the uncompressed bytes and **not** a
+  fall-through to a different encoding. This borrows the posture #113 already
+  requires of a legacy artifact ("fails closed; it does not fall back, and it
+  does not serve what it has"); the trust root is build-pinned for `Embedded`
+  and operator-supplied for `Dir`.
+- The distinction the doc must draw sharply: *manifest definitively absent* →
+  the unsealed dev-only state. *Manifest present but invalid* → fail closed.
+  With a valid manifest: *no offered encoding sealed* → serve (verified)
+  canonical; *any served representation corrupt/absent* → fail closed. What the
+  check proves differs by source: tamper/packaging detection for `Embedded`
+  (its manifest is authenticated transitively by binary integrity);
+  **corruption and manifest-file skew** for `Dir` — the manifest comes from the
+  same operator-supplied directory it vouches for, so dir-local hashing is
+  *not* adversarial tamper detection unless the manifest is authenticated
+  against an external trust root (a future #183-provenance decision).
 
 ### 4.6 Rejected and deferred alternatives (record in the doc)
 
@@ -316,7 +330,10 @@ This is specified so it is executable, but it is **not** part of #207's
 doc deliverable. #207 records the decision; the code and manifest land under #183
 (manifest/build) and a `serve.rs` serving + verification slice (which may be
 #207's own follow-up or folded into #183/#199). Mark the decision doc
-`implementation_status: planned` accordingly.
+`implementation_status: planned` accordingly. This contract was amended during
+PR review (commits `957f84a`, `f7c2b06`) after this plan was first authored;
+this plan mirrors the amendments, and where the two ever diverge,
+`docs/ui-artifact-wire-encoding.md` governs.
 
 ### 7.1 Manifest schema #183 must produce
 
@@ -326,16 +343,23 @@ its sealed variants, and the manifest carries shared provenance:
 - **Manifest-level provenance** (already #183's remit; the variants join it):
   renderer, source SHA, toolchain versions (`rustc`, `wasm-bindgen`, `dx` /
   `wasm-opt`, **and the exact compressor and version** used for each coding —
-  e.g. `brotli` CLI/lib version and quality, `gzip`/zopfli level), and a digest
-  over the whole manifest.
+  e.g. `brotli` CLI/lib version and quality, `gzip`/zopfli level), and a
+  manifest digest — **detached** (computed over the complete serialized
+  manifest, carried alongside) or stored in a field excluded from a canonical
+  serialization; the exact scheme is #183's. A digest stored inside the bytes
+  it covers is an uncomputable fixed point.
 - **Per-asset entry:**
   - `path` (request-relative, matching `safe_rel` output),
   - `content_type` (the canonical decoded type),
   - `identity`: `{ digest: sha256(canonical bytes), bytes }` — the
     content-address,
-  - `encodings`: `[ { coding: "br" | "gzip", digest: sha256(variant bytes),
-    bytes, params } ]`, omitted or empty when no variant is smaller than
-    canonical.
+  - `encodings`: `[ { coding: "br" | "gzip", path, digest: sha256(variant
+    bytes), bytes, params } ]`, omitted or empty when no variant is smaller
+    than canonical. `path` is the artifact-relative sealed location of the
+    variant bytes (same containment rules as the asset `path`, no collision
+    with any canonical path); the daemon locates variant bytes **solely** by
+    it, never by a derived filename. The concrete layout convention stays
+    #183's choice — sealed in the manifest, never assumed.
 - **Determinism requirement:** Brotli/gzip output is **not** guaranteed identical
   across tool versions or platforms. The build must pin the exact compressor and
   settings (sealed in `params`), and #183's cross-target identical-bytes gate must
@@ -349,9 +373,13 @@ its sealed variants, and the manifest carries shared provenance:
 - Give `UiSource` access to the parsed manifest for both variants (compiled-in
   for `Embedded`, loaded from the `--ui-dir` for `Dir`).
 - Change the load/serve path so `serve_static` (line 895) negotiates: parse
-  `Accept-Encoding` (honour `q=0` to exclude a coding; ignore unknown codings),
-  pick Brotli > gzip > identity among **sealed** codings, hash the chosen variant
-  against the sealed digest (§4.5), and build the response with `Content-Type`
+  `Accept-Encoding` (`q=0` excludes a coding; unknown codings are ignored; `*`
+  matches every coding not explicitly listed — bare `*` accepts the sealed
+  codings, `*;q=0` excludes them, RFC 9110 §12.5.3; nonzero weights do not
+  reorder), pick Brotli > gzip > identity among **sealed** codings the client
+  accepts (an empty acceptable set serves canonical, never 406), hash the
+  chosen representation — variant or canonical — against its sealed digest
+  (§4.5), and build the response with `Content-Type`
   (decoded type), `Content-Encoding` (when not identity), the encoded
   `Content-Length` (auto from `Full<Bytes>`), and `Vary: Accept-Encoding`.
 - Keep the SPA fallback (`index.html` for extension-less routes, line 916) on the
@@ -372,8 +400,9 @@ its sealed variants, and the manifest carries shared provenance:
 
 The decision doc states this matrix; the serving slice implements it as tests.
 For **each** source — an `embed-ui` daemon, and a `--ui-dir` daemon pointed at
-the built artifact directory — request the **root document, the wasm, the JS, and
-the stylesheet**:
+the built artifact directory — request the **root document, the wasm, the JS,
+and the stylesheet**. Every row against a variant-bearing asset also asserts
+`Vary: Accept-Encoding` is present (not only the Brotli row). The rows:
 
 - `Accept-Encoding: br, gzip` → assert `Content-Encoding: br`,
   `Content-Length` == sealed `br` bytes, `Vary: Accept-Encoding` present, and
@@ -383,9 +412,21 @@ the stylesheet**:
 - No `Accept-Encoding` → assert **no** `Content-Encoding`, body == canonical
   bytes, SHA-256 == `identity.digest`.
 - `Accept-Encoding: br;q=0, gzip` → assert gzip chosen, not br.
+- Stance rows (review amendments, mirrored from the decision doc):
+  `gzip;q=1, br;q=0.5` → br (weights do not reorder); `identity;q=0` → `200`
+  canonical (the RFC 9110 §12.4.1 disregard stance); bare `*` → br (§12.5.3
+  wildcard); `identity;q=1, *;q=0` → canonical, no `Content-Encoding`.
+- **Every entry, every coding:** iterate the manifest's **own entry list** —
+  every asset, every sealed coding **plus identity**, on both sources — and
+  assert the decoded body's SHA-256 == `identity.digest`.
 - **Fail-closed:** with a variant deliberately corrupted or removed from the
   source, a request offering that sealed encoding returns a **5xx**, never a
   `200` with uncompressed bytes and never a different encoding.
+- **Fail-closed, canonical:** a corrupted canonical file in the `Dir` source →
+  **5xx** on an identity-selecting request (and for a no-variant asset such as
+  a `png`), never `200` with bytes not matching `identity.digest`.
+- **Fail-closed, manifest:** a present-but-truncated/unparsable manifest →
+  fail closed, never a collapse into the "no manifest" dev state.
 - **Security regression:** `GET /api/files/local?...` with `Accept-Encoding: br,
   gzip` returns **no** `Content-Encoding` and the inert-attachment headers are
   unchanged.
@@ -457,8 +498,11 @@ Documentation-contract criteria (`scripts/check-docs.mjs`):
 - The #158 spike numbers are the only measured evidence and are v1/no-`wasm-opt`
   upper bounds; final #198 numbers come from the #183 artifact.
 - Brotli is available to the build toolchain as a pinnable, deterministic
-  compressor; if it is not, the doc records gzip-only as the fallback with the
-  same sealing/negotiation shape.
+  compressor. The decision as shipped seals **both** `br` and `gzip`
+  unconditionally and records **no** gzip-only fallback; if a deterministic
+  Brotli genuinely cannot be pinned, that is a blocker to resolve — or a formal
+  amendment to the canonical decision record — before #183 ships, not a silent
+  gzip-only build.
 
 ## 12. Open questions (resolve with maintainers while authoring)
 
@@ -467,9 +511,10 @@ Documentation-contract criteria (`scripts/check-docs.mjs`):
   `dioxus-architecture.md` stays stable (mirroring how `native-update-policy.md`
   satisfies the #121 pointer). Confirm the maintainer prefers this over folding
   the decision into Decision 5 directly.
-- **Brotli vs. gzip-only for v1.** Recommendation: seal both, prefer Brotli. If
-  the toolchain cannot pin a deterministic Brotli, ship gzip-only now and add
-  Brotli when the compressor is pinned — same manifest shape.
+- **Brotli vs. gzip-only for v1.** *Resolved by the decision as authored:* seal
+  both, prefer Brotli, no fallback recorded. Shipping gzip-only would first
+  require amending the canonical decision record; the determinism risk is
+  handled by pinning the compressor (§7.1, §10), not by dropping a variant.
 - **Where the serving code lands.** Whether the `serve.rs` negotiation + tests
   are a #207 follow-up slice, folded into #183, or gated at #199. This spec
   specifies the contract regardless of which issue executes it.
