@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "project": {
+    "id": "jeliya",
+    "name": "Jeliya"
+  },
+  "branching": {
+    "labelPrefixes": {
+      "enhancement": "feat",
+      "github_actions": "ci"
+    }
+  },
+  "gates": {
+    "e2e": {
+      "hints": [
+        "daemon",
+        "subject",
+        "subjects",
+        "file",
+        "files",
+        "room",
+        "rooms",
+        "invite",
+        "invites",
+        "invitation",
+        "invitations",
+        "membership",
+        "presence",
+        "transfer",
+        "transfers",
+        "pipe",
+        "pipes",
+        "stream",
+        "streams",
+        "frame",
+        "frames",
+        "framing",
+        "websocket",
+        "conformance",
+        "corpus",
+        "protocol",
+        "handshake",
+        "pairing",
+        "signing",
+        "signed",
+        "signature",
+        "trust",
+        "policy",
+        "sandbox",
+        "artifact",
+        "exec",
+        "login",
+        "sync",
+        "crypto",
+        "encryption",
+        "decryption",
+        "auth",
+        "authentication",
+        "consent",
+        "qr",
+        "offline",
+        "backup",
+        "recovery",
+        "ipc",
+        "matrix"
+      ]
+    }
+  },
+  "commands": {
+    "defaultTestCommand": "cargo +1.96.0 test --locked --workspace",
+    "defaultFinalizeGates": [
+      "cargo +1.96.0 fmt --all --check",
+      "cargo +1.96.0 clippy --locked --workspace --all-targets -- -D warnings",
+      "node scripts/check-docs.mjs"
+    ]
+  }
+}

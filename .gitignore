@@ -34,6 +34,10 @@ docs/evidence/**/*.private.*
 # Local agent/tooling metadata; not part of product source.
 .claude/
 
+# Switchyard (ADW) per-run state, written to agents/<adw-id>/ inside the
+# (work)tree. Its --worktree preflight hard-fails when this is not ignored.
+/agents/
+
 # impeccable live-mode ephemeral session state (config.json + design.json are shared)
 .impeccable/live/sessions/
 
