@@ -186,9 +186,17 @@ enum DeferredWake {
 struct Deferred {
     bus: Arc<EventBus>,
     work: Vec<DeferredWake>,
+    /// Fired after this batch delivers — a synchronous caller (`stop`) that
+    /// found another thread draining awaits it, so "already draining" is
+    /// never mistaken for "already delivered".
+    done: Option<oneshot::Sender<()>>,
 }
 
 impl Deferred {
+    fn is_empty(&self) -> bool {
+        self.work.is_empty() && self.done.is_none()
+    }
+
     fn deliver(self) {
         for wake in self.work {
             match wake {
@@ -200,6 +208,9 @@ impl Deferred {
                 DeferredWake::Emit(event) => self.bus.broadcast(event),
                 DeferredWake::CloseBus => self.bus.close(),
             }
+        }
+        if let Some(done) = self.done {
+            let _ = done.send(());
         }
     }
 }
@@ -265,6 +276,7 @@ impl Shared {
         let mut deferred = Deferred {
             bus: self.bus.clone(),
             work: Vec::new(),
+            done: None,
         };
         let now = self.now;
         let actions = self.core.step(input, now);
@@ -289,7 +301,11 @@ impl Shared {
 const OUTBOUND_LOG_CAP: usize = 1024;
 
 /// The shared runtime: the locked driver state plus the serialized delivery
-/// queue. Deferred wake batches are enqueued **while still holding the
+/// queue. The queue's boundedness rests on the async waker contract (`wake`
+/// must not block): every batch is drained promptly by the active drainer,
+/// and empty batches never enqueue. A waker that blocks indefinitely is a
+/// broken executor contract, not a kernel state — the same assumption every
+/// wake-delivery queue in the ecosystem makes. Deferred wake batches are enqueued **while still holding the
 /// `Shared` lock** — so queue order is exactly drive order, across every
 /// cloned handle and thread — and drained by a single drainer after the lock
 /// drops, so wakers run outside the lock yet cross-thread delivery can never
@@ -355,11 +371,15 @@ impl KernelBackend {
         {
             let mut shared = self.lock();
             let deferred = shared.drive(input);
-            self.runtime
-                .delivery
-                .lock()
-                .expect("delivery queue poisoned")
-                .push_back(deferred);
+            // An empty batch delivers nothing: skip the queue so idempotent
+            // no-op inputs cannot grow it behind a stalled drainer.
+            if !deferred.is_empty() {
+                self.runtime
+                    .delivery
+                    .lock()
+                    .expect("delivery queue poisoned")
+                    .push_back(deferred);
+            }
         }
         self.runtime.drain_delivery();
     }
@@ -404,8 +424,25 @@ impl ClientBackend for KernelBackend {
     fn stop(&self) -> BoxFuture<'static, ()> {
         // Initiation is eager (the refusal boundary is set now); the core
         // settles synchronously, so the returned future is already resolved.
-        self.drive_serialized(Input::Stop);
-        Box::pin(async {})
+        // Stop's future resolves only after ITS batch delivers: if another
+        // thread owns the drainer, "already draining" must not read as
+        // "already delivered" — §K11's total-stop ordering includes the
+        // settlements and the bus close.
+        let (done_tx, done_rx) = oneshot::channel();
+        {
+            let mut shared = self.lock();
+            let mut deferred = shared.drive(Input::Stop);
+            deferred.done = Some(done_tx);
+            self.runtime
+                .delivery
+                .lock()
+                .expect("delivery queue poisoned")
+                .push_back(deferred);
+        }
+        self.runtime.drain_delivery();
+        Box::pin(async move {
+            let _ = done_rx.await;
+        })
     }
 }
 
@@ -620,9 +657,23 @@ mod in_memory {
         }
 
         /// Complete a dial with an explicit token — used to prove a straggler
-        /// completion from a retired attempt is fenced.
+        /// completion from a retired attempt is fenced. An accepted token
+        /// (the outstanding attempt's) also clears the dialing flag, exactly
+        /// as `connect` does; a rejected stale token leaves it untouched.
         pub fn connect_at_token(&self, token: u64) {
-            self.drive_serialized(Input::Connected { token });
+            {
+                let mut shared = self.lock();
+                if shared.core.pending_dial() == Some(token) {
+                    shared.dialing = false;
+                }
+                let deferred = shared.drive(Input::Connected { token });
+                self.runtime
+                    .delivery
+                    .lock()
+                    .expect("delivery queue poisoned")
+                    .push_back(deferred);
+            }
+            self.runtime.drain_delivery();
         }
 
         /// Refuse a dial with an explicit token — used to prove a refusal
