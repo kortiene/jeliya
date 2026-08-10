@@ -388,7 +388,9 @@ the app is a *fold* (a replay) over Iroh Rooms' signed event log.
 |---|---|
 | `crates/jeliya-core` | The only consumer of the `iroh-rooms` SDK: room supervisor (one node per open room), event materializer (log → view-models), local state (room names), and the transport-free protocol engine (dispatch + pushes) every transport drives. |
 | `crates/jeliyad` | The resident daemon: a thin local-only WebSocket shell over the `jeliya-core` engine (see `docs/PROTOCOL.md`). |
-| `crates/jeliya-ffi` | C-ABI shim over `jeliya-core` for the mobile in-process (FFI) transport. |
+| `crates/jeliya-ffi` | C-ABI shim over `jeliya-core` for the mobile in-process (FFI) transport. Quarantined from the active build; deleted once the clean-slate DirectClient candidate passes (#202). |
+| `crates/jeliya-api` | The Iroh-free typed protocol API (clean-slate stack, #163): compile-time-paired requests, outputs, pushes, errors, and shared value types for every approved v2 operation. No `serde_json::Value` in public types; `wasm32-unknown-unknown`-safe. |
+| `crates/jeliya-client` | The single UI-facing Rust client contract for the clean-slate Dioxus stack (#167): a cloneable `ClientHandle` with typed `call<O>`, multi-consumer event fan-out, an honest observable lifecycle, a total may-have-executed error model, and a deterministic in-process mock. Entry point for the transport kernel (#168). |
 | `dart/jeliya_protocol` | Pure-Dart typed client for the protocol: typed models + wrappers for all 24 RPCs, WebSocket and in-process FFI transports (`package:jeliya_protocol/ffi.dart`), sidecar supervisor, mock client for tests. |
 | `app/` | The native Flutter app: macOS and Linux desktop clients at parity with the web UI (English + French), plus a phone bottom-tab layout below 900dp and the Android build running the protocol in-process (FFI). Linux is buildable from source but has no published app artifact. |
 | `ui/` | The web UI the daemon serves (`embed-ui`): Vite + React, implements `mockups/`. It remains the only GUI shipped in Windows and Linux releases, and the reference client the native app tracks. |
