@@ -61,6 +61,7 @@ retained as a valid, dated evidence record about the revision it examined.
 - [v0.6.1 evidence boundary](evidence/v0.6.1/index.md) - Empty qualification boundary reserved for fresh, signed v0.6.1 manifests after candidate designation.
 - [Historical Gate A result](gate-a-result.md) - Older direct-connectivity evidence that does not certify the v0.5.0 candidate.
 - [Signing and notarization](signing-notarization.md) - Release-security plan for macOS and Windows artifacts.
+- [Native update, signing, and anti-rollback policy](native-update-policy.md) - Decision record for whether each published native channel has an updater, how update artifacts and metadata are authenticated, and the single-generation anti-rollback, fail-closed UX, recovery, diagnostics, and evidence contract. Decided and not yet built.
 
 ## Language, identity, and governance
 
