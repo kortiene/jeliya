@@ -407,7 +407,13 @@ impl Core {
             at: now.saturating_add(delay),
         });
         self.attempt += 1;
-        self.transition(State::Interrupted, actions);
+        // Honest labels: `Interrupted` is reserved for "was Ready, lost
+        // usability" (the public State contract). A retry of the INITIAL
+        // activation stays `Connecting` — no session was ever established,
+        // so nothing was interrupted.
+        if self.state != State::Connecting {
+            self.transition(State::Interrupted, actions);
+        }
     }
 
     fn on_gate_refused(&mut self, token: u64, now: Tick, actions: &mut Vec<Action>) {
@@ -1484,7 +1490,11 @@ mod tests {
             },
             Tick::ZERO,
         );
-        assert_eq!(core.state(), State::Interrupted);
+        assert_eq!(
+            core.state(),
+            State::Connecting,
+            "an initial-activation retry stays Connecting"
+        );
         let t1 = first_armed_timer(&failed).expect("first retry scheduled");
         let dial = core.step(Input::TimerFired(t1), Tick(1_000));
         assert!(dial.iter().any(|a| matches!(a, Action::Dial { .. })));
@@ -1494,7 +1504,7 @@ mod tests {
             },
             Tick(1_001),
         );
-        assert_eq!(core.state(), State::Interrupted);
+        assert_eq!(core.state(), State::Connecting);
         let t2 = first_armed_timer(&failed).expect("second retry scheduled");
         let dial = core.step(Input::TimerFired(t2), Tick(2_000));
         assert!(dial.iter().any(|a| matches!(a, Action::Dial { .. })));

@@ -856,12 +856,12 @@ fn reconnect_exhaustion_fails_and_settles_outstanding_calls() {
 
     // Three dial failures (with a clock tick between each to fire the
     // backoff timer) exhaust the two-attempt budget and land in Failed.
-    controller.fail_dial(); // attempt 0 → 1, Interrupted
-    assert_eq!(handle.state(), State::Interrupted);
+    controller.fail_dial(); // attempt 0 → 1; initial activation stays Connecting
+    assert_eq!(handle.state(), State::Connecting);
     controller.advance(1); // fire backoff timer → Dial
 
-    controller.fail_dial(); // attempt 1 → 2, Interrupted
-    assert_eq!(handle.state(), State::Interrupted);
+    controller.fail_dial(); // attempt 1 → 2, still Connecting
+    assert_eq!(handle.state(), State::Connecting);
     controller.advance(1); // fire backoff timer → Dial
 
     controller.fail_dial(); // attempt 2 >= max 2 → fail_all → Failed

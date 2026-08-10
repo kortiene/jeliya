@@ -1,27 +1,21 @@
 //! Deduplication and replay policy: opt-in, bounded, guaranteed-only (§K5).
 //!
 //! The protocol's idempotency ledger is keyed on `(session principal, op_id)`,
-//! and only the mutating operations that accept an envelope `op_id` guarantee
-//! "a replayed `op_id` returns the original result and performs no second
+//! and only the operations in its **`op_id`-deduplicated set** guarantee "a
+//! replayed `op_id` returns the original result and performs no second
 //! effect." The kernel encodes exactly that guarantee as a per-call
-//! [`ReplayPolicy`] decided at admission:
+//! [`ReplayPolicy`] decided at admission, behind **four** gates, ALL required:
 //!
-//! | Call shape (from `ErasedCall`)                         | Policy                  |
-//! |--------------------------------------------------------|-------------------------|
-//! | `mutating == true` **and** `op_id == Some(_)`          | `ReplayableUnderOpId`   |
-//! | `mutating == true` **and** `op_id == None`             | `Never`                 |
-//! | `mutating == false` (any `op_id`)                      | `Never`                 |
+//! | Gate | Why |
+//! |---|---|
+//! | `mutating == true` | reads are simply re-issued, never "replayed" |
+//! | `op_id == Some(_)` | the dedup ledger is keyed on it |
+//! | the op is in the protocol's 13-op deduplicated set | outside it the daemon ignores the key: a replay returns the SECOND invocation's view — `created: false` for an ensure that created, `shutdown_in_progress` for an executed `daemon.stop` (whose typed classification would falsely claim `DefinitelyNot`) — a wrong answer, not a duplicate |
+//! | the driver certifies a stable session principal | an ephemeral principal resets the ledger per connection, so a replay re-executes |
 //!
-//! Only `mutating && op_id.is_some()` earns [`ReplayPolicy::ReplayableUnderOpId`].
-//! This is deliberately **broader** than the daemon's dedup-ledger set: a
-//! `Dedup::Key` on a mutating operation outside that set (`daemon.stop`,
-//! `transfer.cancel`, the naturally idempotent mutations, connection-scoped
-//! `stream.*`) is also classified replayable, because for every such operation
-//! the protocol's idempotency table makes a repeat safe *within a daemon
-//! lifetime* — naturally idempotent, connection-scoped re-issue, or a terminal
-//! typed error (`daemon.stop` answers `shutdown_in_progress`). The risk
-//! direction is therefore a harmless duplicate answer, never a silent double
-//! effect; an exact per-operation table remains the §14 Q3 alternative.
+//! Everything failing any gate is [`ReplayPolicy::Never`] and settles a
+//! disconnect honestly as `Disconnected { Unknown }`. (The earlier
+//! `mutating && op_id` heuristic was overturned in review — see spec §K5.)
 
 use jeliya_api::OpId;
 
