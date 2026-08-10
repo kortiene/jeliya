@@ -285,7 +285,7 @@ pub(crate) trait Driver: Send + 'static { /* dial(), now() -> Tick, sleep(until:
 - `deliver_reply(id, out)`, `deliver_error(id, ApiError)`, `deliver_push(ClientEvent)`, `deliver_malformed()`, `deliver_late(id)` — inbound framing under test control.
 - `advance(ticks)` — the virtual clock, the sole source of time; fires due timers.
 - `connect(generation)`, `interrupt(reason)`, `close(reason)` — lifecycle transitions.
-- `fail_send()` — a send/close race: the transport reports the pipe broken exactly when the kernel tries to send.
+- `fail_send()` — a send/close race: the transport reports the pipe broken exactly when the kernel tries to send. Every frame in the failing batch is dropped, and everything that batch had flushed classifies as sent (held if replayable, `Disconnected { Unknown }` otherwise) — a real transport cannot prove that writes queued behind a failed one never left the host, so the driver mirrors the weakest honest claim; a false `DefinitelyNot` would invite an unguarded retry, while `Unknown` only withholds a provable-negative.
 
 No wall clock, no timers, no RNG syscall, no scheduling dependence — the same guarantees the #167 mock gives the seam, now for the kernel. This driver is the reference the four real adapters are diffed against under #175.
 

@@ -391,8 +391,17 @@ mod in_memory {
 
         /// Script the next `Action::Send` to fail at the transport — the
         /// send/close race §K14 names: the pipe breaks exactly as the kernel
-        /// writes. The frame is dropped and the loss surfaces to the core as
-        /// `Interrupted` after the current step's actions apply.
+        /// writes. Every frame in the failing batch is dropped and the loss
+        /// surfaces to the core as `Interrupted` after the batch applies.
+        ///
+        /// Everything the failing batch had flushed is classified as sent —
+        /// held if replayable, `Disconnected { Unknown }` otherwise. That is
+        /// deliberate: a real transport cannot prove that writes queued
+        /// behind a failed one never left the host (socket buffering), so
+        /// the reference driver mirrors the weakest honest claim rather than
+        /// a `DefinitelyNot` no adapter could truthfully make. `Unknown` is
+        /// the safe direction — it only ever withholds a provable-negative,
+        /// never invites an unguarded retry.
         pub fn fail_send(&self) {
             self.lock().fail_next_send = true;
         }

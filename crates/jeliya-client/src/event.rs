@@ -323,6 +323,38 @@ impl EventBus {
                                 merged = true;
                             }
                         }
+                        // Preserve the loss boundary across coalescing: a
+                        // pending drop count must be visible BEFORE the
+                        // coalesced window it overlaps, or reconciliation is
+                        // delayed behind a transition broadcast after the
+                        // loss. Exactly one Lagged marker sits directly
+                        // before the coalescing tail — inserted once, then
+                        // accumulated into — so the bound holds.
+                        if merged && state.dropped > 0 {
+                            let dropped = std::mem::take(&mut state.dropped);
+                            let tail = state.buffer.len() - 1;
+                            let absorbed = tail > 0
+                                && match &mut state.buffer[tail - 1] {
+                                    ClientEvent::Lagged {
+                                        room_id,
+                                        dropped: pending,
+                                    } => {
+                                        *pending = pending.saturating_add(dropped);
+                                        *room_id = None;
+                                        true
+                                    }
+                                    _ => false,
+                                };
+                            if !absorbed {
+                                state.buffer.insert(
+                                    tail,
+                                    ClientEvent::Lagged {
+                                        room_id: None,
+                                        dropped,
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -514,6 +546,79 @@ mod tests {
             state.buffer.len(),
             len_before,
             "a trailing transition coalesces without growth"
+        );
+    }
+
+    /// The loss boundary survives coalescing: a pending drop count is
+    /// reported BEFORE the coalesced window it overlaps (exactly one Lagged
+    /// marker directly before the coalescing tail, accumulated into), so
+    /// reconciliation is never delayed behind a merged transition.
+    #[test]
+    fn loss_marker_precedes_the_coalesced_window() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64 - 1) {
+            bus.broadcast(ClientEvent::ResyncRequired {
+                room_id: RoomId::new("r"),
+                from_pos: pos,
+            });
+        }
+        // The transition appends at the tail; the mailbox is now at capacity.
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        // A push is lost, then a transition coalesces into the tail: the
+        // loss marker must land BEFORE the merged window.
+        bus.broadcast(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: 9_999,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Interrupted,
+            to: State::Ready,
+        });
+        {
+            let state = sub.state.lock().expect("subscriber poisoned");
+            let len = state.buffer.len();
+            assert!(
+                matches!(
+                    state.buffer[len - 2],
+                    ClientEvent::Lagged { dropped: 1, .. }
+                ),
+                "the loss marker sits directly before the coalesced tail"
+            );
+            assert!(matches!(
+                state.buffer[len - 1],
+                ClientEvent::StateChanged {
+                    to: State::Ready,
+                    ..
+                }
+            ));
+        }
+        // Another loss + flap: the existing marker accumulates, no growth.
+        let len_before = sub.state.lock().expect("subscriber poisoned").buffer.len();
+        bus.broadcast(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: 10_000,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert_eq!(
+            state.buffer.len(),
+            len_before,
+            "the marker absorbs, no growth"
+        );
+        let len = state.buffer.len();
+        assert!(
+            matches!(
+                state.buffer[len - 2],
+                ClientEvent::Lagged { dropped: 2, .. }
+            ),
+            "the accumulated loss count is honest"
         );
     }
 }

@@ -595,9 +595,14 @@ impl Core {
                 result,
             } => self.on_reply(generation, id, result, now, actions),
             Inbound::Push { generation, event } => {
-                // Fence stale-generation pushes: a teardown from a prior
-                // connection cannot overwrite newer presence state (§K7).
-                if generation == self.generation.current() {
+                // Fence pushes twice over (§K7): the generation must match —
+                // a teardown from a prior connection cannot overwrite newer
+                // presence state — AND the connection must be Ready. Before
+                // the first connect both sides sit at generation 0, and after
+                // an interrupt the generation is unchanged until reconnect,
+                // so equality alone would admit pre-gate traffic or a retired
+                // transport's stragglers.
+                if self.state == State::Ready && generation == self.generation.current() {
                     actions.push(Action::Emit(event));
                 }
             }
@@ -1783,6 +1788,43 @@ mod tests {
                 }))
             ),
             "a tiny input with a huge op_id must not slip past the byte bound"
+        );
+    }
+
+    /// §K7: a push is emitted only on a Ready connection with a matching
+    /// generation — before the first connect both sides sit at generation 0,
+    /// and after an interrupt the generation is unchanged until reconnect,
+    /// so equality alone would admit pre-gate or retired-transport traffic.
+    #[test]
+    fn pushes_outside_ready_are_fenced() {
+        let mut core = Core::new(limits(), 1);
+        let push = |generation| {
+            Input::Inbound(Inbound::Push {
+                generation,
+                event: crate::event::ClientEvent::ResyncRequired {
+                    room_id: jeliya_api::RoomId::new("r"),
+                    from_pos: 0,
+                },
+            })
+        };
+        // Idle, generation 0: a push with the matching generation is fenced.
+        let idle = core.step(push(0), Tick::ZERO);
+        assert!(
+            idle.iter().all(|a| !matches!(a, Action::Emit(_))),
+            "pre-gate traffic must not reach subscribers"
+        );
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let ready = core.step(push(core.generation()), Tick::ZERO);
+        assert!(
+            ready.iter().any(|a| matches!(a, Action::Emit(_))),
+            "a Ready, matching-generation push is emitted"
+        );
+        core.step(Input::Interrupted, Tick::ZERO);
+        let retired = core.step(push(core.generation()), Tick::ZERO);
+        assert!(
+            retired.iter().all(|a| !matches!(a, Action::Emit(_))),
+            "a retired transport's straggler must not reach subscribers"
         );
     }
 
