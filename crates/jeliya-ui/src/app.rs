@@ -44,6 +44,14 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
             // missed. Then start the client and drive the read concurrently
             // with event consumption.
             let mut events = handle.subscribe();
+            // Recover the current lifecycle state at subscription time. The
+            // subscription is live-only, so if the composition driver
+            // (compose.rs WebRoot) already transitioned to Ready before this
+            // future first polled, the StateChanged events were never buffered
+            // here. Reading state() after subscribing is safe: any transition
+            // that fires after subscribe() AND concurrently with this read is
+            // buffered by the subscription, so there is no gap.
+            ui.write().lifecycle = handle.state();
             handle.start();
 
             let read = {
