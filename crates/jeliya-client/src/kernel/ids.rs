@@ -15,10 +15,15 @@
 //! in-flight id. Because the outstanding set is bounded by
 //! `queue_depth + in_flight` (both far below `2^53`), a free id always exists;
 //! on the astronomically unreachable approach to `MAX_REQUEST_ID` the counter
-//! wraps to zero and resumes skipping. A late reply bearing a wrapped-but-since
-//! reused id is additionally rejected by generation fencing (§K7), because ids
-//! reset per connection — a reused id can only collide *within* one connection,
-//! where the skip-outstanding rule already forbids it.
+//! wraps to zero and resumes skipping. The skip rule covers *outstanding* ids
+//! only: post-wrap, an id from a long-**completed** call of the same
+//! connection could in principle be reissued, and a delayed duplicate reply
+//! for that ancient call would then resolve to the new entry — generation
+//! fencing cannot help within one connection. That state requires `2^53`
+//! requests on a single live connection (~285 years at one million requests
+//! per second) and is **outside the design envelope, recorded as such**: a
+//! deployment that could approach the ceiling must retire the connection
+//! first (a reconnect resets the id space and its generation).
 
 use jeliya_api::{RequestId, MAX_REQUEST_ID};
 

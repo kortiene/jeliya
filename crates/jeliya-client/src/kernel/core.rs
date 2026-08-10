@@ -246,8 +246,12 @@ impl Core {
         if self.state == State::Interrupted && self.backoff_timer.is_some() {
             return;
         }
-        // Reclassify every sent call: hold the replayable, settle the rest,
-        // drop tombstones. Collect first to avoid mutating during iteration.
+        // Reclassify every sent call: settle the already-expired as Timeout
+        // first (the absolute deadline binds regardless of whether the close
+        // or the due timer processes first, matching on_reply), then hold the
+        // replayable, settle the rest, drop tombstones. Collect first to
+        // avoid mutating during iteration.
+        let mut expired = Vec::new();
         let mut hold = Vec::new();
         let mut disconnect = Vec::new();
         let mut drop_cancelled = Vec::new();
@@ -255,6 +259,8 @@ impl Core {
             if entry.is_sent() {
                 if entry.cancelled {
                     drop_cancelled.push(call_id);
+                } else if entry.deadline_at <= now {
+                    expired.push(call_id);
                 } else if entry.replay.is_replayable() {
                     hold.push(call_id);
                 } else {
@@ -265,9 +271,16 @@ impl Core {
         // The ledger iterates in hash order; sort by `CallId` (monotonic at
         // dispatch, queue is FIFO) so held calls replay in original send order
         // and the whole action stream is deterministic (§K13).
+        expired.sort_unstable();
         hold.sort_unstable();
         disconnect.sort_unstable();
         drop_cancelled.sort_unstable();
+        for call_id in expired {
+            if let Some(entry) = self.ledger.take(call_id) {
+                actions.push(Action::CancelTimer(entry.deadline_timer));
+                actions.push(Action::Settle(call_id, Err(CallError::Timeout)));
+            }
+        }
         for call_id in hold {
             if let Some(entry) = self.ledger.get_mut(call_id) {
                 entry.phase = Phase::Queued;
@@ -1789,6 +1802,52 @@ mod tests {
             ),
             "a tiny input with a huge op_id must not slip past the byte bound"
         );
+    }
+
+    /// The absolute deadline binds at an interrupt exactly as it does for a
+    /// reply: a close processed at or past `deadline_at` settles the expired
+    /// call `Timeout` — never `Disconnected`, never held for a replay past
+    /// its budget — regardless of close-vs-timer processing order.
+    #[test]
+    fn an_interrupt_at_the_deadline_settles_timeout_not_disconnected() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        // One replayable and one plain call, both sent at t0.
+        let replayable = core.alloc_call_id();
+        core.step(
+            Input::Dispatch {
+                call_id: replayable,
+                call: erased("message.send", true, Some("op-exp")),
+            },
+            Tick::ZERO,
+        );
+        let plain = core.alloc_call_id();
+        core.step(
+            Input::Dispatch {
+                call_id: plain,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        // The close arrives exactly at the shared deadline, before the timers.
+        let at = Tick::ZERO.saturating_add(limits().default_call_deadline);
+        let interrupted = core.step(Input::Interrupted, at);
+        assert!(
+            matches!(
+                find_settle(&interrupted, replayable),
+                Some(Err(CallError::Timeout))
+            ),
+            "an expired replayable settles Timeout, it is not held past its budget"
+        );
+        assert!(
+            matches!(
+                find_settle(&interrupted, plain),
+                Some(Err(CallError::Timeout))
+            ),
+            "an expired plain call settles Timeout, not Disconnected"
+        );
+        assert_eq!(core.replay_hold_len(), 0);
     }
 
     /// §K7: a push is emitted only on a Ready connection with a matching
