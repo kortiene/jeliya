@@ -68,6 +68,28 @@ impl Admission {
         Ok(())
     }
 
+    /// Convert a replayable call's charge to a **byte-only reservation** at
+    /// send: the count slot frees (`queue_depth` counts admitted-but-unsent
+    /// calls; in-flight work is throttled, never rejected) while the bytes
+    /// stay reserved for a possible hold-and-requeue.
+    pub(crate) fn release_count_keep_bytes(&mut self) {
+        self.queued_count = self.queued_count.saturating_sub(1);
+    }
+
+    /// Restore the count slot when a held replayable re-enters the unsent
+    /// queue (its bytes never left). The count may transiently exceed
+    /// `queue_depth` when a full queue meets held work — held calls cannot
+    /// be refused; new admissions are, which is the backpressure that
+    /// matters.
+    pub(crate) fn charge_count_unchecked(&mut self) {
+        self.queued_count = self.queued_count.saturating_add(1);
+    }
+
+    /// Release a sent replayable's byte-only reservation at settle.
+    pub(crate) fn release_bytes_only(&mut self, payload_bytes: u64) {
+        self.queued_bytes = self.queued_bytes.saturating_sub(payload_bytes);
+    }
+
     /// Release one previously-admitted call's charge (on send-completion via a
     /// settle, on cancellation, or on disconnect). Saturating so a double
     /// release can never underflow into a spuriously huge free budget.

@@ -336,7 +336,7 @@ impl Core {
         for call_id in expired {
             if let Some(entry) = self.ledger.take(call_id) {
                 if entry.holds_charge {
-                    self.admission.release(entry.payload_bytes);
+                    self.admission.release_bytes_only(entry.payload_bytes);
                 }
                 actions.push(Action::CancelTimer(entry.deadline_timer));
                 actions.push(Action::Settle(call_id, Err(CallError::Timeout)));
@@ -345,18 +345,19 @@ impl Core {
         for call_id in hold {
             if let Some(entry) = self.ledger.get_mut(call_id) {
                 entry.phase = Phase::Queued;
-                // The held payload re-enters the queue under the charge it
-                // has held since admission: a replayable call never releases
-                // at send (the charge IS the requeue reservation), so no
-                // recharge happens here and the caps cannot be exceeded.
+                // The held payload re-enters the unsent queue: its bytes
+                // never left the reservation, and its count slot is restored
+                // (transient count overshoot is the held-work-cannot-be-
+                // refused case; new admissions are refused meanwhile).
                 debug_assert!(entry.holds_charge, "a replayable retains its charge");
             }
+            self.admission.charge_count_unchecked();
             self.replay_hold.push_back(call_id);
         }
         for call_id in disconnect {
             if let Some(entry) = self.ledger.take(call_id) {
                 if entry.holds_charge {
-                    self.admission.release(entry.payload_bytes);
+                    self.admission.release_bytes_only(entry.payload_bytes);
                 }
                 actions.push(Action::CancelTimer(entry.deadline_timer));
                 actions.push(Action::Settle(
@@ -627,15 +628,15 @@ impl Core {
                     let mut release = None;
                     if let Some(entry) = self.ledger.get_mut(call_id) {
                         entry.cancelled = true;
-                        // A cancelled call never replays: its requeue
-                        // reservation (if any) is released with the tombstone.
+                        // A cancelled call never replays: its byte-only
+                        // reservation is released with the tombstone.
                         if entry.holds_charge {
                             entry.holds_charge = false;
                             release = Some(entry.payload_bytes);
                         }
                     }
                     if let Some(bytes) = release {
-                        self.admission.release(bytes);
+                        self.admission.release_bytes_only(bytes);
                     }
                     self.push_tombstone(call_id, actions);
                     // The future is gone; drop its reply sender now. The ledger
@@ -704,17 +705,27 @@ impl Core {
                 None => continue,
             };
             self.ledger.mark_sent(call_id, request_id, generation);
-            // A NON-replayable send leaves the byte-bounded queue for good:
-            // release its charge. A replayable call RETAINS its charge while
-            // sent — its payload is retained for a possible hold-and-requeue,
-            // so releasing at send would let an interruption recreate queued
-            // work past the caps (round 16); the charge is the reservation
-            // that makes the requeue always legal, released only at settle.
-            if holds_charge && !replayable {
-                if let Some(entry) = self.ledger.get_mut(call_id) {
-                    entry.holds_charge = false;
+            if holds_charge {
+                if replayable {
+                    // A replayable keeps a BYTE-ONLY reservation while sent:
+                    // the payload stays resident for a hold-and-requeue, so
+                    // its bytes stay reserved — but the count slot frees,
+                    // because queue_depth counts admitted-but-unsent calls
+                    // and in-flight work is throttled, never rejected.
+                    self.admission.release_count_keep_bytes();
+                } else {
+                    // A non-replayable will never re-send: release the whole
+                    // charge AND drop the payload-bearing fields — retaining
+                    // up to in_flight payloads after their charges were
+                    // released would hold ~in_flight × outbound_bytes outside
+                    // the advertised bound.
+                    if let Some(entry) = self.ledger.get_mut(call_id) {
+                        entry.holds_charge = false;
+                        entry.input = RawJson::from_string(String::new());
+                        entry.op_id = None;
+                    }
+                    self.admission.release(payload_bytes);
                 }
-                self.admission.release(payload_bytes);
             }
             self.in_flight_count += 1;
             actions.push(Action::Send(frame));
@@ -765,10 +776,10 @@ impl Core {
             return;
         };
         let entry = self.ledger.take(call_id).expect("resolved entry exists");
-        // A sent replayable still holds its admission charge (the requeue
-        // reservation); settling releases it.
+        // A sent replayable still holds its byte-only reservation; settling
+        // releases it (the count slot freed at send).
         if entry.holds_charge {
-            self.admission.release(entry.payload_bytes);
+            self.admission.release_bytes_only(entry.payload_bytes);
         }
         actions.push(Action::CancelTimer(entry.deadline_timer));
         if !entry.cancelled {
@@ -833,14 +844,14 @@ impl Core {
                     entry.cancelled = true;
                     entry.deadline_timer = reclaim;
                     // A timed-out call is settled and never replays: release
-                    // its requeue reservation with the tombstone.
+                    // its byte-only reservation with the tombstone.
                     if entry.holds_charge {
                         entry.holds_charge = false;
                         release = Some(entry.payload_bytes);
                     }
                 }
                 if let Some(bytes) = release {
-                    self.admission.release(bytes);
+                    self.admission.release_bytes_only(bytes);
                 }
                 actions.push(Action::ArmTimer {
                     id: reclaim,
@@ -2329,6 +2340,82 @@ mod tests {
             "the retry completes normally"
         );
         assert_eq!(core.generation(), generation + 1);
+    }
+
+    /// §K2: a sent replayable reserves BYTES only — queue_depth counts
+    /// admitted-but-unsent calls, and in-flight work throttles, never
+    /// rejects.
+    #[test]
+    fn a_sent_replayable_does_not_consume_queue_depth() {
+        let mut core = Core::new(
+            KernelLimits {
+                queue_depth: 1,
+                in_flight: 2,
+                ..limits()
+            },
+            1,
+            true,
+        );
+        core.step(Input::Start, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
+        let sent = core.alloc_call_id();
+        let actions = core.step(
+            Input::Dispatch {
+                call_id: sent,
+                call: erased("message.send", true, Some("op-qd")),
+            },
+            Tick::ZERO,
+        );
+        assert!(actions.iter().any(|a| matches!(a, Action::Send(_))));
+        // The count slot freed at send: a second admission fits queue_depth=1.
+        let second = core.alloc_call_id();
+        let admitted = core.step(
+            Input::Dispatch {
+                call_id: second,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        assert!(
+            !matches!(
+                find_settle(&admitted, second),
+                Some(Err(CallError::QueueFull { .. }))
+            ),
+            "a sent replayable must not consume the queue-depth slot"
+        );
+    }
+
+    /// §K2: a non-replayable payload is dropped at send — it can never
+    /// re-send, so retaining it would hold bytes outside the released bound.
+    #[test]
+    fn a_non_replayable_payload_is_dropped_at_send() {
+        let mut core = Core::new(limits(), 1, true);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
+        let call = core.alloc_call_id();
+        core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        let entry = core.ledger.get(call).expect("sent entry");
+        assert!(
+            entry.input.as_str().is_empty(),
+            "the sent non-replayable's payload is dropped"
+        );
+        assert!(entry.op_id.is_none(), "and its op_id is dropped");
     }
 
     /// §K5/§K13: held replayable calls re-send in their original send order
