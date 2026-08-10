@@ -236,6 +236,16 @@ impl Core {
         ) {
             return;
         }
+        // Coalesce duplicate loss signals while the reconnect backoff is
+        // armed (a flush can emit several sends that each observe the same
+        // closed transport): the first signal already reclassified every
+        // sent call and scheduled the retry, so another would burn a
+        // reconnect attempt with no dial and orphan the armed timer. A
+        // failure arriving AFTER the timer fired (backoff_timer is None, a
+        // dial is in progress) is a real new attempt and proceeds.
+        if self.state == State::Interrupted && self.backoff_timer.is_some() {
+            return;
+        }
         // Reclassify every sent call: hold the replayable, settle the rest,
         // drop tombstones. Collect first to avoid mutating during iteration.
         let mut hold = Vec::new();
@@ -423,7 +433,12 @@ impl Core {
             ));
             return;
         }
-        let payload_bytes = call.input.as_str().len() as u64;
+        // The charge covers everything the ledger retains per queued call that
+        // scales with caller input: the serialized `in` AND the envelope
+        // `op_id` — `OpId` has no length cap, so an uncharged key would let
+        // tiny-input/huge-key calls slip past the byte bound (AC-1, §K12).
+        let payload_bytes = call.input.as_str().len() as u64
+            + call.op_id.as_ref().map_or(0, |id| id.as_str().len() as u64);
         if let Err(queue_full) = self.admission.try_admit(payload_bytes) {
             // QueueFull is visible, never absorbed (§K2). DefinitelyNot.
             actions.push(Action::Settle(call_id, Err(queue_full)));
@@ -1228,12 +1243,21 @@ mod tests {
             1,
         );
         core.step(Input::Start, Tick::ZERO); // Connecting + Dial
-                                             // Two recoverable losses arm backoff; the third exhausts the budget.
-        core.step(Input::Interrupted, Tick::ZERO);
+                                             // Each loss schedules a backoff whose timer fires a real dial before
+                                             // the next loss (duplicate losses while a backoff is armed coalesce
+                                             // and consume no attempt). Two scheduled retries fit the budget; the
+                                             // failure after the second retry exhausts it.
+        let loss = core.step(Input::Interrupted, Tick::ZERO);
         assert_eq!(core.state(), State::Interrupted);
-        core.step(Input::Interrupted, Tick::ZERO);
+        let t1 = first_armed_timer(&loss).expect("first retry scheduled");
+        let dial = core.step(Input::TimerFired(t1), Tick(1_000));
+        assert!(dial.iter().any(|a| matches!(a, Action::Dial)));
+        let loss = core.step(Input::Interrupted, Tick(1_001));
         assert_eq!(core.state(), State::Interrupted);
-        let exhausted = core.step(Input::Interrupted, Tick::ZERO);
+        let t2 = first_armed_timer(&loss).expect("second retry scheduled");
+        let dial = core.step(Input::TimerFired(t2), Tick(2_000));
+        assert!(dial.iter().any(|a| matches!(a, Action::Dial)));
+        let exhausted = core.step(Input::Interrupted, Tick(2_001));
         assert!(
             exhausted.iter().any(|a| matches!(a, Action::CancelDial)),
             "exhaustion cancels the dial"
@@ -1697,6 +1721,68 @@ mod tests {
         assert!(
             matches!(find_settle(&reply, call), Some(Ok(_))),
             "one tick before the deadline the payload is delivered"
+        );
+    }
+
+    /// §K10: duplicate loss signals while the backoff is armed coalesce —
+    /// they must not burn reconnect attempts with no dial between them or
+    /// orphan armed timers.
+    #[test]
+    fn duplicate_interruptions_coalesce_while_backoff_is_armed() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let first = core.step(Input::Interrupted, Tick::ZERO);
+        let backoff = first_armed_timer(&first).expect("the first loss arms the backoff");
+        // Several sends observed the same closed transport: duplicates arrive.
+        let dup = core.step(Input::Interrupted, Tick::ZERO);
+        assert!(
+            dup.is_empty(),
+            "a duplicate loss while the backoff is armed is coalesced whole"
+        );
+        // The armed timer still fires and dials — the retry was not consumed.
+        let fired = core.step(Input::TimerFired(backoff), Tick(50));
+        assert!(
+            fired.iter().any(|a| matches!(a, Action::Dial)),
+            "the scheduled dial proceeds"
+        );
+        // A failure AFTER the dial began is a real new attempt.
+        let redial_failed = core.step(Input::Interrupted, Tick(51));
+        assert!(
+            first_armed_timer(&redial_failed).is_some(),
+            "a post-dial failure schedules the next backoff"
+        );
+    }
+
+    /// AC-1/§K12: the outbound byte bound covers the envelope `op_id` too —
+    /// `OpId` has no length cap, so an uncharged key would evade the bound.
+    #[test]
+    fn oversized_dedup_keys_are_charged_against_outbound_bytes() {
+        let mut core = Core::new(
+            KernelLimits {
+                outbound_bytes: 16,
+                ..limits()
+            },
+            1,
+        );
+        let call = core.alloc_call_id();
+        let huge_key = "k".repeat(64);
+        let actions = core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("message.send", true, Some(huge_key.as_str())),
+            },
+            Tick::ZERO,
+        );
+        assert!(
+            matches!(
+                find_settle(&actions, call),
+                Some(Err(CallError::QueueFull {
+                    resource: "outbound_bytes",
+                    ..
+                }))
+            ),
+            "a tiny input with a huge op_id must not slip past the byte bound"
         );
     }
 
