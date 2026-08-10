@@ -635,7 +635,13 @@ impl Core {
                     if let Some(entry) = self.ledger.get_mut(call_id) {
                         entry.cancelled = true;
                         // A cancelled call never replays: its byte-only
-                        // reservation is released with the tombstone.
+                        // reservation is released with the tombstone AND its
+                        // payload-bearing fields are dropped — a tombstone
+                        // retaining the payload would hold up to in_flight
+                        // payloads outside the released bound under
+                        // send/drop churn.
+                        entry.input = RawJson::from_string(String::new());
+                        entry.op_id = None;
                         if entry.holds_charge {
                             entry.holds_charge = false;
                             release = Some(entry.payload_bytes);
@@ -850,7 +856,10 @@ impl Core {
                     entry.cancelled = true;
                     entry.deadline_timer = reclaim;
                     // A timed-out call is settled and never replays: release
-                    // its byte-only reservation with the tombstone.
+                    // its byte-only reservation with the tombstone and drop
+                    // its payload-bearing fields (see the cancel path).
+                    entry.input = RawJson::from_string(String::new());
+                    entry.op_id = None;
                     if entry.holds_charge {
                         entry.holds_charge = false;
                         release = Some(entry.payload_bytes);

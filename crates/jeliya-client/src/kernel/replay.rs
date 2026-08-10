@@ -11,7 +11,7 @@
 //! | `mutating == true` | reads are simply re-issued, never "replayed" |
 //! | `op_id == Some(_)` | the dedup ledger is keyed on it |
 //! | the op is in the protocol's 13-op deduplicated set | outside it the daemon ignores the key: a replay returns the SECOND invocation's view — `created: false` for an ensure that created, `shutdown_in_progress` for an executed `daemon.stop` (whose typed classification would falsely claim `DefinitelyNot`) — a wrong answer, not a duplicate |
-//! | the driver certifies a stable session principal | an ephemeral principal resets the ledger per connection, so a replay re-executes |
+//! | the driver certifies dedup-scope continuity (stable principal AND same daemon incarnation) | an ephemeral principal — or a daemon restart, whose in-memory ledger empties while the storage-generation gate still passes — makes a replay re-execute |
 //!
 //! Everything failing any gate is [`ReplayPolicy::Never`] and settles a
 //! disconnect honestly as `Disconnected { Unknown }`. (The earlier

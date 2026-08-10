@@ -117,13 +117,18 @@ pub struct KernelConfig {
     /// syscall inside the library. It is not a credential; it only decorrelates
     /// reconnect storms.
     pub jitter_seed: u64,
-    /// Whether the driver certifies a **stable session principal** across
-    /// reconnects (a stable `client_id`). The daemon's dedup ledger is keyed
-    /// `(principal, op_id)`, so auto-replay is safe only under this
-    /// certification — an adapter that omits `client_id` gets a fresh
-    /// ephemeral principal per connection, where a replay would re-execute a
-    /// mutation whose reply was lost. **Defaults to `false` (replay
-    /// disabled)**: an adapter must opt in, never the reverse (§K5).
+    /// Whether the driver certifies **continuity of the daemon's complete
+    /// dedup scope** across the replay window: a stable session principal (a
+    /// stable `client_id`) AND the same daemon incarnation. The dedup ledger
+    /// is keyed `(principal, op_id)` and is deliberately in-memory — a
+    /// daemon restart empties it while the storage-generation gate still
+    /// passes, so a replay against the new incarnation re-executes the
+    /// mutation even under a stable `client_id`. `DirectClient` (in-process:
+    /// daemon restart = client restart) can certify; a socket adapter can
+    /// only do so once the protocol's `hello` carries a daemon incarnation
+    /// identity to fence on (tracked as a protocol follow-up). **Defaults to
+    /// `false` (replay disabled)**: an adapter must opt in, never the
+    /// reverse (§K5).
     pub stable_principal: bool,
 }
 
