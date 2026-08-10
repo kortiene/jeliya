@@ -1,0 +1,62 @@
+[package]
+name = "jeliya-client"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Lifecycle-aware UI-facing client seam for Jeliya protocol v2: one cloneable ClientHandle with compile-time-paired calls, an honest client State model, multi-consumer events, a may-have-executed error taxonomy, and a deterministic in-process mock. No Iroh, no WebSocket, no Dioxus in the library."
+
+[features]
+# The deterministic mock ships with the seam but stays default-off so the
+# library's normal build carries no test scaffolding. The seam behaviour suite
+# and the example enable it. The feature adds no dependencies — the mock is
+# hand-rolled and clock-free.
+mock = []
+# The verification component (examples/shared_component.rs) needs Dioxus. This
+# feature pulls it in as an OPTIONAL dependency so that a bare
+# `cargo check/clippy --all-targets` — the MSRV (1.91) and clippy jobs — never
+# compiles the heavy UI-framework tree: an optional dependency is built only
+# when its feature is enabled, unlike a dev-dependency, which `--all-targets`
+# would build unconditionally. The dedicated example-build CI steps pass
+# `--features example`.
+example = ["mock", "dep:dioxus"]
+
+[dependencies]
+jeliya-api = { path = "../jeliya-api" }
+# `serde_json` is confined to the erased `RawJson` boundary in `handle.rs` and
+# the mock; it never appears in a public signature (asserted by
+# `tests/boundaries.rs`).
+serde_json = "1"
+thiserror = "2"
+# Executor-agnostic, wasm32-safe primitives only: `Stream` for the event
+# subscription, `oneshot` for reply correlation, `BoxFuture` for the erased
+# backend. No `tokio`, no runtime, no `executor` feature in the library.
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+# Optional, and only for the verification component: the core `dioxus` crate
+# for RSX + `#[component]`, never a renderer. It is behind the `example`
+# feature (default-off) so it is never part of the library's own build — the
+# seam stays transport- and UI-framework-independent, asserted by
+# `tests/boundaries.rs` scanning the library's normal, no-default-features
+# dependency edges. `minimal` gives the macro, signals, and hooks without
+# pulling `tao`/`wry`/a web renderer, so the component links on native and
+# wasm32 alike.
+dioxus = { version = "=0.7.9", default-features = false, features = ["minimal"], optional = true }
+
+[dev-dependencies]
+# `block_on` for the native behaviour suite; the `executor` feature is dev-only
+# so it never reaches the library or the wasm build.
+futures = { version = "0.3", features = ["std", "async-await", "executor"] }
+
+[[example]]
+name = "shared_component"
+# Gating the example on `example` (which enables `mock` and the optional
+# `dioxus`) keeps `cargo check --all-targets` from compiling Dioxus unless that
+# feature is explicitly requested.
+required-features = ["example"]
+
+[[test]]
+name = "seam"
+# The seam behaviour suite drives the mock: skip compilation (not an error)
+# when the mock feature is off. CI runs the suite explicitly with
+# `cargo test -p jeliya-client --features mock`.
+required-features = ["mock"]

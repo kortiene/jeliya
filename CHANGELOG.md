@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- New workspace crate `crates/jeliya-client` — the single UI-facing Rust client
+  contract for the clean-slate Dioxus stack (#156 program, #167). Delivers
+  compile-time request/output pairing (`ClientHandle::call<O: Operation>`
+  returns `O::Output`; no untyped "call by string"), an honest observable
+  lifecycle (`State`, `start`/`stop`, `ClientEvent::StateChanged`),
+  multi-consumer fan-out events where no consumer can silently steal another's
+  pushes, a total may-have-executed error model (`CallError::execution()` covers
+  every variant), and a deterministic clock-free in-process mock
+  (`feature = "mock"`) that scripts responses, errors, push-before-response,
+  gaps, cancellation, and shutdown reproducibly on wasm and native. A shared
+  Dioxus component compiled against the mock links for both native and
+  `wasm32-unknown-unknown` with no per-component `cfg` logic. Backend erasure
+  stays internal: `ClientHandle` wraps `Arc<dyn ClientBackend>`; no Iroh,
+  WebSocket, `tao`/`wry`, or Dioxus dependency enters the library. Entry point
+  for the transport kernel (#168). The decision is recorded at
+  `docs/dioxus-architecture.md` §"Decision 4".
+
 ### Fixed
 
 - A room list backed by a daemon that supplies **no** `last_event_ts` can raise

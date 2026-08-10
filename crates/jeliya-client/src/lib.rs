@@ -1,0 +1,75 @@
+//! Lifecycle-aware UI-facing client seam for Jeliya protocol v2 (#167).
+//!
+//! This crate is the **single UI-facing Rust client contract** that shared
+//! Dioxus components use. The authoritative record of the decision is
+//! `docs/dioxus-architecture.md` §"Decision 4 — one seam, four adapters, one
+//! platform boundary"; where this crate and that record (or `docs/protocol-v2.md`)
+//! disagree, the record is right and this crate has a bug.
+//!
+//! It delivers, and asserts by construction:
+//!
+//! - **Compile-time request/output pairing.** [`ClientHandle::call`] is the one
+//!   paired entry point; it re-uses [`jeliya_api::Operation`] to bind each
+//!   request to its `Output`, so a call cannot be made without knowing its
+//!   reply type. There is no untyped "call by string".
+//! - **An honest, observable lifecycle.** [`State`] is one enum every adapter
+//!   maps its transport lifecycle into; [`ClientHandle::start`] /
+//!   [`ClientHandle::stop`] and [`ClientEvent::StateChanged`] make transitions
+//!   explicit without polling.
+//! - **Multi-consumer events.** [`ClientHandle::subscribe`] returns an
+//!   independent [`EventSubscription`] each time; every subscription observes
+//!   every event, so no consumer can silently steal another's pushes. Replies
+//!   never travel on the event stream.
+//! - **An error model that preserves may-have-executed.** [`CallError`]
+//!   separates wire failures from queue / timeout / cancel / gap / local
+//!   failures, and [`CallError::execution`] is a total function classifying
+//!   whether a failed mutation may have taken effect.
+//! - **A deterministic mock** (behind the `mock` feature) that scripts
+//!   responses, errors, push-before-response, gaps, cancellation, and shutdown
+//!   with no wall clock, no timers, and no reliance on task-scheduling order.
+//!
+//! Boundaries this crate holds by construction (asserted in
+//! `tests/boundaries.rs`, mirroring `jeliya-api`):
+//!
+//! - **No Iroh, WebSocket, native transport, `tao`/`wry`, or Dioxus in the
+//!   library.** The seam is transport-independent and backend erasure stays
+//!   internal; Dioxus appears only as an example/dev dependency for the
+//!   verification component. `PlatformServices` (#174) is injected separately.
+//! - **No `serde_json::Value` in any public signature.** The erased boundary
+//!   carries a JSON *text* newtype, so the token appears nowhere in source.
+//! - **No `tokio`, no wall clock, no scattered `cfg`.** Concurrency primitives
+//!   are executor-agnostic and `wasm32-unknown-unknown`-safe; deadlines are the
+//!   kernel/adapter's concern (#168), never the seam's.
+//!
+//! This becomes the sole UI client contract for the new stack; legacy clients
+//! are not runtime fallbacks (clean-slate cutover).
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+// The seam's internal backend plumbing (the `ClientBackend` trait, the erased
+// call boundary, and the event fan-out) is exercised by a backend. In #167 the
+// only backend is the deterministic mock, behind the default-off `mock`
+// feature; #168 adds the real adapters. With no backend feature enabled the
+// plumbing is legitimately unused, so — and only then — allow dead code rather
+// than scatter per-item attributes. When any backend is compiled in, this is a
+// no-op and dead-code linting is fully active.
+#![cfg_attr(not(feature = "mock"), allow(dead_code))]
+
+mod backend;
+mod error;
+mod event;
+mod handle;
+mod stream;
+
+#[cfg(feature = "mock")]
+pub mod mock;
+
+pub use error::{CallError, Execution, LocalError};
+pub use event::{ClientEvent, EventSubscription, RoomPush, State};
+pub use handle::{ClientHandle, Dedup};
+pub use stream::{StreamCall, StreamCancel};
+
+// The erasure is internal: `ClientBackend`, `ErasedCall`, and `RawJson` are
+// deliberately never exported. Depend on `jeliya_api` for the typed operations,
+// outputs, pushes, errors, ids, and shared value types — this crate re-exports
+// none of them, to avoid a second spelling.

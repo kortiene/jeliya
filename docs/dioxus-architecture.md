@@ -3,9 +3,9 @@ type: "Decision"
 title: "Dioxus clean-slate architecture"
 description: "Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, the protocol and storage generation it defines, the single embedded web artifact every daemon target ships, and the retirement of React, Flutter, the Dart protocol package, and the C ABI."
 tags: ["architecture", "clean-slate", "dioxus", "protocol", "release"]
-timestamp: "2026-07-28T02:20:00Z"
+timestamp: "2026-08-10T00:00:00Z"
 status: "canonical"
-implementation_status: "planned"
+implementation_status: "partial"
 verification_status: "unverified"
 release_status: "unreleased"
 audience: ["contributors", "maintainers", "release-engineers"]
@@ -13,7 +13,7 @@ audience: ["contributors", "maintainers", "release-engineers"]
 
 # Dioxus clean-slate architecture
 
-**Status: DECIDED 2026-07-27. Nothing in this record is built.** Jeliya
+**Status: DECIDED 2026-07-27. M1 is complete; M2 entry is implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
 stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
 protocol and storage generation, and retires React, Flutter, the Dart
@@ -386,8 +386,8 @@ record, a new threat model, and a separately approved backlog** (#113,
 
 ## Implementation
 
-Every milestone carries its own exit gate. No milestone below has a closed
-issue: the program is entirely ahead of the repository.
+Every milestone carries its own exit gate. Landed issues are noted in the
+slice table; all others remain ahead of the repository.
 
 | Milestone | Exit gate |
 |---|---|
@@ -402,17 +402,17 @@ issue: the program is entirely ahead of the repository.
 
 The slices that carry this record:
 
-| Issue | Slice |
-|---|---|
-| #157 | This record, and the superseded pre-Dioxus proposal. |
-| #113 | The first-release distribution decision it records. |
-| #161 | Protocol v2 and its independently authored conformance corpus. |
-| #162 | The required cross-platform product behavior contract — recorded as the [product behavior contract](product-behavior-contract.md). |
-| #163 | The Iroh-free `jeliya-api` contract. |
-| #167 | The lifecycle-aware client seam and its deterministic mock. |
-| #174 | Injectable `PlatformServices`. |
-| #183 | The one content-addressed embedded artifact. |
-| #189 | The system-WebView security, lifecycle, and accessibility matrix. |
+| Issue | Slice | Status |
+|---|---|---|
+| #157 | This record, and the superseded pre-Dioxus proposal. | Landed |
+| #113 | The first-release distribution decision it records. | Landed |
+| #161 | Protocol v2 and its independently authored conformance corpus. | Landed |
+| #162 | The required cross-platform product behavior contract — recorded as the [product behavior contract](product-behavior-contract.md). | Landed |
+| #163 | The Iroh-free `jeliya-api` contract. | Landed |
+| #167 | The lifecycle-aware client seam (`crates/jeliya-client`) and its deterministic mock. | Landed |
+| #174 | Injectable `PlatformServices`. | Planned |
+| #183 | The one content-addressed embedded artifact. | Planned |
+| #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |
 
 **Nothing is retired before its replacement is qualified.** React is removed
 only after the Dioxus web release candidate passes (#200); Flutter desktop

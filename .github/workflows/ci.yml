@@ -290,6 +290,9 @@ jobs:
         with:
           toolchain: 1.96.0
           components: rustfmt, clippy
+          # The jeliya-client seam (#167) must link on wasm32; the shared Dioxus
+          # component is built for this target below (AC-6).
+          targets: wasm32-unknown-unknown
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.2
@@ -309,6 +312,23 @@ jobs:
 
       - name: Rust tests
         run: cargo test --locked --workspace
+
+      # The jeliya-client seam behaviour suite is behind the default-off `mock`
+      # feature (so the library's normal build carries no test scaffolding), so
+      # the workspace test run above compiles it to nothing. Run it explicitly.
+      - name: jeliya-client seam behaviour suite (mock)
+        run: cargo test --locked -p jeliya-client --features mock
+
+      # AC-6: the minimal shared Dioxus component compiles against the mock for
+      # both a native target and wasm32-unknown-unknown, with no per-component
+      # cfg. The `example` feature enables the mock and pulls in the optional
+      # Dioxus dependency; no renderer runs.
+      - name: jeliya-client shared component builds (native + wasm32)
+        run: |
+          set -euo pipefail
+          cargo build --locked -p jeliya-client --example shared_component --features example
+          cargo build --locked -p jeliya-client --example shared_component --features example \
+            --target wasm32-unknown-unknown
 
       - name: Build required live-test binaries
         run: |
