@@ -27,9 +27,11 @@ test("the Dioxus shell renders offline with the shared design system", async ({ 
   await expect(page.locator("#center-empty")).toBeVisible();
 
   // Computed, not declared: the reused stylesheet must actually paint the
-  // shell. A transparent app background means the design system did not load.
-  const background = await root.evaluate(
-    (el) => getComputedStyle(el).backgroundColor,
+  // shell. The design system sets `body { background: var(--bg) }` (--bg is
+  // #070d10); a transparent body means styles.css did not load. `.app` has no
+  // explicit background (it inherits visually from body), so we check body.
+  const background = await page.evaluate(
+    () => getComputedStyle(document.body).backgroundColor,
   );
   expect(background).not.toBe("rgba(0, 0, 0, 0)");
   expect(background).not.toBe("transparent");
