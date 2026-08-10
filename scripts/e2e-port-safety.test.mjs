@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  linuxProcessIdentity,
   readProcessIdentity,
   recordOwnedProcess,
   signalOwnedProcessGroup,
@@ -196,4 +197,156 @@ test("a zombie group leader is treated as absent while its orphan is reaped", {
   } finally {
     try { process.kill(-record.pid, "SIGKILL"); } catch {}
   }
+});
+
+// Build a minimal /proc/<pid>/stat string. After parseProcState splits on ") ":
+//   fields[0] = state, fields[1..18] = filler, fields[19] = starttime (proc(5) field 22).
+function fakeStat(state, startTime) {
+  const filler = Array.from({ length: 18 }, (_, i) => String(i)).join(" ");
+  return `1 (testproc) ${state} ${filler} ${startTime}\n`;
+}
+
+const BOOT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+test("exit-during-read window: leader becomes zombie between stat and cmdline → null", () => {
+  let statCalls = 0;
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => fakeStat(++statCalls === 1 ? "S" : "Z", "12345"),
+      readCmdline: () => Buffer.from(""),
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    null,
+  );
+  assert.equal(statCalls, 2, "recheck stat must be issued");
+});
+
+test("exit-during-read window: leader PID recycled (starttime changed) → mismatching identity, never absence", () => {
+  let statCalls = 0;
+  const identity = linuxProcessIdentity(999, {
+    readStat: () => fakeStat("S", ++statCalls === 1 ? "12345" : "99999"),
+    readCmdline: () => Buffer.from(""),
+    readBootId: () => `${BOOT_ID}\n`,
+  });
+  assert.equal(statCalls, 2, "recheck stat must be issued");
+  // Absence would invite the caller to probe and signal -pid, which may now
+  // name an unrelated group; the new occupant's identity must be surfaced.
+  assert.equal(identity, `linux:${BOOT_ID}:99999:`);
+  // And that surfaced identity must trip the caller's recycled-leader guard.
+  assert.throws(
+    () =>
+      signalOwnedProcessGroup(
+        Object.freeze({ pid: 999, identity: `linux:${BOOT_ID}:12345:node server.mjs` }),
+        "SIGKILL",
+        {
+          readIdentity: () => identity,
+          signalProcess: () => assert.fail("a recycled process group must not be probed or signalled"),
+        },
+      ),
+    /recycled process-group leader/,
+  );
+});
+
+test("kernel dead state X at the first stat read → null (absent)", () => {
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => fakeStat("X", "12345"),
+      readCmdline: () => assert.fail("cmdline must not be read for a dead leader"),
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    null,
+  );
+});
+
+test("exit-during-read window: leader reaches kernel dead state X between stat and cmdline → null", () => {
+  let statCalls = 0;
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => fakeStat(++statCalls === 1 ? "S" : "X", "12345"),
+      readCmdline: () => Buffer.from(""),
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    null,
+  );
+  assert.equal(statCalls, 2, "recheck stat must be issued");
+});
+
+test("exit-during-read window: /proc entry gone (ENOENT on recheck stat) → null", () => {
+  let statCalls = 0;
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => {
+        if (++statCalls === 1) return fakeStat("S", "12345");
+        const err = Object.assign(new Error("no entry"), { code: "ENOENT" });
+        throw err;
+      },
+      readCmdline: () => Buffer.from(""),
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    null,
+  );
+});
+
+test("exit-during-read window: ENOENT on cmdline read (process fully reaped mid-read) → null", () => {
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => fakeStat("S", "12345"),
+      readCmdline: () => {
+        const err = Object.assign(new Error("no entry"), { code: "ENOENT" });
+        throw err;
+      },
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    null,
+  );
+});
+
+test("live process with genuinely empty cmdline raises, not returns null", () => {
+  // stat is identical on both reads: process is alive, identity unchanged → real inspection failure.
+  // The inner "incomplete proc identity" is wrapped as "could not inspect Linux process <pid>".
+  assert.throws(
+    () =>
+      linuxProcessIdentity(999, {
+        readStat: () => fakeStat("S", "12345"),
+        readCmdline: () => Buffer.from(""),
+        readBootId: () => `${BOOT_ID}\n`,
+      }),
+    /could not inspect Linux process 999/,
+  );
+});
+
+test("linuxProcessIdentity returns expected identity string for a running process", () => {
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => fakeStat("S", "12345"),
+      readCmdline: () => Buffer.from("mybin\0--flag\0"),
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    `linux:${BOOT_ID}:12345:mybin --flag`,
+  );
+});
+
+test("linuxProcessIdentity: zombie on first stat read → null without reading cmdline", () => {
+  let cmdlineCalls = 0;
+  assert.equal(
+    linuxProcessIdentity(999, {
+      readStat: () => fakeStat("Z", "12345"),
+      readCmdline: () => { cmdlineCalls++; return Buffer.from("mybin\0"); },
+      readBootId: () => `${BOOT_ID}\n`,
+    }),
+    null,
+  );
+  assert.equal(cmdlineCalls, 0, "cmdline must not be read for a zombie leader");
+});
+
+test("malformed stat raises through to caller", () => {
+  assert.throws(
+    () =>
+      linuxProcessIdentity(999, {
+        readStat: () => "no-closing-paren-and-space",
+        readCmdline: () => Buffer.from("mybin\0"),
+        readBootId: () => `${BOOT_ID}\n`,
+      }),
+    /could not inspect Linux process 999/,
+  );
 });

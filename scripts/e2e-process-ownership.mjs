@@ -1,24 +1,55 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-function linuxProcessIdentity(pid) {
+function parseProcState(stat) {
+  const commandEnd = stat.lastIndexOf(") ");
+  if (commandEnd < 0) throw new Error("malformed proc stat");
+  return stat.slice(commandEnd + 2).trim().split(/\s+/);
+}
+
+export function linuxProcessIdentity(
+  pid,
+  {
+    readStat = (p) => readFileSync(`/proc/${p}/stat`, "utf8"),
+    readCmdline = (p) => readFileSync(`/proc/${p}/cmdline`),
+    readBootId = () => readFileSync("/proc/sys/kernel/random/boot_id", "utf8"),
+  } = {},
+) {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const commandEnd = stat.lastIndexOf(") ");
-    if (commandEnd < 0) throw new Error("malformed proc stat");
-    const fieldsFromState = stat.slice(commandEnd + 2).trim().split(/\s+/);
-    // A zombie has already exited, so its PID can no longer be recycled until
-    // the parent reaps it. Treat the leader as absent and let the caller probe
-    // the still-existing process group for any surviving children.
-    if (fieldsFromState[0] === "Z") return null;
+    const fieldsFromState = parseProcState(readStat(pid));
+    // A dead leader has already exited: a zombie (Z) cannot have its PID
+    // recycled until the parent reaps it, and the kernel dead states (X, x)
+    // are the final instants of the same exit path. Treat the leader as absent
+    // and let the caller probe the still-existing process group for any
+    // surviving children.
+    if (fieldsFromState[0] === "Z" || fieldsFromState[0] === "X" || fieldsFromState[0] === "x") return null;
     const startTime = fieldsFromState[19]; // proc(5) field 22, with state at index 0.
-    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    const command = readFileSync(`/proc/${pid}/cmdline`)
+    const bootId = readBootId().trim();
+    const command = readCmdline(pid)
       .toString("utf8")
       .split("\0")
       .filter(Boolean)
       .join(" ");
-    if (!startTime || !bootId || !command) throw new Error("incomplete proc identity");
+    if (!startTime || !bootId) throw new Error("incomplete proc identity");
+    if (!command) {
+      // The stat read passed the dead-state guard, but the cmdline came back
+      // empty. A process we own always has a cmdline while it is alive, so an
+      // empty one means the leader vanished in the ~20 ms between the two
+      // reads. Disambiguate with a second stat read:
+      //  - reaped: ENOENT/ESRCH -> caught below as absence;
+      //  - zombie or kernel dead state (Z, X, x): exited, PID not yet
+      //    recyclable -> absence;
+      //  - start time changed: the PID was RECYCLED to a new task, so -pid now
+      //    names an unrelated process group. Absence would invite the caller
+      //    to probe and signal it; surface the new occupant's identity instead
+      //    so the caller's recycled-leader guard refuses to signal.
+      //  - same live identity yet no cmdline: a genuine inspection failure,
+      //    stays loud.
+      const recheck = parseProcState(readStat(pid));
+      if (recheck[0] === "Z" || recheck[0] === "X" || recheck[0] === "x") return null;
+      if (recheck[19] !== startTime) return `linux:${bootId}:${recheck[19]}:`;
+      throw new Error("incomplete proc identity");
+    }
     return `linux:${bootId}:${startTime}:${command}`;
   } catch (error) {
     if (error?.code === "ENOENT" || error?.code === "ESRCH") return null;
@@ -26,9 +57,9 @@ function linuxProcessIdentity(pid) {
   }
 }
 
-export function readProcessIdentity(pid) {
+export function readProcessIdentity(pid, deps = {}) {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`invalid process id: ${pid}`);
-  if (process.platform === "linux") return linuxProcessIdentity(pid);
+  if (process.platform === "linux") return linuxProcessIdentity(pid, deps);
   try {
     const identity = execFileSync(
       "ps",
