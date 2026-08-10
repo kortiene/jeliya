@@ -22,7 +22,14 @@ What this pack pins:
   no `--test-cmd`, at CI's pinned toolchain (ci.yml pins Rust 1.96.0; a newer
   local default toolchain's clippy false-fails `-D warnings`). If toolchain
   1.96.0 is not installed the gate fails loudly — install it or pass an
-  explicit `--test-cmd`.
+  explicit `--test-cmd`. **Scope: the Rust workspace only.** Runs that touch
+  `ui/`, `app/`, or the Node contract scripts must pass an explicit
+  per-surface `--test-cmd`; the deliberately narrow default keeps ad-hoc runs
+  cheap and deterministic in a cold linked worktree (the UI/Flutter suites are
+  slow there and the Flutter widget tests are timing-flaky, which would burn
+  the orchestrator's repair loops), while the required CI checks — which
+  Switchyard watches and repairs via its ci-fix phase — remain the
+  authoritative multi-surface gate before any merge.
 - **`commands.defaultFinalizeGates`** — fmt and clippy (CI `rust-runtime`
   parity), then `scripts/check-docs.mjs`, because the orchestrator's document
   phase appends to `docs/` and this repo's docs profile (frontmatter contract,

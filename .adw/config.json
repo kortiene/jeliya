@@ -14,6 +14,10 @@
     "e2e": {
       "hints": [
         "daemon",
+        "subject",
+        "subjects",
+        "file",
+        "files",
         "room",
         "rooms",
         "invite",
