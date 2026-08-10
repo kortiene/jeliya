@@ -20,6 +20,23 @@
   listed at all, so a null `last_event_ts` on a listed row means one specific
   thing — the daemon predates the projection — and never "this room is empty".
 
+- The Linux owned-process identity reader (`scripts/e2e-process-ownership.mjs`)
+  now treats a process that exits between the `/proc/<pid>/stat` and
+  `/proc/<pid>/cmdline` reads as **absent**, matching the `ENOENT`/`ESRCH`
+  contract the reader already implements for a fully reaped process. The
+  previous code threw `incomplete proc identity` when `cmdline` came back empty
+  on a still-readable but vanishing `/proc` entry; that error carried no `.code`,
+  so the absence guard did not catch it and the caller died — observed as an
+  intermittent teardown failure 21 ms after a healthy check on the same pid. The
+  fix re-reads `stat` after an empty `cmdline`: if the leader is now a zombie
+  (`Z`) or its start-time changed (PID recycled), return `null`; if the re-read
+  itself throws `ENOENT`/`ESRCH`, fall through to the existing catch and return
+  `null`. A live process that keeps the same identity yet exposes an empty
+  `cmdline` still throws, as do `EACCES` and malformed `stat`. The recycled-PID
+  guard in `signalOwnedProcessGroup` is unaffected: a live recycled leader has a
+  non-empty `cmdline` and returns its own differing identity string, so the guard
+  still fires. Issue #206.
+
 ### Added
 
 - `room.list` rows now carry **`last_event_ts`** and **`last_event_kind`** —
