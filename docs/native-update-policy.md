@@ -99,9 +99,12 @@ mechanism. "No in-app updater" is a *decision*, not an omission. The rationale:
 Google Play is the **only** channel where an automatic updater is claimed —
 because it is the platform's updater, not Jeliya's. The sideload APK row carries
 a required warning: Android refuses to upgrade an installed app in place when the
-signing key changes, so any upload-key change forces an uninstall and reinstall,
-which discards app-private state; operators must be told this before they change
-keys.
+signing key changes, so changing the key that signs the sideloaded APK forces an
+uninstall and reinstall, which discards app-private state; operators must be told
+this before they change that key. Under Play App Signing this is distinct from
+the upload key: resetting or rotating the upload key does not change the
+Google-held app-signing key and does not affect installed users (see the
+signing-roots table below).
 
 **Windows is conditional.** [The architecture](dioxus-architecture.md) leaves
 Windows an *undecided* first-release target: #188 must explicitly include or
@@ -135,15 +138,23 @@ artifact can replace the sidecar beside it. Authenticity comes only from:
 - **(c)** Play App Signing.
 
 This record must never imply the same-origin sidecar defends a compromised
-origin. Where a channel has only the sidecar (the Linux `curl | sh` and source
+origin. Where a channel has only the sidecar (the `curl | sh` and source
 tarball paths today), the record states plainly that it provides integrity, not
-publisher authenticity, and that adding a publisher signature is owed by #187.
+publisher authenticity, and that adding a publisher signature is owed by #187 —
+and the piped installer script itself is same-origin, pre-verification
+executable content with the same exposure.
 
 ### Rotation
 
-Signing keys and certificates live in GitHub Actions repository or environment
-secrets (per [signing and notarization](signing-notarization.md)) and are
-**never committed**. The role that rotates each root is the **release
+Signing material is **never committed**, and custody differs per root (per
+[signing and notarization](signing-notarization.md)): locally held material —
+the macOS Developer ID `.p12` and notarization credentials, the Android
+**upload** keystore, and a Windows `.pfx` only in the least-preferred mode —
+lives in GitHub Actions repository or environment secrets; the Play
+**distribution** key is held by Google and never enters Actions; and
+remote/HSM-backed Windows signing keeps the private key in the signing service,
+with only service credentials or a key reference held as secrets. The role that
+rotates each root is the **release
 maintainer**, coordinating with the platform authority (Apple, the Windows CA,
 Google Play). Rotation must not silently invalidate installed builds: when a
 rotation changes what a user's platform will trust, the failure must surface as
@@ -165,16 +176,32 @@ response" for the update dimension.
    known-bad build digests is a documented extension; the recommendation for the
    first release is **floor-only**, with the digest list available if a specific
    bad build must be denied before the floor advances.
+   **Reachability limit.** The floor and digest list ship only inside builds
+   compiled *after* a revocation decision; under this record's no-updater policy
+   nothing delivers an advanced floor to an already-installed binary. An
+   installed revoked build therefore keeps starting normally until the operator
+   installs a newer build, or until it encounters newer on-disk state or a newer
+   counterpart component whose floor rejects it. Post-publication denial of an
+   *installed* build comes only from layer 1 as honored by the OS — and on
+   Linux, which has no publisher signature today, from no layer at all.
 
 ### Channel separation / anti-substitution
 
 One reserved application or bundle identifier and one signing identity **per
 packaged target** (per the `package identity` rule in
-[the architecture](dioxus-architecture.md), Decision 3). This ensures a
-foreign- or legacy-channel install cannot upgrade in place into the new
-generation, and a cross-channel artifact swap fails the platform's own identity
-check. The reserved identifier must be one no retiring client already ships, so a
-legacy install cannot masquerade as the new generation.
+[the architecture](dioxus-architecture.md), Decision 3). On channels whose
+platform enforces package identity — the signed macOS and Windows packages and
+Android signature continuity (see
+[Signing roots](#signing-roots-supplied-by-12-referenced-not-owned)) — this
+ensures a foreign- or legacy-channel install cannot upgrade in place into the
+new generation, and a cross-channel artifact swap fails the platform's own
+identity check. The unsigned Linux archive channels (`curl | sh`, source
+tarball) have no platform identity check today: substitution there is bounded
+only by the integrity-only sidecar (see
+[Metadata trust](#metadata-trust--integrity-is-not-authenticity)) until #187
+supplies a publisher-signature mechanism. The reserved identifier must be one no
+retiring client already ships, so a legacy install cannot masquerade as the new
+generation.
 
 ## Anti-rollback and version monotonicity
 
@@ -212,8 +239,8 @@ unverified directory is deleted on the user's behalf.
 
 | State | Fail-closed behavior | Actionable UX |
 |---|---|---|
-| unsupported generation / old client | reject at handshake, before mutation | "This build is too old for your data. Reset to continue: `<reset path>`." |
-| below minimum-supported floor / revoked build | refuse to start; no network required | "This version is no longer supported. Download the current version from `<channel>`." |
+| unsupported generation / old client | reject at handshake, before mutation | "This app is too old to connect. Download the current version from `<channel>`. Old data is not carried over; the reset path is `<reset path>`." |
+| below minimum-supported floor / revoked build | a newer build, installer, or counterpart refuses the below-floor artifact without a network call; an already-installed revoked build is reached only by platform-level revocation (layer 1) | "This version is no longer supported. Download the current version from `<channel>`." |
 | tampered artifact (bad checksum/signature) | installer refuses **before extraction** | "Download failed verification and was not installed. Retry from `<channel>`." |
 | newer state, older binary (downgrade) | refuse to open state | "This install is older than your data. Update, or reset: `<reset path>`." |
 | offline | the prior verified install keeps running; no partial artifact is executed | "You're offline; the installed version is unchanged." |
@@ -224,15 +251,28 @@ unverified directory is deleted on the user's behalf.
 Recovery must **never execute untrusted bytes.** The prior verified install stays
 runnable until a replacement verifies; **verification precedes extraction**; and
 where an updater exists (Google Play only), the OS owns download atomicity and
-rollback of a failed install.
+rollback of a failed install. One bootstrap limitation is stated plainly: on the
+`curl | sh` and `install.ps1` channels the installer script itself is fetched
+from the download origin and piped into the shell with only TLS-to-origin trust,
+before any verification logic exists — a compromised origin or response
+substitutes the script and bypasses every later checksum check. The
+never-execute-untrusted-bytes guarantee therefore covers artifacts handled by an
+already-obtained installer, not the script bootstrap; an authenticated installer
+bootstrap is owed alongside the publisher signature by #187, and operators who
+need more today can download the script, inspect it, and run it from disk.
 
 - **Offline.** No channel here performs a background self-update, so an offline
   machine simply keeps running its installed, already-verified build. Nothing
   partial is fetched or executed.
 - **Interrupted download.** The installer scripts verify the `.sha256` sidecar
-  before extraction and are idempotent with atomic replace, so a partial or
+  before extraction and are idempotent (safe to re-run), so a partial or
   interrupted download fails the checksum, is discarded, and leaves the current
-  install intact; the operator re-runs the installer. Homebrew and Play recover
+  install intact; the operator re-runs the installer. The final binary
+  replacement itself is not guaranteed atomic — `install.sh` stages in a temp
+  directory that may be on a different filesystem from the install directory,
+  and `install.ps1` copies over the existing binary — so an interruption during
+  that final step can leave the installed binary missing or partial; re-running
+  the installer restores a verified build. Homebrew and Play recover
   through their own resumable, verified delivery.
 
 Because only the Google Play channel has an updater, it is the only channel with
@@ -282,9 +322,15 @@ carrying nothing secret-bearing):
 carried by #186–#190 and #199. In the docs bundle, the
 [platform matrix](platform-matrix.md#decided-dioxus-targets) "Decided Dioxus
 targets" rows cross-reference this policy. These results are **enforced evidence,
-not certification**, and **a missing per-channel update gate blocks only that
-channel's publication row** — there is no all-platform barrier, consistent with
-#199.
+not certification**, and there is no all-platform barrier, consistent with #199.
+Gating is per **published artifact**, not per nominal channel: channels that
+consume the same release asset share one publication boundary — the `install.sh`
+archive is also the direct-download archive (and `install.sh` resolves the
+*latest* release by default), and the cask DMG is also the direct-download DMG —
+so a shared asset may be published only when **every** channel gate that
+consumes it passes. Only a channel with its own separate publication step (the
+reviewed tap commit, Play submission) can be withheld independently after the
+asset is public.
 
 "Tested," for the anti-rollback and fail-closed criteria, means this record
 **defines** the case matrix and the retained-evidence schema. Executing the

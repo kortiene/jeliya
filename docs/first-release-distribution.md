@@ -3,7 +3,7 @@ type: "Decision"
 title: "First-release distribution boundary"
 description: "Decision record for how the first release is delivered: one content-addressed Dioxus artifact served by the trusted local daemon and embedded in packaged desktop targets, the trust boundary each surface sits on, the operator-pasted pairing code that authenticates an ordinary browser, and the hosted-origin and delegated-browser work deferred behind a new architecture decision."
 tags: ["architecture", "clean-slate", "dioxus", "release", "security"]
-timestamp: "2026-07-28T20:10:00Z"
+timestamp: "2026-08-10T00:00:00Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"

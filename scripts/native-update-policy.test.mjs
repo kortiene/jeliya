@@ -62,30 +62,63 @@ test('H1 title matches frontmatter title', () => {
 // Channel inventory completeness (AC-1)
 // ---------------------------------------------------------------------------
 
-// The spec §4.1 lists exactly 11 channel rows; every one must appear in the
-// policy body so no channel is silently omitted.
-const EXPECTED_CHANNELS = [
-  // macOS
-  'install.sh',
-  'jeliya.rb',         // Homebrew formula
-  'jeliya-app.rb',     // Homebrew cask
-  // macOS DMG / direct download — described as "macOS DMG" in the policy
-  'macOS DMG',
-  // Windows
-  'install.ps1',
-  // Linux
-  'package-linux.mjs',
-  // Android
-  'Google Play',
-  'sideload APK',
+// The spec §4.1 lists exactly 11 channel rows; assert them against the
+// inventory table itself, not document-wide mentions, so deleting a row cannot
+// pass on the strength of the same term appearing in another section.
+const EXPECTED_ROWS = [
+  ['macOS', 'install.sh'],
+  ['macOS', 'jeliya.rb'],
+  ['macOS', 'jeliya-app.rb'],
+  ['macOS', 'direct browser download'],
+  ['Windows', 'install.ps1'],
+  ['Windows', 'direct browser download'],
+  ['Linux', 'install.sh'],
+  ['Linux', 'Linuxbrew'],
+  ['Linux', 'package-linux.mjs'],
+  ['Android', 'Google Play'],
+  ['Android', 'sideload APK'],
 ];
 
-for (const channel of EXPECTED_CHANNELS) {
-  test(`channel inventory includes "${channel}"`, () => {
-    assert.ok(policy.includes(channel),
-      `docs/native-update-policy.md must mention channel identifier "${channel}"`);
+const inventorySection = policy.split('### Channel inventory')[1].split('\n### ')[0];
+const inventoryRows = inventorySection.split('\n')
+  .filter((l) => l.startsWith('|') && !l.startsWith('|---'))
+  .slice(1); // drop the header row
+
+test('channel inventory table has exactly the 11 expected rows', () => {
+  assert.equal(inventoryRows.length, EXPECTED_ROWS.length,
+    `inventory table must have exactly ${EXPECTED_ROWS.length} channel rows`);
+});
+
+for (const [platform, label] of EXPECTED_ROWS) {
+  test(`channel inventory has a ${platform} row for "${label}"`, () => {
+    assert.ok(inventoryRows.some((r) => {
+      // Cell text may contain escaped pipes (`curl \| sh`); shield them from
+      // the column split, then restore for the label match.
+      const cells = r.replaceAll('\\|', '\u0001').split('|')
+        .map((c) => c.trim().replaceAll('\u0001', '\\|'));
+      return cells[1] === platform && cells[2].includes(label);
+    }), `inventory table must contain a ${platform} row whose Channel cell mentions "${label}"`);
   });
 }
+
+// Honesty qualifiers added in review must stay load-bearing: the revocation
+// floor's reachability limit, the installer-bootstrap trust limitation, and
+// the shared-asset publication boundary may not be silently dropped.
+test('policy states the revocation floor cannot reach already-installed builds', () => {
+  assert.ok(/[Rr]eachability limit/.test(policy) && policy.includes('already-installed'),
+    'policy must state the floor/digest list cannot reach already-installed builds');
+});
+
+test('policy states the piped installer bootstrap runs before any verification', () => {
+  assert.ok(/bootstrap/i.test(policy) && /piped into the shell/.test(policy),
+    'policy must state the installer-script bootstrap limitation');
+});
+
+test('policy gates shared release assets across every consuming channel', () => {
+  assert.ok(policy.includes('share one publication boundary')
+    && /every\*\* channel gate that\s+consumes it/.test(policy),
+    'policy must state the shared-asset publication rule');
+});
 
 // The policy must explicitly enumerate more than one platform.
 test('channel table covers macOS, Linux, Windows, and Android platforms', () => {

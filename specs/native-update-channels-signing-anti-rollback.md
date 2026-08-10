@@ -177,12 +177,18 @@ The doc must document, per platform:
      build floor** in `jeliyad`/the app, plus an optional build-time-embedded
      revocation list of known-bad build digests. A build below the floor or on
      the list **fails closed** with actionable UX **without a network call and
-     without executing untrusted bytes**.
+     without executing untrusted bytes**. Reachability limit (added in review):
+     the floor/list ships only in builds compiled after the revocation
+     decision, and the no-updater policy delivers nothing to an
+     already-installed binary — post-publication denial of an installed build
+     comes only from layer 1.
 - **Channel separation / anti-substitution:** one reserved application/bundle
   identifier and one signing identity **per packaged target** (per
   `dioxus-architecture.md` Decision 3 `package identity` row), so a foreign- or
   legacy-channel install cannot upgrade in place into the new generation and a
-  cross-channel artifact swap fails the platform's own identity check.
+  cross-channel artifact swap fails the platform's own identity check on
+  channels whose platform enforces package identity; the unsigned Linux archive
+  channels have no such check until #187 supplies a publisher signature.
 
 ### 4.4 Downgrade / anti-rollback and version monotonicity (AC-3)
 

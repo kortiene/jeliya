@@ -101,8 +101,10 @@ UX — is governed by the
 [native update, signing, and anti-rollback policy](native-update-policy.md). Its
 per-channel update-case evidence (current, older, newer, revoked, tampered,
 offline, interrupted, downgrade) is **enforced evidence, not certification**,
-and a missing per-channel update gate blocks only that channel's publication row
-(#199); it withholds no other row.
+and a missing update gate withholds no other platform's rows (#199); within a
+platform, channels that consume the same release asset share one publication
+gate, so a shared asset is published only when every consuming channel's gate
+passes.
 
 Treating Windows as a supported target because a bundle command runs is an
 explicit non-goal, and the desktop qualification matrix is blocked on #188
