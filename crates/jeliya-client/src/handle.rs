@@ -184,14 +184,15 @@ impl ClientHandle {
 
     /// Graceful shutdown. Resolves only after every accepted call has settled
     /// (to a real reply or a delivery-classified [`CallError::Cancelled`]) and
-    /// every event stream is closed (§D6). It is `async` precisely because a
-    /// synchronous stop cannot truthfully say accepted work settled.
-    // The seam states `stop` as an `impl Future`-returning method, uniformly
-    // with `call`, so the contract reads the same for every entry point; keep
-    // that shape rather than let clippy rewrite it to `async fn`.
-    #[allow(clippy::manual_async_fn)]
+    /// every event stream is closed (§D6). Initiation is eager, exactly like
+    /// [`call`](Self::call): the refusal boundary is established the moment
+    /// `stop` is invoked — a call issued after `stop()` returns is refused as
+    /// `Cancelled { DefinitelyNot }` even if the stop future has not been
+    /// polled yet. Only the settle-wait is deferred into the returned future.
     pub fn stop(&self) -> impl Future<Output = ()> + '_ {
-        async move { self.inner.stop().await }
+        // Calling the backend here (not inside a deferred async block) is what
+        // makes initiation eager: the returned future only carries the wait.
+        self.inner.stop()
     }
 
     // -- Convenience wrappers (§D2). Each is a one-line forwarder to

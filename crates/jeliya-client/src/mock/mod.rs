@@ -63,6 +63,19 @@ enum Step {
     Local(CallError),
 }
 
+impl Step {
+    /// If this step ultimately hangs — a bare [`Step::Hang`] or an
+    /// [`Step::EmitThenReply`] chain ending in one — the `sent` flag of that
+    /// hang. `None` for every step with a real terminal.
+    fn hang_sent(&self) -> Option<bool> {
+        match self {
+            Step::Hang { sent } => Some(*sent),
+            Step::EmitThenReply { reply, .. } => reply.hang_sent(),
+            _ => None,
+        }
+    }
+}
+
 impl Program {
     /// Resolve the call with a typed success output. `O` names the operation
     /// whose paired `Output` this is, so the scripted reply is serialized
@@ -205,19 +218,47 @@ impl MockInner {
         }
     }
 
+    /// Broadcast every `before` event along an [`Step::EmitThenReply`] chain,
+    /// discarding the chain's terminal. Used when the chain ends in a hang
+    /// that must stay pending after its events are delivered.
+    fn emit_chain_events(&mut self, step: Step) {
+        if let Step::EmitThenReply { before, reply } = step {
+            for event in before {
+                self.bus.broadcast(event);
+            }
+            self.emit_chain_events(*reply);
+        }
+    }
+
     /// Deliver the next pending scripted step: the oldest pending call that is
-    /// not hanging. Returns `false` if nothing is deliverable.
+    /// not a bare hang. An `EmitThenReply` chain ending in a hang delivers its
+    /// events and then stays pending as that hang (settled later by stop,
+    /// cancellation, or disconnect). Returns `false` if nothing is deliverable.
     fn deliver_next(&mut self) -> bool {
+        // Purge abandoned work first: a cancelled call's reply channel is
+        // closed, and its scripted step must never be consumed as if it were
+        // the next observable delivery.
+        self.pending.retain(|pending| !pending.sender.is_canceled());
         let index = self
             .pending
             .iter()
             .position(|pending| !matches!(pending.step, Step::Hang { .. }));
         match index {
-            Some(index) => {
-                let pending = self.pending.remove(index).expect("index is in range");
-                self.resolve(pending.sender, pending.step);
-                true
-            }
+            Some(index) => match self.pending[index].step.hang_sent() {
+                Some(sent) => {
+                    // The chain ends in a hang: deliver its events, leave the
+                    // hang pending in place.
+                    let step =
+                        std::mem::replace(&mut self.pending[index].step, Step::Hang { sent });
+                    self.emit_chain_events(step);
+                    true
+                }
+                None => {
+                    let pending = self.pending.remove(index).expect("index is in range");
+                    self.resolve(pending.sender, pending.step);
+                    true
+                }
+            },
             None => false,
         }
     }
@@ -227,10 +268,7 @@ impl MockInner {
     /// A non-hanging pending call is treated as sent (it reached the backend).
     fn drop_connection(&mut self) {
         for pending in std::mem::take(&mut self.pending) {
-            let sent = match pending.step {
-                Step::Hang { sent } => sent,
-                _ => true,
-            };
+            let sent = pending.step.hang_sent().unwrap_or(true);
             let execution = if sent {
                 Execution::Unknown
             } else {
@@ -255,8 +293,8 @@ impl MockInner {
         // 2. Settle all accepted work: a real terminal if one is available,
         //    else a Cancelled whose Execution preserves may-have-executed.
         for pending in std::mem::take(&mut self.pending) {
-            match pending.step {
-                Step::Hang { sent } => {
+            match pending.step.hang_sent() {
+                Some(sent) => {
                     let execution = if sent {
                         Execution::Unknown
                     } else {
@@ -264,7 +302,7 @@ impl MockInner {
                     };
                     let _ = pending.sender.send(Err(CallError::Cancelled { execution }));
                 }
-                other => self.resolve(pending.sender, other),
+                None => self.resolve(pending.sender, pending.step),
             }
         }
         // 3 & 4. Final Stopped transition, then close every subscription so it
@@ -362,8 +400,24 @@ impl MockController {
     }
 
     /// Drive a lifecycle transition the script asserts (for example
-    /// `Interrupted`), broadcasting the [`ClientEvent::StateChanged`].
+    /// `Interrupted` or `Failed`), broadcasting the
+    /// [`ClientEvent::StateChanged`].
+    ///
+    /// `Stopping` and `Stopped` cannot be scripted here: those states carry the
+    /// §D6 guarantee that accepted work has settled and subscriptions have
+    /// closed, which only [`crate::ClientHandle::stop`] performs. Scripting
+    /// them would broadcast the transition while leaving calls pending and
+    /// streams open — a state the contract says cannot exist.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `state` is [`State::Stopping`] or [`State::Stopped`].
     pub fn set_state(&self, state: State) {
+        assert!(
+            !matches!(state, State::Stopping | State::Stopped),
+            "set_state cannot script {state:?}: shutdown must go through ClientHandle::stop(), \
+             which settles pending calls and closes subscriptions as the state guarantees"
+        );
         self.inner.lock().expect("mock poisoned").transition(state);
     }
 

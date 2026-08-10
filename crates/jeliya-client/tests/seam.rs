@@ -14,7 +14,7 @@
 //! ```
 
 use futures::executor::block_on;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use jeliya_api::{
     ApiError, ByteTotal, GapReason, GapTo, OpId, Push, RoomId, RoomList, RoomListOut,
 };
@@ -1318,4 +1318,339 @@ fn stream_call_resolves_normally_when_cancel_handle_dropped_without_cancel() {
         let out: RoomListOut = sc.await.expect("normal reply after dropped cancel handle");
         assert!(out.rooms.is_empty());
     });
+}
+
+// ---------------------------------------------------------------------------
+// Review-round regressions (#167 Codex round, PR #261)
+//
+// Each test below pins a defect found and confirmed in review: lifecycle
+// events lost to overflow, mis-ordered Lagged markers, a lazy stop() refusal
+// boundary, forever-pending post-close subscriptions, nested-hang scripting,
+// abandoned stream dispatches, stop-owned states scripted via set_state, and
+// example/docs drift.
+// ---------------------------------------------------------------------------
+
+/// Lifecycle transitions are control events: a subscriber at capacity still
+/// observes `Lagged`, then `Stopping`, then the final `Stopped`, then `None` —
+/// never a stream that ends without its terminal transition.
+#[test]
+fn overflow_preserves_terminal_lifecycle_events() {
+    let (handle, controller) = MockScript::new().build();
+    let mut sub = handle.subscribe();
+
+    // Fill the mailbox exactly, then one more: 1 dropped push pending.
+    for i in 0..=1024u64 {
+        controller.emit(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: i,
+        });
+    }
+
+    block_on(async {
+        handle.stop().await;
+        for _ in 0..1024u64 {
+            let event = sub.next().await.expect("buffered event");
+            assert!(
+                !matches!(
+                    event,
+                    ClientEvent::Lagged { .. } | ClientEvent::StateChanged { .. }
+                ),
+                "pre-gap data events drain first, got {event:?}"
+            );
+        }
+        let lagged = sub
+            .next()
+            .await
+            .expect("Lagged flushes before control events");
+        assert!(
+            matches!(lagged, ClientEvent::Lagged { dropped: 1, .. }),
+            "expected Lagged {{ dropped: 1 }}, got {lagged:?}"
+        );
+        let stopping = sub.next().await.expect("Stopping must survive overflow");
+        assert!(
+            matches!(
+                stopping,
+                ClientEvent::StateChanged {
+                    to: State::Stopping,
+                    ..
+                }
+            ),
+            "expected StateChanged to Stopping, got {stopping:?}"
+        );
+        let stopped = sub.next().await.expect("Stopped must survive overflow");
+        assert!(
+            matches!(
+                stopped,
+                ClientEvent::StateChanged {
+                    to: State::Stopped,
+                    ..
+                }
+            ),
+            "expected StateChanged to Stopped, got {stopped:?}"
+        );
+        assert!(sub.next().await.is_none(), "stream ends after Stopped");
+    });
+}
+
+/// The `Lagged` marker occupies the position where the loss occurred: an event
+/// broadcast *after* an overflow (once a slot frees) is delivered *after* the
+/// `Lagged` marker, never before it.
+#[test]
+fn lagged_marker_precedes_events_broadcast_after_the_loss() {
+    let (handle, controller) = MockScript::new().build();
+    let mut sub = handle.subscribe();
+
+    for i in 0..=1024u64 {
+        controller.emit(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: i,
+        });
+    }
+
+    block_on(async {
+        // Free TWO slots — one for the flushed Lagged marker, one for the
+        // post-gap event — then broadcast a distinguishable post-gap event.
+        // (With a single free slot the marker consumes it and the new event is
+        // correctly dropped again; that self-consistency is by design.)
+        let first = sub.next().await.expect("first buffered event");
+        assert!(matches!(
+            first,
+            ClientEvent::ResyncRequired { from_pos: 0, .. }
+        ));
+        let second = sub.next().await.expect("second buffered event");
+        assert!(matches!(
+            second,
+            ClientEvent::ResyncRequired { from_pos: 1, .. }
+        ));
+        controller.emit(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: 9999,
+        });
+
+        // Drain the remaining 1022 pre-gap events.
+        for _ in 0..1022u64 {
+            let event = sub.next().await.expect("pre-gap event");
+            assert!(
+                !matches!(event, ClientEvent::Lagged { .. }),
+                "Lagged must not interleave with pre-gap events"
+            );
+            assert!(
+                !matches!(event, ClientEvent::ResyncRequired { from_pos: 9999, .. }),
+                "post-gap event must not be delivered before Lagged"
+            );
+        }
+        let lagged = sub.next().await.expect("Lagged at the loss position");
+        assert!(
+            matches!(lagged, ClientEvent::Lagged { dropped: 1, .. }),
+            "expected Lagged {{ dropped: 1 }}, got {lagged:?}"
+        );
+        let post_gap = sub.next().await.expect("post-gap event after Lagged");
+        assert!(
+            matches!(post_gap, ClientEvent::ResyncRequired { from_pos: 9999, .. }),
+            "expected the post-gap event, got {post_gap:?}"
+        );
+    });
+}
+
+/// The refusal boundary is established when `stop()` is *invoked*, not when
+/// its future is first polled: a call issued between the two is refused as
+/// `Cancelled {{ DefinitelyNot }}` even though a scripted real reply exists.
+#[test]
+fn stop_refusal_boundary_established_at_invocation() {
+    let (handle, _controller) = MockScript::new()
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&empty_room_list()),
+        )
+        .build();
+
+    let stopping = handle.stop(); // NOT awaited yet.
+    let call = handle.call::<RoomList>(RoomList {}, Dedup::None);
+
+    block_on(async {
+        stopping.await;
+        let result = call.await;
+        assert!(
+            matches!(
+                result,
+                Err(CallError::Cancelled {
+                    execution: Execution::DefinitelyNot
+                })
+            ),
+            "a call issued after stop() was invoked must never execute, got {result:?}"
+        );
+    });
+}
+
+/// A subscription created after shutdown is born closed: it yields `None`
+/// immediately instead of pending forever on a bus that will never broadcast.
+#[test]
+fn subscription_after_stop_is_born_closed() {
+    let (handle, _controller) = MockScript::new().build();
+    block_on(async {
+        handle.stop().await;
+        let mut sub = handle.subscribe();
+        assert!(
+            sub.next().await.is_none(),
+            "post-close subscription must be born closed"
+        );
+    });
+}
+
+/// `emit_then_reply(events, hang(sent))` is a valid push-before-pending-response
+/// script: `deliver_next` broadcasts the events and leaves the hang pending;
+/// `stop()` then settles it as `Cancelled` with the hang's `Execution`.
+#[test]
+fn nested_hang_delivers_events_then_stays_pending() {
+    let (handle, controller) = MockScript::new()
+        .on(
+            "room.list",
+            Program::emit_then_reply(
+                vec![ClientEvent::ResyncRequired {
+                    room_id: RoomId::new("r"),
+                    from_pos: 7,
+                }],
+                Program::hang(true),
+            ),
+        )
+        .build();
+
+    let mut sub = handle.subscribe();
+    let mut call = handle
+        .call::<RoomList>(RoomList {}, Dedup::None)
+        .boxed_local();
+
+    assert!(
+        controller.deliver_next(),
+        "the chain's events are deliverable"
+    );
+    block_on(async {
+        let event = sub.next().await.expect("push delivered before the reply");
+        assert!(matches!(
+            event,
+            ClientEvent::ResyncRequired { from_pos: 7, .. }
+        ));
+    });
+    assert!(
+        (&mut call).now_or_never().is_none(),
+        "the nested hang must keep the call pending"
+    );
+    assert!(
+        !controller.deliver_next(),
+        "nothing further is deliverable while the hang pends"
+    );
+
+    block_on(async {
+        handle.stop().await;
+        let result = call.await;
+        assert!(
+            matches!(
+                result,
+                Err(CallError::Cancelled {
+                    execution: Execution::Unknown
+                })
+            ),
+            "hang(true) settles as Cancelled {{ Unknown }} on stop, got {result:?}"
+        );
+    });
+}
+
+/// Cancelling a `StreamCall` releases its backend dispatch: the next
+/// `deliver_next` must not burn the abandoned call's scripted step — it
+/// resolves the *next* observable call instead.
+#[test]
+fn cancelled_stream_call_releases_backend_slot() {
+    let (handle, controller) = MockScript::new()
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&empty_room_list()),
+        )
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&empty_room_list()),
+        )
+        .build();
+
+    let mut stream_call = handle.call_stream::<RoomList>(RoomList {}, Dedup::None);
+    assert!(stream_call.cancel(Execution::DefinitelyNot));
+    let cancelled = block_on(stream_call);
+    assert!(
+        matches!(
+            cancelled,
+            Err(CallError::Cancelled {
+                execution: Execution::DefinitelyNot
+            })
+        ),
+        "{cancelled:?}"
+    );
+
+    let mut second = handle
+        .call::<RoomList>(RoomList {}, Dedup::None)
+        .boxed_local();
+    assert!(
+        controller.deliver_next(),
+        "an observable call resolves — not the abandoned one"
+    );
+    let result = (&mut second)
+        .now_or_never()
+        .expect("the second call must be the one delivered");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+/// `set_state` refuses the stop-owned terminal states: `Stopped` without
+/// settled work and closed streams is a state the contract says cannot exist.
+#[test]
+#[should_panic(expected = "set_state cannot script")]
+fn set_state_rejects_stop_owned_states() {
+    let (_handle, controller) = MockScript::new().build();
+    controller.set_state(State::Stopped);
+}
+
+/// `Failed` (and other non-stop states) remain scriptable through `set_state`.
+#[test]
+fn set_state_failed_still_scriptable() {
+    let (handle, controller) = MockScript::new().build();
+    let mut sub = handle.subscribe();
+    controller.set_state(State::Failed);
+    block_on(async {
+        let event = sub.next().await.expect("transition broadcast");
+        assert!(
+            matches!(
+                event,
+                ClientEvent::StateChanged {
+                    to: State::Failed,
+                    ..
+                }
+            ),
+            "{event:?}"
+        );
+    });
+}
+
+/// The example's documented build commands must match its manifest gating
+/// (`required-features = ["example"]`), and the component must subscribe
+/// before issuing its mount call so no event is missed while the call pends.
+#[test]
+fn example_docs_and_subscribe_ordering_stay_consistent() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/shared_component.rs");
+    let source =
+        std::fs::read_to_string(path).expect("examples/shared_component.rs must be readable");
+    assert!(
+        source.contains("--features example"),
+        "documented build commands must use the example feature"
+    );
+    assert!(
+        !source.contains("--features mock"),
+        "documented build commands must not name the mock feature"
+    );
+    let subscribe_at = source
+        .find("handle.subscribe()")
+        .expect("component must subscribe");
+    let call_at = source
+        .find("handle.room_list(")
+        .expect("component must call");
+    assert!(
+        subscribe_at < call_at,
+        "the component must subscribe before issuing the mount call"
+    );
 }

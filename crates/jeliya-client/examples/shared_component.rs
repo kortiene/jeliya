@@ -10,13 +10,14 @@
 //! It is built (never run) by CI on both targets:
 //!
 //! ```text
-//! cargo build -p jeliya-client --example shared_component --features mock
-//! cargo build -p jeliya-client --example shared_component --features mock \
+//! cargo build --locked -p jeliya-client --example shared_component --features example
+//! cargo build --locked -p jeliya-client --example shared_component --features example \
 //!     --target wasm32-unknown-unknown
 //! ```
 //!
-//! The example is gated by `required-features = ["mock"]` in `Cargo.toml`, so
-//! the heavy Dioxus tree only compiles in these explicit steps — never under a
+//! The example is gated by `required-features = ["example"]` in `Cargo.toml`
+//! (the `example` feature enables `mock` plus the optional `dioxus`), so the
+//! heavy Dioxus tree only compiles in these explicit steps — never under a
 //! bare `cargo check --all-targets`. Dioxus is used only for RSX and
 //! `#[component]`; no renderer runs.
 
@@ -47,19 +48,31 @@ fn RoomStatus(handle: ClientHandle) -> Element {
     use_future(move || {
         let handle = handle.clone();
         async move {
+            // Subscribe FIRST: subscriptions are live-only, so anything
+            // emitted while the mount call is pending would otherwise be
+            // permanently missed (the mailbox buffers events until first
+            // poll). Then drive the call concurrently with consumption, so a
+            // hanging call cannot keep the event loop from starting.
+            let mut events = handle.subscribe();
+
             // One call on mount. The reply is compile-time paired with
             // `RoomList::Output`; nothing here downcasts an untyped value.
-            let _ = handle.room_list(RoomList {}, Dedup::None).await;
+            let call = async {
+                let _ = handle.room_list(RoomList {}, Dedup::None).await;
+            };
 
             // Live events on an independent subscription. A `StateChanged`
             // updates the rendered state without polling.
-            let mut events = handle.subscribe();
-            while let Some(event) = events.next().await {
-                if let ClientEvent::StateChanged { to, .. } = &event {
-                    state.set(*to);
+            let consume = async {
+                while let Some(event) = events.next().await {
+                    if let ClientEvent::StateChanged { to, .. } = &event {
+                        state.set(*to);
+                    }
+                    last_event.set(Some(event));
                 }
-                last_event.set(Some(event));
-            }
+            };
+
+            futures::join!(call, consume);
         }
     });
 

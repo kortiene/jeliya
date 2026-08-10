@@ -43,7 +43,7 @@ impl ClientHandle {
         let terminal = self.dispatch_typed::<O>(input, dedup);
         let (cancel_tx, cancel_rx) = oneshot::channel();
         StreamCall {
-            terminal,
+            terminal: Some(terminal),
             cancel_rx,
             cancel_tx: Some(cancel_tx),
         }
@@ -61,7 +61,11 @@ pub struct StreamCall<O: Operation>
 where
     O::Output: 'static,
 {
-    terminal: BoxFuture<'static, Result<O::Output, CallError>>,
+    /// The in-flight dispatch. `None` once cancellation has released it: the
+    /// backend-side reply channel is dropped at cancellation time (not at
+    /// `StreamCall` drop), so abandoned work is observably abandoned — the
+    /// mock's `deliver_next` purges it instead of consuming its scripted step.
+    terminal: Option<BoxFuture<'static, Result<O::Output, CallError>>>,
     cancel_rx: oneshot::Receiver<Execution>,
     cancel_tx: Option<oneshot::Sender<Execution>>,
 }
@@ -100,13 +104,24 @@ impl<O: Operation> Future for StreamCall<O> {
         // A cancellation, if signaled, wins over a late terminal.
         match Pin::new(&mut this.cancel_rx).poll(cx) {
             Poll::Ready(Ok(execution)) => {
-                return Poll::Ready(Err(CallError::Cancelled { execution }))
+                // Release the dispatch now: dropping the terminal drops the
+                // backend-side reply channel deterministically at cancellation
+                // time, so the backend can observe the abandonment.
+                this.terminal = None;
+                return Poll::Ready(Err(CallError::Cancelled { execution }));
             }
             // The sender was dropped without cancelling: not a cancellation.
+            // (`futures::channel::oneshot::Receiver` is re-poll-safe after
+            // completion — it keeps returning `Ready(Err(Canceled))`.)
             Poll::Ready(Err(_)) => {}
             Poll::Pending => {}
         }
-        this.terminal.as_mut().poll(cx)
+        match this.terminal.as_mut() {
+            Some(terminal) => terminal.as_mut().poll(cx),
+            // Already resolved by cancellation; a poll after completion has no
+            // result to give — stay pending per `Future`'s contract.
+            None => Poll::Pending,
+        }
     }
 }
 

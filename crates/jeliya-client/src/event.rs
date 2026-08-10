@@ -11,6 +11,7 @@
 
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
@@ -223,6 +224,9 @@ struct SubscriberState {
 /// deterministically.
 pub(crate) struct EventBus {
     subscribers: Mutex<Vec<Weak<Mutex<SubscriberState>>>>,
+    /// Set once [`close`](Self::close) has run; guarded by the `subscribers`
+    /// lock (every load and store happens while holding it).
+    closed: AtomicBool,
 }
 
 impl EventBus {
@@ -230,31 +234,44 @@ impl EventBus {
     pub(crate) fn new() -> Self {
         Self {
             subscribers: Mutex::new(Vec::new()),
+            closed: AtomicBool::new(false),
         }
     }
 
     /// Register an independent subscription. A subscription created *after* an
-    /// event does not receive that past event; pushes are live.
+    /// event does not receive that past event; pushes are live. A subscription
+    /// created after the bus has closed is **born closed**: its stream yields
+    /// `None` immediately instead of pending forever on a bus that will never
+    /// broadcast again.
     pub(crate) fn subscribe(&self) -> EventSubscription {
+        let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
+        let closed = self.closed.load(Ordering::Relaxed);
         let state = Arc::new(Mutex::new(SubscriberState {
             buffer: VecDeque::new(),
             dropped: 0,
             capacity: DEFAULT_FANOUT_CAPACITY,
             waker: None,
-            closed: false,
+            closed,
         }));
-        let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
-        subscribers.push(Arc::downgrade(&state));
+        if !closed {
+            subscribers.push(Arc::downgrade(&state));
+        }
         EventSubscription { state }
     }
 
     /// Deliver `event` to every live subscription in registration order. A
-    /// subscriber whose mailbox is full has this event dropped and its
-    /// `dropped` counter incremented, to be surfaced as
-    /// [`ClientEvent::Lagged`] — never a silent loss.
+    /// subscriber whose mailbox is full has an ordinary push dropped and its
+    /// `dropped` counter incremented, surfaced as a [`ClientEvent::Lagged`]
+    /// that occupies the position in the sequence where the loss occurred —
+    /// never a silent loss, and never reported *after* later events. Lifecycle
+    /// transitions ([`ClientEvent::StateChanged`]) are control events: they are
+    /// never dropped, so a subscriber always observes the final
+    /// `StateChanged { to: Stopped }` (the mailbox may exceed capacity by at
+    /// most the handful of lifecycle transitions plus their `Lagged` markers).
     pub(crate) fn broadcast(&self, event: ClientEvent) {
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
         subscribers.retain(|weak| weak.strong_count() > 0);
+        let is_control = matches!(event, ClientEvent::StateChanged { .. });
         for weak in subscribers.iter() {
             let Some(state) = weak.upgrade() else {
                 continue;
@@ -263,7 +280,21 @@ impl EventBus {
             if state.closed {
                 continue;
             }
-            if state.buffer.len() >= state.capacity {
+            // Materialize any pending drop count as a `Lagged` marker before
+            // appending, so the marker keeps its position in the sequence: a
+            // consumer learns about the loss before it sees anything broadcast
+            // after the loss. Control events flush unconditionally (they bypass
+            // capacity); ordinary pushes flush when a slot is free.
+            if state.dropped > 0 && (is_control || state.buffer.len() < state.capacity) {
+                let dropped = std::mem::take(&mut state.dropped);
+                state.buffer.push_back(ClientEvent::Lagged {
+                    room_id: None,
+                    dropped,
+                });
+            }
+            if is_control {
+                state.buffer.push_back(event.clone());
+            } else if state.buffer.len() >= state.capacity {
                 state.dropped = state.dropped.saturating_add(1);
             } else {
                 state.buffer.push_back(event.clone());
@@ -276,9 +307,11 @@ impl EventBus {
 
     /// Close every subscription. Already-buffered events (including a final
     /// `StateChanged { to: Stopped }`) remain readable; once a mailbox drains,
-    /// its stream yields `None`.
+    /// its stream yields `None`. Subscriptions created after this call are
+    /// born closed.
     pub(crate) fn close(&self) {
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
+        self.closed.store(true, Ordering::Relaxed);
         for weak in subscribers.iter() {
             let Some(state) = weak.upgrade() else {
                 continue;
@@ -296,10 +329,13 @@ impl EventBus {
 /// An independent, live view of the client's [`ClientEvent`] stream.
 ///
 /// Implements [`futures::Stream`]. Each [`subscribe`](crate::ClientHandle::subscribe)
-/// call returns a distinct subscription; every one observes every event. The
-/// stream yields buffered events first, then a single [`ClientEvent::Lagged`]
-/// summarizing any dropped pushes, then `None` once the bus has closed and the
-/// mailbox is drained.
+/// call returns a distinct subscription; every one observes every event. A
+/// [`ClientEvent::Lagged`] marker summarizing dropped pushes occupies the
+/// position in the sequence where the loss occurred, so nothing broadcast
+/// after a loss is observed before the loss is reported; a trailing loss with
+/// no subsequent broadcast surfaces once the buffer drains. The stream yields
+/// `None` once the bus has closed and the mailbox is drained; a subscription
+/// created after close is born closed and yields `None` immediately.
 pub struct EventSubscription {
     state: Arc<Mutex<SubscriberState>>,
 }
