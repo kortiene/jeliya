@@ -66,6 +66,64 @@ fn no_serde_json_value_in_public_source() {
     );
 }
 
+/// The kernel core (#168) is **sans-IO**: it takes logical time as an input and
+/// emits "arm a timer" as an action; it never reads a wall clock and never
+/// makes an RNG syscall, so its behaviour is deterministic and identical on
+/// wasm and native. This scan asserts the discipline structurally — no
+/// `std::time`, `Instant::now`, `SystemTime`, `getrandom`, `rand::`, or `tokio`
+/// token appears in any `src/kernel/**` source line (comment lines that merely
+/// describe the rule are skipped, exactly like the `serde_json::Value` scan).
+#[test]
+fn kernel_source_has_no_wall_clock_rng_or_runtime() {
+    let kernel_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/kernel");
+    // Substrings chosen to name the banned APIs without matching innocent words
+    // (for example `rand::`, not a bare `rand` that also occurs in "strands").
+    const BANNED: [&str; 6] = [
+        "std::time",
+        "Instant::now",
+        "SystemTime",
+        "getrandom",
+        "rand::",
+        "tokio",
+    ];
+    let mut offenders = Vec::new();
+    for path in rust_sources(std::path::Path::new(kernel_dir)) {
+        let text = std::fs::read_to_string(&path).expect("readable kernel source");
+        for (index, line) in text.lines().enumerate() {
+            // Skip comment lines that describe the boundary itself.
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for banned in BANNED {
+                if line.contains(banned) {
+                    offenders.push(format!("{}:{} ({banned})", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "kernel source must carry no wall clock, RNG, or runtime token: {offenders:?}"
+    );
+}
+
+/// Collect every `.rs` file under `dir`, recursively.
+fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut sources = Vec::new();
+    if !dir.exists() {
+        return sources;
+    }
+    for entry in std::fs::read_dir(dir).expect("readable dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            sources.extend(rust_sources(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            sources.push(path);
+        }
+    }
+    sources
+}
+
 /// Recursively scan `.rs` files under `dir`, collecting `file:line` offenders.
 fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
     for entry in std::fs::read_dir(dir).expect("readable src dir") {
