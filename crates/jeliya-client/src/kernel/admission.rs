@@ -68,16 +68,6 @@ impl Admission {
         Ok(())
     }
 
-    /// Re-charge a held call's bytes **without** an admission check: the
-    /// call was admitted once and cannot be refused now (it is
-    /// settled-pending work held for replay across a reconnect). Subsequent
-    /// NEW admissions see the held bytes and refuse — exactly the
-    /// backpressure the byte bound exists to provide (§K12).
-    pub(crate) fn charge_unchecked(&mut self, payload_bytes: u64) {
-        self.queued_count = self.queued_count.saturating_add(1);
-        self.queued_bytes = self.queued_bytes.saturating_add(payload_bytes);
-    }
-
     /// Release one previously-admitted call's charge (on send-completion via a
     /// settle, on cancellation, or on disconnect). Saturating so a double
     /// release can never underflow into a spuriously huge free budget.

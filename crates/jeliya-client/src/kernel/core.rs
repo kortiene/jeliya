@@ -222,7 +222,7 @@ impl Core {
         match input {
             Input::Dispatch { call_id, call } => self.on_dispatch(call_id, call, now, &mut actions),
             Input::Start => self.on_start(&mut actions),
-            Input::Stop => self.on_stop(&mut actions),
+            Input::Stop => self.on_stop(now, &mut actions),
             Input::Connected { token } => self.on_connected(token, now, &mut actions),
             Input::Interrupted { generation } => self.on_interrupted(generation, now, &mut actions),
             Input::DialFailed { token } => self.on_dial_failed(token, now, &mut actions),
@@ -335,31 +335,29 @@ impl Core {
         drop_cancelled.sort_unstable();
         for call_id in expired {
             if let Some(entry) = self.ledger.take(call_id) {
+                if entry.holds_charge {
+                    self.admission.release(entry.payload_bytes);
+                }
                 actions.push(Action::CancelTimer(entry.deadline_timer));
                 actions.push(Action::Settle(call_id, Err(CallError::Timeout)));
             }
         }
         for call_id in hold {
-            let mut recharge = None;
             if let Some(entry) = self.ledger.get_mut(call_id) {
                 entry.phase = Phase::Queued;
-                // A held payload re-enters the byte-bounded queue: re-charge
-                // its admission accounting (unchecked — held work cannot be
-                // refused) so new admissions during the backoff see the held
-                // bytes and the documented bound holds; without this, up to
-                // in_flight payloads escape the cap entirely.
-                if !entry.holds_charge {
-                    entry.holds_charge = true;
-                    recharge = Some(entry.payload_bytes);
-                }
-            }
-            if let Some(bytes) = recharge {
-                self.admission.charge_unchecked(bytes);
+                // The held payload re-enters the queue under the charge it
+                // has held since admission: a replayable call never releases
+                // at send (the charge IS the requeue reservation), so no
+                // recharge happens here and the caps cannot be exceeded.
+                debug_assert!(entry.holds_charge, "a replayable retains its charge");
             }
             self.replay_hold.push_back(call_id);
         }
         for call_id in disconnect {
             if let Some(entry) = self.ledger.take(call_id) {
+                if entry.holds_charge {
+                    self.admission.release(entry.payload_bytes);
+                }
                 actions.push(Action::CancelTimer(entry.deadline_timer));
                 actions.push(Action::Settle(
                     call_id,
@@ -460,7 +458,7 @@ impl Core {
         self.transition(State::Failed, actions);
     }
 
-    fn on_stop(&mut self, actions: &mut Vec<Action>) {
+    fn on_stop(&mut self, now: Tick, actions: &mut Vec<Action>) {
         if self.stopping || self.state == State::Stopped {
             return;
         }
@@ -480,15 +478,20 @@ impl Core {
         for (call_id, entry) in drained {
             actions.push(Action::CancelTimer(entry.deadline_timer));
             if !entry.cancelled {
-                let execution = if entry.ever_sent {
-                    Execution::Unknown
+                // The absolute deadline binds at stop as on every other path:
+                // an already-expired call settles Timeout, not Cancelled,
+                // regardless of stop-vs-timer ordering.
+                let settled = if entry.deadline_at <= now {
+                    Err(CallError::Timeout)
                 } else {
-                    Execution::DefinitelyNot
+                    let execution = if entry.ever_sent {
+                        Execution::Unknown
+                    } else {
+                        Execution::DefinitelyNot
+                    };
+                    Err(CallError::Cancelled { execution })
                 };
-                actions.push(Action::Settle(
-                    call_id,
-                    Err(CallError::Cancelled { execution }),
-                ));
+                actions.push(Action::Settle(call_id, settled));
             }
         }
         self.reset_work();
@@ -560,8 +563,12 @@ impl Core {
             id: deadline_timer,
             at: deadline_at,
         });
-        let replay =
-            ReplayPolicy::derive(call.mutating, call.op_id.as_ref(), self.stable_principal);
+        let replay = ReplayPolicy::derive(
+            call.op,
+            call.mutating,
+            call.op_id.as_ref(),
+            self.stable_principal,
+        );
         self.ledger.insert(
             call_id,
             Entry {
@@ -617,8 +624,18 @@ impl Core {
                 // throttle slot is freed so a queued call can proceed.
                 if !entry.cancelled {
                     self.in_flight_count = self.in_flight_count.saturating_sub(1);
+                    let mut release = None;
                     if let Some(entry) = self.ledger.get_mut(call_id) {
                         entry.cancelled = true;
+                        // A cancelled call never replays: its requeue
+                        // reservation (if any) is released with the tombstone.
+                        if entry.holds_charge {
+                            entry.holds_charge = false;
+                            release = Some(entry.payload_bytes);
+                        }
+                    }
+                    if let Some(bytes) = release {
+                        self.admission.release(bytes);
                     }
                     self.push_tombstone(call_id, actions);
                     // The future is gone; drop its reply sender now. The ledger
@@ -672,7 +689,7 @@ impl Core {
                     .request_id()
             };
             let generation = self.generation.current();
-            let (frame, holds_charge, payload_bytes) = match self.ledger.get(call_id) {
+            let (frame, holds_charge, payload_bytes, replayable) = match self.ledger.get(call_id) {
                 Some(entry) => (
                     WireFrame {
                         id: request_id,
@@ -682,16 +699,18 @@ impl Core {
                     },
                     entry.holds_charge,
                     entry.payload_bytes,
+                    entry.replay.is_replayable(),
                 ),
                 None => continue,
             };
             self.ledger.mark_sent(call_id, request_id, generation);
-            // On send a call leaves the byte-bounded queue: release its
-            // admission charge so the cap tracks queued-outbound only. The
-            // charge flag covers both the first send and a held-replay
-            // re-send (re-charged at hold time), so the accounting is exact
-            // in both directions.
-            if holds_charge {
+            // A NON-replayable send leaves the byte-bounded queue for good:
+            // release its charge. A replayable call RETAINS its charge while
+            // sent — its payload is retained for a possible hold-and-requeue,
+            // so releasing at send would let an interruption recreate queued
+            // work past the caps (round 16); the charge is the reservation
+            // that makes the requeue always legal, released only at settle.
+            if holds_charge && !replayable {
                 if let Some(entry) = self.ledger.get_mut(call_id) {
                     entry.holds_charge = false;
                 }
@@ -746,6 +765,11 @@ impl Core {
             return;
         };
         let entry = self.ledger.take(call_id).expect("resolved entry exists");
+        // A sent replayable still holds its admission charge (the requeue
+        // reservation); settling releases it.
+        if entry.holds_charge {
+            self.admission.release(entry.payload_bytes);
+        }
         actions.push(Action::CancelTimer(entry.deadline_timer));
         if !entry.cancelled {
             self.in_flight_count = self.in_flight_count.saturating_sub(1);
@@ -804,9 +828,19 @@ impl Core {
                 // (§K12, AC-7).
                 self.in_flight_count = self.in_flight_count.saturating_sub(1);
                 let reclaim = self.alloc_timer();
+                let mut release = None;
                 if let Some(entry) = self.ledger.get_mut(call_id) {
                     entry.cancelled = true;
                     entry.deadline_timer = reclaim;
+                    // A timed-out call is settled and never replays: release
+                    // its requeue reservation with the tombstone.
+                    if entry.holds_charge {
+                        entry.holds_charge = false;
+                        release = Some(entry.payload_bytes);
+                    }
+                }
+                if let Some(bytes) = release {
+                    self.admission.release(bytes);
                 }
                 actions.push(Action::ArmTimer {
                     id: reclaim,
@@ -2311,7 +2345,14 @@ mod tests {
             Tick::ZERO,
         );
         let ops: [&'static str; 8] = [
-            "op.a", "op.b", "op.c", "op.d", "op.e", "op.f", "op.g", "op.h",
+            "room.create",
+            "room.leave",
+            "member.remove",
+            "invite.mint",
+            "invite.revoke",
+            "message.send",
+            "status.post",
+            "file.share",
         ];
         for op in ops {
             let call = core.alloc_call_id();

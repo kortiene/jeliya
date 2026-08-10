@@ -286,6 +286,9 @@ impl EventBus {
     /// once per lifetime, so the mailbox stays bounded while a flapping
     /// connection cannot grow it indefinitely (AC-7/§K12).
     pub(crate) fn broadcast(&self, event: ClientEvent) {
+        // Wakers collected under the locks, invoked after both the registry
+        // and every subscriber mutex are released (see `close`).
+        let mut wakers = Vec::new();
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
         subscribers.retain(|weak| weak.strong_count() > 0);
         let is_control = matches!(event, ClientEvent::StateChanged { .. });
@@ -387,8 +390,12 @@ impl EventBus {
                 state.buffer.push_back(event.clone());
             }
             if let Some(waker) = state.waker.take() {
-                waker.wake();
+                wakers.push(waker);
             }
+        }
+        drop(subscribers);
+        for waker in wakers {
+            waker.wake();
         }
     }
 
@@ -397,19 +404,29 @@ impl EventBus {
     /// its stream yields `None`. Subscriptions created after this call are
     /// born closed.
     pub(crate) fn close(&self) {
-        let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
-        self.closed.store(true, Ordering::Relaxed);
-        for weak in subscribers.iter() {
-            let Some(state) = weak.upgrade() else {
-                continue;
-            };
-            let mut state = state.lock().expect("subscriber poisoned");
-            state.closed = true;
-            if let Some(waker) = state.waker.take() {
-                waker.wake();
+        // Wakers are invoked only after every bus lock is released: an
+        // inline-executor waker that immediately polls (re-taking its state
+        // mutex) or subscribes (re-taking the registry mutex) must not
+        // deadlock.
+        let mut wakers = Vec::new();
+        {
+            let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
+            self.closed.store(true, Ordering::Relaxed);
+            for weak in subscribers.iter() {
+                let Some(state) = weak.upgrade() else {
+                    continue;
+                };
+                let mut state = state.lock().expect("subscriber poisoned");
+                state.closed = true;
+                if let Some(waker) = state.waker.take() {
+                    wakers.push(waker);
+                }
             }
+            subscribers.clear();
         }
-        subscribers.clear();
+        for waker in wakers {
+            waker.wake();
+        }
     }
 }
 
