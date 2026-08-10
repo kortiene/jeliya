@@ -43,9 +43,16 @@ pub(crate) enum ReplayPolicy {
 impl ReplayPolicy {
     /// Derive the policy from an [`ErasedCall`](crate::backend::ErasedCall)'s
     /// routing facts. Only a mutating operation carrying a caller-chosen
-    /// `op_id` is replayable.
-    pub(crate) fn derive(mutating: bool, op_id: Option<&OpId>) -> Self {
-        if mutating && op_id.is_some() {
+    /// `op_id` is replayable — and only when the driver certifies a **stable
+    /// session principal** across reconnects (`stable_principal`): the
+    /// daemon's dedup ledger is keyed `(principal, op_id)`, so an adapter
+    /// that omits `client_id` receives a fresh ephemeral principal per
+    /// connection and a replay under the new principal would re-execute a
+    /// mutation whose reply was lost. Without the certification, everything
+    /// is `Never` and a disconnect settles honestly as
+    /// `Disconnected { Unknown }` instead of auto-replaying.
+    pub(crate) fn derive(mutating: bool, op_id: Option<&OpId>, stable_principal: bool) -> Self {
+        if stable_principal && mutating && op_id.is_some() {
             ReplayPolicy::ReplayableUnderOpId
         } else {
             ReplayPolicy::Never
@@ -66,24 +73,35 @@ mod tests {
     fn mutating_with_op_id_is_replayable() {
         let op_id = OpId::new("stable-key");
         assert_eq!(
-            ReplayPolicy::derive(true, Some(&op_id)),
+            ReplayPolicy::derive(true, Some(&op_id), true),
             ReplayPolicy::ReplayableUnderOpId
         );
     }
 
     #[test]
     fn mutating_without_op_id_never_replays() {
-        assert_eq!(ReplayPolicy::derive(true, None), ReplayPolicy::Never);
+        assert_eq!(ReplayPolicy::derive(true, None, true), ReplayPolicy::Never);
     }
 
     #[test]
     fn non_mutating_never_replays_even_with_op_id() {
         let op_id = OpId::new("ignored");
         assert_eq!(
-            ReplayPolicy::derive(false, Some(&op_id)),
+            ReplayPolicy::derive(false, Some(&op_id), true),
             ReplayPolicy::Never
         );
-        assert_eq!(ReplayPolicy::derive(false, None), ReplayPolicy::Never);
+        assert_eq!(ReplayPolicy::derive(false, None, true), ReplayPolicy::Never);
+    }
+
+    #[test]
+    fn an_ephemeral_principal_never_replays() {
+        // Without a stable session principal, (principal, op_id) does not
+        // survive the reconnect, so nothing may auto-replay.
+        let op_id = OpId::new("stable-key");
+        assert_eq!(
+            ReplayPolicy::derive(true, Some(&op_id), false),
+            ReplayPolicy::Never
+        );
     }
 
     #[test]

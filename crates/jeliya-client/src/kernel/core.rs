@@ -116,11 +116,14 @@ pub(crate) struct Core {
     next_call_id: u64,
     /// Monotonic timer-id source.
     next_timer_id: u64,
+    /// Whether the driver certifies a stable session principal across
+    /// reconnects — the precondition for any auto-replay (§K5).
+    stable_principal: bool,
 }
 
 impl Core {
     /// Build a core with the given limits and deterministic jitter seed.
-    pub(crate) fn new(limits: KernelLimits, jitter_seed: u64) -> Self {
+    pub(crate) fn new(limits: KernelLimits, jitter_seed: u64, stable_principal: bool) -> Self {
         let admission = Admission::new(limits.queue_depth, limits.outbound_bytes);
         let backoff = Backoff::new(limits.backoff_base, limits.backoff_cap, jitter_seed);
         Self {
@@ -140,6 +143,7 @@ impl Core {
             attempt: 0,
             next_call_id: 0,
             next_timer_id: 0,
+            stable_principal,
         }
     }
 
@@ -210,6 +214,15 @@ impl Core {
         // the wire index without reclassifying the sent calls, stranding every
         // one of them until its deadline.
         if !matches!(self.state, State::Connecting | State::Interrupted) {
+            return;
+        }
+        // Interrupted with the backoff timer still armed has NO dial in
+        // progress (the retry dials only when the timer fires), so a
+        // completion arriving then can only be a straggler from the retired
+        // dial: accepting it would cancel the configured backoff, bump the
+        // generation, reset the retry budget, and flush replay-held calls
+        // onto a connection that was never gated.
+        if self.state == State::Interrupted && self.backoff_timer.is_some() {
             return;
         }
         self.generation.bump();
@@ -471,7 +484,8 @@ impl Core {
             id: deadline_timer,
             at: deadline_at,
         });
-        let replay = ReplayPolicy::derive(call.mutating, call.op_id.as_ref());
+        let replay =
+            ReplayPolicy::derive(call.mutating, call.op_id.as_ref(), self.stable_principal);
         self.ledger.insert(
             call_id,
             Entry {
@@ -826,6 +840,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         let a = core.alloc_call_id();
         let b = core.alloc_call_id();
@@ -871,6 +886,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         let a = core.alloc_call_id();
         let b = core.alloc_call_id();
@@ -904,7 +920,7 @@ mod tests {
     /// dropped and never double-settles (§K4).
     #[test]
     fn a_reply_settles_once_and_a_duplicate_is_dropped() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO); // → Ready, generation 1
         let call = core.alloc_call_id();
@@ -958,6 +974,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
@@ -1012,6 +1029,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO); // generation 1
@@ -1035,8 +1053,12 @@ mod tests {
         );
         assert_eq!(core.replay_hold_len(), 1);
 
-        // Reconnect: the held call re-sends under generation 2.
-        let reconnect = core.step(Input::Connected, Tick::ZERO);
+        // The backoff fires and the retry dial completes: the held call
+        // re-sends under generation 2 (a completion before the timer fires
+        // would be a stale straggler and is dropped).
+        let backoff = first_armed_timer(&lost).expect("backoff armed");
+        core.step(Input::TimerFired(backoff), Tick(1));
+        let reconnect = core.step(Input::Connected, Tick(1));
         let gen2 = core.generation();
         assert_eq!(gen2, gen1 + 1);
         let wire2 = first_send_id(&reconnect).expect("held call re-sends on reconnect");
@@ -1075,7 +1097,7 @@ mod tests {
     /// disconnect (§K5, the "all others never auto-replay" rule).
     #[test]
     fn a_mutation_without_op_id_never_replays() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
@@ -1110,6 +1132,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
@@ -1195,6 +1218,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
@@ -1241,7 +1265,7 @@ mod tests {
     /// removes it with no frame sent (§K9).
     #[test]
     fn cancelling_a_queued_call_sends_no_frame() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         // Idle: the call is admitted but not sent.
         let call = core.alloc_call_id();
         core.step(
@@ -1270,6 +1294,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         core.step(Input::Start, Tick::ZERO); // Connecting + Dial
                                              // Each loss schedules a backoff whose timer fires a real dial before
@@ -1298,7 +1323,7 @@ mod tests {
     /// (§K4).
     #[test]
     fn a_malformed_frame_strands_nothing() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
@@ -1328,6 +1353,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         // Idle: the call is admitted to the queue but not sent.
         let call = core.alloc_call_id();
@@ -1376,7 +1402,7 @@ mod tests {
     /// is a no-op (§K7, gate-refused branch of AC-5).
     #[test]
     fn gate_refused_settles_all_queued_as_definitely_not_with_no_retry() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO); // → Connecting, Dial
 
         // Two calls queue behind the protocol-validation barrier while Connecting.
@@ -1433,7 +1459,7 @@ mod tests {
     /// A stale-generation push is fenced and never reaches the bus (§K7).
     #[test]
     fn a_stale_generation_push_is_fenced() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO); // generation 1
         let push = || jeliya_api::Push::Transfer {
@@ -1470,7 +1496,7 @@ mod tests {
     /// executed there — while a never-sent call stays `DefinitelyNot`.
     #[test]
     fn gate_refusal_classifies_held_sent_calls_unknown() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let sent = core.alloc_call_id();
@@ -1522,7 +1548,7 @@ mod tests {
     /// deadline even when the peer never sends the late reply.
     #[test]
     fn timeout_tombstone_is_reclaimed_without_a_late_reply() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
@@ -1572,6 +1598,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
@@ -1601,7 +1628,7 @@ mod tests {
     /// does not bump and no sent call is stranded behind a cleared wire index.
     #[test]
     fn duplicate_connected_while_ready_is_ignored() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
@@ -1649,6 +1676,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
@@ -1693,7 +1721,7 @@ mod tests {
     /// one tick earlier settles normally.
     #[test]
     fn a_reply_at_the_deadline_settles_timeout_not_the_payload() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
@@ -1726,7 +1754,7 @@ mod tests {
         );
 
         // One tick earlier the same reply settles normally.
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
@@ -1759,7 +1787,7 @@ mod tests {
     /// orphan armed timers.
     #[test]
     fn duplicate_interruptions_coalesce_while_backoff_is_armed() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let first = core.step(Input::Interrupted, Tick::ZERO);
@@ -1794,6 +1822,7 @@ mod tests {
                 ..limits()
             },
             1,
+            true,
         );
         let call = core.alloc_call_id();
         let huge_key = "k".repeat(64);
@@ -1821,7 +1850,7 @@ mod tests {
     /// `Disconnected`, regardless of refusal-vs-timer processing order.
     #[test]
     fn a_gate_refusal_at_the_deadline_settles_timeout() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         // Queued while Connecting; the gate resolves only at the deadline.
         let call = core.alloc_call_id();
@@ -1847,7 +1876,7 @@ mod tests {
     /// its budget — regardless of close-vs-timer processing order.
     #[test]
     fn an_interrupt_at_the_deadline_settles_timeout_not_disconnected() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         // One replayable and one plain call, both sent at t0.
@@ -1893,7 +1922,7 @@ mod tests {
     /// so equality alone would admit pre-gate or retired-transport traffic.
     #[test]
     fn pushes_outside_ready_are_fenced() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         let push = |generation| {
             Input::Inbound(Inbound::Push {
                 generation,
@@ -1925,12 +1954,38 @@ mod tests {
         );
     }
 
+    /// §K7/§K10: a completion arriving while the backoff timer is still
+    /// armed is a straggler from the retired dial — no retry dial exists yet
+    /// — and must not cancel the backoff, bump the generation, reset the
+    /// budget, or flush held calls.
+    #[test]
+    fn a_completion_during_armed_backoff_is_dropped() {
+        let mut core = Core::new(limits(), 1, true);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let generation = core.generation();
+        let lost = core.step(Input::Interrupted, Tick::ZERO);
+        let backoff = first_armed_timer(&lost).expect("backoff armed");
+        // The retired dial's straggler arrives before the timer fires.
+        let straggler = core.step(Input::Connected, Tick::ZERO);
+        assert!(
+            straggler.is_empty(),
+            "a straggler completion is dropped whole"
+        );
+        assert_eq!(core.generation(), generation, "the generation holds");
+        // The scheduled retry still proceeds normally.
+        let fired = core.step(Input::TimerFired(backoff), Tick(1));
+        assert!(fired.iter().any(|a| matches!(a, Action::Dial)));
+        core.step(Input::Connected, Tick(1));
+        assert_eq!(core.generation(), generation + 1);
+    }
+
     /// §K5/§K13: held replayable calls re-send in their original send order
     /// after a reconnect — the ledger iterates in hash order, so the core
     /// sorts by `CallId` (monotonic at dispatch, FIFO queue).
     #[test]
     fn replay_hold_preserves_original_send_order() {
-        let mut core = Core::new(limits(), 1);
+        let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let ops: [&'static str; 8] = [
@@ -1947,9 +2002,12 @@ mod tests {
             );
             assert!(actions.iter().any(|a| matches!(a, Action::Send(_))));
         }
-        core.step(Input::Interrupted, Tick::ZERO);
+        let lost = core.step(Input::Interrupted, Tick::ZERO);
         assert_eq!(core.replay_hold_len(), 8);
-        let reconnect = core.step(Input::Connected, Tick::ZERO);
+        // Fire the backoff so the retry dial is live before the completion.
+        let backoff = first_armed_timer(&lost).expect("backoff armed");
+        core.step(Input::TimerFired(backoff), Tick(1));
+        let reconnect = core.step(Input::Connected, Tick(1));
         let resent: Vec<&'static str> = reconnect
             .iter()
             .filter_map(|a| match a {

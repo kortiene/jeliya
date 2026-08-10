@@ -19,6 +19,7 @@ fn ready(limits: KernelLimits) -> (ClientHandle, KernelController) {
     let (handle, controller) = ClientHandle::with_kernel(KernelConfig {
         limits,
         jitter_seed: 42,
+        stable_principal: true,
     });
     handle.start();
     controller.connect();
@@ -90,6 +91,7 @@ fn stop_mid_backoff_cancels_timer_and_drains_queue() {
             ..KernelLimits::default()
         },
         jitter_seed: 42,
+        stable_principal: true,
     });
     handle.start();
     controller.connect(); // → Ready (generation 1)
@@ -349,6 +351,7 @@ fn send_failure_drops_every_frame_in_the_batch() {
             ..KernelLimits::default()
         },
         jitter_seed: 42,
+        stable_principal: true,
     });
     handle.start(); // Connecting: dispatches queue, nothing sends
     let fut_a = handle.call::<RoomCreate>(
@@ -385,6 +388,48 @@ fn send_failure_drops_every_frame_in_the_batch() {
     let _ = block_on(fut_a);
     let _ = block_on(fut_b);
     assert_eq!(controller.outstanding(), 0);
+}
+
+/// §K5: without the stable-principal certification (the safe default),
+/// nothing auto-replays — a disconnect settles a keyed mutation honestly as
+/// `Disconnected { Unknown }` instead of re-executing it under a fresh
+/// ephemeral principal whose dedup ledger never saw the op_id.
+#[test]
+fn an_ephemeral_principal_never_auto_replays() {
+    let (handle, controller) = ClientHandle::with_kernel(KernelConfig {
+        limits: KernelLimits {
+            backoff_base: TickDelta::from_ticks(1),
+            backoff_cap: TickDelta::from_ticks(1),
+            ..KernelLimits::default()
+        },
+        jitter_seed: 42,
+        stable_principal: false,
+    });
+    handle.start();
+    controller.connect();
+    let fut = handle.call::<RoomCreate>(
+        RoomCreate {
+            name: "ephemeral".into(),
+        },
+        Dedup::Key(OpId::new("op-ephemeral")),
+    );
+    assert_eq!(controller.take_outbound().len(), 1);
+    controller.interrupt();
+    assert_eq!(
+        controller.replay_held(),
+        0,
+        "nothing is held without the principal certification"
+    );
+    let err = block_on(fut).expect_err("settled by the disconnect");
+    assert!(
+        matches!(
+            err,
+            CallError::Disconnected {
+                execution: Execution::Unknown
+            }
+        ),
+        "honest Unknown, no auto-replay: {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +547,7 @@ fn timeout_while_queued_releases_admission_and_allows_readmission() {
             ..KernelLimits::default()
         },
         jitter_seed: 42,
+        stable_principal: true,
     });
     // Idle: the call is admitted to the queue but never sent.
     let fut = handle.call::<RoomList>(RoomList {}, Dedup::None);
@@ -550,6 +596,7 @@ fn outbound_bytes_queue_full_surfaces_through_handle() {
             ..KernelLimits::default()
         },
         jitter_seed: 42,
+        stable_principal: true,
     });
     let _first = handle.call::<RoomList>(RoomList {}, Dedup::None);
     let second = handle.call::<RoomList>(RoomList {}, Dedup::None);
@@ -675,6 +722,7 @@ fn reconnect_exhaustion_fails_and_settles_outstanding_calls() {
             ..KernelLimits::default()
         },
         jitter_seed: 42,
+        stable_principal: true,
     });
     handle.start();
     assert_eq!(handle.state(), State::Connecting);

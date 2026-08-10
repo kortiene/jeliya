@@ -46,7 +46,7 @@ use futures::future::BoxFuture;
 
 use crate::backend::{ClientBackend, ErasedCall, RawJson};
 use crate::error::{CallError, LocalError};
-use crate::event::{EventBus, EventSubscription, State};
+use crate::event::{ClientEvent, EventBus, EventSubscription, State};
 use crate::kernel::core::{Action, Core, Input};
 use crate::kernel::inflight::CallId;
 use crate::kernel::timing::{Tick, TimerId};
@@ -117,6 +117,14 @@ pub struct KernelConfig {
     /// syscall inside the library. It is not a credential; it only decorrelates
     /// reconnect storms.
     pub jitter_seed: u64,
+    /// Whether the driver certifies a **stable session principal** across
+    /// reconnects (a stable `client_id`). The daemon's dedup ledger is keyed
+    /// `(principal, op_id)`, so auto-replay is safe only under this
+    /// certification — an adapter that omits `client_id` gets a fresh
+    /// ephemeral principal per connection, where a replay would re-execute a
+    /// mutation whose reply was lost. **Defaults to `false` (replay
+    /// disabled)**: an adapter must opt in, never the reverse (§K5).
+    pub stable_principal: bool,
 }
 
 /// The driver-owned mutable state the async shell and the controller share: the
@@ -151,15 +159,50 @@ struct Shared {
     send_failed: bool,
 }
 
+/// Work that must happen **after** the `Shared` mutex is released: settling a
+/// reply future or broadcasting an event invokes arbitrary wakers, and a
+/// waker backed by an inline executor may re-enter the handle — `state()`,
+/// another dispatch, a future drop — re-acquiring the same mutex and
+/// deadlocking. Every `drive` returns one of these; the caller delivers it
+/// with the lock already dropped.
+/// One reply delivery deferred past the lock: the sender and its result.
+type DeferredSettle = (
+    oneshot::Sender<Result<RawJson, CallError>>,
+    Result<RawJson, CallError>,
+);
+
+#[must_use]
+struct Deferred {
+    bus: Arc<EventBus>,
+    settles: Vec<DeferredSettle>,
+    events: Vec<ClientEvent>,
+    close_bus: bool,
+}
+
+impl Deferred {
+    fn deliver(self) {
+        for (sender, result) in self.settles {
+            // The receiver may already be dropped; a no-op send is harmless.
+            let _ = sender.send(result);
+        }
+        for event in self.events {
+            self.bus.broadcast(event);
+        }
+        if self.close_bus {
+            self.bus.close();
+        }
+    }
+}
+
 impl Shared {
     /// Perform one batch of core actions against the real resources.
-    fn apply(&mut self, actions: Vec<Action>) {
+    fn apply(&mut self, actions: Vec<Action>, deferred: &mut Deferred) {
         for action in actions {
-            self.apply_one(action);
+            self.apply_one(action, deferred);
         }
     }
 
-    fn apply_one(&mut self, action: Action) {
+    fn apply_one(&mut self, action: Action, deferred: &mut Deferred) {
         match action {
             Action::Send(frame) => {
                 if self.fail_next_send || self.send_failed {
@@ -184,9 +227,9 @@ impl Shared {
             Action::CancelDial => self.dialing = false,
             Action::Settle(call_id, result) => {
                 if let Some(sender) = self.senders.remove(&call_id) {
-                    // The receiver may already be dropped (a cancelled caller);
-                    // sending into a dropped receiver is a harmless no-op.
-                    let _ = sender.send(result);
+                    // Delivered after the Shared lock drops (§K12 wake
+                    // hygiene): sending invokes the receiver's waker.
+                    deferred.settles.push((sender, result));
                 }
             }
             Action::DropSender(call_id) => {
@@ -197,23 +240,31 @@ impl Shared {
                 // already settled) finds nothing and is a harmless no-op.
                 self.senders.remove(&call_id);
             }
-            Action::Emit(event) => self.bus.broadcast(event),
-            Action::CloseBus => self.bus.close(),
+            Action::Emit(event) => deferred.events.push(event),
+            Action::CloseBus => deferred.close_bus = true,
         }
     }
 
-    /// Step the core and immediately apply the resulting actions.
-    fn drive(&mut self, input: Input) {
+    /// Step the core, apply the resulting actions, and return the wake work
+    /// the caller must deliver **after** releasing the `Shared` lock.
+    fn drive(&mut self, input: Input) -> Deferred {
+        let mut deferred = Deferred {
+            bus: self.bus.clone(),
+            settles: Vec::new(),
+            events: Vec::new(),
+            close_bus: false,
+        };
         let now = self.now;
         let actions = self.core.step(input, now);
-        self.apply(actions);
+        self.apply(actions, &mut deferred);
         // A scripted send failure is a connection loss observed at write
         // time: report it to the core exactly as a real driver would (§K14).
         while std::mem::take(&mut self.send_failed) {
             let now = self.now;
             let actions = self.core.step(Input::Interrupted, now);
-            self.apply(actions);
+            self.apply(actions, &mut deferred);
         }
+        deferred
     }
 }
 
@@ -232,13 +283,17 @@ impl KernelBackend {
 
 impl ClientBackend for KernelBackend {
     fn dispatch(&self, call: ErasedCall) -> BoxFuture<'static, Result<RawJson, CallError>> {
-        let mut shared = self.lock();
-        let call_id = shared.core.alloc_call_id();
-        let (sender, receiver) = oneshot::channel();
-        // Insert the sender before stepping so an immediate refusal (QueueFull,
-        // post-stop) settles into a live channel.
-        shared.senders.insert(call_id, sender);
-        shared.drive(Input::Dispatch { call_id, call });
+        let (receiver, call_id, deferred) = {
+            let mut shared = self.lock();
+            let call_id = shared.core.alloc_call_id();
+            let (sender, receiver) = oneshot::channel();
+            // Insert the sender before stepping so an immediate refusal
+            // (QueueFull, post-stop) settles into a live channel.
+            shared.senders.insert(call_id, sender);
+            let deferred = shared.drive(Input::Dispatch { call_id, call });
+            (receiver, call_id, deferred)
+        };
+        deferred.deliver();
         Box::pin(DispatchFuture {
             receiver,
             cancel: Some((Arc::downgrade(&self.shared), call_id)),
@@ -254,13 +309,15 @@ impl ClientBackend for KernelBackend {
     }
 
     fn start(&self) {
-        self.lock().drive(Input::Start);
+        let deferred = self.lock().drive(Input::Start);
+        deferred.deliver();
     }
 
     fn stop(&self) -> BoxFuture<'static, ()> {
         // Initiation is eager (the refusal boundary is set now); the core
         // settles synchronously, so the returned future is already resolved.
-        self.lock().drive(Input::Stop);
+        let deferred = self.lock().drive(Input::Stop);
+        deferred.deliver();
         Box::pin(async {})
     }
 }
@@ -303,8 +360,12 @@ impl Drop for DispatchFuture {
     fn drop(&mut self) {
         if let Some((weak, call_id)) = self.cancel.take() {
             if let Some(shared) = weak.upgrade() {
-                if let Ok(mut shared) = shared.lock() {
-                    shared.drive(Input::Cancel(call_id));
+                let deferred = shared
+                    .lock()
+                    .ok()
+                    .map(|mut s| s.drive(Input::Cancel(call_id)));
+                if let Some(deferred) = deferred {
+                    deferred.deliver();
                 }
             }
         }
@@ -336,7 +397,7 @@ mod in_memory {
         /// the seam, now for the kernel.
         pub fn with_kernel(config: KernelConfig) -> (ClientHandle, KernelController) {
             let shared = Arc::new(Mutex::new(Shared {
-                core: Core::new(config.limits, config.jitter_seed),
+                core: Core::new(config.limits, config.jitter_seed, config.stable_principal),
                 bus: Arc::new(EventBus::new()),
                 now: Tick::ZERO,
                 senders: HashMap::new(),
@@ -421,21 +482,27 @@ mod in_memory {
         /// Complete a dial: a live connection is established and passes the
         /// generation gate. Returns the fresh generation.
         pub fn connect(&self) -> u64 {
-            let mut shared = self.lock();
-            shared.dialing = false;
-            shared.drive(Input::Connected);
-            shared.core.generation()
+            let (deferred, generation) = {
+                let mut shared = self.lock();
+                shared.dialing = false;
+                let deferred = shared.drive(Input::Connected);
+                (deferred, shared.core.generation())
+            };
+            deferred.deliver();
+            generation
         }
 
         /// Report a recoverable connection loss (a dropped connection or a
         /// send/close race).
         pub fn interrupt(&self) {
-            self.lock().drive(Input::Interrupted);
+            let deferred = self.lock().drive(Input::Interrupted);
+            deferred.deliver();
         }
 
         /// Report a terminal generation-gate refusal (no auto-retry, §K7).
         pub fn gate_refused(&self) {
-            self.lock().drive(Input::GateRefused);
+            let deferred = self.lock().drive(Input::GateRefused);
+            deferred.deliver();
         }
 
         /// Deliver a success reply for `wire_id` on the current generation.
@@ -453,22 +520,24 @@ mod in_memory {
             generation: u64,
         ) {
             let id = RequestId::new(wire_id).expect("wire id within range");
-            self.lock().drive(Input::Inbound(Inbound::Reply {
+            let deferred = self.lock().drive(Input::Inbound(Inbound::Reply {
                 generation,
                 id,
                 result: WireReply::Ok(RawJson::from_string(out_json.into())),
             }));
+            deferred.deliver();
         }
 
         /// Deliver a typed daemon error for `wire_id` on the current generation.
         pub fn deliver_error(&self, wire_id: u64, error: ApiError) {
             let generation = self.generation();
             let id = RequestId::new(wire_id).expect("wire id within range");
-            self.lock().drive(Input::Inbound(Inbound::Reply {
+            let deferred = self.lock().drive(Input::Inbound(Inbound::Reply {
                 generation,
                 id,
                 result: WireReply::Err(error),
             }));
+            deferred.deliver();
         }
 
         /// Deliver a live wire push on the current generation. Takes the
@@ -483,35 +552,49 @@ mod in_memory {
         /// Deliver a push tagged with an explicit generation — used to prove a
         /// stale-generation push is fenced.
         pub fn deliver_push_at_generation(&self, push: jeliya_api::Push, generation: u64) {
-            self.lock()
+            let deferred = self
+                .lock()
                 .drive(Input::Inbound(Inbound::Push { generation, push }));
+            deferred.deliver();
         }
 
         /// Deliver a frame that parses to no envelope: it must strand nothing.
         pub fn deliver_malformed(&self) {
-            self.lock().drive(Input::Inbound(Inbound::Malformed));
+            let deferred = self.lock().drive(Input::Inbound(Inbound::Malformed));
+            deferred.deliver();
         }
 
         /// Advance the virtual clock by `ticks`, firing every timer now due (in
         /// ascending fire-time order).
         pub fn advance(&self, ticks: u64) {
-            let mut shared = self.lock();
-            shared.now.advance(TickDelta(ticks));
+            self.lock().now.advance(TickDelta(ticks));
             loop {
-                let now = shared.now;
-                let due = shared
-                    .timers
-                    .iter()
-                    .filter(|(_, at)| **at <= now)
-                    // Tie-break equal fire times by timer id so the reference
-                    // driver is deterministic when deadlines coincide (§K13).
-                    .min_by_key(|(id, at)| (**at, id.0))
-                    .map(|(id, _)| *id);
-                let Some(id) = due else {
-                    break;
+                let deferred = {
+                    let mut shared = self.lock();
+                    let now = shared.now;
+                    let due = shared
+                        .timers
+                        .iter()
+                        .filter(|(_, at)| **at <= now)
+                        // Tie-break equal fire times by timer id so the
+                        // reference driver is deterministic when deadlines
+                        // coincide (§K13).
+                        .min_by_key(|(id, at)| (**at, id.0))
+                        .map(|(id, _)| *id);
+                    match due {
+                        Some(id) => {
+                            shared.timers.remove(&id);
+                            Some(shared.drive(Input::TimerFired(id)))
+                        }
+                        None => None,
+                    }
                 };
-                shared.timers.remove(&id);
-                shared.drive(Input::TimerFired(id));
+                // Deliver with the lock dropped, then look for the next due
+                // timer (a settle may re-enter and arm or cancel timers).
+                match deferred {
+                    Some(deferred) => deferred.deliver(),
+                    None => break,
+                }
             }
         }
 
@@ -623,6 +706,7 @@ mod in_memory {
                     ..KernelLimits::default()
                 },
                 jitter_seed: 1,
+                stable_principal: true,
             });
             handle.start();
             controller.connect();
@@ -676,6 +760,7 @@ mod in_memory {
                     ..KernelLimits::default()
                 },
                 jitter_seed: 1,
+                stable_principal: true,
             });
             // Idle: both calls queue; the second overflows the depth-1 queue.
             let _first = handle.call::<RoomList>(RoomList {}, Dedup::None);
