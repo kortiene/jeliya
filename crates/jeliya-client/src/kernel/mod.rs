@@ -453,7 +453,9 @@ mod in_memory {
                     .timers
                     .iter()
                     .filter(|(_, at)| **at <= now)
-                    .min_by_key(|(_, at)| **at)
+                    // Tie-break equal fire times by timer id so the reference
+                    // driver is deterministic when deadlines coincide (§K13).
+                    .min_by_key(|(id, at)| (**at, id.0))
                     .map(|(id, _)| *id);
                 let Some(id) = due else {
                     break;

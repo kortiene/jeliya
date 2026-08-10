@@ -5,8 +5,9 @@
 //! §Byte-stream framing), not simple request→reply. This issue defines the
 //! seam surface so the client is not painted into a corner, but the executor
 //! is out of scope here: the daemon side is #233/#242/#243 and the client
-//! kernel is #168. Their credit / `OPEN` / `END` / `ABORT` semantics are the
-//! kernel's to implement against the protocol.
+//! kernel's stream hooks are #269 (assigned to #168 by spec §K16 but not
+//! shipped with it). Their credit / `OPEN` / `END` / `ABORT` semantics are
+//! that layer's to implement against the protocol.
 //!
 //! What #167 fixes now is the *type*: a [`StreamCall`] exposes (a) a cancel
 //! path that maps to [`CallError::Cancelled`] with the [`Execution`]
@@ -33,9 +34,9 @@ impl ClientHandle {
     ///
     /// Depth is deferred: today the terminal is driven by the same erased
     /// dispatch as [`call`](ClientHandle::call), so the mock's scripted
-    /// programs and the cancel path are exercised end-to-end. #168 replaces the
+    /// programs and the cancel path are exercised end-to-end. #269 replaces the
     /// body with real credit/OPEN/END/ABORT framing without changing this
-    /// surface.
+    /// surface (the hooks were assigned to #168 but did not ship with it).
     pub fn call_stream<O: Operation>(&self, input: O, dedup: Dedup) -> StreamCall<O>
     where
         O::Output: 'static,
@@ -78,8 +79,8 @@ where
     /// [`CallError::Cancelled`]` { execution }`. Returns `false` if the call
     /// was already cancelled or its cancel path was detached. The `execution`
     /// the caller passes is authoritative: `DefinitelyNot` if the stream never
-    /// opened, `Unknown` once bytes may have gone out — the kernel (#168) will
-    /// supply the true value from framing state.
+    /// opened, `Unknown` once bytes may have gone out — the kernel's stream
+    /// hooks (#269) will supply the true value from framing state.
     pub fn cancel(&mut self, execution: Execution) -> bool {
         match self.cancel_tx.take() {
             Some(tx) => tx.send(execution).is_ok(),

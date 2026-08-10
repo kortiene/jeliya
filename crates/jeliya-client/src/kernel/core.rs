@@ -101,6 +101,11 @@ pub(crate) struct Core {
     /// Sent replayable calls held across a reconnect for re-send (bounded by
     /// `in_flight`).
     replay_hold: VecDeque<CallId>,
+    /// FIFO of live tombstone ids (sent entries whose caller cancelled or whose
+    /// deadline fired), bounded by `in_flight`: creating a tombstone past the
+    /// budget evicts the oldest, so cancel/timeout churn cannot grow the ledger
+    /// past its documented bound (§K12, AC-7).
+    tombstones: VecDeque<CallId>,
     /// Count of sent, non-cancelled calls — asserted `<= in_flight`.
     in_flight_count: u32,
     /// The single armed reconnect-backoff timer, if any.
@@ -129,6 +134,7 @@ impl Core {
             backoff,
             queue: VecDeque::new(),
             replay_hold: VecDeque::new(),
+            tombstones: VecDeque::new(),
             in_flight_count: 0,
             backoff_timer: None,
             attempt: 0,
@@ -163,12 +169,12 @@ impl Core {
             Input::Dispatch { call_id, call } => self.on_dispatch(call_id, call, now, &mut actions),
             Input::Start => self.on_start(&mut actions),
             Input::Stop => self.on_stop(&mut actions),
-            Input::Connected => self.on_connected(&mut actions),
+            Input::Connected => self.on_connected(now, &mut actions),
             Input::Interrupted => self.on_interrupted(now, &mut actions),
             Input::GateRefused => self.on_gate_refused(&mut actions),
-            Input::Inbound(frame) => self.on_inbound(frame, &mut actions),
-            Input::TimerFired(id) => self.on_timer_fired(id, &mut actions),
-            Input::Cancel(call_id) => self.on_cancel(call_id, &mut actions),
+            Input::Inbound(frame) => self.on_inbound(frame, now, &mut actions),
+            Input::TimerFired(id) => self.on_timer_fired(id, now, &mut actions),
+            Input::Cancel(call_id) => self.on_cancel(call_id, now, &mut actions),
         }
         actions
     }
@@ -191,8 +197,13 @@ impl Core {
         }
     }
 
-    fn on_connected(&mut self, actions: &mut Vec<Action>) {
-        if matches!(self.state, State::Stopping | State::Stopped | State::Failed) {
+    fn on_connected(&mut self, now: Tick, actions: &mut Vec<Action>) {
+        // Only an active dial may complete a connection. A duplicate or stale
+        // `Connected` — while already `Ready`, from `Idle`, or after a terminal
+        // state — is dropped: accepting it would bump the generation and clear
+        // the wire index without reclassifying the sent calls, stranding every
+        // one of them until its deadline.
+        if !matches!(self.state, State::Connecting | State::Interrupted) {
             return;
         }
         self.generation.bump();
@@ -209,7 +220,7 @@ impl Core {
             self.queue.push_front(call_id);
         }
         self.transition(State::Ready, actions);
-        self.flush(actions);
+        self.flush(now, actions);
     }
 
     fn on_interrupted(&mut self, now: Tick, actions: &mut Vec<Action>) {
@@ -235,6 +246,12 @@ impl Core {
                 }
             }
         }
+        // The ledger iterates in hash order; sort by `CallId` (monotonic at
+        // dispatch, queue is FIFO) so held calls replay in original send order
+        // and the whole action stream is deterministic (§K13).
+        hold.sort_unstable();
+        disconnect.sort_unstable();
+        drop_cancelled.sort_unstable();
         for call_id in hold {
             if let Some(entry) = self.ledger.get_mut(call_id) {
                 entry.phase = Phase::Queued;
@@ -257,6 +274,9 @@ impl Core {
                 actions.push(Action::CancelTimer(entry.deadline_timer));
             }
         }
+        // Every tombstone was a sent entry and every sent entry was just
+        // reclassified, so no tombstone survives an interrupt.
+        self.tombstones.clear();
         // No sent calls remain; the wire-id space is retired until reconnect.
         self.in_flight_count = 0;
         self.ledger.clear_wire_index();
@@ -281,24 +301,18 @@ impl Core {
     }
 
     fn on_gate_refused(&mut self, actions: &mut Vec<Action>) {
-        actions.push(Action::CancelDial);
-        if let Some(timer) = self.backoff_timer.take() {
-            actions.push(Action::CancelTimer(timer));
+        // Stop wins (§K11): a refusal from a dial that `stop` already
+        // cancelled must not flip a stopped (or already failed) client to
+        // `Failed` after the bus closed.
+        if matches!(self.state, State::Stopping | State::Stopped | State::Failed) {
+            return;
         }
-        // Nothing was sent past the gate → every call is DefinitelyNot.
-        for (call_id, entry) in self.ledger.drain() {
-            actions.push(Action::CancelTimer(entry.deadline_timer));
-            if !entry.cancelled {
-                actions.push(Action::Settle(
-                    call_id,
-                    Err(CallError::Disconnected {
-                        execution: Execution::DefinitelyNot,
-                    }),
-                ));
-            }
-        }
-        self.reset_work();
-        self.transition(State::Failed, actions);
+        // A never-sent call is provably unexecuted (`DefinitelyNot`), but a
+        // call held for replay was sent on a *prior live generation* and may
+        // have executed there — this generation's gate refusal says nothing
+        // about that one. `fail_all` classifies by `ever_sent` exactly as
+        // §K6 requires, so the barrier delegates to it.
+        self.fail_all(actions);
     }
 
     fn fail_all(&mut self, actions: &mut Vec<Action>) {
@@ -361,8 +375,26 @@ impl Core {
     fn reset_work(&mut self) {
         self.queue.clear();
         self.replay_hold.clear();
+        self.tombstones.clear();
         self.admission.clear();
         self.in_flight_count = 0;
+    }
+
+    /// Record a sent entry that became a tombstone (caller cancel or live
+    /// timeout), evicting the oldest live tombstone once the budget
+    /// (`in_flight`) is full so cancel/timeout churn cannot grow the ledger
+    /// past its documented bound (§K12, AC-7). Early eviction is safe: wire
+    /// ids are monotonic within a generation, so an evicted id is never
+    /// reissued and its late reply resolves to nothing and is dropped.
+    fn push_tombstone(&mut self, call_id: CallId, actions: &mut Vec<Action>) {
+        if self.tombstones.len() >= self.limits.in_flight as usize {
+            if let Some(oldest) = self.tombstones.pop_front() {
+                if let Some(entry) = self.ledger.take(oldest) {
+                    actions.push(Action::CancelTimer(entry.deadline_timer));
+                }
+            }
+        }
+        self.tombstones.push_back(call_id);
     }
 
     // -- dispatch, cancel, send ---------------------------------------------
@@ -392,9 +424,10 @@ impl Core {
             return;
         }
         let deadline_timer = self.alloc_timer();
+        let deadline_at = now.saturating_add(self.limits.default_call_deadline);
         actions.push(Action::ArmTimer {
             id: deadline_timer,
-            at: now.saturating_add(self.limits.default_call_deadline),
+            at: deadline_at,
         });
         let replay = ReplayPolicy::derive(call.mutating, call.op_id.as_ref());
         self.ledger.insert(
@@ -406,6 +439,7 @@ impl Core {
                 payload_bytes,
                 replay,
                 deadline_timer,
+                deadline_at,
                 phase: Phase::Queued,
                 ever_sent: false,
                 cancelled: false,
@@ -415,11 +449,11 @@ impl Core {
         // Only a Ready connection sends; otherwise the call waits behind the
         // protocol-validation barrier (§K7).
         if self.state == State::Ready {
-            self.flush(actions);
+            self.flush(now, actions);
         }
     }
 
-    fn on_cancel(&mut self, call_id: CallId, actions: &mut Vec<Action>) {
+    fn on_cancel(&mut self, call_id: CallId, now: Tick, actions: &mut Vec<Action>) {
         let Some(entry) = self.ledger.get(call_id) else {
             return;
         };
@@ -452,19 +486,20 @@ impl Core {
                     if let Some(entry) = self.ledger.get_mut(call_id) {
                         entry.cancelled = true;
                     }
+                    self.push_tombstone(call_id, actions);
                     // The future is gone; drop its reply sender now. The ledger
                     // entry survives as a tombstone (reclaimed by the late reply
                     // or its deadline), but the sender must not linger, or a
                     // client that routinely drops call futures would grow the
                     // driver's map unboundedly (§K12, AC-7).
                     actions.push(Action::DropSender(call_id));
-                    self.flush(actions);
+                    self.flush(now, actions);
                 }
             }
         }
     }
 
-    fn flush(&mut self, actions: &mut Vec<Action>) {
+    fn flush(&mut self, now: Tick, actions: &mut Vec<Action>) {
         if self.state != State::Ready {
             return;
         }
@@ -472,6 +507,28 @@ impl Core {
             let Some(call_id) = self.queue.pop_front() else {
                 break;
             };
+            // A queued call whose absolute deadline already elapsed (a
+            // shared-deadline timer race, or a long backoff before a replay)
+            // must not be put on the wire past its budget: settle `Timeout`
+            // now, mirroring the queued-timeout branch of `on_timer_fired`.
+            if let Some(entry) = self.ledger.get(call_id) {
+                if entry.deadline_at <= now {
+                    let ever_sent = entry.ever_sent;
+                    let payload_bytes = entry.payload_bytes;
+                    let deadline_timer = entry.deadline_timer;
+                    let cancelled = entry.cancelled;
+                    self.ledger.take(call_id);
+                    self.replay_hold.retain(|&held| held != call_id);
+                    if !ever_sent {
+                        self.admission.release(payload_bytes);
+                    }
+                    actions.push(Action::CancelTimer(deadline_timer));
+                    if !cancelled {
+                        actions.push(Action::Settle(call_id, Err(CallError::Timeout)));
+                    }
+                    continue;
+                }
+            }
             // A cancelled queued entry is removed at cancel time, so any id
             // still in the queue names a live entry; defend anyway.
             let request_id = {
@@ -509,13 +566,13 @@ impl Core {
 
     // -- inbound and timers --------------------------------------------------
 
-    fn on_inbound(&mut self, frame: Inbound, actions: &mut Vec<Action>) {
+    fn on_inbound(&mut self, frame: Inbound, now: Tick, actions: &mut Vec<Action>) {
         match frame {
             Inbound::Reply {
                 generation,
                 id,
                 result,
-            } => self.on_reply(generation, id, result, actions),
+            } => self.on_reply(generation, id, result, now, actions),
             Inbound::Push { generation, event } => {
                 // Fence stale-generation pushes: a teardown from a prior
                 // connection cannot overwrite newer presence state (§K7).
@@ -534,6 +591,7 @@ impl Core {
         generation: u64,
         id: jeliya_api::RequestId,
         result: WireReply,
+        now: Tick,
         actions: &mut Vec<Action>,
     ) {
         // Generation-fenced routing: a stale or late/duplicate reply resolves to
@@ -550,12 +608,15 @@ impl Core {
                 WireReply::Err(api) => Err(CallError::Wire(api)),
             };
             actions.push(Action::Settle(call_id, settled));
+        } else {
+            // The late real reply reclaimed a tombstone.
+            self.tombstones.retain(|&t| t != call_id);
         }
         // A freed slot may release a queued call.
-        self.flush(actions);
+        self.flush(now, actions);
     }
 
-    fn on_timer_fired(&mut self, timer: TimerId, actions: &mut Vec<Action>) {
+    fn on_timer_fired(&mut self, timer: TimerId, now: Tick, actions: &mut Vec<Action>) {
         if self.backoff_timer == Some(timer) {
             self.backoff_timer = None;
             actions.push(Action::Dial);
@@ -577,16 +638,28 @@ impl Core {
             if cancelled {
                 // A tombstone whose reclaim deadline elapsed: reclaim it now.
                 self.ledger.take(call_id);
+                self.tombstones.retain(|&t| t != call_id);
             } else {
                 // A live in-flight call timed out: settle Unknown (it may still
                 // land) and tombstone the id so a late reply is absorbed rather
                 // than mis-routed. No remote cancellation is claimed (§K8/§K9).
+                // The elapsed deadline timer was consumed, so a fresh reclaim
+                // timer is armed: without one, a silent peer would leave the
+                // tombstone (and its wire-index record) in the ledger forever
+                // (§K12, AC-7).
                 self.in_flight_count = self.in_flight_count.saturating_sub(1);
+                let reclaim = self.alloc_timer();
                 if let Some(entry) = self.ledger.get_mut(call_id) {
                     entry.cancelled = true;
+                    entry.deadline_timer = reclaim;
                 }
+                actions.push(Action::ArmTimer {
+                    id: reclaim,
+                    at: now.saturating_add(self.limits.default_call_deadline),
+                });
+                self.push_tombstone(call_id, actions);
                 actions.push(Action::Settle(call_id, Err(CallError::Timeout)));
-                self.flush(actions);
+                self.flush(now, actions);
             }
         } else {
             // A queued call timed out before it was ever sent.
@@ -773,6 +846,7 @@ mod tests {
     #[test]
     fn a_reply_settles_once_and_a_duplicate_is_dropped() {
         let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO); // → Ready, generation 1
         let call = core.alloc_call_id();
         let sent = core.step(
@@ -826,6 +900,7 @@ mod tests {
             },
             1,
         );
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let sent = core.alloc_call_id();
         let queued = core.alloc_call_id();
@@ -879,6 +954,7 @@ mod tests {
             },
             1,
         );
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO); // generation 1
         let call = core.alloc_call_id();
         let first_send = core.step(
@@ -941,6 +1017,7 @@ mod tests {
     #[test]
     fn a_mutation_without_op_id_never_replays() {
         let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
         core.step(
@@ -975,6 +1052,7 @@ mod tests {
             },
             1,
         );
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let sent = core.alloc_call_id();
         let queued = core.alloc_call_id();
@@ -1059,6 +1137,7 @@ mod tests {
             },
             1,
         );
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
         let sent = core.step(
@@ -1152,6 +1231,7 @@ mod tests {
     #[test]
     fn a_malformed_frame_strands_nothing() {
         let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO);
         let call = core.alloc_call_id();
         core.step(
@@ -1286,6 +1366,7 @@ mod tests {
     #[test]
     fn a_stale_generation_push_is_fenced() {
         let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
         core.step(Input::Connected, Tick::ZERO); // generation 1
         let event = ClientEvent::ResyncRequired {
             room_id: jeliya_api::RoomId::new("r"),
@@ -1312,6 +1393,267 @@ mod tests {
         assert!(
             live.iter().any(|a| matches!(a, Action::Emit(_))),
             "a live-generation push is emitted"
+        );
+    }
+
+    /// §K6/§K7: a gate refusal after a replayable mutation was sent on a prior
+    /// live generation settles it `Disconnected { Unknown }` — it may have
+    /// executed there — while a never-sent call stays `DefinitelyNot`.
+    #[test]
+    fn gate_refusal_classifies_held_sent_calls_unknown() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let sent = core.alloc_call_id();
+        let actions = core.step(
+            Input::Dispatch {
+                call_id: sent,
+                call: erased("message.send", true, Some("op-1")),
+            },
+            Tick::ZERO,
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Send(_))),
+            "sent on generation 1"
+        );
+        core.step(Input::Interrupted, Tick::ZERO);
+        // Dispatched while Interrupted: admitted, never sent.
+        let queued = core.alloc_call_id();
+        core.step(
+            Input::Dispatch {
+                call_id: queued,
+                call: erased("message.send", true, Some("op-2")),
+            },
+            Tick::ZERO,
+        );
+        let refused = core.step(Input::GateRefused, Tick::ZERO);
+        assert!(
+            matches!(
+                find_settle(&refused, sent),
+                Some(Err(CallError::Disconnected {
+                    execution: Execution::Unknown
+                }))
+            ),
+            "a call sent on a prior live generation may have executed there"
+        );
+        assert!(
+            matches!(
+                find_settle(&refused, queued),
+                Some(Err(CallError::Disconnected {
+                    execution: Execution::DefinitelyNot
+                }))
+            ),
+            "a never-sent call is provably unexecuted"
+        );
+        assert_eq!(core.state(), State::Failed);
+        assert_eq!(core.ledger_len(), 0);
+    }
+
+    /// §K12/AC-7: a live timeout's tombstone is reclaimed by its re-armed
+    /// deadline even when the peer never sends the late reply.
+    #[test]
+    fn timeout_tombstone_is_reclaimed_without_a_late_reply() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let call = core.alloc_call_id();
+        let dispatched = core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        let deadline = first_armed_timer(&dispatched).expect("deadline armed");
+        let deadline_at = Tick::ZERO.saturating_add(limits().default_call_deadline);
+        let fired = core.step(Input::TimerFired(deadline), deadline_at);
+        assert!(matches!(
+            find_settle(&fired, call),
+            Some(Err(CallError::Timeout))
+        ));
+        let reclaim =
+            first_armed_timer(&fired).expect("a reclaim deadline is re-armed for the tombstone");
+        assert_eq!(
+            core.ledger_len(),
+            1,
+            "the tombstone absorbs a late reply until reclaim"
+        );
+        let reclaimed = core.step(
+            Input::TimerFired(reclaim),
+            deadline_at.saturating_add(limits().default_call_deadline),
+        );
+        assert_eq!(
+            core.ledger_len(),
+            0,
+            "no late reply ever arrives: the reclaim deadline empties the ledger"
+        );
+        assert!(
+            reclaimed.iter().all(|a| !matches!(a, Action::Settle(..))),
+            "reclaim settles nothing"
+        );
+    }
+
+    /// §K12/AC-7: cancel churn cannot grow the ledger past its bound — each
+    /// tombstone past the `in_flight` budget evicts the oldest.
+    #[test]
+    fn cancel_churn_stays_within_the_tombstone_budget() {
+        let mut core = Core::new(
+            KernelLimits {
+                in_flight: 1,
+                ..limits()
+            },
+            1,
+        );
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        for _ in 0..10 {
+            let call = core.alloc_call_id();
+            let actions = core.step(
+                Input::Dispatch {
+                    call_id: call,
+                    call: erased("room.list", false, None),
+                },
+                Tick::ZERO,
+            );
+            assert!(
+                actions.iter().any(|a| matches!(a, Action::Send(_))),
+                "the freed slot sends immediately"
+            );
+            core.step(Input::Cancel(call), Tick::ZERO);
+        }
+        assert!(
+            core.ledger_len() <= 1,
+            "cancel churn keeps at most the tombstone budget (in_flight = 1), got {}",
+            core.ledger_len()
+        );
+    }
+
+    /// A duplicate `Connected` while already `Ready` is dropped: the generation
+    /// does not bump and no sent call is stranded behind a cleared wire index.
+    #[test]
+    fn duplicate_connected_while_ready_is_ignored() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let call = core.alloc_call_id();
+        let sent = core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        let wire_id = first_send_id(&sent).expect("sent while Ready");
+        let generation = core.generation();
+        let duplicate = core.step(Input::Connected, Tick::ZERO);
+        assert!(
+            duplicate.is_empty(),
+            "a duplicate Connected is dropped whole"
+        );
+        assert_eq!(
+            core.generation(),
+            generation,
+            "the generation does not bump"
+        );
+        // The original call still resolves under its issuing generation.
+        let reply = core.step(
+            Input::Inbound(Inbound::Reply {
+                generation,
+                id: jeliya_api::RequestId::new(wire_id).unwrap(),
+                result: WireReply::Ok(RawJson::from_string(String::from("{}"))),
+            }),
+            Tick::ZERO,
+        );
+        assert!(
+            matches!(find_settle(&reply, call), Some(Ok(_))),
+            "the reply still settles the call"
+        );
+    }
+
+    /// A queued call whose absolute deadline elapsed is settled `Timeout` by
+    /// `flush`, never sent past its budget — the shared-deadline timer race.
+    #[test]
+    fn a_queued_call_past_its_deadline_is_not_sent() {
+        let mut core = Core::new(
+            KernelLimits {
+                in_flight: 1,
+                ..limits()
+            },
+            1,
+        );
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let sent = core.alloc_call_id();
+        let queued = core.alloc_call_id();
+        let first = core.step(
+            Input::Dispatch {
+                call_id: sent,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        let deadline = first_armed_timer(&first).expect("deadline armed");
+        core.step(
+            Input::Dispatch {
+                call_id: queued,
+                call: erased("message.send", true, None),
+            },
+            Tick::ZERO,
+        );
+        // Both deadlines are due at the same tick; the in-flight call's timer
+        // processes first and frees the slot.
+        let at = Tick::ZERO.saturating_add(limits().default_call_deadline);
+        let fired = core.step(Input::TimerFired(deadline), at);
+        assert!(matches!(
+            find_settle(&fired, sent),
+            Some(Err(CallError::Timeout))
+        ));
+        assert!(
+            matches!(find_settle(&fired, queued), Some(Err(CallError::Timeout))),
+            "the queued call's budget elapsed too: it settles, it is not sent"
+        );
+        assert!(
+            !fired.iter().any(|a| matches!(a, Action::Send(_))),
+            "no call goes onto the wire past its absolute budget"
+        );
+    }
+
+    /// §K5/§K13: held replayable calls re-send in their original send order
+    /// after a reconnect — the ledger iterates in hash order, so the core
+    /// sorts by `CallId` (monotonic at dispatch, FIFO queue).
+    #[test]
+    fn replay_hold_preserves_original_send_order() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let ops: [&'static str; 8] = [
+            "op.a", "op.b", "op.c", "op.d", "op.e", "op.f", "op.g", "op.h",
+        ];
+        for op in ops {
+            let call = core.alloc_call_id();
+            let actions = core.step(
+                Input::Dispatch {
+                    call_id: call,
+                    call: erased(op, true, Some(op)),
+                },
+                Tick::ZERO,
+            );
+            assert!(actions.iter().any(|a| matches!(a, Action::Send(_))));
+        }
+        core.step(Input::Interrupted, Tick::ZERO);
+        assert_eq!(core.replay_hold_len(), 8);
+        let reconnect = core.step(Input::Connected, Tick::ZERO);
+        let resent: Vec<&'static str> = reconnect
+            .iter()
+            .filter_map(|a| match a {
+                Action::Send(frame) => Some(frame.op),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            resent,
+            ops.to_vec(),
+            "held mutations replay in original send order"
         );
     }
 }

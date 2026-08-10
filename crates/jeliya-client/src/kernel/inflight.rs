@@ -19,7 +19,7 @@ use jeliya_api::{OpId, RequestId};
 
 use crate::backend::RawJson;
 use crate::kernel::replay::ReplayPolicy;
-use crate::kernel::timing::TimerId;
+use crate::kernel::timing::{Tick, TimerId};
 
 /// A local, per-call identity assigned at dispatch. It is the ledger key and
 /// the driver's reply-sender key; distinct from the wire [`RequestId`], which
@@ -58,6 +58,9 @@ pub(crate) struct Entry {
     pub(crate) replay: ReplayPolicy,
     /// The per-call deadline timer to cancel on settle.
     pub(crate) deadline_timer: TimerId,
+    /// The absolute tick the call's budget elapses at — checked by `flush` so
+    /// a queued call whose deadline already passed is never put on the wire.
+    pub(crate) deadline_at: Tick,
     /// Queued vs sent, with the sent stamp.
     pub(crate) phase: Phase,
     /// Set once the call has been on the wire at least once — the
@@ -216,6 +219,7 @@ mod tests {
             payload_bytes: 2,
             replay: ReplayPolicy::Never,
             deadline_timer: TimerId(0),
+            deadline_at: Tick(u64::MAX),
             phase: Phase::Queued,
             ever_sent: false,
             cancelled: false,

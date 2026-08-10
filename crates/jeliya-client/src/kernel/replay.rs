@@ -12,14 +12,16 @@
 //! | `mutating == true` **and** `op_id == None`             | `Never`                 |
 //! | `mutating == false` (any `op_id`)                      | `Never`                 |
 //!
-//! Only `mutating && op_id.is_some()` earns [`ReplayPolicy::ReplayableUnderOpId`],
-//! matching the protocol's "`op_id` deduplicated" row. A `Dedup::Key` on a
-//! non-deduplicating operation stays [`ReplayPolicy::Never`] even though the
-//! envelope still carries the `op_id` (the daemon "accepts it and ignores it"):
-//! the kernel does not manufacture a replay guarantee the protocol does not
-//! give. The heuristic never *under*-settles a mutation as executed-when-it-was
-//! not; its only risk is treating a would-be-replayable call as `Never`, which
-//! is the safe direction (§K5 note; the exact-table alternative is §14 Q3).
+//! Only `mutating && op_id.is_some()` earns [`ReplayPolicy::ReplayableUnderOpId`].
+//! This is deliberately **broader** than the daemon's dedup-ledger set: a
+//! `Dedup::Key` on a mutating operation outside that set (`daemon.stop`,
+//! `transfer.cancel`, the naturally idempotent mutations, connection-scoped
+//! `stream.*`) is also classified replayable, because for every such operation
+//! the protocol's idempotency table makes a repeat safe *within a daemon
+//! lifetime* — naturally idempotent, connection-scoped re-issue, or a terminal
+//! typed error (`daemon.stop` answers `shutdown_in_progress`). The risk
+//! direction is therefore a harmless duplicate answer, never a silent double
+//! effect; an exact per-operation table remains the §14 Q3 alternative.
 
 use jeliya_api::OpId;
 

@@ -276,6 +276,26 @@ fn connected_after_stop_is_ignored() {
     assert_eq!(controller.outstanding(), 0);
 }
 
+/// §K11 stop-wins: a gate refusal from a dial that `stop` already cancelled
+/// must not flip the stopped client to `Failed` after the bus closed.
+#[test]
+fn gate_refusal_after_stop_is_ignored() {
+    let (handle, controller) = ClientHandle::with_kernel(KernelConfig::default());
+    handle.start(); // → Connecting, a dial is in progress
+    block_on(handle.stop()); // cancels the dial → Stopped
+    assert_eq!(handle.state(), State::Stopped);
+
+    // The refusal the cancelled dial already queued arrives late.
+    controller.gate_refused();
+
+    assert_eq!(
+        handle.state(),
+        State::Stopped,
+        "stop wins: a late gate refusal cannot fail a stopped client"
+    );
+    assert_eq!(controller.outstanding(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // In-flight throttle invariant (AC-1 / AC-7)
 // ---------------------------------------------------------------------------
