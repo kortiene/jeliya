@@ -40,17 +40,36 @@ pub(crate) enum Input {
     /// Graceful total stop (§K11).
     Stop,
     /// A live connection was established and passed the generation gate.
-    Connected,
-    /// The connection was lost but may be recoverable via backoff (§K6,
-    /// §K10). Tagged with the generation the lost transport was connected
-    /// under (the pre-connect value for a failed dial), so a delayed close
-    /// callback from a replaced connection cannot tear down its successor.
+    /// Carries the dial token the completing attempt was issued under
+    /// (`Action::Dial`): a completion whose token is not the outstanding
+    /// dial's — a straggler from a retired attempt, or a duplicate — is
+    /// dropped.
+    Connected {
+        /// The completing dial attempt's token.
+        token: u64,
+    },
+    /// A **live** (`Ready`) connection was lost; recoverable via backoff
+    /// (§K6, §K10). Tagged with the generation the lost transport was
+    /// connected under, so a delayed close callback from a replaced
+    /// connection cannot tear down its successor; a dial that never
+    /// connected reports [`Input::DialFailed`] instead.
     Interrupted {
         /// The originating transport's connection generation.
         generation: u64,
     },
+    /// A dial attempt failed before connecting. Carries the attempt's token
+    /// so a duplicate or retired-dial failure cannot burn a retry from the
+    /// budget or arm a spurious backoff.
+    DialFailed {
+        /// The failing dial attempt's token.
+        token: u64,
+    },
     /// A terminal generation-gate refusal that carries no auto-retry (§K7).
-    GateRefused,
+    /// Token-fenced like every other dial outcome.
+    GateRefused {
+        /// The refused dial attempt's token.
+        token: u64,
+    },
     /// One inbound frame arrived, tagged with its generation (§K7).
     Inbound(Inbound),
     /// A driver timer fired.
@@ -73,8 +92,13 @@ pub(crate) enum Action {
     },
     /// Cancel a previously-armed timer.
     CancelTimer(TimerId),
-    /// Begin one dial attempt.
-    Dial,
+    /// Begin one dial attempt, identified by `token`. Every outcome of the
+    /// attempt (`Connected`, `DialFailed`, `GateRefused`) echoes the token,
+    /// and the core accepts only the outstanding dial's.
+    Dial {
+        /// The attempt's identity.
+        token: u64,
+    },
     /// Cancel any in-progress dial/backoff.
     CancelDial,
     /// Settle one call's reply future, exactly once.
@@ -125,6 +149,12 @@ pub(crate) struct Core {
     /// Whether the driver certifies a stable session principal across
     /// reconnects — the precondition for any auto-replay (§K5).
     stable_principal: bool,
+    /// The outstanding dial attempt's token, if a dial is in progress. Every
+    /// dial outcome is fenced against it; `None` while backing off, Ready,
+    /// or terminal, so stragglers and duplicates drop.
+    pending_dial: Option<u64>,
+    /// Monotonic dial-token source.
+    next_dial_token: u64,
 }
 
 impl Core {
@@ -150,6 +180,8 @@ impl Core {
             next_call_id: 0,
             next_timer_id: 0,
             stable_principal,
+            pending_dial: None,
+            next_dial_token: 0,
         }
     }
 
@@ -169,6 +201,12 @@ impl Core {
         self.backoff_timer.is_some()
     }
 
+    /// The outstanding dial attempt's token, if a dial is in progress — the
+    /// driver echoes it on every outcome of the attempt.
+    pub(crate) fn pending_dial(&self) -> Option<u64> {
+        self.pending_dial
+    }
+
     /// Allocate the next local call id (the driver calls this before
     /// dispatching so it can key the reply sender).
     pub(crate) fn alloc_call_id(&mut self) -> CallId {
@@ -185,9 +223,10 @@ impl Core {
             Input::Dispatch { call_id, call } => self.on_dispatch(call_id, call, now, &mut actions),
             Input::Start => self.on_start(&mut actions),
             Input::Stop => self.on_stop(&mut actions),
-            Input::Connected => self.on_connected(now, &mut actions),
+            Input::Connected { token } => self.on_connected(token, now, &mut actions),
             Input::Interrupted { generation } => self.on_interrupted(generation, now, &mut actions),
-            Input::GateRefused => self.on_gate_refused(now, &mut actions),
+            Input::DialFailed { token } => self.on_dial_failed(token, now, &mut actions),
+            Input::GateRefused { token } => self.on_gate_refused(token, now, &mut actions),
             Input::Inbound(frame) => self.on_inbound(frame, now, &mut actions),
             Input::TimerFired(id) => self.on_timer_fired(id, now, &mut actions),
             Input::Cancel(call_id) => self.on_cancel(call_id, now, &mut actions),
@@ -206,31 +245,34 @@ impl Core {
         actions.push(Action::Emit(ClientEvent::StateChanged { from, to }));
     }
 
+    /// Mint a fresh dial attempt: a new token becomes the one outstanding
+    /// dial every outcome is fenced against.
+    fn mint_dial(&mut self, actions: &mut Vec<Action>) {
+        self.next_dial_token = self.next_dial_token.wrapping_add(1);
+        let token = self.next_dial_token;
+        self.pending_dial = Some(token);
+        actions.push(Action::Dial { token });
+    }
+
     fn on_start(&mut self, actions: &mut Vec<Action>) {
         if self.state == State::Idle && !self.stopping {
             self.transition(State::Connecting, actions);
-            actions.push(Action::Dial);
+            self.mint_dial(actions);
         }
     }
 
-    fn on_connected(&mut self, now: Tick, actions: &mut Vec<Action>) {
-        // Only an active dial may complete a connection. A duplicate or stale
-        // `Connected` — while already `Ready`, from `Idle`, or after a terminal
-        // state — is dropped: accepting it would bump the generation and clear
-        // the wire index without reclassifying the sent calls, stranding every
-        // one of them until its deadline.
-        if !matches!(self.state, State::Connecting | State::Interrupted) {
+    fn on_connected(&mut self, token: u64, now: Tick, actions: &mut Vec<Action>) {
+        // Only the outstanding dial may complete a connection: the token
+        // fence drops duplicates, stragglers from retired attempts, and
+        // completions after stop/failure cleared the pending dial — while
+        // Ready, Idle, backing off, or terminal, no dial is pending, so
+        // every completion drops. Accepting a stray one would bump the
+        // generation and clear the wire index without reclassifying sent
+        // calls, or flush replay-held calls onto an ungated connection.
+        if self.pending_dial != Some(token) {
             return;
         }
-        // Interrupted with the backoff timer still armed has NO dial in
-        // progress (the retry dials only when the timer fires), so a
-        // completion arriving then can only be a straggler from the retired
-        // dial: accepting it would cancel the configured backoff, bump the
-        // generation, reset the retry budget, and flush replay-held calls
-        // onto a connection that was never gated.
-        if self.state == State::Interrupted && self.backoff_timer.is_some() {
-            return;
-        }
+        self.pending_dial = None;
         self.generation.bump();
         self.attempt = 0;
         if let Some(timer) = self.backoff_timer.take() {
@@ -249,28 +291,17 @@ impl Core {
     }
 
     fn on_interrupted(&mut self, generation: u64, now: Tick, actions: &mut Vec<Action>) {
-        if !matches!(
-            self.state,
-            State::Connecting | State::Ready | State::Interrupted
-        ) {
+        // A connection loss is meaningful only while a connection is live:
+        // duplicates after the first loss (state already Interrupted), and
+        // anything during Connecting/backoff, drop here — a dial that never
+        // connected reports DialFailed, token-fenced separately. The
+        // generation fence then drops a delayed close from a REPLACED
+        // connection racing its successor (§K7): both fences together make
+        // every loss input attributable to exactly the live connection.
+        if self.state != State::Ready {
             return;
         }
-        // Fence stale losses to their originating connection: a delayed
-        // close from generation N arriving after generation N+1 is live
-        // must not reclassify the successor's calls (§K7). Frames are
-        // fenced the same way; this closes the equivalent hole for the
-        // loss input itself.
         if generation != self.generation.current() {
-            return;
-        }
-        // Coalesce duplicate loss signals while the reconnect backoff is
-        // armed (a flush can emit several sends that each observe the same
-        // closed transport): the first signal already reclassified every
-        // sent call and scheduled the retry, so another would burn a
-        // reconnect attempt with no dial and orphan the armed timer. A
-        // failure arriving AFTER the timer fired (backoff_timer is None, a
-        // dial is in progress) is a real new attempt and proceeds.
-        if self.state == State::Interrupted && self.backoff_timer.is_some() {
             return;
         }
         // Reclassify every sent call: settle the already-expired as Timeout
@@ -339,6 +370,17 @@ impl Core {
         self.schedule_reconnect_or_fail(now, actions);
     }
 
+    fn on_dial_failed(&mut self, token: u64, now: Tick, actions: &mut Vec<Action>) {
+        // Only the outstanding dial can fail: a duplicate or retired-dial
+        // failure callback must not burn a retry from the budget or arm a
+        // spurious backoff that would then reject the real completion.
+        if self.pending_dial != Some(token) {
+            return;
+        }
+        self.pending_dial = None;
+        self.schedule_reconnect_or_fail(now, actions);
+    }
+
     fn schedule_reconnect_or_fail(&mut self, now: Tick, actions: &mut Vec<Action>) {
         if self.attempt >= self.limits.max_reconnect_attempts {
             // Budget exhausted: settle everything honestly, no infinite spin.
@@ -356,13 +398,15 @@ impl Core {
         self.transition(State::Interrupted, actions);
     }
 
-    fn on_gate_refused(&mut self, now: Tick, actions: &mut Vec<Action>) {
-        // Stop wins (§K11): a refusal from a dial that `stop` already
-        // cancelled must not flip a stopped (or already failed) client to
-        // `Failed` after the bus closed.
-        if matches!(self.state, State::Stopping | State::Stopped | State::Failed) {
+    fn on_gate_refused(&mut self, token: u64, now: Tick, actions: &mut Vec<Action>) {
+        // Token-fenced like every dial outcome — which also makes stop win
+        // (§K11): stop cancels the dial and clears the pending token, so a
+        // refusal the cancelled dial already queued cannot flip a stopped
+        // client to Failed after the bus closed.
+        if self.pending_dial != Some(token) {
             return;
         }
+        self.pending_dial = None;
         // A never-sent call is provably unexecuted (`DefinitelyNot`), but a
         // call held for replay was sent on a *prior live generation* and may
         // have executed there — this generation's gate refusal says nothing
@@ -373,6 +417,7 @@ impl Core {
 
     fn fail_all(&mut self, now: Tick, actions: &mut Vec<Action>) {
         actions.push(Action::CancelDial);
+        self.pending_dial = None;
         if let Some(timer) = self.backoff_timer.take() {
             actions.push(Action::CancelTimer(timer));
         }
@@ -409,6 +454,7 @@ impl Core {
         self.stopping = true;
         // 1. Cancel any in-progress dial/backoff.
         actions.push(Action::CancelDial);
+        self.pending_dial = None;
         if let Some(timer) = self.backoff_timer.take() {
             actions.push(Action::CancelTimer(timer));
         }
@@ -706,7 +752,7 @@ impl Core {
     fn on_timer_fired(&mut self, timer: TimerId, now: Tick, actions: &mut Vec<Action>) {
         if self.backoff_timer == Some(timer) {
             self.backoff_timer = None;
-            actions.push(Action::Dial);
+            self.mint_dial(actions);
             return;
         }
         let Some(call_id) = self.ledger.find_by_deadline(timer) else {
@@ -936,7 +982,12 @@ mod tests {
     fn a_reply_settles_once_and_a_duplicate_is_dropped() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO); // → Ready, generation 1
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        ); // → Ready, generation 1
         let call = core.alloc_call_id();
         let sent = core.step(
             Input::Dispatch {
@@ -991,7 +1042,12 @@ mod tests {
             true,
         );
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let sent = core.alloc_call_id();
         let queued = core.alloc_call_id();
         let flush = core.step(
@@ -1051,7 +1107,12 @@ mod tests {
             true,
         );
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO); // generation 1
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        ); // generation 1
         let call = core.alloc_call_id();
         let first_send = core.step(
             Input::Dispatch {
@@ -1082,7 +1143,12 @@ mod tests {
         // would be a stale straggler and is dropped).
         let backoff = first_armed_timer(&lost).expect("backoff armed");
         core.step(Input::TimerFired(backoff), Tick(1));
-        let reconnect = core.step(Input::Connected, Tick(1));
+        let reconnect = core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick(1),
+        );
         let gen2 = core.generation();
         assert_eq!(gen2, gen1 + 1);
         let wire2 = first_send_id(&reconnect).expect("held call re-sends on reconnect");
@@ -1123,7 +1189,12 @@ mod tests {
     fn a_mutation_without_op_id_never_replays() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let call = core.alloc_call_id();
         core.step(
             Input::Dispatch {
@@ -1164,7 +1235,12 @@ mod tests {
             true,
         );
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let sent = core.alloc_call_id();
         let queued = core.alloc_call_id();
         core.step(
@@ -1250,7 +1326,12 @@ mod tests {
             true,
         );
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let call = core.alloc_call_id();
         let sent = core.step(
             Input::Dispatch {
@@ -1325,34 +1406,34 @@ mod tests {
             1,
             true,
         );
-        core.step(Input::Start, Tick::ZERO); // Connecting + Dial
-                                             // Each loss schedules a backoff whose timer fires a real dial before
-                                             // the next loss (duplicate losses while a backoff is armed coalesce
-                                             // and consume no attempt). Two scheduled retries fit the budget; the
-                                             // failure after the second retry exhausts it.
-        let loss = core.step(
-            Input::Interrupted {
-                generation: core.generation(),
+        core.step(Input::Start, Tick::ZERO); // Connecting + Dial (attempt 1)
+                                             // Each dial failure schedules a backoff whose timer fires a real
+                                             // retry dial before the next failure (every outcome is token-fenced
+                                             // to its own attempt). Two scheduled retries fit the budget; the
+                                             // third failure exhausts it.
+        let failed = core.step(
+            Input::DialFailed {
+                token: core.pending_dial().expect("dial pending"),
             },
             Tick::ZERO,
         );
         assert_eq!(core.state(), State::Interrupted);
-        let t1 = first_armed_timer(&loss).expect("first retry scheduled");
+        let t1 = first_armed_timer(&failed).expect("first retry scheduled");
         let dial = core.step(Input::TimerFired(t1), Tick(1_000));
-        assert!(dial.iter().any(|a| matches!(a, Action::Dial)));
-        let loss = core.step(
-            Input::Interrupted {
-                generation: core.generation(),
+        assert!(dial.iter().any(|a| matches!(a, Action::Dial { .. })));
+        let failed = core.step(
+            Input::DialFailed {
+                token: core.pending_dial().expect("dial pending"),
             },
             Tick(1_001),
         );
         assert_eq!(core.state(), State::Interrupted);
-        let t2 = first_armed_timer(&loss).expect("second retry scheduled");
+        let t2 = first_armed_timer(&failed).expect("second retry scheduled");
         let dial = core.step(Input::TimerFired(t2), Tick(2_000));
-        assert!(dial.iter().any(|a| matches!(a, Action::Dial)));
+        assert!(dial.iter().any(|a| matches!(a, Action::Dial { .. })));
         let exhausted = core.step(
-            Input::Interrupted {
-                generation: core.generation(),
+            Input::DialFailed {
+                token: core.pending_dial().expect("dial pending"),
             },
             Tick(2_001),
         );
@@ -1369,7 +1450,12 @@ mod tests {
     fn a_malformed_frame_strands_nothing() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let call = core.alloc_call_id();
         core.step(
             Input::Dispatch {
@@ -1469,7 +1555,12 @@ mod tests {
         assert_eq!(core.ledger_len(), 2, "both calls queued behind the gate");
 
         // Terminal gate refusal — no auto-retry, every call is DefinitelyNot.
-        let refused = core.step(Input::GateRefused, Tick::ZERO);
+        let refused = core.step(
+            Input::GateRefused {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         assert!(
             matches!(
                 find_settle(&refused, a),
@@ -1494,7 +1585,7 @@ mod tests {
         // Start after Failed must not produce a Dial — no auto-retry.
         let retry = core.step(Input::Start, Tick::ZERO);
         assert!(
-            !retry.iter().any(|a| matches!(a, Action::Dial)),
+            !retry.iter().any(|a| matches!(a, Action::Dial { .. })),
             "Start after Failed must not initiate a new dial"
         );
         assert_eq!(core.state(), State::Failed, "state remains Failed");
@@ -1505,7 +1596,12 @@ mod tests {
     fn a_stale_generation_push_is_fenced() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO); // generation 1
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        ); // generation 1
         let push = || jeliya_api::Push::Transfer {
             transfer_op_id: jeliya_api::OpId::new("t"),
             transferred_bytes: 1,
@@ -1542,7 +1638,12 @@ mod tests {
     fn gate_refusal_classifies_held_sent_calls_unknown() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let sent = core.alloc_call_id();
         let actions = core.step(
             Input::Dispatch {
@@ -1555,7 +1656,7 @@ mod tests {
             actions.iter().any(|a| matches!(a, Action::Send(_))),
             "sent on generation 1"
         );
-        core.step(
+        let lost = core.step(
             Input::Interrupted {
                 generation: core.generation(),
             },
@@ -1570,7 +1671,15 @@ mod tests {
             },
             Tick::ZERO,
         );
-        let refused = core.step(Input::GateRefused, Tick::ZERO);
+        // The retry dial reaches the gate and is terminally refused.
+        let backoff = first_armed_timer(&lost).expect("backoff armed");
+        core.step(Input::TimerFired(backoff), Tick(1));
+        let refused = core.step(
+            Input::GateRefused {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick(1),
+        );
         assert!(
             matches!(
                 find_settle(&refused, sent),
@@ -1599,7 +1708,12 @@ mod tests {
     fn timeout_tombstone_is_reclaimed_without_a_late_reply() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let call = core.alloc_call_id();
         let dispatched = core.step(
             Input::Dispatch {
@@ -1650,7 +1764,12 @@ mod tests {
             true,
         );
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         for _ in 0..10 {
             let call = core.alloc_call_id();
             let actions = core.step(
@@ -1679,7 +1798,12 @@ mod tests {
     fn duplicate_connected_while_ready_is_ignored() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let call = core.alloc_call_id();
         let sent = core.step(
             Input::Dispatch {
@@ -1690,7 +1814,9 @@ mod tests {
         );
         let wire_id = first_send_id(&sent).expect("sent while Ready");
         let generation = core.generation();
-        let duplicate = core.step(Input::Connected, Tick::ZERO);
+        // The original dial's token was consumed by the first completion;
+        // replaying it (or any stale token) is dropped whole.
+        let duplicate = core.step(Input::Connected { token: 1 }, Tick::ZERO);
         assert!(
             duplicate.is_empty(),
             "a duplicate Connected is dropped whole"
@@ -1728,7 +1854,12 @@ mod tests {
             true,
         );
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let sent = core.alloc_call_id();
         let queued = core.alloc_call_id();
         let first = core.step(
@@ -1772,7 +1903,12 @@ mod tests {
     fn a_reply_at_the_deadline_settles_timeout_not_the_payload() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let call = core.alloc_call_id();
         let sent = core.step(
             Input::Dispatch {
@@ -1805,7 +1941,12 @@ mod tests {
         // One tick earlier the same reply settles normally.
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let call = core.alloc_call_id();
         let sent = core.step(
             Input::Dispatch {
@@ -1838,7 +1979,12 @@ mod tests {
     fn duplicate_interruptions_coalesce_while_backoff_is_armed() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let first = core.step(
             Input::Interrupted {
                 generation: core.generation(),
@@ -1860,13 +2006,14 @@ mod tests {
         // The armed timer still fires and dials — the retry was not consumed.
         let fired = core.step(Input::TimerFired(backoff), Tick(50));
         assert!(
-            fired.iter().any(|a| matches!(a, Action::Dial)),
+            fired.iter().any(|a| matches!(a, Action::Dial { .. })),
             "the scheduled dial proceeds"
         );
-        // A failure AFTER the dial began is a real new attempt.
+        // A failure of the dial that began is a real new attempt — reported
+        // as a token-fenced dial failure, not a connection loss.
         let redial_failed = core.step(
-            Input::Interrupted {
-                generation: core.generation(),
+            Input::DialFailed {
+                token: core.pending_dial().expect("dial pending"),
             },
             Tick(51),
         );
@@ -1926,7 +2073,12 @@ mod tests {
             Tick::ZERO,
         );
         let at = Tick::ZERO.saturating_add(limits().default_call_deadline);
-        let refused = core.step(Input::GateRefused, at);
+        let refused = core.step(
+            Input::GateRefused {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            at,
+        );
         assert!(
             matches!(find_settle(&refused, call), Some(Err(CallError::Timeout))),
             "an expired call settles Timeout even through the terminal gate path"
@@ -1942,7 +2094,12 @@ mod tests {
     fn an_interrupt_at_the_deadline_settles_timeout_not_disconnected() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         // One replayable and one plain call, both sent at t0.
         let replayable = core.alloc_call_id();
         core.step(
@@ -2009,7 +2166,12 @@ mod tests {
             "pre-gate traffic must not reach subscribers"
         );
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let ready = core.step(push(core.generation()), Tick::ZERO);
         assert!(
             ready.iter().any(|a| matches!(a, Action::Emit(_))),
@@ -2036,7 +2198,12 @@ mod tests {
     fn a_completion_during_armed_backoff_is_dropped() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let generation = core.generation();
         let lost = core.step(
             Input::Interrupted {
@@ -2045,8 +2212,9 @@ mod tests {
             Tick::ZERO,
         );
         let backoff = first_armed_timer(&lost).expect("backoff armed");
-        // The retired dial's straggler arrives before the timer fires.
-        let straggler = core.step(Input::Connected, Tick::ZERO);
+        // The retired dial's straggler arrives before the timer fires: no
+        // dial is pending, and its old token (1, from Start) is consumed.
+        let straggler = core.step(Input::Connected { token: 1 }, Tick::ZERO);
         assert!(
             straggler.is_empty(),
             "a straggler completion is dropped whole"
@@ -2054,8 +2222,56 @@ mod tests {
         assert_eq!(core.generation(), generation, "the generation holds");
         // The scheduled retry still proceeds normally.
         let fired = core.step(Input::TimerFired(backoff), Tick(1));
-        assert!(fired.iter().any(|a| matches!(a, Action::Dial)));
-        core.step(Input::Connected, Tick(1));
+        assert!(fired.iter().any(|a| matches!(a, Action::Dial { .. })));
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick(1),
+        );
+        assert_eq!(core.generation(), generation + 1);
+    }
+
+    /// The round-12 race: a delayed SECOND close from the dead connection
+    /// arriving while the retry dial is active must not burn an attempt or
+    /// arm a backoff that would reject the real completion — losses are
+    /// Ready-only, dial outcomes are token-fenced, so the retry completes.
+    #[test]
+    fn a_duplicate_close_during_the_retry_dial_is_dropped() {
+        let mut core = Core::new(limits(), 1, true);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
+        let generation = core.generation();
+        let lost = core.step(Input::Interrupted { generation }, Tick::ZERO);
+        let backoff = first_armed_timer(&lost).expect("backoff armed");
+        // The backoff fires: the retry dial is active, generation unchanged.
+        core.step(Input::TimerFired(backoff), Tick(1));
+        // The dead connection's SECOND close callback finally arrives — same
+        // generation as current, but the state is not Ready: dropped whole.
+        let dup = core.step(Input::Interrupted { generation }, Tick(2));
+        assert!(dup.is_empty(), "the duplicate close is dropped");
+        // The real retry completion is accepted — nothing rejected it.
+        let reconnect = core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("retry dial pending"),
+            },
+            Tick(3),
+        );
+        assert!(
+            reconnect.iter().any(|a| matches!(
+                a,
+                Action::Emit(ClientEvent::StateChanged {
+                    to: State::Ready,
+                    ..
+                })
+            )),
+            "the retry completes normally"
+        );
         assert_eq!(core.generation(), generation + 1);
     }
 
@@ -2066,7 +2282,12 @@ mod tests {
     fn replay_hold_preserves_original_send_order() {
         let mut core = Core::new(limits(), 1, true);
         core.step(Input::Start, Tick::ZERO);
-        core.step(Input::Connected, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick::ZERO,
+        );
         let ops: [&'static str; 8] = [
             "op.a", "op.b", "op.c", "op.d", "op.e", "op.f", "op.g", "op.h",
         ];
@@ -2091,7 +2312,12 @@ mod tests {
         // Fire the backoff so the retry dial is live before the completion.
         let backoff = first_armed_timer(&lost).expect("backoff armed");
         core.step(Input::TimerFired(backoff), Tick(1));
-        let reconnect = core.step(Input::Connected, Tick(1));
+        let reconnect = core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+            },
+            Tick(1),
+        );
         let resent: Vec<&'static str> = reconnect
             .iter()
             .filter_map(|a| match a {

@@ -264,11 +264,13 @@ fn gate_refused_settles_all_queued_as_definitely_not_and_blocks_future_calls() {
 #[test]
 fn connected_after_stop_is_ignored() {
     let (handle, controller) = ClientHandle::with_kernel(KernelConfig::default());
-    block_on(handle.stop()); // stop from Idle → Stopped
+    handle.start(); // → Connecting, a dial (token 1) is in progress
+    let stale_token = controller.pending_dial().expect("dial pending");
+    block_on(handle.stop()); // cancels the dial → Stopped
     assert_eq!(handle.state(), State::Stopped);
 
-    // A stale Connected arrives (e.g. dial completed just as stop fired).
-    controller.connect();
+    // The cancelled dial's completion arrives late, echoing its token.
+    controller.connect_at_token(stale_token);
 
     assert_eq!(
         handle.state(),
@@ -284,11 +286,12 @@ fn connected_after_stop_is_ignored() {
 fn gate_refusal_after_stop_is_ignored() {
     let (handle, controller) = ClientHandle::with_kernel(KernelConfig::default());
     handle.start(); // → Connecting, a dial is in progress
+    let stale_token = controller.pending_dial().expect("dial pending");
     block_on(handle.stop()); // cancels the dial → Stopped
     assert_eq!(handle.state(), State::Stopped);
 
     // The refusal the cancelled dial already queued arrives late.
-    controller.gate_refused();
+    controller.gate_refused_at_token(stale_token);
 
     assert_eq!(
         handle.state(),
@@ -464,6 +467,34 @@ fn a_stale_generation_loss_cannot_tear_down_the_successor() {
     controller.deliver_reply(sent[0].id, "{}");
     let _ = block_on(fut);
     assert_eq!(controller.outstanding(), 0);
+}
+
+/// K12: the reference driver's outbound observation log is bounded — a test
+/// that never drains it evicts oldest-first with the loss counted, instead
+/// of growing without limit under dispatch/cancel churn.
+#[test]
+fn an_undrained_outbound_log_stays_bounded() {
+    let (handle, controller) = ready(KernelLimits {
+        in_flight: 1,
+        ..KernelLimits::default()
+    });
+    for _ in 0..2_000 {
+        let fut = handle.call::<RoomList>(RoomList {}, Dedup::None);
+        drop(fut); // cancel: frees the slot, the next dispatch sends again
+    }
+    let observed = controller.take_outbound().len();
+    assert!(
+        observed <= 1_024,
+        "the log is bounded, got {observed} frames"
+    );
+    assert!(
+        controller.outbound_overflow() > 0,
+        "evictions are counted, never silent"
+    );
+    assert!(
+        controller.outstanding() <= 1,
+        "the ledger holds at most the tombstone budget (in_flight = 1)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -770,17 +801,17 @@ fn reconnect_exhaustion_fails_and_settles_outstanding_calls() {
     );
     assert_eq!(controller.queued(), 1);
 
-    // Three interrupts (with a clock tick between each to fire the backoff timer)
-    // exhaust the two-attempt budget and land the kernel in Failed.
-    controller.interrupt(); // attempt 0 → 1, Interrupted
+    // Three dial failures (with a clock tick between each to fire the
+    // backoff timer) exhaust the two-attempt budget and land in Failed.
+    controller.fail_dial(); // attempt 0 → 1, Interrupted
     assert_eq!(handle.state(), State::Interrupted);
     controller.advance(1); // fire backoff timer → Dial
 
-    controller.interrupt(); // attempt 1 → 2, Interrupted
+    controller.fail_dial(); // attempt 1 → 2, Interrupted
     assert_eq!(handle.state(), State::Interrupted);
     controller.advance(1); // fire backoff timer → Dial
 
-    controller.interrupt(); // attempt 2 >= max 2 → fail_all → Failed
+    controller.fail_dial(); // attempt 2 >= max 2 → fail_all → Failed
     assert_eq!(handle.state(), State::Failed);
 
     // The queued call (never sent) settles DefinitelyNot.

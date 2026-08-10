@@ -146,8 +146,12 @@ struct Shared {
     /// advances the clock.
     timers: HashMap<TimerId, Tick>,
     /// Frames the core asked the transport to send, retained so the controller
-    /// can learn the wire ids it must reply to.
-    outbound: Vec<WireFrame>,
+    /// can learn the wire ids it must reply to. **Bounded** (K12): an
+    /// undrained log evicts its oldest frame and counts the loss, so a test
+    /// that never drains cannot grow the driver without limit.
+    outbound: std::collections::VecDeque<WireFrame>,
+    /// Frames evicted from the bounded outbound log without being observed.
+    outbound_overflow: u64,
     /// Whether a dial/backoff is in progress.
     dialing: bool,
     /// Scripted send/close race (§K14 `fail_send`): when set, the next
@@ -220,7 +224,11 @@ impl Shared {
                     self.fail_next_send = false;
                     self.send_failed = true;
                 } else {
-                    self.outbound.push(frame);
+                    if self.outbound.len() >= OUTBOUND_LOG_CAP {
+                        self.outbound.pop_front();
+                        self.outbound_overflow = self.outbound_overflow.saturating_add(1);
+                    }
+                    self.outbound.push_back(frame);
                 }
             }
             Action::ArmTimer { id, at } => {
@@ -229,7 +237,7 @@ impl Shared {
             Action::CancelTimer(id) => {
                 self.timers.remove(&id);
             }
-            Action::Dial => self.dialing = true,
+            Action::Dial { .. } => self.dialing = true,
             Action::CancelDial => self.dialing = false,
             Action::Settle(call_id, result) => {
                 if let Some(sender) = self.senders.remove(&call_id) {
@@ -274,22 +282,92 @@ impl Shared {
     }
 }
 
+/// The bound on the driver's outbound observation log: frames a test never
+/// drains are evicted oldest-first (counted in `outbound_overflow`) so the
+/// reference driver honours K12's no-unbounded-collection guarantee even
+/// under dispatch/cancel churn with no `take_outbound`.
+const OUTBOUND_LOG_CAP: usize = 1024;
+
+/// The shared runtime: the locked driver state plus the serialized delivery
+/// queue. Deferred wake batches are enqueued **while still holding the
+/// `Shared` lock** — so queue order is exactly drive order, across every
+/// cloned handle and thread — and drained by a single drainer after the lock
+/// drops, so wakers run outside the lock yet cross-thread delivery can never
+/// invert two drives' effects.
+struct Runtime {
+    shared: Mutex<Shared>,
+    delivery: Mutex<std::collections::VecDeque<Deferred>>,
+    draining: std::sync::atomic::AtomicBool,
+}
+
+impl Runtime {
+    /// Drain the delivery queue as the single drainer. If another thread is
+    /// already draining, it will deliver our batch too (it re-checks after
+    /// clearing the flag), preserving FIFO order.
+    fn drain_delivery(&self) {
+        use std::sync::atomic::Ordering;
+        loop {
+            if self.draining.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            loop {
+                let next = {
+                    let mut queue = self.delivery.lock().expect("delivery queue poisoned");
+                    queue.pop_front()
+                };
+                match next {
+                    Some(deferred) => deferred.deliver(),
+                    None => break,
+                }
+            }
+            self.draining.store(false, Ordering::Release);
+            let empty = self
+                .delivery
+                .lock()
+                .expect("delivery queue poisoned")
+                .is_empty();
+            if empty {
+                return;
+            }
+        }
+    }
+}
+
 /// The kernel-backed [`ClientBackend`]: the async shell binding the sans-IO
 /// core to the event bus, per-call reply oneshots, and the driver's resources.
 /// It never spawns and never reads a wall clock — the driver owns both (§3).
 pub(crate) struct KernelBackend {
-    shared: Arc<Mutex<Shared>>,
+    runtime: Arc<Runtime>,
 }
 
 impl KernelBackend {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.shared.lock().expect("kernel shared state poisoned")
+        self.runtime
+            .shared
+            .lock()
+            .expect("kernel shared state poisoned")
+    }
+
+    /// Drive one input with globally serialized delivery: the deferred batch
+    /// is enqueued while the `Shared` lock is still held (queue order ==
+    /// drive order across threads), then drained outside every lock.
+    fn drive_serialized(&self, input: Input) {
+        {
+            let mut shared = self.lock();
+            let deferred = shared.drive(input);
+            self.runtime
+                .delivery
+                .lock()
+                .expect("delivery queue poisoned")
+                .push_back(deferred);
+        }
+        self.runtime.drain_delivery();
     }
 }
 
 impl ClientBackend for KernelBackend {
     fn dispatch(&self, call: ErasedCall) -> BoxFuture<'static, Result<RawJson, CallError>> {
-        let (receiver, call_id, deferred) = {
+        let (receiver, call_id) = {
             let mut shared = self.lock();
             let call_id = shared.core.alloc_call_id();
             let (sender, receiver) = oneshot::channel();
@@ -297,12 +375,17 @@ impl ClientBackend for KernelBackend {
             // (QueueFull, post-stop) settles into a live channel.
             shared.senders.insert(call_id, sender);
             let deferred = shared.drive(Input::Dispatch { call_id, call });
-            (receiver, call_id, deferred)
+            self.runtime
+                .delivery
+                .lock()
+                .expect("delivery queue poisoned")
+                .push_back(deferred);
+            (receiver, call_id)
         };
-        deferred.deliver();
+        self.runtime.drain_delivery();
         Box::pin(DispatchFuture {
             receiver,
-            cancel: Some((Arc::downgrade(&self.shared), call_id)),
+            cancel: Some((Arc::downgrade(&self.runtime), call_id)),
         })
     }
 
@@ -315,15 +398,13 @@ impl ClientBackend for KernelBackend {
     }
 
     fn start(&self) {
-        let deferred = self.lock().drive(Input::Start);
-        deferred.deliver();
+        self.drive_serialized(Input::Start);
     }
 
     fn stop(&self) -> BoxFuture<'static, ()> {
         // Initiation is eager (the refusal boundary is set now); the core
         // settles synchronously, so the returned future is already resolved.
-        let deferred = self.lock().drive(Input::Stop);
-        deferred.deliver();
+        self.drive_serialized(Input::Stop);
         Box::pin(async {})
     }
 }
@@ -334,7 +415,7 @@ impl ClientBackend for KernelBackend {
 /// remote cancellation (§K9).
 struct DispatchFuture {
     receiver: oneshot::Receiver<Result<RawJson, CallError>>,
-    cancel: Option<(Weak<Mutex<Shared>>, CallId)>,
+    cancel: Option<(Weak<Runtime>, CallId)>,
 }
 
 impl std::future::Future for DispatchFuture {
@@ -365,13 +446,21 @@ impl std::future::Future for DispatchFuture {
 impl Drop for DispatchFuture {
     fn drop(&mut self) {
         if let Some((weak, call_id)) = self.cancel.take() {
-            if let Some(shared) = weak.upgrade() {
-                let deferred = shared
-                    .lock()
-                    .ok()
-                    .map(|mut s| s.drive(Input::Cancel(call_id)));
-                if let Some(deferred) = deferred {
-                    deferred.deliver();
+            if let Some(runtime) = weak.upgrade() {
+                let drove = match runtime.shared.lock() {
+                    Ok(mut shared) => {
+                        let deferred = shared.drive(Input::Cancel(call_id));
+                        runtime
+                            .delivery
+                            .lock()
+                            .expect("delivery queue poisoned")
+                            .push_back(deferred);
+                        true
+                    }
+                    Err(_) => false,
+                };
+                if drove {
+                    runtime.drain_delivery();
                 }
             }
         }
@@ -402,21 +491,26 @@ mod in_memory {
         /// no scheduling dependence — the same guarantees the #167 mock gives
         /// the seam, now for the kernel.
         pub fn with_kernel(config: KernelConfig) -> (ClientHandle, KernelController) {
-            let shared = Arc::new(Mutex::new(Shared {
-                core: Core::new(config.limits, config.jitter_seed, config.stable_principal),
-                bus: Arc::new(EventBus::new()),
-                now: Tick::ZERO,
-                senders: HashMap::new(),
-                timers: HashMap::new(),
-                outbound: Vec::new(),
-                dialing: false,
-                fail_next_send: false,
-                send_failed: false,
-            }));
+            let runtime = Arc::new(Runtime {
+                shared: Mutex::new(Shared {
+                    core: Core::new(config.limits, config.jitter_seed, config.stable_principal),
+                    bus: Arc::new(EventBus::new()),
+                    now: Tick::ZERO,
+                    senders: HashMap::new(),
+                    timers: HashMap::new(),
+                    outbound: std::collections::VecDeque::new(),
+                    outbound_overflow: 0,
+                    dialing: false,
+                    fail_next_send: false,
+                    send_failed: false,
+                }),
+                delivery: Mutex::new(std::collections::VecDeque::new()),
+                draining: std::sync::atomic::AtomicBool::new(false),
+            });
             let handle = ClientHandle::from_backend(Arc::new(KernelBackend {
-                shared: Arc::clone(&shared),
+                runtime: Arc::clone(&runtime),
             }));
-            (handle, KernelController { shared })
+            (handle, KernelController { runtime })
         }
     }
 
@@ -434,12 +528,30 @@ mod in_memory {
     /// in-memory driver. Every method is clock-free and scheduling-independent;
     /// nothing here observes real time.
     pub struct KernelController {
-        shared: Arc<Mutex<Shared>>,
+        runtime: Arc<Runtime>,
     }
 
     impl KernelController {
         fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
-            self.shared.lock().expect("kernel shared state poisoned")
+            self.runtime
+                .shared
+                .lock()
+                .expect("kernel shared state poisoned")
+        }
+
+        /// Drive one input with globally serialized delivery (see
+        /// `KernelBackend::drive_serialized`).
+        fn drive_serialized(&self, input: Input) {
+            {
+                let mut shared = self.lock();
+                let deferred = shared.drive(input);
+                self.runtime
+                    .delivery
+                    .lock()
+                    .expect("delivery queue poisoned")
+                    .push_back(deferred);
+            }
+            self.runtime.drain_delivery();
         }
 
         /// The current connection generation (0 before the first `connect`).
@@ -488,39 +600,79 @@ mod in_memory {
         /// Complete a dial: a live connection is established and passes the
         /// generation gate. Returns the fresh generation.
         pub fn connect(&self) -> u64 {
-            let (deferred, generation) = {
+            let generation = {
                 let mut shared = self.lock();
                 shared.dialing = false;
-                let deferred = shared.drive(Input::Connected);
-                (deferred, shared.core.generation())
+                let token = shared
+                    .core
+                    .pending_dial()
+                    .expect("connect() with no dial in progress");
+                let deferred = shared.drive(Input::Connected { token });
+                self.runtime
+                    .delivery
+                    .lock()
+                    .expect("delivery queue poisoned")
+                    .push_back(deferred);
+                shared.core.generation()
             };
-            deferred.deliver();
+            self.runtime.drain_delivery();
             generation
+        }
+
+        /// Complete a dial with an explicit token — used to prove a straggler
+        /// completion from a retired attempt is fenced.
+        pub fn connect_at_token(&self, token: u64) {
+            self.drive_serialized(Input::Connected { token });
+        }
+
+        /// Refuse a dial with an explicit token — used to prove a refusal
+        /// from a retired (e.g. stop-cancelled) attempt is fenced.
+        pub fn gate_refused_at_token(&self, token: u64) {
+            self.drive_serialized(Input::GateRefused { token });
+        }
+
+        /// The outstanding dial attempt's token, if a dial is in progress.
+        pub fn pending_dial(&self) -> Option<u64> {
+            self.lock().core.pending_dial()
+        }
+
+        /// Fail the outstanding dial attempt (it never connected): consumes a
+        /// retry from the budget and schedules the backoff.
+        pub fn fail_dial(&self) {
+            let token = {
+                let shared = self.lock();
+                shared
+                    .core
+                    .pending_dial()
+                    .expect("fail_dial() with no dial in progress")
+            };
+            self.drive_serialized(Input::DialFailed { token });
         }
 
         /// Report a recoverable connection loss (a dropped connection or a
         /// send/close race).
         pub fn interrupt(&self) {
-            let deferred = {
-                let mut shared = self.lock();
-                let generation = shared.core.generation();
-                shared.drive(Input::Interrupted { generation })
-            };
-            deferred.deliver();
+            let generation = self.lock().core.generation();
+            self.drive_serialized(Input::Interrupted { generation });
         }
 
         /// Report a loss tagged with the generation the (possibly retired)
         /// transport was connected under — used to prove a stale teardown
         /// from a replaced connection is fenced.
         pub fn interrupt_at_generation(&self, generation: u64) {
-            let deferred = self.lock().drive(Input::Interrupted { generation });
-            deferred.deliver();
+            self.drive_serialized(Input::Interrupted { generation });
         }
 
         /// Report a terminal generation-gate refusal (no auto-retry, §K7).
         pub fn gate_refused(&self) {
-            let deferred = self.lock().drive(Input::GateRefused);
-            deferred.deliver();
+            let token = {
+                let shared = self.lock();
+                shared
+                    .core
+                    .pending_dial()
+                    .expect("gate_refused() with no dial in progress")
+            };
+            self.drive_serialized(Input::GateRefused { token });
         }
 
         /// Deliver a success reply for `wire_id` on the current generation.
@@ -538,24 +690,22 @@ mod in_memory {
             generation: u64,
         ) {
             let id = RequestId::new(wire_id).expect("wire id within range");
-            let deferred = self.lock().drive(Input::Inbound(Inbound::Reply {
+            self.drive_serialized(Input::Inbound(Inbound::Reply {
                 generation,
                 id,
                 result: WireReply::Ok(RawJson::from_string(out_json.into())),
             }));
-            deferred.deliver();
         }
 
         /// Deliver a typed daemon error for `wire_id` on the current generation.
         pub fn deliver_error(&self, wire_id: u64, error: ApiError) {
             let generation = self.generation();
             let id = RequestId::new(wire_id).expect("wire id within range");
-            let deferred = self.lock().drive(Input::Inbound(Inbound::Reply {
+            self.drive_serialized(Input::Inbound(Inbound::Reply {
                 generation,
                 id,
                 result: WireReply::Err(error),
             }));
-            deferred.deliver();
         }
 
         /// Deliver a live wire push on the current generation. Takes the
@@ -570,16 +720,12 @@ mod in_memory {
         /// Deliver a push tagged with an explicit generation — used to prove a
         /// stale-generation push is fenced.
         pub fn deliver_push_at_generation(&self, push: jeliya_api::Push, generation: u64) {
-            let deferred = self
-                .lock()
-                .drive(Input::Inbound(Inbound::Push { generation, push }));
-            deferred.deliver();
+            self.drive_serialized(Input::Inbound(Inbound::Push { generation, push }));
         }
 
         /// Deliver a frame that parses to no envelope: it must strand nothing.
         pub fn deliver_malformed(&self) {
-            let deferred = self.lock().drive(Input::Inbound(Inbound::Malformed));
-            deferred.deliver();
+            self.drive_serialized(Input::Inbound(Inbound::Malformed));
         }
 
         /// Advance the virtual clock by `ticks`, firing every timer now due (in
@@ -587,7 +733,7 @@ mod in_memory {
         pub fn advance(&self, ticks: u64) {
             self.lock().now.advance(TickDelta(ticks));
             loop {
-                let deferred = {
+                let drove = {
                     let mut shared = self.lock();
                     let now = shared.now;
                     let due = shared
@@ -602,16 +748,23 @@ mod in_memory {
                     match due {
                         Some(id) => {
                             shared.timers.remove(&id);
-                            Some(shared.drive(Input::TimerFired(id)))
+                            let deferred = shared.drive(Input::TimerFired(id));
+                            self.runtime
+                                .delivery
+                                .lock()
+                                .expect("delivery queue poisoned")
+                                .push_back(deferred);
+                            true
                         }
-                        None => None,
+                        None => false,
                     }
                 };
                 // Deliver with the lock dropped, then look for the next due
                 // timer (a settle may re-enter and arm or cancel timers).
-                match deferred {
-                    Some(deferred) => deferred.deliver(),
-                    None => break,
+                if drove {
+                    self.runtime.drain_delivery();
+                } else {
+                    break;
                 }
             }
         }
@@ -640,6 +793,12 @@ mod in_memory {
         /// The number of armed driver timers.
         pub fn armed_timers(&self) -> usize {
             self.lock().timers.len()
+        }
+
+        /// Frames evicted from the bounded outbound log without being
+        /// observed by `take_outbound` — 0 in any test that drains.
+        pub fn outbound_overflow(&self) -> u64 {
+            self.lock().outbound_overflow
         }
 
         /// The number of live per-call reply senders held by the driver. On the
