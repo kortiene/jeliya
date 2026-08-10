@@ -667,6 +667,15 @@ async function driveClientAbortUpload({ session, tracker, replyState, waitMs }) 
     const rec = ev.record;
     checkBinding(tracker, rec);
     if (rec.kind === KIND.CREDIT) {
+      // The ACK retires the binding (protocol: "Only ACK or that timeout
+      // retires the binding"; a record on a retired stream is malformed) — a
+      // CREDIT emitted after the ACK certifies a daemon still speaking on a
+      // dead stream.
+      if (ackSeen) {
+        throw new AssertFailure(
+          'daemon sent CREDIT after acknowledging the ABORT — the binding retired at ACK',
+        );
+      }
       // A send window granted before the daemon saw our ABORT. It can never
       // acknowledge bytes we never sent.
       if (rec.offset > accepted) {

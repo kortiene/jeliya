@@ -42,7 +42,13 @@ This spec therefore serves three purposes:
 These are the parts that are **not** complete and are the true forward work of #233:
 
 - **R-A — Download has no *executable corpus* fixture.** `file.read` requires a locally *fetched* file (`resource:fetched_file`) and `link:*` provider preconditions. The corpus replay harness is **single-subject** (a `member:b` runs on the primary daemon), so a genuinely fetched-from-a-peer file cannot be staged by the corpus alone. The download producer is exercised by Rust integration tests in `serve.rs`, but the corpus download cases remain declarative. See [[jeliya-ci-local-dev-gotchas]] (single-subject harness) in maintainer memory.
-- **R-B — Harness fault controls unimplemented.** Raw-record injection, credit-pause/release, client-originated ABORT/ACK, and transport-drop are not yet wired into the harness driver, so malformed / backpressure / crossed-terminal / cancellation / disconnect **stream** cases are declarative in the corpus rather than executed.
+- **R-B — Three harness fault controls remain unimplemented.** Client-originated
+  ABORT/ACK **is now wired** (`driveClientAbortUpload` + the `client_abort`
+  fault + its fixture make `stream_aborted{cancelled}` executable, including the
+  CREDIT-after-ACK retired-binding rejection). Raw-record injection,
+  credit-pause/release, and transport-drop are still not wired into the harness
+  driver, so malformed / backpressure / crossed-terminal / disconnect **stream**
+  cases remain declarative in the corpus rather than executed.
 - **R-C — Full-corpus A/B not measured here.** CI live-gates only a slice of the corpus. A full run (all cases) with the byte-stream executor must be run and its pass/fail/error/blocked counts recorded as evidence, not assumed.
 - **R-D — Upstream U1/U2/U3 still block their conformance cases** (declared `blocked_on_upstream`; they fail, they do not skip). Not reopened by #233.
 
