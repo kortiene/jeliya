@@ -11,7 +11,9 @@
 //!
 //! The senders themselves live in the async driver, not here: the ledger tracks
 //! only the bounded per-call *state* the core reasons over, so its size is
-//! `queue_depth + in_flight` by construction (§K12).
+//! `queue_depth + 2·in_flight` by construction — queued entries (admission
+//! bound), sent-and-awaiting entries (the in-flight throttle), and the
+//! tombstone budget the core enforces (§K12).
 
 use std::collections::HashMap;
 

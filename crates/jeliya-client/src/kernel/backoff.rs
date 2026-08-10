@@ -63,12 +63,15 @@ impl Backoff {
     }
 
     /// The delay before reconnect attempt `attempt` (0-based): a uniform draw in
-    /// `[0, window)` where `window = min(cap, base * 2^attempt)`. The exponent
-    /// uses a saturating shift so a large `attempt` clamps to `cap` rather than
-    /// overflowing. Advances the PRNG, so repeated calls form the seeded
+    /// `[0, window)` where `window = min(cap, base * 2^attempt)`. Both the
+    /// exponent and the multiplication saturate — `checked_shl` alone only
+    /// detects a shift count ≥ 64, not value overflow, so a high-bit `base`
+    /// would wrap `scaled` to 0 and reconnect immediately instead of clamping
+    /// to `cap`. Advances the PRNG, so repeated calls form the seeded
     /// sequence.
     pub(crate) fn delay(&mut self, attempt: u32) -> TickDelta {
-        let scaled = self.base.checked_shl(attempt).unwrap_or(u64::MAX);
+        let factor = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+        let scaled = self.base.saturating_mul(factor);
         let window = scaled.min(self.cap);
         if window == 0 {
             return TickDelta(0);
@@ -80,6 +83,29 @@ impl Backoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_high_bit_base_saturates_to_the_cap_instead_of_wrapping_to_zero() {
+        // base << attempt would wrap to 0 for a high-bit base (checked_shl
+        // only detects shift counts >= 64); the window must clamp to cap.
+        let mut backoff = Backoff::new(TickDelta(1 << 63), TickDelta(10_000), 42);
+        for attempt in 1..4 {
+            let delay = backoff.delay(attempt);
+            assert!(
+                delay.0 < 10_000,
+                "attempt {attempt}: the window clamps to cap, got {}",
+                delay.0
+            );
+        }
+        // And the delay is a real draw, not the degenerate 0-window shortcut,
+        // across a few attempts (the seeded PRNG makes this deterministic).
+        let mut probe = Backoff::new(TickDelta(1 << 63), TickDelta(10_000), 42);
+        let draws: Vec<u64> = (1..8).map(|a| probe.delay(a).0).collect();
+        assert!(
+            draws.iter().any(|&d| d != 0),
+            "a wrapped-to-zero window would return all zeros: {draws:?}"
+        );
+    }
 
     #[test]
     fn a_fixed_seed_gives_a_reproducible_sequence() {

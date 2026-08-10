@@ -153,6 +153,12 @@ impl Core {
         self.generation.current()
     }
 
+    /// Whether the reconnect-backoff timer is armed (the retry gap between
+    /// dial attempts) — the controller folds this into `is_dialing`.
+    pub(crate) fn backoff_armed(&self) -> bool {
+        self.backoff_timer.is_some()
+    }
+
     /// Allocate the next local call id (the driver calls this before
     /// dispatching so it can key the reply sender).
     pub(crate) fn alloc_call_id(&mut self) -> CallId {
@@ -603,9 +609,18 @@ impl Core {
         actions.push(Action::CancelTimer(entry.deadline_timer));
         if !entry.cancelled {
             self.in_flight_count = self.in_flight_count.saturating_sub(1);
-            let settled = match result {
-                WireReply::Ok(raw) => Ok(raw),
-                WireReply::Err(api) => Err(CallError::Wire(api)),
+            // The absolute deadline binds regardless of event ordering: a
+            // reply arriving at or past `deadline_at` settles `Timeout` with
+            // the payload dropped — the same outcome as the deadline timer
+            // firing first — so deadline behavior does not depend on whether
+            // the driver processes the transport event or the timer first.
+            let settled = if entry.deadline_at <= now {
+                Err(CallError::Timeout)
+            } else {
+                match result {
+                    WireReply::Ok(raw) => Ok(raw),
+                    WireReply::Err(api) => Err(CallError::Wire(api)),
+                }
             };
             actions.push(Action::Settle(call_id, settled));
         } else {
@@ -1615,6 +1630,73 @@ mod tests {
         assert!(
             !fired.iter().any(|a| matches!(a, Action::Send(_))),
             "no call goes onto the wire past its absolute budget"
+        );
+    }
+
+    /// The absolute deadline binds regardless of event ordering: a reply
+    /// delivered at the deadline tick settles `Timeout` with the payload
+    /// dropped — the same outcome as the timer firing first — while a reply
+    /// one tick earlier settles normally.
+    #[test]
+    fn a_reply_at_the_deadline_settles_timeout_not_the_payload() {
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let call = core.alloc_call_id();
+        let sent = core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        let wire_id = first_send_id(&sent).expect("sent while Ready");
+        let generation = core.generation();
+        let at_deadline = Tick::ZERO.saturating_add(limits().default_call_deadline);
+        let reply = core.step(
+            Input::Inbound(Inbound::Reply {
+                generation,
+                id: jeliya_api::RequestId::new(wire_id).unwrap(),
+                result: WireReply::Ok(RawJson::from_string(String::from("{}"))),
+            }),
+            at_deadline,
+        );
+        assert!(
+            matches!(find_settle(&reply, call), Some(Err(CallError::Timeout))),
+            "a reply at the deadline tick is late: Timeout, payload dropped"
+        );
+        assert_eq!(
+            core.ledger_len(),
+            0,
+            "the late reply still reclaims the entry"
+        );
+
+        // One tick earlier the same reply settles normally.
+        let mut core = Core::new(limits(), 1);
+        core.step(Input::Start, Tick::ZERO);
+        core.step(Input::Connected, Tick::ZERO);
+        let call = core.alloc_call_id();
+        let sent = core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("room.list", false, None),
+            },
+            Tick::ZERO,
+        );
+        let wire_id = first_send_id(&sent).expect("sent while Ready");
+        let generation = core.generation();
+        let just_in_time = Tick(at_deadline.0 - 1);
+        let reply = core.step(
+            Input::Inbound(Inbound::Reply {
+                generation,
+                id: jeliya_api::RequestId::new(wire_id).unwrap(),
+                result: WireReply::Ok(RawJson::from_string(String::from("{}"))),
+            }),
+            just_in_time,
+        );
+        assert!(
+            matches!(find_settle(&reply, call), Some(Ok(_))),
+            "one tick before the deadline the payload is delivered"
         );
     }
 

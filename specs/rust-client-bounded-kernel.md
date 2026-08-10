@@ -229,10 +229,11 @@ Every internal collection has a static or configured bound:
 |---|---|
 | outbound queue (count) | `queue_depth` |
 | outbound queue (bytes) | `outbound_bytes` |
-| in-flight ledger | `in_flight` |
-| tombstones (cancelled-but-id-reserved) | ≤ `in_flight` (reclaimed on reply/deadline) |
+| sent-and-awaiting calls (the in-flight throttle) | `in_flight` |
+| ledger (queued + sent + tombstones) | ≤ `queue_depth` + 2·`in_flight` — every queued call holds a ledger entry from admission, so the ledger is a composite, not `in_flight` alone |
+| tombstones (cancelled-but-id-reserved) | ≤ `in_flight` (a FIFO budget: creating one past it evicts the oldest; reclaimed on reply/deadline) |
 | replay-hold set | ≤ `in_flight` (only replayable sent calls) |
-| armed timers | ≤ `in_flight` + 1 backoff timer |
+| armed timers | ≤ `queue_depth` + 2·`in_flight` + 1 — one deadline/reclaim timer per ledger entry (queued calls arm theirs at dispatch), plus the single backoff timer |
 | per-subscription event buffer | `DEFAULT_FANOUT_CAPACITY` (existing, with `Lagged` overflow) |
 | reconnect attempts | `max_attempts` |
 

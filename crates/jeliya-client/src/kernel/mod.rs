@@ -353,9 +353,12 @@ mod in_memory {
             self.lock().core.generation()
         }
 
-        /// Whether a dial/backoff is in progress.
+        /// Whether a dial/backoff is in progress: an active dial attempt, or
+        /// the armed reconnect-backoff timer between attempts — so an actively
+        /// retrying client is distinguishable from one with no retry work.
         pub fn is_dialing(&self) -> bool {
-            self.lock().dialing
+            let shared = self.lock();
+            shared.dialing || shared.core.backoff_armed()
         }
 
         /// Take the frames the kernel has asked the transport to send since the
