@@ -3,9 +3,15 @@
 #
 #   "One canonical Dioxus artifact has deterministic assets."
 #
-# Builds the web artifact TWICE from a clean checkout into two directories and
-# asserts a byte-identical asset tree: identical sorted file list and identical
-# per-file SHA-256. A difference fails the check (§5, §11).
+# Builds the web artifact TWICE, each build in a fresh cargo target dir that
+# is WIPED between samples, so the second is a real independent rustc compile
+# rather than a fingerprint no-op reusing the first build's wasm, and asserts
+# a byte-identical asset tree: identical sorted file list and identical
+# per-file SHA-256. A difference fails the check (§5, §11). The same dir NAME
+# is reused for both samples (wiped in between): it lives under the repo so
+# path remapping covers it, and an identical name means an identical remapped
+# path — two different names could false-fail if a target path ever leaked
+# into the artifact.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,11 +20,15 @@ cd "$repo"
 
 a="$repo/crates/jeliya-ui/dist-a"
 b="$repo/crates/jeliya-ui/dist-b"
+target_det="$repo/target-det"
+rm -rf "$target_det"
+trap 'rm -rf "$target_det"' EXIT
 
-echo "==> build 1 -> dist-a"
-"$here/build-web.sh" "$a" >/dev/null
-echo "==> build 2 -> dist-b"
-"$here/build-web.sh" "$b" >/dev/null
+echo "==> build 1 -> dist-a (fresh target dir)"
+CARGO_TARGET_DIR="$target_det" "$here/build-web.sh" "$a" >/dev/null
+echo "==> build 2 -> dist-b (independent fresh target dir)"
+rm -rf "$target_det"
+CARGO_TARGET_DIR="$target_det" "$here/build-web.sh" "$b" >/dev/null
 
 # Identical sorted relative file list.
 list_a="$(cd "$a" && LC_ALL=C find . -type f | LC_ALL=C sort)"

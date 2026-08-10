@@ -51,7 +51,20 @@ test("the mock drives the shell to the Ready lifecycle state", async ({ page }) 
   const footer = page.locator("#status-footer");
   await expect(footer).toContainText("Ready");
 
-  // The boot screen (`if !ready { BootScreen { … } }` in app.rs) must be gone
-  // once the client is Ready: it is unmounted, not merely hidden.
+  // The boot screen (rendered as the component ROOT while `!ready` in app.rs)
+  // must be gone once the client is Ready: unmounted, not merely hidden.
   await expect(page.locator("#boot-screen")).not.toBeAttached();
+});
+
+// The daemon serves index.html as the SPA fallback for extension-less nested
+// routes, where a `./`-relative asset URL would resolve under the route path
+// (/rooms/jeliya_ui_web.js) and 404. The asset URLs are root-relative so the
+// same document boots the app at every route; serve.mjs mirrors the daemon's
+// fallback so this smoke is honest.
+test("a nested SPA route loads the app via root-relative assets", async ({ page }) => {
+  await page.goto("/rooms/r-99");
+
+  const root = page.locator("#app-root");
+  await expect(root).toBeVisible();
+  await expect(page.locator("#status-footer")).toContainText("Ready");
 });

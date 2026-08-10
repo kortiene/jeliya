@@ -78,6 +78,17 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
     let lifecycle = format!("{:?}", snapshot.lifecycle);
     let ready = matches!(snapshot.lifecycle, State::Ready);
 
+    // Until Ready, the boot screen is the component ROOT (as the React shell
+    // renders it), never a child of the `.app` grid: auto-placed inside the
+    // two-column grid, its `height: var(--vh-full)` would blow up the first
+    // `auto` row and collapse the sidebar/center instead of covering them.
+    // All hooks are declared above, so the early return is order-safe.
+    if !ready {
+        return rsx! {
+            BootScreen { target: "connecting to the local daemon…".to_string() }
+        };
+    }
+
     rsx! {
         // A root pane state is always set (`pane-rooms`), because the shared
         // stylesheet hides `.sidebar`/`.center` on compact viewports unless a
@@ -99,9 +110,6 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                     div { class: "error-note", id: "notice", "{notice}" }
                 }
                 EmptyCenter {}
-            }
-            if !ready {
-                BootScreen { target: "connecting to the local daemon…".to_string() }
             }
             StatusFooter { lifecycle }
         }

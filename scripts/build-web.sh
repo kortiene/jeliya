@@ -53,6 +53,12 @@ if [ "$cli_wbg" != "$locked_wbg" ]; then
   exit 1
 fi
 
+# Honor an externally-set CARGO_TARGET_DIR (the determinism check builds each
+# sample in its own fresh dir); wasm-bindgen must read from the same one, or a
+# caller-set target dir would silently make it consume a stale default-path
+# artifact.
+target_dir="${CARGO_TARGET_DIR:-$repo/target}"
+
 echo "==> cargo build --locked --release -p jeliya-ui --features web (wasm32)"
 cargo build --locked --release -p jeliya-ui --features web \
   --target wasm32-unknown-unknown
@@ -64,7 +70,7 @@ wasm-bindgen \
   --target web \
   --no-typescript \
   --out-dir "$out" \
-  "$repo/target/wasm32-unknown-unknown/release/$crate.wasm"
+  "$target_dir/wasm32-unknown-unknown/release/$crate.wasm"
 
 echo "==> assets (canonical, single-source)"
 cp "$repo/crates/jeliya-ui/index.html" "$out/index.html"

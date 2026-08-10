@@ -14,7 +14,8 @@ No divergent duplicate of that file is committed here. Instead:
   `dist/styles.css`, and a CI byte-equality guard asserts the served copy is
   identical to its single source, so a copy cannot silently drift (the same
   "no divergence" property the token fixture enforces today).
-- `crates/jeliya-ui/index.html` references it as `./styles.css`.
+- `crates/jeliya-ui/index.html` references it as `/styles.css` (root-relative,
+  so the daemon's SPA fallback can serve the document at nested routes).
 
 Static assets the shell actually references (favicon, `og.png`,
 `site.webmanifest`, …) are pulled into the deterministic hashed output only when

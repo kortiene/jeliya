@@ -20,7 +20,11 @@ const MIME = {
 
 createServer(async (req, res) => {
   const rawPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
-  const rel = normalize(rawPath === "/" ? "/index.html" : rawPath).replace(/^(\.\.[/\\])+/, "");
+  // Mirror the daemon's SPA fallback: an extension-less path serves the root
+  // document, so nested routes (e.g. /rooms/r-99) load the app exactly as
+  // serve_static does — which is what makes the nested-route smoke honest.
+  const spa = rawPath === "/" || extname(rawPath) === "" ? "/index.html" : rawPath;
+  const rel = normalize(spa).replace(/^(\.\.[/\\])+/, "");
   try {
     const bytes = await readFile(join(distDir, rel));
     res.writeHead(200, { "content-type": MIME[extname(rel)] ?? "application/octet-stream" });
