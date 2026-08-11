@@ -51,14 +51,16 @@ fn main() {
     );
 
     let marker = std::fs::read_to_string(dist.join(".dioxus-artifact")).unwrap_or_default();
-    if !marker
-        .lines()
-        .any(|line| line.trim() == "renderer=dioxus-web")
-    {
-        fail(
-            "the embedded UI is not a Dioxus artifact: crates/jeliya-ui/dist is missing or its \
-             .dioxus-artifact marker does not declare renderer=dioxus-web",
-        );
+    // Renderer AND crate identity: another Dioxus application's artifact —
+    // built by the same pinned tools, marker and index fully well-formed —
+    // must not embed as jeliya's UI.
+    for required in ["renderer=dioxus-web", "crate=jeliya-ui"] {
+        if !marker.lines().any(|line| line.trim() == required) {
+            fail(&format!(
+                "the embedded UI is not the jeliya Dioxus artifact: crates/jeliya-ui/dist is \
+                 missing or its .dioxus-artifact marker does not declare {required}"
+            ));
+        }
     }
 
     // The marker records the canonical toolchain; a leftover dist built by an

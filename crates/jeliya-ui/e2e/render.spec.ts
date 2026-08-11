@@ -9,12 +9,28 @@ import { test, expect } from "@playwright/test";
 // swap" guard rather than trusting class presence. It runs offline and needs
 // no daemon: #176 renders against the deterministic mock.
 let webSockets: string[] = [];
+let apiRequests: string[] = [];
 
 test.beforeEach(async ({ page, baseURL }) => {
   const origin = baseURL === undefined ? undefined : new URL(baseURL).origin;
+  apiRequests = [];
   await page.route("**/*", (route) => {
     const url = new URL(route.request().url());
     if (origin !== undefined && url.origin === origin) {
+      // Same-origin does not mean anything goes: the static server carries
+      // only the artifact's assets, and a request shaped like daemon API
+      // traffic (/api/*, /ws) means the mock boundary leaked — the static
+      // server would 404 it while the shell renders on, so the smoke would
+      // stay silently green. Record and abort so the offending test fails
+      // with the URL in hand; asset and SPA-route requests continue.
+      const apiShaped =
+        url.pathname.startsWith("/api/") ||
+        url.pathname === "/ws" ||
+        url.pathname.startsWith("/ws/");
+      if (apiShaped) {
+        apiRequests.push(url.pathname);
+        return route.abort();
+      }
       return route.continue();
     }
     return route.abort();
@@ -37,6 +53,10 @@ test.afterEach(() => {
   expect(
     webSockets,
     "the offline smoke must see no WebSocket connections (no-network guarantee)",
+  ).toEqual([]);
+  expect(
+    apiRequests,
+    "the offline smoke must see no API-shaped same-origin traffic (mock boundary)",
   ).toEqual([]);
 });
 

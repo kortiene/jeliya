@@ -54,16 +54,22 @@ is_diagnostic() {
 # `--version 0` is a semver RANGE cargo may resolve to newer tooling);
 # `tool@X` requires full x.y.z. The one variable accepted is `$locked_wbg`,
 # which build-web.sh derives from Cargo.lock and hard-fails on mismatch.
-pinned() {
-  grep -Eq -- '--version[= ]=[0-9]+\.[0-9]+\.[0-9]+|@[0-9]+\.[0-9]+\.[0-9]+' <<<"$1" && return 0
-  grep -Eq -- '(--version[= ]=|@)\$\{?locked_wbg\}?' <<<"$1"
+# The pin must belong to the PROTECTED package: `cargo install a b@x.y.z`
+# leaves `a` unpinned even though the segment contains a version. `--version`
+# still counts segment-wide because cargo itself rejects --version with more
+# than one crate.
+pinned_for() { # $1 = package name regex, $2 = segment
+  grep -Eq -- "$1@[0-9]+\.[0-9]+\.[0-9]+" <<<"$2" && return 0
+  grep -Eq -- "$1@\\$\{?locked_wbg\}?" <<<"$2" && return 0
+  grep -Eq -- '--version[= ]=[0-9]+\.[0-9]+\.[0-9]+' <<<"$2" && return 0
+  grep -Eq -- '--version[= ]=\$\{?locked_wbg\}?' <<<"$2"
 }
 
 # 1. Any dioxus-cli / dx install must be version-pinned.
 while IFS= read -r line; do
   while IFS= read -r seg; do
     is_diagnostic "$seg" && continue
-    if grep -Eq 'cargo([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|binstall).*dioxus-cli' <<<"$seg" && ! pinned "$seg"; then
+    if grep -Eq 'cargo([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|binstall).*dioxus-cli' <<<"$seg" && ! pinned_for 'dioxus-cli' "$seg"; then
       echo "FAIL: unpinned dioxus-cli install: $seg"
       fail=1
     fi
@@ -71,14 +77,22 @@ while IFS= read -r line; do
     # FETCHED URL itself — a version token in an output filename or another
     # argument pins nothing about what the remote resource tracks.
     if grep -Eq '(curl|wget).*dioxus' <<<"$seg"; then
-      url_pinned=0
+      # Each DIOXUS URL must itself carry the version — an unrelated
+      # versioned URL in the same transfer list pins nothing about the
+      # Dioxus resource, and a dioxus name appearing only in an output
+      # filename identifies no fetched resource at all.
+      saw_dioxus_url=0
+      dioxus_urls_ok=1
       for word in $seg; do
         case "$word" in
-          *://*) grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$word" && url_pinned=1 ;;
+          *://*dioxus*)
+            saw_dioxus_url=1
+            grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$word" || dioxus_urls_ok=0
+            ;;
         esac
       done
-      if [ "$url_pinned" -ne 1 ]; then
-        echo "FAIL: unpinned dx download (no version in the fetched URL): $seg"
+      if [ "$saw_dioxus_url" -ne 1 ] || [ "$dioxus_urls_ok" -ne 1 ]; then
+        echo "FAIL: unpinned dx download (every fetched Dioxus URL must carry the version): $seg"
         fail=1
       fi
     fi
@@ -89,7 +103,7 @@ done < <(scan 'dioxus-cli|(curl|wget).*dioxus')
 while IFS= read -r line; do
   while IFS= read -r seg; do
     is_diagnostic "$seg" && continue
-    if grep -Eq 'cargo([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|binstall).*wasm-bindgen' <<<"$seg" && ! pinned "$seg"; then
+    if grep -Eq 'cargo([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|binstall).*wasm-bindgen' <<<"$seg" && ! pinned_for 'wasm-bindgen[a-z-]*' "$seg"; then
       echo "FAIL: unpinned wasm-bindgen-cli install: $seg"
       fail=1
     fi
