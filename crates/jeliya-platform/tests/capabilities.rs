@@ -77,7 +77,7 @@ fn staging_a_known_source_produces_a_shareable_blob() {
     let blob = block_on(
         services
             .files()
-            .stage_for_share(src, 1000, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1000, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     assert_eq!(blob.size(), 20);
@@ -93,7 +93,7 @@ fn a_known_oversize_source_fails_before_any_copy() {
         .unwrap()
         .unwrap();
     let outcome = block_on(services.files().stage_for_share(
-        src,
+        &src,
         100,
         ProgressSink::discard(),
         &ct,
@@ -119,11 +119,12 @@ fn a_streamed_content_source_is_enforced_mid_copy() {
         .unwrap()
         .unwrap();
     assert_eq!(src.kind(), FileObjectKind::ContentUri);
-    let outcome = block_on(
-        services
-            .files()
-            .stage_for_share(src, 16, ProgressSink::discard(), &ct),
-    );
+    let outcome = block_on(services.files().stage_for_share(
+        &src,
+        16,
+        ProgressSink::discard(),
+        &ct,
+    ));
     match outcome {
         Err(CapabilityError::Failed(FailureKind::FileTooLarge { size, limit })) => {
             assert_eq!(limit, 16);
@@ -143,7 +144,7 @@ fn an_empty_source_fails_file_empty() {
         .unwrap()
         .unwrap();
     let outcome = block_on(services.files().stage_for_share(
-        src,
+        &src,
         100,
         ProgressSink::discard(),
         &ct,
@@ -172,7 +173,7 @@ fn a_cancel_fired_mid_copy_yields_cancelled_and_no_partial() {
             ct_for_sink.cancel();
         }
     });
-    let outcome = block_on(services.files().stage_for_share(src, 1000, sink, &ct));
+    let outcome = block_on(services.files().stage_for_share(&src, 1000, sink, &ct));
     assert_eq!(outcome, Err(CapabilityError::Cancelled));
     assert!(
         controller.staged().is_empty(),
@@ -211,7 +212,7 @@ fn export_and_open_sinks_commit_the_written_bytes() {
     )
     .unwrap()
     .unwrap();
-    let mut sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+    let mut sink = block_on(services.files().export_sink(&target, &ct)).unwrap();
     block_on(sink.write(vec![1, 2])).unwrap();
     block_on(sink.write(vec![3])).unwrap();
     block_on(sink.commit()).unwrap();
@@ -243,7 +244,7 @@ fn dropping_an_uncommitted_export_sink_leaves_no_artifact() {
     .unwrap()
     .unwrap();
     {
-        let mut sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+        let mut sink = block_on(services.files().export_sink(&target, &ct)).unwrap();
         block_on(sink.write(vec![1, 2])).unwrap();
         block_on(sink.write(vec![3, 4])).unwrap();
         // Dropped without commit: the partial artifact fails closed.
@@ -263,7 +264,7 @@ fn dropping_an_uncommitted_export_sink_leaves_no_artifact() {
     )
     .unwrap()
     .unwrap();
-    let mut sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+    let mut sink = block_on(services.files().export_sink(&target, &ct)).unwrap();
     block_on(sink.write(vec![5, 6])).unwrap();
     block_on(sink.write(vec![7])).unwrap();
     block_on(sink.commit()).unwrap();
@@ -284,7 +285,7 @@ fn sharing_a_staged_blob_records_the_share() {
     let blob = block_on(
         services
             .files()
-            .stage_for_share(src, 1000, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1000, ProgressSink::discard(), &ct),
     )
     .unwrap();
     let content = ShareContent::attachment(ShareAttachment::Blob(blob));
@@ -308,7 +309,7 @@ fn read_staged_pulls_the_staged_bytes_boundedly() {
     let blob = block_on(
         services
             .files()
-            .stage_for_share(src, 1000, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1000, ProgressSink::discard(), &ct),
     )
     .unwrap();
     let mut reader = block_on(services.files().read_staged(&blob)).unwrap();
@@ -337,7 +338,7 @@ fn read_staged_fails_closed_on_a_blob_this_service_never_minted() {
         .unwrap()
         .unwrap();
     let foreign_blob = block_on(foreign.files().stage_for_share(
-        src,
+        &src,
         1000,
         ProgressSink::discard(),
         &ct,
@@ -786,11 +787,11 @@ fn already_consumed_export_target_is_rejected_on_second_use() {
     let target_clone = target.clone();
 
     // First sink consumes the token: ok.
-    let sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+    let sink = block_on(services.files().export_sink(&target, &ct)).unwrap();
     block_on(sink.commit()).unwrap();
 
     // Second sink with the same (cloned) target — token is gone: Io.
-    let second = block_on(services.files().export_sink(target_clone, &ct)).err();
+    let second = block_on(services.files().export_sink(&target_clone, &ct)).err();
     assert_eq!(
         second,
         Some(CapabilityError::Failed(FailureKind::Io)),
@@ -992,7 +993,7 @@ fn a_share_sheet_stays_open_until_the_controller_delivers() {
     let blob = block_on(
         services
             .files()
-            .stage_for_share(src, 1000, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1000, ProgressSink::discard(), &ct),
     )
     .unwrap();
     block_on(async {
@@ -1166,7 +1167,7 @@ fn cross_service_tokens_fail_closed() {
             controller,
             services
                 .files()
-                .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+                .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
         )
         .expect("stage ok");
         staged.push(blob);
@@ -1199,7 +1200,7 @@ fn cross_service_tokens_fail_closed() {
     assert_eq!(
         block_on(
             b.files()
-                .stage_for_share(src_a, 1024, ProgressSink::discard(), &ct)
+                .stage_for_share(&src_a, 1024, ProgressSink::discard(), &ct)
         )
         .err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable)),
@@ -1210,7 +1211,7 @@ fn cross_service_tokens_fail_closed() {
         .expect("pick_export_target ok")
         .expect("a target was picked");
     assert_eq!(
-        block_on(b.files().export_sink(target_a, &ct)).err(),
+        block_on(b.files().export_sink(&target_a, &ct)).err(),
         Some(CapabilityError::Failed(FailureKind::Io)),
         "service B must not write to service A's export target"
     );
@@ -1343,7 +1344,7 @@ fn zero_length_staged_pulls_fail_rather_than_spin() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     let mut reader = block_on(services.files().read_staged(&blob)).expect("reader");
@@ -1607,7 +1608,7 @@ fn a_token_fired_before_the_first_poll_still_cancels() {
     .unwrap()
     .unwrap();
     block_on(async {
-        let export = std::pin::pin!(services.files().export_sink(target, &ct));
+        let export = std::pin::pin!(services.files().export_sink(&target, &ct));
         let open = std::pin::pin!(services.files().open_sink(name("a.bin"), None, &ct));
         let share = std::pin::pin!(services.files().share_sink(name("b.bin"), None, &ct));
         // Fired after every call, before any of them is polled.
@@ -1759,7 +1760,7 @@ fn releasing_a_staged_blob_reaps_it_and_is_final() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
 
@@ -1816,7 +1817,7 @@ fn releasing_another_services_blob_fails_closed() {
     let blob = settle(
         &a_ctl,
         a.files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     assert_eq!(
@@ -1861,7 +1862,7 @@ fn invalid_share_content_consumes_no_scripted_outcome() {
         &other_ctl,
         other
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     assert_eq!(
@@ -1883,7 +1884,7 @@ fn invalid_share_content_consumes_no_scripted_outcome() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     assert_eq!(
@@ -1914,7 +1915,7 @@ fn a_sink_can_fail_mid_transfer_and_keeps_nothing() {
     )
     .unwrap()
     .unwrap();
-    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    let mut sink = block_on(services.files().export_sink(&target, &ct)).expect("sink opens");
     block_on(sink.write(b"good".to_vec())).expect("first chunk accepted");
     // The disk fills on the second chunk.
     controller.force_error(
@@ -1971,7 +1972,7 @@ fn a_sink_can_fail_at_finalization_and_publishes_nothing() {
     )
     .unwrap()
     .unwrap();
-    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    let mut sink = block_on(services.files().export_sink(&target, &ct)).expect("sink opens");
     block_on(sink.write(b"every".to_vec())).expect("chunk accepted");
     block_on(sink.write(b"byte".to_vec())).expect("chunk accepted");
     controller.force_error(
@@ -2029,7 +2030,7 @@ fn a_staged_read_can_fail_after_the_reader_is_open() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     let mut reader = block_on(services.files().read_staged(&blob)).expect("reader");
@@ -2087,7 +2088,7 @@ fn abandoned_picks_and_targets_can_be_discarded() {
         block_on(
             services
                 .files()
-                .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
+                .stage_for_share(&src, 1024, ProgressSink::discard(), &ct)
         )
         .err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable)),
@@ -2106,7 +2107,7 @@ fn abandoned_picks_and_targets_can_be_discarded() {
         Ok(())
     );
     assert!(
-        block_on(services.files().export_sink(target, &ct)).is_err(),
+        block_on(services.files().export_sink(&target, &ct)).is_err(),
         "a discarded target cannot be written to"
     );
 }
@@ -2126,16 +2127,15 @@ fn staging_consumes_the_picked_source() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct)
     )
     .is_ok());
     assert_eq!(
-        block_on(services.files().stage_for_share(
-            again.clone(),
-            1024,
-            ProgressSink::discard(),
-            &ct
-        ))
+        block_on(
+            services
+                .files()
+                .stage_for_share(&again, 1024, ProgressSink::discard(), &ct)
+        )
         .err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable)),
         "a staged source is consumed"
@@ -2165,22 +2165,24 @@ fn staging_consumes_the_source_on_every_outcome() {
         if outcome == "scripted" {
             controller.force_error(Capability::Stage, CapabilityError::Failed(FailureKind::Io));
             assert_eq!(
-                block_on(
-                    services
-                        .files()
-                        .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
-                )
+                block_on(services.files().stage_for_share(
+                    &src,
+                    1024,
+                    ProgressSink::discard(),
+                    &ct
+                ))
                 .err(),
                 Some(CapabilityError::Failed(FailureKind::Io))
             );
         } else {
             ct.cancel();
             assert_eq!(
-                block_on(
-                    services
-                        .files()
-                        .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
-                )
+                block_on(services.files().stage_for_share(
+                    &src,
+                    1024,
+                    ProgressSink::discard(),
+                    &ct
+                ))
                 .err(),
                 Some(CapabilityError::Cancelled)
             );
@@ -2196,7 +2198,7 @@ fn staging_consumes_the_source_on_every_outcome() {
         let fresh = CancelToken::new();
         assert_eq!(
             block_on(services.files().stage_for_share(
-                again,
+                &again,
                 1024,
                 ProgressSink::discard(),
                 &fresh
@@ -2377,11 +2379,11 @@ fn export_sink_consumes_its_target_on_every_outcome() {
                 Capability::ExportSink,
                 CapabilityError::Failed(FailureKind::Io),
             );
-            assert!(block_on(services.files().export_sink(target, &ct)).is_err());
+            assert!(block_on(services.files().export_sink(&target, &ct)).is_err());
         } else {
             ct.cancel();
             assert_eq!(
-                block_on(services.files().export_sink(target, &ct)).err(),
+                block_on(services.files().export_sink(&target, &ct)).err(),
                 Some(CapabilityError::Cancelled)
             );
         }
@@ -2392,7 +2394,7 @@ fn export_sink_consumes_its_target_on_every_outcome() {
         );
         let fresh = CancelToken::new();
         assert!(
-            block_on(services.files().export_sink(again, &fresh)).is_err(),
+            block_on(services.files().export_sink(&again, &fresh)).is_err(),
             "{outcome}: a consumed target cannot be written to"
         );
     }
@@ -2418,7 +2420,7 @@ fn a_share_holds_its_staged_bytes_until_the_sheet_settles() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
 
@@ -2629,7 +2631,7 @@ fn a_failed_share_leaves_the_caller_its_handle() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     let blob_content = ShareContent::attachment(ShareAttachment::Blob(blob.clone()));
@@ -2663,7 +2665,7 @@ fn a_token_fired_mid_transfer_stops_the_sink() {
     )
     .unwrap()
     .unwrap();
-    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    let mut sink = block_on(services.files().export_sink(&target, &ct)).expect("sink opens");
     block_on(sink.write(b"before".to_vec())).expect("accepted before cancellation");
     ct.cancel();
     assert_eq!(
@@ -2783,7 +2785,7 @@ fn opening_a_staged_reader_can_fail() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     controller.force_error(
@@ -2818,7 +2820,7 @@ fn a_zero_bound_pull_consumes_no_scripted_failure() {
         &controller,
         services
             .files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     let mut reader = block_on(services.files().read_staged(&blob)).expect("reader");
@@ -2891,7 +2893,7 @@ fn an_invalid_staged_handle_consumes_no_open_failure() {
     let foreign = settle(
         &a_ctl,
         a.files()
-            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
 
@@ -2911,7 +2913,7 @@ fn an_invalid_staged_handle_consumes_no_open_failure() {
     let own = settle(
         &b_ctl,
         b.files()
-            .stage_for_share(own_src, 1024, ProgressSink::discard(), &ct),
+            .stage_for_share(&own_src, 1024, ProgressSink::discard(), &ct),
     )
     .expect("stage ok");
     assert_eq!(
@@ -2935,7 +2937,7 @@ fn a_pre_cancelled_sink_consumes_no_script() {
     )
     .unwrap()
     .unwrap();
-    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    let mut sink = block_on(services.files().export_sink(&target, &ct)).expect("sink opens");
     controller.force_error(
         Capability::FileSinkWrite,
         CapabilityError::Failed(FailureKind::Io),
@@ -2963,7 +2965,7 @@ fn a_pre_cancelled_sink_consumes_no_script() {
     )
     .unwrap()
     .unwrap();
-    let mut sink = block_on(services.files().export_sink(target, &fresh)).expect("sink opens");
+    let mut sink = block_on(services.files().export_sink(&target, &fresh)).expect("sink opens");
     assert_eq!(
         block_on(sink.write(b"chunk".to_vec())).err(),
         Some(CapabilityError::Failed(FailureKind::Io)),
@@ -3002,7 +3004,7 @@ fn progress_reports_only_bytes_already_copied() {
     };
     let blob = settle(
         &controller,
-        services.files().stage_for_share(src, 1024, sink, &ct),
+        services.files().stage_for_share(&src, 1024, sink, &ct),
     )
     .expect("stage ok");
     assert_eq!(*seen.borrow(), vec![8, 10]);
@@ -3026,7 +3028,7 @@ fn progress_reports_only_bytes_already_copied() {
         })
     };
     assert_eq!(
-        block_on(services.files().stage_for_share(src, 1024, sink, &ct)).err(),
+        block_on(services.files().stage_for_share(&src, 1024, sink, &ct)).err(),
         Some(CapabilityError::Cancelled)
     );
     assert_eq!(
@@ -3037,5 +3039,156 @@ fn progress_reports_only_bytes_already_copied() {
     assert!(
         controller.staged().is_empty(),
         "a cancelled stage records nothing"
+    );
+}
+
+/// A handle from another service fails closed *and* stays discardable on the
+/// service that actually holds its grant. Consuming the caller's handle on that
+/// path would strand the producing service's file object with nothing left to
+/// name it — the reason every `Files` method borrows.
+#[test]
+fn a_foreign_handle_fails_closed_without_stranding_its_grant() {
+    let (a, a_ctl) = fake::desktop();
+    let (b, b_ctl) = fake::desktop();
+    let ct = CancelToken::new();
+
+    a_ctl.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&a_ctl, a.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(a_ctl.retained_handles().sources, 1);
+
+    // The caller's ONE handle, offered to the wrong service.
+    assert_eq!(
+        block_on(
+            b.files()
+                .stage_for_share(&src, 1024, ProgressSink::discard(), &ct)
+        )
+        .err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+    assert_eq!(
+        a_ctl.retained_handles().sources,
+        1,
+        "A still holds the grant — and the caller still holds the handle"
+    );
+    assert_eq!(block_on(a.files().discard_source(&src)), Ok(()));
+    assert_eq!(a_ctl.retained_handles(), Default::default());
+
+    // The same for an export target's write grant.
+    a_ctl.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let target = settle(&a_ctl, a.files().pick_export_target(name("out.bin"), &ct))
+        .unwrap()
+        .unwrap();
+    assert!(block_on(b.files().export_sink(&target, &ct)).is_err());
+    assert_eq!(a_ctl.retained_handles().export_targets, 1);
+    assert_eq!(block_on(a.files().discard_export_target(&target)), Ok(()));
+    assert_eq!(a_ctl.retained_handles(), Default::default());
+    assert_eq!(b_ctl.retained_handles(), Default::default());
+}
+
+/// An invalid staging call reports its own failure and consumes no script, and
+/// a known-oversize source fails before any copy — so neither steals the
+/// outcome scripted for the next real staging call.
+#[test]
+fn invalid_staging_consumes_no_scripted_failure() {
+    let (a, a_ctl) = fake::desktop();
+    let (b, b_ctl) = fake::desktop();
+    let ct = CancelToken::new();
+    a_ctl.arm_pick("foreign.bin", None, b"payload".to_vec());
+    let foreign = settle(&a_ctl, a.files().pick(&ct)).unwrap().unwrap();
+
+    b_ctl.force_error(Capability::Stage, CapabilityError::Denied);
+    assert_eq!(
+        block_on(
+            b.files()
+                .stage_for_share(&foreign, 1024, ProgressSink::discard(), &ct)
+        )
+        .err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a foreign source reports its own failure, not the script"
+    );
+
+    // A known-oversize source fails before any copy, and also takes no script.
+    b_ctl.arm_pick("big.bin", None, vec![0u8; 64]);
+    let big = settle(&b_ctl, b.files().pick(&ct)).unwrap().unwrap();
+    assert!(matches!(
+        block_on(
+            b.files()
+                .stage_for_share(&big, 8, ProgressSink::discard(), &ct)
+        ),
+        Err(CapabilityError::Failed(FailureKind::FileTooLarge {
+            size: 64,
+            limit: 8
+        }))
+    ));
+    assert!(
+        b_ctl.staged().is_empty(),
+        "an oversize source is rejected before any copy"
+    );
+
+    // The script is still waiting for the first call that really stages.
+    b_ctl.arm_pick("ok.bin", None, b"fits".to_vec());
+    let ok = settle(&b_ctl, b.files().pick(&ct)).unwrap().unwrap();
+    assert_eq!(
+        block_on(
+            b.files()
+                .stage_for_share(&ok, 1024, ProgressSink::discard(), &ct)
+        )
+        .err(),
+        Some(CapabilityError::Denied),
+        "the untouched script lands on the next valid staging call"
+    );
+}
+
+/// The same rule for `export_sink` and for cleanup: an invalid handle reports
+/// its own failure and leaves the script for the next valid call.
+#[test]
+fn invalid_export_and_cleanup_consume_no_scripted_failure() {
+    let (a, a_ctl) = fake::desktop();
+    let (b, b_ctl) = fake::desktop();
+    let ct = CancelToken::new();
+    a_ctl.arm_export_target(ExportTargetKind::NativePath, "foreign.bin");
+    let foreign = settle(
+        &a_ctl,
+        a.files().pick_export_target(name("foreign.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+
+    b_ctl.force_error(Capability::ExportSink, CapabilityError::Denied);
+    assert_eq!(
+        block_on(b.files().export_sink(&foreign, &ct)).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "a foreign target reports its own fail-closed Io, not the script"
+    );
+    b_ctl.arm_export_target(ExportTargetKind::NativePath, "own.bin");
+    let own = settle(&b_ctl, b.files().pick_export_target(name("own.bin"), &ct))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        block_on(b.files().export_sink(&own, &ct)).err(),
+        Some(CapabilityError::Denied),
+        "the untouched script lands on the next valid export sink"
+    );
+
+    // Cleanup: a foreign handle takes no Release script either.
+    a_ctl.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&a_ctl, a.files().pick(&ct)).unwrap().unwrap();
+    b_ctl.force_error(
+        Capability::Release,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(b.files().discard_source(&src)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a foreign cleanup reports Unreadable, not the script"
+    );
+    b_ctl.arm_pick("own.bin", None, b"mine".to_vec());
+    let own_src = settle(&b_ctl, b.files().pick(&ct)).unwrap().unwrap();
+    assert_eq!(
+        block_on(b.files().discard_source(&own_src)).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "the untouched script lands on the next valid cleanup"
     );
 }

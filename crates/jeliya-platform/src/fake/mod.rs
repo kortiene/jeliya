@@ -969,6 +969,17 @@ impl Files for FakePlatform {
     fn discard_source(&self, src: &PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = src.token();
+        // A handle this service does not hold reports its own `Unreadable` and
+        // consumes NO script — an invalid cleanup must not steal the failure
+        // scripted for the next valid one.
+        if !inner
+            .sources
+            .lock()
+            .expect("sources poisoned")
+            .contains_key(&token.get())
+        {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+        }
         // Bound at CALL time, like every other scripted outcome: two cleanup
         // futures created in call order must keep their outcomes however the
         // executor polls them. A failed cleanup leaves the entry recoverable,
@@ -1002,6 +1013,17 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = artifact.token();
+        // A handle this service does not hold reports its own `Unreadable` and
+        // consumes NO script — an invalid cleanup must not steal the failure
+        // scripted for the next valid one.
+        if !inner
+            .share_artifacts
+            .lock()
+            .expect("share artifacts poisoned")
+            .contains_key(&token.get())
+        {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+        }
         // Bound at CALL time, like every other scripted outcome: two cleanup
         // futures created in call order must keep their outcomes however the
         // executor polls them. A failed cleanup leaves the entry recoverable,
@@ -1032,6 +1054,17 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = target.token();
+        // A handle this service does not hold reports its own `Unreadable` and
+        // consumes NO script — an invalid cleanup must not steal the failure
+        // scripted for the next valid one.
+        if !inner
+            .export_targets
+            .lock()
+            .expect("export targets poisoned")
+            .contains_key(&token.get())
+        {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+        }
         // Bound at CALL time, like every other scripted outcome: two cleanup
         // futures created in call order must keep their outcomes however the
         // executor polls them. A failed cleanup leaves the entry recoverable,
@@ -1058,7 +1091,7 @@ impl Files for FakePlatform {
 
     fn stage_for_share(
         &self,
-        src: PickedSource,
+        src: &PickedSource,
         limit: u64,
         progress: ProgressSink,
         ct: &CancelToken,
@@ -1080,6 +1113,25 @@ impl Files for FakePlatform {
         if ct.is_cancelled() {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
+        // Neither does a call that cannot legitimately start. A source this
+        // service never produced (or already staged, or discarded) reports its
+        // own failure, and a known-oversize one fails BEFORE any copy exactly
+        // as §D5 says — so neither steals the outcome scripted for the next
+        // real staging call.
+        let Some(body) = claimed else {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+        };
+        let known_len = (!body.streamed).then(|| body.bytes.len() as u64);
+        if let Some(len) = known_len {
+            if len > limit {
+                return Box::pin(async move {
+                    Err(CapabilityError::Failed(FailureKind::FileTooLarge {
+                        size: len,
+                        limit,
+                    }))
+                });
+            }
+        }
         // Bind this call's scripted outcome NOW, in call order: a script says
         // "the next call fails", so poll order must not re-pair it with a
         // different call. The clone is still needed for the mid-copy checks.
@@ -1095,22 +1147,12 @@ impl Files for FakePlatform {
             if let Some(error) = bound {
                 return Err(error);
             }
-            let (bytes, streamed) = match claimed {
-                Some(body) => (body.bytes, body.streamed),
-                // Forged, already staged, or already discarded.
-                None => return Err(CapabilityError::Failed(FailureKind::Unreadable)),
-            };
-            let len = bytes.len() as u64;
-            // Known-size sources are rejected BEFORE any copy; a streamed source
-            // (`content://`) has no authoritative size up front, so its limit is
-            // enforced during the copy instead.
-            if !streamed && len > limit {
-                return Err(CapabilityError::Failed(FailureKind::FileTooLarge {
-                    size: len,
-                    limit,
-                }));
-            }
-            let total = if streamed { None } else { Some(len) };
+            let bytes = body.bytes;
+            // The known-size limit was already enforced at call time, before
+            // any copy, so the mid-copy check below can only ever fire for a
+            // streamed source (`content://`), which has no authoritative size
+            // up front. `total` is `None` for exactly that case.
+            let total = known_len;
             let mut copied: u64 = 0;
             let mut staged: Vec<u8> = Vec::new();
             for chunk in bytes.chunks(STAGE_CHUNK_BYTES) {
@@ -1200,6 +1242,17 @@ impl Files for FakePlatform {
     fn release_staged(&self, blob: &ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = blob.token();
+        // A handle this service does not hold reports its own `Unreadable` and
+        // consumes NO script — an invalid cleanup must not steal the failure
+        // scripted for the next valid one.
+        if !inner
+            .staged_blobs
+            .lock()
+            .expect("staged blobs poisoned")
+            .contains_key(&token.get())
+        {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+        }
         // Bound at CALL time, like every other scripted outcome: two cleanup
         // futures created in call order must keep their outcomes however the
         // executor polls them. A failed cleanup leaves the entry recoverable,
@@ -1271,7 +1324,7 @@ impl Files for FakePlatform {
 
     fn export_sink(
         &self,
-        to: ExportTarget,
+        to: &ExportTarget,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>> {
         let inner = self.inner.clone();
@@ -1288,6 +1341,11 @@ impl Files for FakePlatform {
         if ct.is_cancelled() {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
+        // A forged, re-used, or discarded target reports its own fail-closed
+        // `Io` and consumes no script — the same rule as everywhere else.
+        if claimed.is_none() {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
+        }
         let bound = inner.take_forced(Capability::ExportSink);
         let ct = ct.clone();
         Box::pin(async move {
@@ -1299,10 +1357,6 @@ impl Files for FakePlatform {
             }
             if let Some(error) = bound {
                 return Err(error);
-            }
-            // A forged, re-used, or discarded `ExportTarget` had no entry.
-            if claimed.is_none() {
-                return Err(CapabilityError::Failed(FailureKind::Io));
             }
             Ok(Box::new(FakeFileSink {
                 inner,

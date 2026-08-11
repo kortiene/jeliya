@@ -704,14 +704,17 @@ pub trait Files {
     /// until [`Files::release_staged`] is called, because only the UI knows
     /// whether the daemon's `file.share` settled.
     ///
-    /// The **source** is consumed either way: it is taken by value and the
-    /// service drops its private entry on *every* outcome — success, a typed
-    /// failure, a cancellation, or the future being dropped — because no
-    /// caller can reach [`Files::discard_source`] for a handle it has already
-    /// moved in here. An abandoned pick is the only one that needs discarding.
+    /// The **source is consumed** on every outcome — success, a typed failure,
+    /// a cancellation, or the future being dropped — but "consumed" is a fact
+    /// about *this service's* private entry, not about the caller's handle.
+    /// The handle is borrowed, so a call that fails closed because the source
+    /// belongs to a different service leaves the caller able to discard it on
+    /// the service that actually holds it; consuming it here would strand that
+    /// grant with nothing left to name it. A handle whose entry this service
+    /// did consume fails `Unreadable` on reuse and needs no discard.
     fn stage_for_share(
         &self,
-        src: PickedSource,
+        src: &PickedSource,
         limit: u64,
         progress: ProgressSink,
         ct: &CancelToken,
@@ -767,12 +770,16 @@ pub trait Files {
     ) -> BoxFuture<'_, Result<Option<ExportTarget>, CapabilityError>>;
 
     /// Open a [`FileSink`] writing to a chosen [`ExportTarget`]. The UI
-    /// drives the client seam's `file.read` and pumps the DATA chunks in;
-    /// this method consumes the target (a re-used target fails closed). The
-    /// destination spelling stays inside the service — the sink is bytes-only.
+    /// drives the client seam's `file.read` and pumps the DATA chunks in.
+    ///
+    /// The target's **entry** is consumed on every outcome, so a re-used target
+    /// fails closed — but the handle is borrowed, for the reason
+    /// [`Files::stage_for_share`] gives: a target belonging to another service
+    /// must stay discardable on the one that holds its grant. The destination
+    /// spelling stays inside the service — the sink is bytes-only.
     fn export_sink(
         &self,
-        to: ExportTarget,
+        to: &ExportTarget,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>>;
 
