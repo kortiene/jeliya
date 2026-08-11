@@ -13,7 +13,7 @@
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::RoomList;
-use jeliya_client::{ClientHandle, Dedup, State};
+use jeliya_client::{CallError, ClientHandle, Dedup, State};
 
 use crate::components::{BootScreen, EmptyCenter, RoomListItem, StatusFooter};
 use crate::services::PlatformServices;
@@ -75,14 +75,33 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                     // the stream ends first (stopped or failed before ever
                     // Ready), there is nothing to read.
                     let mut ready = handle.subscribe();
-                    while handle.state() != State::Ready {
-                        if ready.next().await.is_none() {
-                            return;
+                    loop {
+                        while handle.state() != State::Ready {
+                            if ready.next().await.is_none() {
+                                return;
+                            }
                         }
-                    }
-                    match handle.call::<RoomList>(RoomList {}, Dedup::None).await {
-                        Ok(out) => ui.write().set_rooms(out.rooms),
-                        Err(error) => ui.write().set_notice(format!("room.list: {error:?}")),
+                        match handle.call::<RoomList>(RoomList {}, Dedup::None).await {
+                            Ok(out) => {
+                                ui.write().set_rooms(out.rooms);
+                                return;
+                            }
+                            // An accepted call can still die mid-flight when
+                            // the transport drops (Ready → Interrupted before
+                            // the reply). room.list is a pure idempotent
+                            // read, so a Disconnected verdict retries after
+                            // the next recovery to Ready; every other error
+                            // is a genuine reply or refusal and is recorded
+                            // once — retrying those could loop forever on a
+                            // persistent failure.
+                            Err(error @ CallError::Disconnected { .. }) => {
+                                ui.write().set_notice(format!("room.list: {error:?}"));
+                            }
+                            Err(error) => {
+                                ui.write().set_notice(format!("room.list: {error:?}"));
+                                return;
+                            }
+                        }
                     }
                 }
             };
