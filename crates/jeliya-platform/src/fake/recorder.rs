@@ -76,6 +76,11 @@ pub enum Capability {
     Clipboard,
     /// [`crate::UrlLauncher::open_external`].
     OpenExternal,
+    /// Any [`crate::WindowActions`] command on a platform that HAS windows — a
+    /// compositor refusing a raise, an OS vetoing a close. Distinct from the
+    /// structural `Unavailable` a browser or Android shape returns, which is a
+    /// fact about the platform rather than an outcome of the request.
+    WindowAction,
 }
 
 /// One recorded effect, in the order it happened.

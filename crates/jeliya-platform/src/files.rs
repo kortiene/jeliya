@@ -802,9 +802,17 @@ pub trait Files {
 
     /// Share content through the platform (the OS share sheet / a file share).
     /// Dismissing the sheet is [`CapabilityError::Cancelled`], not `Ok`.
+    ///
+    /// Takes the content by **reference**: a denied, dismissed, or dropped
+    /// share leaves the caller holding its attachment handle, which it needs in
+    /// order to retry or to release. Consuming the content would strand the
+    /// bytes — the service still owns them, but the only handle naming them
+    /// would be gone. A [`ShareableBlob`] is not consumed by sharing at all
+    /// (`release_staged` reaps it); a [`FetchedArtifact`] is consumed only by a
+    /// share that completes, after which the handle fails closed.
     fn share_content(
         &self,
-        content: ShareContent,
+        content: &ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>>;
 }

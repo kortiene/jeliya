@@ -288,7 +288,7 @@ fn sharing_a_staged_blob_records_the_share() {
     )
     .unwrap();
     let content = ShareContent::attachment(ShareAttachment::Blob(blob));
-    settle(&controller, services.files().share_content(content, &ct)).unwrap();
+    settle(&controller, services.files().share_content(&content, &ct)).unwrap();
     assert!(controller
         .effects()
         .iter()
@@ -810,7 +810,7 @@ fn share_sheet_rejects_empty_content() {
         anchor: None,
     };
     assert!(empty.is_empty());
-    let outcome = block_on(services.share().share(empty, &ct));
+    let outcome = block_on(services.share().share(&empty, &ct));
     assert!(
         matches!(outcome, Err(CapabilityError::Failed(_))),
         "share of empty content must fail"
@@ -997,7 +997,7 @@ fn a_share_sheet_stays_open_until_the_controller_delivers() {
     .unwrap();
     block_on(async {
         let content = ShareContent::attachment(ShareAttachment::Blob(blob));
-        let mut fut = std::pin::pin!(services.files().share_content(content, &ct));
+        let mut fut = std::pin::pin!(services.files().share_content(&content, &ct));
         assert!(
             futures::poll!(fut.as_mut()).is_pending(),
             "the share sheet stays open until advanced"
@@ -1128,7 +1128,7 @@ fn a_factory_blob_with_an_unminted_token_fails_closed() {
     let forged = shareable_blob(blob_token_from_raw(7777), 10);
     let content = ShareContent::attachment(ShareAttachment::Blob(forged.clone()));
     assert_eq!(
-        block_on(services.files().share_content(content, &ct)),
+        block_on(services.files().share_content(&content, &ct)),
         Err(CapabilityError::Failed(FailureKind::Unreadable)),
         "a forged blob never opens the share sheet"
     );
@@ -1179,10 +1179,10 @@ fn cross_service_tokens_fail_closed() {
         "service B must not resolve service A's blob token"
     );
     assert_eq!(
-        block_on(
-            b.files()
-                .share_content(ShareContent::attachment(ShareAttachment::Blob(blob_a)), &ct)
-        ),
+        block_on(b.files().share_content(
+            &ShareContent::attachment(ShareAttachment::Blob(blob_a)),
+            &ct
+        )),
         Err(CapabilityError::Failed(FailureKind::Unreadable)),
         "service B must not share service A's blob"
     );
@@ -1454,7 +1454,7 @@ fn a_fetched_room_file_is_shared_through_the_service_s_own_custody() {
         anchor: None,
     };
     assert_eq!(
-        settle(&controller, services.files().share_content(content, &ct)),
+        settle(&controller, services.files().share_content(&content, &ct)),
         Ok(())
     );
 
@@ -1493,7 +1493,7 @@ fn a_fetched_artifact_from_another_service_fails_closed() {
 
     assert_eq!(
         block_on(b.files().share_content(
-            ShareContent::attachment(ShareAttachment::Fetched(artifact)),
+            &ShareContent::attachment(ShareAttachment::Fetched(artifact)),
             &ct
         )),
         Err(CapabilityError::Failed(FailureKind::Unreadable)),
@@ -1523,7 +1523,7 @@ fn a_shared_artifact_is_consumed_but_a_dismissal_keeps_it() {
         settle(
             &controller,
             services.files().share_content(
-                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
                 &ct
             )
         ),
@@ -1535,7 +1535,7 @@ fn a_shared_artifact_is_consumed_but_a_dismissal_keeps_it() {
         settle(
             &controller,
             services.files().share_content(
-                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
                 &ct
             )
         ),
@@ -1545,7 +1545,7 @@ fn a_shared_artifact_is_consumed_but_a_dismissal_keeps_it() {
         settle(
             &controller,
             services.files().share_content(
-                ShareContent::attachment(ShareAttachment::Fetched(artifact)),
+                &ShareContent::attachment(ShareAttachment::Fetched(artifact)),
                 &ct
             )
         ),
@@ -1644,11 +1644,11 @@ fn overlapping_shares_are_claimed_in_call_order_not_poll_order() {
 
         block_on(async {
             let first = std::pin::pin!(services.files().share_content(
-                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
                 &ct
             ));
             let second = std::pin::pin!(services.files().share_content(
-                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
                 &ct
             ));
             let mut first = first;
@@ -1710,32 +1710,32 @@ fn an_incomplete_share_returns_the_artifact_to_staging() {
 
     // Dropped mid-flight, before the sheet settles.
     block_on(async {
-        let mut fut = std::pin::pin!(services.files().share_content(content(), &ct));
+        let mut fut = std::pin::pin!(services.files().share_content(&content(), &ct));
         assert!(futures::poll!(fut.as_mut()).is_pending());
     });
 
     // Scripted failure.
     controller.force_error(Capability::ShareContent, CapabilityError::Denied);
     assert_eq!(
-        settle(&controller, services.files().share_content(content(), &ct)),
+        settle(&controller, services.files().share_content(&content(), &ct)),
         Err(CapabilityError::Denied)
     );
 
     // Dismissed.
     controller.force_error(Capability::ShareContent, CapabilityError::Cancelled);
     assert_eq!(
-        settle(&controller, services.files().share_content(content(), &ct)),
+        settle(&controller, services.files().share_content(&content(), &ct)),
         Err(CapabilityError::Cancelled)
     );
 
     // Still shareable after all three, and consumed only by the one that
     // completes.
     assert_eq!(
-        settle(&controller, services.files().share_content(content(), &ct)),
+        settle(&controller, services.files().share_content(&content(), &ct)),
         Ok(())
     );
     assert_eq!(
-        settle(&controller, services.files().share_content(content(), &ct)),
+        settle(&controller, services.files().share_content(&content(), &ct)),
         Err(CapabilityError::Failed(FailureKind::Unreadable)),
         "the completed share consumed it"
     );
@@ -1848,7 +1848,7 @@ fn invalid_share_content_consumes_no_scripted_outcome() {
     };
     assert!(empty.is_empty());
     assert_eq!(
-        block_on(services.files().share_content(empty, &ct)),
+        block_on(services.files().share_content(&empty, &ct)),
         Err(CapabilityError::Failed(FailureKind::Io)),
         "empty content is a caller error, not the scripted denial"
     );
@@ -1869,7 +1869,7 @@ fn invalid_share_content_consumes_no_scripted_outcome() {
     .expect("stage ok");
     assert_eq!(
         block_on(services.files().share_content(
-            ShareContent::attachment(ShareAttachment::Blob(foreign)),
+            &ShareContent::attachment(ShareAttachment::Blob(foreign)),
             &ct
         )),
         Err(CapabilityError::Failed(FailureKind::Unreadable)),
@@ -1894,7 +1894,7 @@ fn invalid_share_content_consumes_no_scripted_outcome() {
             &controller,
             services
                 .files()
-                .share_content(ShareContent::attachment(ShareAttachment::Blob(mine)), &ct)
+                .share_content(&ShareContent::attachment(ShareAttachment::Blob(mine)), &ct)
         ),
         Err(CapabilityError::Denied),
         "the untouched script lands on the first share that really starts"
@@ -2232,7 +2232,7 @@ fn an_abandoned_fetched_artifact_can_be_released() {
         settle(
             &controller,
             services.files().share_content(
-                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
                 &ct
             )
         ),
@@ -2257,7 +2257,7 @@ fn an_abandoned_fetched_artifact_can_be_released() {
     );
     assert_eq!(
         block_on(services.files().share_content(
-            ShareContent::attachment(ShareAttachment::Fetched(artifact)),
+            &ShareContent::attachment(ShareAttachment::Fetched(artifact)),
             &ct
         )),
         Err(CapabilityError::Failed(FailureKind::Unreadable))
@@ -2278,7 +2278,7 @@ fn a_shared_artifact_needs_no_release() {
         settle(
             &controller,
             services.files().share_content(
-                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
                 &ct
             )
         ),
@@ -2430,7 +2430,7 @@ fn a_share_holds_its_staged_bytes_until_the_sheet_settles() {
 
     block_on(async {
         let mut share = std::pin::pin!(services.files().share_content(
-            ShareContent::attachment(ShareAttachment::Blob(blob.clone())),
+            &ShareContent::attachment(ShareAttachment::Blob(blob.clone())),
             &ct
         ));
         assert!(
@@ -2471,7 +2471,7 @@ fn a_share_holds_its_staged_bytes_until_the_sheet_settles() {
         block_on(
             services
                 .files()
-                .share_content(ShareContent::attachment(ShareAttachment::Blob(blob)), &ct)
+                .share_content(&ShareContent::attachment(ShareAttachment::Blob(blob)), &ct)
         ),
         Err(CapabilityError::Failed(FailureKind::Unreadable))
     );
@@ -2513,4 +2513,136 @@ fn a_failed_release_leaves_the_entry_recoverable() {
         block_on(services.files().release_artifact(artifact)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable))
     );
+}
+
+/// Cleanup outcomes bind at call time like every other scripted outcome: two
+/// cleanup futures created in call order must keep their outcomes however the
+/// executor polls them.
+#[test]
+fn cleanup_outcomes_bind_at_call_time() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+
+    // One failure queued; the FIRST cleanup called must take it.
+    controller.force_error(
+        Capability::Release,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    block_on(async {
+        let mut first = std::pin::pin!(services.files().release_artifact(artifact.clone()));
+        let mut second = std::pin::pin!(services.files().discard_source(src.clone()));
+        // Polled in REVERSE order.
+        assert!(
+            matches!(futures::poll!(second.as_mut()), Poll::Ready(Ok(()))),
+            "the second call is unaffected by the first call's scripted failure"
+        );
+        assert!(
+            matches!(
+                futures::poll!(first.as_mut()),
+                Poll::Ready(Err(CapabilityError::Failed(FailureKind::Io)))
+            ),
+            "the first call keeps the failure it was scripted"
+        );
+    });
+    // The failed release left its entry recoverable; the successful one reaped.
+    assert_eq!(controller.retained_handles().share_artifacts, 1);
+    assert_eq!(controller.retained_handles().sources, 0);
+}
+
+/// A window action can be refused by a platform that HAS windows — a compositor
+/// declining a raise, an OS vetoing a close. §6 promises every capability
+/// method's action outcome is forceable, and this one was not.
+#[test]
+fn window_actions_are_scriptable_where_windows_exist() {
+    let (services, controller) = fake::desktop();
+    assert!(services.window().availability().is_available());
+    controller.force_error(Capability::WindowAction, CapabilityError::Denied);
+    assert_eq!(
+        services.window().request_close().err(),
+        Some(CapabilityError::Denied),
+        "a refused close is Denied, not a silent success"
+    );
+    assert!(
+        controller.window_commands().is_empty(),
+        "a refused command is not recorded as performed"
+    );
+    // The next command is unaffected, and is recorded.
+    assert_eq!(services.window().minimize(), Ok(()));
+    assert_eq!(
+        controller.window_commands(),
+        vec![jeliya_platform::WindowCommand::Minimize]
+    );
+    // Structural unavailability is still a shape fact, not a scripted one.
+    let (browser, browser_ctl) = fake::browser();
+    browser_ctl.force_error(Capability::WindowAction, CapabilityError::Denied);
+    assert_eq!(
+        browser.window().minimize().err(),
+        Some(CapabilityError::Unavailable),
+        "availability is decided before any script"
+    );
+}
+
+/// A share that does not complete must leave the caller holding its attachment
+/// handle — otherwise the service still owns the bytes and nothing can name
+/// them. The content is borrowed, so this test deliberately never clones it.
+#[test]
+fn a_failed_share_leaves_the_caller_its_handle() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+    // The caller's ONE content value; a consuming API would take it here.
+    let content = ShareContent::attachment(ShareAttachment::Fetched(artifact));
+
+    controller.force_error(Capability::ShareContent, CapabilityError::Denied);
+    assert_eq!(
+        settle(&controller, services.files().share_content(&content, &ct)),
+        Err(CapabilityError::Denied)
+    );
+    // Still usable: the same value retries, and the artifact was put back.
+    assert_eq!(controller.retained_handles().share_artifacts, 1);
+    assert_eq!(
+        settle(&controller, services.files().share_content(&content, &ct)),
+        Ok(()),
+        "the caller could retry with the handle it still holds"
+    );
+    assert_eq!(controller.retained_handles().share_artifacts, 0);
+
+    // A blob is not consumed by sharing at all, so the caller keeps it and can
+    // still reap it afterwards.
+    controller.arm_pick("blob.bin", None, b"bytes".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    let blob_content = ShareContent::attachment(ShareAttachment::Blob(blob.clone()));
+    assert_eq!(
+        settle(
+            &controller,
+            services.files().share_content(&blob_content, &ct)
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        block_on(services.files().release_staged(blob)),
+        Ok(()),
+        "a shared blob is still the caller's to reap"
+    );
+    assert_eq!(controller.retained_handles(), Default::default());
 }

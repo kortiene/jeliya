@@ -124,9 +124,14 @@ pub trait Share {
     /// the platform accepted the share; a dismissed sheet is
     /// [`CapabilityError::Cancelled`], a refused target is
     /// [`CapabilityError::Denied`].
+    ///
+    /// Takes the content by **reference**, for the same reason
+    /// [`crate::Files::share_content`] does: a sheet that is denied, dismissed,
+    /// or dropped must leave the caller holding its attachment handle, or the
+    /// bytes the service still owns become unreachable.
     fn share(
         &self,
-        content: ShareContent,
+        content: &ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>>;
 }

@@ -868,16 +868,19 @@ impl Files for FakePlatform {
     fn discard_source(&self, src: PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = src.token();
+        // Bound at CALL time, like every other scripted outcome: two cleanup
+        // futures created in call order must keep their outcomes however the
+        // executor polls them. A failed cleanup leaves the entry recoverable,
+        // so the caller can retry.
+        let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
+
             // The private entry IS the retained file object; dropping it is the
             // whole point. Fails closed for a forged, already-staged, or
             // already-discarded source, exactly as `release_staged` does.
-            // A cleanup that fails must leave the entry recoverable: the
-            // caller has to be able to retry, so the outcome is bound BEFORE
-            // the removal and the registry is untouched on failure.
-            if let Some(error) = inner.take_forced(Capability::Release) {
-                return Err(error);
-            }
             if inner
                 .sources
                 .lock()
@@ -898,13 +901,16 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = artifact.token();
+        // Bound at CALL time, like every other scripted outcome: two cleanup
+        // futures created in call order must keep their outcomes however the
+        // executor polls them. A failed cleanup leaves the entry recoverable,
+        // so the caller can retry.
+        let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
-            // A cleanup that fails must leave the entry recoverable: the
-            // caller has to be able to retry, so the outcome is bound BEFORE
-            // the removal and the registry is untouched on failure.
-            if let Some(error) = inner.take_forced(Capability::Release) {
+            if let Some(error) = bound {
                 return Err(error);
             }
+
             if inner
                 .share_artifacts
                 .lock()
@@ -925,13 +931,16 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = target.token();
+        // Bound at CALL time, like every other scripted outcome: two cleanup
+        // futures created in call order must keep their outcomes however the
+        // executor polls them. A failed cleanup leaves the entry recoverable,
+        // so the caller can retry.
+        let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
-            // A cleanup that fails must leave the entry recoverable: the
-            // caller has to be able to retry, so the outcome is bound BEFORE
-            // the removal and the registry is untouched on failure.
-            if let Some(error) = inner.take_forced(Capability::Release) {
+            if let Some(error) = bound {
                 return Err(error);
             }
+
             if inner
                 .export_targets
                 .lock()
@@ -1074,13 +1083,16 @@ impl Files for FakePlatform {
     fn release_staged(&self, blob: ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = blob.token();
+        // Bound at CALL time, like every other scripted outcome: two cleanup
+        // futures created in call order must keep their outcomes however the
+        // executor polls them. A failed cleanup leaves the entry recoverable,
+        // so the caller can retry.
+        let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
-            // A cleanup that fails must leave the entry recoverable: the
-            // caller has to be able to retry, so the outcome is bound BEFORE
-            // the removal and the registry is untouched on failure.
-            if let Some(error) = inner.take_forced(Capability::Release) {
+            if let Some(error) = bound {
                 return Err(error);
             }
+
             // The release is the reap: a blob this service never staged, or one
             // already released, fails closed exactly as `read_staged` does.
             // An already-open reader holds its own `Arc` and keeps working —
@@ -1246,7 +1258,7 @@ impl Files for FakePlatform {
 
     fn share_content(
         &self,
-        content: ShareContent,
+        content: &ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         self.gated_share(Capability::ShareContent, content, ct)
@@ -1583,7 +1595,7 @@ impl FakePlatform {
     fn gated_share(
         &self,
         capability: Capability,
-        content: ShareContent,
+        content: &ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
@@ -1633,7 +1645,7 @@ impl FakePlatform {
         };
         let bound = match inner.take_forced(capability) {
             Some(error) => Err(error),
-            None => Ok(content),
+            None => Ok(content.clone()),
         };
         let turn = inner.open_dialog(capability, ct);
         Box::pin(async move {
@@ -1667,7 +1679,7 @@ impl FakePlatform {
 impl Share for FakePlatform {
     fn share(
         &self,
-        content: ShareContent,
+        content: &ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         self.gated_share(Capability::Share, content, ct)
@@ -1695,8 +1707,17 @@ impl Navigation for FakePlatform {
 
 impl FakePlatform {
     fn window_command(&self, command: WindowCommand) -> Result<(), CapabilityError> {
+        // Structural availability first: a browser has no window to act on, and
+        // that is a shape fact rather than a scripted one.
         if !self.inner.shape.window_availability().is_available() {
             return Err(CapabilityError::Unavailable);
+        }
+        // …then the scripted action outcome. A window manager can refuse a
+        // request that is perfectly available (a compositor denying a raise, a
+        // close vetoed by the OS), and §6 promises every capability method's
+        // action outcome is forceable — this one was not.
+        if let Some(error) = self.inner.take_forced(Capability::WindowAction) {
+            return Err(error);
         }
         self.inner.record(RecordedEffect::Window { command });
         Ok(())
