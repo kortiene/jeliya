@@ -2152,3 +2152,140 @@ fn staging_consumes_the_picked_source() {
         "and needs no discard"
     );
 }
+
+/// The source is consumed on **every** staging outcome, not just success: the
+/// handle was moved in, so no caller can reach `discard_source` for it
+/// afterwards, and a failed or cancelled stage would otherwise pin the file
+/// object for the service's lifetime.
+#[test]
+fn staging_consumes_the_source_on_every_outcome() {
+    for outcome in ["scripted", "cancelled"] {
+        let (services, controller) = fake::desktop();
+        let ct = CancelToken::new();
+        controller.arm_pick("doc.bin", None, b"payload".to_vec());
+        let src = settle(&controller, services.files().pick(&ct))
+            .expect("pick ok")
+            .expect("a source was picked");
+        let again = src.clone();
+
+        if outcome == "scripted" {
+            controller.force_error(Capability::Stage, CapabilityError::Failed(FailureKind::Io));
+            assert_eq!(
+                block_on(
+                    services
+                        .files()
+                        .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
+                )
+                .err(),
+                Some(CapabilityError::Failed(FailureKind::Io))
+            );
+        } else {
+            ct.cancel();
+            assert_eq!(
+                block_on(
+                    services
+                        .files()
+                        .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
+                )
+                .err(),
+                Some(CapabilityError::Cancelled)
+            );
+        }
+
+        // The grant is gone either way: nothing is left to discard, and the
+        // clone cannot be staged.
+        assert_eq!(
+            block_on(services.files().discard_source(again.clone())).err(),
+            Some(CapabilityError::Failed(FailureKind::Unreadable)),
+            "{outcome}: the source was already consumed"
+        );
+        let fresh = CancelToken::new();
+        assert_eq!(
+            block_on(services.files().stage_for_share(
+                again,
+                1024,
+                ProgressSink::discard(),
+                &fresh
+            ))
+            .err(),
+            Some(CapabilityError::Failed(FailureKind::Unreadable)),
+            "{outcome}: a consumed source cannot be staged"
+        );
+    }
+}
+
+/// A fetched artifact the user backs out of must be releasable: committing a
+/// share sink leaves real bytes in the service's staging area, and a successful
+/// share is otherwise the only thing that removes them.
+#[test]
+fn an_abandoned_fetched_artifact_can_be_released() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+
+    // Backing out after a dismissed share must not strand the bytes.
+    controller.force_error(Capability::ShareContent, CapabilityError::Cancelled);
+    assert_eq!(
+        settle(
+            &controller,
+            services.files().share_content(
+                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ct
+            )
+        ),
+        Err(CapabilityError::Cancelled)
+    );
+    assert_eq!(
+        block_on(services.files().release_artifact(artifact.clone())),
+        Ok(())
+    );
+    assert!(
+        controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ReleasedArtifact)),
+        "the release is recorded"
+    );
+    // Final, and no longer shareable.
+    assert_eq!(
+        block_on(services.files().release_artifact(artifact.clone())).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a release is final"
+    );
+    assert_eq!(
+        block_on(services.files().share_content(
+            ShareContent::attachment(ShareAttachment::Fetched(artifact)),
+            &ct
+        )),
+        Err(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+    assert!(controller.open_dialogs().is_empty());
+}
+
+/// A shared artifact is already consumed, so it needs no release.
+#[test]
+fn a_shared_artifact_needs_no_release() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+    assert_eq!(
+        settle(
+            &controller,
+            services.files().share_content(
+                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ct
+            )
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        block_on(services.files().release_artifact(artifact)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+}

@@ -742,6 +742,13 @@ fn no_shared_ui_selection_reaches_the_implementation_surface() {
             // the door through `[dev-dependencies]` unseen.
             "--edges",
             "all",
+            // ALL targets, not just the host: `cargo tree` filters to the
+            // default host platform, so a `[target.'cfg(windows)'.dependencies]`
+            // (or wasm) entry enabling the feature would be invisible on the
+            // Linux CI host — and the browser and Android targets are exactly
+            // the ones this contract exists for.
+            "--target",
+            "all",
             // Same format note as the default-graph test above.
             "--prefix",
             "none",
@@ -826,6 +833,13 @@ fn no_workspace_member_resolves_the_implementation_feature() {
             // tests are built, so excluding dev edges would let a member open
             // the door through `[dev-dependencies]` unseen.
             "--edges",
+            "all",
+            // ALL targets, not just the host: `cargo tree` filters to the
+            // default host platform, so a `[target.'cfg(windows)'.dependencies]`
+            // (or wasm) entry enabling the feature would be invisible on the
+            // Linux CI host — and the browser and Android targets are exactly
+            // the ones this contract exists for.
+            "--target",
             "all",
             // Same format note as the default-graph test above.
             "--prefix",

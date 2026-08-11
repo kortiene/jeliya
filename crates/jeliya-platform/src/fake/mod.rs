@@ -749,6 +749,27 @@ impl Files for FakePlatform {
         })
     }
 
+    fn release_artifact(
+        &self,
+        artifact: FetchedArtifact,
+    ) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        let inner = self.inner.clone();
+        let token = artifact.token();
+        Box::pin(async move {
+            if inner
+                .share_artifacts
+                .lock()
+                .expect("share artifacts poisoned")
+                .remove(&token.get())
+                .is_none()
+            {
+                return Err(CapabilityError::Failed(FailureKind::Unreadable));
+            }
+            inner.record(RecordedEffect::ReleasedArtifact);
+            Ok(())
+        })
+    }
+
     fn discard_export_target(
         &self,
         target: ExportTarget,
@@ -778,7 +799,18 @@ impl Files for FakePlatform {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<ShareableBlob, CapabilityError>> {
         let inner = self.inner.clone();
-        // A pre-fired token never starts the operation and consumes nothing —
+        // Claim the source FIRST, synchronously, because `src` was taken by
+        // value and no caller can reach `discard_source` for it afterwards.
+        // Every exit below — a pre-fired token, a scripted failure, a
+        // cancellation, or a dropped future — then drops the body and the
+        // service's private file/blob/URI grant with it, which is what
+        // "consumed whatever the outcome" has to mean.
+        let claimed = inner
+            .sources
+            .lock()
+            .expect("sources poisoned")
+            .remove(&src.token().get());
+        // A pre-fired token never starts the operation and consumes no SCRIPT —
         // the dispatch-after-stop rule `pick` documents, applied uniformly.
         if ct.is_cancelled() {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
@@ -798,17 +830,10 @@ impl Files for FakePlatform {
             if let Some(error) = bound {
                 return Err(error);
             }
-            // `src` was taken by value, so this consumes the service's private
-            // entry too: the picked object cannot be staged twice, and an
-            // abandoned pick is released through `discard_source` instead of
-            // lingering for the service's lifetime.
-            let (bytes, streamed) = {
-                let mut sources = inner.sources.lock().expect("sources poisoned");
-                match sources.remove(&src.token().get()) {
-                    Some(body) => (body.bytes, body.streamed),
-                    // The source vanished before staging.
-                    None => return Err(CapabilityError::Failed(FailureKind::Unreadable)),
-                }
+            let (bytes, streamed) = match claimed {
+                Some(body) => (body.bytes, body.streamed),
+                // Forged, already staged, or already discarded.
+                None => return Err(CapabilityError::Failed(FailureKind::Unreadable)),
             };
             let len = bytes.len() as u64;
             // Known-size sources are rejected BEFORE any copy; a streamed source

@@ -659,6 +659,22 @@ pub trait Files {
     /// pick needs no discard.
     fn discard_source(&self, src: PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>>;
 
+    /// Release a [`FetchedArtifact`] that will not be shared — the abandoned
+    /// counterpart of a successful share consuming it.
+    ///
+    /// A committed [`ShareSink`] leaves real bytes in the service's staging
+    /// area (a browser blob, a native temporary file). Sharing consumes them,
+    /// but a user who backs out of the sheet, or stops retrying after a
+    /// cancelled or failed share, otherwise leaves them there for the service's
+    /// lifetime. As with the other handles, `Clone` rules out a `Drop` guard —
+    /// no copy knows it is the last — so the release is explicit and final;
+    /// an artifact already shared or released fails
+    /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable).
+    fn release_artifact(
+        &self,
+        artifact: FetchedArtifact,
+    ) -> BoxFuture<'_, Result<(), CapabilityError>>;
+
     /// Release an [`ExportTarget`] the caller will not write to — the same rule
     /// for the destination side, where an Android SAF create-document grant is
     /// the resource being held. [`Files::export_sink`] consumes the target, so
@@ -686,10 +702,11 @@ pub trait Files {
     /// until [`Files::release_staged`] is called, because only the UI knows
     /// whether the daemon's `file.share` settled.
     ///
-    /// The **source** is consumed either way: it is taken by value, and the
-    /// service drops its private entry whatever the outcome, so an abandoned
-    /// pick is released with [`Files::discard_source`] rather than by retrying
-    /// this.
+    /// The **source** is consumed either way: it is taken by value and the
+    /// service drops its private entry on *every* outcome — success, a typed
+    /// failure, a cancellation, or the future being dropped — because no
+    /// caller can reach [`Files::discard_source`] for a handle it has already
+    /// moved in here. An abandoned pick is the only one that needs discarding.
     fn stage_for_share(
         &self,
         src: PickedSource,

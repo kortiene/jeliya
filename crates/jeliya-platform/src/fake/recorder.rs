@@ -131,6 +131,9 @@ pub enum RecordedEffect {
     DiscardedSource,
     /// An abandoned export target was released, dropping its write grant.
     DiscardedExportTarget,
+    /// A fetched artifact was released without being shared — the abandoned
+    /// counterpart of a successful share consuming it.
+    ReleasedArtifact,
     /// A staged blob's bytes were released after the daemon's `file.share`
     /// settled — the outbound "delete after share" reap. Carries nothing: the
     /// staging location never leaves the service (§K1).
