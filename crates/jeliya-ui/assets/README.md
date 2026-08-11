@@ -21,5 +21,12 @@ Static assets the shell actually references (favicon, `og.png`,
 `site.webmanifest`, …) are pulled into the deterministic hashed output only when
 the shell uses them; unreferenced assets are not embedded.
 
-This directory holds `jeliya-ui`-specific static assets (none yet). The design
-tokens stay sourced from the repo-root `assets/design-tokens.json`.
+One generated file lives here and is **not** committed (gitignored):
+`build.rs` refreshes `assets/styles.css` from the single source on every build
+so the `dx serve --features web` dev loop (whose `[web.resource]` declares
+`/styles.css`) serves a styled shell — `dx` never runs `build-web.sh`, so
+without the copy the dev server would 404 the stylesheet. Being regenerated
+from `ui/src/styles.css` each build, it cannot drift.
+
+This directory otherwise holds `jeliya-ui`-specific static assets (none yet).
+The design tokens stay sourced from the repo-root `assets/design-tokens.json`.

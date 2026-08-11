@@ -46,8 +46,15 @@ if ! diff -r "$a" "$b" >/dev/null; then
   exit 1
 fi
 
-digest_a="$(cd "$a" && LC_ALL=C find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | awk '{print $1}')"
-digest_b="$(cd "$b" && LC_ALL=C find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | awk '{print $1}')"
+# Stock macOS ships `shasum`, not GNU `sha256sum` — support both so the
+# documented reproducibility verification runs on every supported host.
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA256=(sha256sum)
+else
+  SHA256=(shasum -a 256)
+fi
+digest_a="$(cd "$a" && LC_ALL=C find . -type f | LC_ALL=C sort | xargs "${SHA256[@]}" | "${SHA256[@]}" | awk '{print $1}')"
+digest_b="$(cd "$b" && LC_ALL=C find . -type f | LC_ALL=C sort | xargs "${SHA256[@]}" | "${SHA256[@]}" | awk '{print $1}')"
 if [ "$digest_a" != "$digest_b" ]; then
   echo "FAIL: aggregate artifact digests differ: $digest_a != $digest_b" >&2
   exit 1

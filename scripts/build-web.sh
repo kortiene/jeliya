@@ -35,8 +35,10 @@ export CARGO_INCREMENTAL=0
 # the standard pins, and the determinism check runs both of its samples under
 # the same inherited environment, so it cannot catch an environment-specific
 # artifact. CARGO_ENCODED_RUSTFLAGS outranks RUSTFLAGS in cargo's precedence
-# and is cleared for the same reason.
-unset CARGO_ENCODED_RUSTFLAGS
+# and is cleared for the same reason — as are RUSTC and its wrappers, which
+# would make cargo invoke a compiler other than the one the pin below
+# validates (rustc on PATH), letting a noncanonical compiler pass every gate.
+unset CARGO_ENCODED_RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 export RUSTFLAGS="--remap-path-prefix=$repo=. --remap-path-prefix=$HOME=~"
 
 # The wasm-bindgen CLI version MUST match the locked library version exactly.

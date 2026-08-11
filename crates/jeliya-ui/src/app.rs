@@ -149,18 +149,26 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                 if let Some(notice) = snapshot.notice.as_ref() {
                     div { class: "error-note", id: "notice", "{notice}" }
                 }
-                // On compact viewports `pane-rooms` shows ONLY the sidebar
-                // (`.center` is hidden), so an empty room list must render an
-                // empty state here or a phone lands on a blank main area.
-                // Mirrors the React shell's `rooms-empty muted` element.
-                if snapshot.rooms.is_empty() {
-                    div { class: "rooms-empty muted", id: "rooms-empty", "No rooms yet" }
-                }
-                for room in snapshot.rooms.iter() {
-                    RoomListItem {
-                        key: "{room.room_id}",
-                        room: room.clone(),
-                        selected: false,
+                // `.rooms-list` is the scroll container the stylesheet
+                // styles (flex: 1, overflow-y: auto, min-height: 0). Rows as
+                // direct children of `.sidebar` would compress or clip once
+                // the list outgrows the viewport — desktop `.sidebar` does
+                // not scroll. Mirrors the React shell's nested container.
+                div { class: "rooms-list", id: "rooms-list",
+                    // On compact viewports `pane-rooms` shows ONLY the
+                    // sidebar (`.center` is hidden), so an empty room list
+                    // must render an empty state here or a phone lands on a
+                    // blank main area. Mirrors the React shell's
+                    // `rooms-empty muted` element.
+                    if snapshot.rooms.is_empty() {
+                        div { class: "rooms-empty muted", id: "rooms-empty", "No rooms yet" }
+                    }
+                    for room in snapshot.rooms.iter() {
+                        RoomListItem {
+                            key: "{room.room_id}",
+                            room: room.clone(),
+                            selected: false,
+                        }
                     }
                 }
             }
