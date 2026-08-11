@@ -99,9 +99,9 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
     };
     if let Some(target) = boot_target {
         return rsx! {
-            BootScreen { target: target.to_string() }
-            if let Some(notice) = snapshot.notice.as_ref() {
-                div { class: "error-note", id: "notice", "{notice}" }
+            BootScreen {
+                target: target.to_string(),
+                notice: snapshot.notice.clone(),
             }
         };
     }

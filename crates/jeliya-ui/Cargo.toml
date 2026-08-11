@@ -33,8 +33,10 @@ ui = ["dep:dioxus", "dioxus/minimal", "dep:futures", "jeliya-client/mock"]
 web = ["ui", "dioxus/web"]
 
 # The system-WebView shell target (M4: #186-#189). This slice defines the
-# layering seam — a `native` composition exists and is selected at the root —
-# but does NOT build or ship it. The concrete system-WebView renderer
+# layering seam — `compose.rs` carries the mock-composed `NativeComposition` /
+# `NativeRoot` stub (compile-gated on this feature, checked in CI) that M4
+# plugs its renderer, live adapter, and real `PlatformServices` into — but
+# does NOT build or ship the shell. The concrete system-WebView renderer
 # (`dioxus-desktop`, which declares `tungstenite` with `native-tls` and so
 # links `openssl-sys` non-optionally for every non-Android target) is wired in
 # by the M4 packaging slices, deliberately kept out of the default and

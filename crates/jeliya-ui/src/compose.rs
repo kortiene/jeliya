@@ -91,6 +91,72 @@ pub fn WebRoot() -> Element {
     }
 }
 
+/// The native (system-WebView, M4: #186–#189) composition seam. This M3 slice
+/// defines the **boundary** only: the same deterministic mock behind the
+/// [`ClientHandle`], and the deterministic in-memory services standing in
+/// until #174's target implementations land. M4 replaces the internals — the
+/// live adapter behind the same handle, the desktop/Android
+/// [`PlatformServices`], its renderer and `bin` — **at this seam**, without
+/// inventing the target-selection boundary.
+#[cfg(feature = "native")]
+#[derive(Clone)]
+pub struct NativeComposition {
+    /// The client seam handed to [`crate::AppRoot`].
+    pub handle: ClientHandle,
+    /// The platform-authority seam handed to [`crate::AppRoot`], injected
+    /// separately from `handle`.
+    pub services: PlatformServices,
+    /// The mock controller driving the reference backend until the live
+    /// adapter (#171–#173) replaces it behind the same handle.
+    pub controller: Rc<MockController>,
+}
+
+/// Build the native seam stub (see [`NativeComposition`]). The services are
+/// the same deterministic in-memory implementation the browser composition
+/// uses today — a stand-in this function exists to let M4 swap, not a claim
+/// that native platform authority is implemented here.
+#[cfg(feature = "native")]
+pub fn native_composition() -> NativeComposition {
+    let (handle, controller) = MockScript::new()
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&RoomListOut { rooms: Vec::new() }),
+        )
+        .build();
+    NativeComposition {
+        handle,
+        services: PlatformServices::web_default(),
+        controller: Rc::new(controller),
+    }
+}
+
+/// The native root: identical deterministic drive to [`WebRoot`]; the M4
+/// system-WebView shell mounts this through its own renderer and replaces the
+/// composition internals at [`native_composition`].
+#[cfg(feature = "native")]
+#[component]
+pub fn NativeRoot() -> Element {
+    let composition = use_hook(native_composition);
+    let handle = composition.handle.clone();
+    let services = composition.services.clone();
+
+    use_future(move || {
+        let composition = composition.clone();
+        async move {
+            composition.handle.start();
+            composition.controller.set_state(State::Ready);
+            for _ in 0..8 {
+                while composition.controller.deliver_next() {}
+                yield_once().await;
+            }
+        }
+    });
+
+    rsx! {
+        AppRoot { handle, services }
+    }
+}
+
 /// Yield control back to the executor exactly once, then resume. Lets the
 /// cooperatively-scheduled `AppRoot` future dispatch its reads between the
 /// driver's settle passes, with no wall clock and no busy loop.
