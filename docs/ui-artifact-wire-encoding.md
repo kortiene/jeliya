@@ -281,11 +281,28 @@ its sealed variants, and the manifest carries shared provenance:
   serialized manifest and carried alongside it) or stored in a field excluded
   from a canonical serialization; the exact scheme is #183's to fix. A digest
   stored inside the very bytes it covers is a fixed point no producer can
-  compute.
+  compute. **Both sources verify this digest at load, before accepting the
+  manifest**: recompute over the loaded bytes and compare — a missing or
+  mismatched detached digest fails closed exactly as an unparsable manifest
+  does, never a fall-through to accepting the manifest's metadata (for `Dir`
+  that is the partial-copy/skew detection this record promises; for
+  `Embedded` it is packaging-defect evidence), and never a collapse into the
+  manifest-less dev state.
 - **Per-asset entry:**
   - `path` (request-relative, matching `safe_rel` output; **unique** across
     the manifest — a duplicate asset `path` fails manifest validation, since
-    the serving lookup could not deterministically select between them),
+    the serving lookup could not deterministically select between them).
+    Every sealed path — canonical, variant, and metadata — uses a **portable
+    slash-only grammar**: forward-slash separators, no backslash anywhere, no
+    platform prefix (drive letter, UNC), no absolute, empty, `.` or `..`
+    segment; violations fail validation. `safe_rel`'s slash-splitting alone
+    is not sufficient — on Windows a native join would honor `..\` or `C:\`
+    and escape the artifact directory from a schema-valid manifest. And the
+    uniqueness/ancestor rules are validated on a **portable collision key**
+    (the Unicode case-folded path), not exact equality: `assets/App.js` and
+    `assets/app.js` alias on case-insensitive filesystems (Windows, default
+    macOS), where a `Dir` source overwrites one representation while an
+    embedded map holds both — a parity break, so sealing both is rejected,
   - `content_type` (the canonical decoded type),
   - `identity`: the content-address, `{ digest: sha256(canonical bytes), bytes }`,
   - `encodings`: a list of `{ coding, path, digest: sha256(variant bytes), bytes,
@@ -413,7 +430,11 @@ when the daemon serves its value faithfully. The rows:
   checks stored artifacts, this row checks what the serving path actually
   returned) and its decoded body's SHA-256 equals `identity.digest`; the
   **identity** body — which has no encoding entry to compare against —
-  equals `identity.digest` directly. The four named types above
+  equals `identity.digest` directly. Each iteration also asserts the body
+  length **and** the response `Content-Length` equal that representation's
+  sealed `bytes` (the encoding entry's for a variant, `identity.bytes` for
+  identity) — sealed lengths are load-bearing (#198 size evidence), and the
+  named-asset rows above check them for only four assets. The four named types above
   stay the behavioral subset (headers, weights, fail-closed); this row proves the
   universal claim that every sealed variant decodes to its canonical identity —
   which neither the served-bytes-vs-variant-digest check (self-consistent even
@@ -428,7 +449,10 @@ when the daemon serves its value faithfully. The rows:
   never a `200` whose bytes do not match `identity.digest`.
 - **Fail-closed, manifest:** a `--ui-dir` whose manifest is present but
   truncated or unparsable fails closed (**5xx**/refusal), never serves
-  canonical bytes with no `Content-Encoding` as if no manifest existed.
+  canonical bytes with no `Content-Encoding` as if no manifest existed. A
+  valid-JSON manifest whose **detached digest is missing or mismatched**
+  fails closed identically — load-time digest verification is required on
+  both sources, never a fall-through to trusting the manifest's metadata.
 - **Allow-list:** with an extra file (for example `debug.html`) placed in the
   `Dir` source but absent from the manifest, requesting it returns **404** —
   never a `200` with unverified bytes; the manifest-less bare directory

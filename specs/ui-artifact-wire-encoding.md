@@ -353,11 +353,22 @@ its sealed variants, and the manifest carries shared provenance:
   manifest digest — **detached** (computed over the complete serialized
   manifest, carried alongside) or stored in a field excluded from a canonical
   serialization; the exact scheme is #183's. A digest stored inside the bytes
-  it covers is an uncomputable fixed point.
+  it covers is an uncomputable fixed point. Both sources **verify this digest
+  at load, before accepting the manifest** — missing or mismatched fails
+  closed exactly as unparsable does (Dir: partial-copy/skew detection;
+  Embedded: packaging-defect evidence), never a fall-through to trusting the
+  metadata and never a collapse into the manifest-less dev state.
 - **Per-asset entry:**
   - `path` (request-relative, matching `safe_rel` output; **unique** across
     the manifest — a duplicate asset `path` fails validation, the serving
-    lookup could not deterministically select between them),
+    lookup could not deterministically select between them). Every sealed
+    path uses a **portable slash-only grammar** (no backslash, no platform
+    prefix, no absolute/empty/`.`/`..` segment — a native join would honor
+    `..\`/`C:\` on Windows and escape the artifact directory), and the
+    uniqueness/ancestor rules are validated on a **portable collision key**
+    (Unicode case-folded path), not exact equality — `assets/App.js` vs
+    `assets/app.js` alias on case-insensitive filesystems and break
+    Embedded/Dir parity,
   - `content_type` (the canonical decoded type),
   - `identity`: `{ digest: sha256(canonical bytes), bytes }` — the
     content-address,
@@ -473,7 +484,11 @@ when the daemon serves its value faithfully. The rows:
   same decoded content must fail — this row checks what the serving path
   returned, not the stored artifact) and its decoded body == `identity.digest`;
   the **identity** body — no encoding entry exists for it — ==
-  `identity.digest` directly.
+  `identity.digest` directly. Each iteration also asserts body length **and**
+  response `Content-Length` == that representation's sealed `bytes`
+  (encoding entry's for a variant, `identity.bytes` for identity) — the
+  named-asset rows check lengths for only four assets, and sealed lengths
+  feed the #198 size evidence.
 - **Fail-closed:** with a variant deliberately corrupted or removed from the
   source, a request offering that sealed encoding returns a **5xx**, never a
   `200` with uncompressed bytes and never a different encoding.
@@ -481,7 +496,9 @@ when the daemon serves its value faithfully. The rows:
   **5xx** on an identity-selecting request (and for a no-variant asset such as
   a `png`), never `200` with bytes not matching `identity.digest`.
 - **Fail-closed, manifest:** a present-but-truncated/unparsable manifest →
-  fail closed, never a collapse into the "no manifest" dev state.
+  fail closed, never a collapse into the "no manifest" dev state; likewise a
+  valid-JSON manifest whose detached digest is missing or mismatched
+  (load-time digest verification, both sources).
 - **Allow-list:** an extra file (for example `debug.html`) in the `Dir` source
   but absent from the manifest → **404**, never a `200` with unverified bytes;
   the manifest-less bare directory serving that same file stays the dev-only
