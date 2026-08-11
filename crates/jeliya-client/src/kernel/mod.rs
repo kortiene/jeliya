@@ -50,7 +50,6 @@ use crate::event::{ClientEvent, EventBus, EventSubscription, State};
 use crate::kernel::core::{Action, Core, Input};
 use crate::kernel::inflight::CallId;
 use crate::kernel::timing::{Tick, TimerId};
-use crate::kernel::transport::WireFrame;
 
 /// The kernel's hard bounds. Every field is explicit; none defaults silently to
 /// "unbounded". The adapter/host chooses them, with the documented
@@ -151,10 +150,13 @@ struct Shared {
     /// advances the clock.
     timers: HashMap<TimerId, Tick>,
     /// Frames the core asked the transport to send, retained so the controller
-    /// can learn the wire ids it must reply to. **Bounded** (K12): an
-    /// undrained log evicts its oldest frame and counts the loss, so a test
-    /// that never drains cannot grow the driver without limit.
-    outbound: std::collections::VecDeque<WireFrame>,
+    /// can learn the wire ids it must reply to. **Bounded** (K12) twice over:
+    /// an undrained log evicts its oldest entry and counts the loss, and each
+    /// entry is the redaction-safe METADATA view only — retaining the full
+    /// `WireFrame` would keep every near-limit payload alive (up to the cap ×
+    /// the 16 MiB byte budget) after admission already released it, since
+    /// `take_outbound` never exposes more than the id and operation anyway.
+    outbound: std::collections::VecDeque<SentFrame>,
     /// Frames evicted from the bounded outbound log without being observed.
     outbound_overflow: u64,
     /// Whether a dial/backoff is in progress.
@@ -244,7 +246,13 @@ impl Shared {
                         self.outbound.pop_front();
                         self.outbound_overflow = self.outbound_overflow.saturating_add(1);
                     }
-                    self.outbound.push_back(frame);
+                    // Redact at APPEND time: the log keeps only what
+                    // take_outbound exposes, so the payload and op_id drop
+                    // with the frame here instead of living in the log.
+                    self.outbound.push_back(SentFrame {
+                        id: frame.id.get(),
+                        op: frame.op,
+                    });
                 }
             }
             Action::ArmTimer { id, at } => {
@@ -513,8 +521,21 @@ impl Drop for DispatchFuture {
 // Deterministic in-memory driver + controller (the Verification substrate).
 // ---------------------------------------------------------------------------
 
+/// A redaction-safe view of one sent frame: the controller learns the wire
+/// id it must reply to and the operation name, never the payload or `op_id`.
+/// Defined outside the gated driver module because the outbound log stores
+/// exactly this view (redacted at append time); publicly visible only
+/// through the feature-gated re-export in `lib.rs` — this module is private.
+#[derive(Clone, Copy, Debug)]
+pub struct SentFrame {
+    /// The wire correlation id.
+    pub id: u64,
+    /// The operation's wire name.
+    pub op: &'static str,
+}
+
 #[cfg(feature = "test-transport")]
-pub use in_memory::{KernelController, SentFrame};
+pub use in_memory::KernelController;
 
 #[cfg(feature = "test-transport")]
 mod in_memory {
@@ -554,16 +575,6 @@ mod in_memory {
             }));
             (handle, KernelController { runtime })
         }
-    }
-
-    /// A redaction-safe view of one sent frame: the controller learns the wire
-    /// id it must reply to and the operation name, never the payload or `op_id`.
-    #[derive(Clone, Copy, Debug)]
-    pub struct SentFrame {
-        /// The wire correlation id.
-        pub id: u64,
-        /// The operation's wire name.
-        pub op: &'static str,
     }
 
     /// The test-driven controller half of the kernel — the deterministic
@@ -625,14 +636,7 @@ mod in_memory {
         /// Take the frames the kernel has asked the transport to send since the
         /// last drain, as redaction-safe [`SentFrame`] views.
         pub fn take_outbound(&self) -> Vec<SentFrame> {
-            self.lock()
-                .outbound
-                .drain(..)
-                .map(|frame| SentFrame {
-                    id: frame.id.get(),
-                    op: frame.op,
-                })
-                .collect()
+            self.lock().outbound.drain(..).collect()
         }
 
         /// Complete a dial: a live connection is established and passes the
