@@ -234,7 +234,7 @@ Every internal collection has a static or configured bound:
 | tombstones (cancelled-but-id-reserved) | ≤ `in_flight` (a FIFO budget: creating one past it evicts the oldest; reclaimed on reply/deadline) |
 | replay-hold set | ≤ `in_flight` (only replayable sent calls) |
 | armed timers | ≤ `queue_depth` + 2·`in_flight` + 1 — one deadline/reclaim timer per ledger entry (queued calls arm theirs at dispatch), plus the single backoff timer |
-| per-subscription event buffer | `DEFAULT_FANOUT_CAPACITY` + a small additive control/loss allowance: one bypass `StateChanged`, the at-most-once terminal transitions (`Stopping`/`Stopped`/`Failed`), and their adjacent `Lagged` markers — the flapping test pins ≤ capacity + 3 |
+| per-subscription event buffer | `DEFAULT_FANOUT_CAPACITY` + a control/loss allowance of at most 5: one bypass non-terminal `StateChanged`, up to two `Lagged` markers, and the at-most-once terminals — failure-then-stop reaches exactly capacity + 5 (`Lagged`, bypass `StateChanged`, `Failed`, `Stopping`, `Stopped`), and the alternative stop-while-Ready variant (second flushed `Lagged`, no `Failed`) also caps at + 5; the event tests pin both the ceiling and the reaching sequence |
 | reconnect attempts | `max_attempts` |
 
 There is no map keyed by an unbounded external input (no per-room, per-push, or per-generation accumulation). A fault test drives saturation + repeated flap + cancel churn and asserts no collection exceeds its bound across thousands of `step`s.

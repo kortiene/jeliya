@@ -495,9 +495,9 @@ mod tests {
         });
         let state = sub.state.lock().expect("subscriber poisoned");
         assert!(
-            state.buffer.len() <= DEFAULT_FANOUT_CAPACITY + 3,
-            "the mailbox is bounded under flapping (capacity plus the at-most-\
-             once terminal transitions), got {}",
+            state.buffer.len() <= DEFAULT_FANOUT_CAPACITY + 5,
+            "the mailbox is bounded under flapping (capacity plus the \
+             control/loss allowance), got {}",
             state.buffer.len()
         );
         let last_transition = state.buffer.iter().rev().find_map(|event| match event {
@@ -509,6 +509,80 @@ mod tests {
             Some(State::Stopped),
             "the terminal transition appends distinctly and is observable"
         );
+    }
+
+    /// The WORST-CASE mailbox ceiling, reached by failure-then-stop: a full
+    /// stalled mailbox drops a push, interruption appends the flushed
+    /// `Lagged` and a non-mergeable `StateChanged` (+2, the tail was an
+    /// ordinary event), retry exhaustion appends `Failed` (+3), and a later
+    /// `stop()` appends `Stopping` and `Stopped` distinctly (+4, +5). The
+    /// allowance cannot exceed 5 for contract-respecting sequences: at most
+    /// one bypass non-terminal `StateChanged` (afterwards the tail stays
+    /// coalescible until a terminal, and no non-terminal follows `Failed`),
+    /// at most two `Lagged` markers, and the at-most-once terminals — a
+    /// second flushed `Lagged` needs a Ready-with-pushes window before
+    /// `stop()`, which the `Failed` path forecloses, so the two +5 variants
+    /// exclude each other's extras.
+    #[test]
+    fn failure_then_stop_reaches_but_never_exceeds_the_mailbox_ceiling() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64) {
+            bus.broadcast(ClientEvent::ResyncRequired {
+                room_id: RoomId::new("r"),
+                from_pos: pos,
+            });
+        }
+        // One more push at capacity: dropped, pending as a Lagged count.
+        bus.broadcast(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: DEFAULT_FANOUT_CAPACITY as u64,
+        });
+        // Interruption: flushes the Lagged marker, then appends (the tail is
+        // an ordinary event, so nothing coalesces).
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        // Retry exhaustion, then stop: three distinct terminal appends.
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Interrupted,
+            to: State::Failed,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Failed,
+            to: State::Stopping,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Stopping,
+            to: State::Stopped,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert_eq!(
+            state.buffer.len(),
+            DEFAULT_FANOUT_CAPACITY + 5,
+            "the failure-then-stop sequence reaches exactly the ceiling"
+        );
+        let tail: Vec<_> = state.buffer.iter().skip(DEFAULT_FANOUT_CAPACITY).collect();
+        assert!(
+            matches!(tail[0], ClientEvent::Lagged { dropped: 1, .. }),
+            "the dropped push surfaces before the transition: {tail:?}"
+        );
+        for (index, to) in [
+            State::Interrupted,
+            State::Failed,
+            State::Stopping,
+            State::Stopped,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                matches!(tail[index + 1], ClientEvent::StateChanged { to: t, .. } if *t == to),
+                "distinct transition {to:?} at tail position {}: {tail:?}",
+                index + 1
+            );
+        }
     }
 
     /// Coalescing must not reorder: a transition with ordinary events queued
