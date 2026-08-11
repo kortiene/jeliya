@@ -302,27 +302,38 @@ fn code_only(text: &str) -> String {
 }
 
 /// The index just past a character literal starting at `start`, or `None` when
-/// this quote opens no literal (a lifetime, or an unterminated run).
+/// this quote opens no literal — a lifetime, a loop label, or an unterminated
+/// run.
+///
+/// The distinction matters and cannot be made by scanning for the next
+/// apostrophe: `'retry: loop { … break 'retry; }` puts two apostrophes on one
+/// line with real code between them, so a scan-to-next-quote would strip the
+/// body — including an `implementation` import — and the boundary check would
+/// pass on code that reaches the factories. A character literal is therefore
+/// recognised only by its **shape**: an escape, or exactly one character that
+/// closes immediately. Anything else is a label or a lifetime and is left in
+/// place.
 fn char_literal_end(chars: &[char], start: usize) -> Option<usize> {
-    let mut i = start + 1;
-    if chars.get(i) == Some(&'\\') {
-        // Skip the escaped character itself, whatever it is, so `'\''` does not
-        // terminate on its own escaped quote.
-        i += 2;
-    } else if chars.get(i).is_some_and(|c| *c != '\'' && *c != '\n') {
-        i += 1;
-    } else {
-        return None;
-    }
-    // `'\x41'` / `'\u{1f600}'` run on to their closing quote.
-    while let Some(c) = chars.get(i) {
-        match c {
-            '\'' => return Some(i + 1),
-            '\n' => return None,
-            _ => i += 1,
+    match chars.get(start + 1)? {
+        // An escape runs to its own closing quote: `'\''`, `'\n'`, `'\x41'`,
+        // `'\u{1f600}'`. Skipping the escaped character first is what keeps
+        // `'\''` from terminating on the quote it escapes.
+        '\\' => {
+            let mut i = start + 3;
+            while let Some(c) = chars.get(i) {
+                match c {
+                    '\'' => return Some(i + 1),
+                    '\n' => return None,
+                    _ => i += 1,
+                }
+            }
+            None
         }
+        // One character, closing immediately — `'a'`, `'"'`, `'é'`.
+        _ if chars.get(start + 2) == Some(&'\'') => Some(start + 3),
+        // `'a`, `'static`, `'retry:` — a lifetime or a label.
+        _ => None,
     }
-    None
 }
 
 /// Every workspace member directory beside this crate (any sibling holding a
@@ -584,6 +595,31 @@ fn main() {
         code_only(lifetime).contains("implementation"),
         "a lifetime must not be mistaken for a char literal: {:?}",
         code_only(lifetime)
+    );
+
+    // A loop LABEL is the same hazard with both apostrophes on one line and
+    // real code between them: scanning to the next quote would strip the body.
+    for labelled in [
+        "'retry: loop { jeliya_platform::implementation::blob_token_from_raw(7); break 'retry; }",
+        "'a: for _ in 0..1 { use jeliya_platform::implementation::shareable_blob; break 'a; }",
+        "'outer: loop { if c == '\"' { break 'outer; } \
+         jeliya_platform::implementation::shareable_blob(t, 1); }",
+    ] {
+        assert!(
+            code_only(labelled).contains("implementation"),
+            "a loop label must not blank out the code it encloses: {labelled:?}\n\
+             stripped to: {:?}",
+            code_only(labelled)
+        );
+    }
+
+    // …while a genuine char literal beside a label is still consumed.
+    let label_then_literal = "'outer: loop { let q = '\"'; }\n\
+                              assert!(true, \"never forks the implementation\");\n";
+    assert!(
+        !code_only(label_then_literal).contains("implementation"),
+        "a char literal after a label must still strip the string that follows: {:?}",
+        code_only(label_then_literal)
     );
 }
 

@@ -39,6 +39,14 @@ pub enum Capability {
     OpenSink,
     /// [`crate::Files::share_sink`].
     ShareSink,
+    /// [`crate::FileSink::write`] — a destination that fails **mid-transfer**
+    /// (a full disk, a revoked SAF document), which is a materially different
+    /// path from a sink that never opens: the caller must stop advancing
+    /// CREDIT, abort the stream, and drop the uncommitted artifact.
+    FileSinkWrite,
+    /// [`crate::files::ShareSink::write`] — the same mid-transfer failure on
+    /// the inbound staging path.
+    ShareSinkWrite,
     /// [`crate::Files::share_content`].
     ShareContent,
     /// [`crate::Share::share`].
@@ -104,6 +112,10 @@ pub enum RecordedEffect {
         /// The committed bytes, in write order.
         bytes: Vec<u8>,
     },
+    /// A staged blob's bytes were released after the daemon's `file.share`
+    /// settled — the outbound "delete after share" reap. Carries nothing: the
+    /// staging location never leaves the service (§K1).
+    ReleasedStaged,
     /// Content was shared through the OS share sheet.
     Shared {
         /// The shared content.

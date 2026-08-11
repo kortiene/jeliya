@@ -654,6 +654,10 @@ pub trait Files {
     /// the partial staged file is deleted and the outcome is `Cancelled` /
     /// `Failed`, **never** `Ok` — a failed or cancelled share must not leak
     /// bytes into the data dir.
+    ///
+    /// A blob that *was* staged is the caller's to release: the bytes live
+    /// until [`Files::release_staged`] is called, because only the UI knows
+    /// whether the daemon's `file.share` settled.
     fn stage_for_share(
         &self,
         src: PickedSource,
@@ -673,6 +677,26 @@ pub trait Files {
         &self,
         blob: &ShareableBlob,
     ) -> BoxFuture<'_, Result<Box<dyn StagedBlobReader>, CapabilityError>>;
+
+    /// Release a staged blob's bytes once the daemon's `file.share` has
+    /// **settled** — the outbound half of "delete after share" (§D5).
+    ///
+    /// The service cannot learn this on its own and must not guess: reaching
+    /// EOF in a [`StagedBlobReader`] means the bytes were *read*, not that the
+    /// daemon accepted the operation (a retry re-reads them), and dropping a
+    /// [`ShareableBlob`] is invisible to the service because the handle is an
+    /// opaque token, not a guard. The UI drives `file.share`, so the UI is the
+    /// only party that knows the outcome; it calls this on **success or
+    /// failure** once no further attempt will be made, and the service deletes
+    /// its staging copy.
+    ///
+    /// Consuming the handle by value makes the release final: a blob this
+    /// service did not stage, or one already released, fails
+    /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable) — the same
+    /// minted-token gate [`Files::read_staged`] applies. A reader already open
+    /// over the bytes keeps working, mirroring an open file descriptor
+    /// outliving an unlink.
+    fn release_staged(&self, blob: ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>>;
 
     /// Open the platform save dialog for a fetched file, suggesting
     /// `suggested`. `Ok(None)` / `Cancelled` follow the same distinction as

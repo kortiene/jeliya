@@ -33,7 +33,11 @@
   pumped `file.read` stream and `commit` mints a `FetchedArtifact` the OS
   share sheet accepts, so `ShareContent` carries only handles to bytes the
   producing service custodies — never a bare `(RoomId, FileId)` the platform
-  has no way to read — and a successful share consumes the artifact.
+  has no way to read — and a successful share consumes the artifact. The
+  outbound direction reaps explicitly: `release_staged` is how the UI tells the
+  service a staged blob may go once `file.share` has settled, because EOF means
+  the bytes were read rather than accepted and dropping an opaque handle is
+  invisible to the service — without it "delete after share" is unimplementable.
   `FileName` is validated, not merely promised: `FileName::parse` fails
   closed on separators, `.`/`..`, empty, and control characters, so a
   peer-supplied name cannot carry portable path syntax into a native sink —

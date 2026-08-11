@@ -1669,3 +1669,221 @@ fn two_overlapping_shares_of_one_artifact_cannot_both_succeed() {
         "exactly one share is recorded"
     );
 }
+
+// ---- D5: the outbound half of "delete after share" ----------------------
+
+/// Only the UI knows whether the daemon's `file.share` settled, so the service
+/// must be told when the staged bytes may go. Reaching reader EOF is not that
+/// signal — a retry re-reads the same bytes — and dropping the opaque handle is
+/// invisible to the service.
+#[test]
+fn releasing_a_staged_blob_reaps_it_and_is_final() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+
+    // Reading to EOF must NOT reap: the upload may still be retried.
+    let mut reader = block_on(services.files().read_staged(&blob)).expect("reader");
+    while block_on(reader.next_chunk(4))
+        .expect("bounded pull")
+        .is_some()
+    {}
+    drop(reader);
+    assert!(
+        block_on(services.files().read_staged(&blob)).is_ok(),
+        "EOF is not a release — the bytes survive for a retry"
+    );
+
+    // A reader already open keeps working across the release, as an open fd
+    // outlives an unlink.
+    let mut live = block_on(services.files().read_staged(&blob)).expect("reader");
+    assert_eq!(
+        block_on(services.files().release_staged(blob.clone())),
+        Ok(())
+    );
+    assert_eq!(
+        block_on(live.next_chunk(4)).expect("bounded pull"),
+        Some(b"0123".to_vec()),
+        "an open reader survives the release"
+    );
+
+    assert!(
+        controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ReleasedStaged)),
+        "the reap is recorded"
+    );
+    // Final: the bytes are gone and a second release fails closed.
+    assert_eq!(
+        block_on(services.files().read_staged(&blob)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+    assert_eq!(
+        block_on(services.files().release_staged(blob)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a release is final; a second one fails closed"
+    );
+}
+
+/// A blob another service staged is not this service's to reap — the same
+/// minted-token gate `read_staged` applies.
+#[test]
+fn releasing_another_services_blob_fails_closed() {
+    let (a, a_ctl) = fake::desktop();
+    let (b, _b_ctl) = fake::desktop();
+    let ct = CancelToken::new();
+    a_ctl.arm_pick("doc.bin", None, b"abcd".to_vec());
+    let src = settle(&a_ctl, a.files().pick(&ct)).unwrap().unwrap();
+    let blob = settle(
+        &a_ctl,
+        a.files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    assert_eq!(
+        block_on(b.files().release_staged(blob.clone())).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+    // …and A's own release still works afterwards.
+    assert_eq!(block_on(a.files().release_staged(blob)), Ok(()));
+}
+
+// ---- §6: an operation that never starts consumes no script --------------
+
+/// Validation precedes the script, not merely the sheet. A caller error must
+/// leave a queued outcome for the next share that actually starts, instead of
+/// eating it and masking the empty-content or anti-forgery failure.
+#[test]
+fn invalid_share_content_consumes_no_scripted_outcome() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.force_error(Capability::ShareContent, CapabilityError::Denied);
+
+    let empty = ShareContent {
+        text: None,
+        attachment: None,
+        anchor: None,
+    };
+    assert!(empty.is_empty());
+    assert_eq!(
+        block_on(services.files().share_content(empty, &ct)),
+        Err(CapabilityError::Failed(FailureKind::Io)),
+        "empty content is a caller error, not the scripted denial"
+    );
+    assert!(controller.open_dialogs().is_empty(), "no sheet opened");
+
+    // A forged attachment likewise reports its own failure.
+    let (other, other_ctl) = fake::desktop();
+    other_ctl.arm_pick("doc.bin", None, b"xy".to_vec());
+    let src = settle(&other_ctl, other.files().pick(&ct))
+        .unwrap()
+        .unwrap();
+    let foreign = settle(
+        &other_ctl,
+        other
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    assert_eq!(
+        block_on(services.files().share_content(
+            ShareContent::attachment(ShareAttachment::Blob(foreign)),
+            &ct
+        )),
+        Err(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a forged attachment reports the anti-forgery failure, not the script"
+    );
+    assert!(controller.open_dialogs().is_empty(), "no sheet opened");
+
+    // The script is still queued for the share that actually starts.
+    controller.arm_pick("own.bin", None, b"zz".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
+    let mine = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    assert_eq!(
+        settle(
+            &controller,
+            services
+                .files()
+                .share_content(ShareContent::attachment(ShareAttachment::Blob(mine)), &ct)
+        ),
+        Err(CapabilityError::Denied),
+        "the untouched script lands on the first share that really starts"
+    );
+}
+
+// ---- §6: a destination that fails mid-transfer --------------------------
+
+/// A sink that fails partway through is a materially different path from one
+/// that never opens: the caller must stop advancing CREDIT, abort, and drop the
+/// artifact. It has to be scriptable, and the failed chunk must not be kept.
+#[test]
+fn a_sink_can_fail_mid_transfer_and_keeps_nothing() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    block_on(sink.write(b"good".to_vec())).expect("first chunk accepted");
+    // The disk fills on the second chunk.
+    controller.force_error(
+        Capability::FileSinkWrite,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(sink.write(b"lost".to_vec())).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "the destination failed mid-transfer"
+    );
+    drop(sink);
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ExportedLocal { .. })),
+        "an aborted transfer publishes no artifact"
+    );
+
+    // The same path exists on the inbound staging sink.
+    let mut share =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    controller.force_error(
+        Capability::ShareSinkWrite,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(share.write(b"lost".to_vec())).err(),
+        Some(CapabilityError::Failed(FailureKind::Io))
+    );
+    drop(share);
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::StagedFetched { .. })),
+        "an aborted staging transfer mints no artifact"
+    );
+}

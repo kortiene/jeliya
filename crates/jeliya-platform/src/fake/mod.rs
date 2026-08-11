@@ -798,6 +798,28 @@ impl Files for FakePlatform {
         })
     }
 
+    fn release_staged(&self, blob: ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        let inner = self.inner.clone();
+        let token = blob.token();
+        Box::pin(async move {
+            // The release is the reap: a blob this service never staged, or one
+            // already released, fails closed exactly as `read_staged` does.
+            // An already-open reader holds its own `Arc` and keeps working —
+            // the fake's stand-in for an fd outliving an unlink.
+            let released = inner
+                .staged_blobs
+                .lock()
+                .expect("staged blobs poisoned")
+                .remove(&token.get())
+                .is_some();
+            if !released {
+                return Err(CapabilityError::Failed(FailureKind::Unreadable));
+            }
+            inner.record(RecordedEffect::ReleasedStaged);
+            Ok(())
+        })
+    }
+
     fn pick_export_target(
         &self,
         suggested: FileName,
@@ -962,7 +984,16 @@ struct FakeFileSink {
 
 impl FileSink for FakeFileSink {
     fn write(&mut self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        // Bound at call time, like every other scripted outcome. A destination
+        // that fails partway through is the path a client adapter must handle
+        // differently from one that never opens — stop advancing CREDIT, abort
+        // the stream, drop the artifact — so it has to be scriptable, and the
+        // chunk that failed is NOT accumulated.
+        let bound = self.inner.take_forced(Capability::FileSinkWrite);
         Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
             self.written.extend_from_slice(&chunk);
             Ok(())
         })
@@ -1003,7 +1034,12 @@ struct FakeShareSink {
 
 impl ShareSink for FakeShareSink {
     fn write(&mut self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        // Same mid-transfer failure path as [`FakeFileSink::write`].
+        let bound = self.inner.take_forced(Capability::ShareSinkWrite);
         Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
             self.written.extend_from_slice(&chunk);
             Ok(())
         })
@@ -1239,14 +1275,19 @@ impl FakePlatform {
         if ct.is_cancelled() {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
+        // Validation precedes the script, not just the sheet. An operation that
+        // never starts must consume nothing — the same rule a pre-fired token
+        // follows — so a caller error leaves a queued outcome for the next
+        // share that actually starts, instead of silently eating it and
+        // masking the empty-content or anti-forgery failure in a test.
+        if content.is_empty() {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
+        }
+        if !inner.attachment_is_staged(&content) {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+        }
         let bound = match inner.take_forced(capability) {
             Some(error) => Err(error),
-            None if content.is_empty() => {
-                return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
-            }
-            None if !inner.attachment_is_staged(&content) => {
-                return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
-            }
             None => Ok(content),
         };
         let turn = inner.open_dialog(capability, ct);
