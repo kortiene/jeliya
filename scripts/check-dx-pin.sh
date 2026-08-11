@@ -15,10 +15,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 cd "$repo"
 
-# The actual fetch surfaces: the CI workflows and the canonical build recipe.
-# The other `check-*.sh` guards only DEFINE these patterns (to search for them),
-# so scanning them would flag the check against itself.
-scan_paths=(.github/workflows scripts/build-web.sh)
+# The actual fetch surfaces: every workflow, every script, and the packaging
+# helpers — the contract forbids an unpinned fetch ANYWHERE, not only in the
+# canonical recipe. The `check-*.sh` guards only DEFINE these patterns (to
+# search for them), so they are excluded rather than flagged against
+# themselves.
+scan() {
+  grep -rhnE --exclude='check-*.sh' "$1" .github/workflows scripts packaging 2>/dev/null || true
+}
 fail=0
 
 # A diagnostic (`echo`/`printf`), a pattern definition (`grep`), or a comment is
@@ -49,7 +53,7 @@ while IFS= read -r line; do
     echo "FAIL: unpinned dx download: $line"
     fail=1
   fi
-done < <(grep -rhnE 'dioxus-cli|(curl|wget).*dioxus' "${scan_paths[@]}" 2>/dev/null || true)
+done < <(scan 'dioxus-cli|(curl|wget).*dioxus')
 
 # 2. Every wasm-bindgen(-cli) install must be version-pinned.
 while IFS= read -r line; do
@@ -58,7 +62,7 @@ while IFS= read -r line; do
     echo "FAIL: unpinned wasm-bindgen-cli install: $line"
     fail=1
   fi
-done < <(grep -rhnE 'cargo (install|binstall).*wasm-bindgen' "${scan_paths[@]}" 2>/dev/null || true)
+done < <(scan 'cargo (install|binstall).*wasm-bindgen')
 
 # 3. An action-based install (taiki-e/install-action's `tool:` input) is the
 #    same fetch surface through a different door: a `tool:` naming these
@@ -69,7 +73,7 @@ while IFS= read -r line; do
     echo "FAIL: unpinned action-based tool install: $line"
     fail=1
   fi
-done < <(grep -rhnE '^[[:space:]]*tool:.*(dioxus-cli|wasm-bindgen)' "${scan_paths[@]}" 2>/dev/null || true)
+done < <(scan '^[[:space:]]*tool:.*(dioxus-cli|wasm-bindgen)')
 
 if [ "$fail" -ne 0 ]; then
   echo

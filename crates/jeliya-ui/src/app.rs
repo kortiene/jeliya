@@ -169,9 +169,17 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                         }
                     }
                 }
+                // The footer sits at the BOTTOM of the sidebar's flex
+                // column (after the flex-1 rooms list), not as a loose
+                // `.app` child: the grid auto-places an unpositioned child
+                // into row 1 — the full-width strip the stylesheet reserves
+                // for `.conn-region` — which would render the footer above
+                // the sidebar and open an empty band over the center. The
+                // sidebar is also the one pane visible in every layout this
+                // shell produces, which is the point of the state label.
+                StatusFooter { lifecycle }
             }
             section { class: "center", id: "center", EmptyCenter {} }
-            StatusFooter { lifecycle }
         }
     }
 }

@@ -117,8 +117,22 @@ fn no_cfg_target_forks_in_shared_components() {
     let components_dir =
         std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/components"));
     let mut offenders = Vec::new();
-    for entry in std::fs::read_dir(components_dir).expect("readable components dir") {
-        let path = entry.expect("dir entry").path();
+    // Recursive: a nested module (src/components/room/mod.rs) is as much a
+    // shared component as an immediate file, and an unwalked subdirectory
+    // would silently exempt it from the no-fork contract.
+    let mut pending = vec![components_dir.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("readable components dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    for path in files {
         if path.extension().is_some_and(|ext| ext == "rs") {
             let text = std::fs::read_to_string(&path).expect("readable component");
             for (index, line) in text.lines().enumerate() {

@@ -38,7 +38,7 @@ export CARGO_INCREMENTAL=0
 # and is cleared for the same reason — as are RUSTC and its wrappers, which
 # would make cargo invoke a compiler other than the one the pin below
 # validates (rustc on PATH), letting a noncanonical compiler pass every gate.
-unset CARGO_ENCODED_RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
+unset RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 # Cargo also accepts profile, rustflags, and compiler overrides from the
 # environment (CARGO_PROFILE_RELEASE_OPT_LEVEL=0, CARGO_BUILD_RUSTFLAGS,
 # CARGO_TARGET_<T>_RUSTFLAGS, CARGO_BUILD_RUSTC and its wrapper forms, ...) —
@@ -48,7 +48,30 @@ unset CARGO_ENCODED_RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 for cargo_var in $(compgen -e | grep -E '^CARGO_(PROFILE_|BUILD_RUSTFLAGS$|BUILD_RUSTDOCFLAGS$|BUILD_RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?$|TARGET_.*_RUSTFLAGS$)' || true); do
   unset "$cargo_var"
 done
-export RUSTFLAGS="--remap-path-prefix=$repo=. --remap-path-prefix=$HOME=~"
+# Space-safe flag delivery: RUSTFLAGS is whitespace-split, so a checkout or
+# home directory containing a space would shear a remap argument apart and
+# fail the build. CARGO_ENCODED_RUSTFLAGS is unit-separator-delimited for
+# exactly this; it also outranks RUSTFLAGS, so setting it doubles as the
+# override-channel pin.
+US=$'\x1f'
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${repo}=.${US}--remap-path-prefix=${HOME}=~"
+
+# Cargo CONFIG FILES are one more override channel: $CARGO_HOME/config.toml
+# can set build.rustc or [profile.release] keys that bypass every
+# environment-level pin above, invisibly to the determinism check (both of
+# its samples read the same config). Build under a fresh CARGO_HOME whose
+# config is empty, sharing the real registry/git caches by symlink so
+# nothing re-downloads. A committed repo-level .cargo/config.toml (none
+# exists today) would still apply, as a reviewed file should.
+real_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+iso_cargo_home="$(mktemp -d)"
+trap 'rm -rf "$iso_cargo_home"' EXIT
+for shared in registry git; do
+  if [ -d "$real_cargo_home/$shared" ]; then
+    ln -s "$real_cargo_home/$shared" "$iso_cargo_home/$shared"
+  fi
+done
+export CARGO_HOME="$iso_cargo_home"
 
 # The wasm-bindgen CLI version MUST match the locked library version exactly.
 locked_wbg="$(awk '
@@ -100,6 +123,14 @@ cargo build --locked --release -p jeliya-ui --features web \
   --target wasm32-unknown-unknown
 
 echo "==> wasm-bindgen $locked_wbg (no wasm-opt)"
+# $out is caller-supplied: refuse to delete a directory that is non-empty
+# and not a previous artifact output (the marker is this script's own
+# tombstone) — a typo'd path must not be irreversibly destroyed.
+if [ -e "$out" ] && [ ! -f "$out/.dioxus-artifact" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
+  echo "FAIL: refusing to replace $out — it exists, is non-empty, and carries no .dioxus-artifact marker." >&2
+  echo "      pass a new or empty directory, or a previous build output." >&2
+  exit 1
+fi
 rm -rf "$out"
 mkdir -p "$out"
 wasm-bindgen \
