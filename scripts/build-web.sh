@@ -53,6 +53,21 @@ if [ "$cli_wbg" != "$locked_wbg" ]; then
   exit 1
 fi
 
+# The canonical artifact is a function of the exact compiler, not just the
+# lockfile: the workspace `rust-version = 1.91` is only the MSRV floor, and a
+# different stable rustc emits different wasm while the determinism check
+# still passes (both of its samples use the same unpinned compiler). Pin the
+# compiler exactly as the CLI is pinned, and record it in the marker. CI and
+# release both set up 1.96.0 (ci.yml jeliya-ui-web, release.yml embedded-ui).
+pinned_rustc="1.96.0"
+active_rustc="$(rustc --version | awk '{print $2}')"
+if [ "$active_rustc" != "$pinned_rustc" ]; then
+  echo "FAIL: rustc $active_rustc != pinned $pinned_rustc (the canonical compiler)." >&2
+  echo "      rustup toolchain install $pinned_rustc" >&2
+  echo "      RUSTUP_TOOLCHAIN=$pinned_rustc bash scripts/build-web.sh" >&2
+  exit 1
+fi
+
 # Honor an externally-set CARGO_TARGET_DIR (the determinism check builds each
 # sample in its own fresh dir); wasm-bindgen must read from the same one, or a
 # caller-set target dir would silently make it consume a stale default-path
@@ -86,6 +101,7 @@ cp "$repo/ui/src/styles.css" "$out/styles.css"
 cat > "$out/.dioxus-artifact" <<EOF
 renderer=dioxus-web
 crate=jeliya-ui
+rustc=$pinned_rustc
 wasm_bindgen=$locked_wbg
 EOF
 

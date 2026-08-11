@@ -13,7 +13,7 @@
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::RoomList;
-use jeliya_client::{ClientHandle, Dedup, State};
+use jeliya_client::{ClientEvent, ClientHandle, Dedup, State};
 
 use crate::components::{BootScreen, EmptyCenter, RoomListItem, StatusFooter};
 use crate::services::PlatformServices;
@@ -57,6 +57,31 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
             let read = {
                 let handle = handle.clone();
                 async move {
+                    // The seam accepts calls only in `Ready` (`event.rs`
+                    // §State: Connecting is "not yet usable"), and this
+                    // component never retries — so a read dispatched while a
+                    // real adapter is still Connecting would be refused and
+                    // leave the room list empty for the session. The mock
+                    // masks that by accepting calls in every non-stopping
+                    // state. Gate the sole mount read on Ready: a dedicated
+                    // subscription taken BEFORE the state check (so a
+                    // transition between the two is buffered, not missed)
+                    // observes the first `StateChanged { to: Ready }` unless
+                    // the handle is already synchronously Ready. If the
+                    // stream ends first (stopped or failed before ever
+                    // Ready), there is nothing to read.
+                    let mut ready = handle.subscribe();
+                    if handle.state() != State::Ready {
+                        loop {
+                            match ready.next().await {
+                                Some(ClientEvent::StateChanged {
+                                    to: State::Ready, ..
+                                }) => break,
+                                Some(_) => continue,
+                                None => return,
+                            }
+                        }
+                    }
                     match handle.call::<RoomList>(RoomList {}, Dedup::None).await {
                         Ok(out) => ui.write().set_rooms(out.rooms),
                         Err(error) => ui.write().set_notice(format!("room.list: {error:?}")),
@@ -114,6 +139,16 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
         // `app pane-${pane}`; so does this.
         div { class: "app pane-rooms", id: "app-root",
             nav { class: "sidebar", id: "sidebar",
+                // The notice lives in the SIDEBAR, not `.center`: on compact
+                // viewports `pane-rooms` hides `.center` entirely, and this
+                // slice's shell is fixed at `pane-rooms` — a notice rendered
+                // there would leave a phone showing a misleading "No rooms
+                // yet" while the one diagnostic that explains it is
+                // unreachable. The sidebar is the region visible in every
+                // pane layout this shell can produce.
+                if let Some(notice) = snapshot.notice.as_ref() {
+                    div { class: "error-note", id: "notice", "{notice}" }
+                }
                 // On compact viewports `pane-rooms` shows ONLY the sidebar
                 // (`.center` is hidden), so an empty room list must render an
                 // empty state here or a phone lands on a blank main area.
@@ -129,12 +164,7 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                     }
                 }
             }
-            section { class: "center", id: "center",
-                if let Some(notice) = snapshot.notice.as_ref() {
-                    div { class: "error-note", id: "notice", "{notice}" }
-                }
-                EmptyCenter {}
-            }
+            section { class: "center", id: "center", EmptyCenter {} }
             StatusFooter { lifecycle }
         }
     }
