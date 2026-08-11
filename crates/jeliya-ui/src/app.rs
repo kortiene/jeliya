@@ -16,8 +16,8 @@ use jeliya_api::RoomList;
 use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
 
 use crate::components::{BootScreen, EmptyCenter, RoomListItem, StatusFooter};
-use crate::services::PlatformServices;
 use crate::state::UiState;
+use crate::PlatformServices;
 
 /// The application root component (the spec's `app_root`).
 ///
@@ -29,12 +29,11 @@ use crate::state::UiState;
 pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
     let mut ui = use_signal(UiState::new);
 
-    // Record that the shell mounted through the injected services seam — a
-    // small, honest demonstration that platform authority is reached only
-    // through `PlatformServices`, never directly.
-    use_hook(move || {
-        services.set_preference("ui.mounted", "1");
-    });
+    // Touch the injected services seam once on mount — a small, honest
+    // demonstration that platform authority is reached only through
+    // `PlatformServices`, never directly. Reading the storage durability is a
+    // side-effect-free platform fact through the canonical contract (#174).
+    use_hook(move || services.preferences().durability());
 
     use_future(move || {
         let handle = handle.clone();

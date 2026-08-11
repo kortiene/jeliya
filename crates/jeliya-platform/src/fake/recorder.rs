@@ -1,0 +1,184 @@
+//! The call-recording and scriptable-outcome substrate shared by the fakes
+//! (#174 §6).
+//!
+//! A [`Recorder`] captures every effect in order — opened URLs, clipboard
+//! writes, shares, navigations, staged blobs with their bytes, preference
+//! writes, window commands — for assertions. A [`Script`] lets any capability
+//! method be forced to return `Unavailable` / `Denied` / `Cancelled` / a typed
+//! `Failed`, so the denied / unavailable / cancelled paths the Verification
+//! section demands are exercisable without a device. Neither the recorder nor
+//! the script uses a wall clock, an RNG, or any task-scheduling order.
+
+use std::collections::HashMap;
+use std::collections::VecDeque;
+
+use jeliya_api::{FileId, RoomId};
+
+use crate::clipboard::ShareContent;
+use crate::error::CapabilityError;
+use crate::files::ExportTargetKind;
+use crate::launcher::SafeExternalUrl;
+use crate::navigation::Route;
+use crate::storage::{PreferenceKey, SecretKey};
+use crate::window::WindowCommand;
+
+/// A capability method that can be scripted to fail on its next call.
+///
+/// Structural facts (window actions on a browser, a private directory on the
+/// web) are modelled by the fake **shape**, not scripted here; this enum names
+/// the methods whose *action* outcome a test forces.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Capability {
+    /// [`crate::Files::pick`].
+    Pick,
+    /// [`crate::Files::pick_export_target`].
+    PickExport,
+    /// [`crate::Files::stage_for_share`].
+    Stage,
+    /// [`crate::Files::export_local`].
+    ExportLocal,
+    /// [`crate::Files::open_local`].
+    OpenLocal,
+    /// [`crate::Files::share_content`].
+    ShareContent,
+    /// [`crate::Share::share`].
+    Share,
+    /// [`crate::Clipboard::write_text`].
+    Clipboard,
+    /// [`crate::UrlLauncher::open_external`].
+    OpenExternal,
+}
+
+/// One recorded effect, in the order it happened.
+///
+/// Secret values are never recorded ([`RecordedEffect::SecretWrite`] carries
+/// only the key), so a recorder dump cannot leak a credential (§K1/§K5).
+#[derive(Clone, PartialEq, Debug)]
+pub enum RecordedEffect {
+    /// A file source was picked (records the display name only).
+    Picked {
+        /// The picked source's display name.
+        name: String,
+    },
+    /// A source was staged for share (records the copied size and bytes).
+    Staged {
+        /// The number of bytes staged.
+        size: u64,
+        /// The staged bytes (the fake's stand-in for the staging file).
+        bytes: Vec<u8>,
+    },
+    /// An export target was chosen.
+    PickedExport {
+        /// The chosen target's kind.
+        kind: ExportTargetKind,
+    },
+    /// A local file was exported to a target.
+    ExportedLocal {
+        /// The exported file's room.
+        room_id: RoomId,
+        /// The exported file's id.
+        file_id: FileId,
+        /// The target kind written to.
+        kind: ExportTargetKind,
+    },
+    /// A local file was opened with the platform opener.
+    OpenedLocal {
+        /// The opened file's room.
+        room_id: RoomId,
+        /// The opened file's id.
+        file_id: FileId,
+    },
+    /// Content was shared through the OS share sheet.
+    Shared {
+        /// The shared content.
+        content: ShareContent,
+    },
+    /// An external URL was opened.
+    OpenedUrl {
+        /// The opened, vetted URL.
+        url: SafeExternalUrl,
+    },
+    /// Text was written to the clipboard.
+    ClipboardWrite {
+        /// The written text.
+        text: String,
+    },
+    /// A preference was written (`value` is `None` for a removal).
+    PreferenceWrite {
+        /// The preference key.
+        key: PreferenceKey,
+        /// The new value, or `None` if removed.
+        value: Option<String>,
+    },
+    /// A secret was written (the value is deliberately not recorded).
+    SecretWrite {
+        /// The secret key.
+        key: SecretKey,
+    },
+    /// The route was navigated.
+    Navigated {
+        /// The route navigated to.
+        route: Route,
+    },
+    /// An unconsumed back gesture was handed back to the platform.
+    HandBackToPlatform,
+    /// A window command was invoked.
+    Window {
+        /// The invoked command.
+        command: WindowCommand,
+    },
+}
+
+/// The ordered log of effects a fake produced.
+#[derive(Default)]
+pub struct Recorder {
+    effects: Vec<RecordedEffect>,
+}
+
+impl Recorder {
+    /// Append one effect.
+    pub fn record(&mut self, effect: RecordedEffect) {
+        self.effects.push(effect);
+    }
+
+    /// Every recorded effect, in order.
+    pub fn effects(&self) -> Vec<RecordedEffect> {
+        self.effects.clone()
+    }
+}
+
+/// Forced outcomes, keyed by capability. Each capability holds a queue, so a
+/// test can script several calls in a row; a call with no scripted outcome
+/// takes the shape's default (usually success).
+#[derive(Default)]
+pub struct Script {
+    forced: HashMap<Capability, VecDeque<CapabilityError>>,
+    /// When set, the next preference/secret write reports
+    /// [`crate::WriteOutcome::SessionOnly`] even on a persistent shape, so the
+    /// write-honesty invariant (§K6) is exercisable.
+    force_session_only: bool,
+}
+
+impl Script {
+    /// Force the next call of `capability` to fail with `error`.
+    pub fn force(&mut self, capability: Capability, error: CapabilityError) {
+        self.forced.entry(capability).or_default().push_back(error);
+    }
+
+    /// Take the forced outcome for `capability`, if one is queued.
+    pub fn take(&mut self, capability: Capability) -> Option<CapabilityError> {
+        self.forced
+            .get_mut(&capability)
+            .and_then(VecDeque::pop_front)
+    }
+
+    /// Set whether the next writes report session-only durability.
+    pub fn set_force_session_only(&mut self, force: bool) {
+        self.force_session_only = force;
+    }
+
+    /// Whether writes are currently forced session-only.
+    pub fn force_session_only(&self) -> bool {
+        self.force_session_only
+    }
+}

@@ -1,0 +1,73 @@
+[package]
+name = "jeliya-platform"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Injectable PlatformServices boundary for the Jeliya clean-slate stack (#174): one cloneable, renderer-agnostic facade carrying object-safe capability traits for files, persistence, lifecycle, URLs, clipboard/share, navigation, and window actions, plus a closed outcome taxonomy, safe path/URL types, and deterministic browser/desktop/Android fakes. No Iroh, no WebSocket, no native transport, no wry/tao, no Dioxus in the library graph, and no serde_json::Value in any public signature."
+
+[features]
+default = []
+# The deterministic in-process fakes ship with the contract but stay
+# default-off so the library's normal build carries no test scaffolding and the
+# workspace MSRV `--all-targets` job compiles the crate to (essentially)
+# nothing — the discipline `jeliya-client`'s `mock` and `jeliya-ui`'s `ui`
+# features already use. The feature adds NO dependencies: the fakes are
+# hand-rolled, clock-free, RNG-free, and rely on no task-scheduling order, so
+# their behaviour is identical on wasm32 and native (mirroring `jeliya-client`'s
+# mock, whose feature likewise adds nothing).
+fake = []
+# The verification component (`examples/shared_component.rs`) needs Dioxus. This
+# feature pulls it in as an OPTIONAL dependency (never a dev-dependency, which
+# `--all-targets` would build unconditionally) plus the `fake` feature it
+# drives, so a bare `cargo check/clippy --all-targets` never compiles the heavy
+# UI-framework tree. The dedicated example-build CI steps pass
+# `--features example`.
+example = ["fake", "dep:dioxus"]
+
+[dependencies]
+# The only library dependency: the typed protocol-v2 API. Ids and view-model
+# types (`RoomId`, `FileId`, served limits) are consumed from here and never
+# respelled. `jeliya-api` is already wasm32-clean (no Iroh/WebSocket/Dioxus, no
+# `serde_json::Value` in public types), so the contract links in the browser
+# graph by construction.
+jeliya-api = { path = "../jeliya-api" }
+thiserror = "2"
+# Executor-agnostic, `wasm32`-safe primitives only, exactly the surface
+# `jeliya-client` uses: `Stream` for the lifecycle subscription. No `tokio`, no
+# runtime, no `executor` feature in the library. `futures` is a light,
+# MSRV-clean tree (no Iroh, no native transport, no OpenSSL), so the workspace
+# MSRV `--all-targets` job stays renderer-free and OpenSSL-free with it present
+# — the same trade `jeliya-client`/`jeliya-ui` already make.
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+# Optional, and only for the verification component: the core `dioxus` crate for
+# RSX + `#[component]`, never a renderer. Behind the `example` feature
+# (default-off), so it is never part of the library's own build — the contract
+# stays renderer-independent (`PlatformServices` provides `Clone + PartialEq`
+# without depending on Dioxus), asserted by `tests/boundaries.rs`. `minimal`
+# gives the macro, signals, and hooks without pulling `tao`/`wry`/a web
+# renderer, so the component links on native and wasm32 alike.
+dioxus = { version = "=0.7.9", default-features = false, features = ["minimal"], optional = true }
+
+[dev-dependencies]
+# `block_on` for the native behaviour suite; the `executor` feature is dev-only
+# so it never reaches the library or the wasm build. The library itself owns its
+# `BoxFuture` alias in std, so the default build needs no `futures` at all.
+futures = { version = "0.3", features = ["std", "async-await", "executor"] }
+
+[[example]]
+name = "shared_component"
+# Gating the example on `example` (which enables `fake` and the optional
+# `dioxus`) keeps `cargo check --all-targets` from compiling Dioxus unless that
+# feature is explicitly requested.
+required-features = ["example"]
+
+[[test]]
+name = "capabilities"
+# The behaviour suite drives the fakes: skip compilation (not an error) when the
+# fake feature is off. CI runs it explicitly with
+# `cargo test -p jeliya-platform --features fake`.
+required-features = ["fake"]
+
+[lints]
+workspace = true

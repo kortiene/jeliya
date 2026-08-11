@@ -336,6 +336,30 @@ jobs:
           cargo build --locked -p jeliya-client --example shared_component --features example \
             --target wasm32-unknown-unknown
 
+      # The #174 PlatformServices behaviour suite (tests/capabilities.rs, AC-6)
+      # drives the deterministic fakes behind the default-off `fake` feature, so
+      # the `--workspace` run above compiles it to nothing. Run it explicitly —
+      # the step the crate manifest documents — and lint it clippy-clean under
+      # the same feature so an unused import in the fake-only suite goes red.
+      - name: jeliya-platform behaviour suite (fake)
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p jeliya-platform --features fake --all-targets -- -D warnings
+          cargo test --locked -p jeliya-platform --features fake
+
+      # The extended no-`cfg` boundary: the shared component
+      # (examples/shared_component.rs) compiles against the injected
+      # PlatformServices for both a native target and wasm32-unknown-unknown with
+      # no per-component cfg — the direct analogue of the jeliya-client
+      # two-target check. The `example` feature enables the fakes and pulls in
+      # the optional Dioxus dependency; no renderer runs.
+      - name: jeliya-platform shared component builds (native + wasm32)
+        run: |
+          set -euo pipefail
+          cargo build --locked -p jeliya-platform --example shared_component --features example
+          cargo build --locked -p jeliya-platform --example shared_component --features example \
+            --target wasm32-unknown-unknown
+
       - name: Build required live-test binaries
         run: |
           set -euo pipefail

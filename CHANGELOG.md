@@ -4,6 +4,32 @@
 
 ### Added
 
+- New workspace crate `crates/jeliya-platform` — the single injectable
+  `PlatformServices` boundary for the clean-slate Dioxus stack (#156 program,
+  #174). One cloneable, renderer-agnostic facade carries object-safe capability
+  traits for files, persistence, lifecycle, URLs, clipboard/share, navigation,
+  and window actions, with a closed outcome taxonomy (`CapabilityError` keeps
+  `Unavailable`/`Denied`/`Cancelled`/typed failures apart, so a cancellation
+  never becomes success), safe path/URL types that distinguish a browser blob
+  from a desktop path from an Android `content://` URI, an allowlisted
+  fail-closed external-URL launcher, honest storage durability, and a
+  representable lifecycle-event model. It ships a deterministic in-process fake
+  for every service (`feature = "fake"`) in browser/desktop/Android shapes,
+  scriptable for denied/unavailable/cancelled outcomes; a shared Dioxus
+  component compiled against the fakes links for both native and
+  `wasm32-unknown-unknown` with no per-component `cfg`. No Iroh, WebSocket,
+  native transport, `wry`/`tao`, `openssl-sys`, or Dioxus enters the library
+  graph, and no `serde_json::Value` appears in any public signature. Target
+  implementations (browser web-sys, desktop dialogs, Android SAF/JNI) follow in
+  M3–M5 behind the unchanged facade. The decision is recorded at
+  `docs/dioxus-architecture.md` §"Decision 4".
+
+- `crates/jeliya-ui` adopts that canonical contract (#174): its former
+  provisional local seam (`src/services.rs` and `WebPlatformServices`) is
+  deleted and replaced by a re-export of `jeliya_platform::PlatformServices`,
+  with composition injecting a deterministic fake shape — the mechanical change
+  #176 promised, and no shared component gains a `cfg` fork.
+
 - New workspace crate `crates/jeliya-client` — the single UI-facing Rust client
   contract for the clean-slate Dioxus stack (#156 program, #167). Delivers
   compile-time request/output pairing (`ClientHandle::call<O: Operation>`
