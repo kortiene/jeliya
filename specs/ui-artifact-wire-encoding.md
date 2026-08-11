@@ -435,7 +435,7 @@ its sealed variants, and the manifest carries shared provenance:
   for `Embedded`, loaded from the `--ui-dir` for `Dir`).
 - Change the load/serve path so `serve_static` (line 895) negotiates: look the
   requested path up against the manifest's entry set **first** (a sealed
-  extension-less asset such as a `LICENSE` entry stays reachable, never
+  extension-less asset such as a `license` entry stays reachable, never
   shadowed by the fallback); only when it matches no entry **and** is
   route-like (extension-less) fall back to `index.html` — the baseline's
   lookup-then-fallback order (lines 912-921), so deep links keep reloading;
@@ -453,10 +453,13 @@ its sealed variants, and the manifest carries shared provenance:
   chosen representation — variant or canonical — against its sealed digest
   (§4.5), and build the response with `Content-Type`
   (decoded type), `Content-Encoding` (when not identity), the encoded
-  `Content-Length` (auto from `Full<Bytes>`), `Vary: Accept-Encoding`, and —
-  root document only — an explicit non-cacheable policy (`Cache-Control:
-  no-cache` at minimum): hashed assets cache indefinitely by digest, the
-  entry point must not (`first-release-distribution.md`).
+  `Content-Length` (auto from `Full<Bytes>`), `Vary: Accept-Encoding`, and a
+  cache policy keyed to the request-path form (caches key by URL, not
+  digest): a long-lived immutable policy only when the request path embeds
+  the content digest; every stable-path asset — the root document and e.g.
+  `/styles.css` — gets an explicit revalidating policy (`Cache-Control:
+  no-cache` at minimum), or a stale copy outlives its generation
+  (`first-release-distribution.md`).
 - Keep the SPA fallback (`index.html` for extension-less routes, line 916) on the
   same negotiated path.
 - **Leave `local_file`, `share_upload`, `session`, `health`, `preflight`,
@@ -527,15 +530,18 @@ when the daemon serves its value faithfully. The rows:
   a `png`), never `200` with bytes not matching `identity.digest`.
 - **Fail-closed, manifest:** a present-but-truncated/unparsable manifest →
   fail closed, never a collapse into the "no manifest" dev state; likewise a
-  valid-JSON manifest whose detached digest is missing or mismatched
-  (load-time digest verification, both sources), a validly sealed
+  valid-JSON manifest whose sealed digest fails load-time verification —
+  `Dir`: the always-required sidecar missing/mismatched; `Embedded` on the
+  in-manifest scheme (legitimately sidecar-less, never sidecar-refused): the
+  field not reproducing over the excluded-field canonicalization — a validly sealed
   manifest whose advertised aggregate canonical digest does not match the
   value derived from its own entries (exact-version rejection compares the
   derived value, never the advertised field), and a sidecar-only directory
   (digest present, manifest missing) — never the dev state.
-- **Entry-point cache policy:** the root document carries the explicit
-  non-cacheable policy on identity and encoded branches; hashed assets stay
-  cacheable by digest (`first-release-distribution.md` invariant).
+- **Cache policy:** the root document and every stable-path asset
+  (`/styles.css` included) carry the revalidating policy on identity and
+  encoded branches; only digest-embedding request paths carry the immutable
+  policy (`first-release-distribution.md` invariant, URL-keyed caches).
 - **Exact-version rejection:** a complete, correctly sealed artifact of a
   different UI generation (self-consistent throughout; derived canonical
   digest ≠ the daemon's build-pinned digest) → refused with the reset path.
@@ -547,11 +553,14 @@ when the daemon serves its value faithfully. The rows:
   contrast. In the same run, a deep link such as `/rooms/r-99` still resolves
   through the SPA fallback to the sealed `index.html`, served negotiated as
   usual — the allow-list applies to the resolved asset path, never the raw
-  route. A sealed extension-less asset (for example a `LICENSE` entry) is
+  route. A sealed extension-less asset (for example a `license` entry) is
   served, not shadowed: entry lookup precedes the route-like fallback.
 - **Security regression:** `GET /api/files/local?...` with `Accept-Encoding: br,
   gzip` returns **no** `Content-Encoding` and the inert-attachment headers are
-  unchanged.
+  unchanged; the same probe runs against `GET /api/session` and one
+  representative of each control-response family (health, preflight, gate
+  refusal) — negotiation leaking through a shared response helper must fail
+  these rows.
 - **Identical sources:** the negotiated encoding, `Content-Type`,
   `Content-Length`, and decoded digest for each asset match between the
   `Embedded` and `Dir` daemons.

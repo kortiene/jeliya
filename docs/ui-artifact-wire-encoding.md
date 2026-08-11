@@ -3,7 +3,7 @@ type: "Decision"
 title: "How the embedded UI artifact is compressed on the wire"
 description: "Decision record for how the embedded UI artifact is delivered on the wire: the #183 manifest seals Brotli and gzip variants of each compressible asset served by static content negotiation, the canonical content-address stays the uncompressed bytes, a corrupt or missing variant fails closed, and Embedded and --ui-dir sources behave identically."
 tags: ["release", "web", "dioxus", "compression", "artifact", "clean-slate", "security"]
-timestamp: "2026-08-10T18:00:00Z"
+timestamp: "2026-08-11T02:17:00Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -382,7 +382,7 @@ its sealed variants, and the manifest carries shared provenance:
   for `Embedded`, loaded from the `--ui-dir` for `Dir`.
 - Change the load/serve path so `serve_static` negotiates: look the requested
   path up against the manifest's entry set **first** (a sealed extension-less
-  asset such as a `LICENSE` entry stays reachable, never shadowed by the
+  asset such as a `license` entry stays reachable, never shadowed by the
   fallback); only when it matches no entry **and** is route-like
   (extension-less) fall back to `index.html` — the baseline's
   lookup-then-fallback order, so a deep link such as `/rooms/r-99` keeps
@@ -404,12 +404,15 @@ its sealed variants, and the manifest carries shared provenance:
   response with `Content-Type` (decoded type),
   `Content-Encoding` (when not identity), the encoded `Content-Length` (set
   automatically from the served in-memory bytes), `Vary: Accept-Encoding`,
-  and — for the **root document only** — an explicit non-cacheable policy
-  (`Cache-Control: no-cache` at minimum): hashed assets are immutable per
-  digest and may cache indefinitely, but
-  [the entry point must not be](first-release-distribution.md), or a stale
-  cached shell outlives its own generation and requests hashed assets the
-  new manifest no longer lists.
+  and a cache policy keyed to the **request-path form**, because a browser
+  cache is keyed by URL, not by manifest digest: an asset may carry a
+  long-lived immutable policy **only if its request path embeds its content
+  digest**; every stable-path asset — the root document, and any asset
+  served at a generation-independent path such as `/styles.css` — carries an
+  explicit revalidating policy (`Cache-Control: no-cache` at minimum),
+  because
+  [a cached stable-path asset outlives its own generation](first-release-distribution.md)
+  on the same origin exactly as a cached entry point does.
 - Keep the SPA fallback (`index.html` for extension-less routes) on the same
   negotiated path.
 - **Leave `local_file`, `share_upload`, `session`, `health`, `preflight`,
@@ -495,20 +498,26 @@ when the daemon serves its value faithfully. The rows:
 - **Fail-closed, manifest:** a `--ui-dir` whose manifest is present but
   truncated or unparsable fails closed (**5xx**/refusal), never serves
   canonical bytes with no `Content-Encoding` as if no manifest existed. A
-  valid-JSON manifest whose **detached digest is missing or mismatched**
-  fails closed identically — load-time digest verification is required on
-  both sources, never a fall-through to trusting the manifest's metadata.
+  valid-JSON manifest whose sealed digest fails load-time verification
+  fails closed identically — for `Dir`, a missing or mismatched **detached
+  sidecar** (which `Dir` always requires); for `Embedded` on the in-manifest
+  scheme — which legitimately has no sidecar and must not be sidecar-refused
+  — a field that does not reproduce over the excluded-field
+  canonicalization. Never a fall-through to trusting the manifest's
+  metadata.
   And a validly sealed manifest whose **advertised aggregate canonical
   digest does not match the value derived from its own entries** fails
   closed — the derived value, never the advertised field, is what
   exact-version rejection compares. A **sidecar-only** directory (detached
   digest present, manifest missing) likewise fails closed — never the
   unverified dev state.
-- **Entry-point cache policy:** the root document carries the explicit
-  non-cacheable policy on both the identity and encoded branches — a cached
-  entry point outlives its own generation
-  ([first-release-distribution](first-release-distribution.md)); hashed
-  assets stay cacheable by digest.
+- **Cache policy:** the root document **and every stable-path asset**
+  (`/styles.css` included) carry the explicit revalidating policy on both
+  the identity and encoded branches — a URL-keyed cache serves a stale
+  stable-path asset across generations exactly as it would a stale entry
+  point ([first-release-distribution](first-release-distribution.md)); only
+  an asset whose request path embeds its content digest carries the
+  immutable long-lived policy.
 - **Exact-version rejection:** a complete, correctly sealed artifact of a
   **different UI generation** — sidecar verifies, advertised aggregate
   equals the derived value, every asset self-matches — is **refused** with
@@ -523,11 +532,16 @@ when the daemon serves its value faithfully. The rows:
   link such as `/rooms/r-99` still resolves through the SPA fallback to the
   sealed `index.html` and serves it negotiated as usual — the allow-list
   applies to the resolved asset path, never to the raw route. A sealed
-  extension-less asset in the manifest (for example a `LICENSE` entry) is
+  extension-less asset in the manifest (for example a `license` entry) is
   served, not shadowed: entry lookup precedes the route-like fallback.
 - **Security regression:** `GET /api/files/local?...` with `Accept-Encoding: br,
   gzip` returns **no** `Content-Encoding` and the inert-attachment headers are
-  unchanged.
+  unchanged. The same `Accept-Encoding: br, gzip` probe runs against the
+  credential-bearing `GET /api/session` and one representative of **each**
+  named control-response family — health, preflight, and a gate refusal —
+  asserting no `Content-Encoding` ever appears: negotiation applied through
+  a shared response helper instead of only `serve_static` must fail these
+  rows, not just the download one.
 - **Identical sources:** the negotiated encoding, `Content-Type`,
   `Content-Length`, and decoded digest for each asset match between the
   `Embedded` and `Dir` daemons.
