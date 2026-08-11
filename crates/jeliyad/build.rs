@@ -80,6 +80,12 @@ fn main() {
              the Dioxus shell",
         );
     }
+    if !module_refs.iter().any(|r| r.ends_with(".css")) {
+        fail(
+            "the embedded index.html references no root-relative stylesheet — the canonical \
+             shell consumes the design system as /styles.css",
+        );
+    }
     for reference in &module_refs {
         let module = dist.join(reference.trim_start_matches('/'));
         println!("cargo:rerun-if-changed={}", module.display());

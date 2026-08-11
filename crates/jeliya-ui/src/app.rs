@@ -13,7 +13,7 @@
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::RoomList;
-use jeliya_client::{ClientEvent, ClientHandle, Dedup, State};
+use jeliya_client::{ClientHandle, Dedup, State};
 
 use crate::components::{BootScreen, EmptyCenter, RoomListItem, StatusFooter};
 use crate::services::PlatformServices;
@@ -64,22 +64,20 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                     // leave the room list empty for the session. The mock
                     // masks that by accepting calls in every non-stopping
                     // state. Gate the sole mount read on Ready: a dedicated
-                    // subscription taken BEFORE the state check (so a
-                    // transition between the two is buffered, not missed)
-                    // observes the first `StateChanged { to: Ready }` unless
-                    // the handle is already synchronously Ready. If the
-                    // stream ends first (stopped or failed before ever
+                    // subscription taken BEFORE the first state check (so a
+                    // transition between the two is buffered, not missed),
+                    // and the CURRENT state — not the observed event — is
+                    // what authorizes dispatch: a buffered Ready followed by
+                    // a buffered Interrupted must keep waiting for the next
+                    // Ready, not fire on the stale event. Every transition
+                    // emits a control `StateChanged` (never dropped), so
+                    // re-checking `state()` per event cannot miss Ready. If
+                    // the stream ends first (stopped or failed before ever
                     // Ready), there is nothing to read.
                     let mut ready = handle.subscribe();
-                    if handle.state() != State::Ready {
-                        loop {
-                            match ready.next().await {
-                                Some(ClientEvent::StateChanged {
-                                    to: State::Ready, ..
-                                }) => break,
-                                Some(_) => continue,
-                                None => return,
-                            }
+                    while handle.state() != State::Ready {
+                        if ready.next().await.is_none() {
+                            return;
                         }
                     }
                     match handle.call::<RoomList>(RoomList {}, Dedup::None).await {
