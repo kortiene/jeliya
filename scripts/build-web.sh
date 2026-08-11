@@ -115,6 +115,16 @@ if [ "$active_rustc" != "$pinned_rustc" ]; then
   echo "      RUSTUP_TOOLCHAIN=$pinned_rustc bash scripts/build-web.sh" >&2
   exit 1
 fi
+# Cargo drives the rustc invocation, metadata hashes, and profile behavior —
+# a distro cargo paired with the pinned rustc changes the emitted wasm just
+# as invisibly. The rustup pairing means the toolchain's cargo reports the
+# same release number.
+active_cargo="$(cargo --version | awk '{print $2}')"
+if [ "$active_cargo" != "$pinned_rustc" ]; then
+  echo "FAIL: cargo $active_cargo != pinned $pinned_rustc (cargo and rustc must come from the same pinned toolchain)." >&2
+  echo "      RUSTUP_TOOLCHAIN=$pinned_rustc bash scripts/build-web.sh" >&2
+  exit 1
+fi
 
 # Honor an externally-set CARGO_TARGET_DIR (the determinism check builds each
 # sample in its own fresh dir); wasm-bindgen must read from the same one, or a

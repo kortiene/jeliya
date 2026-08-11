@@ -86,7 +86,10 @@ done < <(scan 'cargo (install|binstall).*wasm-bindgen')
 #    binaries must carry an explicit `@version` too.
 while IFS= read -r line; do
   is_diagnostic "$line" && continue
-  if ! grep -Eq '@[0-9$]' <<<"$line"; then
+  # Literal numeric version ONLY: an action input has no validated shell
+  # variable, and `@${{ vars.X }}` resolves at workflow time to whatever the
+  # repository variable happens to hold — that is not a pin.
+  if ! grep -Eq '@[0-9]' <<<"$line"; then
     echo "FAIL: unpinned action-based tool install: $line"
     fail=1
   fi

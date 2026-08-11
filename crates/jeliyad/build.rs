@@ -157,6 +157,16 @@ fn module_script_bodies(html: &str) -> String {
     let mut from = 0;
     while let Some(open_rel) = lower[from..].find("<script") {
         let open = from + open_rel;
+        // Tag-NAME boundary: `<script` must be followed by whitespace or the
+        // tag close, or `<scripture ...>` would count as a script and its
+        // `</scripture>` would satisfy the `</script` search below.
+        match lower[open + "<script".len()..].chars().next() {
+            Some(c) if c.is_ascii_whitespace() || c == '>' => {}
+            _ => {
+                from = open + "<script".len();
+                continue;
+            }
+        }
         let Some(tag_end_rel) = lower[open..].find('>') else {
             break;
         };
@@ -169,10 +179,20 @@ fn module_script_bodies(html: &str) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         let body_start = tag_end + 1;
-        let Some(close_rel) = lower[body_start..].find("</script") else {
-            break;
+        // Exact closing tag (optional whitespace before '>'), for the same
+        // boundary reason.
+        let mut close_search = body_start;
+        let body_end = loop {
+            let Some(rel) = lower[close_search..].find("</script") else {
+                return out;
+            };
+            let candidate = close_search + rel;
+            let after = &lower[candidate + "</script".len()..];
+            if after.trim_start().starts_with('>') || after.starts_with('>') {
+                break candidate;
+            }
+            close_search = candidate + "</script".len();
         };
-        let body_end = body_start + close_rel;
         if tag_norm.contains(" type=\"module\"") || tag_norm.contains(" type='module'") {
             out.push_str(&html[body_start..body_end]);
             out.push('\n');
@@ -191,6 +211,14 @@ fn stylesheet_link_tags(html: &str) -> String {
     let mut from = 0;
     while let Some(open_rel) = lower[from..].find("<link") {
         let open = from + open_rel;
+        // Same tag-name boundary discipline as the script scan.
+        match lower[open + "<link".len()..].chars().next() {
+            Some(c) if c.is_ascii_whitespace() || c == '>' => {}
+            _ => {
+                from = open + "<link".len();
+                continue;
+            }
+        }
         let Some(end_rel) = lower[open..].find('>') else {
             break;
         };
