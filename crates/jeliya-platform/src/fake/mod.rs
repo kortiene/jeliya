@@ -526,10 +526,17 @@ impl FakeController {
             .collect()
     }
 
-    /// Resolve once at least one scripted dialog is open — the event-driven
-    /// complement to [`FakeController::deliver_next`] for drivers sharing an
-    /// executor with the code under test (the mock's `pending_call`
-    /// discipline).
+    /// Resolve once at least one scripted dialog is open and **not yet
+    /// released** — that is, once [`FakeController::deliver_next`] would
+    /// actually advance something. The event-driven complement to
+    /// `deliver_next` for drivers sharing an executor with the code under test
+    /// (the mock's `pending_call` discipline).
+    ///
+    /// A released-but-unsettled dialog is deliberately not counted: it is
+    /// already spoken for, so resolving on it would hand a controller loop a
+    /// dialog it cannot deliver. It does still appear in
+    /// [`FakeController::open_dialogs`], which reports what is open rather than
+    /// what is deliverable.
     pub fn pending_dialog(&self) -> PendingDialog {
         PendingDialog {
             inner: self.inner.clone(),
@@ -694,6 +701,12 @@ impl Files for FakePlatform {
         let bound = inner.take_forced(Capability::Stage);
         let ct = ct.clone();
         Box::pin(async move {
+            // Defence in depth: the call-time gate cannot see a token fired
+            // between the call and the first poll. Cancellation wins the tie,
+            // as it does in `DialogTurn::poll`.
+            if ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -825,7 +838,14 @@ impl Files for FakePlatform {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
         let bound = inner.take_forced(Capability::ExportSink);
+        let ct = ct.clone();
         Box::pin(async move {
+            // Defence in depth: the call-time gate cannot see a token fired
+            // between the call and the first poll. Cancellation wins the tie,
+            // as it does in `DialogTurn::poll`.
+            if ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -861,7 +881,14 @@ impl Files for FakePlatform {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
         let bound = inner.take_forced(Capability::OpenSink);
+        let ct = ct.clone();
         Box::pin(async move {
+            // Defence in depth: the call-time gate cannot see a token fired
+            // between the call and the first poll. Cancellation wins the tie,
+            // as it does in `DialogTurn::poll`.
+            if ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -884,7 +911,14 @@ impl Files for FakePlatform {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
         let bound = inner.take_forced(Capability::ShareSink);
+        let ct = ct.clone();
         Box::pin(async move {
+            // Defence in depth: the call-time gate cannot see a token fired
+            // between the call and the first poll. Cancellation wins the tie,
+            // as it does in `DialogTurn::poll`.
+            if ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -1220,16 +1254,22 @@ impl FakePlatform {
             turn.await?;
             let content = bound?;
             // A completed share consumes a fetched artifact — "delete after
-            // share", mirroring `export_sink`'s consumed target — so re-sharing
-            // the same handle fails closed. A dismissal settles as `Cancelled`
+            // share", mirroring `export_sink`'s consumed target. The REMOVAL is
+            // the gate, not the call-time check: two sheets can be open for one
+            // artifact at once, and only the share that actually takes the
+            // bytes may report success. A dismissal settles as `Cancelled`
             // above and never reaches here, leaving the artifact staged for a
             // retry that needs no second download.
             if let Some(ShareAttachment::Fetched(artifact)) = &content.attachment {
-                inner
+                let claimed = inner
                     .share_artifacts
                     .lock()
                     .expect("share artifacts poisoned")
-                    .remove(&artifact.token().get());
+                    .remove(&artifact.token().get())
+                    .is_some();
+                if !claimed {
+                    return Err(CapabilityError::Failed(FailureKind::Unreadable));
+                }
             }
             inner.record(RecordedEffect::Shared { content });
             Ok(())

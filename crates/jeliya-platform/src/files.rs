@@ -2,8 +2,8 @@
 //! platform object kinds a file surface touches, and the pick → stage → export
 //! / open / share contract.
 //!
-//! The files capability never traffics in raw strings. Four distinct types
-//! carry the four distinct object kinds:
+//! The files capability never traffics in raw strings. Five distinct types
+//! carry the distinct object kinds a file surface touches:
 //!
 //! - [`PickedSource`] — an **opaque handle** to a user-selected *source*. It
 //!   carries display metadata and a [`FileObjectKind`] discriminant, but the
@@ -56,22 +56,35 @@ use crate::BoxFuture;
 ///
 /// The invariant is **enforced, not promised**: [`FileName::parse`] is the only
 /// constructor, and the value it admits is a non-empty single path component —
-/// no `/` or `\` separator, not `.` or `..`, no control characters. A platform
-/// sink may therefore join it under a directory it owns without re-checking for
-/// traversal, because a name that could navigate out of that directory is not
-/// representable.
+/// no `/` or `\` separator, not `.` or `..`, no control characters. What is
+/// enforced is *portable path syntax*: the name cannot carry a separator or a
+/// navigation component into a sink's artifact naming.
 ///
-/// What this type deliberately does **not** do — a sink materializing a real
-/// artifact must still apply its own platform naming rules:
+/// It is **not** a substitute for the sink's own platform naming rules, and two
+/// of those are directory-affecting **on Windows**, so a Windows sink must
+/// sanitize before it joins:
+///
+/// - no `:` filtering — `C:name` is an ordinary POSIX file name but a
+///   *drive-qualified* path on Windows, and `Path::join`/`PathBuf::push`
+///   replace the whole base when the pushed path "has a prefix but no root", so
+///   joining it escapes the owned directory entirely;
+/// - no trailing-dot or trailing-space trimming — Windows strips these during
+///   path normalization, so `".. "` normalizes to a navigation component.
+///
+/// The rest are naming rules rather than traversal, and are likewise the sink's:
 ///
 /// - no Unicode normalization (NFC/NFD) or case folding;
 /// - no Windows reserved-device-name filtering (`CON`, `NUL`, `AUX`, …);
-/// - no trailing-dot or trailing-space trimming (Windows strips these);
-/// - no `:` filtering (a Windows drive letter or alternate data stream);
 /// - no length cap (filesystems differ);
 /// - no hidden-file policy (a leading `.` is a legal name).
 ///
-/// The guarantee is exactly one thing: the name cannot navigate directories.
+/// So: a **POSIX** sink may join a `FileName` under a directory it owns without
+/// re-checking for traversal; a **Windows** sink must first reject or rewrite a
+/// name containing `:` and trim trailing dots and spaces. The type deliberately
+/// does neither, because `10:30 notes.txt` is an ordinary file name on the
+/// targets that are actually committed (`docs/platform-matrix.md`), and
+/// rejecting it here would make a peer's file unopenable and unshareable there
+/// to close a hazard on a target whose scope is still undecided.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FileName(String);
 

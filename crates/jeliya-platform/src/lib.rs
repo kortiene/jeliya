@@ -100,10 +100,19 @@ pub use error::{Availability, CapabilityError, FailureKind};
 /// unification** makes the one-sentence version false in exactly the builds
 /// this crate exists to serve.
 ///
-/// **Tier 1 — any graph without an implementation crate** (the default build,
-/// the `fake` build, every CI job, `jeliya-ui` on its own): the factory module
+/// **Tier 1 — any graph without an implementation crate**: the factory module
 /// is not compiled at all, and a [`ShareableBlob`] is literally not
-/// constructible. The `compile_fail` doctest below pins that.
+/// constructible. The `compile_fail` doctest below pins that, and it is the
+/// per-crate jobs (`-p jeliya-platform --features fake`, the wasm and MSRV
+/// selections, `jeliya-ui` on its own) that resolve this way.
+///
+/// A `--workspace` invocation does **not**: `jeliya-platform-implementation` is
+/// a workspace member, so selecting the whole workspace unifies
+/// `implementation` onto the one `jeliya-platform` every member links, and even
+/// the doctest that pins tier 1 is gated off (it is `cfg`'d on the feature
+/// being absent). That is not a leak — it is tier 2, below, which is exactly
+/// the condition the boundary is built for, and it is why the door crate is a
+/// member at all: so the workspace lock, the MSRV job, and clippy cover it.
 ///
 /// **Tier 2 — a unified target binary.** When an M3–M5 target crate enables
 /// `implementation`, Cargo unifies the feature onto the single

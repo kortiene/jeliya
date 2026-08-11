@@ -347,12 +347,16 @@ jobs:
           cargo clippy --locked -p jeliya-platform --features fake --all-targets -- -D warnings
           cargo test --locked -p jeliya-platform --features fake
 
-      # The `implementation` factory surface (#174 §K4) is default-off, so the
-      # workspace run compiles it to nothing. Lint and test it explicitly, and
-      # again together with `fake` — that combination is what compiles the
-      # forged-token case in tests/capabilities.rs, the one that proves a
-      # factory-built handle the service never minted fails closed. The door
-      # crate is built on its own so its re-export cannot rot silently.
+      # The `implementation` factory surface (#174 §K4). Note that the
+      # `--workspace` run above does NOT leave it uncompiled: the door crate
+      # `jeliya-platform-implementation` is a workspace member, so selecting the
+      # workspace unifies the feature onto the single `jeliya-platform` every
+      # member links. What the workspace run does not do is exercise the surface
+      # on its own or alongside `fake` — and the `fake,implementation`
+      # combination is what compiles the forged-token case in
+      # tests/capabilities.rs, the one proving a factory-built handle the
+      # service never minted fails closed. The door crate is also built alone so
+      # its re-export cannot rot silently.
       - name: jeliya-platform implementation surface and its door crate
         run: |
           set -euo pipefail

@@ -36,7 +36,11 @@
   has no way to read — and a successful share consumes the artifact.
   `FileName` is validated, not merely promised: `FileName::parse` fails
   closed on separators, `.`/`..`, empty, and control characters, so a
-  peer-supplied name cannot carry path traversal into a native sink. Text
+  peer-supplied name cannot carry portable path syntax into a native sink —
+  with the platform-specific remainder (Windows `:` and trailing dots/spaces,
+  reserved device names, normalization, length caps) explicitly left to the
+  sink and documented as such, because those strings are ordinary file names
+  on the committed targets. Text
   language and formatting locale are two independent preference keys, per the
   product contract's "text locale != formatting locale from day one". Clipboard writes are
   asynchronous (a browser denial is the `writeText` promise rejection), and a

@@ -1,5 +1,5 @@
 //! The window-actions capability (#174 §D11): meaningful on packaged desktop,
-//! [`Availability::Unavailable`](crate::Availability::Unavailable) on browser
+//! [`crate::Availability::Unavailable`] on browser
 //! and Android.
 //!
 //! A component that offers a window control renders it as absent where the

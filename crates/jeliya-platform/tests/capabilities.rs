@@ -1589,3 +1589,83 @@ fn share_sink_surfaces_a_forced_denial_at_creation() {
         CapabilityError::Denied
     );
 }
+
+/// §K2 defence in depth: a token fired after the call but before the first poll
+/// still yields `Cancelled`, never a live sink. The call-time gate cannot see
+/// that window, and these three methods are the reference an M3–M5
+/// implementation — where opening a SAF document or a download handle really
+/// does suspend — will be written against.
+#[test]
+fn a_token_fired_before_the_first_poll_still_cancels() {
+    let (services, controller) = fake::desktop();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let ct = CancelToken::new();
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    block_on(async {
+        let export = std::pin::pin!(services.files().export_sink(target, &ct));
+        let open = std::pin::pin!(services.files().open_sink(name("a.bin"), None, &ct));
+        let share = std::pin::pin!(services.files().share_sink(name("b.bin"), None, &ct));
+        // Fired after every call, before any of them is polled.
+        ct.cancel();
+        assert_eq!(export.await.err(), Some(CapabilityError::Cancelled));
+        assert_eq!(open.await.err(), Some(CapabilityError::Cancelled));
+        assert_eq!(share.await.err(), Some(CapabilityError::Cancelled));
+    });
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ExportedLocal { .. })),
+        "a cancelled sink writes nothing"
+    );
+}
+
+/// The consume-on-success rule must be the **removal**, not the call-time
+/// check: the fake supports several open sheets at once, so two shares of one
+/// artifact can both pass validation. Only the one that actually takes the
+/// bytes may report success.
+#[test]
+fn two_overlapping_shares_of_one_artifact_cannot_both_succeed() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+
+    block_on(async {
+        let content = ShareContent::attachment(ShareAttachment::Fetched(artifact.clone()));
+        let mut first = std::pin::pin!(services.files().share_content(content, &ct));
+        let content = ShareContent::attachment(ShareAttachment::Fetched(artifact));
+        let mut second = std::pin::pin!(services.files().share_content(content, &ct));
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        assert!(controller.deliver_next());
+        assert!(controller.deliver_next());
+        assert!(matches!(
+            futures::poll!(first.as_mut()),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(
+            matches!(
+                futures::poll!(second.as_mut()),
+                Poll::Ready(Err(CapabilityError::Failed(FailureKind::Unreadable)))
+            ),
+            "the second sheet must not report success for bytes the first consumed"
+        );
+    });
+    assert_eq!(
+        controller
+            .effects()
+            .iter()
+            .filter(|e| matches!(e, RecordedEffect::Shared { .. }))
+            .count(),
+        1,
+        "exactly one share is recorded"
+    );
+}
