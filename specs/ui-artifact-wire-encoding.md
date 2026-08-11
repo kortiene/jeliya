@@ -150,9 +150,9 @@ artifact. The decision is cheap to make now and expensive to retrofit.
 
 ### 4.2 Compressible set and canonical identity
 
-- **Compress:** `html`, `js`/`mjs`, `css`, `wasm`, `json`/`map`, `webmanifest`,
-  `svg`, and `txt` — the text-like and wasm assets `guess_mime` already
-  enumerates (`serve.rs` line 1906). These are first-party, content-addressed,
+- **Compress:** `html`/`htm`, `js`/`mjs`, `css`, `wasm`, `json`/`map`,
+  `webmanifest`, `svg`, and `txt` — the text-like and wasm assets `guess_mime`
+  already enumerates (`serve.rs` line 1906). These are first-party, content-addressed,
   and contain no secret and no attacker-controlled input, so compressing them is
   safe (§4.4).
 - **Do not bother compressing** already-compressed binary assets (`png`, `jpg`,
@@ -365,6 +365,17 @@ its sealed variants, and the manifest carries shared provenance:
     with any canonical path); the daemon locates variant bytes **solely** by
     it, never by a derived filename. The concrete layout convention stays
     #183's choice — sealed in the manifest, never assumed.
+- **Canonical artifact digest** — the single identity the exact-version
+  rejection pins, derived **only** from the canonical byte set: entries sorted
+  bytewise by `path`, each contributing `path` and `identity.digest` to a
+  deterministic serialization (recommended: `path`, a NUL separator, the
+  lowercase-hex `identity.digest`, a newline, per entry), SHA-256 over that.
+  Excludes `encodings`, `content_type`, and provenance — sealing, dropping, or
+  re-compressing a variant, or a compressor bump, can never change canonical
+  identity; the whole-manifest digest continues to cover everything. #183 may
+  seal a different serialization only by recording it in the manifest; the
+  invariants (canonical-only inputs, bytewise `path` order, deterministic) are
+  contractual.
 - **Determinism requirement:** Brotli/gzip output is **not** guaranteed identical
   across tool versions or platforms. The build must pin the exact compressor and
   settings (sealed in `params`), and #183's cross-target identical-bytes gate must
@@ -378,8 +389,10 @@ its sealed variants, and the manifest carries shared provenance:
 - Give `UiSource` access to the parsed manifest for both variants (compiled-in
   for `Embedded`, loaded from the `--ui-dir` for `Dir`).
 - Change the load/serve path so `serve_static` (line 895) negotiates: resolve
-  the request path against the manifest's entry set first (with a valid
-  manifest an unlisted path is a **404**, never a filesystem or embed
+  the SPA fallback first (an extension-less route resolves to `index.html`,
+  exactly as today — deep links must keep reloading), then resolve the
+  **resulting asset path** against the manifest's entry set (with a valid
+  manifest an unlisted resolved path is a **404**, never a filesystem or embed
   fallback), parse
   `Accept-Encoding` (`q=0` excludes a coding; unknown codings are ignored; `*`
   matches every coding not explicitly listed — bare `*` accepts the sealed
@@ -432,7 +445,10 @@ variant `path`). The rows:
   every asset, every sealed coding **plus identity**, on both sources —
   request offering exactly that coding, assert `Content-Encoding` == the
   requested coding (absent for identity), proving the sealed variant rather
-  than canonical identity answered, and
+  than canonical identity answered, assert the **encoded** body's SHA-256 ==
+  that coding's sealed variant digest (byte-exact: a different valid stream
+  with the same decoded content must fail — this row checks what the serving
+  path returned, not the stored artifact), and
   assert the decoded body's SHA-256 == `identity.digest`.
 - **Fail-closed:** with a variant deliberately corrupted or removed from the
   source, a request offering that sealed encoding returns a **5xx**, never a
@@ -445,7 +461,10 @@ variant `path`). The rows:
 - **Allow-list:** an extra file (for example `debug.html`) in the `Dir` source
   but absent from the manifest → **404**, never a `200` with unverified bytes;
   the manifest-less bare directory serving that same file stays the dev-only
-  contrast.
+  contrast. In the same run, a deep link such as `/rooms/r-99` still resolves
+  through the SPA fallback to the sealed `index.html`, served negotiated as
+  usual — the allow-list applies to the resolved asset path, never the raw
+  route.
 - **Security regression:** `GET /api/files/local?...` with `Accept-Encoding: br,
   gzip` returns **no** `Content-Encoding` and the inert-attachment headers are
   unchanged.
