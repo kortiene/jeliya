@@ -8,6 +8,8 @@ import { test, expect } from "@playwright/test";
 // reproducing the #158 spike's "does the existing CSS survive the renderer
 // swap" guard rather than trusting class presence. It runs offline and needs
 // no daemon: #176 renders against the deterministic mock.
+let webSockets: string[] = [];
+
 test.beforeEach(async ({ page, baseURL }) => {
   const origin = baseURL === undefined ? undefined : new URL(baseURL).origin;
   await page.route("**/*", (route) => {
@@ -17,6 +19,25 @@ test.beforeEach(async ({ page, baseURL }) => {
     }
     return route.abort();
   });
+  // page.route() does not intercept WebSockets — the application's intended
+  // transport is exactly that, so the no-network guarantee must cover it.
+  // The #176 shell opens no socket at all: any attempt is a violation, so
+  // every WebSocket is blocked (never connected upstream) AND recorded, and
+  // the afterEach assertion fails the test that produced it.
+  webSockets = [];
+  await page.routeWebSocket(/.*/, () => {
+    // Never connect: the socket stays dead.
+  });
+  page.on("websocket", (ws) => {
+    webSockets.push(ws.url());
+  });
+});
+
+test.afterEach(() => {
+  expect(
+    webSockets,
+    "the offline smoke must see no WebSocket connections (no-network guarantee)",
+  ).toEqual([]);
 });
 
 test("the Dioxus shell renders offline with the shared design system", async ({ page }) => {

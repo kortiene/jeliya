@@ -161,13 +161,19 @@ fn module_script_bodies(html: &str) -> String {
             break;
         };
         let tag_end = open + tag_end_rel;
-        let tag = &lower[open..tag_end];
+        // Whitespace-normalized, space-prefixed attribute matching: a bare
+        // substring test would also accept `data-type="module"`, which the
+        // browser does not execute as a module.
+        let tag_norm = lower[open..tag_end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         let body_start = tag_end + 1;
         let Some(close_rel) = lower[body_start..].find("</script") else {
             break;
         };
         let body_end = body_start + close_rel;
-        if tag.contains("type=\"module\"") || tag.contains("type='module'") {
+        if tag_norm.contains(" type=\"module\"") || tag_norm.contains(" type='module'") {
             out.push_str(&html[body_start..body_end]);
             out.push('\n');
         }
@@ -189,8 +195,13 @@ fn stylesheet_link_tags(html: &str) -> String {
             break;
         };
         let end = open + end_rel;
-        let tag = &lower[open..end];
-        if tag.contains("rel=\"stylesheet\"") || tag.contains("rel='stylesheet'") {
+        // Same attribute-boundary discipline as the module-script scan: a
+        // `data-rel="stylesheet"` must not count.
+        let tag_norm = lower[open..end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if tag_norm.contains(" rel=\"stylesheet\"") || tag_norm.contains(" rel='stylesheet'") {
             out.push_str(&html[open..end]);
             out.push('\n');
         }

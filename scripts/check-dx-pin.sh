@@ -45,9 +45,13 @@ is_diagnostic() {
 }
 
 # A pinned version token: `--version =X` / `--version=X` / `tool@X`, where `X`
-# is a literal digit OR a shell variable that holds the locked version.
+# is a literal digit — or exactly `$locked_wbg`, the ONE variable accepted,
+# because build-web.sh derives it from Cargo.lock and hard-fails on mismatch.
+# Any other variable could be sourced dynamically (even "latest") and is not
+# a pin.
 pinned() {
-  grep -Eq -- '--version[= ]=?[0-9$]|@[0-9$]' <<<"$1"
+  grep -Eq -- '--version[= ]=?[0-9]|@[0-9]' <<<"$1" && return 0
+  grep -Eq -- '(--version[= ]=?|@)\$\{?locked_wbg\}?' <<<"$1"
 }
 
 # 1. Any dioxus-cli / dx install must be version-pinned.
