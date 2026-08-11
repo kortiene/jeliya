@@ -48,14 +48,6 @@ unset RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 for cargo_var in $(compgen -e | grep -E '^CARGO_(PROFILE_|BUILD_RUSTFLAGS$|BUILD_RUSTDOCFLAGS$|BUILD_RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?$|TARGET_.*_RUSTFLAGS$)' || true); do
   unset "$cargo_var"
 done
-# Space-safe flag delivery: RUSTFLAGS is whitespace-split, so a checkout or
-# home directory containing a space would shear a remap argument apart and
-# fail the build. CARGO_ENCODED_RUSTFLAGS is unit-separator-delimited for
-# exactly this; it also outranks RUSTFLAGS, so setting it doubles as the
-# override-channel pin.
-US=$'\x1f'
-export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${repo}=.${US}--remap-path-prefix=${HOME}=~"
-
 # Cargo CONFIG FILES are one more override channel: $CARGO_HOME/config.toml
 # can set build.rustc or [profile.release] keys that bypass every
 # environment-level pin above, invisibly to the determinism check (both of
@@ -72,6 +64,17 @@ for shared in registry git; do
   fi
 done
 export CARGO_HOME="$iso_cargo_home"
+
+# Space-safe flag delivery: RUSTFLAGS is whitespace-split, so a checkout or
+# home directory containing a space would shear a remap argument apart and
+# fail the build. CARGO_ENCODED_RUSTFLAGS is unit-separator-delimited for
+# exactly this; it also outranks RUSTFLAGS, so setting it doubles as the
+# override-channel pin. The isolated CARGO_HOME gets its own remap to a
+# FIXED token: registry/git dependency sources resolve through the per-run
+# mktemp path, and without the remap those embedded paths would differ
+# between the determinism check's two samples (they did — CI caught it).
+US=$'\x1f'
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${repo}=.${US}--remap-path-prefix=${iso_cargo_home}=/cargo-home${US}--remap-path-prefix=${HOME}=~"
 
 # The wasm-bindgen CLI version MUST match the locked library version exactly.
 locked_wbg="$(awk '
