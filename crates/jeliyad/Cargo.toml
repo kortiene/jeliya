@@ -11,10 +11,12 @@ name = "jeliyad"
 path = "src/main.rs"
 
 [features]
-# Embed the built web UI (ui/dist) into the binary so a single `jeliyad`
-# serves the SPA on its own loopback origin. Requires `ui/dist` to exist at
-# build time (run `npm run build` in ui/ first). Off by default so a plain
-# `cargo build` stays a lean WS-only daemon with no UI-build dependency.
+# Embed the built web UI (crates/jeliya-ui/dist, the #176 Dioxus artifact)
+# into the binary so a single `jeliyad` serves the SPA on its own loopback
+# origin. Requires the artifact to exist at build time (run
+# `scripts/build-web.sh` first); build.rs fails the build closed otherwise.
+# Off by default so a plain `cargo build` stays a lean WS-only daemon with
+# no UI-build dependency.
 embed-ui = ["dep:rust-embed"]
 # Diagnostic-only verifier binary. Off by default and never enabled for the
 # five release artifacts. jeliya-core forwards to the published upstream seam

@@ -5,7 +5,7 @@
 # or test it. It is deleted outright under #202 once the Android DirectClient
 # candidate passes. The crate stays on disk (excluded, not a member) so the
 # retirement slice owns the removal atomically.
-members = ["crates/jeliya-core", "crates/jeliyad", "crates/jeliya-api", "crates/jeliya-codec", "crates/jeliya-client"]
+members = ["crates/jeliya-core", "crates/jeliyad", "crates/jeliya-api", "crates/jeliya-codec", "crates/jeliya-client", "crates/jeliya-ui"]
 exclude = ["crates/jeliya-ffi"]
 resolver = "2"
 

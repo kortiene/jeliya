@@ -78,18 +78,23 @@ for `v0.6.0`, and remains covered by adversarial installer tests.
 ## Mandatory build ordering (UI before cargo)
 
 The release binary is built with the cargo feature `embed-ui`, which embeds
-`ui/dist` into the binary via `rust-embed`. **`ui/dist` must exist before the
-cargo build**, so every build path does, in order:
+`crates/jeliya-ui/dist` (the Dioxus web artifact, #176) into the binary via
+`rust-embed` behind a fail-closed `build.rs` guard. **The artifact must exist
+before the cargo build**, so a by-hand build does, in order:
 
 ```sh
-cd ui && npm ci && npm run build      # produces ui/dist  (do this FIRST)
+bash scripts/build-web.sh             # produces crates/jeliya-ui/dist (FIRST)
 cargo build --release -p jeliyad --features embed-ui   # (or `cargo zigbuild` for musl)
 ```
 
-`release.yml` enforces this ordering by building the UI once, retaining it as a
-private workflow artifact, and requiring every matrix build to download and
-assert that exact input before Cargo runs. If you build a release binary by
-hand, preserve the same order or the UI will be missing or stale.
+Two release-line caveats, stated plainly: the artifact this embeds is the
+mock-composed #176 foundation shell (live transport is #168/#171; the sealed
+manifest is #183), and `release.yml`'s tagged pipeline still builds the React
+`ui/dist` — the shipped artifact until #200 per the architecture record — so
+a tagged release from `main` currently **fails closed** at the embed guard
+rather than shipping either non-working UI. `release.yml` retains its
+build-once/assert-input ordering for whichever artifact the cutover (#200)
+settles on.
 
 Linux targets use `cargo zigbuild` against `*-unknown-linux-musl` to produce
 static binaries and dodge glibc-version breakage (the tree has C deps — `ring`,

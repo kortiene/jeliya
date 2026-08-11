@@ -3,7 +3,7 @@ type: "Decision"
 title: "First-release distribution boundary"
 description: "Decision record for how the first release is delivered: one content-addressed Dioxus artifact served by the trusted local daemon and embedded in packaged desktop targets, the trust boundary each surface sits on, the operator-pasted pairing code that authenticates an ordinary browser, and the hosted-origin and delegated-browser work deferred behind a new architecture decision."
 tags: ["architecture", "clean-slate", "dioxus", "release", "security"]
-timestamp: "2026-08-10T00:00:00Z"
+timestamp: "2026-08-10T18:00:00Z"
 status: "canonical"
 implementation_status: "planned"
 verification_status: "unverified"
@@ -140,6 +140,12 @@ boundary requires of it.
   serves are identical. There is no per-surface build.
 - **Content-addressed, with recorded provenance** — source revision, toolchain
   versions, and digest.
+- **Pre-compressed variants, sealed.** The artifact's manifest includes `br` and
+  `gzip` variants of each compressible asset, each digested, served by static
+  content negotiation; the canonical content-address stays the uncompressed bytes,
+  and a requested-but-corrupt or missing variant fails closed rather than serving
+  uncompressed (see
+  [how the embedded UI artifact is compressed on the wire](ui-artifact-wire-encoding.md)).
 - **Exact-version rejection.** A daemon consumes only the artifact digest it was
   built against. A mismatch **fails closed** with the reset path shown; it does
   not fall back, and it does not serve what it has.
