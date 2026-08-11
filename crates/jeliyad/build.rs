@@ -47,18 +47,22 @@ fn main() {
         Ok(text) => text,
         Err(_) => fail("the embedded UI has no index.html"),
     };
-    // The HTML referencing a wasm URL is not the same as the module being
-    // there: a marked-but-incomplete directory (a referenced module deleted,
-    // marker and index intact) must fail the build, not ship a UI that 404s
-    // on every load. "Some non-empty .wasm/.js exists" is not enough either —
-    // a stale, differently named module would stand in for the one the shell
-    // actually imports — so validate the exact root-relative modules
-    // index.html references (they are root-relative by the SPA-fallback
-    // contract stated in index.html itself).
+    // The HTML referencing a URL is not the same as the file being there: a
+    // marked-but-incomplete directory (a referenced module or the stylesheet
+    // deleted, marker and index intact) must fail the build, not ship a UI
+    // that 404s on every load or renders without the canonical design
+    // system. "Some non-empty .wasm/.js exists" is not enough either — a
+    // stale, differently named file would stand in for the one the shell
+    // actually loads — so validate the exact root-relative references
+    // index.html makes (they are root-relative by the SPA-fallback contract
+    // stated in index.html itself).
     let module_refs: Vec<&str> = {
         let mut refs: Vec<&str> = index
             .split(['"', '\''])
-            .filter(|t| t.starts_with('/') && (t.ends_with(".wasm") || t.ends_with(".js")))
+            .filter(|t| {
+                t.starts_with('/')
+                    && (t.ends_with(".wasm") || t.ends_with(".js") || t.ends_with(".css"))
+            })
             .collect();
         refs.sort_unstable();
         refs.dedup();
@@ -84,8 +88,8 @@ fn main() {
             .unwrap_or(false);
         if !nonempty {
             fail(&format!(
-                "the embedded UI is missing or has an empty {reference} — a module index.html \
-                 loads; the artifact is incomplete"
+                "the embedded UI is missing or has an empty {reference} — a file index.html \
+                 references; the artifact is incomplete"
             ));
         }
     }

@@ -30,7 +30,14 @@ out="${1:-$repo/crates/jeliya-ui/dist}"
 export LC_ALL=C
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
 export CARGO_INCREMENTAL=0
-export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$repo=. --remap-path-prefix=$HOME=~"
+# The canonical flags are EXACTLY these — caller RUSTFLAGS (say, -C
+# debuginfo=1) would change the emitted wasm while the marker records only
+# the standard pins, and the determinism check runs both of its samples under
+# the same inherited environment, so it cannot catch an environment-specific
+# artifact. CARGO_ENCODED_RUSTFLAGS outranks RUSTFLAGS in cargo's precedence
+# and is cleared for the same reason.
+unset CARGO_ENCODED_RUSTFLAGS
+export RUSTFLAGS="--remap-path-prefix=$repo=. --remap-path-prefix=$HOME=~"
 
 # The wasm-bindgen CLI version MUST match the locked library version exactly.
 locked_wbg="$(awk '
