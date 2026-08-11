@@ -5240,9 +5240,10 @@ mod tests {
     // behaviour that the future implementation must not silently break.
 
     /// §4.2 "Compress" set: html, js/mjs, css, wasm, json/map, webmanifest,
-    /// svg, txt must all resolve to a text-like or wasm MIME type — never a
-    /// binary one.  This is the set the #183 manifest will seal Brotli+gzip
-    /// variants for; a binary MIME here would indicate a mismatch.
+    /// svg, txt, and ttf (an uncompressed font container) must all resolve to
+    /// their canonical non-fallback MIME type.  This is the set the #183
+    /// manifest will seal Brotli+gzip variants for; the octet-stream fallback
+    /// here would indicate a mismatch.
     #[test]
     fn guess_mime_compressible_extensions_return_text_or_wasm_types() {
         let compressible = [
@@ -5257,6 +5258,7 @@ mod tests {
             ("app.webmanifest", "application/manifest+json"),
             ("icon.svg", "image/svg+xml"),
             ("readme.txt", "text/plain"),
+            ("font.ttf", "font/ttf"),
         ];
         for (file, expected_prefix) in compressible {
             let mime = guess_mime(file);
@@ -5273,8 +5275,8 @@ mod tests {
         }
     }
 
-    /// §4.2 "Do not bother compressing" set: png, jpg, webp, woff2, gif, ico
-    /// are already-compressed binary assets.  The manifest may omit their
+    /// §4.2 "Do not bother compressing" set: png, jpg/jpeg, webp, woff/woff2,
+    /// gif, ico are already-compressed binary assets.  The manifest may omit their
     /// variants; the daemon serves them canonical.  They must stay binary MIME
     /// types so the build knows not to waste time compressing them.
     #[test]
@@ -5285,6 +5287,7 @@ mod tests {
             ("photo.jpeg", "image/jpeg"),
             ("image.webp", "image/webp"),
             ("font.woff2", "font/woff2"),
+            ("font.woff", "font/woff"),
             ("anim.gif", "image/gif"),
             ("favicon.ico", "image/x-icon"),
         ];
@@ -5498,6 +5501,11 @@ mod tests {
     #[test]
     fn serve_static_dir_missing_asset_with_extension_returns_404() {
         let dir = TempDir::new().expect("ui dir");
+        // Seed the SPA shell: an erroneous fallback for an extension-bearing
+        // miss would serve it with 200 and fail the assertion below. Without
+        // the fixture, this test could not tell the forbidden fallback from
+        // the intended direct 404 — both would 404 in an empty directory.
+        std::fs::write(dir.path().join("index.html"), b"<html>app</html>").expect("write index");
         let ui = super::UiSource::Dir(dir.path().to_path_buf());
 
         let response = super::serve_static("/assets/missing.wasm", &ui);

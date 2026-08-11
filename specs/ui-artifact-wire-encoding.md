@@ -151,8 +151,12 @@ artifact. The decision is cheap to make now and expensive to retrofit.
 ### 4.2 Compressible set and canonical identity
 
 - **Compress:** `html`/`htm`, `js`/`mjs`, `css`, `wasm`, `json`/`map`,
-  `webmanifest`, `svg`, and `txt` — the text-like and wasm assets `guess_mime`
-  already enumerates (`serve.rs` line 1906). These are first-party, content-addressed,
+  `webmanifest`, `svg`, `txt`, and `ttf` (uncompressed font container) — per
+  `guess_mime`'s characterized table (`serve.rs` line 1906). The
+  do-not-compress set is `png`, `jpg`/`jpeg`, `webp`, `woff`/`woff2`, `gif`,
+  `ico`; together the two sets classify **every** recognized extension, and
+  an extension added to `guess_mime` later must be classified in the same
+  change. These are first-party, content-addressed,
   and contain no secret and no attacker-controlled input, so compressing them is
   safe (§4.4).
 - **Do not bother compressing** already-compressed binary assets (`png`, `jpg`,
@@ -375,8 +379,10 @@ its sealed variants, and the manifest carries shared provenance:
     prefix, no absolute/empty/`.`/`..` segment — a native join would honor
     `..\`/`C:\` on Windows and escape the artifact directory), and segments
     are restricted to a **portable alphabet**: lowercase ASCII letters,
-    digits, `_`, `-`, interior `.` (no leading/trailing dot, no
-    Windows-reserved device name `con`/`nul`/`aux`/`com1`–`9`/`lpt1`–`9`;
+    digits, `_`, `-`, interior `.` (no leading/trailing dot, and no segment
+    whose **stem** — before the first dot — is a Windows-reserved device
+    name `con`/`prn`/`aux`/`nul`/`com1`–`9`/`lpt1`–`9`, covering
+    extension-bearing forms like `con.js`;
     each segment at most **255 bytes**, the common filesystem component
     bound, and each complete relative path at most **1024 bytes** —
     individually valid segments can still compose a pathname no filesystem

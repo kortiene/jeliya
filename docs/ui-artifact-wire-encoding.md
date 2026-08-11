@@ -93,14 +93,20 @@ make now and expensive to retrofit.
 
 ## Compressible set and canonical identity
 
-- **Compress** the text-like and wasm assets `guess_mime` already enumerates:
+- **Compress** the text-like, wasm, and uncompressed-container assets
+  `guess_mime` already enumerates:
   `html`/`htm`, `js`/`mjs`, `css`, `wasm`, `json`/`map`, `webmanifest`, `svg`,
-  and `txt`. These are first-party, content-addressed, and contain no secret and no
+  `txt`, and `ttf` (an uncompressed font container that compresses well).
+  These are first-party, content-addressed, and contain no secret and no
   attacker-controlled input, so compressing them is safe (see
   [Security boundary](#security-boundary)).
-- **Do not bother compressing** already-compressed binary assets (`png`, `jpg`,
-  `webp`, `woff2`, `gif`, `ico`): the manifest may omit their variants, and the
-  daemon serves them canonical. The build should skip a variant whose bytes are
+- **Do not bother compressing** already-compressed binary assets (`png`,
+  `jpg`/`jpeg`, `webp`, `woff`/`woff2` — both font containers carry internal
+  compression — `gif`, `ico`): the manifest may omit their variants, and the
+  daemon serves them canonical. Together the two sets classify **every**
+  extension the characterized MIME table recognizes; an extension added to
+  `guess_mime` later must be classified here in the same change, so #183
+  never meets an asset with no defined variant policy. The build should skip a variant whose bytes are
   not smaller than the canonical bytes; a variant larger than the original is a
   build-time waste, not a correctness problem, and the daemon must treat "no
   sealed variant" as "serve canonical".
@@ -314,8 +320,10 @@ its sealed variants, and the manifest carries shared provenance:
     and escape the artifact directory from a schema-valid manifest. Path
     segments are further restricted to a **portable alphabet**: lowercase
     ASCII letters, digits, `_`, `-`, and interior `.` (no leading or trailing
-    dot, and no Windows-reserved device name such as `con`, `nul`, `aux`,
-    `com1`–`com9`, `lpt1`–`lpt9`; each segment at most **255 bytes**, the
+    dot, and no segment whose **stem** — the part before the first dot — is
+    a Windows-reserved device name (`con`, `prn`, `aux`, `nul`,
+    `com1`–`com9`, `lpt1`–`lpt9`), which covers extension-bearing forms such
+    as `con.js` that Windows reserves just the same; each segment at most **255 bytes**, the
     common filesystem component bound, and each complete relative path at
     most **1024 bytes** — individually valid segments can still compose a
     pathname no filesystem accepts. The cap bounds the relative key only, so
