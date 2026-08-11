@@ -291,7 +291,9 @@ while IFS= read -r line; do
   # the action receives only the unversioned name, so a version the raw line
   # carries after `#` pins nothing. The input is a comma/newline-separated
   # LIST (multiline forms arrive here joined), so EVERY protected token must
-  # carry its own trailing pin — a pinned neighbor pins nothing.
+  # carry its own trailing pin — a pinned neighbor pins nothing. The key
+  # itself may be QUOTED (`"tool":` is the same YAML mapping key), so the
+  # feed accepts optional quotes and space before the colon.
   val="$(sed 's/^[^:]*://' <<<"$(strip_comment_tail "$line")")"
   set -f
   for tok in $(tr ',' ' ' <<<"$val"); do
@@ -307,7 +309,7 @@ while IFS= read -r line; do
     fi
   done
   set +f
-done < <(scan '^[[:space:]]*tool:.*(dioxus-cli|wasm-bindgen)')
+done < <(scan '^[[:space:]]*["'\'']?tool["'\'']?[[:space:]]*:.*(dioxus-cli|wasm-bindgen)')
 
 if [ "$fail" -ne 0 ]; then
   echo

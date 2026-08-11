@@ -144,8 +144,9 @@ fn no_cfg_target_forks_in_shared_components() {
             // of the WHOLE FILE: per-line matching missed multiline
             // expressions (`#[cfg(any(` on one line, `target_os = "windows"`
             // on the next), and whitespace stripping already covers spaced
-            // forms and `cfg!(...)`. The `target_*=` tokens catch every
-            // discriminating key regardless of `any`/`all`/`not` nesting.
+            // forms and `cfg!(...)`. The `target_` prefix patterns catch
+            // every discriminating key regardless of `any`/`all`/`not`
+            // nesting.
             // (Comment stripping is the naive `//` split — a guard, not a
             // parser; components carry no `//` inside string literals.)
             let compact: String = text
@@ -156,14 +157,15 @@ fn no_cfg_target_forks_in_shared_components() {
                 .filter(|c| !c.is_whitespace())
                 .collect();
             for pattern in [
-                "target_arch=",
-                "target_os=",
-                "target_family=",
-                "target_pointer_width=",
-                "target_env=",
-                "target_endian=",
-                "target_vendor=",
-                "target_feature=",
+                // Every `target_*` cfg key — arch/os/family/env/abi/
+                // endian/vendor/feature/pointer_width/has_atomic and any
+                // key rustc adds later — discriminates platforms. In the
+                // compacted text a cfg operand is always preceded by an
+                // opening paren (`cfg(`, `any(`, `all(`, `not(`,
+                // `cfg_attr(`, `cfg!(`) or a comma, so two prefixes cover
+                // every predicate position without enumerating keys.
+                "(target_",
+                ",target_",
                 // ANY feature gate is a fork a component must not own —
                 // `feature="desktop"` self-selects a platform as surely as
                 // the renderer features do. Components carry no cfg
@@ -341,10 +343,12 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                 // it (direct, grouped, or aliased) lets a later signature
                 // spell `value::Value` with neither fully qualified form on
                 // any line — and importing the `json` MACRO builds a Value
-                // with no import of the type at all. The prefixes bound the
-                // match so `from_value`/`to_value` imports do not trip the
-                // module patterns (they are flagged by the line scan's
-                // path-position doors instead).
+                // with no import of the type at all. The CONVERSION
+                // functions are the same breach through a group: `use
+                // serde_json::{to_value as encode};` never spells the path
+                // the line scan's doors look for, so any `to_value`/
+                // `from_value` inside a serde_json use declaration is
+                // flagged here, aliased or not.
                 if declaration.contains("Value")
                     || declaration.contains("self")
                     || declaration.contains("::value")
@@ -353,6 +357,8 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                     || declaration.contains("::json")
                     || declaration.contains("{json")
                     || declaration.contains(",json")
+                    || declaration.contains("to_value")
+                    || declaration.contains("from_value")
                 {
                     offenders.push(format!(
                         "{} — a use declaration imports serde_json Value, its value module, or the json! macro",

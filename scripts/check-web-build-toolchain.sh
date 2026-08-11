@@ -22,6 +22,9 @@ fi
 fail=0
 # Match invocations, not prose: comment lines (which describe the guard itself)
 # are stripped first, then a word boundary is required before the tool name.
+# The TRAILING boundary is any non-identifier character or end of line — the
+# shell separates `npm<TAB>ci`, `npm;`, and `npm|` exactly like `npm ci`, so
+# a literal-space-only boundary would launder a real invocation.
 # `ui/dist` is forbidden as an input in any form, but `jeliya-ui/dist` (the
 # Dioxus output) is not `ui/dist` and must not match.
 code="$(grep -vE '^[[:space:]]*#' "$recipe")"
@@ -32,12 +35,12 @@ while IFS= read -r pattern; do
     fail=1
   fi
 done <<'PATTERNS'
-(^|[^[:alnum:]_])npm( |$)
-(^|[^[:alnum:]_])npx( |$)
-(^|[^[:alnum:]_])vite( |$)
-(^|[^[:alnum:]_])tsc( |$)
-(^|[^[:alnum:]_])flutter( |$)
-(^|[^[:alnum:]_])dart( |$)
+(^|[^[:alnum:]_])npm([^[:alnum:]_-]|$)
+(^|[^[:alnum:]_])npx([^[:alnum:]_-]|$)
+(^|[^[:alnum:]_])vite([^[:alnum:]_-]|$)
+(^|[^[:alnum:]_])tsc([^[:alnum:]_-]|$)
+(^|[^[:alnum:]_])flutter([^[:alnum:]_-]|$)
+(^|[^[:alnum:]_])dart([^[:alnum:]_-]|$)
 (^|[^[:alnum:]_-])ui/dist
 (^|[^[:alnum:]_-])node_modules
 PATTERNS
