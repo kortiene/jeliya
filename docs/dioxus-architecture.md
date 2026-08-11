@@ -21,12 +21,18 @@ stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
 protocol and storage generation, and retires React, Flutter, the Dart
 protocol package, the C ABI, and `jeliya-ffi`.
 
-Read every statement below as a requirement on unwritten code. The released
-`v0.6.x` line and the current source candidate ship React in `ui/`, Flutter
-in `app/`, and Dart transports in `dart/jeliya_protocol/`; the workspace
-crates are `jeliya-core`, `jeliyad`, and `jeliya-ffi`. No Dioxus code exists
-in the tree, and [the daemon protocol](PROTOCOL.md) remains the contract every
-released daemon speaks until protocol v2 is specified.
+Read every statement below as a requirement the tree either already meets —
+the milestones the status line marks implemented — or must still grow into.
+The released `v0.6.x` line and the current source candidate still ship React
+in `ui/`, Flutter in `app/`, and Dart transports in `dart/jeliya_protocol/`;
+the workspace members are now `jeliya-core`, `jeliyad`, `jeliya-api`,
+`jeliya-codec`, `jeliya-client`, and `jeliya-ui` (the shared Dioxus crate,
+#176), with `jeliya-ffi` quarantined from the active build under #166 until
+#202 deletes it. [Protocol v2](protocol-v2.md) is specified and the in-tree
+daemon's wire protocol is v2-only (a v1-era browser `GET /api/session` token
+handshake survives for the served UI pending the #166 remainder); [the v1
+daemon protocol](PROTOCOL.md) remains the contract every **released** daemon
+speaks.
 
 Program: #156. This record satisfies #157 and records the canonical
 architecture selected by the first-release distribution decision, #113. It
@@ -36,12 +42,14 @@ supersedes the [production deployment proposal](production-deployment.md).
 
 Three recorded repository facts forced the decision.
 
-**The protocol contract exists three times.** `jeliya-core` exposes 24 v1 RPC
-methods. The authoritative method map is duplicated in
-`ui/src/lib/protocol.ts`, Dart models live in
-`dart/jeliya_protocol/lib/src/models.dart`, and all 24 dispatch arms live in
-`crates/jeliya-core/src/engine.rs`. The workspace has no shared API crate, so
-no compiler checks that the three agree (#163).
+**The protocol contract existed three times.** `jeliya-core` exposed 24 v1 RPC
+methods. The authoritative method map was duplicated in
+`ui/src/lib/protocol.ts`, Dart models lived in
+`dart/jeliya_protocol/lib/src/models.dart`, and all 24 dispatch arms lived in
+`crates/jeliya-core/src/engine.rs`. The workspace had no shared API crate, so
+no compiler checked that the three agreed (#163 — the landed `jeliya-api`
+crate now closes this; the React and Dart copies persist only until #200 and
+#202 retire them).
 
 **Every user-facing decision ships twice.** React and Flutter each need their
 own implementation, their own fixtures, and a gate to hold them together —
@@ -88,7 +96,7 @@ The program's clean-slate policy, verbatim from #156:
 > clients and old data fail closed with an actionable reset path; no
 > unverified directory is deleted automatically.
 
-**How old clients fail.** `jeliyad` becomes v2-only and rejects unsupported
+**How old clients fail.** `jeliyad` is v2-only and rejects unsupported
 clients during the handshake, **before dispatch and before any mutation
 executes** (#161, #164, #166). No legacy client may execute a v2 mutation
 (#157). Stale processes and state generations fail explicitly; a
@@ -158,13 +166,13 @@ issue assigns owners, so these roles are this record's own allocation.
 | `jeliya-ui` | new — the shared UI crate, with Dioxus and `dx` pinned | web maintainer | platform authority; it reaches it only through injected services |
 | `PlatformServices` | new — one injectable boundary for files, persistence, lifecycle, URLs, clipboard and share, navigation, and window actions | cross-platform maintainers | nothing; every service has a deterministic test implementation |
 | package identity | new — one reserved application or bundle identifier per packaged target | release maintainer | any identifier a retiring client already ships, which would let a legacy install upgrade into the new generation |
-| `crates/jeliya-ffi` | to be removed — still present, still building, and still the Android transport; quarantined from the active build under #166, deleted under #202 | mobile maintainer | — |
+| `crates/jeliya-ffi` | to be removed — still present on disk and still the Flutter Android transport, but no longer built or tested by the workspace; quarantined from the active build under #166, deleted under #202 | mobile maintainer | — |
 
 Direction rules that hold across the stack:
 
 - Browser WASM must stay free of Iroh and native dependencies; `jeliya-api`
   must compile for `wasm32-unknown-unknown`, and CI must assert its
-  dependency tree once the crate exists (#157, #163, #171).
+  dependency tree now that the crate exists (#157, #163, #171).
 - Iroh types are not moved into `jeliya-api`. Conversion happens at explicit
   module boundaries (#165).
 - Shared components contain no platform business-logic `cfg` forks (#174).
@@ -198,7 +206,9 @@ fallback.
 Pretending `DirectClient` reconnects is an explicit non-goal (#173). One
 fault-injected suite must prove all four expose the same view-level contract
 while retaining honest transport-specific lifecycle differences (#175). No
-such suite exists, and neither does any of the four adapters.
+such suite exists; of the four adapters only the deterministic mock has
+landed (shipped with the seam, #167) — `WsWeb`, `WsNative`, and
+`DirectClient` do not yet exist.
 
 **`PlatformServices`** (#174) keeps platform authority out of shared RSX
 components through one injectable boundary covering files, persistence,
@@ -212,9 +222,10 @@ artifact, and **the exact same bytes** must be embedded in every daemon
 target (#183). Its sealed manifest must carry the renderer, source SHA,
 toolchain versions, and digest, and consumption of a legacy artifact must
 fail. **No React or renderer rollback artifact may be produced under this
-architecture.** Today the web build produces the React `ui/dist` archive that
-`jeliyad` embeds and that `v0.6.0` published; that remains the shipped
-artifact until #200.
+architecture.** Today the in-tree build embeds the reproducible Dioxus
+artifact (`crates/jeliya-ui/dist`, #176) and fails closed on React output;
+the React `ui/dist` archive that `v0.6.0` published remains the **shipped**
+artifact until the release-line cutover (#200).
 
 The delivery shape is fixed by
 [the first-release distribution boundary](first-release-distribution.md)
@@ -361,10 +372,11 @@ manifest is #183, the Dioxus-side token gate is #177, and React removal / the
 release-line cutover is #200. `ui/` and its per-client gates stay intact until
 then (Decision 5).
 
-Two further open questions are decisions rather than measurements, and neither
-waits on a spike. #92 selects the v2 shared-file maximum in M0 so that #161 can
-specify the protocol — the 100 MiB v1 limit is a reference, and deferring the
-choice until implementation evidence arrives is an explicit non-goal there.
+Two further open questions were decisions rather than measurements, and
+neither waited on a spike. #92 selected the v2 shared-file maximum in M0 so
+that #161 could specify the protocol — [protocol v2](protocol-v2.md) now
+fixes `max_shared_file_bytes` from
+[the shared-file size policy](shared-file-size.md).
 #188 decides whether Windows is in first-release scope. Both are listed under
 [what this record does not decide](#what-this-record-does-not-decide).
 

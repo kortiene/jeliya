@@ -29,6 +29,14 @@ if [ -z "$out" ]; then
   echo "FAIL: output path normalized to empty — refusing." >&2
   exit 1
 fi
+# Anchor a relative output under the repo (this script already runs from
+# $repo, so resolution is unchanged): an option-shaped name like `-dist`
+# must never reach ls/rm/mv/find as a flag, and later stages run cargo from
+# a different cwd where a relative path would resolve elsewhere.
+case "$out" in
+  /*) ;;
+  *) out="$repo/$out" ;;
+esac
 
 # Reproducibility controls. A fixed SOURCE_DATE_EPOCH and remapped path prefix
 # keep absolute paths and timestamps out of the binary; LC_ALL=C fixes any
@@ -179,15 +187,35 @@ echo "==> wasm-bindgen $locked_wbg (no wasm-opt)"
 # and not a previous output of THIS build (the marker must carry this
 # script's own renderer and crate fields — a mere file named
 # .dioxus-artifact in some unrelated tree grants nothing) — a typo'd path
-# must not be irreversibly destroyed.
+# must not be irreversibly destroyed. An existing NON-directory can never
+# be a previous output, so it is refused outright; and an enumeration
+# failure is NOT proof of emptiness — a directory that cannot be listed
+# fails closed instead of being deleted unseen. The marker gate guards
+# ACCIDENTS; #183's sealed content-addressed manifest owns adversarial
+# integrity (the same stance as the daemon embed guard's).
 is_own_output() {
   grep -qx 'renderer=dioxus-web' "$1/.dioxus-artifact" 2>/dev/null &&
     grep -qx 'crate=jeliya-ui' "$1/.dioxus-artifact" 2>/dev/null
 }
-if [ -e "$out" ] && ! is_own_output "$out" && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
-  echo "FAIL: refusing to replace $out — it exists, is non-empty, and carries no .dioxus-artifact marker." >&2
+if [ -e "$out" ] && [ ! -d "$out" ]; then
+  echo "FAIL: refusing to replace $out — it exists and is not a directory." >&2
   echo "      pass a new or empty directory, or a previous build output." >&2
   exit 1
+fi
+if [ -d "$out" ] && ! is_own_output "$out"; then
+  # `find`, not a newline-stripped `ls` substitution: a directory whose only
+  # entry has a newline-only name would read back as empty text and be
+  # destroyed; any find hit keeps the non-empty "$out/" path prefix after
+  # the substitution strips trailing newlines.
+  if ! entries="$(find "$out" -mindepth 1 -print -quit 2>/dev/null)"; then
+    echo "FAIL: refusing to replace $out — it cannot be enumerated, so it cannot be proven empty." >&2
+    exit 1
+  fi
+  if [ -n "$entries" ]; then
+    echo "FAIL: refusing to replace $out — it exists, is non-empty, and carries no .dioxus-artifact marker." >&2
+    echo "      pass a new or empty directory, or a previous build output." >&2
+    exit 1
+  fi
 fi
 # STAGE, then swap: an interrupted run must never leave $out half-written
 # (marker-less), or every later invocation would refuse it as unrelated data
@@ -217,6 +245,14 @@ rustc=$pinned_rustc
 wasm_bindgen=$locked_wbg
 EOF
 
+# The parent must be writable BEFORE anything is deleted: `rm -rf` unlinks
+# a previous output's contents first and only then fails on the directory
+# entry itself, which would destroy the old artifact AND discard the staged
+# tree through the EXIT trap — losing both.
+if [ ! -w "$(dirname "$out")" ]; then
+  echo "FAIL: cannot replace $out — its parent directory is not writable." >&2
+  exit 1
+fi
 rm -rf "$out"
 mv "$staging" "$out"
 staging=""
