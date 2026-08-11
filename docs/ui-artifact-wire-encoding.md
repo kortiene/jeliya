@@ -283,11 +283,15 @@ its sealed variants, and the manifest carries shared provenance:
   stored inside the very bytes it covers is a fixed point no producer can
   compute.
 - **Per-asset entry:**
-  - `path` (request-relative, matching `safe_rel` output),
+  - `path` (request-relative, matching `safe_rel` output; **unique** across
+    the manifest — a duplicate asset `path` fails manifest validation, since
+    the serving lookup could not deterministically select between them),
   - `content_type` (the canonical decoded type),
   - `identity`: the content-address, `{ digest: sha256(canonical bytes), bytes }`,
   - `encodings`: a list of `{ coding, path, digest: sha256(variant bytes), bytes,
-    params }` where `coding` is `br` or `gzip`, omitted or empty when no variant
+    params }` where `coding` is `br` or `gzip` — at most **one** entry per
+    coding (a second `br` or `gzip` for the same asset fails manifest
+    validation) — omitted or empty when no variant
     is smaller than canonical. `path` is the artifact-relative location of the
     sealed variant bytes, validated by the same containment rules as the asset
     `path` and required to be **unique across the entire artifact namespace**
@@ -331,7 +335,8 @@ its sealed variants, and the manifest carries shared provenance:
   reloading; then enforce the allow-list on the resulting target (with a
   valid manifest an unlisted non-route-like path is a **404**, never a
   filesystem or embed fallback), parse `Accept-Encoding`
-  (`q=0` excludes a coding; unknown codings are ignored; `*` matches every
+  (coding tokens compare **case-insensitively** — `GZIP` ≡ `gzip`, RFC 9110
+  §8.4.1; `q=0` excludes a coding; unknown codings are ignored; `*` matches every
   coding not explicitly listed — so a bare `*` accepts the sealed codings and
   `*;q=0` excludes them, RFC 9110 §12.5.3; nonzero weights do **not** reorder),
   pick Brotli, then gzip, then identity among **sealed** codings the client
@@ -373,6 +378,9 @@ when the daemon serves its value faithfully. The rows:
 - `Accept-Encoding: gzip` → assert `Content-Encoding: gzip`, `Content-Length`
   equals the sealed `gzip` bytes, and `gunzip(body)` SHA-256 equals
   `identity.digest`.
+- `Accept-Encoding: GZIP` → assert `Content-Encoding: gzip`: content-coding
+  tokens are case-insensitive (RFC 9110 §8.4.1) — pinned so a literal token
+  comparison cannot satisfy the contract by serving identity.
 - No `Accept-Encoding` → assert **no** `Content-Encoding`, body equals the
   canonical bytes, SHA-256 equals `identity.digest`.
 - `Accept-Encoding: br;q=0, gzip` → assert gzip chosen, not br.
