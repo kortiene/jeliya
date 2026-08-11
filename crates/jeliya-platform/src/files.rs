@@ -652,12 +652,13 @@ pub trait Files {
     /// it — [`PickedSource`] is `Clone`, so a `Drop` impl cannot know which
     /// copy was the last — which is why the release is explicit.
     ///
-    /// Consuming the handle by value makes it final; a source this service did
-    /// not produce, or one already staged or discarded, fails
+    /// Borrowed, not consumed, for the reason [`Files::release_staged`] gives:
+    /// a discard that fails must leave the caller able to retry. A source this
+    /// service did not produce, or one already staged or discarded, fails
     /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable).
-    /// [`Files::stage_for_share`] consumes its source the same way, so a staged
-    /// pick needs no discard.
-    fn discard_source(&self, src: PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>>;
+    /// [`Files::stage_for_share`] *does* consume its source, so a staged pick
+    /// needs no discard.
+    fn discard_source(&self, src: &PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>>;
 
     /// Release a [`FetchedArtifact`] that will not be shared — the abandoned
     /// counterpart of a successful share consuming it.
@@ -667,12 +668,13 @@ pub trait Files {
     /// but a user who backs out of the sheet, or stops retrying after a
     /// cancelled or failed share, otherwise leaves them there for the service's
     /// lifetime. As with the other handles, `Clone` rules out a `Drop` guard —
-    /// no copy knows it is the last — so the release is explicit and final;
-    /// an artifact already shared or released fails
+    /// no copy knows it is the last — so the release is explicit, and
+    /// **borrowed** like every other cleanup here so a failed deletion leaves
+    /// the caller able to retry; an artifact already shared or released fails
     /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable).
     fn release_artifact(
         &self,
-        artifact: FetchedArtifact,
+        artifact: &FetchedArtifact,
     ) -> BoxFuture<'_, Result<(), CapabilityError>>;
 
     /// Release an [`ExportTarget`] the caller will not write to — the same rule
@@ -681,7 +683,7 @@ pub trait Files {
     /// only an abandoned one needs this.
     fn discard_export_target(
         &self,
-        target: ExportTarget,
+        target: &ExportTarget,
     ) -> BoxFuture<'_, Result<(), CapabilityError>>;
 
     /// Turn a [`PickedSource`] into a daemon-shareable [`ShareableBlob`].
@@ -722,6 +724,11 @@ pub trait Files {
     /// stage fails
     /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable) — never an
     /// empty `Ok` reader. Paths never cross; only bytes do.
+    ///
+    /// Opening can also fail on its own — a staged file whose permissions
+    /// changed before the upload started — which is a different moment from a
+    /// read failing partway through ([`StagedBlobReader::next_chunk`]):
+    /// nothing has been sent yet, so the caller has no stream to abort.
     fn read_staged(
         &self,
         blob: &ShareableBlob,
@@ -739,13 +746,16 @@ pub trait Files {
     /// failure** once no further attempt will be made, and the service deletes
     /// its staging copy.
     ///
-    /// Consuming the handle by value makes the release final: a blob this
-    /// service did not stage, or one already released, fails
-    /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable) — the same
+    /// The handle is **borrowed**, not consumed: deleting can itself fail (a
+    /// locked temporary, a permission change), and the service then keeps the
+    /// bytes so the caller can retry — impossible if the failed call ate the
+    /// only handle naming them. Finality comes from the registry instead: a
+    /// blob this service did not stage, or one already released, fails
+    /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable), the same
     /// minted-token gate [`Files::read_staged`] applies. A reader already open
     /// over the bytes keeps working, mirroring an open file descriptor
     /// outliving an unlink.
-    fn release_staged(&self, blob: ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>>;
+    fn release_staged(&self, blob: &ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>>;
 
     /// Open the platform save dialog for a fetched file, suggesting
     /// `suggested`. `Ok(None)` / `Cancelled` follow the same distinction as

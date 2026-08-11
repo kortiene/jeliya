@@ -63,6 +63,11 @@ pub enum Capability {
     /// error, and a caller must then be able to retry, so a failed release
     /// leaves the entry in place rather than reaping it anyway.
     Release,
+    /// [`crate::Files::read_staged`] — the staged file failing to **open**: a
+    /// permission changed before the upload started. A different moment from a
+    /// read failing partway through, because nothing has been sent yet and the
+    /// caller has no stream to abort.
+    ReadStaged,
     /// [`crate::StagedBlobReader::next_chunk`] — the **source** failing
     /// mid-upload, the mirror of a sink failing mid-download: the staged file
     /// became unreadable after the reader was opened, so the uploader must stop

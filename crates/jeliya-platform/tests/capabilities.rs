@@ -1778,10 +1778,7 @@ fn releasing_a_staged_blob_reaps_it_and_is_final() {
     // A reader already open keeps working across the release, as an open fd
     // outlives an unlink.
     let mut live = block_on(services.files().read_staged(&blob)).expect("reader");
-    assert_eq!(
-        block_on(services.files().release_staged(blob.clone())),
-        Ok(())
-    );
+    assert_eq!(block_on(services.files().release_staged(&blob)), Ok(()));
     assert_eq!(
         block_on(live.next_chunk(4)).expect("bounded pull"),
         Some(b"0123".to_vec()),
@@ -1801,7 +1798,7 @@ fn releasing_a_staged_blob_reaps_it_and_is_final() {
         Some(CapabilityError::Failed(FailureKind::Unreadable))
     );
     assert_eq!(
-        block_on(services.files().release_staged(blob)).err(),
+        block_on(services.files().release_staged(&blob)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable)),
         "a release is final; a second one fails closed"
     );
@@ -1823,11 +1820,11 @@ fn releasing_another_services_blob_fails_closed() {
     )
     .expect("stage ok");
     assert_eq!(
-        block_on(b.files().release_staged(blob.clone())).err(),
+        block_on(b.files().release_staged(&blob)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable))
     );
     // …and A's own release still works afterwards.
-    assert_eq!(block_on(a.files().release_staged(blob)), Ok(()));
+    assert_eq!(block_on(a.files().release_staged(&blob)), Ok(()));
 }
 
 // ---- §6: an operation that never starts consumes no script --------------
@@ -2072,10 +2069,7 @@ fn abandoned_picks_and_targets_can_be_discarded() {
     let src = settle(&controller, services.files().pick(&ct))
         .expect("pick ok")
         .expect("a source was picked");
-    assert_eq!(
-        block_on(services.files().discard_source(src.clone())),
-        Ok(())
-    );
+    assert_eq!(block_on(services.files().discard_source(&src)), Ok(()));
     assert!(
         controller
             .effects()
@@ -2085,7 +2079,7 @@ fn abandoned_picks_and_targets_can_be_discarded() {
     );
     // Final, and the object is gone: staging it now fails closed.
     assert_eq!(
-        block_on(services.files().discard_source(src.clone())).err(),
+        block_on(services.files().discard_source(&src)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable)),
         "a discard is final"
     );
@@ -2108,7 +2102,7 @@ fn abandoned_picks_and_targets_can_be_discarded() {
     .unwrap()
     .unwrap();
     assert_eq!(
-        block_on(services.files().discard_export_target(target.clone())),
+        block_on(services.files().discard_export_target(&target)),
         Ok(())
     );
     assert!(
@@ -2147,7 +2141,7 @@ fn staging_consumes_the_picked_source() {
         "a staged source is consumed"
     );
     assert_eq!(
-        block_on(services.files().discard_source(again)).err(),
+        block_on(services.files().discard_source(&again)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable)),
         "and needs no discard"
     );
@@ -2195,7 +2189,7 @@ fn staging_consumes_the_source_on_every_outcome() {
         // The grant is gone either way: nothing is left to discard, and the
         // clone cannot be staged.
         assert_eq!(
-            block_on(services.files().discard_source(again.clone())).err(),
+            block_on(services.files().discard_source(&again)).err(),
             Some(CapabilityError::Failed(FailureKind::Unreadable)),
             "{outcome}: the source was already consumed"
         );
@@ -2239,7 +2233,7 @@ fn an_abandoned_fetched_artifact_can_be_released() {
         Err(CapabilityError::Cancelled)
     );
     assert_eq!(
-        block_on(services.files().release_artifact(artifact.clone())),
+        block_on(services.files().release_artifact(&artifact)),
         Ok(())
     );
     assert!(
@@ -2251,7 +2245,7 @@ fn an_abandoned_fetched_artifact_can_be_released() {
     );
     // Final, and no longer shareable.
     assert_eq!(
-        block_on(services.files().release_artifact(artifact.clone())).err(),
+        block_on(services.files().release_artifact(&artifact)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable)),
         "a release is final"
     );
@@ -2285,7 +2279,7 @@ fn a_shared_artifact_needs_no_release() {
         Ok(())
     );
     assert_eq!(
-        block_on(services.files().release_artifact(artifact)).err(),
+        block_on(services.files().release_artifact(&artifact)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable))
     );
 }
@@ -2359,7 +2353,7 @@ fn an_aborted_picker_releases_its_bound_grant() {
         1,
         "a delivered handle is the caller's, and still backed"
     );
-    assert_eq!(block_on(services.files().discard_source(src)), Ok(()));
+    assert_eq!(block_on(services.files().discard_source(&src)), Ok(()));
     assert_eq!(controller.retained_handles(), Default::default());
 }
 
@@ -2392,7 +2386,7 @@ fn export_sink_consumes_its_target_on_every_outcome() {
             );
         }
         assert_eq!(
-            block_on(services.files().discard_export_target(again.clone())).err(),
+            block_on(services.files().discard_export_target(&again)).err(),
             Some(CapabilityError::Failed(FailureKind::Unreadable)),
             "{outcome}: the grant was already consumed"
         );
@@ -2438,11 +2432,12 @@ fn a_share_holds_its_staged_bytes_until_the_sheet_settles() {
             "the sheet is open"
         );
         // A clone is released underneath the still-open sheet.
-        assert_eq!(services.files().release_staged(blob.clone()).await, Ok(()));
+        assert_eq!(services.files().release_staged(&blob).await, Ok(()));
         assert_eq!(
             controller.retained_handles().staged_blobs,
-            0,
-            "the registry entry is gone while the sheet is still open"
+            1,
+            "the registry entry is gone, but the open sheet still HOLDS the \
+             bytes — reporting zero here would be the false clean bill"
         );
         assert!(controller.deliver_next());
         assert!(
@@ -2460,6 +2455,12 @@ fn a_share_holds_its_staged_bytes_until_the_sheet_settles() {
         )),
         "the settled share carried the real bytes, from its own hold: {:?}",
         controller.effects()
+    );
+
+    assert_eq!(
+        controller.retained_handles().staged_blobs,
+        0,
+        "the hold ended with the sheet"
     );
 
     // …but the blob is gone for anything that starts afterwards.
@@ -2493,7 +2494,7 @@ fn a_failed_release_leaves_the_entry_recoverable() {
         CapabilityError::Failed(FailureKind::Io),
     );
     assert_eq!(
-        block_on(services.files().release_artifact(artifact.clone())).err(),
+        block_on(services.files().release_artifact(&artifact)).err(),
         Some(CapabilityError::Failed(FailureKind::Io)),
         "the deletion failed"
     );
@@ -2506,11 +2507,11 @@ fn a_failed_release_leaves_the_entry_recoverable() {
     );
     // The retry succeeds, which is only possible because the entry survived.
     assert_eq!(
-        block_on(services.files().release_artifact(artifact.clone())),
+        block_on(services.files().release_artifact(&artifact)),
         Ok(())
     );
     assert_eq!(
-        block_on(services.files().release_artifact(artifact)).err(),
+        block_on(services.files().release_artifact(&artifact)).err(),
         Some(CapabilityError::Failed(FailureKind::Unreadable))
     );
 }
@@ -2537,8 +2538,8 @@ fn cleanup_outcomes_bind_at_call_time() {
         CapabilityError::Failed(FailureKind::Io),
     );
     block_on(async {
-        let mut first = std::pin::pin!(services.files().release_artifact(artifact.clone()));
-        let mut second = std::pin::pin!(services.files().discard_source(src.clone()));
+        let mut first = std::pin::pin!(services.files().release_artifact(&artifact));
+        let mut second = std::pin::pin!(services.files().discard_source(&src));
         // Polled in REVERSE order.
         assert!(
             matches!(futures::poll!(second.as_mut()), Poll::Ready(Ok(()))),
@@ -2640,9 +2641,238 @@ fn a_failed_share_leaves_the_caller_its_handle() {
         Ok(())
     );
     assert_eq!(
-        block_on(services.files().release_staged(blob)),
+        block_on(services.files().release_staged(&blob)),
         Ok(()),
         "a shared blob is still the caller's to reap"
     );
     assert_eq!(controller.retained_handles(), Default::default());
+}
+
+/// §K2 through the whole transfer, not just its opening: a token fired after
+/// the sink is returned must stop writes and prevent publication. Otherwise a
+/// mid-copy cancellation becomes a published artifact, and an adapter that
+/// keeps advancing CREDIT past a fired token looks correct against this fake.
+#[test]
+fn a_token_fired_mid_transfer_stops_the_sink() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    block_on(sink.write(b"before".to_vec())).expect("accepted before cancellation");
+    ct.cancel();
+    assert_eq!(
+        block_on(sink.write(b"after".to_vec())).err(),
+        Some(CapabilityError::Cancelled),
+        "a fired token stops the transfer"
+    );
+    assert_eq!(
+        block_on(sink.commit()).err(),
+        Some(CapabilityError::Cancelled),
+        "and cancellation must never become a published artifact"
+    );
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ExportedLocal { .. })),
+        "nothing was published"
+    );
+
+    // The same on the inbound staging sink.
+    let ct2 = CancelToken::new();
+    let mut share =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct2)).expect("share sink");
+    block_on(share.write(b"before".to_vec())).expect("accepted");
+    ct2.cancel();
+    assert_eq!(
+        block_on(share.write(b"after".to_vec())).err(),
+        Some(CapabilityError::Cancelled)
+    );
+    assert_eq!(
+        block_on(share.commit()).err(),
+        Some(CapabilityError::Cancelled),
+        "a cancelled staging transfer mints no artifact"
+    );
+    assert_eq!(controller.retained_handles().share_artifacts, 0);
+}
+
+/// A cleanup that fails must leave the caller its handle: the service keeps the
+/// bytes precisely so the call can be retried, and a consuming signature would
+/// make them unreachable. This test never clones.
+#[test]
+fn a_failed_cleanup_leaves_the_caller_its_handle() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+
+    controller.force_error(
+        Capability::Release,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(services.files().release_artifact(&artifact)).err(),
+        Some(CapabilityError::Failed(FailureKind::Io))
+    );
+    assert_eq!(controller.retained_handles().share_artifacts, 1);
+    // The retry uses the same handle the caller still holds.
+    assert_eq!(
+        block_on(services.files().release_artifact(&artifact)),
+        Ok(())
+    );
+    assert_eq!(controller.retained_handles(), Default::default());
+}
+
+/// Re-arming a picker replaces a handle no caller can ever receive, so the
+/// entry it replaces must be reaped — otherwise setup code that revises an
+/// armed result inflates the retained count for the fake's whole life.
+#[test]
+fn re_arming_a_picker_reaps_the_handle_it_replaces() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("first.bin", None, b"one".to_vec());
+    controller.arm_pick("second.bin", None, b"two".to_vec());
+    assert_eq!(
+        controller.retained_handles().sources,
+        1,
+        "only the surviving armed source is held"
+    );
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(src.display_name().as_str(), "second.bin");
+    assert_eq!(block_on(services.files().discard_source(&src)), Ok(()));
+    assert_eq!(controller.retained_handles(), Default::default());
+
+    controller.arm_export_target(ExportTargetKind::NativePath, "a.bin");
+    controller.arm_export_target(ExportTargetKind::NativePath, "b.bin");
+    assert_eq!(controller.retained_handles().export_targets, 1);
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("b.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        block_on(services.files().discard_export_target(&target)),
+        Ok(())
+    );
+    assert_eq!(controller.retained_handles(), Default::default());
+}
+
+/// Opening a staged reader is its own failure moment — a permission that
+/// changed before the upload began — distinct from a read failing partway
+/// through, because nothing has been sent yet.
+#[test]
+fn opening_a_staged_reader_can_fail() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("blob.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    controller.force_error(
+        Capability::ReadStaged,
+        CapabilityError::Failed(FailureKind::Unreadable),
+    );
+    assert_eq!(
+        block_on(services.files().read_staged(&blob)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "the staged file would not open"
+    );
+    // The bytes survive for a retry — an open failure reaps nothing.
+    let mut reader = block_on(services.files().read_staged(&blob)).expect("the retry opens");
+    assert_eq!(
+        block_on(reader.next_chunk(4)).expect("pull"),
+        Some(b"0123".to_vec())
+    );
+}
+
+/// A zero bound is always a caller error, so it must be judged before the
+/// script is dequeued — otherwise an invalid no-credit pull silently eats a
+/// scripted source failure meant for the next real read.
+#[test]
+fn a_zero_bound_pull_consumes_no_scripted_failure() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("blob.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    let mut reader = block_on(services.files().read_staged(&blob)).expect("reader");
+    controller.force_error(
+        Capability::StagedReadChunk,
+        CapabilityError::Failed(FailureKind::Unreadable),
+    );
+    assert_eq!(
+        block_on(reader.next_chunk(0)).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "the zero bound reports its own error, not the scripted one"
+    );
+    assert_eq!(
+        block_on(reader.next_chunk(4)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "the scripted source failure was left for the next real read"
+    );
+}
+
+/// `retained_handles` must count bytes an in-flight share is holding. Reporting
+/// zero while a pending sheet still owns a file would be exactly the false
+/// clean bill a cleanup test would believe.
+#[test]
+fn in_flight_shares_count_as_retained() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+    let content = ShareContent::attachment(ShareAttachment::Fetched(artifact));
+
+    block_on(async {
+        let mut share = std::pin::pin!(services.files().share_content(&content, &ct));
+        assert!(
+            futures::poll!(share.as_mut()).is_pending(),
+            "the sheet is open"
+        );
+        // The claim took the bytes OUT of the registry — but the share owns
+        // them, so they are still retained.
+        assert_eq!(
+            controller.retained_handles().share_artifacts,
+            1,
+            "an in-flight claim is still the service holding file bytes"
+        );
+        assert!(controller.deliver_next());
+        assert!(matches!(
+            futures::poll!(share.as_mut()),
+            Poll::Ready(Ok(()))
+        ));
+    });
+    assert_eq!(
+        controller.retained_handles(),
+        Default::default(),
+        "the completed share consumed them"
+    );
 }

@@ -99,6 +99,14 @@ struct FakeInner {
     share_artifacts: Mutex<HashMap<u64, Vec<u8>>>,
     pending_pick: Mutex<Option<PickedSource>>,
     pending_export: Mutex<Option<ExportTarget>>,
+    /// Tokens whose bytes an in-flight share is holding: a claimed fetched
+    /// artifact, or a staged blob a sheet is keeping alive. They are out of (or
+    /// independent of) the registries above, so `retained_handles` has to union
+    /// them in — otherwise it reports zero while a pending share still owns
+    /// file bytes, which is exactly the false clean bill a cleanup test would
+    /// believe.
+    in_flight_artifacts: Mutex<HashMap<u64, usize>>,
+    in_flight_blobs: Mutex<HashMap<u64, usize>>,
     /// The open scripted dialogs awaiting controller advancement (§6).
     dialogs: Mutex<DialogQueue>,
     /// This fake's issuer id — see [`NEXT_SERVICE_ID`].
@@ -120,6 +128,8 @@ impl FakeInner {
             export_targets: Mutex::new(HashMap::new()),
             staged_blobs: Mutex::new(HashMap::new()),
             share_artifacts: Mutex::new(HashMap::new()),
+            in_flight_artifacts: Mutex::new(HashMap::new()),
+            in_flight_blobs: Mutex::new(HashMap::new()),
             pending_pick: Mutex::new(None),
             pending_export: Mutex::new(None),
             dialogs: Mutex::new(DialogQueue::default()),
@@ -139,6 +149,28 @@ impl FakeInner {
         debug_assert!(local < 1 << 32, "fake token space exhausted");
         debug_assert!(self.service_id < 1 << 32, "fake service space exhausted");
         (self.service_id << 32) | local
+    }
+
+    /// Note one more in-flight hold of `token` in `which`.
+    fn hold_enter(which: &Mutex<HashMap<u64, usize>>, token: u64) {
+        *which
+            .lock()
+            .expect("in-flight holds poisoned")
+            .entry(token)
+            .or_insert(0) += 1;
+    }
+
+    /// Release one in-flight hold of `token`, dropping the entry at zero.
+    fn hold_exit(which: &Mutex<HashMap<u64, usize>>, token: u64) {
+        // Best-effort under poisoning, as everywhere in a Drop path.
+        if let Ok(mut holds) = which.lock() {
+            if let Some(count) = holds.get_mut(&token) {
+                *count -= 1;
+                if *count == 0 {
+                    holds.remove(&token);
+                }
+            }
+        }
     }
 
     fn record(&self, effect: RecordedEffect) {
@@ -184,12 +216,20 @@ impl FakeInner {
     /// the same "an open reader outlives the unlink" model `read_staged` has —
     /// so a share that opened against real bytes stays honest. Returns `None`
     /// for a blob this service did not stage.
-    fn hold_staged(&self, blob: &ShareableBlob) -> Option<Arc<Vec<u8>>> {
-        self.staged_blobs
+    fn hold_staged(self: &Arc<Self>, blob: &ShareableBlob) -> Option<BlobHold> {
+        let token = blob.token().get();
+        let bytes = self
+            .staged_blobs
             .lock()
             .expect("staged blobs poisoned")
-            .get(&blob.token().get())
-            .cloned()
+            .get(&token)
+            .cloned()?;
+        FakeInner::hold_enter(&self.in_flight_blobs, token);
+        Some(BlobHold {
+            inner: Arc::clone(self),
+            token,
+            bytes,
+        })
     }
 
     /// Take a fetched artifact's bytes out of the registry for the duration of
@@ -209,6 +249,7 @@ impl FakeInner {
             .lock()
             .expect("share artifacts poisoned")
             .remove(&token)?;
+        FakeInner::hold_enter(&self.in_flight_artifacts, token);
         Some(ArtifactClaim {
             inner: Arc::clone(self),
             token,
@@ -471,6 +512,22 @@ impl Drop for ArtifactClaim {
                 artifacts.insert(self.token, bytes);
             }
         }
+        FakeInner::hold_exit(&self.inner.in_flight_artifacts, self.token);
+    }
+}
+
+/// A staged blob's bytes kept alive for the lifetime of one share sheet, and
+/// counted as retained while it lives — see [`FakeInner::hold_staged`].
+struct BlobHold {
+    inner: Arc<FakeInner>,
+    token: u64,
+    #[allow(dead_code)]
+    bytes: Arc<Vec<u8>>,
+}
+
+impl Drop for BlobHold {
+    fn drop(&mut self) {
+        FakeInner::hold_exit(&self.inner.in_flight_blobs, self.token);
     }
 }
 
@@ -478,6 +535,23 @@ impl Drop for ArtifactClaim {
 /// [`browser`], [`desktop`], or [`android`].
 pub struct FakePlatform {
     inner: Arc<FakeInner>,
+}
+
+/// How many distinct tokens a registry and its in-flight holds name between
+/// them. A union rather than a sum: a blob can be both registered and held by
+/// an open sheet, and it is one set of bytes either way.
+fn union_len<V>(
+    registry: &Mutex<HashMap<u64, V>>,
+    in_flight: &Mutex<HashMap<u64, usize>>,
+    poison: &str,
+) -> usize {
+    let registry = registry.lock().expect(poison);
+    let in_flight = in_flight.lock().expect("in-flight holds poisoned");
+    registry
+        .keys()
+        .chain(in_flight.keys())
+        .collect::<std::collections::HashSet<_>>()
+        .len()
 }
 
 /// The private entries a fake is still holding — see
@@ -572,7 +646,23 @@ impl FakeController {
             mime,
             kind,
         );
-        *self.inner.pending_pick.lock().expect("pick poisoned") = Some(source);
+        // Re-arming replaces the pending handle, and the one it replaces can
+        // never reach a caller — so nothing could ever discard it. Reap it
+        // here, or setup code that revises an armed result inflates
+        // `retained_handles` for the rest of the fake's life.
+        let replaced = self
+            .inner
+            .pending_pick
+            .lock()
+            .expect("pick poisoned")
+            .replace(source);
+        if let Some(replaced) = replaced {
+            self.inner
+                .sources
+                .lock()
+                .expect("sources poisoned")
+                .remove(&replaced.token().get());
+        }
     }
 
     /// Arm the next [`Files::pick_export_target`] to return a target of `kind`.
@@ -595,7 +685,20 @@ impl FakeController {
             kind,
             FileName::parse(suggested).expect("armed export name must be a valid FileName"),
         );
-        *self.inner.pending_export.lock().expect("export poisoned") = Some(target);
+        // Same overwrite reap as `arm_pick`.
+        let replaced = self
+            .inner
+            .pending_export
+            .lock()
+            .expect("export poisoned")
+            .replace(target);
+        if let Some(replaced) = replaced {
+            self.inner
+                .export_targets
+                .lock()
+                .expect("export targets poisoned")
+                .remove(&replaced.token().get());
+        }
     }
 
     /// Force the next call of `capability` to fail with `error` (the
@@ -668,18 +771,16 @@ impl FakeController {
                 .lock()
                 .expect("export targets poisoned")
                 .len(),
-            staged_blobs: self
-                .inner
-                .staged_blobs
-                .lock()
-                .expect("staged blobs poisoned")
-                .len(),
-            share_artifacts: self
-                .inner
-                .share_artifacts
-                .lock()
-                .expect("share artifacts poisoned")
-                .len(),
+            staged_blobs: union_len(
+                &self.inner.staged_blobs,
+                &self.inner.in_flight_blobs,
+                "staged blobs poisoned",
+            ),
+            share_artifacts: union_len(
+                &self.inner.share_artifacts,
+                &self.inner.in_flight_artifacts,
+                "share artifacts poisoned",
+            ),
         }
     }
 
@@ -865,7 +966,7 @@ impl Files for FakePlatform {
         })
     }
 
-    fn discard_source(&self, src: PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>> {
+    fn discard_source(&self, src: &PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = src.token();
         // Bound at CALL time, like every other scripted outcome: two cleanup
@@ -897,7 +998,7 @@ impl Files for FakePlatform {
 
     fn release_artifact(
         &self,
-        artifact: FetchedArtifact,
+        artifact: &FetchedArtifact,
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = artifact.token();
@@ -927,7 +1028,7 @@ impl Files for FakePlatform {
 
     fn discard_export_target(
         &self,
-        target: ExportTarget,
+        target: &ExportTarget,
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = target.token();
@@ -1059,7 +1160,12 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<Box<dyn StagedBlobReader>, CapabilityError>> {
         let inner = self.inner.clone();
         let token = blob.token();
+        // Opening is its own failure moment, before any byte is pulled.
+        let bound = inner.take_forced(Capability::ReadStaged);
         Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
             // Token resolution stays inside the service: a blob this service
             // did not stage (a forged token, another service's blob) fails
             // closed — never an empty Ok reader.
@@ -1080,7 +1186,7 @@ impl Files for FakePlatform {
         })
     }
 
-    fn release_staged(&self, blob: ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>> {
+    fn release_staged(&self, blob: &ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = blob.token();
         // Bound at CALL time, like every other scripted outcome: two cleanup
@@ -1191,6 +1297,7 @@ impl Files for FakePlatform {
                 inner,
                 dest: SinkDest::Export { kind },
                 written: Vec::new(),
+                ct,
             }) as Box<dyn FileSink>)
         })
     }
@@ -1221,6 +1328,7 @@ impl Files for FakePlatform {
                 inner,
                 dest: SinkDest::Open { name, declared },
                 written: Vec::new(),
+                ct,
             }) as Box<dyn FileSink>)
         })
     }
@@ -1252,6 +1360,7 @@ impl Files for FakePlatform {
                 name,
                 declared,
                 written: Vec::new(),
+                ct,
             }) as Box<dyn ShareSink>)
         })
     }
@@ -1283,6 +1392,11 @@ struct FakeFileSink {
     inner: Arc<FakeInner>,
     dest: SinkDest,
     written: Vec<u8>,
+    /// The token the sink was opened under. A transfer is a bounded copy
+    /// (§D12), so cancellation must reach it *after* it starts — otherwise a
+    /// mid-copy cancel becomes a published artifact, and an adapter that keeps
+    /// advancing CREDIT past a fired token looks correct against this fake.
+    ct: CancelToken,
 }
 
 impl FileSink for FakeFileSink {
@@ -1294,6 +1408,12 @@ impl FileSink for FakeFileSink {
         // chunk that failed is NOT accumulated.
         let bound = self.inner.take_forced(Capability::FileSinkWrite);
         Box::pin(async move {
+            // Cancellation reaches the transfer, not just its opening: a
+            // fired token means this chunk must not be accepted and the
+            // caller must stop advancing CREDIT.
+            if self.ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -1308,7 +1428,13 @@ impl FileSink for FakeFileSink {
         // report success. Nothing is recorded, so the artifact was never
         // published.
         let bound = self.inner.take_forced(Capability::FileSinkCommit);
+        let this_ct = self.ct.clone();
         Box::pin(async move {
+            // A cancelled transfer must not publish: the artifact is dropped
+            // exactly as it is when the sink is dropped uncommitted.
+            if this_ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -1341,6 +1467,8 @@ struct FakeShareSink {
     name: FileName,
     declared: Option<Mime>,
     written: Vec<u8>,
+    /// See [`FakeFileSink::ct`].
+    ct: CancelToken,
 }
 
 impl ShareSink for FakeShareSink {
@@ -1348,6 +1476,12 @@ impl ShareSink for FakeShareSink {
         // Same mid-transfer failure path as [`FakeFileSink::write`].
         let bound = self.inner.take_forced(Capability::ShareSinkWrite);
         Box::pin(async move {
+            // Cancellation reaches the transfer, not just its opening: a
+            // fired token means this chunk must not be accepted and the
+            // caller must stop advancing CREDIT.
+            if self.ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -1361,7 +1495,13 @@ impl ShareSink for FakeShareSink {
         // minted and nothing is recorded, so a failed staging commit cannot be
         // mistaken for a shareable artifact.
         let bound = self.inner.take_forced(Capability::ShareSinkCommit);
+        let this_ct = self.ct.clone();
         Box::pin(async move {
+            // A cancelled transfer must not publish: the artifact is dropped
+            // exactly as it is when the sink is dropped uncommitted.
+            if this_ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
             if let Some(error) = bound {
                 return Err(error);
             }
@@ -1410,12 +1550,19 @@ impl StagedBlobReader for FakeStagedReader {
         // or a native read erroring partway through the upload. Bound at call
         // time like every other scripted outcome, and the position is not
         // consumed, so the failure is observable without corrupting the read.
+        // A zero bound is always a caller error, so it is judged BEFORE the
+        // script is dequeued: an invalid pull must not consume a scripted
+        // source failure meant for the next real read.
+        if max_len == 0 {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
+        }
         let bound = self.inner.take_forced(Capability::StagedReadChunk);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
             }
-            // Before the EOF check, so the rule is position-independent: a
+            // Kept for position-independence even though the call-time guard
+            // above already rejects it: a
             // zero bound would otherwise yield an endless run of empty
             // non-EOF chunks with the offset never advancing — a credit-driven
             // puller with no credit spinning instead of waiting. Neither
@@ -1612,7 +1759,7 @@ impl FakePlatform {
         }
         // Matched exhaustively on purpose: a new attachment kind must decide
         // how it resolves rather than default to "shareable".
-        let mut held: Option<Arc<Vec<u8>>> = None;
+        let mut held: Option<BlobHold> = None;
         let claim = match &content.attachment {
             None => None,
             // A staged blob is NOT consumed by sharing — the daemon's
@@ -1660,7 +1807,7 @@ impl FakePlatform {
             // these bytes never went anywhere.
             let attached_bytes = held
                 .as_ref()
-                .map(|bytes| bytes.len() as u64)
+                .map(|held| held.bytes.len() as u64)
                 .or_else(|| claim.as_ref().and_then(ArtifactClaim::len));
             if let Some(claim) = claim {
                 claim.consume();
