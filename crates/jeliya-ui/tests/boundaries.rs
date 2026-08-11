@@ -279,7 +279,10 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
             while let Some(rel) = compact[from..].find("useserde_json::") {
                 let at = from + rel;
                 let declaration = compact[at..].split(';').next().unwrap_or("");
-                if declaration.contains("Value") {
+                // `self` inside the group (`use serde_json::{self as json}`)
+                // re-imports the MODULE under an alias — the same breach the
+                // top-level alias check catches, through the grouped door.
+                if declaration.contains("Value") || declaration.contains("self") {
                     offenders.push(format!(
                         "{} — a use declaration imports serde_json Value",
                         path.display()
