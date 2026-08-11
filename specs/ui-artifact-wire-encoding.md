@@ -369,8 +369,11 @@ its sealed variants, and the manifest carries shared provenance:
     variant bytes (same containment rules as the asset `path`; unique across
     the **entire artifact namespace** — no collision with any canonical path,
     any other variant path, or the manifest and its detached-digest sidecar,
-    so materializing the directory can never overwrite one representation
-    with another); the daemon locates variant bytes **solely** by
+    and no sealed path may be an **ancestor**/directory prefix of another: a
+    `Dir` source cannot materialize a path as both file and directory, and
+    `Embedded`/`Dir` parity forbids sealing what a directory cannot
+    represent — so materializing the directory can never overwrite one
+    representation with another); the daemon locates variant bytes **solely** by
     it, never by a derived filename. The concrete layout convention stays
     #183's choice — sealed in the manifest, never assumed.
 - **Canonical artifact digest** — the single identity the exact-version
@@ -464,11 +467,13 @@ when the daemon serves its value faithfully. The rows:
   every asset, every sealed coding **plus identity**, on both sources —
   request offering exactly that coding, assert `Content-Encoding` == the
   requested coding (absent for identity), proving the sealed variant rather
-  than canonical identity answered, assert the **encoded** body's SHA-256 ==
-  that coding's sealed variant digest (byte-exact: a different valid stream
-  with the same decoded content must fail — this row checks what the serving
-  path returned, not the stored artifact), and
-  assert the decoded body's SHA-256 == `identity.digest`.
+  than canonical identity answered, and assert served bytes against sealed
+  digests branched by representation: an **encoded** body's SHA-256 == its
+  encoding entry's digest (byte-exact: a different valid stream with the
+  same decoded content must fail — this row checks what the serving path
+  returned, not the stored artifact) and its decoded body == `identity.digest`;
+  the **identity** body — no encoding entry exists for it — ==
+  `identity.digest` directly.
 - **Fail-closed:** with a variant deliberately corrupted or removed from the
   source, a request offering that sealed encoding returns a **5xx**, never a
   `200` with uncompressed bytes and never a different encoding.

@@ -296,7 +296,11 @@ its sealed variants, and the manifest carries shared provenance:
     sealed variant bytes, validated by the same containment rules as the asset
     `path` and required to be **unique across the entire artifact namespace**
     — no collision with any canonical asset `path`, any other variant `path`,
-    or the manifest and its detached-digest sidecar, so materializing the
+    or the manifest and its detached-digest sidecar, and no sealed path
+    (canonical, variant, or metadata) may be an **ancestor** (directory
+    prefix) of another: a `Dir` source cannot materialize `assets` as both a
+    file and a directory, and `Embedded`/`Dir` parity forbids an embedded map
+    from sealing what a directory cannot represent — so materializing the
     artifact directory can never overwrite one representation with another; for
     `Embedded` the same key addresses the compiled-in variant lookup. The
     concrete layout convention (for example `<path>.br` / `<path>.gz` suffixing)
@@ -402,12 +406,14 @@ when the daemon serves its value faithfully. The rows:
   identity**, on **both** sources, request the asset over HTTP offering exactly
   that coding, assert the response's `Content-Encoding` equals the requested
   coding (absent for identity) — proving the sealed variant, not canonical
-  identity, answered — assert the **encoded** body's SHA-256 equals that
-  coding's sealed variant digest (byte-exact: a different valid gzip/Brotli
+  identity, answered — and assert the served bytes against the sealed
+  digests, branched by representation: an **encoded** body's SHA-256 equals
+  its encoding entry's digest (byte-exact: a different valid gzip/Brotli
   stream with the same decoded content must fail — the cross-target gate
   checks stored artifacts, this row checks what the serving path actually
-  returned), and assert the
-  decoded body's SHA-256 equals `identity.digest`. The four named types above
+  returned) and its decoded body's SHA-256 equals `identity.digest`; the
+  **identity** body — which has no encoding entry to compare against —
+  equals `identity.digest` directly. The four named types above
   stay the behavioral subset (headers, weights, fail-closed); this row proves the
   universal claim that every sealed variant decodes to its canonical identity —
   which neither the served-bytes-vs-variant-digest check (self-consistent even
