@@ -17,9 +17,60 @@
   Dioxus component compiled against the mock links for both native and
   `wasm32-unknown-unknown` with no per-component `cfg` logic. Backend erasure
   stays internal: `ClientHandle` wraps `Arc<dyn ClientBackend>`; no Iroh,
-  WebSocket, `tao`/`wry`, or Dioxus dependency enters the library. Entry point
-  for the transport kernel (#168). The decision is recorded at
-  `docs/dioxus-architecture.md` §"Decision 4".
+  WebSocket, `tao`/`wry`, or Dioxus dependency enters the library. The decision
+  is recorded at `docs/dioxus-architecture.md` §"Decision 4".
+
+- `crates/jeliya-client` gains the bounded, lifecycle-aware client kernel (#168):
+  the transport-independent sans-IO state machine that sits behind
+  `ClientBackend` and gives the seam its real machinery. The kernel's
+  correctness properties — hard request bounds, deterministic settlement,
+  deadlines, cancellation at every phase, generation fencing, capped jittered
+  backoff, honest post-send uncertainty, and total stop — all live in a pure
+  synchronous core (`src/kernel/core.rs`) that takes logical time as input and
+  emits `Action` values for a driver to perform, with no wall clock, no spawns,
+  and no RNG syscall. This makes every fault case a deterministic sequence of
+  `step` calls, identical on wasm and native.
+
+  Key guarantees:
+
+  - **Bounded admission.** `KernelLimits.queue_depth` (count) and
+    `outbound_bytes` (bytes) are admission-time refusals surfaced as
+    `CallError::QueueFull`; `in_flight` is a throttle, not a rejection.
+  - **Exactly-once settlement.** A take-once in-flight ledger makes duplicate,
+    late, and malformed replies structurally unable to strand a call or
+    double-settle it.
+  - **Replay only where guaranteed.** Four gates, ALL required: the call is
+    mutating, carries a caller `op_id`, names an operation in the protocol's
+    13-operation `op_id`-deduplicated set, and the driver certifies dedup-scope
+    continuity (`KernelConfig::stable_principal` — stable `client_id` AND same
+    daemon incarnation; **default off**). Everything else is
+    `ReplayPolicy::Never` and settles a disconnect honestly as
+    `Disconnected { Unknown }` — a keyed `daemon.stop` never replays, and
+    nothing replays under the default configuration.
+  - **Honest post-send uncertainty.** Connection loss classifies outstanding
+    work as `Execution::DefinitelyNot` (never-sent) or `Execution::Unknown`
+    (may-have-executed) by consulting each call's `sent` state in the ledger.
+  - **Cancellation without remote lies.** Dropping a future tombstones the
+    call locally and sends no cancel frame; the daemon may still run the
+    operation. Only `transfer.cancel` cancels remotely.
+  - **Generation fencing.** Every in-flight call and every inbound frame is
+    stamped with a monotonic connection generation; stale-generation replies and
+    pushes are discarded before they can settle a call or overwrite newer state.
+  - **Capped jittered backoff.** Reconnect attempts use full-jitter exponential
+    backoff from a deterministic in-core xorshift PRNG seeded at construction
+    (`KernelConfig.jitter_seed`), with `max_reconnect_attempts` exhaustion and
+    an honest `State::Failed` settlement — no infinite spin.
+  - **Total stop.** `Input::Stop` cancels any in-progress dial/backoff, drains
+    the queue and in-flight ledger (settling each call exactly once), and leaves
+    no unbounded task or map behind.
+
+  New public types: `KernelLimits`, `KernelConfig`, `TickDelta` (re-exported
+  from `jeliya_client`). The deterministic in-memory driver and
+  `KernelController` ship behind the `test-transport` feature (default-off) as
+  the reference the four adapters (#171/#172/#173) are diffed against (#175).
+  `ClientHandle::with_kernel(config)` constructs a kernel-backed handle for
+  tests and adapters. The kernel adds no new runtime dependency; no concrete
+  socket is implemented (those are #171/#172/#173). MSRV 1.91.
 
 ### Fixed
 

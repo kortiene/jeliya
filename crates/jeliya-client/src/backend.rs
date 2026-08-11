@@ -18,6 +18,12 @@ use crate::event::{EventSubscription, State};
 /// A JSON text blob. A *text* newtype, not `serde_json::Value`, so the
 /// no-`Value`-in-source rule holds (asserted by `tests/boundaries.rs`) and the
 /// erased boundary carries nothing but bytes.
+///
+/// `Clone` is load-bearing for the kernel (#168): a replayable call must
+/// re-serialize the *identical* `in` bytes under the same `op_id` on a
+/// reconnect, so the queued input is cloned into each outbound frame rather
+/// than re-encoded from the typed request.
+#[derive(Clone)]
 pub(crate) struct RawJson(Box<str>);
 
 impl RawJson {
@@ -44,17 +50,15 @@ pub(crate) struct ErasedCall {
     /// The operation's wire name (`O::PATH`).
     pub(crate) op: &'static str,
     /// Whether the operation mutates (`O::MUTATING`) — the kernel's replay
-    /// ledger (#168) consults this; retained here so the trait stays
-    /// sufficient for it without a later breaking change.
-    #[allow(dead_code)]
+    /// ledger (#168) consults this to derive the call's replay policy.
     pub(crate) mutating: bool,
-    /// The envelope-level deduplication key, from [`Dedup`](crate::Dedup).
-    #[allow(dead_code)]
+    /// The envelope-level deduplication key, from [`Dedup`](crate::Dedup). The
+    /// kernel forwards it verbatim on the wire and uses its presence (together
+    /// with `mutating`) to decide replay eligibility.
     pub(crate) op_id: Option<OpId>,
-    /// The serialized `in` object. Consumed by a real transport backend (#168);
-    /// the reference mock routes on `op` alone, so this is retained for the
-    /// kernel rather than read here.
-    #[allow(dead_code)]
+    /// The serialized `in` object. The kernel byte-accounts it against the
+    /// outbound-bytes cap (§K2) and re-sends the identical bytes on a
+    /// replayable reconnect; the reference mock routes on `op` alone.
     pub(crate) input: RawJson,
 }
 

@@ -20,6 +20,15 @@ mock = []
 # would build unconditionally. The dedicated example-build CI steps pass
 # `--features example`.
 example = ["mock", "dep:dioxus"]
+# The deterministic in-memory kernel driver (#168) and its `KernelController`
+# ship behind this feature, default-off, so the library's normal build carries
+# no test scaffolding — exactly like `mock`. It adds no dependencies: the
+# driver is a hand-rolled, clock-free, RNG-free virtual transport. The kernel
+# core itself is unconditional production code; only the in-memory reference
+# driver and controller are gated here so #175's parity suite and the kernel's
+# own fault suite can reuse them. CI runs the kernel suite with
+# `cargo test -p jeliya-client --features test-transport`.
+test-transport = []
 
 [dependencies]
 jeliya-api = { path = "../jeliya-api" }
@@ -60,3 +69,12 @@ name = "seam"
 # when the mock feature is off. CI runs the suite explicitly with
 # `cargo test -p jeliya-client --features mock`.
 required-features = ["mock"]
+
+[[test]]
+name = "kernel_fault"
+# Explicit fault coverage for the bounded kernel (#168 §8 verification
+# bullets): stop from each lifecycle phase, gate-refused terminal path,
+# connected-after-stop race, and in-flight throttle invariant. Drives the
+# deterministic in-memory controller, so CI runs:
+# `cargo test -p jeliya-client --features test-transport`
+required-features = ["test-transport"]

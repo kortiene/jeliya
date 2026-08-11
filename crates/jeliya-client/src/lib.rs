@@ -59,6 +59,7 @@ mod backend;
 mod error;
 mod event;
 mod handle;
+mod kernel;
 mod stream;
 
 #[cfg(feature = "mock")]
@@ -67,7 +68,16 @@ pub mod mock;
 pub use error::{CallError, Execution, LocalError};
 pub use event::{ClientEvent, EventSubscription, RoomPush, State};
 pub use handle::{ClientHandle, Dedup};
+pub use kernel::{KernelConfig, KernelLimits, TickDelta};
 pub use stream::{StreamCall, StreamCancel};
+
+// The deterministic in-memory kernel driver and its controller are the
+// reference substrate the four real adapters (#171/#172/#173) are diffed
+// against (#175). They ship behind `test-transport` (default-off) so the
+// library's normal build carries no test scaffolding, mirroring how the mock
+// backend ships behind `mock`.
+#[cfg(feature = "test-transport")]
+pub use kernel::{KernelController, SentFrame};
 
 // The erasure is internal: `ClientBackend`, `ErasedCall`, and `RawJson` are
 // deliberately never exported. Depend on `jeliya_api` for the typed operations,

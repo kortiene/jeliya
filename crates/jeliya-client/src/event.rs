@@ -129,7 +129,13 @@ pub enum RoomPush {
         device_id: DeviceId,
         /// The new link state.
         link: Link,
-        /// The connection generation that makes a stale teardown discardable.
+        /// The connection generation that makes a stale teardown discardable
+        /// (protocol §Presence; truthful data depends on upstream U1). The
+        /// kernel forwards it verbatim: discarding by payload generation
+        /// needs last-seen state per `(room, device)` — exactly the
+        /// unbounded-external-key map §K12 forbids in the kernel — so the
+        /// comparison belongs to the presence-folding consumer, whose
+        /// per-member state is already bounded by room membership.
         generation: u64,
     },
     /// A transfer made progress (the wire `transfer` push). Goes only to the
@@ -245,6 +251,11 @@ impl EventBus {
     /// broadcast again.
     pub(crate) fn subscribe(&self) -> EventSubscription {
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
+        // Prune dead entries at registration too: broadcasts prune, but a
+        // quiet client (Idle, or Ready with no events) whose components
+        // repeatedly subscribe and drop would otherwise grow the registry
+        // without bound (AC-7).
+        subscribers.retain(|weak| weak.strong_count() > 0);
         let closed = self.closed.load(Ordering::Relaxed);
         let state = Arc::new(Mutex::new(SubscriberState {
             buffer: VecDeque::new(),
@@ -264,11 +275,20 @@ impl EventBus {
     /// `dropped` counter incremented, surfaced as a [`ClientEvent::Lagged`]
     /// that occupies the position in the sequence where the loss occurred —
     /// never a silent loss, and never reported *after* later events. Lifecycle
-    /// transitions ([`ClientEvent::StateChanged`]) are control events: they are
-    /// never dropped, so a subscriber always observes the final
-    /// `StateChanged { to: Stopped }` (the mailbox may exceed capacity by at
-    /// most the handful of lifecycle transitions plus their `Lagged` markers).
+    /// transitions ([`ClientEvent::StateChanged`]) are control events: they
+    /// always reach the subscriber, but under backpressure the **flapping
+    /// family coalesces** rather than grow the mailbox without bound — at
+    /// capacity, a new `Connecting`/`Ready`/`Interrupted` transition merges
+    /// into the last undelivered non-terminal `StateChanged` (its `from`
+    /// stays, its `to` advances). Terminal transitions (`Stopping`,
+    /// `Stopped`, `Failed`) always append **distinctly** — the seam
+    /// guarantees a subscriber observes each of them, and they occur at most
+    /// once per lifetime, so the mailbox stays bounded while a flapping
+    /// connection cannot grow it indefinitely (AC-7/§K12).
     pub(crate) fn broadcast(&self, event: ClientEvent) {
+        // Wakers collected under the locks, invoked after both the registry
+        // and every subscriber mutex are released (see `close`).
+        let mut wakers = Vec::new();
         let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
         subscribers.retain(|weak| weak.strong_count() > 0);
         let is_control = matches!(event, ClientEvent::StateChanged { .. });
@@ -280,12 +300,80 @@ impl EventBus {
             if state.closed {
                 continue;
             }
+            // At capacity, a NON-TERMINAL control event coalesces into the
+            // last undelivered non-terminal StateChanged instead of appending
+            // (endpoints stay honest: the merged transition spans old.from →
+            // new.to). Terminal transitions (Stopping/Stopped/Failed) always
+            // append distinctly — the seam guarantees a subscriber observes
+            // them individually, and they occur at most once per lifetime, so
+            // they cannot unbound the mailbox; only the flapping family
+            // (Connecting/Ready/Interrupted) repeats without limit.
+            let mut merged = false;
+            if is_control && state.buffer.len() >= state.capacity {
+                if let ClientEvent::StateChanged { to: new_to, .. } = &event {
+                    let non_terminal = matches!(
+                        new_to,
+                        State::Connecting | State::Ready | State::Interrupted
+                    );
+                    if non_terminal {
+                        // Only a TRAILING transition may coalesce: merging
+                        // into a StateChanged with ordinary events queued
+                        // after it would move the newer transition before
+                        // events broadcast earlier, breaking ordering. At
+                        // capacity ordinary events no longer append, so the
+                        // tail stays a StateChanged once flapping begins and
+                        // the bound holds.
+                        if let Some(ClientEvent::StateChanged { to, .. }) = state.buffer.back_mut()
+                        {
+                            if matches!(*to, State::Connecting | State::Ready | State::Interrupted)
+                            {
+                                *to = *new_to;
+                                merged = true;
+                            }
+                        }
+                        // Preserve the loss boundary across coalescing: a
+                        // pending drop count must be visible BEFORE the
+                        // coalesced window it overlaps, or reconciliation is
+                        // delayed behind a transition broadcast after the
+                        // loss. Exactly one Lagged marker sits directly
+                        // before the coalescing tail — inserted once, then
+                        // accumulated into — so the bound holds.
+                        if merged && state.dropped > 0 {
+                            let dropped = std::mem::take(&mut state.dropped);
+                            let tail = state.buffer.len() - 1;
+                            let absorbed = tail > 0
+                                && match &mut state.buffer[tail - 1] {
+                                    ClientEvent::Lagged {
+                                        room_id,
+                                        dropped: pending,
+                                    } => {
+                                        *pending = pending.saturating_add(dropped);
+                                        *room_id = None;
+                                        true
+                                    }
+                                    _ => false,
+                                };
+                            if !absorbed {
+                                state.buffer.insert(
+                                    tail,
+                                    ClientEvent::Lagged {
+                                        room_id: None,
+                                        dropped,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             // Materialize any pending drop count as a `Lagged` marker before
             // appending, so the marker keeps its position in the sequence: a
             // consumer learns about the loss before it sees anything broadcast
-            // after the loss. Control events flush unconditionally (they bypass
-            // capacity); ordinary pushes flush when a slot is free.
-            if state.dropped > 0 && (is_control || state.buffer.len() < state.capacity) {
+            // after the loss. An appending control event flushes it
+            // unconditionally; ordinary pushes flush when a slot is free. A
+            // coalescing control event appends nothing, so the marker waits.
+            if state.dropped > 0 && ((is_control && !merged) || state.buffer.len() < state.capacity)
+            {
                 let dropped = std::mem::take(&mut state.dropped);
                 state.buffer.push_back(ClientEvent::Lagged {
                     room_id: None,
@@ -293,15 +381,21 @@ impl EventBus {
                 });
             }
             if is_control {
-                state.buffer.push_back(event.clone());
+                if !merged {
+                    state.buffer.push_back(event.clone());
+                }
             } else if state.buffer.len() >= state.capacity {
                 state.dropped = state.dropped.saturating_add(1);
             } else {
                 state.buffer.push_back(event.clone());
             }
             if let Some(waker) = state.waker.take() {
-                waker.wake();
+                wakers.push(waker);
             }
+        }
+        drop(subscribers);
+        for waker in wakers {
+            waker.wake();
         }
     }
 
@@ -310,19 +404,29 @@ impl EventBus {
     /// its stream yields `None`. Subscriptions created after this call are
     /// born closed.
     pub(crate) fn close(&self) {
-        let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
-        self.closed.store(true, Ordering::Relaxed);
-        for weak in subscribers.iter() {
-            let Some(state) = weak.upgrade() else {
-                continue;
-            };
-            let mut state = state.lock().expect("subscriber poisoned");
-            state.closed = true;
-            if let Some(waker) = state.waker.take() {
-                waker.wake();
+        // Wakers are invoked only after every bus lock is released: an
+        // inline-executor waker that immediately polls (re-taking its state
+        // mutex) or subscribes (re-taking the registry mutex) must not
+        // deadlock.
+        let mut wakers = Vec::new();
+        {
+            let mut subscribers = self.subscribers.lock().expect("event bus poisoned");
+            self.closed.store(true, Ordering::Relaxed);
+            for weak in subscribers.iter() {
+                let Some(state) = weak.upgrade() else {
+                    continue;
+                };
+                let mut state = state.lock().expect("subscriber poisoned");
+                state.closed = true;
+                if let Some(waker) = state.waker.take() {
+                    wakers.push(waker);
+                }
             }
+            subscribers.clear();
         }
-        subscribers.clear();
+        for waker in wakers {
+            waker.wake();
+        }
     }
 }
 
@@ -360,5 +464,274 @@ impl Stream for EventSubscription {
         }
         state.waker = Some(cx.waker().clone());
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AC-7/§K12: a stalled subscriber under a flapping connection cannot
+    /// grow its mailbox without bound — at capacity, lifecycle transitions
+    /// coalesce into the last undelivered `StateChanged`, and the honest
+    /// final state (`Stopped` included) survives the coalescing.
+    #[test]
+    fn flapping_lifecycle_coalesces_for_a_stalled_subscriber() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        for _ in 0..(DEFAULT_FANOUT_CAPACITY * 3) {
+            bus.broadcast(ClientEvent::StateChanged {
+                from: State::Ready,
+                to: State::Interrupted,
+            });
+            bus.broadcast(ClientEvent::StateChanged {
+                from: State::Interrupted,
+                to: State::Ready,
+            });
+        }
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Stopped,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert!(
+            state.buffer.len() <= DEFAULT_FANOUT_CAPACITY + 5,
+            "the mailbox is bounded under flapping (capacity plus the \
+             control/loss allowance), got {}",
+            state.buffer.len()
+        );
+        let last_transition = state.buffer.iter().rev().find_map(|event| match event {
+            ClientEvent::StateChanged { to, .. } => Some(*to),
+            _ => None,
+        });
+        assert_eq!(
+            last_transition,
+            Some(State::Stopped),
+            "the terminal transition appends distinctly and is observable"
+        );
+    }
+
+    /// The WORST-CASE mailbox ceiling, reached by failure-then-stop: a full
+    /// stalled mailbox drops a push, interruption appends the flushed
+    /// `Lagged` and a non-mergeable `StateChanged` (+2, the tail was an
+    /// ordinary event), retry exhaustion appends `Failed` (+3), and a later
+    /// `stop()` appends `Stopping` and `Stopped` distinctly (+4, +5). The
+    /// allowance cannot exceed 5 for contract-respecting sequences: at most
+    /// one bypass non-terminal `StateChanged` (afterwards the tail stays
+    /// coalescible until a terminal, and no non-terminal follows `Failed`),
+    /// at most two `Lagged` markers, and the at-most-once terminals — a
+    /// second flushed `Lagged` needs a Ready-with-pushes window before
+    /// `stop()`, which the `Failed` path forecloses, so the two +5 variants
+    /// exclude each other's extras.
+    #[test]
+    fn failure_then_stop_reaches_but_never_exceeds_the_mailbox_ceiling() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64) {
+            bus.broadcast(ClientEvent::ResyncRequired {
+                room_id: RoomId::new("r"),
+                from_pos: pos,
+            });
+        }
+        // One more push at capacity: dropped, pending as a Lagged count.
+        bus.broadcast(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: DEFAULT_FANOUT_CAPACITY as u64,
+        });
+        // Interruption: flushes the Lagged marker, then appends (the tail is
+        // an ordinary event, so nothing coalesces).
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        // Retry exhaustion, then stop: three distinct terminal appends.
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Interrupted,
+            to: State::Failed,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Failed,
+            to: State::Stopping,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Stopping,
+            to: State::Stopped,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert_eq!(
+            state.buffer.len(),
+            DEFAULT_FANOUT_CAPACITY + 5,
+            "the failure-then-stop sequence reaches exactly the ceiling"
+        );
+        let tail: Vec<_> = state.buffer.iter().skip(DEFAULT_FANOUT_CAPACITY).collect();
+        assert!(
+            matches!(tail[0], ClientEvent::Lagged { dropped: 1, .. }),
+            "the dropped push surfaces before the transition: {tail:?}"
+        );
+        for (index, to) in [
+            State::Interrupted,
+            State::Failed,
+            State::Stopping,
+            State::Stopped,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                matches!(tail[index + 1], ClientEvent::StateChanged { to: t, .. } if *t == to),
+                "distinct transition {to:?} at tail position {}: {tail:?}",
+                index + 1
+            );
+        }
+    }
+
+    /// Coalescing must not reorder: a transition with ordinary events queued
+    /// after it keeps its position — only a TRAILING transition merges.
+    #[test]
+    fn coalescing_never_reorders_across_queued_pushes() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        // Ordinary events queue AFTER the transition, up to capacity.
+        for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64) {
+            bus.broadcast(ClientEvent::ResyncRequired {
+                room_id: RoomId::new("r"),
+                from_pos: pos,
+            });
+        }
+        // At capacity, a new transition must NOT merge into the older,
+        // non-trailing one (that would move the reconnect before events
+        // broadcast earlier); it appends.
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Interrupted,
+            to: State::Ready,
+        });
+        {
+            let state = sub.state.lock().expect("subscriber poisoned");
+            let first_transition = state.buffer.iter().find_map(|event| match event {
+                ClientEvent::StateChanged { to, .. } => Some(*to),
+                _ => None,
+            });
+            assert_eq!(
+                first_transition,
+                Some(State::Interrupted),
+                "the older transition keeps its original value and position"
+            );
+            assert!(
+                matches!(
+                    state.buffer.back(),
+                    Some(ClientEvent::StateChanged {
+                        to: State::Ready,
+                        ..
+                    })
+                ),
+                "the new transition appended at the tail"
+            );
+        }
+        // With the tail now a transition, further flapping coalesces there.
+        let len_before = sub.state.lock().expect("subscriber poisoned").buffer.len();
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert_eq!(
+            state.buffer.len(),
+            len_before,
+            "a trailing transition coalesces without growth"
+        );
+    }
+
+    /// The loss boundary survives coalescing: a pending drop count is
+    /// reported BEFORE the coalesced window it overlaps (exactly one Lagged
+    /// marker directly before the coalescing tail, accumulated into), so
+    /// reconciliation is never delayed behind a merged transition.
+    #[test]
+    fn loss_marker_precedes_the_coalesced_window() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64 - 1) {
+            bus.broadcast(ClientEvent::ResyncRequired {
+                room_id: RoomId::new("r"),
+                from_pos: pos,
+            });
+        }
+        // The transition appends at the tail; the mailbox is now at capacity.
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        // A push is lost, then a transition coalesces into the tail: the
+        // loss marker must land BEFORE the merged window.
+        bus.broadcast(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: 9_999,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Interrupted,
+            to: State::Ready,
+        });
+        {
+            let state = sub.state.lock().expect("subscriber poisoned");
+            let len = state.buffer.len();
+            assert!(
+                matches!(
+                    state.buffer[len - 2],
+                    ClientEvent::Lagged { dropped: 1, .. }
+                ),
+                "the loss marker sits directly before the coalesced tail"
+            );
+            assert!(matches!(
+                state.buffer[len - 1],
+                ClientEvent::StateChanged {
+                    to: State::Ready,
+                    ..
+                }
+            ));
+        }
+        // Another loss + flap: the existing marker accumulates, no growth.
+        let len_before = sub.state.lock().expect("subscriber poisoned").buffer.len();
+        bus.broadcast(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: 10_000,
+        });
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert_eq!(
+            state.buffer.len(),
+            len_before,
+            "the marker absorbs, no growth"
+        );
+        let len = state.buffer.len();
+        assert!(
+            matches!(
+                state.buffer[len - 2],
+                ClientEvent::Lagged { dropped: 2, .. }
+            ),
+            "the accumulated loss count is honest"
+        );
+    }
+
+    /// AC-7: subscribe/drop churn on a quiet bus cannot grow the subscriber
+    /// registry without bound — registration prunes dead entries.
+    #[test]
+    fn subscribe_churn_on_a_quiet_bus_stays_bounded() {
+        let bus = EventBus::new();
+        for _ in 0..1_000 {
+            drop(bus.subscribe());
+        }
+        let live = bus.subscribe();
+        let registered = bus.subscribers.lock().expect("event bus poisoned").len();
+        assert!(
+            registered <= 2,
+            "dead subscriptions are pruned at registration, got {registered}"
+        );
+        drop(live);
     }
 }

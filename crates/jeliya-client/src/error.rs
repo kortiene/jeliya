@@ -63,14 +63,14 @@ pub enum LocalError {
 /// The variants are the closed set of failure classes the seam distinguishes.
 /// See [`CallError::execution`] for the may-have-executed classification each
 /// carries.
-#[derive(Clone, PartialEq, Debug, thiserror::Error)]
+#[derive(Clone, PartialEq, thiserror::Error)]
 pub enum CallError {
     /// The daemon reached operation semantics and answered a typed protocol
     /// error, carried verbatim as a [`jeliya_api::ApiError`]. `execution()` is
     /// [`Execution::DefinitelyNot`]: a typed refusal commits no effect (a
     /// pre-`END` stream failure authors no `file.share` event, an
     /// `op_id_conflict` performed no second effect, and so on).
-    #[error("daemon returned a typed error: {0:?}")]
+    #[error("daemon returned a typed error: {}", wire_code(.0))]
     Wire(ApiError),
     /// The bounded outbound queue refused the request before it was sent
     /// (#168's backpressure, surfaced rather than absorbed). `execution()` is
@@ -106,6 +106,50 @@ pub enum CallError {
     /// A client-local failure that never reached a daemon verdict.
     #[error("local failure: {0}")]
     Local(LocalError),
+}
+
+/// The wire error's protocol `code` tag, extracted through its serde
+/// representation so the rendered string carries the discriminant and **no
+/// payload** — an `op_id_conflict` must not print the conflicting `OpId`, and
+/// no identifier-bearing field ever enters an error string (§K15). The typed
+/// payload stays available programmatically via [`CallError::as_wire`].
+fn wire_code(error: &ApiError) -> String {
+    serde_json::to_value(error)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("code")
+                .and_then(|code| code.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| String::from("unrenderable"))
+}
+
+/// `Debug` is hand-written for the same §K15 reason the `Display` is: the
+/// derived impl would recursively format the wire payload, and
+/// `ApiError::OpIdConflict` carries the raw dedup key. `Wire` renders only
+/// the protocol code; every other variant matches its derived shape.
+impl std::fmt::Debug for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::Wire(error) => f.debug_tuple("Wire").field(&wire_code(error)).finish(),
+            CallError::QueueFull { resource, limit } => f
+                .debug_struct("QueueFull")
+                .field("resource", resource)
+                .field("limit", limit)
+                .finish(),
+            CallError::Timeout => f.write_str("Timeout"),
+            CallError::Cancelled { execution } => f
+                .debug_struct("Cancelled")
+                .field("execution", execution)
+                .finish(),
+            CallError::Disconnected { execution } => f
+                .debug_struct("Disconnected")
+                .field("execution", execution)
+                .finish(),
+            CallError::Local(local) => f.debug_tuple("Local").field(local).finish(),
+        }
+    }
 }
 
 impl CallError {
@@ -145,5 +189,44 @@ impl CallError {
 impl From<LocalError> for CallError {
     fn from(error: LocalError) -> Self {
         CallError::Local(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jeliya_api::OpId;
+
+    /// §K15: the rendered error carries the protocol code and no payload —
+    /// an `op_id_conflict` must not print the conflicting key.
+    #[test]
+    fn wire_error_display_redacts_identifier_payloads() {
+        let rendered = CallError::Wire(ApiError::OpIdConflict {
+            op_id: OpId::new("secret-dedup-key"),
+        })
+        .to_string();
+        assert!(
+            rendered.contains("op_id_conflict"),
+            "the protocol code is present: {rendered}"
+        );
+        assert!(
+            !rendered.contains("secret-dedup-key"),
+            "the dedup key leaked into the error string: {rendered}"
+        );
+        // §K15 covers Debug too: `{:?}` must render the code, not the key.
+        let debugged = format!(
+            "{:?}",
+            CallError::Wire(ApiError::OpIdConflict {
+                op_id: OpId::new("secret-dedup-key"),
+            })
+        );
+        assert!(
+            debugged.contains("op_id_conflict"),
+            "the protocol code is present in Debug: {debugged}"
+        );
+        assert!(
+            !debugged.contains("secret-dedup-key"),
+            "the dedup key leaked into Debug: {debugged}"
+        );
     }
 }
