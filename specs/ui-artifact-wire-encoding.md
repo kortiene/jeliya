@@ -380,7 +380,11 @@ its sealed variants, and the manifest carries shared provenance:
     each segment at most **255 bytes**, the common filesystem component
     bound, and each complete relative path at most **1024 bytes** —
     individually valid segments can still compose a pathname no filesystem
-    accepts — so every sealed path is materializable on a `Dir` filesystem).
+    accepts. The cap bounds the relative key; at `Dir` load the daemon also
+    validates each **joined native path** (base directory included) against
+    the platform's total bound and fails closed — an over-deep `--ui-dir`
+    is an operator error surfaced at load — so every accepted sealed path
+    is materializable on the serving `Dir` filesystem).
     Byte equality is then the collision key by construction — case-fold,
     Unicode NFC/NFD, and Win32 trailing-dot/space aliasing are
     unrepresentable, so no filesystem can treat two sealed paths as one
@@ -456,7 +460,10 @@ its sealed variants, and the manifest carries shared provenance:
   `Content-Length` (auto from `Full<Bytes>`), `Vary: Accept-Encoding`, and a
   cache policy keyed to the request-path form (caches key by URL, not
   digest): a long-lived immutable policy only when the request path embeds
-  the content digest; every stable-path asset — the root document and e.g.
+  the content digest **and** the response is a direct manifest-entry match —
+  an SPA-fallback response always revalidates (an extension-less route can
+  masquerade as a digest-addressed path while carrying the entry point);
+  every stable-path asset — the root document and e.g.
   `/styles.css` — gets an explicit revalidating policy (`Cache-Control:
   no-cache` at minimum), or a stale copy outlives its generation
   (`first-release-distribution.md`).
@@ -500,6 +507,10 @@ when the daemon serves its value faithfully. The rows:
   must fail this row.
 - Two header fields `br;q=0` + `gzip` → assert gzip: repeated field values
   combine before parsing; a single-value read must fail this row.
+- Against an asset that intentionally omits a variant: offering only the
+  unsealed coding → `200` canonical, no `Content-Encoding` (absence is
+  negotiation, never 5xx/406); offering it ahead of a sealed coding → the
+  sealed coding serves (absent preferred coding skipped, not fatal).
 - No `Accept-Encoding` → assert **no** `Content-Encoding`, body == canonical
   bytes, SHA-256 == `identity.digest`.
 - `Accept-Encoding: br;q=0, gzip` → assert gzip chosen, not br.

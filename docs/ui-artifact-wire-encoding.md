@@ -318,7 +318,12 @@ its sealed variants, and the manifest carries shared provenance:
     `com1`–`com9`, `lpt1`–`lpt9`; each segment at most **255 bytes**, the
     common filesystem component bound, and each complete relative path at
     most **1024 bytes** — individually valid segments can still compose a
-    pathname no filesystem accepts — so no sealed path exists that a `Dir`
+    pathname no filesystem accepts. The cap bounds the relative key only, so
+    at `Dir` load the daemon additionally validates that each **joined
+    native path** (base directory included) fits the platform's total-path
+    bound and fails closed otherwise — an over-deep `--ui-dir` is an
+    operator error surfaced at load, not a first-request surprise — so no
+    accepted sealed path exists that the serving `Dir`
     filesystem cannot materialize while an embedded map holds it). This
     makes byte equality the collision
     key by construction: with only lowercase ASCII sealed, case-fold aliasing
@@ -407,7 +412,11 @@ its sealed variants, and the manifest carries shared provenance:
   and a cache policy keyed to the **request-path form**, because a browser
   cache is keyed by URL, not by manifest digest: an asset may carry a
   long-lived immutable policy **only if its request path embeds its content
-  digest**; every stable-path asset — the root document, and any asset
+  digest**, and only on a **direct manifest-entry match** — an SPA-fallback
+  response always revalidates, whatever the raw route looks like, since an
+  arbitrary extension-less route can masquerade as a digest-addressed path
+  while actually carrying the entry point; every stable-path asset — the
+  root document, and any asset
   served at a generation-independent path such as `/styles.css` — carries an
   explicit revalidating policy (`Cache-Control: no-cache` at minimum),
   because
@@ -450,6 +459,12 @@ when the daemon serves its value faithfully. The rows:
 - Two header fields, `Accept-Encoding: br;q=0` then `Accept-Encoding: gzip`
   → assert `Content-Encoding: gzip`: repeated field values combine before
   parsing — an implementation reading a single header value must fail.
+- Against an asset that **intentionally omits** a variant (not smaller than
+  canonical): offering only the unsealed coding → `200`, canonical bytes,
+  **no** `Content-Encoding` — never a 5xx or 406, an absent entry is
+  ordinary negotiation, not corruption; offering the unsealed coding ahead
+  of a sealed one → the sealed one is served — an absent preferred coding
+  is skipped, not fatal.
 - No `Accept-Encoding` → assert **no** `Content-Encoding`, body equals the
   canonical bytes, SHA-256 equals `identity.digest`.
 - `Accept-Encoding: br;q=0, gzip` → assert gzip chosen, not br.
