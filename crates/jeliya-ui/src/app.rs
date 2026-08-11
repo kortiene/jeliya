@@ -103,6 +103,22 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                             // persistent failure.
                             Err(error @ CallError::Disconnected { .. }) => {
                                 ui.write().set_notice(format!("room.list: {error:?}"));
+                                // A Disconnected settlement can outrun the
+                                // lifecycle event — the seam permits settling
+                                // pending calls before publishing
+                                // Interrupted — so "state still Ready" does
+                                // not mean the connection recovered. Wait for
+                                // the lifecycle to actually LEAVE Ready
+                                // before waiting for the next Ready: an
+                                // immediate retry against the dying
+                                // connection could be refused with a
+                                // non-retryable error and end this task
+                                // before recovery.
+                                while handle.state() == State::Ready {
+                                    if ready.next().await.is_none() {
+                                        return;
+                                    }
+                                }
                             }
                             Err(error) => {
                                 ui.write().set_notice(format!("room.list: {error:?}"));
@@ -185,7 +201,15 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                     // blank main area. Mirrors the React shell's
                     // `rooms-empty muted` element.
                     if snapshot.rooms.is_empty() {
-                        div { class: "rooms-empty muted", id: "rooms-empty", "No rooms yet" }
+                        // "No rooms yet" is an ANSWER, not a default: before
+                        // the first room.list reply lands, an empty vector
+                        // means "not answered yet", and claiming an empty
+                        // account during a slow read would be false.
+                        if snapshot.rooms_loaded {
+                            div { class: "rooms-empty muted", id: "rooms-empty", "No rooms yet" }
+                        } else {
+                            div { class: "rooms-empty muted", id: "rooms-loading", "Loading rooms…" }
+                        }
                     }
                     for room in snapshot.rooms.iter() {
                         RoomListItem {

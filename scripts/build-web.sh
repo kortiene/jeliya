@@ -73,8 +73,12 @@ export CARGO_HOME="$iso_cargo_home"
 # FIXED token: registry/git dependency sources resolve through the per-run
 # mktemp path, and without the remap those embedded paths would differ
 # between the determinism check's two samples (they did — CI caught it).
+# Remap ORDER is load-bearing: rustc applies the LAST matching rule, and a
+# checkout under $HOME matches both prefixes — the broad home rule must come
+# first so the specific repo rule wins and sources embed as repo-relative
+# (`.`), not as a checkout-path-dependent `~/...`.
 US=$'\x1f'
-export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${repo}=.${US}--remap-path-prefix=${iso_cargo_home}=/cargo-home${US}--remap-path-prefix=${HOME}=~"
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${HOME}=~${US}--remap-path-prefix=${iso_cargo_home}=/cargo-home${US}--remap-path-prefix=${repo}=."
 
 # The wasm-bindgen CLI version MUST match the locked library version exactly.
 locked_wbg="$(awk '

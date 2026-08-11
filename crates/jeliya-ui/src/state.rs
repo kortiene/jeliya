@@ -23,6 +23,10 @@ pub struct UiState {
     pub lifecycle: State,
     /// The locally known rooms, from the typed `room.list` reply.
     pub rooms: Vec<RoomRow>,
+    /// Whether the initial `room.list` reply has arrived. An empty `rooms`
+    /// before then means "not answered yet", not "no rooms" — the shell must
+    /// not claim an empty account while the read is still in flight.
+    pub rooms_loaded: bool,
     /// The most recent local-facing notice (a wire error or a local failure),
     /// or `None`.
     pub notice: Option<String>,
@@ -35,6 +39,7 @@ impl UiState {
         Self {
             lifecycle: State::Idle,
             rooms: Vec::new(),
+            rooms_loaded: false,
             notice: None,
         }
     }
@@ -54,6 +59,7 @@ impl UiState {
     /// Replace the room list with the typed `room.list` reply's view models.
     pub fn set_rooms(&mut self, rooms: Vec<RoomRow>) {
         self.rooms = rooms;
+        self.rooms_loaded = true;
     }
 
     /// Record a local-facing notice (a failed read or a wire error).
