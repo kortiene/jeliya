@@ -198,6 +198,14 @@ is_diagnostic() {
 # segment names the package but no operand-shaped occurrence can be
 # validated (exotic quoting, indirection), it fails closed as unpinned.
 pinned_for() { # $1 = package name regex, $2 = segment
+  # A GIT source resolves the repository's moving default branch no matter
+  # what package version is requested — `--git URL tool@x.y.z` still fetches
+  # whatever the branch points at today. Only an immutable full-SHA `--rev`
+  # pins a git install; without one the segment is unpinned regardless of
+  # any version token below.
+  if grep -Eiq -- '--git' <<<"$2"; then
+    grep -Eq -- '--rev[= ][0-9a-f]{40}([^0-9a-f]|$)' <<<"$2" || return 1
+  fi
   grep -Eiq -- '--version[= ]=[0-9]+\.[0-9]+\.[0-9]+' <<<"$2" && return 0
   grep -Eq -- '--version[= ]=(\$locked_wbg([^A-Za-z0-9_]|$)|\$\{locked_wbg\})' <<<"$2" && return 0
   found=0
@@ -293,7 +301,10 @@ while IFS= read -r line; do
   # LIST (multiline forms arrive here joined), so EVERY protected token must
   # carry its own trailing pin — a pinned neighbor pins nothing. The key
   # itself may be QUOTED (`"tool":` is the same YAML mapping key), so the
-  # feed accepts optional quotes and space before the colon.
+  # feed accepts optional quotes and space before the colon — and it may sit
+  # inside a FLOW mapping (`with: { tool: wasm-bindgen-cli }`), so a `tool:`
+  # reached through `{` or `,` is scanned identically (the per-token loop
+  # below ignores the brace tokens).
   val="$(sed 's/^[^:]*://' <<<"$(strip_comment_tail "$line")")"
   set -f
   for tok in $(tr ',' ' ' <<<"$val"); do
@@ -309,7 +320,7 @@ while IFS= read -r line; do
     fi
   done
   set +f
-done < <(scan '^[[:space:]]*["'\'']?tool["'\'']?[[:space:]]*:.*(dioxus-cli|wasm-bindgen)')
+done < <(scan '(^[[:space:]]*|[{,][[:space:]]*)["'\'']?tool["'\'']?[[:space:]]*:.*(dioxus-cli|wasm-bindgen)')
 
 if [ "$fail" -ne 0 ]; then
   echo

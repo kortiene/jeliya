@@ -19,7 +19,10 @@
 //! `StateChanged` to `Stopping` then `Stopped`, and ends every subscription).
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
@@ -156,6 +159,7 @@ impl MockScript {
             state: State::Idle,
             programs: self.programs,
             pending: VecDeque::new(),
+            pending_wakers: Vec::new(),
             stopping: false,
             bus: Arc::new(EventBus::new()),
         }));
@@ -179,6 +183,10 @@ struct MockInner {
     state: State,
     programs: HashMap<&'static str, VecDeque<Step>>,
     pending: VecDeque<Pending>,
+    /// Wakers parked by [`MockController::pending_call`], woken when a call
+    /// registers (or the mock begins stopping, so a waiter never outlives
+    /// the backend it waits on).
+    pending_wakers: Vec<Waker>,
     stopping: bool,
     bus: Arc<EventBus>,
 }
@@ -309,6 +317,11 @@ impl MockInner {
         //        yields None after the Stopped event it just observed.
         self.transition(State::Stopped);
         self.bus.close();
+        // A parked pending_call() waiter must observe the shutdown rather
+        // than sleep past the backend's end.
+        for waker in std::mem::take(&mut self.pending_wakers) {
+            waker.wake();
+        }
     }
 }
 
@@ -339,6 +352,12 @@ impl ClientBackend for MockBackend {
             Some(step) => {
                 let (sender, receiver) = oneshot::channel();
                 inner.pending.push_back(Pending { sender, step });
+                // The registration IS the wake source for pending_call():
+                // a driver awaiting dispatch resumes because dispatch
+                // happened, never because a scheduler guess paid off.
+                for waker in inner.pending_wakers.drain(..) {
+                    waker.wake();
+                }
                 Box::pin(async move {
                     match receiver.await {
                         Ok(result) => result,
@@ -388,6 +407,22 @@ impl MockController {
         self.inner.lock().expect("mock poisoned").deliver_next()
     }
 
+    /// Resolve once at least one dispatched call is pending settlement (or
+    /// the mock has begun stopping, so a waiter never outlives the backend).
+    ///
+    /// This is the event-driven complement to [`Self::deliver_next`] for
+    /// drivers that share an executor with the code under test: a
+    /// deliver-and-yield pump must GUESS how many passes the dispatching
+    /// task needs, and a self-waking pump can starve it indefinitely on an
+    /// executor that isn't round-robin fair. Awaiting this future instead
+    /// resumes the driver exactly when `dispatch` registers a call — woken
+    /// by the dispatch itself, deterministically and clock-free.
+    pub fn pending_call(&self) -> PendingCall {
+        PendingCall {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
     /// Inject an out-of-band event (a [`ClientEvent::Gap`],
     /// [`ClientEvent::ResyncRequired`], a peer push, a [`ClientEvent::Lagged`],
     /// …) to every subscriber.
@@ -428,5 +463,24 @@ impl MockController {
     /// sequence stays under the script's control.
     pub fn drop_connection(&self) {
         self.inner.lock().expect("mock poisoned").drop_connection();
+    }
+}
+
+/// Future returned by [`MockController::pending_call`]: ready when a
+/// dispatched call awaits settlement, or when the mock has begun stopping.
+pub struct PendingCall {
+    inner: Arc<Mutex<MockInner>>,
+}
+
+impl Future for PendingCall {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut inner = self.inner.lock().expect("mock poisoned");
+        if !inner.pending.is_empty() || inner.stopping {
+            return Poll::Ready(());
+        }
+        inner.pending_wakers.push(cx.waker().clone());
+        Poll::Pending
     }
 }

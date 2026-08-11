@@ -116,20 +116,28 @@ fn no_serde_json_value_in_public_source() {
 /// the `native`/`web` features by name.
 #[test]
 fn no_cfg_target_forks_in_shared_components() {
-    let components_dir =
-        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/components"));
+    let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
     let mut offenders = Vec::new();
-    // Recursive: a nested module (src/components/room/mod.rs) is as much a
-    // shared component as an immediate file, and an unwalked subdirectory
-    // would silently exempt it from the no-fork contract.
-    let mut pending = vec![components_dir.to_path_buf()];
+    // The scan covers the whole target-agnostic root — app.rs and state.rs
+    // are as shared as components/, and a platform branch there forks the
+    // UI exactly the same way. The EXCEPTIONS are the modules whose job is
+    // selection: lib.rs owns the renderer-optional feature-gated module
+    // graph, compose.rs and the per-target bin/ own target composition,
+    // and services.rs owns service implementations behind the injected
+    // seam. Recursive: a nested module is as much shared code as an
+    // immediate file, and an unwalked subdirectory would silently exempt
+    // it from the no-fork contract.
+    let mut pending = vec![src_dir.to_path_buf()];
     let mut files = Vec::new();
     while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).expect("readable components dir") {
+        for entry in std::fs::read_dir(&dir).expect("readable src dir") {
             let path = entry.expect("dir entry").path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if path.is_dir() {
-                pending.push(path);
-            } else {
+                if name != "bin" {
+                    pending.push(path);
+                }
+            } else if !matches!(name, "lib.rs" | "compose.rs" | "services.rs") {
                 files.push(path);
             }
         }
@@ -206,11 +214,29 @@ fn no_cfg_target_forks_in_shared_components() {
     );
 }
 
-/// The crate's `Cargo.toml` `[dependencies]` section must not directly name
-/// `jeliya-core`, `jeliyad`, or `jeliya-ffi`. These native crates must never
-/// reach `jeliya-ui`'s dependency graph — belt-and-suspenders at the manifest
-/// level complementing the `wasm_web_graph_is_free_of_iroh_and_native_crates`
-/// graph check.
+/// The crate's `Cargo.toml` dependency tables must not directly name any
+/// forbidden native-family crate. The full family list, not just the three
+/// Jeliya crates: a dependency restricted to a target CI never resolves
+/// (say `iroh` under `[target.'cfg(target_os = "windows")'.dependencies]`)
+/// escapes both graph checks, so the manifest scan is the only gate that
+/// sees it. Belt-and-suspenders at the manifest level complementing the
+/// `wasm_web_graph_is_free_of_iroh_and_native_crates` graph check.
+const BANNED_MANIFEST_CRATES: [&str; 13] = [
+    "jeliya-core",
+    "jeliyad",
+    "jeliya-ffi",
+    "iroh",
+    "quinn",
+    "rustls",
+    "tokio",
+    "hickory",
+    "wry",
+    "tao",
+    "openssl-sys",
+    "native-tls",
+    "tungstenite",
+];
+
 #[test]
 fn crate_manifest_has_no_direct_native_crate_dependency() {
     let manifest_path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
@@ -238,13 +264,16 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
             // A detailed table can name the banned crate in its HEADER
             // (`[dependencies.jeliya-core]`), never reaching the body scan.
             if in_deps {
-                for banned in ["jeliya-core", "jeliyad", "jeliya-ffi"] {
+                for banned in BANNED_MANIFEST_CRATES {
                     // TOML accepts literal (single-quoted) keys and strings
                     // too: `[dependencies.'jeliya-core']` names the same
-                    // crate the bare and double-quoted forms do.
-                    if trimmed.contains(&format!(".{banned}]"))
-                        || trimmed.contains(&format!("\"{banned}\""))
-                        || trimmed.contains(&format!("'{banned}'"))
+                    // crate the bare and double-quoted forms do. Quoted
+                    // matches are PREFIX-open (`"iroh` not `"iroh"`) so a
+                    // family member (`"iroh-base"`) is caught like the
+                    // umbrella crate, mirroring the graph gate's semantics.
+                    if trimmed.contains(&format!(".{banned}"))
+                        || trimmed.contains(&format!("\"{banned}"))
+                        || trimmed.contains(&format!("'{banned}"))
                     {
                         panic!(
                             "Cargo.toml dependency table names native crate '{banned}' — \
@@ -258,14 +287,15 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
         if !in_deps || trimmed.starts_with('#') {
             continue;
         }
-        for banned in ["jeliya-core", "jeliyad", "jeliya-ffi"] {
+        for banned in BANNED_MANIFEST_CRATES {
             // A dependency declaration starts with `<name> =` — or renames
             // the package (`x = { package = "jeliya-core", … }`), so the
             // quoted package name counts wherever it appears in the table,
-            // in double-quoted AND single-quoted (TOML literal) form.
+            // in double-quoted AND single-quoted (TOML literal) form —
+            // prefix-open, so family members are caught too.
             if trimmed.starts_with(banned)
-                || trimmed.contains(&format!("\"{banned}\""))
-                || trimmed.contains(&format!("'{banned}'"))
+                || trimmed.contains(&format!("\"{banned}"))
+                || trimmed.contains(&format!("'{banned}"))
             {
                 panic!(
                     "Cargo.toml [dependencies] declares native crate '{banned}' directly — \

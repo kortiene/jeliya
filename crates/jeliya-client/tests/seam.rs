@@ -1654,3 +1654,52 @@ fn example_docs_and_subscribe_ordering_stay_consistent() {
         "the component must subscribe before issuing the mount call"
     );
 }
+
+// ---------------------------------------------------------------------------
+// pending_call — the event-driven driver primitive
+// ---------------------------------------------------------------------------
+
+/// `pending_call` parks until a dispatch registers, resolves BY THE WAKE the
+/// dispatch performs (a missing wake would hang this test's executor, not
+/// pass it), is immediately ready while a call awaits settlement, and
+/// resolves on stop so a waiter never outlives the backend. This is the
+/// primitive the compose drivers await instead of guessing how many
+/// deliver-and-yield passes the dispatching task needs — a guess that either
+/// falls short or starves an executor that is not round-robin fair.
+#[test]
+fn pending_call_wakes_on_dispatch_and_resolves_on_stop() {
+    let (handle, controller) = MockScript::new()
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&empty_room_list()),
+        )
+        .build();
+    handle.start();
+    controller.set_state(State::Ready);
+
+    // No dispatch yet: the waiter parks.
+    assert!(controller.pending_call().now_or_never().is_none());
+
+    // Woken by the dispatch itself: the driver half awaits the waiter and
+    // then delivers; the call half registers and awaits its reply. If
+    // dispatch did not wake the parked waiter, this block_on would hang.
+    let waiter = controller.pending_call();
+    let call = handle.call::<RoomList>(RoomList {}, Dedup::None);
+    let reply = block_on(async {
+        let ((), reply) = futures::join!(
+            async {
+                waiter.await;
+                while controller.deliver_next() {}
+            },
+            call,
+        );
+        reply
+    });
+    assert!(reply.is_ok(), "delivered reply settles the call: {reply:?}");
+
+    // Stop resolves a parked waiter instead of leaking it.
+    let mut parked = controller.pending_call();
+    assert!((&mut parked).now_or_never().is_none());
+    block_on(handle.stop());
+    assert!((&mut parked).now_or_never().is_some());
+}

@@ -204,13 +204,21 @@ fn main() {
     for reference in &module_refs {
         let module = dist.join(reference.trim_start_matches('/'));
         println!("cargo:rerun-if-changed={}", module.display());
-        let nonempty = std::fs::metadata(&module)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false);
-        if !nonempty {
+        // A reference must resolve to an embedded REGULAR FILE. Parent
+        // components are rejected outright: the browser normalizes
+        // `/../x.js` to `/x.js` BEFORE requesting, so a filesystem check
+        // that follows `..` would validate a sibling outside dist that the
+        // embed tree never serves. And a directory named `x.js` has
+        // nonzero metadata length while serving nothing.
+        let traverses = reference.split('/').any(|component| component == "..");
+        let embedded_file = !traverses
+            && std::fs::metadata(&module)
+                .map(|m| m.is_file() && m.len() > 0)
+                .unwrap_or(false);
+        if !embedded_file {
             fail(&format!(
-                "the embedded UI is missing or has an empty {reference} — a file index.html \
-                 references; the artifact is incomplete"
+                "the embedded UI is missing, empty, traversing, or not a regular file at \
+                 {reference} — a path index.html references; the artifact is incomplete"
             ));
         }
     }

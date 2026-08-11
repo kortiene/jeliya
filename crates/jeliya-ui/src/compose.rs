@@ -9,14 +9,14 @@
 //! system-WebView target (M4) selects its own composition here later.
 //!
 //! #176 renders against the deterministic **mock** — the reference behaviour.
-//! The mock is driven to `Ready` and its scripted mount reads are settled with
-//! a bounded, cooperative pump (no wall clock, no busy loop). The real browser
-//! transport (`WsWeb`, #168) replaces [`web_composition`]'s mock with the live
-//! adapter behind the same handle; nothing else in this crate changes.
+//! The mock is driven to `Ready` and its scripted mount reads are settled
+//! event-driven: the driver awaits [`MockController::pending_call`] and
+//! delivers when the app's own dispatch wakes it (no wall clock, no busy
+//! loop, no scheduling guess). The real browser transport (`WsWeb`, #168)
+//! replaces [`web_composition`]'s mock with the live adapter behind the same
+//! handle; nothing else in this crate changes.
 
-use std::future::poll_fn;
 use std::rc::Rc;
-use std::task::Poll;
 
 use dioxus::prelude::*;
 use jeliya_api::{RoomList, RoomListOut};
@@ -74,20 +74,39 @@ pub fn WebRoot() -> Element {
         let composition = composition.clone();
         async move {
             // Drive the reference backend deterministically: reach `Ready` so
-            // the shell leaves the boot state, then settle the eager-dispatched
-            // mount reads over a bounded number of cooperative passes. There is
-            // no live push source in this foundation slice, so this terminates.
+            // the shell leaves the boot state, then settle the mount reads
+            // EVENT-DRIVEN. A fixed deliver-and-yield pass count guesses the
+            // executor's scheduling — and guessed wrong here: Dioxus polls a
+            // self-waking task ahead of its siblings, so the passes ran out
+            // (or, unbounded, starved the app entirely) before the read task
+            // ever dispatched, leaving the shipped shell on "Loading rooms…"
+            // forever. `pending_call` parks until the app's dispatch itself
+            // wakes the driver, and resolves on stop so this task never
+            // outlives the backend. If the app never dispatches, the driver
+            // stays parked (quiescent, no busy loop) and the e2e settle
+            // assertion reports the missing read.
             composition.handle.start();
             composition.controller.set_state(State::Ready);
-            for _ in 0..8 {
-                while composition.controller.deliver_next() {}
-                yield_once().await;
-            }
+            drive_scripted_replies(&composition.controller, SCRIPTED_MOUNT_READS).await;
         }
     });
 
     rsx! {
         AppRoot { handle, services }
+    }
+}
+
+/// How many scripted mount reads the compositions carry — exactly the
+/// `room.list` reply today. A new scripted read must bump this in lockstep,
+/// or the driver stops delivering before the new read settles.
+const SCRIPTED_MOUNT_READS: usize = 1;
+
+/// Await each dispatch and settle it, `expected` times: the event-driven
+/// pump both roots share.
+async fn drive_scripted_replies(controller: &MockController, expected: usize) {
+    for _ in 0..expected {
+        controller.pending_call().await;
+        while controller.deliver_next() {}
     }
 }
 
@@ -145,31 +164,12 @@ pub fn NativeRoot() -> Element {
         async move {
             composition.handle.start();
             composition.controller.set_state(State::Ready);
-            for _ in 0..8 {
-                while composition.controller.deliver_next() {}
-                yield_once().await;
-            }
+            // Same event-driven delivery contract as WebRoot.
+            drive_scripted_replies(&composition.controller, SCRIPTED_MOUNT_READS).await;
         }
     });
 
     rsx! {
         AppRoot { handle, services }
     }
-}
-
-/// Yield control back to the executor exactly once, then resume. Lets the
-/// cooperatively-scheduled `AppRoot` future dispatch its reads between the
-/// driver's settle passes, with no wall clock and no busy loop.
-async fn yield_once() {
-    let mut yielded = false;
-    poll_fn(move |cx| {
-        if yielded {
-            Poll::Ready(())
-        } else {
-            yielded = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    })
-    .await;
 }

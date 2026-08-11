@@ -131,11 +131,14 @@ test.describe("compact viewport", () => {
     await expect(page.locator("#sidebar")).toBeVisible();
     const roomsList = page.locator("#rooms-list");
     await expect(roomsList).toBeVisible();
-    // The list is never blank: scripted rooms render `.room-item` rows, and
-    // an unanswered or empty account renders the loading/empty element.
-    await expect(
-      roomsList.locator(".room-item, .rooms-empty").first(),
-    ).toBeVisible();
+    // The scripted mount read must SETTLE, not merely render something:
+    // `#rooms-loading` shares the `rooms-empty` class, so a class-based
+    // assertion would stay green if the room read never resolved and the
+    // shipped shell sat on "Loading rooms…" forever. The mock's scripted
+    // reply is the known empty account: the answered empty state must be
+    // visible and the loading element gone.
+    await expect(page.locator("#rooms-empty")).toBeVisible();
+    await expect(page.locator("#rooms-loading")).not.toBeAttached();
     // `pane-rooms` shows ONLY the sidebar on compact viewports.
     await expect(page.locator("#center")).not.toBeVisible();
   });
