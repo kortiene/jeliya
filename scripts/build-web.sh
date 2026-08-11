@@ -22,6 +22,13 @@ cd "$repo"
 
 crate=jeliya_ui_web
 out="${1:-$repo/crates/jeliya-ui/dist}"
+# Normalize: a trailing slash would put the staging template INSIDE the
+# current output, and the later swap would delete its own source.
+while [ "${out%/}" != "$out" ]; do out="${out%/}"; done
+if [ -z "$out" ]; then
+  echo "FAIL: output path normalized to empty — refusing." >&2
+  exit 1
+fi
 
 # Reproducibility controls. A fixed SOURCE_DATE_EPOCH and remapped path prefix
 # keep absolute paths and timestamps out of the binary; LC_ALL=C fixes any
@@ -56,6 +63,12 @@ done
 # nothing re-downloads. A committed repo-level .cargo/config.toml (none
 # exists today) would still apply, as a reviewed file should.
 real_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+# Absolute before linking: a relative CARGO_HOME would be stored relative
+# inside the temp home, and the registry/git links would dangle there.
+case "$real_cargo_home" in
+  /*) ;;
+  *) real_cargo_home="$PWD/$real_cargo_home" ;;
+esac
 iso_cargo_home="$(mktemp -d)"
 staging=""
 trap 'rm -rf "$iso_cargo_home" "$staging"' EXIT

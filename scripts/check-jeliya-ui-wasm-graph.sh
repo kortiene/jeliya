@@ -25,7 +25,7 @@ forbidden=(
   wry tao openssl-sys native-tls tungstenite tokio-tungstenite
 )
 
-graph="$(cargo tree -p jeliya-ui --features web \
+graph="$(cargo tree --locked -p jeliya-ui --features web \
   --target wasm32-unknown-unknown --edges normal --prefix none --no-dedupe \
   2>/dev/null | awk '{print $1}' | sort -u)"
 
@@ -33,7 +33,7 @@ fail=0
 for name in "${forbidden[@]}"; do
   if grep -qx -- "$name" <<<"$graph"; then
     echo "FAIL: '$name' is reachable from the jeliya-ui wasm32 'web' build"
-    cargo tree -p jeliya-ui --features web \
+    cargo tree --locked -p jeliya-ui --features web \
       --target wasm32-unknown-unknown --edges normal --invert "$name" 2>/dev/null | head -20
     fail=1
   fi

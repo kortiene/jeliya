@@ -19,6 +19,7 @@ fn wasm_web_graph_is_free_of_iroh_and_native_crates() {
     let output = Command::new(env!("CARGO"))
         .args([
             "tree",
+            "--locked",
             "-p",
             "jeliya-ui",
             "--features",
@@ -68,6 +69,7 @@ fn default_library_graph_pulls_no_renderer() {
     let output = Command::new(env!("CARGO"))
         .args([
             "tree",
+            "--locked",
             "-p",
             "jeliya-ui",
             "--no-default-features",
@@ -207,8 +209,10 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
             continue;
         }
         for banned in ["jeliya-core", "jeliyad", "jeliya-ffi"] {
-            // A dependency declaration starts with `<name> =` or `<name>.workspace`.
-            if trimmed.starts_with(banned) {
+            // A dependency declaration starts with `<name> =` — or renames
+            // the package (`x = { package = "jeliya-core", … }`), so the
+            // quoted package name counts wherever it appears in the table.
+            if trimmed.starts_with(banned) || trimmed.contains(&format!("\"{banned}\"")) {
                 panic!(
                     "Cargo.toml [dependencies] declares native crate '{banned}' directly — \
                      it must never enter jeliya-ui's graph (line: {line})"
