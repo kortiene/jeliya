@@ -45,7 +45,7 @@ unset RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 # each changes the emitted wasm or the invoked compiler while the marker
 # records only the standard pins, invisible to the determinism check for the
 # same both-samples-inherit-it reason. Strip them all.
-for cargo_var in $(compgen -e | grep -E '^CARGO_(PROFILE_|BUILD_RUSTFLAGS$|BUILD_RUSTDOCFLAGS$|BUILD_RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?$|TARGET_.*_RUSTFLAGS$)' || true); do
+for cargo_var in $(compgen -e | grep -E '^CARGO_(PROFILE_|BUILD_RUSTFLAGS$|BUILD_RUSTDOCFLAGS$|BUILD_RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?$|TARGET_.*_(RUSTFLAGS|LINKER)$)' || true); do
   unset "$cargo_var"
 done
 # Cargo CONFIG FILES are one more override channel: $CARGO_HOME/config.toml
@@ -122,8 +122,15 @@ target_dir="${CARGO_TARGET_DIR:-$repo/target}"
 export CARGO_TARGET_DIR="$target_dir"
 
 echo "==> cargo build --locked --release -p jeliya-ui --features web (wasm32)"
-cargo build --locked --release -p jeliya-ui --features web \
-  --target wasm32-unknown-unknown
+# Run cargo from the isolated directory, not the checkout: cargo's config
+# lookup ALSO walks the current directory's ancestors, so a repository under
+# \$HOME would still pick up \$HOME/.cargo/config.toml (build.rustc, profile
+# overrides) no matter what CARGO_HOME says. From the temp dir the ancestor
+# chain is the temp root's, which carries no config. The repo's own committed
+# .cargo/config.toml (none exists today) would need re-evaluating here if one
+# is ever added — from this cwd it would NOT apply.
+(cd "$iso_cargo_home" && cargo build --locked --release -p jeliya-ui --features web \
+  --target wasm32-unknown-unknown --manifest-path "$repo/Cargo.toml")
 
 echo "==> wasm-bindgen $locked_wbg (no wasm-opt)"
 # $out is caller-supplied: refuse to delete a directory that is non-empty

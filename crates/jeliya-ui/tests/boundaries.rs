@@ -149,6 +149,8 @@ fn no_cfg_target_forks_in_shared_components() {
                     "cfg(target_pointer_width",
                     "cfg(target_env",
                     r#"feature = "native""#,
+                    r#"feature = "web""#,
+                    r#"feature = "ui""#,
                 ] {
                     if line.contains(pattern) {
                         offenders.push(format!(

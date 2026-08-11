@@ -83,7 +83,14 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                         }
                         match handle.call::<RoomList>(RoomList {}, Dedup::None).await {
                             Ok(out) => {
-                                ui.write().set_rooms(out.rooms);
+                                let mut state = ui.write();
+                                state.set_rooms(out.rooms);
+                                // A retry that succeeds must clear the
+                                // transient disconnect notice the failed
+                                // attempt recorded, or the recovered shell
+                                // shows a stale connection-loss error next
+                                // to successfully loaded data forever.
+                                state.notice = None;
                                 return;
                             }
                             // An accepted call can still die mid-flight when
