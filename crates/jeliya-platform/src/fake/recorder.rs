@@ -56,6 +56,13 @@ pub enum Capability {
     /// [`crate::files::ShareSink::commit`] — the same finalization failure on
     /// the inbound staging path; no [`crate::FetchedArtifact`] is minted.
     ShareSinkCommit,
+    /// [`crate::Files::release_staged`], [`crate::Files::release_artifact`],
+    /// [`crate::Files::discard_source`], and
+    /// [`crate::Files::discard_export_target`] — cleanup that itself fails (a
+    /// locked temporary file, a permission change). The API can return an
+    /// error, and a caller must then be able to retry, so a failed release
+    /// leaves the entry in place rather than reaping it anyway.
+    Release,
     /// [`crate::StagedBlobReader::next_chunk`] — the **source** failing
     /// mid-upload, the mirror of a sink failing mid-download: the staged file
     /// became unreadable after the reader was opened, so the uploader must stop
@@ -142,6 +149,13 @@ pub enum RecordedEffect {
     Shared {
         /// The shared content.
         content: ShareContent,
+        /// How many bytes the attachment actually carried at settlement, read
+        /// from the service's own hold rather than looked up again. `None`
+        /// when the content had no attachment. This is what makes "the bytes
+        /// were still real when the sheet settled" an assertable fact: a blob
+        /// released while the sheet was open is already out of the registry,
+        /// so a size that still reports here can only have come from the hold.
+        attached_bytes: Option<u64>,
     },
     /// An external URL was opened.
     OpenedUrl {

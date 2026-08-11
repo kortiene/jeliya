@@ -34,10 +34,16 @@
   share sheet accepts, so `ShareContent` carries only handles to bytes the
   producing service custodies — never a bare `(RoomId, FileId)` the platform
   has no way to read — and a successful share consumes the artifact. The
-  outbound direction reaps explicitly: `release_staged` is how the UI tells the
-  service a staged blob may go once `file.share` has settled, because EOF means
-  the bytes were read rather than accepted and dropping an opaque handle is
-  invisible to the service — without it "delete after share" is unimplementable.
+  handle custody is explicit in both directions. Every handle that names
+  service-held bytes or a grant has exactly one release — `release_staged`,
+  `release_artifact`, `discard_source`, `discard_export_target` — and
+  consumption is the other half (`stage_for_share` drops its source on every
+  outcome, `export_sink` consumes its target, a successful share consumes the
+  artifact), so nothing is retained by a caller doing nothing. The signal
+  cannot be inferred: reaching EOF in a reader means the bytes were read, not
+  that the daemon accepted them, and dropping an opaque handle is invisible to
+  the service, so without an explicit release "delete after share" is
+  unimplementable.
   `FileName` is validated, not merely promised: `FileName::parse` fails
   closed on separators, `.`/`..`, empty, and control characters, so a
   peer-supplied name cannot carry portable path syntax into a native sink —

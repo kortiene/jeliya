@@ -175,11 +175,21 @@ impl FakeInner {
     /// minted-token registries. Matched exhaustively on purpose: a new
     /// attachment kind must decide how it resolves rather than default to
     /// "shareable".
-    fn blob_is_staged(&self, blob: &ShareableBlob) -> bool {
+    /// Hold a staged blob's bytes for the lifetime of one share sheet.
+    ///
+    /// A presence check alone would be a lie by the time the sheet settles:
+    /// `release_staged` can reap the blob while the sheet is still open, and
+    /// the share would then report success for bytes the service no longer
+    /// has. Holding the `Arc` keeps them alive for exactly this operation —
+    /// the same "an open reader outlives the unlink" model `read_staged` has —
+    /// so a share that opened against real bytes stays honest. Returns `None`
+    /// for a blob this service did not stage.
+    fn hold_staged(&self, blob: &ShareableBlob) -> Option<Arc<Vec<u8>>> {
         self.staged_blobs
             .lock()
             .expect("staged blobs poisoned")
-            .contains_key(&blob.token().get())
+            .get(&blob.token().get())
+            .cloned()
     }
 
     /// Take a fetched artifact's bytes out of the registry for the duration of
@@ -366,6 +376,67 @@ impl Drop for DialogTurn {
     }
 }
 
+/// Which private registry a [`BoundEntry`] guard reaps from.
+#[derive(Clone, Copy)]
+enum BoundRegistry {
+    Sources,
+    ExportTargets,
+}
+
+/// Reaps a picker-bound private entry unless its handle actually reaches the
+/// caller.
+///
+/// `pick` takes the armed source out of `pending_pick` at call time, so between
+/// then and settlement the only reference to that file/blob/URI grant is inside
+/// this operation. If the dialog is cancelled or the future dropped, the caller
+/// never receives the [`PickedSource`] and so can never call
+/// [`Files::discard_source`] — nothing else would ever reap it. Delivering the
+/// handle calls [`BoundEntry::keep`]; every other exit drops the guard, which
+/// reaps. `pick_export_target` uses the same guard for its target.
+struct BoundEntry {
+    inner: Arc<FakeInner>,
+    registry: BoundRegistry,
+    token: u64,
+    live: bool,
+}
+
+impl BoundEntry {
+    fn new(inner: &Arc<FakeInner>, registry: BoundRegistry, token: u64) -> Self {
+        Self {
+            inner: Arc::clone(inner),
+            registry,
+            token,
+            live: true,
+        }
+    }
+
+    /// The handle reached the caller: it is theirs to consume or discard.
+    fn keep(mut self) {
+        self.live = false;
+    }
+}
+
+impl Drop for BoundEntry {
+    fn drop(&mut self) {
+        if !self.live {
+            return;
+        }
+        // Best-effort under poisoning, as everywhere in Drop.
+        match self.registry {
+            BoundRegistry::Sources => {
+                if let Ok(mut sources) = self.inner.sources.lock() {
+                    sources.remove(&self.token);
+                }
+            }
+            BoundRegistry::ExportTargets => {
+                if let Ok(mut targets) = self.inner.export_targets.lock() {
+                    targets.remove(&self.token);
+                }
+            }
+        }
+    }
+}
+
 /// A fetched artifact held out of the registry while one share is in flight.
 ///
 /// Dropped without [`ArtifactClaim::consume`] it puts the bytes back, so a
@@ -380,6 +451,12 @@ struct ArtifactClaim {
 }
 
 impl ArtifactClaim {
+    /// How many bytes this claim is holding — recorded at settlement, which is
+    /// what makes the hold observable rather than merely modelled.
+    fn len(&self) -> Option<u64> {
+        self.bytes.as_ref().map(|bytes| bytes.len() as u64)
+    }
+
     /// The share completed: the bytes are gone for good ("delete after share").
     fn consume(mut self) {
         self.bytes = None;
@@ -401,6 +478,21 @@ impl Drop for ArtifactClaim {
 /// [`browser`], [`desktop`], or [`android`].
 pub struct FakePlatform {
     inner: Arc<FakeInner>,
+}
+
+/// The private entries a fake is still holding — see
+/// [`FakeController::retained_handles`]. All zero means the service is holding
+/// no file object, grant, or staged byte on the caller's behalf.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RetainedHandles {
+    /// Picked sources whose grant the service still owns.
+    pub sources: usize,
+    /// Export targets whose write grant the service still owns.
+    pub export_targets: usize,
+    /// Staged blobs whose bytes the service still holds.
+    pub staged_blobs: usize,
+    /// Fetched artifacts the service has materialized and not yet released.
+    pub share_artifacts: usize,
 }
 
 /// A test-side handle that arms scripted outcomes, drives lifecycle events, and
@@ -559,6 +651,38 @@ impl FakeController {
         delivered
     }
 
+    /// How many private entries the service is still holding: picked sources,
+    /// export targets, staged blobs, and fetched artifacts.
+    ///
+    /// Every one of these is a real resource on a target — an open `File`, a
+    /// SAF write grant, a staging file — so "did this operation let go of it?"
+    /// is a question a test must be able to ask directly. Without this the
+    /// retention rules are invisible from outside the fake, and a leak looks
+    /// exactly like a clean abort.
+    pub fn retained_handles(&self) -> RetainedHandles {
+        RetainedHandles {
+            sources: self.inner.sources.lock().expect("sources poisoned").len(),
+            export_targets: self
+                .inner
+                .export_targets
+                .lock()
+                .expect("export targets poisoned")
+                .len(),
+            staged_blobs: self
+                .inner
+                .staged_blobs
+                .lock()
+                .expect("staged blobs poisoned")
+                .len(),
+            share_artifacts: self
+                .inner
+                .share_artifacts
+                .lock()
+                .expect("share artifacts poisoned")
+                .len(),
+        }
+    }
+
     /// The dialogs currently open, in call order — diagnostics for ordering
     /// and drop-withdrawal assertions.
     pub fn open_dialogs(&self) -> Vec<Capability> {
@@ -709,11 +833,24 @@ impl Files for FakePlatform {
             Some(error) => Err(error),
             None => Ok(inner.pending_pick.lock().expect("pick poisoned").take()),
         };
+        // The armed source is out of `pending_pick` now, so guard its private
+        // entry until the handle actually reaches the caller.
+        let mut guard = match &bound {
+            Ok(Some(source)) => Some(BoundEntry::new(
+                &inner,
+                BoundRegistry::Sources,
+                source.token().get(),
+            )),
+            _ => None,
+        };
         let turn = inner.open_dialog(Capability::Pick, ct);
         Box::pin(async move {
             turn.await?;
             match bound? {
                 Some(source) => {
+                    if let Some(guard) = guard.take() {
+                        guard.keep();
+                    }
                     inner.record(RecordedEffect::Picked {
                         name: source.display_name().as_str().to_owned(),
                     });
@@ -735,6 +872,12 @@ impl Files for FakePlatform {
             // The private entry IS the retained file object; dropping it is the
             // whole point. Fails closed for a forged, already-staged, or
             // already-discarded source, exactly as `release_staged` does.
+            // A cleanup that fails must leave the entry recoverable: the
+            // caller has to be able to retry, so the outcome is bound BEFORE
+            // the removal and the registry is untouched on failure.
+            if let Some(error) = inner.take_forced(Capability::Release) {
+                return Err(error);
+            }
             if inner
                 .sources
                 .lock()
@@ -756,6 +899,12 @@ impl Files for FakePlatform {
         let inner = self.inner.clone();
         let token = artifact.token();
         Box::pin(async move {
+            // A cleanup that fails must leave the entry recoverable: the
+            // caller has to be able to retry, so the outcome is bound BEFORE
+            // the removal and the registry is untouched on failure.
+            if let Some(error) = inner.take_forced(Capability::Release) {
+                return Err(error);
+            }
             if inner
                 .share_artifacts
                 .lock()
@@ -777,6 +926,12 @@ impl Files for FakePlatform {
         let inner = self.inner.clone();
         let token = target.token();
         Box::pin(async move {
+            // A cleanup that fails must leave the entry recoverable: the
+            // caller has to be able to retry, so the outcome is bound BEFORE
+            // the removal and the registry is untouched on failure.
+            if let Some(error) = inner.take_forced(Capability::Release) {
+                return Err(error);
+            }
             if inner
                 .export_targets
                 .lock()
@@ -920,6 +1075,12 @@ impl Files for FakePlatform {
         let inner = self.inner.clone();
         let token = blob.token();
         Box::pin(async move {
+            // A cleanup that fails must leave the entry recoverable: the
+            // caller has to be able to retry, so the outcome is bound BEFORE
+            // the removal and the registry is untouched on failure.
+            if let Some(error) = inner.take_forced(Capability::Release) {
+                return Err(error);
+            }
             // The release is the reap: a blob this service never staged, or one
             // already released, fails closed exactly as `read_staged` does.
             // An already-open reader holds its own `Arc` and keeps working —
@@ -952,12 +1113,23 @@ impl Files for FakePlatform {
             Some(error) => Err(error),
             None => Ok(inner.pending_export.lock().expect("export poisoned").take()),
         };
+        let mut guard = match &bound {
+            Ok(Some(target)) => Some(BoundEntry::new(
+                &inner,
+                BoundRegistry::ExportTargets,
+                target.token().get(),
+            )),
+            _ => None,
+        };
         let _ = suggested;
         let turn = inner.open_dialog(Capability::PickExport, ct);
         Box::pin(async move {
             turn.await?;
             match bound? {
                 Some(target) => {
+                    if let Some(guard) = guard.take() {
+                        guard.keep();
+                    }
                     inner.record(RecordedEffect::PickedExport {
                         kind: target.kind(),
                     });
@@ -974,6 +1146,16 @@ impl Files for FakePlatform {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>> {
         let inner = self.inner.clone();
+        // Claim the destination FIRST, for the same reason `stage_for_share`
+        // claims its source: `to` was taken by value, so no caller can reach
+        // `discard_export_target` for it after this, and every exit below must
+        // therefore drop the grant rather than strand it.
+        let kind = to.kind();
+        let claimed = inner
+            .export_targets
+            .lock()
+            .expect("export targets poisoned")
+            .remove(&to.token().get());
         if ct.is_cancelled() {
             return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
@@ -989,17 +1171,8 @@ impl Files for FakePlatform {
             if let Some(error) = bound {
                 return Err(error);
             }
-            // Resolve the destination through the minted-token registry,
-            // consuming it; a forged or re-used `ExportTarget` has no entry
-            // and cannot be written to.
-            let kind = to.kind();
-            if inner
-                .export_targets
-                .lock()
-                .expect("export targets poisoned")
-                .remove(&to.token().get())
-                .is_none()
-            {
+            // A forged, re-used, or discarded `ExportTarget` had no entry.
+            if claimed.is_none() {
                 return Err(CapabilityError::Failed(FailureKind::Io));
             }
             Ok(Box::new(FakeFileSink {
@@ -1427,19 +1600,26 @@ impl FakePlatform {
         }
         // Matched exhaustively on purpose: a new attachment kind must decide
         // how it resolves rather than default to "shareable".
+        let mut held: Option<Arc<Vec<u8>>> = None;
         let claim = match &content.attachment {
             None => None,
             // A staged blob is NOT consumed by sharing — the daemon's
             // `file.share` reads it, and `release_staged` is what reaps it — so
             // presence is the whole check.
-            Some(ShareAttachment::Blob(blob)) => {
-                if !inner.blob_is_staged(blob) {
+            Some(ShareAttachment::Blob(blob)) => match inner.hold_staged(blob) {
+                // Held, not consumed: the daemon's `file.share` reads a staged
+                // blob and `release_staged` reaps it, so sharing one twice is
+                // legitimate — but the bytes must not vanish mid-sheet.
+                Some(bytes) => {
+                    held = Some(bytes);
+                    None
+                }
+                None => {
                     return Box::pin(async {
                         Err(CapabilityError::Failed(FailureKind::Unreadable))
-                    });
+                    })
                 }
-                None
-            }
+            },
             // A fetched artifact IS consumed, so the claim is taken now, in
             // call order, and released again if this share does not complete.
             Some(ShareAttachment::Fetched(artifact)) => match inner.claim_artifact(artifact) {
@@ -1462,10 +1642,23 @@ impl FakePlatform {
             // dropped future all leave it staged for a retry.
             turn.await?;
             let content = bound?;
+            // Read the size from the hold, not from the registry: that is the
+            // point of holding it. A blob released while this sheet was open is
+            // gone from the registry, and the share is still honest because
+            // these bytes never went anywhere.
+            let attached_bytes = held
+                .as_ref()
+                .map(|bytes| bytes.len() as u64)
+                .or_else(|| claim.as_ref().and_then(ArtifactClaim::len));
             if let Some(claim) = claim {
                 claim.consume();
             }
-            inner.record(RecordedEffect::Shared { content });
+            // The hold ends with the sheet.
+            drop(held);
+            inner.record(RecordedEffect::Shared {
+                content,
+                attached_bytes,
+            });
             Ok(())
         })
     }

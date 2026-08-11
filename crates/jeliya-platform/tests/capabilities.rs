@@ -1472,7 +1472,7 @@ fn a_fetched_room_file_is_shared_through_the_service_s_own_custody() {
     assert!(
         effects.iter().any(|e| matches!(
             e,
-            RecordedEffect::Shared { content }
+            RecordedEffect::Shared { content, .. }
                 if content.attachment == Some(ShareAttachment::Fetched(artifact.clone()))
         )),
         "the sheet was presented with the fetched artifact: {effects:?}"
@@ -2282,6 +2282,231 @@ fn a_shared_artifact_needs_no_release() {
                 &ct
             )
         ),
+        Ok(())
+    );
+    assert_eq!(
+        block_on(services.files().release_artifact(artifact)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+}
+
+/// A picker that binds its result and then aborts must not strand the grant.
+///
+/// The caller never receives the handle, so `discard_source` is unreachable and
+/// nothing else would ever reap it — which is invisible from the outside unless
+/// the fake is asked what it is still holding. That is what
+/// `retained_handles()` is for: without it this test passes whether or not the
+/// grant leaks.
+#[test]
+fn an_aborted_picker_releases_its_bound_grant() {
+    let (services, controller) = fake::android();
+    assert_eq!(controller.retained_handles(), Default::default());
+
+    // Cancelled after the call, before settlement.
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let ct = CancelToken::new();
+    block_on(async {
+        let mut fut = std::pin::pin!(services.files().pick(&ct));
+        assert!(futures::poll!(fut.as_mut()).is_pending());
+        assert_eq!(
+            controller.retained_handles().sources,
+            1,
+            "the armed source is bound and held while the dialog is open"
+        );
+        ct.cancel();
+        assert_eq!(fut.await.err(), Some(CapabilityError::Cancelled));
+    });
+    assert_eq!(
+        controller.retained_handles().sources,
+        0,
+        "a cancelled pick releases the file object it had bound"
+    );
+
+    // Dropped before settlement.
+    controller.arm_pick("other.bin", None, b"payload".to_vec());
+    let ct2 = CancelToken::new();
+    block_on(async {
+        let mut fut = std::pin::pin!(services.files().pick(&ct2));
+        assert!(futures::poll!(fut.as_mut()).is_pending());
+    });
+    assert_eq!(
+        controller.retained_handles().sources,
+        0,
+        "a dropped pick releases it too"
+    );
+
+    // The same for an export target's write grant.
+    controller.arm_export_target(ExportTargetKind::AndroidDocument, "out.bin");
+    let ct3 = CancelToken::new();
+    block_on(async {
+        let mut fut = std::pin::pin!(services.files().pick_export_target(name("out.bin"), &ct3));
+        assert!(futures::poll!(fut.as_mut()).is_pending());
+        assert_eq!(controller.retained_handles().export_targets, 1);
+        ct3.cancel();
+        assert_eq!(fut.await.err(), Some(CapabilityError::Cancelled));
+    });
+    assert_eq!(controller.retained_handles(), Default::default());
+
+    // A pick that DOES reach the caller keeps its grant — the guard must not
+    // over-reap.
+    controller.arm_pick("kept.bin", None, b"payload".to_vec());
+    let ct4 = CancelToken::new();
+    let src = settle(&controller, services.files().pick(&ct4))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(
+        controller.retained_handles().sources,
+        1,
+        "a delivered handle is the caller's, and still backed"
+    );
+    assert_eq!(block_on(services.files().discard_source(src)), Ok(()));
+    assert_eq!(controller.retained_handles(), Default::default());
+}
+
+/// `export_sink` takes its target by value, so every exit must drop the grant —
+/// the caller cannot reach `discard_export_target` afterwards.
+#[test]
+fn export_sink_consumes_its_target_on_every_outcome() {
+    for outcome in ["scripted", "cancelled"] {
+        let (services, controller) = fake::android();
+        let ct = CancelToken::new();
+        controller.arm_export_target(ExportTargetKind::AndroidDocument, "out.bin");
+        let target = settle(
+            &controller,
+            services.files().pick_export_target(name("out.bin"), &ct),
+        )
+        .unwrap()
+        .unwrap();
+        let again = target.clone();
+        if outcome == "scripted" {
+            controller.force_error(
+                Capability::ExportSink,
+                CapabilityError::Failed(FailureKind::Io),
+            );
+            assert!(block_on(services.files().export_sink(target, &ct)).is_err());
+        } else {
+            ct.cancel();
+            assert_eq!(
+                block_on(services.files().export_sink(target, &ct)).err(),
+                Some(CapabilityError::Cancelled)
+            );
+        }
+        assert_eq!(
+            block_on(services.files().discard_export_target(again.clone())).err(),
+            Some(CapabilityError::Failed(FailureKind::Unreadable)),
+            "{outcome}: the grant was already consumed"
+        );
+        let fresh = CancelToken::new();
+        assert!(
+            block_on(services.files().export_sink(again, &fresh)).is_err(),
+            "{outcome}: a consumed target cannot be written to"
+        );
+    }
+}
+
+/// Releasing a staged blob while its sheet is open must not make the share a
+/// lie: the operation holds the bytes for the sheet's lifetime, exactly as an
+/// open reader outlives the unlink.
+///
+/// The recorded `attached_bytes` is read from that hold rather than looked up
+/// again, which is what makes the hold observable: the blob is out of the
+/// registry by settlement, so a size reported here can only have come from the
+/// bytes this share kept alive.
+#[test]
+fn a_share_holds_its_staged_bytes_until_the_sheet_settles() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+
+    block_on(async {
+        let mut share = std::pin::pin!(services.files().share_content(
+            ShareContent::attachment(ShareAttachment::Blob(blob.clone())),
+            &ct
+        ));
+        assert!(
+            futures::poll!(share.as_mut()).is_pending(),
+            "the sheet is open"
+        );
+        // A clone is released underneath the still-open sheet.
+        assert_eq!(services.files().release_staged(blob.clone()).await, Ok(()));
+        assert_eq!(
+            controller.retained_handles().staged_blobs,
+            0,
+            "the registry entry is gone while the sheet is still open"
+        );
+        assert!(controller.deliver_next());
+        assert!(
+            matches!(futures::poll!(share.as_mut()), Poll::Ready(Ok(()))),
+            "the share held its bytes and stays honest"
+        );
+    });
+    assert!(
+        controller.effects().iter().any(|e| matches!(
+            e,
+            RecordedEffect::Shared {
+                attached_bytes: Some(7),
+                ..
+            }
+        )),
+        "the settled share carried the real bytes, from its own hold: {:?}",
+        controller.effects()
+    );
+
+    // …but the blob is gone for anything that starts afterwards.
+    assert_eq!(
+        block_on(services.files().read_staged(&blob)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+    assert_eq!(
+        block_on(
+            services
+                .files()
+                .share_content(ShareContent::attachment(ShareAttachment::Blob(blob)), &ct)
+        ),
+        Err(CapabilityError::Failed(FailureKind::Unreadable))
+    );
+}
+
+/// Cleanup can itself fail — a locked temporary file, a permission change — and
+/// the caller must be able to retry, so a failed release leaves the entry.
+#[test]
+fn a_failed_release_leaves_the_entry_recoverable() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+
+    controller.force_error(
+        Capability::Release,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(services.files().release_artifact(artifact.clone())).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "the deletion failed"
+    );
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ReleasedArtifact)),
+        "a failed release reaps nothing"
+    );
+    // The retry succeeds, which is only possible because the entry survived.
+    assert_eq!(
+        block_on(services.files().release_artifact(artifact.clone())),
         Ok(())
     );
     assert_eq!(

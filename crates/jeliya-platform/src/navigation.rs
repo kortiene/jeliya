@@ -91,6 +91,7 @@ pub struct RouteParseError;
 /// through — a bad URL must become a parse error the router can recover from,
 /// never a silently mangled room id.
 fn decode_segment(segment: &str) -> Result<String, RouteParseError> {
+    let segment = &unescape_dot_segment(segment);
     let bytes = segment.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -113,6 +114,50 @@ fn decode_segment(segment: &str) -> Result<String, RouteParseError> {
     String::from_utf8(out).map_err(|_| RouteParseError)
 }
 
+/// Whether `segment` is dots followed by zero or more `!` — the family
+/// [`escape_dot_segment`] has to escape, because its first member (`.`, `..`)
+/// is a URL *dot segment*.
+fn is_dot_family(segment: &str) -> bool {
+    let dots = segment.len() - segment.trim_start_matches('.').len();
+    dots > 0 && segment[dots..].bytes().all(|b| b == b'!')
+}
+
+/// Make a path segment that a URL parser would treat as a dot segment
+/// unrepresentable, reversibly.
+///
+/// An id is protocol-supplied and the `jeliya_api` newtypes apply no
+/// representation validation, so a `RoomId` of `..` would make
+/// [`Route::to_path`] emit `/rooms/../activity` — which a browser normalizes to
+/// `/activity` before the router ever sees it, silently losing the room.
+///
+/// Percent-encoding cannot save it: the URL Standard defines a double-dot
+/// segment as `..`, `.%2e`, `%2e.`, or `%2e%2e` (ASCII case-insensitive), and a
+/// single-dot segment likewise, so every spelling of the dots normalizes. The
+/// bytes themselves have to change. A `!` is appended — unreserved in
+/// `encodeURIComponent`, so it survives encoding literally — and the whole
+/// dots-then-bangs family shifts by one so the escape stays reversible.
+///
+/// This is the **one** deliberate divergence from `encodeURIComponent`, and it
+/// touches only segments no real id has: every `blake3:…` id, and anything with
+/// a non-dot character, is spelled byte-identically to the web shell as before.
+/// The shipped shell cannot represent these ids correctly either — this makes
+/// the case round-trip here rather than silently losing the route.
+fn escape_dot_segment(segment: &str) -> std::borrow::Cow<'_, str> {
+    if is_dot_family(segment) {
+        std::borrow::Cow::Owned(format!("{segment}!"))
+    } else {
+        std::borrow::Cow::Borrowed(segment)
+    }
+}
+
+/// The inverse of [`escape_dot_segment`], applied before percent-decoding.
+fn unescape_dot_segment(segment: &str) -> std::borrow::Cow<'_, str> {
+    match segment.strip_suffix('!') {
+        Some(rest) if is_dot_family(segment) => std::borrow::Cow::Owned(rest.to_owned()),
+        _ => std::borrow::Cow::Borrowed(segment),
+    }
+}
+
 /// Percent-encode one path segment with **exactly** `encodeURIComponent`'s
 /// unreserved set (`A–Z a–z 0–9 - _ . ! ~ * ' ( )`) and uppercase hex, so the
 /// spelling is byte-identical to the web shell's `routePath` — room ids are
@@ -120,6 +165,7 @@ fn decode_segment(segment: &str) -> Result<String, RouteParseError> {
 /// Hand-rolled (the crate's only library dependency is `jeliya-api`; a
 /// percent-encoding crate is not worth a new edge in the audited graph).
 fn encode_segment(segment: &str) -> String {
+    let segment = &escape_dot_segment(segment);
     let mut out = String::with_capacity(segment.len());
     for byte in segment.bytes() {
         match byte {
@@ -313,6 +359,53 @@ mod tests {
         ] {
             let route = Route::parse(path).expect("canonical route parses");
             assert_eq!(route.to_path(), path, "round-trips byte-identically");
+        }
+    }
+
+    /// An id is protocol-supplied and unvalidated, so `..` is representable.
+    /// Emitting `/rooms/../activity` would let a browser normalize the room
+    /// away before the router ever saw it — and no percent-encoding saves it,
+    /// because the URL Standard treats `%2e` exactly like `.`. The bytes have
+    /// to change, so the dots-then-bangs family shifts by one.
+    #[test]
+    fn dot_only_ids_never_become_url_dot_segments() {
+        for id in [".", "..", "...", "..!", "..!!", "."] {
+            let route = Route::Room {
+                room_id: RoomId::new(id),
+                dest: RoomDest::Activity,
+            };
+            let path = route.to_path();
+            let segment = path
+                .strip_prefix("/rooms/")
+                .and_then(|rest| rest.strip_suffix("/activity"))
+                .expect("a room path");
+            assert!(
+                !segment.bytes().all(|b| b == b'.'),
+                "{id:?} encoded to the dot segment {segment:?}"
+            );
+            assert_eq!(
+                Route::parse(&path).expect("the escaped spelling parses"),
+                route,
+                "{id:?} must round-trip"
+            );
+        }
+    }
+
+    /// The escape touches ONLY the dots-then-bangs family; every ordinary id —
+    /// including one with dots in it — keeps its byte-identical spelling.
+    #[test]
+    fn the_dot_escape_leaves_ordinary_ids_untouched() {
+        for id in ["blake3:abc", "a..b", "..hidden", "!", "a!", ".a."] {
+            let route = Route::Room {
+                room_id: RoomId::new(id),
+                dest: RoomDest::Activity,
+            };
+            assert_eq!(
+                route.to_path(),
+                format!("/rooms/{}/activity", encode_segment(id)),
+                "{id:?} keeps the encodeURIComponent spelling"
+            );
+            assert_eq!(Route::parse(&route.to_path()).expect("parses"), route);
         }
     }
 
