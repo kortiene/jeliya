@@ -52,17 +52,28 @@ scan() {
         *.yml|*.yaml) yaml=1 ;;
         *) yaml=0 ;;
       esac
-      awk -v yaml="$yaml" '
+      awk -v yaml="$yaml" -v q="'" '
+        # The run-key detector tolerates any list-dash spacing and quoted
+        # keys: `-  run:` (two spaces) and `- "run":` are the same executed
+        # step, and misreading them as a NON-run key would JOIN a literal
+        # shell block — exactly the laundering the run split prevents.
+        BEGIN { runre = "^[[:space:]]*(-[[:space:]]+)?[\"" q "]?run[\"" q "]?[[:space:]]*:" }
         function flush() { if (mode) { print buf; mode = 0 } }
         function joinline(l) { sub(/^[[:space:]]+/, "", l); buf = buf " " l }
         {
           if (mode == 2) {
             # A lone block-scalar header on the line after the key re-routes
-            # the block: a fold marker joins like any fold, a literal marker
-            # reverts to per-line semantics. Header forms carry an optional
-            # indentation digit and chomp indicator (`>2`, `>-`, `>2-`).
+            # the block: a fold marker joins like any fold; a literal marker
+            # keeps per-line semantics for `run:` (shell lines are separate
+            # commands) but JOINS for any other key — a literal ACTION INPUT
+            # (`tool: |` + indented name) is one value, and per-line printing
+            # would hide the name from the tool-pin scan. Header forms carry
+            # an optional indentation digit and chomp indicator (`>2`, `>-`).
             if ($0 ~ /^[[:space:]]*>[0-9+-]*[[:space:]]*(#.*)?$/) { mode = 1; next }
-            if ($0 ~ /^[[:space:]]*\|[0-9+-]*[[:space:]]*(#.*)?$/) { flush(); print; next }
+            if ($0 ~ /^[[:space:]]*\|[0-9+-]*[[:space:]]*(#.*)?$/) {
+              if (runkey) { flush(); print; next }
+              mode = 1; next
+            }
           }
           if (mode == 1) { # folded block: blank lines stay inside the fold
             if ($0 ~ /^[[:space:]]*$/) next
@@ -87,8 +98,19 @@ scan() {
             sub(/[[:space:]]*>[0-9+-]*[[:space:]]*(#.*)?$/, "", buf)
             next
           }
+          if (yaml && $0 ~ /:[[:space:]]*\|[0-9+-]*[[:space:]]*(#.*)?$/) {
+            # Literal marker on the key line: same run-vs-input split as the
+            # own-line dispatch above.
+            if ($0 ~ runre) { print; next }
+            mode = 1
+            match($0, /[^[:space:]]/); basecol = RSTART
+            buf = $0
+            sub(/[[:space:]]*\|[0-9+-]*[[:space:]]*(#.*)?$/, "", buf)
+            next
+          }
           if (yaml && $0 ~ /^[[:space:]]*(- )?[^[:space:]:#][^:]*:[[:space:]]+[^|>[:space:]]/) {
             mode = 2
+            runkey = ($0 ~ runre)
             match($0, /[^[:space:]]/); basecol = RSTART
             buf = $0
             next
@@ -99,6 +121,7 @@ scan() {
             # both handled by mode 2 above). Nested mappings and lists are
             # excluded by the continuation rules and flush unjoined.
             mode = 2
+            runkey = ($0 ~ runre)
             match($0, /[^[:space:]]/); basecol = RSTART
             buf = $0
             sub(/[[:space:]]*#.*$/, "", buf)
@@ -149,6 +172,11 @@ segments() {
     sed 's/[[:space:]]#.*$//'
 }
 is_diagnostic() {
+  # No exemption for a segment carrying an executable substitution: the
+  # shell runs `$(cargo install dioxus-cli)` BEFORE the enclosing echo —
+  # and process substitution (`<(...)`, `>(...)`) executes just the same —
+  # so a diagnostic invocation cannot launder what its arguments execute.
+  case "$1" in *'$('* | *'`'* | *'<('* | *'>('*) return 1 ;; esac
   case "$(sed 's/^[[:space:]-]*//' <<<"$1")" in
     '#'*|echo|echo\ *|printf|printf\ *|grep|grep\ *) return 0 ;;
   esac
@@ -179,7 +207,9 @@ pinned_for() { # $1 = package name regex, $2 = segment
     case "$word" in -*|'') continue ;; esac
     if grep -Eiq -- "^$1(@|$)" <<<"$word"; then
       found=1
-      grep -Eiq -- "^$1@[0-9]+\.[0-9]+\.[0-9]+$" <<<"$word" && continue
+      # An exact pre-release/build pin (`@0.7.0-alpha.3`) is as complete a
+      # version as `@x.y.z` — cargo installs exactly it.
+      grep -Eiq -- "^$1@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$" <<<"$word" && continue
       grep -Eq -- '@\$(\{locked_wbg\}|locked_wbg)$' <<<"$word" && continue
       set +f
       return 1
@@ -197,33 +227,46 @@ while IFS= read -r line; do
       echo "FAIL: unpinned dioxus-cli install: $seg"
       fail=1
     fi
-    # A curl/wget of a dx release must carry the pinned version in the
-    # FETCHED URL itself — a version token in an output filename or another
-    # argument pins nothing about what the remote resource tracks.
-    if grep -Eiq '(curl|wget).*dioxus' <<<"$seg"; then
-      # Each DIOXUS URL must itself carry the version — an unrelated
+    # A curl/wget of a dx OR wasm-bindgen release must carry the pinned
+    # version in the FETCHED URL itself — a version token in an output
+    # filename or another argument pins nothing about what the remote
+    # resource tracks, and a direct binary download is the same fetch
+    # surface as a cargo install.
+    if grep -Eiq '(curl|wget).*(dioxus|wasm-bindgen)' <<<"$seg"; then
+      # Each PROTECTED URL must itself carry the version — an unrelated
       # versioned URL in the same transfer list pins nothing about the
-      # Dioxus resource, and a dioxus name appearing only in an output
-      # filename identifies no fetched resource at all. Words are
+      # protected resource, and a protected name appearing only in an
+      # output filename identifies no fetched resource at all. Words are
       # lowercased first: `DioxusLabs/Dioxus` in a download URL names the
       # same fetched resource.
-      saw_dioxus_url=0
-      dioxus_urls_ok=1
+      saw_protected_url=0
+      protected_urls_ok=1
       for word in $seg; do
         case "${word,,}" in
-          *://*dioxus*)
-            saw_dioxus_url=1
-            grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"${word,,}" || dioxus_urls_ok=0
+          *://*dioxus* | *://*wasm-bindgen*)
+            saw_protected_url=1
+            # The version must sit in the PATH of the fetched resource: a
+            # numeric host (`http://1.2.3.4/...`) or a versioned CDN prefix
+            # pins nothing about what the path tracks — and a path through
+            # `latest` is by definition unpinned no matter what version
+            # tokens surround it.
+            url_path="${word,,}"
+            url_path="${url_path#*://}"
+            url_path="${url_path#*/}"
+            case "$url_path" in *latest*) protected_urls_ok=0 ;; *)
+              grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$url_path" || protected_urls_ok=0
+              ;;
+            esac
             ;;
         esac
       done
-      if [ "$saw_dioxus_url" -ne 1 ] || [ "$dioxus_urls_ok" -ne 1 ]; then
-        echo "FAIL: unpinned dx download (every fetched Dioxus URL must carry the version): $seg"
+      if [ "$saw_protected_url" -ne 1 ] || [ "$protected_urls_ok" -ne 1 ]; then
+        echo "FAIL: unpinned dx/wasm-bindgen download (every fetched Dioxus or wasm-bindgen URL must carry the version): $seg"
         fail=1
       fi
     fi
   done < <(segments "$line")
-done < <(scan 'dioxus-cli|(curl|wget).*dioxus')
+done < <(scan 'dioxus-cli|(curl|wget).*(dioxus|wasm-bindgen)')
 
 # 2. Every wasm-bindgen(-cli) install must be version-pinned.
 while IFS= read -r line; do
@@ -246,11 +289,24 @@ while IFS= read -r line; do
   # repository variable happens to hold — that is not a pin. The version must
   # survive YAML comment stripping: in `tool: wasm-bindgen-cli # @0.2.126`
   # the action receives only the unversioned name, so a version the raw line
-  # carries after `#` pins nothing.
-  if ! grep -Eq '@[0-9]+\.[0-9]+\.[0-9]+' <<<"$(strip_comment_tail "$line")"; then
-    echo "FAIL: unpinned action-based tool install: $line"
-    fail=1
-  fi
+  # carries after `#` pins nothing. The input is a comma/newline-separated
+  # LIST (multiline forms arrive here joined), so EVERY protected token must
+  # carry its own trailing pin — a pinned neighbor pins nothing.
+  val="$(sed 's/^[^:]*://' <<<"$(strip_comment_tail "$line")")"
+  set -f
+  for tok in $(tr ',' ' ' <<<"$val"); do
+    # YAML strips the quotes before the action sees the name — the scan
+    # must too, or `tool: "wasm-bindgen-cli"` dodges the protected-name
+    # anchor while installing the unpinned tool. Exact pre-release pins
+    # (`@0.7.0-alpha.3`) are complete versions and pass.
+    tok="${tok//[\"\']/}"
+    if grep -Eiq '^(dioxus-cli|wasm-bindgen)' <<<"$tok" &&
+      ! grep -Eq '@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' <<<"$tok"; then
+      echo "FAIL: unpinned action-based tool install: $line"
+      fail=1
+    fi
+  done
+  set +f
 done < <(scan '^[[:space:]]*tool:.*(dioxus-cli|wasm-bindgen)')
 
 if [ "$fail" -ne 0 ]; then

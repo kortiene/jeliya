@@ -164,9 +164,11 @@ fn no_cfg_target_forks_in_shared_components() {
                 "target_endian=",
                 "target_vendor=",
                 "target_feature=",
-                r#"feature="native""#,
-                r#"feature="web""#,
-                r#"feature="ui""#,
+                // ANY feature gate is a fork a component must not own —
+                // `feature="desktop"` self-selects a platform as surely as
+                // the renderer features do. Components carry no cfg
+                // features at all; composition happens in compose.rs.
+                r#"feature=""#,
                 // Rust's standalone platform aliases fork on OS/family with
                 // no target_* key at all; cover them direct and inside
                 // combinators.
@@ -182,6 +184,13 @@ fn no_cfg_target_forks_in_shared_components() {
                 "not(unix",
                 "cfg_attr(windows",
                 "cfg_attr(unix",
+                // An alias needs no leading position: in the compacted
+                // `any(feature="experimental",windows)` the alias is a
+                // LATER combinator operand, reached only through a comma.
+                ",windows)",
+                ",windows,",
+                ",unix)",
+                ",unix,",
             ] {
                 if compact.contains(pattern) {
                     offenders.push(format!("{} — contains {pattern:?}", path.display()));
@@ -209,15 +218,39 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
     for line in manifest.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
-            // Every dependency table counts, including build-dependencies
-            // and target-specific tables like
-            // [target.'cfg(not(target_arch = "wasm32"))'.dependencies] — a
-            // banned crate declared there is as much a direct dependency as
-            // one in [dependencies].
+            // Every dependency table counts, including build-dependencies,
+            // target-specific tables like
+            // [target.'cfg(not(target_arch = "wasm32"))'.dependencies], and
+            // DETAILED tables ([dependencies.name] /
+            // [target.'…'.dependencies.name]) — a banned crate declared in
+            // any of them is as much a direct dependency as one in
+            // [dependencies].
             in_deps = trimmed == "[dependencies]"
                 || trimmed == "[dev-dependencies]"
                 || trimmed == "[build-dependencies]"
-                || (trimmed.starts_with("[target.") && trimmed.ends_with("dependencies]"));
+                || trimmed.starts_with("[dependencies.")
+                || trimmed.starts_with("[dev-dependencies.")
+                || trimmed.starts_with("[build-dependencies.")
+                || (trimmed.starts_with("[target.")
+                    && (trimmed.ends_with("dependencies]") || trimmed.contains(".dependencies.")));
+            // A detailed table can name the banned crate in its HEADER
+            // (`[dependencies.jeliya-core]`), never reaching the body scan.
+            if in_deps {
+                for banned in ["jeliya-core", "jeliyad", "jeliya-ffi"] {
+                    // TOML accepts literal (single-quoted) keys and strings
+                    // too: `[dependencies.'jeliya-core']` names the same
+                    // crate the bare and double-quoted forms do.
+                    if trimmed.contains(&format!(".{banned}]"))
+                        || trimmed.contains(&format!("\"{banned}\""))
+                        || trimmed.contains(&format!("'{banned}'"))
+                    {
+                        panic!(
+                            "Cargo.toml dependency table names native crate '{banned}' — \
+                             it must never enter jeliya-ui's graph (line: {line})"
+                        );
+                    }
+                }
+            }
             continue;
         }
         if !in_deps || trimmed.starts_with('#') {
@@ -226,8 +259,12 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
         for banned in ["jeliya-core", "jeliyad", "jeliya-ffi"] {
             // A dependency declaration starts with `<name> =` — or renames
             // the package (`x = { package = "jeliya-core", … }`), so the
-            // quoted package name counts wherever it appears in the table.
-            if trimmed.starts_with(banned) || trimmed.contains(&format!("\"{banned}\"")) {
+            // quoted package name counts wherever it appears in the table,
+            // in double-quoted AND single-quoted (TOML literal) form.
+            if trimmed.starts_with(banned)
+                || trimmed.contains(&format!("\"{banned}\""))
+                || trimmed.contains(&format!("'{banned}'"))
+            {
                 panic!(
                     "Cargo.toml [dependencies] declares native crate '{banned}' directly — \
                      it must never enter jeliya-ui's graph (line: {line})"
@@ -253,6 +290,24 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                 }
                 if line.contains("serde_json::Value") || line.contains("serde_json::value::Value") {
                     offenders.push(format!("{}:{}", path.display(), index + 1));
+                }
+                // Raw JSON needs no `Value` spelling: the `json!` macro
+                // BUILDS a Value, path-position `serde_json::value::…`
+                // reaches the module without importing it, and
+                // `to_value`/`from_value` traffic in Value at the boundary.
+                for door in [
+                    "serde_json::json!",
+                    "serde_json::value::",
+                    "serde_json::to_value",
+                    "serde_json::from_value",
+                ] {
+                    if line.contains(door) {
+                        offenders.push(format!(
+                            "{}:{} — reaches serde_json::Value via {door}",
+                            path.display(),
+                            index + 1
+                        ));
+                    }
                 }
             }
             // A grouped, aliased, or MULTILINE import (`use serde_json::{` /
@@ -282,9 +337,25 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                 // `self` inside the group (`use serde_json::{self as json}`)
                 // re-imports the MODULE under an alias — the same breach the
                 // top-level alias check catches, through the grouped door.
-                if declaration.contains("Value") || declaration.contains("self") {
+                // The `value` SUBMODULE is the same breach again: importing
+                // it (direct, grouped, or aliased) lets a later signature
+                // spell `value::Value` with neither fully qualified form on
+                // any line — and importing the `json` MACRO builds a Value
+                // with no import of the type at all. The prefixes bound the
+                // match so `from_value`/`to_value` imports do not trip the
+                // module patterns (they are flagged by the line scan's
+                // path-position doors instead).
+                if declaration.contains("Value")
+                    || declaration.contains("self")
+                    || declaration.contains("::value")
+                    || declaration.contains("{value")
+                    || declaration.contains(",value")
+                    || declaration.contains("::json")
+                    || declaration.contains("{json")
+                    || declaration.contains(",json")
+                {
                     offenders.push(format!(
-                        "{} — a use declaration imports serde_json Value",
+                        "{} — a use declaration imports serde_json Value, its value module, or the json! macro",
                         path.display()
                     ));
                 }

@@ -390,10 +390,13 @@ fn inside_initializer_call(normalized: &str, quoted: &str, idents: &[String]) ->
         let mut from = 0;
         while let Some(rel) = normalized[from..].find(&call) {
             let at = from + rel;
+            // `.` disqualifies too: `other.init(...)` calls a PROPERTY named
+            // like the import, not the imported initializer binding — the
+            // real bindgen init is never invoked and the shell mounts blank.
             let boundary = normalized[..at]
                 .chars()
                 .next_back()
-                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'));
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.'));
             if boundary {
                 let after = &normalized[at + call.len()..];
                 let span = after.find(')').map_or(after, |end| &after[..end]);
