@@ -1625,48 +1625,119 @@ fn a_token_fired_before_the_first_poll_still_cancels() {
     );
 }
 
-/// The consume-on-success rule must be the **removal**, not the call-time
-/// check: the fake supports several open sheets at once, so two shares of one
-/// artifact can both pass validation. Only the one that actually takes the
-/// bytes may report success.
+/// Two shares of one artifact: the **first call** wins, whatever order the
+/// executor polls them in.
+///
+/// The claim is taken at call time rather than at settle time precisely so this
+/// is not a scheduling race — the fake's whole discipline is that release order
+/// can never re-pair outcomes with calls. The second call finds the artifact
+/// already claimed and fails without ever opening a sheet.
 #[test]
-fn two_overlapping_shares_of_one_artifact_cannot_both_succeed() {
+fn overlapping_shares_are_claimed_in_call_order_not_poll_order() {
+    for poll_second_first in [false, true] {
+        let (services, controller) = fake::android();
+        let ct = CancelToken::new();
+        let mut sink =
+            block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+        block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+        let artifact = block_on(sink.commit()).expect("commit");
+
+        block_on(async {
+            let first = std::pin::pin!(services.files().share_content(
+                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ct
+            ));
+            let second = std::pin::pin!(services.files().share_content(
+                ShareContent::attachment(ShareAttachment::Fetched(artifact.clone())),
+                &ct
+            ));
+            let mut first = first;
+            let mut second = second;
+            // The second call never opens a sheet: the artifact is already
+            // claimed by the first.
+            assert_eq!(
+                controller.open_dialogs().len(),
+                1,
+                "only the first call opens a share sheet"
+            );
+            if poll_second_first {
+                assert!(
+                    matches!(
+                        futures::poll!(second.as_mut()),
+                        Poll::Ready(Err(CapabilityError::Failed(FailureKind::Unreadable)))
+                    ),
+                    "the second call loses regardless of poll order"
+                );
+            }
+            assert!(futures::poll!(first.as_mut()).is_pending());
+            assert!(controller.deliver_next());
+            assert!(
+                matches!(futures::poll!(first.as_mut()), Poll::Ready(Ok(()))),
+                "the first call wins regardless of poll order"
+            );
+            if !poll_second_first {
+                assert!(matches!(
+                    futures::poll!(second.as_mut()),
+                    Poll::Ready(Err(CapabilityError::Failed(FailureKind::Unreadable)))
+                ));
+            }
+        });
+        assert_eq!(
+            controller
+                .effects()
+                .iter()
+                .filter(|e| matches!(e, RecordedEffect::Shared { .. }))
+                .count(),
+            1,
+            "exactly one share is recorded"
+        );
+        assert!(!controller.deliver_next(), "no stray sheet was left open");
+    }
+}
+
+/// A share that does not complete must put the artifact back — dismissed,
+/// scripted-failure, or simply dropped mid-flight — so a retry needs no second
+/// download.
+#[test]
+fn an_incomplete_share_returns_the_artifact_to_staging() {
     let (services, controller) = fake::android();
     let ct = CancelToken::new();
     let mut sink =
         block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
     block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
     let artifact = block_on(sink.commit()).expect("commit");
+    let content = || ShareContent::attachment(ShareAttachment::Fetched(artifact.clone()));
 
+    // Dropped mid-flight, before the sheet settles.
     block_on(async {
-        let content = ShareContent::attachment(ShareAttachment::Fetched(artifact.clone()));
-        let mut first = std::pin::pin!(services.files().share_content(content, &ct));
-        let content = ShareContent::attachment(ShareAttachment::Fetched(artifact));
-        let mut second = std::pin::pin!(services.files().share_content(content, &ct));
-        assert!(futures::poll!(first.as_mut()).is_pending());
-        assert!(futures::poll!(second.as_mut()).is_pending());
-        assert!(controller.deliver_next());
-        assert!(controller.deliver_next());
-        assert!(matches!(
-            futures::poll!(first.as_mut()),
-            Poll::Ready(Ok(()))
-        ));
-        assert!(
-            matches!(
-                futures::poll!(second.as_mut()),
-                Poll::Ready(Err(CapabilityError::Failed(FailureKind::Unreadable)))
-            ),
-            "the second sheet must not report success for bytes the first consumed"
-        );
+        let mut fut = std::pin::pin!(services.files().share_content(content(), &ct));
+        assert!(futures::poll!(fut.as_mut()).is_pending());
     });
+
+    // Scripted failure.
+    controller.force_error(Capability::ShareContent, CapabilityError::Denied);
     assert_eq!(
-        controller
-            .effects()
-            .iter()
-            .filter(|e| matches!(e, RecordedEffect::Shared { .. }))
-            .count(),
-        1,
-        "exactly one share is recorded"
+        settle(&controller, services.files().share_content(content(), &ct)),
+        Err(CapabilityError::Denied)
+    );
+
+    // Dismissed.
+    controller.force_error(Capability::ShareContent, CapabilityError::Cancelled);
+    assert_eq!(
+        settle(&controller, services.files().share_content(content(), &ct)),
+        Err(CapabilityError::Cancelled)
+    );
+
+    // Still shareable after all three, and consumed only by the one that
+    // completes.
+    assert_eq!(
+        settle(&controller, services.files().share_content(content(), &ct)),
+        Ok(())
+    );
+    assert_eq!(
+        settle(&controller, services.files().share_content(content(), &ct)),
+        Err(CapabilityError::Failed(FailureKind::Unreadable)),
+        "the completed share consumed it"
     );
 }
 
@@ -1885,5 +1956,62 @@ fn a_sink_can_fail_mid_transfer_and_keeps_nothing() {
             .iter()
             .any(|e| matches!(e, RecordedEffect::StagedFetched { .. })),
         "an aborted staging transfer mints no artifact"
+    );
+}
+
+/// A destination that took every byte and then failed to **finalize** — a flush
+/// error, a SAF document that would not close, a download that never published
+/// — is its own path: the caller has nothing left to send and must still not
+/// report success. It must be scriptable, and nothing may be published.
+#[test]
+fn a_sink_can_fail_at_finalization_and_publishes_nothing() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    block_on(sink.write(b"every".to_vec())).expect("chunk accepted");
+    block_on(sink.write(b"byte".to_vec())).expect("chunk accepted");
+    controller.force_error(
+        Capability::FileSinkCommit,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(sink.commit()).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "finalization failed after every byte was accepted"
+    );
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ExportedLocal { .. })),
+        "a failed commit publishes no artifact"
+    );
+
+    // The share sink's finalization mints no artifact, so nothing becomes
+    // attachable.
+    let mut share =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(share.write(b"bytes".to_vec())).expect("chunk accepted");
+    controller.force_error(
+        Capability::ShareSinkCommit,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(share.commit()).err(),
+        Some(CapabilityError::Failed(FailureKind::Io))
+    );
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::StagedFetched { .. })),
+        "a failed staging commit mints no artifact"
     );
 }

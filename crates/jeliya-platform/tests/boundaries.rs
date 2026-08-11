@@ -163,29 +163,89 @@ const IMPLEMENTATION_DOOR_CRATES: [&str; 1] = ["jeliya-platform-implementation"]
 
 /// Whether a manifest admits the `implementation` factory surface.
 ///
-/// Cargo has two spellings for the same thing and a boundary check must catch
-/// both: the inline form (`jeliya-platform = { …, features = ["implementation"]
-/// }`) and the split-table form, where the dependency name is on the `[…]`
-/// header line and `features` is on its own line — so the header is tracked
-/// rather than each line judged alone. A dependency on the door crate counts
-/// too, since that is a transitive door. Inline comments are stripped so prose
-/// about the rule (including this crate's own manifest notes) cannot trip it.
+/// Cargo has several spellings for the same thing and a boundary check must
+/// catch all of them, so this evaluates **table by table** rather than judging
+/// lines alone:
+///
+/// - the inline form, `jeliya-platform = { …, features = ["implementation"] }`;
+/// - the split form, where the dependency name is the `[…]` header and
+///   `features` is a separate line;
+/// - the **renamed** split form, where the header names an alias and
+///   `package = "jeliya-platform"` appears somewhere in the body — in either
+///   order, which is why the table is buffered before it is judged;
+/// - a `[features]` forward, including one through a renamed alias
+///   (`ui = ["platform/implementation"]`), which is why aliases are collected
+///   in a first pass.
+///
+/// Inline comments are stripped so prose about the rule cannot trip it. This is
+/// a token scan and is deliberately not the only leg: the resolver-truth tests
+/// below ask Cargo what it actually resolved and so cannot be out-spelled.
 fn manifest_opens_the_implementation_door(manifest: &str) -> bool {
-    let mut table_names_platform = false;
+    // Pass 1: gather (header, body) tables of comment-stripped lines.
+    let mut tables: Vec<(String, Vec<String>)> = vec![(String::new(), Vec::new())];
     for line in manifest.lines() {
-        let code = line.split('#').next().unwrap_or("").trim();
+        let code = line.split('#').next().unwrap_or("").trim().to_string();
         if code.starts_with('[') {
-            table_names_platform = code.contains("jeliya-platform");
-            if table_names_platform && code.contains("implementation") {
+            tables.push((code, Vec::new()));
+        } else if !code.is_empty() {
+            tables
+                .last_mut()
+                .expect("a table is always open")
+                .1
+                .push(code);
+        }
+    }
+
+    // Pass 2: every alias that resolves to the contract crate or its door.
+    let mut aliases: Vec<String> = vec!["jeliya-platform".to_string()];
+    for (header, body) in &tables {
+        // `[dependencies.alias]` … `package = "jeliya-platform"`
+        if let Some(alias) = header
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .rsplit('.')
+            .next()
+            .filter(|_| header.contains("dependencies"))
+        {
+            if body
+                .iter()
+                .any(|line| line.starts_with("package") && line.contains("jeliya-platform"))
+            {
+                aliases.push(alias.to_string());
+            }
+        }
+        // `alias = { package = "jeliya-platform", … }`
+        for line in body {
+            if line.contains("package") && line.contains("jeliya-platform") {
+                if let Some((name, _)) = line.split_once('=') {
+                    let name = name.trim();
+                    if !name.is_empty() && !name.contains(' ') {
+                        aliases.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    for (header, body) in &tables {
+        let table_is_platform = aliases.iter().any(|alias| header.contains(alias.as_str()))
+            || body
+                .iter()
+                .any(|line| line.starts_with("package") && line.contains("jeliya-platform"));
+        for line in std::iter::once(header).chain(body.iter()) {
+            if !line.contains("implementation") {
+                continue;
+            }
+            // A line naming both, an alias-qualified feature forward, or any
+            // `implementation` inside a table that resolves to the contract.
+            if line.contains("jeliya-platform")
+                || table_is_platform
+                || aliases
+                    .iter()
+                    .any(|alias| line.contains(&format!("{alias}/implementation")))
+            {
                 return true;
             }
-            continue;
-        }
-        if code.contains("jeliya-platform") && code.contains("implementation") {
-            return true;
-        }
-        if table_names_platform && code.contains("implementation") {
-            return true;
         }
     }
     false
@@ -494,11 +554,40 @@ jeliya-platform-implementation = { path = "../jeliya-platform-implementation" }
 [features]
 ui = ["jeliya-platform/implementation"]
 "#;
+    // The renamed split form: the header names an alias, and neither body line
+    // carries both tokens. A line-at-a-time or header-only check misses it.
+    let renamed_split = r#"
+[dependencies.platform]
+package = "jeliya-platform"
+features = ["implementation"]
+"#;
+    // …and with the keys in the other order, since the table is judged whole.
+    let renamed_split_reversed = r#"
+[dependencies.platform]
+features = ["implementation"]
+package = "jeliya-platform"
+"#;
+    // A clean renamed dependency whose feature is forwarded from [features].
+    let renamed_feature_forward = r#"
+[dependencies.platform]
+package = "jeliya-platform"
+
+[features]
+ui = ["platform/implementation"]
+"#;
+    let renamed_inline_door = r#"
+[dependencies]
+door = { package = "jeliya-platform-implementation", path = "../x" }
+"#;
     for (label, fixture) in [
         ("inline features", inline),
         ("split dependency table", split_table),
         ("transitive door dependency", transitive),
         ("feature-table forward", feature_table),
+        ("renamed split table", renamed_split),
+        ("renamed split table, reversed keys", renamed_split_reversed),
+        ("renamed feature forward", renamed_feature_forward),
+        ("renamed inline door", renamed_inline_door),
     ] {
         assert!(
             manifest_opens_the_implementation_door(fixture),
@@ -665,6 +754,87 @@ fn no_shared_ui_selection_reaches_the_implementation_surface() {
                     !line.contains("implementation"),
                     "`--features {selection}` resolves jeliya-platform with the implementation \
                      feature on:\n{tree}"
+                );
+            }
+        }
+    }
+}
+
+/// Every workspace member's package name, from the root `members` list.
+fn workspace_member_names() -> Vec<String> {
+    let root = std::fs::read_to_string(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../Cargo.toml"
+    )))
+    .expect("readable workspace manifest");
+    let members = root
+        .split_once("members = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list.to_string())
+        .expect("a members list");
+    let mut names = Vec::new();
+    for entry in members.split(',') {
+        let path = entry
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\n' || c == ' ');
+        if path.is_empty() {
+            continue;
+        }
+        let manifest = std::fs::read_to_string(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                .join(path)
+                .join("Cargo.toml"),
+        )
+        .expect("readable member manifest");
+        let name = manifest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("name = "))
+            .map(|name| name.trim().trim_matches('"').to_string())
+            .expect("a package name");
+        names.push(name);
+    }
+    names
+}
+
+/// **Resolver truth over every workspace member**, with all of that member's
+/// own features on.
+///
+/// The shared-UI test below names the three graphs the product actually ships;
+/// this one closes the general claim, because a token scan cannot see a
+/// `package = ` rename or a `[workspace.dependencies]` alias, and *any* member
+/// reaching the surface violates the sole-door boundary — not only `jeliya-ui`.
+/// `--all-features` is what makes it strong: a member that hides the enablement
+/// behind one of its own optional features is still caught.
+#[test]
+fn no_workspace_member_resolves_the_implementation_feature() {
+    for name in workspace_member_names() {
+        // The contract crate defines the feature; the door crate is the door.
+        if name == "jeliya-platform" || IMPLEMENTATION_DOOR_CRATES.contains(&name.as_str()) {
+            continue;
+        }
+        let tree = tree(&[
+            "--locked",
+            "-p",
+            &name,
+            "--all-features",
+            "--edges",
+            "no-dev",
+            // Same format note as the default-graph test above.
+            "--prefix",
+            "none",
+            "-f",
+            "{p} {f}",
+        ]);
+        for line in tree.lines() {
+            assert!(
+                !line.starts_with("jeliya-platform-implementation"),
+                "member `{name}` carries an edge to the implementation door:\n{tree}"
+            );
+            if line.starts_with("jeliya-platform v") {
+                assert!(
+                    !line.contains("implementation"),
+                    "member `{name}` resolves jeliya-platform with the implementation feature \
+                     on:\n{tree}"
                 );
             }
         }

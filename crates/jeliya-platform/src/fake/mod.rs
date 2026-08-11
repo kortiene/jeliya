@@ -175,20 +175,35 @@ impl FakeInner {
     /// minted-token registries. Matched exhaustively on purpose: a new
     /// attachment kind must decide how it resolves rather than default to
     /// "shareable".
-    fn attachment_is_staged(&self, content: &ShareContent) -> bool {
-        match &content.attachment {
-            Some(ShareAttachment::Blob(blob)) => self
-                .staged_blobs
-                .lock()
-                .expect("staged blobs poisoned")
-                .contains_key(&blob.token().get()),
-            Some(ShareAttachment::Fetched(artifact)) => self
-                .share_artifacts
-                .lock()
-                .expect("share artifacts poisoned")
-                .contains_key(&artifact.token().get()),
-            None => true,
-        }
+    fn blob_is_staged(&self, blob: &ShareableBlob) -> bool {
+        self.staged_blobs
+            .lock()
+            .expect("staged blobs poisoned")
+            .contains_key(&blob.token().get())
+    }
+
+    /// Take a fetched artifact's bytes out of the registry for the duration of
+    /// one share, in **call order**.
+    ///
+    /// The claim is the anti-forgery check and the consume-on-success gate at
+    /// once, and taking it here rather than at settle time is what makes the
+    /// outcome independent of poll order: with two shares of one artifact, the
+    /// first *call* claims it and the second fails immediately without ever
+    /// opening a sheet, however the executor later polls them. Returns `None`
+    /// for an artifact this service did not materialize or has already handed
+    /// to another in-flight share.
+    fn claim_artifact(self: &Arc<Self>, artifact: &FetchedArtifact) -> Option<ArtifactClaim> {
+        let token = artifact.token().get();
+        let bytes = self
+            .share_artifacts
+            .lock()
+            .expect("share artifacts poisoned")
+            .remove(&token)?;
+        Some(ArtifactClaim {
+            inner: Arc::clone(self),
+            token,
+            bytes: Some(bytes),
+        })
     }
 
     /// Register an open dialog (ticket order == call order) and return the
@@ -346,6 +361,37 @@ impl Drop for DialogTurn {
             // real failure.
             if let Ok(mut queue) = self.inner.dialogs.lock() {
                 queue.withdraw(self.ticket);
+            }
+        }
+    }
+}
+
+/// A fetched artifact held out of the registry while one share is in flight.
+///
+/// Dropped without [`ArtifactClaim::consume`] it puts the bytes back, so a
+/// dismissed, cancelled, scripted-failure, or simply dropped share leaves the
+/// artifact staged for a retry that needs no second download — the same
+/// drop-is-abort honesty [`DialogTurn`] has. Only a share that actually
+/// completes consumes it.
+struct ArtifactClaim {
+    inner: Arc<FakeInner>,
+    token: u64,
+    bytes: Option<Vec<u8>>,
+}
+
+impl ArtifactClaim {
+    /// The share completed: the bytes are gone for good ("delete after share").
+    fn consume(mut self) {
+        self.bytes = None;
+    }
+}
+
+impl Drop for ArtifactClaim {
+    fn drop(&mut self) {
+        if let Some(bytes) = self.bytes.take() {
+            // Best-effort under poisoning, as everywhere in Drop.
+            if let Ok(mut artifacts) = self.inner.share_artifacts.lock() {
+                artifacts.insert(self.token, bytes);
             }
         }
     }
@@ -1000,7 +1046,15 @@ impl FileSink for FakeFileSink {
     }
 
     fn commit(self: Box<Self>) -> BoxFuture<'static, Result<(), CapabilityError>> {
+        // A destination that took every byte and then failed to finalize is its
+        // own path: the caller has nothing left to send and must still not
+        // report success. Nothing is recorded, so the artifact was never
+        // published.
+        let bound = self.inner.take_forced(Capability::FileSinkCommit);
         Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
             let this = *self;
             match this.dest {
                 SinkDest::Export { kind } => this.inner.record(RecordedEffect::ExportedLocal {
@@ -1046,7 +1100,14 @@ impl ShareSink for FakeShareSink {
     }
 
     fn commit(self: Box<Self>) -> BoxFuture<'static, Result<FetchedArtifact, CapabilityError>> {
+        // Same finalization path as [`FakeFileSink::commit`]: no artifact is
+        // minted and nothing is recorded, so a failed staging commit cannot be
+        // mistaken for a shareable artifact.
+        let bound = self.inner.take_forced(Capability::ShareSinkCommit);
         Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
             let this = *self;
             let id = this.inner.next_id();
             let size = this.written.len() as u64;
@@ -1283,34 +1344,45 @@ impl FakePlatform {
         if content.is_empty() {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
         }
-        if !inner.attachment_is_staged(&content) {
-            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
-        }
+        // Matched exhaustively on purpose: a new attachment kind must decide
+        // how it resolves rather than default to "shareable".
+        let claim = match &content.attachment {
+            None => None,
+            // A staged blob is NOT consumed by sharing — the daemon's
+            // `file.share` reads it, and `release_staged` is what reaps it — so
+            // presence is the whole check.
+            Some(ShareAttachment::Blob(blob)) => {
+                if !inner.blob_is_staged(blob) {
+                    return Box::pin(async {
+                        Err(CapabilityError::Failed(FailureKind::Unreadable))
+                    });
+                }
+                None
+            }
+            // A fetched artifact IS consumed, so the claim is taken now, in
+            // call order, and released again if this share does not complete.
+            Some(ShareAttachment::Fetched(artifact)) => match inner.claim_artifact(artifact) {
+                Some(claim) => Some(claim),
+                None => {
+                    return Box::pin(async {
+                        Err(CapabilityError::Failed(FailureKind::Unreadable))
+                    })
+                }
+            },
+        };
         let bound = match inner.take_forced(capability) {
             Some(error) => Err(error),
             None => Ok(content),
         };
         let turn = inner.open_dialog(capability, ct);
         Box::pin(async move {
+            // Every early return below drops `claim`, which puts the artifact
+            // back: a dismissal, a cancellation, a scripted failure, or a
+            // dropped future all leave it staged for a retry.
             turn.await?;
             let content = bound?;
-            // A completed share consumes a fetched artifact — "delete after
-            // share", mirroring `export_sink`'s consumed target. The REMOVAL is
-            // the gate, not the call-time check: two sheets can be open for one
-            // artifact at once, and only the share that actually takes the
-            // bytes may report success. A dismissal settles as `Cancelled`
-            // above and never reaches here, leaving the artifact staged for a
-            // retry that needs no second download.
-            if let Some(ShareAttachment::Fetched(artifact)) = &content.attachment {
-                let claimed = inner
-                    .share_artifacts
-                    .lock()
-                    .expect("share artifacts poisoned")
-                    .remove(&artifact.token().get())
-                    .is_some();
-                if !claimed {
-                    return Err(CapabilityError::Failed(FailureKind::Unreadable));
-                }
+            if let Some(claim) = claim {
+                claim.consume();
             }
             inner.record(RecordedEffect::Shared { content });
             Ok(())

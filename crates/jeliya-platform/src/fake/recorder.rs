@@ -47,6 +47,15 @@ pub enum Capability {
     /// [`crate::files::ShareSink::write`] — the same mid-transfer failure on
     /// the inbound staging path.
     ShareSinkWrite,
+    /// [`crate::FileSink::commit`] — a destination that accepted every chunk
+    /// and then failed to **finalize**: a flush error, a SAF document that
+    /// would not close, a browser download that never published, an opener the
+    /// platform refused. Distinct from a write failure, because the caller has
+    /// already sent every byte and must still not report success.
+    FileSinkCommit,
+    /// [`crate::files::ShareSink::commit`] — the same finalization failure on
+    /// the inbound staging path; no [`crate::FetchedArtifact`] is minted.
+    ShareSinkCommit,
     /// [`crate::Files::share_content`].
     ShareContent,
     /// [`crate::Share::share`].
