@@ -88,11 +88,14 @@ fn main() {
              bindgen glue — it is not the Dioxus shell",
         );
     }
-    let stylesheet_refs = collect_refs(&index, &[".css"]);
+    // A stylesheet reference counts only inside an active
+    // `<link rel="stylesheet">` tag: `/styles.css` in a meta attribute or
+    // prose applies no design system.
+    let stylesheet_refs = collect_refs(&stylesheet_link_tags(&index), &[".css"]);
     if stylesheet_refs.is_empty() {
         fail(
-            "the embedded index.html references no root-relative stylesheet — the canonical \
-             shell consumes the design system as /styles.css",
+            "the embedded index.html has no active stylesheet link referencing a root-relative \
+             stylesheet — the canonical shell consumes the design system as /styles.css",
         );
     }
     module_refs.extend(stylesheet_refs);
@@ -169,6 +172,29 @@ fn module_script_bodies(html: &str) -> String {
             out.push('\n');
         }
         from = body_end;
+    }
+    out
+}
+
+/// Extract `<link ...>` tag texts whose attributes include
+/// `rel="stylesheet"` (run after comment stripping; ASCII-lowercased shadow
+/// for case). Only an active stylesheet link applies the design system.
+fn stylesheet_link_tags(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::new();
+    let mut from = 0;
+    while let Some(open_rel) = lower[from..].find("<link") {
+        let open = from + open_rel;
+        let Some(end_rel) = lower[open..].find('>') else {
+            break;
+        };
+        let end = open + end_rel;
+        let tag = &lower[open..end];
+        if tag.contains("rel=\"stylesheet\"") || tag.contains("rel='stylesheet'") {
+            out.push_str(&html[open..end]);
+            out.push('\n');
+        }
+        from = end + 1;
     }
     out
 }

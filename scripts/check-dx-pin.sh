@@ -30,14 +30,18 @@ scan() {
 }
 fail=0
 
-# A diagnostic (`echo`/`printf`), a pattern definition (`grep`), or a comment is
-# not an invocation — the check must not flag a help string or a regex that
-# merely QUOTES a pinned install command.
+# A joined line may chain several commands (`cargo install x && echo done`);
+# each segment is classified on its own so a diagnostic tail cannot launder a
+# real install — substring matching used to skip the whole line. A segment is
+# diagnostic only when its INVOCATION is echo/printf/grep, or it is a comment.
+segments() {
+  awk '{ n = split($0, s, /&&|\|\||;|\|/); for (i = 1; i <= n; i++) print s[i] }' <<<"$1"
+}
 is_diagnostic() {
-  case "$1" in
-    *echo*|*printf*|*grep*) return 0 ;;
+  case "$(sed 's/^[[:space:]-]*//' <<<"$1")" in
+    '#'*|echo|echo\ *|printf|printf\ *|grep|grep\ *) return 0 ;;
   esac
-  [[ "$1" =~ ^[[:space:]]*# ]]
+  return 1
 }
 
 # A pinned version token: `--version =X` / `--version=X` / `tool@X`, where `X`
@@ -48,25 +52,29 @@ pinned() {
 
 # 1. Any dioxus-cli / dx install must be version-pinned.
 while IFS= read -r line; do
-  is_diagnostic "$line" && continue
-  if grep -Eq 'cargo (install|binstall).*dioxus-cli' <<<"$line" && ! pinned "$line"; then
-    echo "FAIL: unpinned dioxus-cli install: $line"
-    fail=1
-  fi
-  # A curl/wget of a dx release must carry a pinned version tag.
-  if grep -Eq '(curl|wget).*dioxus' <<<"$line" && ! grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$line"; then
-    echo "FAIL: unpinned dx download: $line"
-    fail=1
-  fi
+  while IFS= read -r seg; do
+    is_diagnostic "$seg" && continue
+    if grep -Eq 'cargo (install|binstall).*dioxus-cli' <<<"$seg" && ! pinned "$seg"; then
+      echo "FAIL: unpinned dioxus-cli install: $seg"
+      fail=1
+    fi
+    # A curl/wget of a dx release must carry a pinned version tag.
+    if grep -Eq '(curl|wget).*dioxus' <<<"$seg" && ! grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$seg"; then
+      echo "FAIL: unpinned dx download: $seg"
+      fail=1
+    fi
+  done < <(segments "$line")
 done < <(scan 'dioxus-cli|(curl|wget).*dioxus')
 
 # 2. Every wasm-bindgen(-cli) install must be version-pinned.
 while IFS= read -r line; do
-  is_diagnostic "$line" && continue
-  if grep -Eq 'cargo (install|binstall).*wasm-bindgen' <<<"$line" && ! pinned "$line"; then
-    echo "FAIL: unpinned wasm-bindgen-cli install: $line"
-    fail=1
-  fi
+  while IFS= read -r seg; do
+    is_diagnostic "$seg" && continue
+    if grep -Eq 'cargo (install|binstall).*wasm-bindgen' <<<"$seg" && ! pinned "$seg"; then
+      echo "FAIL: unpinned wasm-bindgen-cli install: $seg"
+      fail=1
+    fi
+  done < <(segments "$line")
 done < <(scan 'cargo (install|binstall).*wasm-bindgen')
 
 # 3. An action-based install (taiki-e/install-action's `tool:` input) is the
