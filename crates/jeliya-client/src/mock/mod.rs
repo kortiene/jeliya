@@ -159,7 +159,8 @@ impl MockScript {
             state: State::Idle,
             programs: self.programs,
             pending: VecDeque::new(),
-            pending_wakers: Vec::new(),
+            pending_wakers: HashMap::new(),
+            next_waiter: 0,
             stopping: false,
             bus: Arc::new(EventBus::new()),
         }));
@@ -183,10 +184,13 @@ struct MockInner {
     state: State,
     programs: HashMap<&'static str, VecDeque<Step>>,
     pending: VecDeque<Pending>,
-    /// Wakers parked by [`MockController::pending_call`], woken when a call
-    /// registers (or the mock begins stopping, so a waiter never outlives
-    /// the backend it waits on).
-    pending_wakers: Vec<Waker>,
+    /// Wakers parked by [`MockController::pending_call`], keyed per waiter
+    /// so a re-poll REPLACES its slot (no duplicates) and a dropped waiter
+    /// unregisters (no leak). Woken when a call registers (or the mock
+    /// begins stopping, so a waiter never outlives the backend).
+    pending_wakers: HashMap<u64, Waker>,
+    /// Monotonic id source for [`PendingCall`] waiter slots.
+    next_waiter: u64,
     stopping: bool,
     bus: Arc<EventBus>,
 }
@@ -319,7 +323,7 @@ impl MockInner {
         self.bus.close();
         // A parked pending_call() waiter must observe the shutdown rather
         // than sleep past the backend's end.
-        for waker in std::mem::take(&mut self.pending_wakers) {
+        for (_, waker) in std::mem::take(&mut self.pending_wakers) {
             waker.wake();
         }
     }
@@ -355,7 +359,7 @@ impl ClientBackend for MockBackend {
                 // The registration IS the wake source for pending_call():
                 // a driver awaiting dispatch resumes because dispatch
                 // happened, never because a scheduler guess paid off.
-                for waker in inner.pending_wakers.drain(..) {
+                for (_, waker) in inner.pending_wakers.drain() {
                     waker.wake();
                 }
                 Box::pin(async move {
@@ -420,7 +424,19 @@ impl MockController {
     pub fn pending_call(&self) -> PendingCall {
         PendingCall {
             inner: Arc::clone(&self.inner),
+            waiter: None,
         }
+    }
+
+    /// How many [`PendingCall`] waiters are currently parked — diagnostics
+    /// for tests asserting that waiters neither leak on drop nor duplicate
+    /// on re-poll.
+    pub fn parked_waiters(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("mock poisoned")
+            .pending_wakers
+            .len()
     }
 
     /// Inject an out-of-band event (a [`ClientEvent::Gap`],
@@ -470,13 +486,19 @@ impl MockController {
 /// dispatched call awaits settlement, or when the mock has begun stopping.
 pub struct PendingCall {
     inner: Arc<Mutex<MockInner>>,
+    /// This waiter's slot in `pending_wakers`, once parked: a re-poll
+    /// replaces the slot instead of appending a duplicate, readiness clears
+    /// it, and `Drop` unregisters it so a canceled waiter cannot retain
+    /// executor resources.
+    waiter: Option<u64>,
 }
 
 impl Future for PendingCall {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let mut inner = self.inner.lock().expect("mock poisoned");
+        let this = self.get_mut();
+        let mut inner = this.inner.lock().expect("mock poisoned");
         // A dropped call future cancels its sender but leaves its queue
         // entry until a delivery purges it — canceled work is not pending
         // work, and reporting it ready would let a driver spend its
@@ -485,9 +507,34 @@ impl Future for PendingCall {
             .pending
             .retain(|pending| !pending.sender.is_canceled());
         if !inner.pending.is_empty() || inner.stopping {
+            if let Some(id) = this.waiter.take() {
+                inner.pending_wakers.remove(&id);
+            }
             return Poll::Ready(());
         }
-        inner.pending_wakers.push(cx.waker().clone());
+        let id = match this.waiter {
+            Some(id) => id,
+            None => {
+                let id = inner.next_waiter;
+                inner.next_waiter += 1;
+                this.waiter = Some(id);
+                id
+            }
+        };
+        inner.pending_wakers.insert(id, cx.waker().clone());
         Poll::Pending
+    }
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        if let Some(id) = self.waiter.take() {
+            // No panic on a poisoned lock in Drop: unregistration is
+            // best-effort cleanup, and the poisoning panic is the real
+            // failure being unwound.
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.pending_wakers.remove(&id);
+            }
+        }
     }
 }

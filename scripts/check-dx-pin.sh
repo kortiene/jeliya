@@ -261,6 +261,12 @@ while IFS= read -r line; do
             url_path="${word,,}"
             url_path="${url_path#*://}"
             url_path="${url_path#*/}"
+            # Neither the FRAGMENT (client-side only — never sent to the
+            # server) nor the QUERY (server-defined selection no scan can
+            # verify) pins the fetched resource: a version living only
+            # there is decoration on a moving path.
+            url_path="${url_path%%#*}"
+            url_path="${url_path%%\?*}"
             case "$url_path" in *latest*) protected_urls_ok=0 ;; *)
               grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$url_path" || protected_urls_ok=0
               ;;

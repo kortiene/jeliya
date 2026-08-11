@@ -1746,3 +1746,49 @@ fn pending_call_ignores_canceled_calls() {
     });
     assert!(reply.is_ok(), "the live call settles: {reply:?}");
 }
+
+/// Parked waiters neither leak on drop nor duplicate on re-poll: a
+/// `PendingCall` owns one waker slot — re-polling replaces it, dropping
+/// unregisters it, and readiness clears it.
+#[test]
+fn pending_call_waiters_neither_leak_nor_duplicate() {
+    let (handle, controller) = MockScript::new()
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&empty_room_list()),
+        )
+        .build();
+    handle.start();
+    controller.set_state(State::Ready);
+    assert_eq!(controller.parked_waiters(), 0);
+
+    // One waiter, polled twice: one slot, not two.
+    let mut parked = controller.pending_call();
+    assert!((&mut parked).now_or_never().is_none());
+    assert!((&mut parked).now_or_never().is_none());
+    assert_eq!(controller.parked_waiters(), 1);
+
+    // A second waiter gets its own slot.
+    let mut parked2 = controller.pending_call();
+    assert!((&mut parked2).now_or_never().is_none());
+    assert_eq!(controller.parked_waiters(), 2);
+
+    // Dropping unregisters, leaving the other slot intact.
+    drop(parked);
+    assert_eq!(controller.parked_waiters(), 1);
+
+    // Readiness clears the surviving waiter's slot.
+    let call = handle.call::<RoomList>(RoomList {}, Dedup::None);
+    let reply = block_on(async {
+        let ((), reply) = futures::join!(
+            async {
+                parked2.await;
+                while controller.deliver_next() {}
+            },
+            call,
+        );
+        reply
+    });
+    assert!(reply.is_ok());
+    assert_eq!(controller.parked_waiters(), 0);
+}
