@@ -60,6 +60,17 @@ while IFS= read -r line; do
   fi
 done < <(grep -rhnE 'cargo (install|binstall).*wasm-bindgen' "${scan_paths[@]}" 2>/dev/null || true)
 
+# 3. An action-based install (taiki-e/install-action's `tool:` input) is the
+#    same fetch surface through a different door: a `tool:` naming these
+#    binaries must carry an explicit `@version` too.
+while IFS= read -r line; do
+  is_diagnostic "$line" && continue
+  if ! grep -Eq '@[0-9$]' <<<"$line"; then
+    echo "FAIL: unpinned action-based tool install: $line"
+    fail=1
+  fi
+done < <(grep -rhnE '^[[:space:]]*tool:.*(dioxus-cli|wasm-bindgen)' "${scan_paths[@]}" 2>/dev/null || true)
+
 if [ "$fail" -ne 0 ]; then
   echo
   echo "CI must not fetch an unpinned dx or wasm-bindgen (#176 AC-5)."

@@ -49,9 +49,16 @@ pub fn RoomListItem(room: RoomRow, selected: bool) -> Element {
     };
     rsx! {
         div { class: "{class}", "data-room": "{room.room_id}",
-            span { class: "room-info",
-                span { class: "room-name-line",
-                    span { class: "room-name", "{label}" }
+            // `.room-select` carries the row's padding, flex growth, and
+            // alignment in the canonical stylesheet; `.room-item` is only
+            // the border/hover container. Mirrors the React shell's
+            // `button.room-select`; selection wiring is a later slice — the
+            // element exists here for the design-system layout.
+            button { class: "room-select",
+                span { class: "room-info",
+                    span { class: "room-name-line",
+                        span { class: "room-name", "{label}" }
+                    }
                 }
             }
         }

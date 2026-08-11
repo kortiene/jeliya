@@ -571,6 +571,16 @@ jobs:
           npm ci --ignore-scripts
           npm audit --audit-level=high
 
+      # The #176 render-smoke Playwright tree is installed and EXECUTED by the
+      # jeliya-ui-web job; an unaudited lockfile there would be a dependency
+      # this gate never sees.
+      - name: npm high/critical advisory audit (jeliya-ui render smoke)
+        working-directory: crates/jeliya-ui/e2e
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+
   jeliya-ui-web:
     # The #176 web-foundation gates, folded into one dedicated job so no new
     # REQUIRED check name is invented without confirming the branch-protection
