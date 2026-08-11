@@ -31,6 +31,9 @@ scan() {
 }
 fail=0
 
+# `cargo [+toolchain] [--global-option] install` is the documented grammar —
+# the predicates tolerate those prefixes so `cargo +1.96.0 install x` or
+# `cargo --quiet install x` cannot slip past a literal-adjacency match.
 # A joined line may chain several commands (`cargo install x && echo done`);
 # each segment is classified on its own so a diagnostic tail cannot launder a
 # real install — substring matching used to skip the whole line. A segment is
@@ -59,7 +62,7 @@ pinned() {
 while IFS= read -r line; do
   while IFS= read -r seg; do
     is_diagnostic "$seg" && continue
-    if grep -Eq 'cargo (install|binstall).*dioxus-cli' <<<"$seg" && ! pinned "$seg"; then
+    if grep -Eq 'cargo([[:space:]]+(\+[[:alnum:].-]+|-{1,2}[[:alnum:]=-]+))*[[:space:]]+(install|binstall).*dioxus-cli' <<<"$seg" && ! pinned "$seg"; then
       echo "FAIL: unpinned dioxus-cli install: $seg"
       fail=1
     fi
@@ -75,12 +78,12 @@ done < <(scan 'dioxus-cli|(curl|wget).*dioxus')
 while IFS= read -r line; do
   while IFS= read -r seg; do
     is_diagnostic "$seg" && continue
-    if grep -Eq 'cargo (install|binstall).*wasm-bindgen' <<<"$seg" && ! pinned "$seg"; then
+    if grep -Eq 'cargo([[:space:]]+(\+[[:alnum:].-]+|-{1,2}[[:alnum:]=-]+))*[[:space:]]+(install|binstall).*wasm-bindgen' <<<"$seg" && ! pinned "$seg"; then
       echo "FAIL: unpinned wasm-bindgen-cli install: $seg"
       fail=1
     fi
   done < <(segments "$line")
-done < <(scan 'cargo (install|binstall).*wasm-bindgen')
+done < <(scan 'cargo([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|binstall).*wasm-bindgen')
 
 # 3. An action-based install (taiki-e/install-action's `tool:` input) is the
 #    same fetch surface through a different door: a `tool:` naming these

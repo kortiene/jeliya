@@ -170,9 +170,15 @@ echo "==> cargo build --locked --release -p jeliya-ui --features web (wasm32)"
 
 echo "==> wasm-bindgen $locked_wbg (no wasm-opt)"
 # $out is caller-supplied: refuse to delete a directory that is non-empty
-# and not a previous artifact output (the marker is this script's own
-# tombstone) — a typo'd path must not be irreversibly destroyed.
-if [ -e "$out" ] && [ ! -f "$out/.dioxus-artifact" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
+# and not a previous output of THIS build (the marker must carry this
+# script's own renderer and crate fields — a mere file named
+# .dioxus-artifact in some unrelated tree grants nothing) — a typo'd path
+# must not be irreversibly destroyed.
+is_own_output() {
+  grep -qx 'renderer=dioxus-web' "$1/.dioxus-artifact" 2>/dev/null &&
+    grep -qx 'crate=jeliya-ui' "$1/.dioxus-artifact" 2>/dev/null
+}
+if [ -e "$out" ] && ! is_own_output "$out" && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
   echo "FAIL: refusing to replace $out — it exists, is non-empty, and carries no .dioxus-artifact marker." >&2
   echo "      pass a new or empty directory, or a previous build output." >&2
   exit 1

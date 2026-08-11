@@ -167,6 +167,19 @@ fn no_cfg_target_forks_in_shared_components() {
                 r#"feature="native""#,
                 r#"feature="web""#,
                 r#"feature="ui""#,
+                // Rust's standalone platform aliases fork on OS/family with
+                // no target_* key at all; cover them direct and inside
+                // combinators.
+                "cfg(windows",
+                "cfg(unix",
+                "cfg!(windows",
+                "cfg!(unix",
+                "any(windows",
+                "any(unix",
+                "all(windows",
+                "all(unix",
+                "not(windows",
+                "not(unix",
             ] {
                 if compact.contains(pattern) {
                     offenders.push(format!("{} — contains {pattern:?}", path.display()));
@@ -236,21 +249,32 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                let fully_qualified =
-                    line.contains("serde_json::Value") || line.contains("serde_json::value::Value");
-                // A grouped or aliased import (`use serde_json::{Value}`,
-                // `use serde_json::Value as Json`) brings the type into
-                // scope without either fully qualified spelling; any `use`
-                // of serde_json naming Value is the same boundary breach.
-                let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-                let imported = compact.contains("useserde_json::")
-                    && (compact.contains("Value,")
-                        || compact.contains("Value}")
-                        || compact.contains("Value;")
-                        || compact.contains("Valueas"));
-                if fully_qualified || imported {
+                if line.contains("serde_json::Value") || line.contains("serde_json::value::Value") {
                     offenders.push(format!("{}:{}", path.display(), index + 1));
                 }
+            }
+            // A grouped, aliased, or MULTILINE import (`use serde_json::{` /
+            // `Value,` / `};`) has neither fully qualified spelling on any
+            // single line: scan complete `use serde_json::…;` declarations
+            // on a comment-stripped, whitespace-collapsed copy of the file.
+            let compact: String = text
+                .lines()
+                .map(|line| line.split("//").next().unwrap_or(""))
+                .collect::<String>()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let mut from = 0;
+            while let Some(rel) = compact[from..].find("useserde_json::") {
+                let at = from + rel;
+                let declaration = compact[at..].split(';').next().unwrap_or("");
+                if declaration.contains("Value") {
+                    offenders.push(format!(
+                        "{} — a use declaration imports serde_json Value",
+                        path.display()
+                    ));
+                }
+                from = at + "useserde_json::".len();
             }
         }
     }
