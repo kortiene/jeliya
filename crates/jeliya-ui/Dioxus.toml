@@ -1,0 +1,43 @@
+# `dx` web build configuration for `jeliya-ui` (#176).
+#
+# NOTE ON THE CANONICAL BUILD (Open Question O-4): the reproducible,
+# determinism-checked artifact is produced by `scripts/build-web.sh` using
+# `cargo build --target wasm32-unknown-unknown` plus a PINNED `wasm-bindgen-cli`
+# (0.2.126) — the path the #158 spike proved in this repo. `dx` (dioxus-cli)
+# historically pulls `openssl-sys`, which needs system OpenSSL headers the
+# clean-slate toolchain deliberately avoids, so the pure-cargo path is
+# canonical here. This file documents the equivalent `dx` configuration so a
+# `dx serve`/`dx build` developer loop stays consistent with the canonical
+# output; whichever tool is used, the determinism check (§5) runs against the
+# artifact and both must produce equivalent asset trees.
+
+[application]
+name = "jeliya-ui"
+# The browser DOM renderer (system WebView at runtime); WGPU/Blitz are excluded.
+default_platform = "web"
+# The single canonical output directory the daemon embeds (§9). NOT `ui/dist`,
+# so the React and Dioxus outputs can never be confused.
+out_dir = "dist"
+asset_dir = "assets"
+
+[web.app]
+title = "Jeliya"
+
+[web.watcher]
+reload_html = true
+
+[web.resource]
+# The one canonical stylesheet, referenced from its single source (§7).
+style = ["/styles.css"]
+script = []
+
+[web.resource.dev]
+style = []
+script = []
+
+[bundle]
+# Determinism (§5, O-6): `wasm-opt` output varies across Binaryen versions, so
+# the reproducible artifact either pins Binaryen or disables `wasm-opt`. The
+# canonical `scripts/build-web.sh` path does not run `wasm-opt` (size budgets
+# are #198); record the Binaryen version in `docs/dioxus-web-build.md` if it is
+# ever enabled for the size win.

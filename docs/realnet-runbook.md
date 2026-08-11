@@ -3,7 +3,7 @@ type: "Runbook"
 title: "Real-network NAT runbook"
 description: "Operator procedure for collecting revision-bound direct and forced-relay evidence across three distinct public egress paths."
 tags: ["nat", "networking", "operations", "p2p"]
-timestamp: "2026-07-19T21:49:56Z"
+timestamp: "2026-08-10T20:00:00Z"
 status: "canonical"
 implementation_status: "implemented"
 verification_status: "partial"
@@ -116,6 +116,17 @@ rejected for this three-role topology. Do not override that result with
 `--allow-shared-egress` for a certifying run.
 
 ## Pinned toolchain and source prerequisites
+
+**Known limitation since #176:** the fresh-source evidence build in
+`scripts/realnet-evidence.mjs` still runs the React `ui/dist` npm pipeline,
+while the daemon's `embed-ui` build now embeds the Dioxus artifact
+(`crates/jeliya-ui/dist`) behind a fail-closed guard — so an evidence run on a
+post-#176 source **fails at the embed-ui build step** rather than signing
+evidence that mis-attests the embedded artifact. Moving the evidence producer
+and `scripts/check-release.mjs`'s `embedded_ui` contract onto the Dioxus
+toolchain is owned by #183 (attestation schema) / #200 (release-line cutover);
+until then no release-qualifying run is possible from `main`, which matches
+the release evidence gate above (BLOCKED, candidate pending).
 
 A release-qualifying schema 2 run is supported only from an x86_64 macOS
 operator. It requires all of the following before any remote mutation:
