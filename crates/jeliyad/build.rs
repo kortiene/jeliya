@@ -55,7 +55,10 @@ fn main() {
     // stale, differently named file would stand in for the one the shell
     // actually loads — so validate the exact root-relative references
     // index.html makes (they are root-relative by the SPA-fallback contract
-    // stated in index.html itself).
+    // stated in index.html itself). HTML comments are stripped first: a
+    // commented-out module script still carries its quoted paths, and
+    // accepting them would embed a shell whose init never runs.
+    let index = strip_html_comments(&index);
     let module_refs: Vec<&str> = {
         let mut refs: Vec<&str> = index
             .split(['"', '\''])
@@ -115,6 +118,23 @@ fn main() {
             ));
         }
     }
+}
+
+/// Remove `<!-- ... -->` spans so commented-out markup cannot satisfy the
+/// reference checks. An unterminated comment drops the rest of the document —
+/// fail-closed: whatever hides in it does not count as a reference.
+fn strip_html_comments(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("-->") {
+            Some(end) => rest = &rest[start + end + 3..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn fail(message: &str) -> ! {

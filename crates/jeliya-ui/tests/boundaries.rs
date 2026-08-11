@@ -141,18 +141,22 @@ fn no_cfg_target_forks_in_shared_components() {
                 }
                 // Platform-discriminating cfg keys that must not appear in
                 // shared components. Feature-gating on `ui`/`web`/`native` is
-                // forbidden here too: a component cannot self-select its target.
+                // forbidden here too: a component cannot self-select its
+                // target. Matching runs on a whitespace-stripped copy of the
+                // line so `#[cfg (target_os` and spaced feature forms cannot
+                // slip past a literal pattern, and `cfg!(...)` — every bit as
+                // capable of platform branching — is covered alongside the
+                // attribute form. `cfg(target_` catches every target_* key,
+                // present and future.
+                let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
                 for pattern in [
-                    "cfg(target_arch",
-                    "cfg(target_os",
-                    "cfg(target_family",
-                    "cfg(target_pointer_width",
-                    "cfg(target_env",
-                    r#"feature = "native""#,
-                    r#"feature = "web""#,
-                    r#"feature = "ui""#,
+                    "cfg(target_",
+                    "cfg!(target_",
+                    r#"feature="native""#,
+                    r#"feature="web""#,
+                    r#"feature="ui""#,
                 ] {
-                    if line.contains(pattern) {
+                    if compact.contains(pattern) {
                         offenders.push(format!(
                             "{}:{} — {}",
                             path.display(),

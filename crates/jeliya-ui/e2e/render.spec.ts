@@ -1,15 +1,18 @@
 import { test, expect } from "@playwright/test";
 
-// The no-network render smoke (§11, Verification). It blocks all non-loopback
-// requests, loads the reproducible artifact, and asserts the shared shell
-// renders with the design system driving COMPUTED style — reproducing the #158
-// spike's "does the existing CSS survive the renderer swap" guard rather than
-// trusting class presence. It runs offline and needs no daemon: #176 renders
-// against the deterministic mock.
-test.beforeEach(async ({ page }) => {
+// The no-network render smoke (§11, Verification). It blocks every request
+// outside the static server's own ORIGIN — a hostname-only check would let a
+// regression open another loopback port (a daemon, some other local service)
+// while the smoke stayed green — loads the reproducible artifact, and asserts
+// the shared shell renders with the design system driving COMPUTED style,
+// reproducing the #158 spike's "does the existing CSS survive the renderer
+// swap" guard rather than trusting class presence. It runs offline and needs
+// no daemon: #176 renders against the deterministic mock.
+test.beforeEach(async ({ page, baseURL }) => {
+  const origin = baseURL === undefined ? undefined : new URL(baseURL).origin;
   await page.route("**/*", (route) => {
     const url = new URL(route.request().url());
-    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+    if (origin !== undefined && url.origin === origin) {
       return route.continue();
     }
     return route.abort();

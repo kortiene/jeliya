@@ -13,7 +13,7 @@
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::RoomList;
-use jeliya_client::{CallError, ClientHandle, Dedup, State};
+use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
 
 use crate::components::{BootScreen, EmptyCenter, RoomListItem, StatusFooter};
 use crate::services::PlatformServices;
@@ -107,21 +107,41 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                                 // lifecycle event — the seam permits settling
                                 // pending calls before publishing
                                 // Interrupted — so "state still Ready" does
-                                // not mean the connection recovered. Wait for
-                                // the lifecycle to actually LEAVE Ready
-                                // before waiting for the next Ready: an
+                                // not mean the connection recovered, and an
                                 // immediate retry against the dying
                                 // connection could be refused with a
-                                // non-retryable error and end this task
-                                // before recovery.
-                                while handle.state() == State::Ready {
-                                    if ready.next().await.is_none() {
-                                        return;
+                                // non-retryable error, ending this task
+                                // before recovery. Prove leave-and-re-enter
+                                // from the EVENTS themselves: a state-only
+                                // wait would deadlock when both transitions
+                                // buffered before this future resumed (the
+                                // current state is already Ready again and
+                                // the drained queue never wakes it).
+                                let mut left_ready = false;
+                                loop {
+                                    match ready.next().await {
+                                        Some(ClientEvent::StateChanged { to, .. }) => {
+                                            if to != State::Ready {
+                                                left_ready = true;
+                                            } else if left_ready {
+                                                break;
+                                            }
+                                        }
+                                        Some(_) => continue,
+                                        None => return,
                                     }
                                 }
                             }
                             Err(error) => {
-                                ui.write().set_notice(format!("room.list: {error:?}"));
+                                let mut state = ui.write();
+                                state.set_notice(format!("room.list: {error:?}"));
+                                // The read has ANSWERED — with a terminal
+                                // error this task will not retry — so the
+                                // loading state must end: leaving
+                                // rooms_loaded false would show
+                                // "Loading rooms…" forever next to the error
+                                // notice with nothing in flight.
+                                state.rooms_loaded = true;
                                 return;
                             }
                         }
