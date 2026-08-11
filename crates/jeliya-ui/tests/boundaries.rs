@@ -323,6 +323,11 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect();
+            // Root-qualified imports (`use ::serde_json as json;`) compact
+            // to `use::serde_json…`, matching neither predicate below —
+            // normalize the optional leading `::` away so both spellings
+            // are the same declaration.
+            let compact = compact.replace("use::serde_json", "useserde_json");
             // Aliasing the MODULE (`use serde_json as json`) evades both
             // scans while later signatures use json::Value; the alias itself
             // is the breach signal.

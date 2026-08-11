@@ -31,7 +31,10 @@ graph="$(cargo tree --locked -p jeliya-ui --features web \
 
 fail=0
 for name in "${forbidden[@]}"; do
-  if grep -qx -- "$name" <<<"$graph"; then
+  # PREFIX match, as the list above defines its entries: `iroh-base` without
+  # the umbrella `iroh` crate is as forbidden as `iroh` itself, and an
+  # exact-name comparison would wave the family member through.
+  if grep -q -- "^$name" <<<"$graph"; then
     echo "FAIL: '$name' is reachable from the jeliya-ui wasm32 'web' build"
     cargo tree --locked -p jeliya-ui --features web \
       --target wasm32-unknown-unknown --edges normal --invert "$name" 2>/dev/null | head -20

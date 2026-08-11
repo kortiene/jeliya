@@ -112,3 +112,31 @@ test("a nested SPA route loads the app via root-relative assets", async ({ page 
   await expect(root).toBeVisible();
   await expect(page.locator("#status-footer")).toContainText("Ready");
 });
+
+// Compact viewports are a DIFFERENT rendering contract: at
+// `max-width: 899.98px` the stylesheet hides every pane and the `pane-*`
+// class on `.app` restores exactly one. Every other test runs the desktop
+// viewport, where those rules never apply — so removing or misspelling the
+// shell's `pane-rooms` class would blank the phone/system-WebView UI while
+// the whole desktop suite stayed green. This smoke pins the compact
+// contract: the sidebar pane (and its room list content — rows, or the
+// loading/empty state) is visible, and the center pane is hidden.
+test.describe("compact viewport", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("the compact shell shows the rooms pane and hides the center", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("#status-footer")).toContainText("Ready");
+    await expect(page.locator("#sidebar")).toBeVisible();
+    const roomsList = page.locator("#rooms-list");
+    await expect(roomsList).toBeVisible();
+    // The list is never blank: scripted rooms render `.room-item` rows, and
+    // an unanswered or empty account renders the loading/empty element.
+    await expect(
+      roomsList.locator(".room-item, .rooms-empty").first(),
+    ).toBeVisible();
+    // `pane-rooms` shows ONLY the sidebar on compact viewports.
+    await expect(page.locator("#center")).not.toBeVisible();
+  });
+});

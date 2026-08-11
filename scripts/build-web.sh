@@ -41,9 +41,13 @@ esac
 # Reproducibility controls. A fixed SOURCE_DATE_EPOCH and remapped path prefix
 # keep absolute paths and timestamps out of the binary; LC_ALL=C fixes any
 # collation the pipeline performs; incremental compilation is off so output does
-# not depend on prior build state.
+# not depend on prior build state. The epoch is assigned UNCONDITIONALLY: an
+# inherited caller value is an override channel exactly like RUSTFLAGS — two
+# machines exporting different epochs would emit different bytes while the
+# determinism check stays green (both of its samples inherit the same value)
+# and the marker records nothing about it.
 export LC_ALL=C
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
+export SOURCE_DATE_EPOCH=1700000000
 export CARGO_INCREMENTAL=0
 # The canonical flags are EXACTLY these — caller RUSTFLAGS (say, -C
 # debuginfo=1) would change the emitted wasm while the marker records only

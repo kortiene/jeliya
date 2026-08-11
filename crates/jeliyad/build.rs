@@ -319,12 +319,31 @@ fn executable_position(normalized: &str, quoted: &str, is_js: bool) -> bool {
         let before = normalized[..at].trim_end();
         let ok = if is_js {
             let keyword = ["from", "import"].into_iter().find(|k| before.ends_with(k));
-            keyword.is_some_and(|k| {
+            let static_pos = keyword.is_some_and(|k| {
                 before[..before.len() - k.len()]
                     .chars()
                     .next_back()
                     .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
-            })
+            });
+            // A DYNAMIC import (`import('/x.js')`, space allowed before the
+            // paren) loads the module just as surely — excluding it from the
+            // reference set would let the guard accept an artifact missing a
+            // module whose failed load leaves the packaged UI blank. The
+            // boundary check mirrors the keyword form ('.' included: there
+            // is no member `import()` in module syntax).
+            let dynamic_pos = before
+                .strip_suffix('(')
+                .map(str::trim_end)
+                .is_some_and(|head| {
+                    head.ends_with("import")
+                        && head[..head.len() - "import".len()]
+                            .chars()
+                            .next_back()
+                            .is_none_or(|c| {
+                                !(c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.')
+                            })
+                });
+            static_pos || dynamic_pos
         } else {
             matches!(before.chars().next_back(), Some(':' | '(' | ','))
         };
