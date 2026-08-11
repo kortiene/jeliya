@@ -359,7 +359,11 @@ its sealed variants, and the manifest carries shared provenance:
   at load, before accepting the manifest**, recomputing per scheme — the
   detached sidecar verifies over the serialized bytes as stored; an
   in-manifest field verifies over the canonical serialization that excludes
-  the field (the producer's canonicalization) — missing or mismatched fails
+  the field (the producer's canonicalization). For `Dir` artifacts the
+  detached sidecar is **required regardless of scheme** (in-manifest-only is
+  `Embedded`-only): a directory artifact must leave sealing evidence that
+  survives losing the manifest, or a partial copy dropping the manifest
+  reads as an unsealed dev directory. Missing or mismatched fails
   closed exactly as unparsable does (Dir: partial-copy/skew detection;
   Embedded: packaging-defect evidence), never a fall-through to trusting the
   metadata and never a collapse into the manifest-less dev state.
@@ -530,6 +534,11 @@ when the daemon serves its value faithfully. The rows:
 - **Entry-point cache policy:** the root document carries the explicit
   non-cacheable policy on identity and encoded branches; hashed assets stay
   cacheable by digest (`first-release-distribution.md` invariant).
+- **Exact-version rejection:** a complete, correctly sealed artifact of a
+  different UI generation (self-consistent throughout; derived canonical
+  digest ≠ the daemon's build-pinned digest) → refused with the reset path.
+  Advertised-vs-derived consistency never authorizes serving; the
+  derived-vs-pinned comparison is the rejection itself.
 - **Allow-list:** an extra file (for example `debug.html`) in the `Dir` source
   but absent from the manifest → **404**, never a `200` with unverified bytes;
   the manifest-less bare directory serving that same file stays the dev-only

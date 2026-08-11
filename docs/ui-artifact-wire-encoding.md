@@ -290,7 +290,12 @@ its sealed variants, and the manifest carries shared provenance:
   loaded serialized manifest bytes exactly as stored; for an in-manifest
   field, over the canonical serialization that **excludes the field** — the
   same canonicalization the producer used, since recomputing over raw bytes
-  with the field still present can never reproduce the sealed value. A
+  with the field still present can never reproduce the sealed value. For a
+  `Dir` artifact the **detached sidecar is required regardless of scheme**
+  (the in-manifest-only scheme is `Embedded`-only): a directory artifact
+  must leave sealing evidence that survives losing the manifest itself, or
+  a partial copy that drops the manifest would present both metadata files
+  as absent and read as an unsealed dev directory. A
   missing or
   mismatched detached digest fails closed exactly as an unparsable manifest
   does, never a fall-through to accepting the manifest's metadata (for `Dir`
@@ -311,7 +316,9 @@ its sealed variants, and the manifest carries shared provenance:
     ASCII letters, digits, `_`, `-`, and interior `.` (no leading or trailing
     dot, and no Windows-reserved device name such as `con`, `nul`, `aux`,
     `com1`–`com9`, `lpt1`–`lpt9`; each segment at most **255 bytes**, the
-    common filesystem component bound, so no sealed path exists that a `Dir`
+    common filesystem component bound, and each complete relative path at
+    most **1024 bytes** — individually valid segments can still compose a
+    pathname no filesystem accepts — so no sealed path exists that a `Dir`
     filesystem cannot materialize while an embedded map holds it). This
     makes byte equality the collision
     key by construction: with only lowercase ASCII sealed, case-fold aliasing
@@ -502,6 +509,13 @@ when the daemon serves its value faithfully. The rows:
   entry point outlives its own generation
   ([first-release-distribution](first-release-distribution.md)); hashed
   assets stay cacheable by digest.
+- **Exact-version rejection:** a complete, correctly sealed artifact of a
+  **different UI generation** — sidecar verifies, advertised aggregate
+  equals the derived value, every asset self-matches — is **refused** with
+  the reset path, because its derived canonical digest does not equal the
+  daemon's build-pinned digest. Advertised-vs-derived consistency alone
+  never authorizes serving; the derived-vs-pinned comparison is the
+  rejection this record exists to preserve.
 - **Allow-list:** with an extra file (for example `debug.html`) placed in the
   `Dir` source but absent from the manifest, requesting it returns **404** —
   never a `200` with unverified bytes; the manifest-less bare directory
