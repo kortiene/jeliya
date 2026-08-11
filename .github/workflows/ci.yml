@@ -592,7 +592,9 @@ jobs:
         with:
           toolchain: 1.96.0
           # The reproducible browser artifact is built for wasm32; the
-          # renderer stays out of the host-target jobs.
+          # renderer stays out of the host-target jobs. clippy backs the
+          # native-seam lint gate below.
+          components: clippy
           targets: wasm32-unknown-unknown
 
       - name: Cache Cargo
