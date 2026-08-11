@@ -13,16 +13,40 @@
   never becomes success), safe path/URL types that distinguish a browser blob
   from a desktop path from an Android `content://` URI, an allowlisted
   fail-closed external-URL launcher, honest storage durability, and a
-  representable lifecycle-event model. It ships a deterministic in-process fake
-  for every service (`feature = "fake"`) in browser/desktop/Android shapes,
-  scriptable for denied/unavailable/cancelled outcomes; a shared Dioxus
-  component compiled against the fakes links for both native and
-  `wasm32-unknown-unknown` with no per-component `cfg`. No Iroh, WebSocket,
-  native transport, `wry`/`tao`, `openssl-sys`, or Dioxus enters the library
-  graph, and no `serde_json::Value` appears in any public signature. Target
-  implementations (browser web-sys, desktop dialogs, Android SAF/JNI) follow in
-  M3–M5 behind the unchanged facade. The decision is recorded at
-  `docs/dioxus-architecture.md` §"Decision 4".
+  representable lifecycle-event model. `Route` is the canonical product route
+  family (`/rooms`, `/rooms/:roomId/{activity,people,agents,files,pipes}` with
+  typed file/pipe item selection, `/fleet`, `/settings`), parsed fail-closed
+  (malformed percent-escapes and empty interior segments are errors, stricter
+  by design than the web shell's total parse — the router maps `Err` to the
+  Rooms recovery state) and rendered byte-identically to the web shell's
+  `encodeURIComponent` spelling. Lifecycle control intents are lossless *and*
+  bounded: a saturated mailbox run-length-encodes a Back burst and absorbs a
+  restated close/restore into its still-undelivered twin, hard-capping the
+  mailbox at capacity plus a fixed control allowance. File bytes cross the
+  boundary as bytes, matching protocol v2's byte-stream framing: a
+  `StagedBlobReader` (pull, CREDIT-shaped) feeds the `file.share` upload from
+  a staged blob, and `FileSink`s from `export_sink`/`open_sink` accept
+  `file.read` DATA chunks (write-resolution is credit-advance; dropping an
+  uncommitted sink deletes the partial artifact) — the retired
+  v1 local-file HTTP edge is unrepresentable. Clipboard writes are
+  asynchronous (a browser denial is the `writeText` promise rejection), and a
+  default-off `implementation` feature exposes path-free factories so the
+  M3–M5 target crates (separate crates by design) can construct
+  `PickedSource`/`ExportTarget`/`ShareableBlob` without any path crossing the
+  boundary — `jeliya-ui` is scanned to never enable it. It ships a
+  deterministic in-process fake for every service (`feature = "fake"`) in
+  browser/desktop/Android shapes, scriptable for
+  denied/unavailable/cancelled outcomes; scripted picker/dialog/share
+  operations stay open until the test advances them via
+  `FakeController::deliver_next` (outcome bound at call time, cancellation
+  wins races, drop withdraws), so cancellation-vs-reply ordering is explicit,
+  never a race. A shared Dioxus component compiled against the fakes links for
+  both native and `wasm32-unknown-unknown` with no per-component `cfg`. No
+  Iroh, WebSocket, native transport, `wry`/`tao`, `openssl-sys`, or Dioxus
+  enters the library graph, and no `serde_json::Value` appears in any public
+  signature. Target implementations (browser web-sys, desktop dialogs, Android
+  SAF/JNI) follow in M3–M5 behind the unchanged facade. The decision is
+  recorded at `docs/dioxus-architecture.md` §"Decision 4".
 
 - `crates/jeliya-ui` adopts that canonical contract (#174): its former
   provisional local seam (`src/services.rs` and `WebPlatformServices`) is

@@ -29,7 +29,9 @@ bug** — say which in the PR.
   queryable fact, and a non-durable write is reported, not swallowed.
 - **Representable lifecycle events** on a bounded, loss-visible subscription;
   control intents (`BackRequested`, `ProcessRestored`, terminal window events)
-  are never lost or coalesced.
+  are never silently lost: a saturated mailbox run-length-encodes a Back burst
+  (every Back still delivered) and absorbs a restated close/restore into its
+  still-undelivered twin, keeping the mailbox hard-bounded.
 - **A deterministic in-process fake for every service** (behind the `fake`
   feature), shaped as browser / desktop / Android fixtures and scriptable for
   denied / unavailable / cancelled outcomes.

@@ -12,11 +12,9 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use jeliya_api::{FileId, RoomId};
-
 use crate::clipboard::ShareContent;
 use crate::error::CapabilityError;
-use crate::files::ExportTargetKind;
+use crate::files::{ExportTargetKind, FileName, Mime};
 use crate::launcher::SafeExternalUrl;
 use crate::navigation::Route;
 use crate::storage::{PreferenceKey, SecretKey};
@@ -35,10 +33,10 @@ pub enum Capability {
     PickExport,
     /// [`crate::Files::stage_for_share`].
     Stage,
-    /// [`crate::Files::export_local`].
-    ExportLocal,
-    /// [`crate::Files::open_local`].
-    OpenLocal,
+    /// [`crate::Files::export_sink`].
+    ExportSink,
+    /// [`crate::Files::open_sink`].
+    OpenSink,
     /// [`crate::Files::share_content`].
     ShareContent,
     /// [`crate::Share::share`].
@@ -72,21 +70,25 @@ pub enum RecordedEffect {
         /// The chosen target's kind.
         kind: ExportTargetKind,
     },
-    /// A local file was exported to a target.
+    /// An export sink was committed: fetched bytes reached their destination.
+    /// Recorded only on [`crate::FileSink::commit`] — a dropped, uncommitted
+    /// sink records nothing (the partial artifact is deleted, §D12/K2).
     ExportedLocal {
-        /// The exported file's room.
-        room_id: RoomId,
-        /// The exported file's id.
-        file_id: FileId,
         /// The target kind written to.
         kind: ExportTargetKind,
+        /// The committed bytes, in write order.
+        bytes: Vec<u8>,
     },
-    /// A local file was opened with the platform opener.
+    /// An open sink was committed: fetched bytes were handed to the platform
+    /// opener. Same commit-only discipline as
+    /// [`RecordedEffect::ExportedLocal`].
     OpenedLocal {
-        /// The opened file's room.
-        room_id: RoomId,
-        /// The opened file's id.
-        file_id: FileId,
+        /// The display name the artifact was opened under.
+        name: FileName,
+        /// The peer-declared content type — untrusted, an opener hint only.
+        declared: Option<Mime>,
+        /// The committed bytes, in write order.
+        bytes: Vec<u8>,
     },
     /// Content was shared through the OS share sheet.
     Shared {

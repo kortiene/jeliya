@@ -22,6 +22,7 @@
 //! renderer runs.
 
 use dioxus::prelude::*;
+use futures::FutureExt;
 use jeliya_platform::fake;
 use jeliya_platform::{PlatformServices, Route, SafeExternalUrl};
 
@@ -49,16 +50,25 @@ fn CapabilityPanel(services: PlatformServices) -> Element {
     let window_available = services.window().availability().is_available();
     let route = services.navigation().route();
     let route_label = match route {
-        Route::Root => "root".to_string(),
-        Route::Room { room_id } => format!("room {room_id}"),
+        Route::Rooms => "rooms".to_string(),
+        Route::Room { room_id, .. } => format!("room {room_id}"),
+        Route::Fleet => "fleet".to_string(),
         Route::Settings => "settings".to_string(),
     };
 
     // Drive a couple of actions through the seam. Failures are surfaced, never
     // swallowed — a component branches on the outcome, not on the platform.
-    let clipboard_note = match services.clipboard().write_text("diagnostics") {
-        Ok(()) => "copied".to_string(),
-        Err(error) => format!("copy failed: {error}"),
+    // The clipboard write is asynchronous (a browser denial arrives when the
+    // writeText promise rejects); the fake settles on first poll, so a single
+    // poll observes the honest outcome here. A real component awaits it.
+    let clipboard_note = match services
+        .clipboard()
+        .write_text("diagnostics")
+        .now_or_never()
+    {
+        Some(Ok(())) => "copied".to_string(),
+        Some(Err(error)) => format!("copy failed: {error}"),
+        None => "copy pending".to_string(),
     };
     let launch_note = match SafeExternalUrl::parse("https://jeliya.example") {
         Ok(url) => match services.url_launcher().open_external(url) {

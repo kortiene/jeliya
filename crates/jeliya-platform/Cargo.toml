@@ -17,6 +17,13 @@ default = []
 # their behaviour is identical on wasm32 and native (mirroring `jeliya-client`'s
 # mock, whose feature likewise adds nothing).
 fake = []
+# The implementation-facing factory surface (`src/implementation.rs`): path-free
+# constructors and token accessors for `PickedSource`/`ExportTarget`/
+# `ShareableBlob`, which the M3–M5 target crates (separate crates by design)
+# need to implement the capability traits. Default-off and adds NO dependencies;
+# the shared-component graph (`jeliya-ui`) must never enable it — asserted in
+# `tests/boundaries.rs` — so a shared component still cannot forge a blob.
+implementation = []
 # The verification component (`examples/shared_component.rs`) needs Dioxus. This
 # feature pulls it in as an OPTIONAL dependency (never a dev-dependency, which
 # `--all-targets` would build unconditionally) plus the `fake` feature it

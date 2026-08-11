@@ -2,23 +2,38 @@
 //! acceptance criterion and K-invariant, exercising the denied / unavailable /
 //! cancelled paths per capability. Runs under `--features fake`.
 
+use std::task::Poll;
+
 use futures::executor::block_on;
 
-use jeliya_api::{FileId, RoomId};
+use jeliya_api::RoomId;
 use jeliya_platform::fake::{self, Capability, FakeController, RecordedEffect};
 use jeliya_platform::{
     CancelToken, CapabilityError, Durability, ExportTargetKind, FailureKind, FileName,
-    FileObjectKind, LifecycleEvent, LocalFileRef, PlatformServices, PreferenceKey, ProgressSink,
-    Route, SafeExternalUrl, Secret, SecretKey, ShareAttachment, ShareContent, StageProgress,
-    WriteOutcome,
+    FileObjectKind, LifecycleEvent, PlatformServices, PreferenceKey, ProgressSink, RoomDest, Route,
+    SafeExternalUrl, Secret, SecretKey, ShareAttachment, ShareContent, StageProgress, WriteOutcome,
 };
-
-fn local_ref() -> LocalFileRef {
-    LocalFileRef::new(RoomId::new("r-1"), FileId::new("f-1"))
-}
 
 /// A shape constructor, so the shared cases can iterate the three fixtures.
 type Build = fn() -> (PlatformServices, FakeController);
+
+/// Drive a dialog-gated operation to its settled outcome: poll (opening the
+/// dialog), advance the controller whenever it parks — the terse path for
+/// tests that don't assert on in-flight ordering.
+fn settle<F: std::future::Future>(controller: &FakeController, fut: F) -> F::Output {
+    block_on(async move {
+        let mut fut = std::pin::pin!(fut);
+        loop {
+            if let Poll::Ready(out) = futures::poll!(fut.as_mut()) {
+                return out;
+            }
+            assert!(
+                controller.deliver_next(),
+                "operation parked but no dialog is deliverable"
+            );
+        }
+    })
+}
 
 // ---- AC-1 / K4: file object kinds ---------------------------------------
 
@@ -32,7 +47,7 @@ fn each_shape_picks_its_own_object_kind() {
         let (services, controller) = build();
         controller.arm_pick("photo.png", None, b"hello".to_vec());
         let ct = CancelToken::new();
-        let picked = block_on(services.files().pick(&ct))
+        let picked = settle(&controller, services.files().pick(&ct))
             .expect("pick ok")
             .expect("a source was picked");
         assert_eq!(picked.kind(), kind);
@@ -48,7 +63,9 @@ fn staging_a_known_source_produces_a_shareable_blob() {
     let (services, controller) = fake::desktop();
     controller.arm_pick("doc.bin", None, vec![0u8; 20]);
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     let blob = block_on(
         services
             .files()
@@ -64,7 +81,9 @@ fn a_known_oversize_source_fails_before_any_copy() {
     let (services, controller) = fake::desktop();
     controller.arm_pick("big.bin", None, vec![0u8; 200]);
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     let outcome = block_on(services.files().stage_for_share(
         src,
         100,
@@ -88,7 +107,9 @@ fn a_streamed_content_source_is_enforced_mid_copy() {
     // A `content://` source: size unknown up front, enforced during the copy.
     controller.arm_pick("stream.bin", None, vec![7u8; 50]);
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     assert_eq!(src.kind(), FileObjectKind::ContentUri);
     let outcome = block_on(
         services
@@ -110,7 +131,9 @@ fn an_empty_source_fails_file_empty() {
     let (services, controller) = fake::browser();
     controller.arm_pick("empty", None, Vec::new());
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     let outcome = block_on(services.files().stage_for_share(
         src,
         100,
@@ -130,7 +153,9 @@ fn a_cancel_fired_mid_copy_yields_cancelled_and_no_partial() {
     let (services, controller) = fake::android();
     controller.arm_pick("stream.bin", None, vec![1u8; 40]);
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     // The progress sink fires the cancel after the first chunk — a
     // deterministic mid-copy cancel with no wall clock.
     let ct_for_sink = ct.clone();
@@ -159,28 +184,96 @@ fn a_pre_fired_cancel_never_becomes_ok() {
         block_on(services.files().pick(&ct)),
         Err(CapabilityError::Cancelled)
     ));
+    assert!(
+        controller.open_dialogs().is_empty(),
+        "a pre-fired token never opens a dialog"
+    );
 }
 
-// ---- AC-1: export / open / share resolve the token natively (K5) --------
+// ---- AC-1: export / open route fetched bytes through sinks (v2) ---------
 
 #[test]
-fn open_and_export_local_never_leak_the_daemon_token() {
+fn export_and_open_sinks_commit_the_written_bytes() {
     let (services, controller) = fake::desktop();
     let ct = CancelToken::new();
     controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
-    let target = block_on(
+    let target = settle(
+        &controller,
         services
             .files()
             .pick_export_target(FileName::new("out.bin"), &ct),
     )
     .unwrap()
     .unwrap();
-    block_on(services.files().export_local(local_ref(), target, &ct)).unwrap();
-    block_on(services.files().open_local(local_ref())).unwrap();
-    // The internal token string never appears in any recorded effect.
-    let dump = format!("{:?}", controller.effects());
-    assert!(!dump.contains("fake-native-token"), "token leaked: {dump}");
-    assert!(dump.contains("ExportedLocal") && dump.contains("OpenedLocal"));
+    let mut sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+    block_on(sink.write(vec![1, 2])).unwrap();
+    block_on(sink.write(vec![3])).unwrap();
+    block_on(sink.commit()).unwrap();
+
+    let mut open = block_on(
+        services
+            .files()
+            .open_sink(FileName::new("view.bin"), None, &ct),
+    )
+    .unwrap();
+    block_on(open.write(vec![9])).unwrap();
+    block_on(open.commit()).unwrap();
+
+    let effects = controller.effects();
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        RecordedEffect::ExportedLocal { kind: ExportTargetKind::NativePath, bytes } if bytes == &[1, 2, 3]
+    )));
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        RecordedEffect::OpenedLocal { bytes, .. } if bytes == &[9]
+    )));
+}
+
+#[test]
+fn dropping_an_uncommitted_export_sink_leaves_no_artifact() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let target = settle(
+        &controller,
+        services
+            .files()
+            .pick_export_target(FileName::new("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    {
+        let mut sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+        block_on(sink.write(vec![1, 2])).unwrap();
+        block_on(sink.write(vec![3, 4])).unwrap();
+        // Dropped without commit: the partial artifact fails closed.
+    }
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::ExportedLocal { .. })),
+        "a dropped, uncommitted sink records no export"
+    );
+    // A fresh target + sink with write+commit records the full sequence.
+    controller.arm_export_target(ExportTargetKind::NativePath, "out2.bin");
+    let target = settle(
+        &controller,
+        services
+            .files()
+            .pick_export_target(FileName::new("out2.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    let mut sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+    block_on(sink.write(vec![5, 6])).unwrap();
+    block_on(sink.write(vec![7])).unwrap();
+    block_on(sink.commit()).unwrap();
+    assert!(controller.effects().iter().any(|e| matches!(
+        e,
+        RecordedEffect::ExportedLocal { bytes, .. } if bytes == &[5, 6, 7]
+    )));
 }
 
 #[test]
@@ -188,7 +281,9 @@ fn sharing_a_staged_blob_records_the_share() {
     let (services, controller) = fake::android();
     controller.arm_pick("pic", None, vec![9u8; 10]);
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     let blob = block_on(
         services
             .files()
@@ -196,11 +291,68 @@ fn sharing_a_staged_blob_records_the_share() {
     )
     .unwrap();
     let content = ShareContent::attachment(ShareAttachment::Blob(blob));
-    block_on(services.files().share_content(content, &ct)).unwrap();
+    settle(&controller, services.files().share_content(content, &ct)).unwrap();
     assert!(controller
         .effects()
         .iter()
         .any(|e| matches!(e, RecordedEffect::Shared { .. })));
+}
+
+// ---- v2 upload plumbing: staged bytes are pullable under a bound ---------
+
+#[test]
+fn read_staged_pulls_the_staged_bytes_boundedly() {
+    let (services, controller) = fake::desktop();
+    controller.arm_pick("doc.bin", None, (0u8..20).collect());
+    let ct = CancelToken::new();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
+    let blob = block_on(
+        services
+            .files()
+            .stage_for_share(src, 1000, ProgressSink::discard(), &ct),
+    )
+    .unwrap();
+    let mut reader = block_on(services.files().read_staged(&blob)).unwrap();
+    assert_eq!(reader.size(), blob.size());
+    let mut pulled = Vec::new();
+    while let Some(chunk) = block_on(reader.next_chunk(3)).unwrap() {
+        assert!(chunk.len() <= 3, "every pull respects the caller's bound");
+        pulled.extend_from_slice(&chunk);
+    }
+    let staged = controller.staged();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(
+        pulled, staged[0].1,
+        "the pulled concatenation byte-equals the staged bytes"
+    );
+}
+
+#[test]
+fn read_staged_fails_closed_on_a_blob_this_service_never_minted() {
+    // Stage a blob on a SECOND fake; the first service must refuse to read
+    // it — never an empty Ok reader.
+    let (foreign, foreign_controller) = fake::desktop();
+    foreign_controller.arm_pick("doc", None, b"foreign".to_vec());
+    let ct = CancelToken::new();
+    let src = settle(&foreign_controller, foreign.files().pick(&ct))
+        .unwrap()
+        .unwrap();
+    let foreign_blob = block_on(foreign.files().stage_for_share(
+        src,
+        1000,
+        ProgressSink::discard(),
+        &ct,
+    ))
+    .unwrap();
+
+    let (services, _controller) = fake::desktop();
+    assert_eq!(
+        block_on(services.files().read_staged(&foreign_blob)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "an unminted blob token fails closed"
+    );
 }
 
 // ---- AC-2 / K6: preferences, durability honesty, custody ----------------
@@ -304,7 +456,9 @@ fn lifecycle_intents_are_representable_and_control_survives_overflow() {
         },
         LifecycleEvent::ProcessRestored,
         LifecycleEvent::BackRequested,
-        LifecycleEvent::NavigationRequested { route: Route::Root },
+        LifecycleEvent::NavigationRequested {
+            route: Route::Rooms,
+        },
         LifecycleEvent::Window(WindowEvent::CloseRequested),
     ] {
         controller.emit_lifecycle(event);
@@ -374,17 +528,20 @@ fn the_three_did_not_happen_reasons_are_distinct() {
     let (services, controller) = fake::browser();
     let ct = CancelToken::new();
 
-    // Denied: the platform said no.
+    // Denied: the platform said no. The denial arrives through the resolved
+    // future — a clipboard write settles asynchronously, never as a
+    // pre-settled success.
     controller.force_error(Capability::Clipboard, CapabilityError::Denied);
     assert_eq!(
-        services.clipboard().write_text("x"),
-        Err(CapabilityError::Denied)
+        block_on(services.clipboard().write_text("x")),
+        Err(CapabilityError::Denied),
+        "clipboard denial must arrive through the resolved future"
     );
 
     // Cancelled: the user dismissed the picker.
     controller.force_error(Capability::Pick, CapabilityError::Cancelled);
     assert!(matches!(
-        block_on(services.files().pick(&ct)),
+        settle(&controller, services.files().pick(&ct)),
         Err(CapabilityError::Cancelled)
     ));
 
@@ -397,9 +554,10 @@ fn the_three_did_not_happen_reasons_are_distinct() {
 #[test]
 fn navigation_updates_the_single_route_state() {
     let (services, controller) = fake::desktop();
-    assert_eq!(services.navigation().route(), Route::Root);
+    assert_eq!(services.navigation().route(), Route::Rooms);
     let room = Route::Room {
         room_id: RoomId::new("r-9"),
+        dest: RoomDest::Activity,
     };
     services.navigation().navigate(room.clone());
     assert_eq!(services.navigation().route(), room);
@@ -495,7 +653,7 @@ fn secret_store_durability_matches_shape() {
 #[test]
 fn clipboard_happy_path_is_recorded() {
     let (services, controller) = fake::desktop();
-    services.clipboard().write_text("copy me").unwrap();
+    block_on(services.clipboard().write_text("copy me")).unwrap();
     assert_eq!(
         controller.last_clipboard().as_deref(),
         Some("copy me"),
@@ -559,7 +717,8 @@ fn already_consumed_export_target_is_rejected_on_second_use() {
     let (services, controller) = fake::desktop();
     let ct = CancelToken::new();
     controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
-    let target = block_on(
+    let target = settle(
+        &controller,
         services
             .files()
             .pick_export_target(FileName::new("out.bin"), &ct),
@@ -567,21 +726,18 @@ fn already_consumed_export_target_is_rejected_on_second_use() {
     .unwrap()
     .unwrap();
 
-    // Clone the target before the first export so we can try again.
+    // Clone the target before the first sink so we can try again.
     let target_clone = target.clone();
 
-    // First export consumes the token: ok.
-    block_on(services.files().export_local(local_ref(), target, &ct)).unwrap();
+    // First sink consumes the token: ok.
+    let sink = block_on(services.files().export_sink(target, &ct)).unwrap();
+    block_on(sink.commit()).unwrap();
 
-    // Second export with the same (cloned) target — token is gone: Io.
-    let second = block_on(
-        services
-            .files()
-            .export_local(local_ref(), target_clone, &ct),
-    );
+    // Second sink with the same (cloned) target — token is gone: Io.
+    let second = block_on(services.files().export_sink(target_clone, &ct)).err();
     assert_eq!(
         second,
-        Err(CapabilityError::Failed(FailureKind::Io)),
+        Some(CapabilityError::Failed(FailureKind::Io)),
         "a re-used export target must fail"
     );
 }
@@ -642,9 +798,9 @@ fn all_background_phases_are_representable() {
 
 #[test]
 fn pick_with_nothing_armed_returns_ok_none() {
-    let (services, _) = fake::browser();
+    let (services, controller) = fake::browser();
     let ct = CancelToken::new();
-    let result = block_on(services.files().pick(&ct));
+    let result = settle(&controller, services.files().pick(&ct));
     // PickedSource does not implement PartialEq so we match on the shape.
     assert!(
         matches!(result, Ok(None)),
@@ -654,9 +810,10 @@ fn pick_with_nothing_armed_returns_ok_none() {
 
 #[test]
 fn pick_export_target_with_nothing_armed_returns_ok_none() {
-    let (services, _) = fake::desktop();
+    let (services, controller) = fake::desktop();
     let ct = CancelToken::new();
-    let result = block_on(
+    let result = settle(
+        &controller,
         services
             .files()
             .pick_export_target(FileName::new("file.bin"), &ct),
@@ -678,14 +835,14 @@ fn multiple_scripted_errors_drain_in_queue_order() {
     controller.force_error(Capability::Pick, CapabilityError::Denied);
     controller.force_error(Capability::Pick, CapabilityError::Cancelled);
 
-    let first = block_on(services.files().pick(&ct));
+    let first = settle(&controller, services.files().pick(&ct));
     assert!(matches!(first, Err(CapabilityError::Denied)));
 
-    let second = block_on(services.files().pick(&ct));
+    let second = settle(&controller, services.files().pick(&ct));
     assert!(matches!(second, Err(CapabilityError::Cancelled)));
 
     // Third call — queue exhausted — falls through to the normal (unarmed) path.
-    let third = block_on(services.files().pick(&ct));
+    let third = settle(&controller, services.files().pick(&ct));
     assert!(matches!(third, Ok(None)));
 }
 
@@ -714,7 +871,9 @@ fn picked_source_mime_is_accessible_when_set() {
         b"jpg bytes".to_vec(),
     );
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     assert_eq!(src.mime().map(|m| m.as_str()), Some("image/jpeg"));
 }
 
@@ -723,6 +882,208 @@ fn picked_source_mime_is_none_when_not_set() {
     let (services, controller) = fake::browser();
     controller.arm_pick("no-mime.bin", None, b"data".to_vec());
     let ct = CancelToken::new();
-    let src = block_on(services.files().pick(&ct)).unwrap().unwrap();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
     assert!(src.mime().is_none());
+}
+
+// ---- §6 Determinism: dialogs settle only on controller advancement ------
+
+#[test]
+fn an_armed_pick_stays_open_until_the_controller_delivers() {
+    let (services, controller) = fake::desktop();
+    controller.arm_pick("doc", None, b"data".to_vec());
+    let ct = CancelToken::new();
+    block_on(async {
+        let mut fut = std::pin::pin!(services.files().pick(&ct));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "spec §6: a scripted picker resolves only when the test advances it"
+        );
+        assert!(
+            controller.deliver_next(),
+            "one dialog is open and deliverable"
+        );
+        let picked = fut.await.expect("pick ok").expect("a source was picked");
+        assert_eq!(picked.display_name().as_str(), "doc");
+    });
+    assert!(!controller.deliver_next(), "nothing left to deliver");
+}
+
+#[test]
+fn an_armed_export_pick_stays_open_until_the_controller_delivers() {
+    let (services, controller) = fake::desktop();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let ct = CancelToken::new();
+    block_on(async {
+        let mut fut = std::pin::pin!(services
+            .files()
+            .pick_export_target(FileName::new("out.bin"), &ct));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "the save dialog stays open until advanced"
+        );
+        assert!(controller.deliver_next());
+        assert!(fut.await.expect("pick ok").is_some());
+    });
+}
+
+#[test]
+fn a_share_sheet_stays_open_until_the_controller_delivers() {
+    let (services, controller) = fake::android();
+    controller.arm_pick("pic", None, vec![9u8; 10]);
+    let ct = CancelToken::new();
+    let src = settle(&controller, services.files().pick(&ct))
+        .unwrap()
+        .unwrap();
+    let blob = block_on(
+        services
+            .files()
+            .stage_for_share(src, 1000, ProgressSink::discard(), &ct),
+    )
+    .unwrap();
+    block_on(async {
+        let content = ShareContent::attachment(ShareAttachment::Blob(blob));
+        let mut fut = std::pin::pin!(services.files().share_content(content, &ct));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "the share sheet stays open until advanced"
+        );
+        assert!(controller.deliver_next());
+        fut.await.expect("share ok");
+    });
+}
+
+#[test]
+fn a_cancel_while_the_picker_is_open_beats_a_later_delivery() {
+    let (services, controller) = fake::desktop();
+    controller.arm_pick("doc", None, b"data".to_vec());
+    let ct = CancelToken::new();
+    block_on(async {
+        let mut fut = std::pin::pin!(services.files().pick(&ct));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "the dialog is open"
+        );
+        ct.cancel();
+        controller.deliver_next();
+        assert!(
+            matches!(fut.await, Err(CapabilityError::Cancelled)),
+            "cancellation wins the race"
+        );
+    });
+    assert!(
+        !controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::Picked { .. })),
+        "a cancelled dialog records no pick"
+    );
+}
+
+#[test]
+fn dropping_an_open_dialog_withdraws_it() {
+    let (services, controller) = fake::desktop();
+    controller.arm_pick("doc", None, b"data".to_vec());
+    let ct = CancelToken::new();
+    block_on(async {
+        let mut fut = std::pin::pin!(services.files().pick(&ct));
+        assert!(futures::poll!(fut.as_mut()).is_pending());
+        assert_eq!(controller.open_dialogs().len(), 1);
+    }); // future dropped here
+    assert!(
+        controller.open_dialogs().is_empty(),
+        "a dropped dialog future withdraws its dialog"
+    );
+    assert!(
+        !controller.deliver_next(),
+        "nothing is deliverable after the drop"
+    );
+    assert!(!controller
+        .effects()
+        .iter()
+        .any(|e| matches!(e, RecordedEffect::Picked { .. })));
+}
+
+#[test]
+fn outcomes_bind_at_call_time_and_deliver_in_call_order() {
+    let (services, controller) = fake::browser();
+    let ct = CancelToken::new();
+    controller.force_error(Capability::Pick, CapabilityError::Denied);
+    controller.arm_pick("doc", None, b"x".to_vec());
+    block_on(async {
+        let mut first = std::pin::pin!(services.files().pick(&ct));
+        let mut second = std::pin::pin!(services.files().pick(&ct));
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        assert!(controller.deliver_next());
+        assert!(controller.deliver_next());
+        // Poll in REVERSE order: each outcome stays with its call.
+        assert!(matches!(
+            futures::poll!(second.as_mut()),
+            Poll::Ready(Ok(Some(_)))
+        ));
+        assert!(matches!(
+            futures::poll!(first.as_mut()),
+            Poll::Ready(Err(CapabilityError::Denied))
+        ));
+    });
+}
+
+#[test]
+fn pending_dialog_resolves_when_a_dialog_opens_and_unregisters_on_drop() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    block_on(async {
+        let mut waiter = std::pin::pin!(controller.pending_dialog());
+        assert!(
+            futures::poll!(waiter.as_mut()).is_pending(),
+            "no dialog open yet"
+        );
+        controller.arm_pick("doc", None, b"d".to_vec());
+        let mut fut = std::pin::pin!(services.files().pick(&ct));
+        assert!(futures::poll!(fut.as_mut()).is_pending());
+        assert!(
+            futures::poll!(waiter.as_mut()).is_ready(),
+            "a dialog is now open"
+        );
+        controller.deliver_next();
+        assert!(matches!(fut.await, Ok(Some(_))));
+    });
+    // A dropped waiter leaves no parked waker behind.
+    block_on(async {
+        let mut waiter = std::pin::pin!(controller.pending_dialog());
+        assert!(futures::poll!(waiter.as_mut()).is_pending());
+    });
+    assert!(!controller.deliver_next());
+}
+
+// ---- K4: the implementation factory cannot bypass the minted-token gate --
+
+/// Compiled only when BOTH `fake` and `implementation` are on (the factory
+/// surface plus a service to aim it at): a blob forged through the factory
+/// with a token this service never minted fails closed at resolution —
+/// never `Ok`, and never an open share sheet.
+#[cfg(feature = "implementation")]
+#[test]
+fn a_factory_blob_with_an_unminted_token_fails_closed() {
+    use jeliya_platform::{BlobToken, ShareableBlob};
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    let forged = ShareableBlob::for_implementation(BlobToken::from_raw(7777), 10);
+    let content = ShareContent::attachment(ShareAttachment::Blob(forged.clone()));
+    assert_eq!(
+        block_on(services.files().share_content(content, &ct)),
+        Err(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a forged blob never opens the share sheet"
+    );
+    assert!(controller.open_dialogs().is_empty());
+    assert!(
+        matches!(
+            block_on(services.files().read_staged(&forged)).err(),
+            Some(CapabilityError::Failed(FailureKind::Unreadable))
+        ),
+        "a forged blob is unreadable too"
+    );
 }

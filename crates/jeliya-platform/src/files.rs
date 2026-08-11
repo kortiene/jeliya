@@ -13,14 +13,28 @@
 //!   neither spelling. The service that produced the source keeps the internals
 //!   in its own table, keyed by the token.
 //! - [`ShareableBlob`] — a daemon-shareable handle produced **only** by
-//!   [`Files::stage_for_share`]. A shared component cannot construct one, so the
-//!   daemon's anti-exfiltration invariant is preserved at the type level (the
-//!   UI cannot forge a daemon path).
+//!   [`Files::stage_for_share`]. A shared component cannot construct one under
+//!   default features, so the daemon's anti-exfiltration invariant is
+//!   preserved at the type level (the UI cannot forge a daemon path). The
+//!   M3–M5 target crates construct these through the path-free factories
+//!   behind the default-off `implementation` feature; a token the producing
+//!   service did not mint fails closed at resolution.
 //! - [`ExportTarget`] — a *destination* for a fetched file (a place to write),
 //!   distinct from a [`PickedSource`] (a place to read).
-//! - [`LocalFileRef`] — a typed reference to a daemon-fetched local copy,
-//!   `(RoomId, FileId)`. The service resolves it to a token-carrying URL
-//!   internally; components never see the URL or the token (§K5).
+//! - [`LocalFileRef`] — a typed reference to a room file, `(RoomId, FileId)` —
+//!   the identifier pair the UI feeds to the client seam's `file.read` and the
+//!   only file identity [`crate::ShareAttachment::Local`] carries. In protocol
+//!   v2 file bytes travel the byte-stream framing (`docs/protocol-v2.md`
+//!   §file.read), not an HTTP URL, so no token-carrying URL exists to resolve;
+//!   the daemon-token half of §K5 is enforced by
+//!   [`crate::storage::SecretStore`] custody alone.
+//!
+//! Bytes cross this boundary through two small object-safe traits, never
+//! through paths: [`StagedBlobReader`] (the **pull** side — the v2 upload
+//! stream pulls exactly what CREDIT permits from a staged blob) and
+//! [`FileSink`] (the **push** side — the UI pumps `file.read` DATA chunks into
+//! a platform destination). Only bytes and identifiers cross; every spelling
+//! stays inside the producing service.
 
 use jeliya_api::{FileId, RoomId};
 
@@ -239,10 +253,13 @@ impl ExportTarget {
 /// A daemon-shareable handle, produced **only** by [`Files::stage_for_share`].
 ///
 /// It is the sole value the daemon's `file.share` operation accepts. A shared
-/// component cannot construct one (the constructor is crate-private), so the
+/// component cannot construct one (the constructor is crate-private under
+/// default features; target implementation crates use the path-free
+/// `for_implementation` factory behind the `implementation` feature), so the
 /// daemon's anti-exfiltration invariant — `file.share` refuses any path outside
 /// the daemon data dir — is preserved at the type level: the UI cannot forge a
-/// daemon path, because it holds only this opaque token.
+/// daemon path, because it holds only this opaque token, and a token the
+/// producing service did not mint fails closed at resolution.
 #[derive(Clone)]
 pub struct ShareableBlob {
     token: BlobToken,
@@ -280,13 +297,15 @@ impl std::fmt::Debug for ShareableBlob {
     }
 }
 
-/// A typed reference to a daemon-fetched local copy of a file, `(RoomId,
-/// FileId)`.
+/// A typed reference to a room file, `(RoomId, FileId)`.
 ///
-/// [`Files::open_local`] and [`Files::export_local`] take this; the service
-/// resolves it to the token-carrying `GET /api/files/local` URL internally, so
-/// components never see the URL or the daemon token (§K5). This is why the
-/// files capability takes a typed reference, not a URL string.
+/// This is the identifier pair the UI hands to the client seam's `file.read`
+/// operation and the only file identity [`crate::ShareAttachment::Local`]
+/// carries. It is deliberately **not** a URL: in protocol v2 the retired
+/// `GET /api/files/local` HTTP edge does not exist — file bytes travel the
+/// byte-stream framing, pumped into a [`FileSink`] from
+/// [`Files::export_sink`] / [`Files::open_sink`] — so there is no
+/// token-carrying URL to resolve and no daemon token near this type (§K5).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LocalFileRef {
     room_id: RoomId,
@@ -358,8 +377,60 @@ impl std::fmt::Debug for ProgressSink {
     }
 }
 
+/// A bounded, pull-shaped reader over a staged blob's bytes, produced by
+/// [`Files::read_staged`] — the platform half of the v2 `file.share` upload.
+///
+/// **Pull-shaped on purpose:** the v2 upload stream sends Binary DATA frames
+/// only under receiver-driven CREDIT (`docs/protocol-v2.md` §Byte-stream
+/// framing), so the uploader pulls one bounded chunk per DATA frame it is
+/// permitted to send — the reader never pushes bytes the stream has no credit
+/// for. The trait is object-safe and its future is the crate's `!Send`
+/// [`BoxFuture`] (browser platform handles are not `Send`); the client-side
+/// upload input that consumes this must therefore accept `!Send` sources.
+pub trait StagedBlobReader {
+    /// Total bytes in the staged blob. Equals the blob's staged size and
+    /// feeds the `file.share` request's `declared_bytes`.
+    fn size(&self) -> u64;
+
+    /// The next chunk, at most `max_len` bytes. `Ok(None)` is clean EOF;
+    /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable) if the
+    /// staged bytes vanished mid-read (the staged file was reaped).
+    fn next_chunk(
+        &mut self,
+        max_len: usize,
+    ) -> BoxFuture<'_, Result<Option<Vec<u8>>, CapabilityError>>;
+}
+
+/// A push-shaped byte destination for a fetched file, produced by
+/// [`Files::export_sink`] / [`Files::open_sink`] — the platform half of the
+/// v2 `file.read` download.
+///
+/// The UI drives the client seam's `file.read` and pumps each DATA chunk in;
+/// **the `write` future resolving is the platform's acceptance signal**: the
+/// caller advances its `file.read` CREDIT only after the chunk was accepted
+/// (protocol rule: the receiver advances credit only as its sink accepts,
+/// `docs/protocol-v2.md` §Byte-stream framing), so a slow disk or a stalled
+/// SAF document naturally throttles the stream instead of buffering it.
+///
+/// **Drop is abort (§D12/K2):** dropping an uncommitted sink aborts the write
+/// and deletes the partial artifact — the same cancel-cleans-up honesty
+/// [`Files::stage_for_share`] has. Only [`FileSink::commit`] makes the bytes
+/// real.
+pub trait FileSink {
+    /// Append one chunk. Resolution is acceptance — advance stream credit
+    /// only after it resolves `Ok`.
+    fn write(&mut self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), CapabilityError>>;
+
+    /// Finalize the artifact (complete the browser download, close the SAF
+    /// document, publish the temp file). For a sink from
+    /// [`Files::open_sink`], commit also invokes the platform opener on the
+    /// finished artifact.
+    fn commit(self: Box<Self>) -> BoxFuture<'static, Result<(), CapabilityError>>;
+}
+
 /// The files capability: pick a source, stage it for the daemon to share,
-/// export or open a daemon-fetched local copy, and share content.
+/// read staged bytes for upload, sink fetched bytes to an export target or
+/// the platform opener, and share content.
 ///
 /// Object-safe: every asynchronous method returns a [`BoxFuture`], so the
 /// erased implementation stays behind `Arc<dyn Files>`.
@@ -395,6 +466,18 @@ pub trait Files {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<ShareableBlob, CapabilityError>>;
 
+    /// Open a bounded [`StagedBlobReader`] over a staged blob's bytes, for
+    /// the v2 `file.share` upload to pull under CREDIT.
+    ///
+    /// Token resolution stays inside the service: a blob this service did not
+    /// stage fails
+    /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable) — never an
+    /// empty `Ok` reader. Paths never cross; only bytes do.
+    fn read_staged(
+        &self,
+        blob: &ShareableBlob,
+    ) -> BoxFuture<'_, Result<Box<dyn StagedBlobReader>, CapabilityError>>;
+
     /// Open the platform save dialog for a fetched file, suggesting
     /// `suggested`. `Ok(None)` / `Cancelled` follow the same distinction as
     /// [`Files::pick`].
@@ -404,20 +487,28 @@ pub trait Files {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Option<ExportTarget>, CapabilityError>>;
 
-    /// Export a daemon-fetched local copy to a chosen [`ExportTarget`]. The
-    /// service resolves the [`LocalFileRef`] to its token-carrying URL
-    /// internally (§K5).
-    fn export_local(
+    /// Open a [`FileSink`] writing to a chosen [`ExportTarget`]. The UI
+    /// drives the client seam's `file.read` and pumps the DATA chunks in;
+    /// this method consumes the target (a re-used target fails closed). The
+    /// destination spelling stays inside the service — the sink is bytes-only.
+    fn export_sink(
         &self,
-        file: LocalFileRef,
         to: ExportTarget,
         ct: &CancelToken,
-    ) -> BoxFuture<'_, Result<(), CapabilityError>>;
+    ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>>;
 
-    /// Open a daemon-fetched local copy with the platform opener (a tab, the OS
-    /// viewer). The service resolves the reference to its token-carrying URL
-    /// internally (§K5).
-    fn open_local(&self, file: LocalFileRef) -> BoxFuture<'_, Result<(), CapabilityError>>;
+    /// Open a [`FileSink`] whose [`FileSink::commit`] hands the finished
+    /// artifact to the platform opener (an object-URL tab on the browser, the
+    /// OS viewer on desktop). `declared` is the peer-declared content type —
+    /// an **untrusted opener hint, never a trust decision**
+    /// (`docs/protocol-v2.md` §file.read: never render inline on that
+    /// declaration).
+    fn open_sink(
+        &self,
+        name: FileName,
+        declared: Option<Mime>,
+        ct: &CancelToken,
+    ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>>;
 
     /// Share content through the platform (the OS share sheet / a file share).
     /// Dismissing the sheet is [`CapabilityError::Cancelled`], not `Ok`.

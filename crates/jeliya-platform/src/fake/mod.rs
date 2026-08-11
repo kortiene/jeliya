@@ -3,12 +3,14 @@
 //!
 //! One [`FakePlatform`] implements every capability, deterministically: **no
 //! wall clock, no RNG, no reliance on task-scheduling order**. A scripted
-//! picker / dialog / share resolves to the outcome the test armed on its
-//! [`FakeController`]; nothing depends on when a task is polled. Three
-//! target-shaped constructors — [`browser`], [`desktop`], [`android`] — carry
-//! each target's structural facts (durability, availability, source kind,
-//! streamed staging) so a shared component compiles and behaves against all
-//! three without a device.
+//! picker / dialog / share stays **open** until the test advances it via
+//! [`FakeController::deliver_next`] — the controller-driven settlement
+//! discipline of `jeliya-client`'s mock — so cancellation-vs-reply ordering is
+//! explicit, never a race; the outcome is bound at call time, so release order
+//! can never re-pair outcomes with calls. Three target-shaped constructors —
+//! [`browser`], [`desktop`], [`android`] — carry each target's structural
+//! facts (durability, availability, source kind, streamed staging) so a shared
+//! component compiles and behaves against all three without a device.
 //!
 //! The fakes add no dependencies: everything here is `std` plus the crate's own
 //! types, so the behaviour is identical on `wasm32` and native — the discipline
@@ -18,15 +20,18 @@ pub mod recorder;
 pub mod shapes;
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
-use crate::cancel::CancelToken;
+use crate::cancel::{CancelToken, Cancelled};
 use crate::clipboard::{Clipboard, Share, ShareAttachment, ShareContent};
 use crate::error::{Availability, CapabilityError, FailureKind};
 use crate::files::{
-    ExportTarget, ExportTargetKind, FileName, FileObjectKind, Files, LocalFileRef, Mime,
-    PickedSource, ProgressSink, ShareableBlob, SourceToken, StageProgress,
+    ExportTarget, ExportTargetKind, FileName, FileObjectKind, FileSink, Files, Mime, PickedSource,
+    ProgressSink, ShareableBlob, SourceToken, StageProgress, StagedBlobReader,
 };
 use crate::launcher::{SafeExternalUrl, UrlLauncher};
 use crate::lifecycle::{Lifecycle, LifecycleBus, LifecycleEvent, LifecycleSubscription};
@@ -66,20 +71,19 @@ struct FakeInner {
     route: Mutex<Route>,
     lifecycle: LifecycleBus,
     sources: Mutex<HashMap<u64, SourceBody>>,
-    /// Export-target tokens this service minted → their kind. `export_local`
+    /// Export-target tokens this service minted → their kind. `export_sink`
     /// resolves the target through here, so a forged [`ExportTarget`] fails.
     export_targets: Mutex<HashMap<u64, ExportTargetKind>>,
-    /// Staged-blob tokens this service minted → their size. `share` resolves a
-    /// [`ShareableBlob`] through here, so a blob the service did not stage
-    /// cannot be shared (the anti-forgery half of §K4).
-    staged_blobs: Mutex<HashMap<u64, u64>>,
+    /// Staged-blob tokens this service minted → the staged bytes (size is the
+    /// length). `read_staged` and `share` resolve a [`ShareableBlob`] through
+    /// here, so a blob the service did not stage can neither be read nor
+    /// shared (the anti-forgery half of §K4).
+    staged_blobs: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
     pending_pick: Mutex<Option<PickedSource>>,
     pending_export: Mutex<Option<ExportTarget>>,
+    /// The open scripted dialogs awaiting controller advancement (§6).
+    dialogs: Mutex<DialogQueue>,
     next_id: AtomicU64,
-    /// The internal daemon/session token. It is used only to resolve local-file
-    /// URLs inside the service and is **never** exposed on any public type
-    /// (§K5).
-    token: Secret,
 }
 
 impl FakeInner {
@@ -90,15 +94,15 @@ impl FakeInner {
             script: Mutex::new(Script::default()),
             prefs: Mutex::new(BTreeMap::new()),
             secrets: Mutex::new(BTreeMap::new()),
-            route: Mutex::new(Route::Root),
+            route: Mutex::new(Route::Rooms),
             lifecycle: LifecycleBus::new(),
             sources: Mutex::new(HashMap::new()),
             export_targets: Mutex::new(HashMap::new()),
             staged_blobs: Mutex::new(HashMap::new()),
             pending_pick: Mutex::new(None),
             pending_export: Mutex::new(None),
+            dialogs: Mutex::new(DialogQueue::default()),
             next_id: AtomicU64::new(1),
-            token: Secret::new("fake-native-token"),
         }
     }
 
@@ -134,10 +138,6 @@ impl FakeInner {
         }
     }
 
-    /// Resolve a [`LocalFileRef`] to its token-carrying URL **inside the
-    /// service**. The returned string is used to drive the platform opener and
-    /// is never recorded, returned, or placed on any component-facing type — so
-    /// the daemon token stays native (§K5).
     /// Whether a [`ShareContent`]'s blob attachment (if any) was staged by this
     /// service. A blob this service never minted is not shareable — the
     /// anti-forgery half of §K4, checked against the minted-token registry.
@@ -152,13 +152,151 @@ impl FakeInner {
         }
     }
 
-    fn resolve_local_url(&self, file: &LocalFileRef) -> String {
-        format!(
-            "/api/files/local?room={}&file={}&token={}",
-            file.room_id(),
-            file.file_id(),
-            self.token.expose()
-        )
+    /// Register an open dialog (ticket order == call order) and return the
+    /// parked turn its operation awaits. The caller bound its outcome BEFORE
+    /// registering — the mock's dispatch discipline — so release order can
+    /// never re-pair outcomes with calls.
+    fn open_dialog(self: &Arc<Self>, capability: Capability, ct: &CancelToken) -> DialogTurn {
+        let ticket = self
+            .dialogs
+            .lock()
+            .expect("dialogs poisoned")
+            .open(capability);
+        DialogTurn {
+            inner: Arc::clone(self),
+            ticket,
+            done: false,
+            cancelled: ct.cancelled(),
+        }
+    }
+}
+
+/// The open scripted dialogs, in call order, plus parked
+/// [`FakeController::pending_dialog`] waiters — the fake's analogue of the
+/// mock's `pending`/`pending_wakers` pair.
+#[derive(Default)]
+struct DialogQueue {
+    open: Vec<OpenDialog>,
+    /// Keyed per waiter: a re-poll replaces its slot, a dropped waiter
+    /// unregisters.
+    waiters: HashMap<u64, Waker>,
+    next_ticket: u64,
+    next_waiter: u64,
+}
+
+/// One scripted dialog awaiting controller advancement.
+struct OpenDialog {
+    ticket: u64,
+    capability: Capability,
+    /// Set by [`DialogQueue::deliver_next`]; consumed by the operation's next
+    /// poll.
+    released: bool,
+    /// The operation's parked waker, when it has polled and found itself
+    /// unreleased.
+    waker: Option<Waker>,
+}
+
+impl DialogQueue {
+    fn open(&mut self, capability: Capability) -> u64 {
+        let ticket = self.next_ticket;
+        self.next_ticket += 1;
+        self.open.push(OpenDialog {
+            ticket,
+            capability,
+            released: false,
+            waker: None,
+        });
+        // A parked pending_dialog() waiter resumes BECAUSE a dialog opened.
+        for (_, waker) in self.waiters.drain() {
+            waker.wake();
+        }
+        ticket
+    }
+
+    fn withdraw(&mut self, ticket: u64) {
+        self.open.retain(|dialog| dialog.ticket != ticket);
+    }
+
+    fn take_released(&mut self, ticket: u64) -> bool {
+        match self
+            .open
+            .iter()
+            .position(|dialog| dialog.ticket == ticket && dialog.released)
+        {
+            Some(index) => {
+                self.open.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn park(&mut self, ticket: u64, waker: Waker) {
+        if let Some(dialog) = self.open.iter_mut().find(|dialog| dialog.ticket == ticket) {
+            dialog.waker = Some(waker);
+        }
+    }
+
+    fn deliver_next(&mut self) -> bool {
+        match self.open.iter_mut().find(|dialog| !dialog.released) {
+            Some(dialog) => {
+                dialog.released = true;
+                if let Some(waker) = dialog.waker.take() {
+                    waker.wake();
+                }
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// The parked half of one open scripted dialog: `Ok(())` when the controller
+/// releases it ([`FakeController::deliver_next`]), `Err(Cancelled)` when the
+/// token fires first. Dropping it withdraws the dialog — drop-is-abort
+/// (§D12/K2).
+struct DialogTurn {
+    inner: Arc<FakeInner>,
+    ticket: u64,
+    done: bool,
+    cancelled: Cancelled,
+}
+
+impl Future for DialogTurn {
+    type Output = Result<(), CapabilityError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        // Cancellation wins every race with a release: "cancellation must not
+        // become success" biases ties toward Cancelled, deterministically.
+        if Pin::new(&mut this.cancelled).poll(cx).is_ready() {
+            this.done = true;
+            this.inner
+                .dialogs
+                .lock()
+                .expect("dialogs poisoned")
+                .withdraw(this.ticket);
+            return Poll::Ready(Err(CapabilityError::Cancelled));
+        }
+        let mut queue = this.inner.dialogs.lock().expect("dialogs poisoned");
+        if queue.take_released(this.ticket) {
+            this.done = true;
+            return Poll::Ready(Ok(()));
+        }
+        queue.park(this.ticket, cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+impl Drop for DialogTurn {
+    fn drop(&mut self) {
+        if !self.done {
+            // Best-effort under poisoning: the panic being unwound is the
+            // real failure.
+            if let Ok(mut queue) = self.inner.dialogs.lock() {
+                queue.withdraw(self.ticket);
+            }
+        }
     }
 }
 
@@ -235,7 +373,7 @@ impl FakeController {
     /// Arm the next [`Files::pick_export_target`] to return a target of `kind`.
     pub fn arm_export_target(&self, kind: ExportTargetKind, suggested: &str) {
         let id = self.inner.next_id();
-        // Register the minted token so a later `export_local` can resolve the
+        // Register the minted token so a later `export_sink` can resolve the
         // destination through it — a forged target has no entry.
         self.inner
             .export_targets
@@ -278,6 +416,41 @@ impl FakeController {
     /// Close the lifecycle bus (every subscription ends after draining).
     pub fn close_lifecycle(&self) {
         self.inner.lifecycle.close();
+    }
+
+    /// Release the oldest un-advanced open dialog so its bound outcome settles
+    /// on the operation's next poll — the fake's `MockController::deliver_next`.
+    /// Returns `false` when no dialog is awaiting advancement.
+    pub fn deliver_next(&self) -> bool {
+        self.inner
+            .dialogs
+            .lock()
+            .expect("dialogs poisoned")
+            .deliver_next()
+    }
+
+    /// The dialogs currently open, in call order — diagnostics for ordering
+    /// and drop-withdrawal assertions.
+    pub fn open_dialogs(&self) -> Vec<Capability> {
+        self.inner
+            .dialogs
+            .lock()
+            .expect("dialogs poisoned")
+            .open
+            .iter()
+            .map(|dialog| dialog.capability)
+            .collect()
+    }
+
+    /// Resolve once at least one scripted dialog is open — the event-driven
+    /// complement to [`FakeController::deliver_next`] for drivers sharing an
+    /// executor with the code under test (the mock's `pending_call`
+    /// discipline).
+    pub fn pending_dialog(&self) -> PendingDialog {
+        PendingDialog {
+            inner: self.inner.clone(),
+            waiter: None,
+        }
     }
 
     /// Every recorded effect, in order.
@@ -389,15 +562,20 @@ impl Files for FakePlatform {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Option<PickedSource>, CapabilityError>> {
         let inner = self.inner.clone();
-        let ct = ct.clone();
+        // A pre-fired token never opens the dialog and consumes nothing (the
+        // operation never starts — the mock's dispatch-after-stop rule).
+        if ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
+        // Bind this call's outcome NOW (call order); settle it on advancement.
+        let bound = match inner.take_forced(Capability::Pick) {
+            Some(error) => Err(error),
+            None => Ok(inner.pending_pick.lock().expect("pick poisoned").take()),
+        };
+        let turn = inner.open_dialog(Capability::Pick, ct);
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::Pick) {
-                return Err(error);
-            }
-            if ct.is_cancelled() {
-                return Err(CapabilityError::Cancelled);
-            }
-            match inner.pending_pick.lock().expect("pick poisoned").take() {
+            turn.await?;
+            match bound? {
                 Some(source) => {
                     inner.record(RecordedEffect::Picked {
                         name: source.display_name().as_str().to_owned(),
@@ -406,7 +584,8 @@ impl Files for FakePlatform {
                 }
                 // A clean no-selection (not a dismissal): the platform reported
                 // no file without the user cancelling. A dismissal is scripted
-                // as `Cancelled` via the controller instead.
+                // as `Cancelled` via the controller instead — and either way,
+                // the outcome is delivered only on controller advancement.
                 None => Ok(None),
             }
         })
@@ -481,12 +660,38 @@ impl Files for FakePlatform {
                 .staged_blobs
                 .lock()
                 .expect("staged blobs poisoned")
-                .insert(id, copied);
+                .insert(id, Arc::new(staged.clone()));
             inner.record(RecordedEffect::Staged {
                 size: copied,
                 bytes: staged,
             });
             Ok(ShareableBlob::new(crate::files::BlobToken::new(id), copied))
+        })
+    }
+
+    fn read_staged(
+        &self,
+        blob: &ShareableBlob,
+    ) -> BoxFuture<'_, Result<Box<dyn StagedBlobReader>, CapabilityError>> {
+        let inner = self.inner.clone();
+        let token = blob.token();
+        Box::pin(async move {
+            // Token resolution stays inside the service: a blob this service
+            // did not stage (a forged token, another service's blob) fails
+            // closed — never an empty Ok reader.
+            let bytes = inner
+                .staged_blobs
+                .lock()
+                .expect("staged blobs poisoned")
+                .get(&token.get())
+                .cloned();
+            match bytes {
+                Some(bytes) => {
+                    Ok(Box::new(FakeStagedReader { bytes, offset: 0 })
+                        as Box<dyn StagedBlobReader>)
+                }
+                None => Err(CapabilityError::Failed(FailureKind::Unreadable)),
+            }
         })
     }
 
@@ -496,16 +701,19 @@ impl Files for FakePlatform {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Option<ExportTarget>, CapabilityError>> {
         let inner = self.inner.clone();
-        let ct = ct.clone();
+        if ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
+        // Bind at call time, settle on advancement — same discipline as pick.
+        let bound = match inner.take_forced(Capability::PickExport) {
+            Some(error) => Err(error),
+            None => Ok(inner.pending_export.lock().expect("export poisoned").take()),
+        };
+        let _ = suggested;
+        let turn = inner.open_dialog(Capability::PickExport, ct);
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::PickExport) {
-                return Err(error);
-            }
-            if ct.is_cancelled() {
-                return Err(CapabilityError::Cancelled);
-            }
-            let _ = suggested;
-            match inner.pending_export.lock().expect("export poisoned").take() {
+            turn.await?;
+            match bound? {
                 Some(target) => {
                     inner.record(RecordedEffect::PickedExport {
                         kind: target.kind(),
@@ -517,24 +725,23 @@ impl Files for FakePlatform {
         })
     }
 
-    fn export_local(
+    fn export_sink(
         &self,
-        file: LocalFileRef,
         to: ExportTarget,
         ct: &CancelToken,
-    ) -> BoxFuture<'_, Result<(), CapabilityError>> {
+    ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>> {
         let inner = self.inner.clone();
         let ct = ct.clone();
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::ExportLocal) {
+            if let Some(error) = inner.take_forced(Capability::ExportSink) {
                 return Err(error);
             }
             if ct.is_cancelled() {
                 return Err(CapabilityError::Cancelled);
             }
-            // Resolve the destination through the minted-token registry; a
-            // forged `ExportTarget` (one this service never produced) has no
-            // entry and cannot be written to.
+            // Resolve the destination through the minted-token registry,
+            // consuming it; a forged or re-used `ExportTarget` has no entry
+            // and cannot be written to.
             let kind = to.kind();
             if inner
                 .export_targets
@@ -545,29 +752,34 @@ impl Files for FakePlatform {
             {
                 return Err(CapabilityError::Failed(FailureKind::Io));
             }
-            // Resolve the token-carrying URL internally; it never surfaces.
-            let _url = inner.resolve_local_url(&file);
-            inner.record(RecordedEffect::ExportedLocal {
-                room_id: file.room_id().clone(),
-                file_id: file.file_id().clone(),
-                kind,
-            });
-            Ok(())
+            Ok(Box::new(FakeFileSink {
+                inner,
+                dest: SinkDest::Export { kind },
+                written: Vec::new(),
+            }) as Box<dyn FileSink>)
         })
     }
 
-    fn open_local(&self, file: LocalFileRef) -> BoxFuture<'_, Result<(), CapabilityError>> {
+    fn open_sink(
+        &self,
+        name: FileName,
+        declared: Option<Mime>,
+        ct: &CancelToken,
+    ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>> {
         let inner = self.inner.clone();
+        let ct = ct.clone();
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::OpenLocal) {
+            if let Some(error) = inner.take_forced(Capability::OpenSink) {
                 return Err(error);
             }
-            let _url = inner.resolve_local_url(&file);
-            inner.record(RecordedEffect::OpenedLocal {
-                room_id: file.room_id().clone(),
-                file_id: file.file_id().clone(),
-            });
-            Ok(())
+            if ct.is_cancelled() {
+                return Err(CapabilityError::Cancelled);
+            }
+            Ok(Box::new(FakeFileSink {
+                inner,
+                dest: SinkDest::Open { name, declared },
+                written: Vec::new(),
+            }) as Box<dyn FileSink>)
         })
     }
 
@@ -576,23 +788,87 @@ impl Files for FakePlatform {
         content: ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
-        let inner = self.inner.clone();
-        let ct = ct.clone();
+        self.gated_share(Capability::ShareContent, content, ct)
+    }
+}
+
+/// The destination one [`FakeFileSink`] commits to.
+enum SinkDest {
+    /// A consumed export target of this kind.
+    Export { kind: ExportTargetKind },
+    /// The platform opener, with the peer-declared (untrusted) type.
+    Open {
+        name: FileName,
+        declared: Option<Mime>,
+    },
+}
+
+/// The fake's [`FileSink`]: accumulates written chunks in memory and records
+/// the committed artifact. Dropped uncommitted, it records **nothing** — the
+/// fake's "delete the partial artifact" (§D12/K2).
+struct FakeFileSink {
+    inner: Arc<FakeInner>,
+    dest: SinkDest,
+    written: Vec<u8>,
+}
+
+impl FileSink for FakeFileSink {
+    fn write(&mut self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), CapabilityError>> {
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::ShareContent) {
-                return Err(error);
-            }
-            if ct.is_cancelled() {
-                return Err(CapabilityError::Cancelled);
-            }
-            if content.is_empty() {
-                return Err(CapabilityError::Failed(FailureKind::Io));
-            }
-            if !inner.blob_is_staged(&content) {
-                return Err(CapabilityError::Failed(FailureKind::Unreadable));
-            }
-            inner.record(RecordedEffect::Shared { content });
+            self.written.extend_from_slice(&chunk);
             Ok(())
+        })
+    }
+
+    fn commit(self: Box<Self>) -> BoxFuture<'static, Result<(), CapabilityError>> {
+        Box::pin(async move {
+            let this = *self;
+            match this.dest {
+                SinkDest::Export { kind } => this.inner.record(RecordedEffect::ExportedLocal {
+                    kind,
+                    bytes: this.written,
+                }),
+                SinkDest::Open { name, declared } => {
+                    this.inner.record(RecordedEffect::OpenedLocal {
+                        name,
+                        declared,
+                        bytes: this.written,
+                    });
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The fake's [`StagedBlobReader`]: bounded pulls over the staged bytes. The
+/// per-pull bound is `max_len` capped by [`STAGE_CHUNK_BYTES`], so even a
+/// generous caller exercises multiple chunks — the same "bounded, never the
+/// whole file at once" contract the staging copy holds.
+struct FakeStagedReader {
+    bytes: Arc<Vec<u8>>,
+    offset: usize,
+}
+
+impl StagedBlobReader for FakeStagedReader {
+    fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn next_chunk(
+        &mut self,
+        max_len: usize,
+    ) -> BoxFuture<'_, Result<Option<Vec<u8>>, CapabilityError>> {
+        Box::pin(async move {
+            if self.offset >= self.bytes.len() {
+                return Ok(None);
+            }
+            let len = max_len
+                .min(STAGE_CHUNK_BYTES)
+                .min(self.bytes.len() - self.offset);
+            let chunk = self.bytes[self.offset..self.offset + len].to_vec();
+            self.offset += len;
+            Ok(Some(chunk))
         })
     }
 }
@@ -726,14 +1002,54 @@ impl UrlLauncher for FakePlatform {
 }
 
 impl Clipboard for FakePlatform {
-    fn write_text(&self, text: &str) -> Result<(), CapabilityError> {
-        if let Some(error) = self.inner.take_forced(Capability::Clipboard) {
-            return Err(error);
+    fn write_text(&self, text: &str) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        // Not a dialog (§6 scopes controller advancement to picker/dialog/
+        // share), so the outcome resolves on first poll — but only through
+        // the returned future, matching how a browser denial arrives as the
+        // writeText promise's rejection.
+        let inner = self.inner.clone();
+        let text = text.to_owned();
+        Box::pin(async move {
+            if let Some(error) = inner.take_forced(Capability::Clipboard) {
+                return Err(error);
+            }
+            inner.record(RecordedEffect::ClipboardWrite { text });
+            Ok(())
+        })
+    }
+}
+
+impl FakePlatform {
+    /// Shared share-sheet gate for [`Files::share_content`] and
+    /// [`Share::share`]: validation precedes the sheet (empty or forged
+    /// content never opens a dialog); forced and armed outcomes bind at call
+    /// time and settle only on controller advancement.
+    fn gated_share(
+        &self,
+        capability: Capability,
+        content: ShareContent,
+        ct: &CancelToken,
+    ) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        let inner = self.inner.clone();
+        if ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
         }
-        self.inner.record(RecordedEffect::ClipboardWrite {
-            text: text.to_owned(),
-        });
-        Ok(())
+        let bound = match inner.take_forced(capability) {
+            Some(error) => Err(error),
+            None if content.is_empty() => {
+                return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
+            }
+            None if !inner.blob_is_staged(&content) => {
+                return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+            }
+            None => Ok(content),
+        };
+        let turn = inner.open_dialog(capability, ct);
+        Box::pin(async move {
+            turn.await?;
+            inner.record(RecordedEffect::Shared { content: bound? });
+            Ok(())
+        })
     }
 }
 
@@ -743,24 +1059,7 @@ impl Share for FakePlatform {
         content: ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
-        let inner = self.inner.clone();
-        let ct = ct.clone();
-        Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::Share) {
-                return Err(error);
-            }
-            if ct.is_cancelled() {
-                return Err(CapabilityError::Cancelled);
-            }
-            if content.is_empty() {
-                return Err(CapabilityError::Failed(FailureKind::Io));
-            }
-            if !inner.blob_is_staged(&content) {
-                return Err(CapabilityError::Failed(FailureKind::Unreadable));
-            }
-            inner.record(RecordedEffect::Shared { content });
-            Ok(())
-        })
+        self.gated_share(Capability::Share, content, ct)
     }
 }
 
@@ -816,5 +1115,54 @@ impl WindowActions for FakePlatform {
 
     fn focus(&self) -> Result<(), CapabilityError> {
         self.window_command(WindowCommand::Focus)
+    }
+}
+
+// ---- PendingDialog -------------------------------------------------------
+
+/// Future returned by [`FakeController::pending_dialog`]: ready when at least
+/// one scripted dialog is open and awaiting advancement.
+pub struct PendingDialog {
+    inner: Arc<FakeInner>,
+    /// This waiter's slot, once parked: a re-poll REPLACES it (no duplicates),
+    /// readiness clears it, `Drop` unregisters it — the keyed-waker discipline
+    /// of the mock's `PendingCall`.
+    waiter: Option<u64>,
+}
+
+impl Future for PendingDialog {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        let mut queue = this.inner.dialogs.lock().expect("dialogs poisoned");
+        if !queue.open.is_empty() {
+            if let Some(id) = this.waiter.take() {
+                queue.waiters.remove(&id);
+            }
+            return Poll::Ready(());
+        }
+        let id = match this.waiter {
+            Some(id) => id,
+            None => {
+                let id = queue.next_waiter;
+                queue.next_waiter += 1;
+                this.waiter = Some(id);
+                id
+            }
+        };
+        queue.waiters.insert(id, cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+impl Drop for PendingDialog {
+    fn drop(&mut self) {
+        if let Some(id) = self.waiter.take() {
+            // Best-effort under poisoning, as everywhere in Drop.
+            if let Ok(mut queue) = self.inner.dialogs.lock() {
+                queue.waiters.remove(&id);
+            }
+        }
     }
 }

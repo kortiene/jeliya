@@ -62,6 +62,11 @@ fn default_library_graph_is_free_of_native_and_renderer_crates() {
         "--no-default-features",
         "--edges",
         "no-dev",
+        // `--prefix none` puts every package name at column 0; the default
+        // indent format hides all but the root behind tree glyphs, which
+        // `starts_with` would never match — the check would pass vacuously.
+        "--prefix",
+        "none",
     ]);
     assert_graph_clean(&tree, "default library");
 }
@@ -79,6 +84,9 @@ fn fake_feature_graph_is_free_of_native_and_renderer_crates() {
         "fake",
         "--edges",
         "no-dev",
+        // Same format note as the default-graph test above.
+        "--prefix",
+        "none",
     ]);
     assert_graph_clean(&tree, "fake-feature");
 }
@@ -105,6 +113,79 @@ fn wasm32_fake_graph_is_free_of_native_and_renderer_crates() {
         "--no-dedupe",
     ]);
     assert_graph_clean(&tree, "wasm32 fake-feature");
+}
+
+/// The banned-crate checker itself must fail closed: a bare `tokio vX` line
+/// (the `--prefix none` output shape) trips the assertion. Pins the contract
+/// against a regression to a parser that only matches glyph-prefixed indent
+/// output — which matches nothing at column 0 and passes vacuously.
+#[test]
+fn assert_graph_clean_detects_banned_crate() {
+    let synthetic = "jeliya-platform v0.0.0\ntokio v1.47.1\n";
+    assert!(
+        std::panic::catch_unwind(|| assert_graph_clean(synthetic, "synthetic")).is_err(),
+        "a bare banned-crate line must trip the checker"
+    );
+}
+
+/// The retired v1 HTTP edge must not be reintroduced anywhere in this crate's
+/// source: protocol v2 serves file bytes over the byte-stream framing
+/// (`file.read`), so no `/api/files/local` URL — and no token-in-URL format
+/// string — may exist for a service to resolve. Comment lines are skipped so
+/// the rule may be described where it is enforced.
+#[test]
+fn no_retired_local_file_url_in_source() {
+    let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let mut offenders = Vec::new();
+    for path in rust_sources(src_dir) {
+        let text = std::fs::read_to_string(&path).expect("readable source");
+        for (index, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if line.contains("/api/files/local") || line.contains("token=") {
+                offenders.push(format!("{}:{}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "retired local-file URL edge found in source: {offenders:?}"
+    );
+}
+
+/// The shared-component crate must never reach the `implementation` factory
+/// surface: `jeliya-ui`'s manifest must not enable the feature, and its source
+/// must not name the factory tokens — the compile-time forgery boundary (§K4)
+/// only holds if the shared graph stays on default features.
+#[test]
+fn jeliya_ui_never_enables_the_implementation_feature() {
+    let ui_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../jeliya-ui"));
+    let manifest =
+        std::fs::read_to_string(ui_dir.join("Cargo.toml")).expect("readable jeliya-ui manifest");
+    // Scan non-comment manifest lines only, so prose about the rule cannot
+    // trip it; any dependency/feature line naming the feature does.
+    let enabled = manifest
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .any(|line| line.contains("implementation"));
+    assert!(
+        !enabled,
+        "jeliya-ui/Cargo.toml must not enable jeliya-platform/implementation"
+    );
+    let mut offenders = Vec::new();
+    for path in rust_sources(&ui_dir.join("src")) {
+        let text = std::fs::read_to_string(&path).expect("readable jeliya-ui source");
+        for (index, line) in text.lines().enumerate() {
+            if line.contains("for_implementation") || line.contains("from_raw") {
+                offenders.push(format!("{}:{}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "jeliya-ui source names an implementation-factory token: {offenders:?}"
+    );
 }
 
 /// No `serde_json::Value` may appear in any public source: this crate consumes

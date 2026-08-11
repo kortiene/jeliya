@@ -12,8 +12,10 @@ use crate::error::{Availability, CapabilityError};
 /// A window event on platforms that have windows (desktop).
 ///
 /// [`WindowEvent::CloseRequested`] is a **control intent** the lifecycle
-/// subscription never coalesces or drops (§K8); the others are ordinary and may
-/// be dropped under backpressure with a loss-visible marker.
+/// subscription never drops (§K8); a close restated while the previous request
+/// is still undelivered is absorbed into it, so a stalled consumer holds at
+/// most one pending close and answers it exactly once. The others are ordinary
+/// and may be dropped under backpressure with a loss-visible marker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WindowEvent {
     /// The window gained focus.

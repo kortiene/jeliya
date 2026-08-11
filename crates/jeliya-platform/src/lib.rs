@@ -87,19 +87,43 @@ pub mod window;
 #[cfg(feature = "fake")]
 pub mod fake;
 
+// The implementation-facing factory surface for the M3–M5 target crates. The
+// feature gate lives here at the crate root — never in the contract surface
+// (§K10). Default-off: the shared-component graph cannot reach it.
+#[cfg(feature = "implementation")]
+pub mod implementation;
+
 pub use cancel::CancelToken;
 pub use clipboard::{Clipboard, Share, ShareAnchor, ShareAttachment, ShareContent};
 pub use error::{Availability, CapabilityError, FailureKind};
+/// The forgery boundary in one sentence: a shared component compiled with
+/// **default features** cannot construct a [`ShareableBlob`] — the factory
+/// surface exists only behind the default-off `implementation` feature.
+#[cfg_attr(
+    not(feature = "implementation"),
+    doc = r#"
+
+```compile_fail
+use jeliya_platform::files::BlobToken;
+use jeliya_platform::ShareableBlob;
+
+// Neither the token wrapper nor the factory exists on default features.
+let _ = ShareableBlob::for_implementation(BlobToken::from_raw(7), 10);
+```
+"#
+)]
+pub use files::ShareableBlob;
 pub use files::{
-    ExportTarget, ExportTargetKind, FileName, FileObjectKind, Files, LocalFileRef, Mime,
-    PickedSource, ProgressSink, ShareableBlob, StageProgress,
+    BlobToken, ExportTarget, ExportTargetKind, ExportToken, FileName, FileObjectKind, FileSink,
+    Files, LocalFileRef, Mime, PickedSource, ProgressSink, SourceToken, StageProgress,
+    StagedBlobReader,
 };
 pub use launcher::{SafeExternalUrl, UnsafeUrl, UrlLauncher};
 pub use lifecycle::{
     BackgroundPhase, Lifecycle, LifecycleBus, LifecycleDelivery, LifecycleEvent,
     LifecycleSubscription,
 };
-pub use navigation::{Navigation, Route, RouteParseError};
+pub use navigation::{Navigation, RoomDest, Route, RouteParseError};
 pub use services::{Platform, PlatformServices};
 pub use storage::{
     Durability, PreferenceKey, Preferences, PrivateDirectory, Secret, SecretKey, SecretStore,

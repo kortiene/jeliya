@@ -155,7 +155,7 @@ The files capability never traffics in raw strings. Four distinct types carry th
   The `FileObjectKind` is inspectable (`kind() -> FileObjectKind` discriminant) so tests and the staging step can assert the shape, but the **underlying path/URI is not exposed to shared components** — a component cannot read a `content://` URI as a path because it cannot reach either spelling. This is the type-level enforcement of "a local file path and a `content://` URI are not interchangeable".
 - **`ShareableBlob`** — a daemon-shareable handle produced **only** by `stage_for_share()` (D5). It is the sole value `file.share` accepts. Components cannot construct one from a path, so the daemon's anti-exfiltration invariant is preserved at the type level (the UI cannot forge a daemon path).
 - **`ExportTarget`** — a destination for a fetched file, produced by `pick_export_target()`. Internally `BrowserDownload` (a suggested filename; the browser owns the destination), `NativePath` (a save-dialog path), or `AndroidDocument` (a SAF document `content://` write target). Distinct from `PickedSource`: an export target is a place to *write*, a picked source is a place to *read*.
-- **`LocalFileRef`** — a typed reference to a *daemon-fetched* local copy, `(RoomId, FileId)` (reusing `jeliya_api` ids). `open_local()` and `export_local()` take this; the service resolves it to the token-carrying `GET /api/files/local` URL (D9). Components never see the URL or the token.
+- **`LocalFileRef`** — a typed reference to a room file, `(RoomId, FileId)` (reusing `jeliya_api` ids) — the identifier pair the UI feeds to the client seam's `file.read` and the only file identity `ShareAttachment::Local` carries. It is deliberately not a URL: in protocol v2 the `GET /api/files/local` HTTP edge is retired (file bytes travel the byte-stream framing), so no token-carrying URL exists and none is resolved (D9).
 
 The `Files` trait methods:
 
@@ -163,14 +163,19 @@ The `Files` trait methods:
 fn pick(&self, ct: &CancelToken) -> BoxFuture<'_, Result<Option<PickedSource>, CapabilityError>>;
 fn stage_for_share(&self, src: PickedSource, limit: u64, progress: ProgressSink, ct: &CancelToken)
     -> BoxFuture<'_, Result<ShareableBlob, CapabilityError>>;
+fn read_staged(&self, blob: &ShareableBlob)
+    -> BoxFuture<'_, Result<Box<dyn StagedBlobReader>, CapabilityError>>;
 fn pick_export_target(&self, suggested: FileName, ct: &CancelToken)
     -> BoxFuture<'_, Result<Option<ExportTarget>, CapabilityError>>;
-fn export_local(&self, file: LocalFileRef, to: ExportTarget, ct: &CancelToken)
-    -> BoxFuture<'_, Result<(), CapabilityError>>;
-fn open_local(&self, file: LocalFileRef) -> BoxFuture<'_, Result<(), CapabilityError>>;
+fn export_sink(&self, to: ExportTarget, ct: &CancelToken)
+    -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>>;
+fn open_sink(&self, name: FileName, declared: Option<Mime>, ct: &CancelToken)
+    -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>>;
 fn share_content(&self, content: ShareContent, ct: &CancelToken)
     -> BoxFuture<'_, Result<(), CapabilityError>>;
 ```
+
+Bytes cross the boundary through two small object-safe traits, never through paths or URLs: **`StagedBlobReader`** (`size()`, `next_chunk(max_len)`) is the pull side — the v2 `file.share` upload pulls exactly what CREDIT permits, one bounded chunk per DATA frame it may send; **`FileSink`** (`write(chunk)`, `commit()`) is the push side — the UI drives the client seam's `file.read` and pumps DATA chunks in, advancing its stream credit only as each `write` resolves (the protocol's receiver-driven credit rule), and dropping an uncommitted sink deletes the partial artifact (D12/K2). `open_sink`'s `declared` is the peer-declared content type — an untrusted opener hint, never a trust decision. The handoff contract: the UI adapts `Box<dyn StagedBlobReader>` to the client seam's upload input in `jeliya-ui` composition, keeping K11 (no shared type between the two facades); note that the client-side upload input (#269's depth) must accept `!Send` byte sources, because platform futures are `!Send` by design.
 
 `pick`/`pick_export_target` return `Ok(None)` **only** where the platform reports a clean no-selection that is not a user dismissal (rare); an actual user dismissal is `Err(Cancelled)`. The two are kept distinct so a caller never treats a dismissed picker as "no files exist". (The fakes make the distinction explicit and testable.)
 
@@ -180,15 +185,17 @@ fn share_content(&self, content: ShareContent, ct: &CancelToken)
 
 - **Size is enforced against the daemon-reported `max_shared_file_bytes`**, passed in as `limit` (from `jeliya_api`'s server-limits view model — never a constant redefined here; the 100 MiB figure lives once, in protocol v2). A known-oversize `PickedSource` fails with `FileTooLarge` **before any copy**; a streamed source (`content://`, where the size is not known up front) is copied through a **bounded buffer** and aborts with `FileTooLarge` the instant the running total would exceed `limit`. Zero bytes fails with `FileEmpty`.
 - **The copy is bounded and cancellable.** It reads the content stream in bounded chunks (never buffering the whole file in memory), reports progress on `ProgressSink`, and observes the `CancelToken`. On cancel or any failure it **deletes the partial staged file** and returns `Cancelled` / `Failed`, never `Ok` — the exact `finally { delete }` honesty the Dart convention has (a failed or cancelled share must not leak bytes into the data dir).
-- **The daemon stays authoritative.** The staging service produces a handle inside the daemon's staging directory; it does not itself call `file.share` (that is the client seam's `file.share` operation) and it does not read daemon files. The daemon re-enforces the size limit and the shareable-path invariant on `file.share` regardless of what the service produced. On the browser, "staging" is the server-side `POST /api/files/share` (there is no client-side staging dir); the service abstracts the mechanism, and the contract is identical to the caller.
+- **The daemon stays authoritative.** The staging service produces a handle to bytes it holds; it does not itself call `file.share` (that is the client seam's `file.share` operation) and it does not read daemon files. The daemon re-enforces the size limit and its anti-exfiltration invariant on `file.share` regardless of what the service produced. On the browser, "staging" is holding the picked blob client-side until the v2 upload pulls it through `read_staged` — the v1 server-side `POST /api/files/share` edge is a legacy reference only (protocol-v2.md: `file.share` combines v1's RPC and its separate HTTP upload edge).
 
-Per-platform mechanism (for the fakes' shapes and the M3–M5 impls; **not** implemented here beyond the fakes):
+Per-platform mechanism (for the fakes' shapes and the M3–M5 impls; **not** implemented here beyond the fakes). Export and open consume the v2 `file.read` byte stream through a `FileSink` on every platform; only the sink's destination differs:
 
-| Platform | pick source | stage_for_share | export | open |
+| Platform | pick source | stage_for_share | export sink | open sink |
 |---|---|---|---|---|
-| Browser | `<input type=file>` → blob | `POST /api/files/share` (server stages) | browser download | open `/api/files/local` URL in a tab |
-| Desktop | native file dialog → path | copy path → `<data_dir>/uploads/<unique>`, delete after share | save dialog → path | OS opener on the local copy |
-| Android | SAF picker → `content://` | stream `content://` → protected staging dir, bounded, delete after share | SAF create-document → `content://` | share sheet / OS viewer |
+| Browser | `<input type=file>` → blob | hold the blob client-side; upload pulls via `read_staged` | browser download | object-URL tab on commit |
+| Desktop | native file dialog → path | copy path → staging area, delete after share | save-dialog path | OS viewer on the committed temp file |
+| Android | SAF picker → `content://` | stream `content://` → protected staging dir, bounded, delete after share | SAF create-document → `content://` | OS viewer on the committed copy |
+
+`ShareAttachment::Local`'s Android share-sheet materialization (turning a `(RoomId, FileId)` into a shareable local artifact) is deferred to the Android target slice: the UI pumps `file.read` into staging there. The deferral is stated here so it is never smuggled back in through a URL.
 
 ### D6 — Storage: preferences, secret custody, and private-directory ownership are explicit (AC-2), with honest durability
 
@@ -231,7 +238,7 @@ Ownership rules the contract fixes:
 
 - **Back and exit are the router's / platform's decision, surfaced as an intent, never auto-handled by the service.** The service delivers `BackRequested`; the shared router decides whether to pop an in-app destination or hand the gesture back to the platform (an explicit `WindowActions::request_exit()` / `Navigation::hand_back_to_platform()`), exactly as the Flutter `PopScope` policy does. A `BackRequested` that the router does not consume must **not silently become an exit** — the exit is a separate, explicit action.
 - **`ProcessRestored` triggers authoritative resync, not a fabricated reconnect** — this is the honest Android `DirectClient` lifecycle difference the architecture already fixed (§"Decision 4"); the lifecycle capability names it so the shared UI can drive a `stream.resync` rather than pretend a socket reconnected.
-- **Lifecycle delivery is loss-visible.** The subscription is bounded; an overflowed consumer learns it lagged (as with the client event bus). But **control intents that must not be lost or reordered** — `BackRequested`, `ProcessRestored`, and terminal window events — are delivered distinctly and never coalesced into another outcome (a lost Back that silently exits, or a coalesced restore that skips resync, would be exactly the honesty failure the clean-slate generation removes).
+- **Lifecycle delivery is loss-visible.** The subscription is bounded; an overflowed consumer learns it lagged (as with the client event bus). **Control intents that must never be silently lost or reordered** — `BackRequested`, `ProcessRestored`, and terminal window events — survive overflow losslessly *and* boundedly: a saturated mailbox run-length-encodes a Back burst (every Back still delivered, one per poll), and a close/restore restated while the identical intent is still undelivered is absorbed into the pending one (a lost Back that silently exits, or a dropped restore that skips resync, would be exactly the honesty failure the clean-slate generation removes — and an unbounded mailbox would be its own failure).
 
 ### D8 — URLs: an allowlisted safe launcher (AC-4)
 
@@ -239,9 +246,9 @@ Ownership rules the contract fixes:
 
 ### D9 — Clipboard and share; the daemon token stays native
 
-- **`Clipboard::write_text(&str) -> Result<(), CapabilityError>`** — a failed write returns `Err`, never `Ok`; the UI must not read a failed copy as success (`settings_panel.dart` clears the "copied" flag and raises a manual-copy note on failure). Clipboard *read* is out of scope unless a required behavior needs it (none in the inventory); if added later it is a separate method with its own `Denied` path.
+- **`Clipboard::write_text(&str) -> BoxFuture<Result<(), CapabilityError>>`** — asynchronous, because the browser's `navigator.clipboard.writeText` settles a promise and a permission denial is that promise's rejection: a synchronous signature could only fire-and-forget and falsely report `Ok`. The future resolves to `Err`, never `Ok`, on failure; the UI must not read a failed copy as success (`settings_panel.dart` clears the "copied" flag and raises a manual-copy note on failure). Clipboard *read* is out of scope unless a required behavior needs it (none in the inventory); if added later it is a separate method with its own `Denied` path.
 - **`Share::share(ShareContent) -> Result<(), CapabilityError>`** — the OS share sheet (invite tickets via `SharePlus`; Android file share). `ShareContent` carries text and/or a `LocalFileRef`/`ShareableBlob`, plus an optional anchor rect for iPad popover presentation. Dismissing the share sheet is `Cancelled`, not `Ok`.
-- **`LocalFileRef` → URL resolution keeps the token native (§K5).** `open_local`/`export_local` resolve the `(room_id, file_id)` reference to the `GET /api/files/local` URL **inside the service**; the token (native daemon token on desktop, tab-scoped session credential on browser) is added there and never enters shared component state or crosses into untrusted WebView script. This is why the files capability takes a typed reference, not a URL string.
+- **No token-carrying URL exists in v2 (§K5).** File bytes travel the byte-stream framing (`file.read`), pumped into `export_sink`/`open_sink` sinks — the retired `GET /api/files/local` HTTP edge is gone, so there is no URL for a service to resolve and no place a token could ride one. The daemon-token half of K5 is enforced by `SecretStore` custody alone: the token never appears on any public type, and `LocalFileRef` stays a typed `(room_id, file_id)` reference, never a URL string.
 
 ### D10 — Navigation: the route is the navigation state
 
@@ -260,11 +267,11 @@ Every method that opens a user dialog or runs a bounded copy takes a `&CancelTok
 - **K1 — Closed, redacting outcomes.** `CapabilityError` is exhaustive; its `Display`/`Debug` render a discriminant and no path/URI/identifier payload (a staged filename or a `content://` URI must not leak into an error string — mirror `CallError`'s §K15). *(test: taxonomy.rs)*
 - **K2 — Cancellation is not success and not a generic failure.** For every cancellable method, a fired token and a dropped future both yield exactly `Err(Cancelled)`; a staged copy leaves no partial blob behind. *(test: taxonomy.rs, files.rs)*
 - **K3 — `Unavailable` ≠ `Denied` ≠ `Cancelled`.** Each is distinctly observable per capability and per fake shape (window actions `Unavailable` on browser; a scripted permission refusal `Denied`; a dismissed picker `Cancelled`). *(test: taxonomy.rs)*
-- **K4 — Object kinds are non-interchangeable.** A `content://` `PickedSource` never exposes a filesystem path; `ShareableBlob` is constructible only via `stage_for_share`; `LocalFileRef` is the only file-open input. Attempting to spell a path from a content URI does not compile. *(test: boundaries.rs compile-fail / files.rs)*
-- **K5 — The daemon token stays native.** No public type carries the daemon token; `LocalFileRef` resolution adds it inside the service; the token never appears in component-facing state. *(test: boundaries.rs source scan for token field names; review)*
+- **K4 — Object kinds are non-interchangeable.** A `content://` `PickedSource` never exposes a filesystem path; `ShareableBlob` is not constructible by shared components (default features) — target implementation crates use the path-free `implementation`-feature factory, and a token the producing service did not mint fails closed at resolution. Attempting to spell a path from a content URI does not compile. *(test: boundaries.rs compile-fail / files.rs; the `jeliya-ui` manifest is scanned to never enable `implementation`)*
+- **K5 — The daemon token stays native.** No public type carries the daemon token, and no token-carrying URL exists for it to ride (the v1 local-file HTTP edge is retired in v2 — file bytes travel the byte stream); custody is `SecretStore`'s alone, and the token never appears in component-facing state. *(test: boundaries.rs source scan for the retired URL edge; review)*
 - **K6 — Durability honesty.** `Preferences::durability()` reports `SessionScoped` on the browser fake and `Persistent` on the desktop/Android fakes; a scripted non-durable write returns `SessionOnly`/`WriteNotDurable` while the in-memory value still reads back this session. *(test: storage.rs)*
 - **K7 — Size enforced against the daemon limit, before and during copy.** `stage_for_share` fails `FileTooLarge` before copy for a known-oversize source and mid-copy for a streamed one; `FileEmpty` for zero bytes; the limit is the passed-in daemon value, never a redefined constant. *(test: files.rs)*
-- **K8 — Lifecycle intents are lossless.** `BackRequested`, `ProcessRestored`, and terminal window events are delivered distinctly and never coalesced; an overflowed consumer is told it lagged rather than silently starved. *(test: lifecycle.rs)*
+- **K8 — Lifecycle intents are lossless and bounded.** Every `BackRequested` is delivered (a saturated mailbox run-length-encodes a Back burst rather than growing without bound, and delivers it one Back per poll); `ProcessRestored` and terminal window events are delivered distinctly, a restatement absorbed only while the identical intent is still undelivered; an overflowed consumer is told it lagged rather than silently starved. The mailbox never exceeds its capacity plus a fixed control allowance. *(test: lifecycle.rs)*
 - **K9 — Allowlisted launcher fails closed.** `SafeExternalUrl::parse` rejects every non-allowlisted scheme; `open_external` returns its failure rather than swallowing it. *(test: launcher path in taxonomy.rs)*
 - **K10 — No platform `cfg` forks in shared code.** The trait/type surface carries no `cfg(target_…)`/feature fork; the extended `no_cfg_target_forks_in_shared_components` scan (now covering `jeliya-ui` components consuming the services) passes. *(test: boundaries.rs; jeliya-ui boundaries.rs)*
 - **K11 — Injected separately.** `PlatformServices` and `ClientHandle` are distinct `AppRoot` props with no shared type; neither is reachable through the other. *(review + app.rs signature)*
