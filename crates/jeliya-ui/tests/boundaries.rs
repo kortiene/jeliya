@@ -135,35 +135,39 @@ fn no_cfg_target_forks_in_shared_components() {
     for path in files {
         if path.extension().is_some_and(|ext| ext == "rs") {
             let text = std::fs::read_to_string(&path).expect("readable component");
-            for (index, line) in text.lines().enumerate() {
-                if line.trim_start().starts_with("//") {
-                    continue;
-                }
-                // Platform-discriminating cfg keys that must not appear in
-                // shared components. Feature-gating on `ui`/`web`/`native` is
-                // forbidden here too: a component cannot self-select its
-                // target. Matching runs on a whitespace-stripped copy of the
-                // line so `#[cfg (target_os` and spaced feature forms cannot
-                // slip past a literal pattern, and `cfg!(...)` — every bit as
-                // capable of platform branching — is covered alongside the
-                // attribute form. `cfg(target_` catches every target_* key,
-                // present and future.
-                let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-                for pattern in [
-                    "cfg(target_",
-                    "cfg!(target_",
-                    r#"feature="native""#,
-                    r#"feature="web""#,
-                    r#"feature="ui""#,
-                ] {
-                    if compact.contains(pattern) {
-                        offenders.push(format!(
-                            "{}:{} — {}",
-                            path.display(),
-                            index + 1,
-                            line.trim()
-                        ));
-                    }
+            // Platform-discriminating cfg keys that must not appear in
+            // shared components. Feature-gating on `ui`/`web`/`native` is
+            // forbidden here too: a component cannot self-select its target.
+            // Matching runs on a comment-stripped, whitespace-collapsed copy
+            // of the WHOLE FILE: per-line matching missed multiline
+            // expressions (`#[cfg(any(` on one line, `target_os = "windows"`
+            // on the next), and whitespace stripping already covers spaced
+            // forms and `cfg!(...)`. The `target_*=` tokens catch every
+            // discriminating key regardless of `any`/`all`/`not` nesting.
+            // (Comment stripping is the naive `//` split — a guard, not a
+            // parser; components carry no `//` inside string literals.)
+            let compact: String = text
+                .lines()
+                .map(|line| line.split("//").next().unwrap_or(""))
+                .collect::<String>()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            for pattern in [
+                "target_arch=",
+                "target_os=",
+                "target_family=",
+                "target_pointer_width=",
+                "target_env=",
+                "target_endian=",
+                "target_vendor=",
+                "target_feature=",
+                r#"feature="native""#,
+                r#"feature="web""#,
+                r#"feature="ui""#,
+            ] {
+                if compact.contains(pattern) {
+                    offenders.push(format!("{} — contains {pattern:?}", path.display()));
                 }
             }
         }

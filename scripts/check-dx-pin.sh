@@ -20,8 +20,13 @@ cd "$repo"
 # canonical recipe. The `check-*.sh` guards only DEFINE these patterns (to
 # search for them), so they are excluded rather than flagged against
 # themselves.
+# Backslash-newline continuations are joined first: `cargo install --locked \`
+# on one line and `dioxus-cli` on the next is one command, and a per-line scan
+# would see neither half match the predicate.
 scan() {
-  grep -rhnE --exclude='check-*.sh' "$1" .github/workflows scripts packaging 2>/dev/null || true
+  find .github/workflows scripts packaging -type f ! -name 'check-*.sh' -print0 2>/dev/null |
+    xargs -0 sed -e ':a' -e '/\\$/{N;s/\\\n/ /;ba' -e '}' 2>/dev/null |
+    grep -hE "$1" || true
 }
 fail=0
 

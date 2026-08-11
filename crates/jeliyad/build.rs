@@ -61,36 +61,41 @@ fn main() {
     // quoted paths, and accepting them would embed a shell whose init never
     // runs.
     let index = strip_js_comments(&strip_html_comments(&index));
-    let module_refs: Vec<&str> = {
-        let mut refs: Vec<&str> = index
+    let collect_refs = |text: &str, exts: &[&str]| -> Vec<String> {
+        let mut refs: Vec<String> = text
             .split(['"', '\''])
-            .filter(|t| {
-                t.starts_with('/')
-                    && (t.ends_with(".wasm") || t.ends_with(".js") || t.ends_with(".css"))
-            })
+            .filter(|t| t.starts_with('/') && exts.iter().any(|ext| t.ends_with(ext)))
+            .map(str::to_owned)
             .collect();
         refs.sort_unstable();
         refs.dedup();
         refs
     };
+    // Module references count only inside an ACTIVE module script: a path in
+    // a `type="text/plain"` script, an ordinary attribute, or prose is not
+    // executable, and accepting it would embed a shell whose init never runs.
+    let scripts = module_script_bodies(&index);
+    let mut module_refs = collect_refs(&scripts, &[".wasm", ".js"]);
     if !module_refs.iter().any(|r| r.ends_with(".wasm")) {
         fail(
-            "the embedded index.html references no root-relative .wasm module — it is not the \
-             Dioxus shell",
+            "the embedded index.html has no active module script referencing a root-relative \
+             .wasm module — it is not the Dioxus shell",
         );
     }
     if !module_refs.iter().any(|r| r.ends_with(".js")) {
         fail(
-            "the embedded index.html references no root-relative .js bindgen glue — it is not \
-             the Dioxus shell",
+            "the embedded index.html has no active module script referencing root-relative .js \
+             bindgen glue — it is not the Dioxus shell",
         );
     }
-    if !module_refs.iter().any(|r| r.ends_with(".css")) {
+    let stylesheet_refs = collect_refs(&index, &[".css"]);
+    if stylesheet_refs.is_empty() {
         fail(
             "the embedded index.html references no root-relative stylesheet — the canonical \
              shell consumes the design system as /styles.css",
         );
     }
+    module_refs.extend(stylesheet_refs);
     for reference in &module_refs {
         let module = dist.join(reference.trim_start_matches('/'));
         println!("cargo:rerun-if-changed={}", module.display());
@@ -136,6 +141,35 @@ fn strip_html_comments(html: &str) -> String {
         }
     }
     out.push_str(rest);
+    out
+}
+
+/// Extract the bodies of `<script type="module">` elements (run after
+/// comment stripping). Only these are executable module code. Case handled
+/// via an ASCII-lowercased shadow (length-preserving, so indices map back);
+/// an unterminated script tag or body drops the remainder — fail-closed.
+fn module_script_bodies(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::new();
+    let mut from = 0;
+    while let Some(open_rel) = lower[from..].find("<script") {
+        let open = from + open_rel;
+        let Some(tag_end_rel) = lower[open..].find('>') else {
+            break;
+        };
+        let tag_end = open + tag_end_rel;
+        let tag = &lower[open..tag_end];
+        let body_start = tag_end + 1;
+        let Some(close_rel) = lower[body_start..].find("</script") else {
+            break;
+        };
+        let body_end = body_start + close_rel;
+        if tag.contains("type=\"module\"") || tag.contains("type='module'") {
+            out.push_str(&html[body_start..body_end]);
+            out.push('\n');
+        }
+        from = body_end;
+    }
     out
 }
 
