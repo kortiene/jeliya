@@ -3,7 +3,7 @@ type: "Decision"
 title: "Dioxus clean-slate architecture"
 description: "Decision record for the clean-slate typed Rust client stack on Dioxus system-WebView rendering, the protocol and storage generation it defines, the single embedded web artifact every daemon target ships, and the retirement of React, Flutter, the Dart protocol package, and the C ABI."
 tags: ["architecture", "clean-slate", "dioxus", "protocol", "release"]
-timestamp: "2026-08-10T00:00:00Z"
+timestamp: "2026-08-10T18:00:00Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "unverified"
@@ -221,11 +221,15 @@ The web build must produce **one** reproducible, content-addressed Dioxus
 artifact, and **the exact same bytes** must be embedded in every daemon
 target (#183). Its sealed manifest must carry the renderer, source SHA,
 toolchain versions, and digest, and consumption of a legacy artifact must
-fail. **No React or renderer rollback artifact may be produced under this
-architecture.** Today the in-tree build embeds the reproducible Dioxus
-artifact (`crates/jeliya-ui/dist`, #176) and fails closed on React output;
-the React `ui/dist` archive that `v0.6.0` published remains the **shipped**
-artifact until the release-line cutover (#200).
+fail. The same sealed manifest also carries pre-compressed `br` and `gzip`
+variants of each compressible asset, each with its own digest, served by static
+content negotiation, with the content-address kept over the uncompressed bytes
+(see [how the embedded UI artifact is compressed on the wire](ui-artifact-wire-encoding.md));
+#183 stays the owner of that schema. **No React or renderer rollback artifact may
+be produced under this architecture.** Today the in-tree build embeds the
+reproducible Dioxus artifact (`crates/jeliya-ui/dist`, #176) and fails closed
+on React output; the React `ui/dist` archive that `v0.6.0` published remains
+the **shipped** artifact until the release-line cutover (#200).
 
 The delivery shape is fixed by
 [the first-release distribution boundary](first-release-distribution.md)
@@ -274,7 +278,7 @@ blocks only that platform's publication row (#199).
 
 | Boundary | Rule | Issue |
 |---|---|---|
-| artifact | one content-addressed Dioxus artifact, identical bytes in every target; legacy artifact consumption fails | #183 |
+| artifact | one content-addressed Dioxus artifact, identical bytes in every target; legacy artifact consumption fails; the sealed manifest also carries pre-compressed `br`/`gzip` variants served by static negotiation, canonical digest unchanged ([wire encoding](ui-artifact-wire-encoding.md)) | #183 |
 | daemon token | stays native, never crosses into untrusted WebView script, and is redacted in logs and diagnostics | #159, #170, #172, #184 |
 | storage | one new namespaced generation per platform; legacy keys are ignored or removed, never interpreted as new state; Android state is app-private and backup-excluded | #173, #178, #185, #190 |
 | navigation | navigation, new-window, download, devtools, and storage policies fail closed in the packaged WebView | #189, #196 |
@@ -351,7 +355,10 @@ One finding belongs to other issues rather than to this record: the daemon
 serves embedded assets with no content encoding, ignoring `Accept-Encoding`.
 That costs nothing on loopback and is a real input to #183 and #113 wherever
 the same artifact travels further, since compressing this spike's wasm alone
-removed 61% of it.
+removed 61% of it. How that artifact is encoded on the wire — seal Brotli and
+gzip variants in the sealed manifest and negotiate statically, with the
+canonical digest kept over the uncompressed bytes — is now decided in
+[how the embedded UI artifact is compressed on the wire](ui-artifact-wire-encoding.md).
 
 **What #176 landed (the M3 web foundation).** The production `crates/jeliya-ui`
 crate now exists as a workspace member, with `dioxus` pinned (`=0.7.9`) and the

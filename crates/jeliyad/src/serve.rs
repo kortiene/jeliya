@@ -1959,8 +1959,8 @@ mod tests {
     use tokio_tungstenite::WebSocketStream;
 
     use super::{
-        complete_data_message_len, constant_time_eq, gate_refusal, safe_download_mime, serve_ws,
-        stream_start_position,
+        complete_data_message_len, constant_time_eq, gate_refusal, guess_mime,
+        last_segment_has_ext, safe_download_mime, safe_rel, serve_ws, stream_start_position,
     };
 
     const SOCKET_FRAME_BYTES: usize = 4_096;
@@ -5238,6 +5238,333 @@ mod tests {
             .expect("disconnect cleanup")
             .expect("serve task");
         assert_eq!(state.transfer_pool.usage(), (0, 0));
+    }
+
+    // ── #207 wire-encoding decision: unit coverage ────────────────────────────
+    //
+    // These tests verify properties the decision document (docs/ui-artifact-wire-encoding.md)
+    // specifies for unwritten serving + manifest code.  They pin existing helper
+    // behaviour that the future implementation must not silently break.
+
+    /// §4.2 "Compress" set: html, js/mjs, css, wasm, json/map, webmanifest,
+    /// svg, txt, and ttf (an uncompressed font container) must all resolve to
+    /// their canonical non-fallback MIME type.  This is the set the #183
+    /// manifest will seal Brotli+gzip variants for; the octet-stream fallback
+    /// here would indicate a mismatch.
+    #[test]
+    fn guess_mime_compressible_extensions_return_text_or_wasm_types() {
+        let compressible = [
+            ("index.html", "text/html"),
+            ("page.htm", "text/html"),
+            ("app.js", "text/javascript"),
+            ("module.mjs", "text/javascript"),
+            ("styles.css", "text/css"),
+            ("app.wasm", "application/wasm"),
+            ("data.json", "application/json"),
+            ("source.map", "application/json"),
+            ("app.webmanifest", "application/manifest+json"),
+            ("icon.svg", "image/svg+xml"),
+            ("readme.txt", "text/plain"),
+            ("font.ttf", "font/ttf"),
+        ];
+        for (file, expected_prefix) in compressible {
+            let mime = guess_mime(file);
+            assert!(
+                mime.starts_with(expected_prefix),
+                "{file}: expected MIME starting with {expected_prefix:?}, got {mime:?}"
+            );
+            // A compressible type must not be a binary application type that
+            // carries no meaning for the browser (would make compression pointless).
+            assert_ne!(
+                mime, "application/octet-stream",
+                "{file} must not resolve to the binary fallback"
+            );
+        }
+    }
+
+    /// §4.2 "Do not bother compressing" set: png, jpg/jpeg, webp, woff/woff2,
+    /// gif, ico are already-compressed binary assets.  The manifest may omit their
+    /// variants; the daemon serves them canonical.  They must stay binary MIME
+    /// types so the build knows not to waste time compressing them.
+    #[test]
+    fn guess_mime_non_compressible_binary_extensions_return_binary_types() {
+        let non_compressible = [
+            ("image.png", "image/png"),
+            ("photo.jpg", "image/jpeg"),
+            ("photo.jpeg", "image/jpeg"),
+            ("image.webp", "image/webp"),
+            ("font.woff2", "font/woff2"),
+            ("font.woff", "font/woff"),
+            ("anim.gif", "image/gif"),
+            ("favicon.ico", "image/x-icon"),
+        ];
+        for (file, expected) in non_compressible {
+            assert_eq!(guess_mime(file), expected, "{file}: expected {expected:?}");
+        }
+    }
+
+    /// §4.2 fallback: unknown extensions must resolve to the binary fallback,
+    /// keeping the compressible set closed.  The build must not silently
+    /// compress files it does not recognise.
+    #[test]
+    fn guess_mime_unknown_extension_returns_octet_stream() {
+        for file in ["asset.bin", "data.unknown", "file", "noext"] {
+            assert_eq!(
+                guess_mime(file),
+                "application/octet-stream",
+                "{file} must fall back to octet-stream"
+            );
+        }
+    }
+
+    /// §4.4 Security boundary: types the static serving path will compress
+    /// (html, js, svg) are active document types that `safe_download_mime` must
+    /// neutralise to `application/octet-stream` for the file-download path.
+    /// This confirms that the two paths — static serving and `local_file` — see
+    /// different MIME treatment, which is the structural guarantee that prevents
+    /// `Content-Encoding` from ever reaching peer-supplied content.
+    #[test]
+    fn compressible_static_types_are_neutralized_on_the_download_path() {
+        // These MIME types are served compressed on the static path but must
+        // collapse to octet-stream when a peer declares them on a file upload,
+        // preserving the no-script-execution rule for inline rendering.
+        let active_compressible = [
+            "text/html",
+            "text/javascript",
+            "image/svg+xml",
+            "application/json",
+            "text/css",
+            "application/manifest+json",
+        ];
+        for mime in active_compressible {
+            assert_eq!(
+                safe_download_mime(mime),
+                "application/octet-stream",
+                "{mime} must be neutralized to octet-stream on the download path"
+            );
+        }
+    }
+
+    /// §4.4 Security boundary (positive case): inert binary types that pass
+    /// through `safe_download_mime` unchanged must not appear in the compressible
+    /// set (it would waste cycles compressing pre-compressed formats).
+    #[test]
+    fn inert_download_types_are_binary_not_compressible() {
+        // These pass through safe_download_mime; they must all be binary MIME
+        // types that the build will skip variants for.
+        let inert_binary = [
+            ("image/png", "image/png"),
+            ("image/jpeg", "image/jpeg"),
+            ("image/webp", "image/webp"),
+            ("image/gif", "image/gif"),
+            ("audio/mpeg", "audio/mpeg"),
+            ("video/mp4", "video/mp4"),
+            ("application/pdf", "application/pdf"),
+        ];
+        for (input, expected_out) in inert_binary {
+            assert_eq!(
+                safe_download_mime(input),
+                expected_out,
+                "{input} must pass through safe_download_mime unchanged"
+            );
+            // Each must be a binary/media type, not a text type the static
+            // serving path compresses.
+            assert!(
+                !expected_out.starts_with("text/"),
+                "{input} must not be a text/* type on the download path"
+            );
+        }
+    }
+
+    /// `safe_rel` must reject any path containing `..` (path traversal) and
+    /// return `None`.  These paths must never reach `UiSource::load`.
+    #[test]
+    fn safe_rel_rejects_traversal_sequences() {
+        for path in [
+            "/../etc/passwd",
+            "/foo/../../../etc/shadow",
+            "/a/b/../../../secret",
+            "/../",
+            "/..",
+        ] {
+            assert_eq!(
+                safe_rel(path),
+                None,
+                "{path} must be rejected (path traversal)"
+            );
+        }
+    }
+
+    /// `safe_rel` must produce a clean relative key for well-formed paths,
+    /// collapsing leading slashes and empty segments.
+    #[test]
+    fn safe_rel_produces_clean_relative_keys() {
+        assert_eq!(safe_rel("/"), Some(String::new()));
+        assert_eq!(safe_rel("//"), Some(String::new()));
+        assert_eq!(safe_rel("/index.html"), Some("index.html".into()));
+        assert_eq!(safe_rel("/assets/app.wasm"), Some("assets/app.wasm".into()));
+        assert_eq!(safe_rel("/a//b/./c.js"), Some("a/b/c.js".into()));
+    }
+
+    /// `last_segment_has_ext` drives the SPA fallback: a path without a file
+    /// extension maps to `index.html` so the Dioxus app can handle its own
+    /// routing.  Extension-bearing paths get a 404 if the asset is absent.
+    #[test]
+    fn last_segment_has_ext_drives_spa_fallback() {
+        // Paths without an extension fall back to index.html.
+        assert!(!last_segment_has_ext("about"));
+        assert!(!last_segment_has_ext("rooms/r-abc"));
+        assert!(!last_segment_has_ext(""));
+
+        // Paths with an extension do NOT fall back; a missing asset 404s.
+        assert!(last_segment_has_ext("app.js"));
+        assert!(last_segment_has_ext("assets/app-abc123.wasm"));
+        assert!(last_segment_has_ext("styles.css"));
+        assert!(last_segment_has_ext("favicon.ico"));
+    }
+
+    // ── #207 serve_static behavioral baseline (UiSource::Dir e2e) ────────────
+    //
+    // These tests cross the serve_static → UiSource::Dir → filesystem boundary.
+    // They pin the pre-#183 baseline (no Content-Encoding, correct Content-Type,
+    // SPA fallback, 404 for missing assets) so the #183 serving slice can make
+    // targeted diffs against a known-good starting state.
+    //
+    // NOTE: The full verification matrix in docs/ui-artifact-wire-encoding.md
+    // (Accept-Encoding negotiation, fail-closed integrity, Embedded/Dir parity)
+    // is deferred to the #183 manifest + a serve.rs slice. The local_file
+    // security regression guard (must never emit Content-Encoding) also belongs
+    // in that slice, as it requires testing through Request<Incoming>.
+
+    /// §3 "Embedded and --ui-dir sources behave identically": Dir source serves
+    /// a text asset with the correct Content-Type and no Content-Encoding.
+    /// This pins the baseline that the #183 serving slice upgrades.
+    #[test]
+    fn serve_static_dir_serves_asset_with_correct_content_type_and_no_encoding() {
+        let dir = TempDir::new().expect("ui dir");
+        std::fs::write(dir.path().join("app.js"), b"console.log('hello')").expect("write js");
+        let ui = super::UiSource::Dir(dir.path().to_path_buf());
+
+        let response = super::serve_static("/app.js", &ui);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/javascript; charset=utf-8"),
+        );
+        // Pre-#183 baseline: the current path emits no Content-Encoding.
+        // The #183 serving slice will add Accept-Encoding negotiation here.
+        assert!(
+            response.headers().get("content-encoding").is_none(),
+            "pre-#183 serve_static must emit no Content-Encoding"
+        );
+    }
+
+    /// §3: root path `/` maps to `index.html` through the Dir source.
+    #[test]
+    fn serve_static_dir_root_maps_to_index_html() {
+        let dir = TempDir::new().expect("ui dir");
+        std::fs::write(dir.path().join("index.html"), b"<!doctype html>").expect("write index");
+        let ui = super::UiSource::Dir(dir.path().to_path_buf());
+
+        let response = super::serve_static("/", &ui);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+        );
+    }
+
+    /// §3 SPA fallback: an extension-less route (no `.` in the last segment)
+    /// falls through to `index.html` so the Dioxus app can handle routing.
+    #[test]
+    fn serve_static_dir_spa_fallback_for_extension_less_route() {
+        let dir = TempDir::new().expect("ui dir");
+        std::fs::write(dir.path().join("index.html"), b"<html>app</html>").expect("write index");
+        let ui = super::UiSource::Dir(dir.path().to_path_buf());
+
+        let response = super::serve_static("/rooms/r-abc123", &ui);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+        );
+    }
+
+    /// §3: an unknown asset path whose last segment has a file extension returns
+    /// 404. Only extension-less routes fall back to index.html; asset paths that
+    /// are genuinely absent must not serve the SPA shell.
+    #[test]
+    fn serve_static_dir_missing_asset_with_extension_returns_404() {
+        let dir = TempDir::new().expect("ui dir");
+        // Seed the SPA shell: an erroneous fallback for an extension-bearing
+        // miss would serve it with 200 and fail the assertion below. Without
+        // the fixture, this test could not tell the forbidden fallback from
+        // the intended direct 404 — both would 404 in an empty directory.
+        std::fs::write(dir.path().join("index.html"), b"<html>app</html>").expect("write index");
+        let ui = super::UiSource::Dir(dir.path().to_path_buf());
+
+        let response = super::serve_static("/assets/missing.wasm", &ui);
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// UiSource::None returns the no-UI status page (200 text/plain) for any
+    /// path. It must never emit Content-Encoding.
+    #[test]
+    fn serve_static_none_returns_status_page_without_content_encoding() {
+        let response = super::serve_static("/app.wasm", &super::UiSource::None);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().get("content-encoding").is_none(),
+            "status page must not have Content-Encoding"
+        );
+        // Confirm it's the descriptive text page, not an asset.
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8"),
+        );
+    }
+
+    /// §4.2: the wasm asset type is correctly typed and has no Content-Encoding
+    /// in the Dir source, confirming the content-type round-trip through
+    /// guess_mime → asset() for the highest-value compressible artifact.
+    #[test]
+    fn serve_static_dir_wasm_asset_has_correct_type_and_no_encoding() {
+        let dir = TempDir::new().expect("ui dir");
+        let wasm_bytes = b"\0asm\x01\x00\x00\x00"; // minimal wasm magic
+        std::fs::write(dir.path().join("app_bg.wasm"), wasm_bytes).expect("write wasm");
+        let ui = super::UiSource::Dir(dir.path().to_path_buf());
+
+        let response = super::serve_static("/app_bg.wasm", &ui);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/wasm"),
+        );
+        assert!(
+            response.headers().get("content-encoding").is_none(),
+            "wasm asset must not have Content-Encoding before #183 variant sealing"
+        );
     }
 
     /// AC-5: a DATA payload that exceeds `MAX_STREAM_DATA_BYTES` (65 536) but whose
