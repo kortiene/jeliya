@@ -297,12 +297,19 @@ its sealed variants, and the manifest carries shared provenance:
     platform prefix (drive letter, UNC), no absolute, empty, `.` or `..`
     segment; violations fail validation. `safe_rel`'s slash-splitting alone
     is not sufficient — on Windows a native join would honor `..\` or `C:\`
-    and escape the artifact directory from a schema-valid manifest. And the
-    uniqueness/ancestor rules are validated on a **portable collision key**
-    (the Unicode case-folded path), not exact equality: `assets/App.js` and
-    `assets/app.js` alias on case-insensitive filesystems (Windows, default
-    macOS), where a `Dir` source overwrites one representation while an
-    embedded map holds both — a parity break, so sealing both is rejected,
+    and escape the artifact directory from a schema-valid manifest. Path
+    segments are further restricted to a **portable alphabet**: lowercase
+    ASCII letters, digits, `_`, `-`, and interior `.` (no leading or trailing
+    dot, and no Windows-reserved device name such as `con`, `nul`, `aux`,
+    `com1`–`com9`, `lpt1`–`lpt9`). This makes byte equality the collision
+    key by construction: with only lowercase ASCII sealed, case-fold aliasing
+    (`assets/App.js` vs `assets/app.js` on Windows/default-macOS), Unicode
+    NFC/NFD aliasing (macOS normalizes), and Win32 trailing-dot/space
+    normalization can never produce two sealed paths one filesystem treats
+    as the same file — the parity break where a `Dir` source overwrites one
+    representation while an embedded map holds both is unrepresentable. The
+    build emits lowercase-ASCII names today; a future asset outside the
+    alphabet is a build failure to resolve, not a reason to widen the rule,
   - `content_type` (the canonical decoded type),
   - `identity`: the content-address, `{ digest: sha256(canonical bytes), bytes }`,
   - `encodings`: a list of `{ coding, path, digest: sha256(variant bytes), bytes,
@@ -332,9 +339,16 @@ its sealed variants, and the manifest carries shared provenance:
   `content_type`, and provenance, so sealing, dropping, or re-compressing a
   variant — or a compressor version bump — can never change the artifact's
   canonical identity; the whole-manifest digest above continues to cover
-  everything. #183 may seal a different serialization only by recording it in
+  everything. The loader **derives this digest from the validated
+  `(path, identity.digest)` entries** — it never trusts an advertised
+  aggregate field: a stale or inconsistent field can sit in a manifest whose
+  sidecar digest verifies and whose every asset matches its own
+  `identity.digest`, and comparing the advertised value against the pinned
+  one would accept a different canonical byte set. If the manifest also
+  carries the aggregate as a field, a mismatch with the derived value fails
+  closed. #183 may seal a different serialization only by recording it in
   the manifest itself; the invariants — canonical-only inputs, bytewise `path`
-  order, deterministic — are contractual.
+  order, deterministic, derived-not-trusted — are contractual.
 - **Determinism requirement:** Brotli/gzip output is **not** guaranteed identical
   across tool versions or platforms. The build must pin the exact compressor and
   settings (sealed in `params`), and #183's cross-target identical-bytes gate must
@@ -453,6 +467,10 @@ when the daemon serves its value faithfully. The rows:
   valid-JSON manifest whose **detached digest is missing or mismatched**
   fails closed identically — load-time digest verification is required on
   both sources, never a fall-through to trusting the manifest's metadata.
+  And a validly sealed manifest whose **advertised aggregate canonical
+  digest does not match the value derived from its own entries** fails
+  closed — the derived value, never the advertised field, is what
+  exact-version rejection compares.
 - **Allow-list:** with an extra file (for example `debug.html`) placed in the
   `Dir` source but absent from the manifest, requesting it returns **404** —
   never a `200` with unverified bytes; the manifest-less bare directory

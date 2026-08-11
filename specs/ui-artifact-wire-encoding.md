@@ -364,11 +364,15 @@ its sealed variants, and the manifest carries shared provenance:
     lookup could not deterministically select between them). Every sealed
     path uses a **portable slash-only grammar** (no backslash, no platform
     prefix, no absolute/empty/`.`/`..` segment — a native join would honor
-    `..\`/`C:\` on Windows and escape the artifact directory), and the
-    uniqueness/ancestor rules are validated on a **portable collision key**
-    (Unicode case-folded path), not exact equality — `assets/App.js` vs
-    `assets/app.js` alias on case-insensitive filesystems and break
-    Embedded/Dir parity,
+    `..\`/`C:\` on Windows and escape the artifact directory), and segments
+    are restricted to a **portable alphabet**: lowercase ASCII letters,
+    digits, `_`, `-`, interior `.` (no leading/trailing dot, no
+    Windows-reserved device name `con`/`nul`/`aux`/`com1`–`9`/`lpt1`–`9`).
+    Byte equality is then the collision key by construction — case-fold,
+    Unicode NFC/NFD, and Win32 trailing-dot/space aliasing are
+    unrepresentable, so no filesystem can treat two sealed paths as one
+    file. The build emits lowercase ASCII today; an out-of-alphabet asset is
+    a build failure, not a reason to widen the rule,
   - `content_type` (the canonical decoded type),
   - `identity`: `{ digest: sha256(canonical bytes), bytes }` — the
     content-address,
@@ -394,9 +398,15 @@ its sealed variants, and the manifest carries shared provenance:
   lowercase-hex `identity.digest`, a newline, per entry), SHA-256 over that.
   Excludes `encodings`, `content_type`, and provenance — sealing, dropping, or
   re-compressing a variant, or a compressor bump, can never change canonical
-  identity; the whole-manifest digest continues to cover everything. #183 may
+  identity; the whole-manifest digest continues to cover everything. The
+  loader **derives** the value from the validated `(path, identity.digest)`
+  entries — never trusts an advertised aggregate field (a stale field can
+  sit in a sidecar-verified manifest whose every asset self-matches); if the
+  manifest carries the field too, a mismatch with the derived value fails
+  closed. #183 may
   seal a different serialization only by recording it in the manifest; the
-  invariants (canonical-only inputs, bytewise `path` order, deterministic) are
+  invariants (canonical-only inputs, bytewise `path` order, deterministic,
+  derived-not-trusted) are
   contractual.
 - **Determinism requirement:** Brotli/gzip output is **not** guaranteed identical
   across tool versions or platforms. The build must pin the exact compressor and
@@ -498,7 +508,10 @@ when the daemon serves its value faithfully. The rows:
 - **Fail-closed, manifest:** a present-but-truncated/unparsable manifest →
   fail closed, never a collapse into the "no manifest" dev state; likewise a
   valid-JSON manifest whose detached digest is missing or mismatched
-  (load-time digest verification, both sources).
+  (load-time digest verification, both sources), and a validly sealed
+  manifest whose advertised aggregate canonical digest does not match the
+  value derived from its own entries (exact-version rejection compares the
+  derived value, never the advertised field).
 - **Allow-list:** an extra file (for example `debug.html`) in the `Dir` source
   but absent from the manifest → **404**, never a `200` with unverified bytes;
   the manifest-less bare directory serving that same file stays the dev-only
