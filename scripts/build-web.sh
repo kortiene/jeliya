@@ -139,6 +139,12 @@ if [ "$active_cargo" != "$pinned_rustc" ]; then
   echo "      RUSTUP_TOOLCHAIN=$pinned_rustc bash scripts/build-web.sh" >&2
   exit 1
 fi
+# The VALIDATED toolchain must also be the one the build uses: validation
+# runs with the repository as cwd, but cargo later runs from the isolated
+# temp directory — where a rustup DIRECTORY override that satisfied the
+# checks here no longer applies and the default toolchain would build
+# instead. Pin the invocation explicitly (a no-op without rustup).
+export RUSTUP_TOOLCHAIN="$pinned_rustc"
 
 # Honor an externally-set CARGO_TARGET_DIR (the determinism check builds each
 # sample in its own fresh dir); wasm-bindgen must read from the same one, or a

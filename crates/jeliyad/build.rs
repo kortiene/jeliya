@@ -341,6 +341,18 @@ fn imported_default_idents(normalized: &str) -> Vec<(String, String)> {
     let mut bindings = Vec::new();
     let mut from_idx = 0;
     while let Some(rel) = normalized[from_idx..].find("import ") {
+        let key_at = from_idx + rel;
+        // Identifier boundary: `ximport init from …` is not an import
+        // statement (and not valid JS) — a preceding identifier character
+        // disqualifies the match.
+        let bounded = normalized[..key_at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'));
+        if !bounded {
+            from_idx = key_at + "import ".len();
+            continue;
+        }
         let at = from_idx + rel + "import ".len();
         let rest = &normalized[at..];
         let ident: String = rest

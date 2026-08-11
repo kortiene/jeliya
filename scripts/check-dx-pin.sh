@@ -31,9 +31,10 @@ scan() {
 }
 fail=0
 
-# `cargo [+toolchain] [--global-option] install` is the documented grammar —
-# the predicates tolerate those prefixes so `cargo +1.96.0 install x` or
-# `cargo --quiet install x` cannot slip past a literal-adjacency match.
+# `cargo [+toolchain] [OPTIONS] install` is the documented grammar, and an
+# option may carry a SEPARATE value token (`--config KEY=VALUE`) — so any
+# tokens are tolerated between `cargo` and the subcommand. Over-matching only
+# ever FLAGS more (fail-closed), never less.
 # A joined line may chain several commands (`cargo install x && echo done`);
 # each segment is classified on its own so a diagnostic tail cannot launder a
 # real install — substring matching used to skip the whole line. A segment is
@@ -62,14 +63,24 @@ pinned() {
 while IFS= read -r line; do
   while IFS= read -r seg; do
     is_diagnostic "$seg" && continue
-    if grep -Eq 'cargo([[:space:]]+(\+[[:alnum:].-]+|-{1,2}[[:alnum:]=-]+))*[[:space:]]+(install|binstall).*dioxus-cli' <<<"$seg" && ! pinned "$seg"; then
+    if grep -Eq 'cargo([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|binstall).*dioxus-cli' <<<"$seg" && ! pinned "$seg"; then
       echo "FAIL: unpinned dioxus-cli install: $seg"
       fail=1
     fi
-    # A curl/wget of a dx release must carry a pinned version tag.
-    if grep -Eq '(curl|wget).*dioxus' <<<"$seg" && ! grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$seg"; then
-      echo "FAIL: unpinned dx download: $seg"
-      fail=1
+    # A curl/wget of a dx release must carry the pinned version in the
+    # FETCHED URL itself — a version token in an output filename or another
+    # argument pins nothing about what the remote resource tracks.
+    if grep -Eq '(curl|wget).*dioxus' <<<"$seg"; then
+      url_pinned=0
+      for word in $seg; do
+        case "$word" in
+          *://*) grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+' <<<"$word" && url_pinned=1 ;;
+        esac
+      done
+      if [ "$url_pinned" -ne 1 ]; then
+        echo "FAIL: unpinned dx download (no version in the fetched URL): $seg"
+        fail=1
+      fi
     fi
   done < <(segments "$line")
 done < <(scan 'dioxus-cli|(curl|wget).*dioxus')
@@ -78,7 +89,7 @@ done < <(scan 'dioxus-cli|(curl|wget).*dioxus')
 while IFS= read -r line; do
   while IFS= read -r seg; do
     is_diagnostic "$seg" && continue
-    if grep -Eq 'cargo([[:space:]]+(\+[[:alnum:].-]+|-{1,2}[[:alnum:]=-]+))*[[:space:]]+(install|binstall).*wasm-bindgen' <<<"$seg" && ! pinned "$seg"; then
+    if grep -Eq 'cargo([[:space:]]+[^[:space:]]+)*[[:space:]]+(install|binstall).*wasm-bindgen' <<<"$seg" && ! pinned "$seg"; then
       echo "FAIL: unpinned wasm-bindgen-cli install: $seg"
       fail=1
     fi

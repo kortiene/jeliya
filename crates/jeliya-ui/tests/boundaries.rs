@@ -180,6 +180,8 @@ fn no_cfg_target_forks_in_shared_components() {
                 "all(unix",
                 "not(windows",
                 "not(unix",
+                "cfg_attr(windows",
+                "cfg_attr(unix",
             ] {
                 if compact.contains(pattern) {
                     offenders.push(format!("{} — contains {pattern:?}", path.display()));
@@ -264,6 +266,15 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect();
+            // Aliasing the MODULE (`use serde_json as json`) evades both
+            // scans while later signatures use json::Value; the alias itself
+            // is the breach signal.
+            if compact.contains("useserde_jsonas") {
+                offenders.push(format!(
+                    "{} — aliases the serde_json module (raw-JSON boundary)",
+                    path.display()
+                ));
+            }
             let mut from = 0;
             while let Some(rel) = compact[from..].find("useserde_json::") {
                 let at = from + rel;
