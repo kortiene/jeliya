@@ -40,7 +40,11 @@ and Brotli would beat that. That saving is currently unclaimed. It costs nothing
 ## The decision
 
 Seal a **Brotli** and a **gzip** variant of each compressible asset inside the
-#183 artifact manifest, each with its own digest and shared provenance, and have
+#183 artifact manifest, each with its own digest and shared provenance (per
+asset, a variant whose bytes are not smaller than canonical is omitted — refined
+in [Compressible set and canonical identity](#compressible-set-and-canonical-identity);
+that per-asset omission is distinct from dropping a *coding* build-wide, which
+stays rejected), and have
 the daemon serve them by **static content negotiation**: it reads the client's
 `Accept-Encoding`, chooses the best *sealed* variant the client accepts (Brotli
 preferred over gzip when both are offered and sealed), serves those bytes, and
@@ -169,6 +173,12 @@ target.
   variant-corrupt does: a contract that refuses a bad variant but serves a bad
   canonical with `200` is not fail-closed. The manifest-less bare directory
   remains the one exempt state — nothing is sealed there.
+- **A valid manifest is an allow-list.** A request path that, after SPA-fallback
+  resolution, matches no manifest entry is answered **404** — never read from
+  the directory or the embed and served unverified. An extra, stale, or
+  hand-added file in a `--ui-dir` (or a leftover compiled-in asset) is not
+  servable content; only the manifest-less bare directory serves unlisted
+  files.
 - **What that check proves differs by source, stated rather than implied.** For
   `Embedded`, the manifest is authenticated transitively by the integrity of the
   daemon binary, so a mismatch is genuine tamper or packaging evidence. For
@@ -296,7 +306,9 @@ its sealed variants, and the manifest carries shared provenance:
 
 - Give `UiSource` access to the parsed manifest for both variants — compiled-in
   for `Embedded`, loaded from the `--ui-dir` for `Dir`.
-- Change the load/serve path so `serve_static` negotiates: parse `Accept-Encoding`
+- Change the load/serve path so `serve_static` negotiates: resolve the request
+  path against the manifest's entry set first (with a valid manifest an unlisted
+  path is a **404**, never a filesystem or embed fallback), parse `Accept-Encoding`
   (`q=0` excludes a coding; unknown codings are ignored; `*` matches every
   coding not explicitly listed — so a bare `*` accepts the sealed codings and
   `*;q=0` excludes them, RFC 9110 §12.5.3; nonzero weights do **not** reorder),
@@ -323,7 +335,11 @@ Every row against an asset that has sealed variants additionally asserts
 `Vary: Accept-Encoding` is present — including the gzip, no-header, weighted,
 and `identity;q=0` rows — per the per-asset requirement in
 [Security boundary](#security-boundary); an implementation that adds `Vary`
-only on the Brotli branch must fail these tests. The rows:
+only on the Brotli branch must fail these tests. Every row — identity and
+encoded alike — also asserts the response `Content-Type` equals the manifest's
+sealed `content_type` (the canonical decoded type: `application/wasm` for the
+wasm asset, never `application/octet-stream` and never a type derived from a
+variant `path`). The rows:
 
 - `Accept-Encoding: br, gzip` → assert `Content-Encoding: br`, `Content-Length`
   equals the sealed `br` bytes, `Vary: Accept-Encoding` present, and
@@ -349,7 +365,10 @@ only on the Brotli branch must fail these tests. The rows:
   codings (the real-world Safari range-request shape).
 - **Every entry, every coding:** iterate the manifest's **own entry list** (never
   a hard-coded path set) and, for each asset entry and each sealed coding **plus
-  identity**, on **both** sources, request the asset over HTTP and assert the
+  identity**, on **both** sources, request the asset over HTTP offering exactly
+  that coding, assert the response's `Content-Encoding` equals the requested
+  coding (absent for identity) — proving the sealed variant, not canonical
+  identity, answered — and assert the
   decoded body's SHA-256 equals `identity.digest`. The four named types above
   stay the behavioral subset (headers, weights, fail-closed); this row proves the
   universal claim that every sealed variant decodes to its canonical identity —
@@ -366,11 +385,16 @@ only on the Brotli branch must fail these tests. The rows:
 - **Fail-closed, manifest:** a `--ui-dir` whose manifest is present but
   truncated or unparsable fails closed (**5xx**/refusal), never serves
   canonical bytes with no `Content-Encoding` as if no manifest existed.
+- **Allow-list:** with an extra file (for example `debug.html`) placed in the
+  `Dir` source but absent from the manifest, requesting it returns **404** —
+  never a `200` with unverified bytes; the manifest-less bare directory
+  serving that same file stays the dev-only contrast.
 - **Security regression:** `GET /api/files/local?...` with `Accept-Encoding: br,
   gzip` returns **no** `Content-Encoding` and the inert-attachment headers are
   unchanged.
-- **Identical sources:** the negotiated encoding, `Content-Length`, and decoded
-  digest for each asset match between the `Embedded` and `Dir` daemons.
+- **Identical sources:** the negotiated encoding, `Content-Type`,
+  `Content-Length`, and decoded digest for each asset match between the
+  `Embedded` and `Dir` daemons.
 - **Cross-target identical bytes:** #183's gate diffs every sealed variant across
   daemon targets; this decision only adds the variants to that set.
 - **Evidence:** record raw and encoded sizes per asset and as a dist total into

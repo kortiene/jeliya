@@ -222,6 +222,11 @@ shipped bytes are intact, not that they parse).
   For `Embedded` this holds transitively via binary integrity; for `Dir` the
   read bytes are hashed **before** serving. Canonical-corrupt fails exactly as
   variant-corrupt.
+- **A valid manifest is an allow-list.** A request path that, after SPA-fallback
+  resolution, matches no manifest entry is a **404** — never read from the
+  directory or the embed and served unverified. An extra, stale, or hand-added
+  file in a `--ui-dir` (or a leftover compiled-in asset) is not servable
+  content; only the manifest-less bare directory serves unlisted files.
 - A representation whose bytes are **missing or do not match the sealed digest**
   is a fail-closed error (a 5xx, e.g. a `500`/`503` with an `internal`-class
   body), **not** a silent fall-through to the uncompressed bytes and **not** a
@@ -372,7 +377,10 @@ its sealed variants, and the manifest carries shared provenance:
 
 - Give `UiSource` access to the parsed manifest for both variants (compiled-in
   for `Embedded`, loaded from the `--ui-dir` for `Dir`).
-- Change the load/serve path so `serve_static` (line 895) negotiates: parse
+- Change the load/serve path so `serve_static` (line 895) negotiates: resolve
+  the request path against the manifest's entry set first (with a valid
+  manifest an unlisted path is a **404**, never a filesystem or embed
+  fallback), parse
   `Accept-Encoding` (`q=0` excludes a coding; unknown codings are ignored; `*`
   matches every coding not explicitly listed — bare `*` accepts the sealed
   codings, `*;q=0` excludes them, RFC 9110 §12.5.3; nonzero weights do not
@@ -402,7 +410,11 @@ The decision doc states this matrix; the serving slice implements it as tests.
 For **each** source — an `embed-ui` daemon, and a `--ui-dir` daemon pointed at
 the built artifact directory — request the **root document, the wasm, the JS,
 and the stylesheet**. Every row against a variant-bearing asset also asserts
-`Vary: Accept-Encoding` is present (not only the Brotli row). The rows:
+`Vary: Accept-Encoding` is present (not only the Brotli row). Every row —
+identity and encoded alike — also asserts `Content-Type` == the manifest's
+sealed `content_type` (the canonical decoded type, never
+`application/octet-stream` for the wasm asset and never a type derived from a
+variant `path`). The rows:
 
 - `Accept-Encoding: br, gzip` → assert `Content-Encoding: br`,
   `Content-Length` == sealed `br` bytes, `Vary: Accept-Encoding` present, and
@@ -417,7 +429,10 @@ and the stylesheet**. Every row against a variant-bearing asset also asserts
   canonical (the RFC 9110 §12.4.1 disregard stance); bare `*` → br (§12.5.3
   wildcard); `identity;q=1, *;q=0` → canonical, no `Content-Encoding`.
 - **Every entry, every coding:** iterate the manifest's **own entry list** —
-  every asset, every sealed coding **plus identity**, on both sources — and
+  every asset, every sealed coding **plus identity**, on both sources —
+  request offering exactly that coding, assert `Content-Encoding` == the
+  requested coding (absent for identity), proving the sealed variant rather
+  than canonical identity answered, and
   assert the decoded body's SHA-256 == `identity.digest`.
 - **Fail-closed:** with a variant deliberately corrupted or removed from the
   source, a request offering that sealed encoding returns a **5xx**, never a
@@ -427,11 +442,16 @@ and the stylesheet**. Every row against a variant-bearing asset also asserts
   a `png`), never `200` with bytes not matching `identity.digest`.
 - **Fail-closed, manifest:** a present-but-truncated/unparsable manifest →
   fail closed, never a collapse into the "no manifest" dev state.
+- **Allow-list:** an extra file (for example `debug.html`) in the `Dir` source
+  but absent from the manifest → **404**, never a `200` with unverified bytes;
+  the manifest-less bare directory serving that same file stays the dev-only
+  contrast.
 - **Security regression:** `GET /api/files/local?...` with `Accept-Encoding: br,
   gzip` returns **no** `Content-Encoding` and the inert-attachment headers are
   unchanged.
-- **Identical sources:** the negotiated encoding, `Content-Length`, and decoded
-  digest for each asset match between the `Embedded` and `Dir` daemons.
+- **Identical sources:** the negotiated encoding, `Content-Type`,
+  `Content-Length`, and decoded digest for each asset match between the
+  `Embedded` and `Dir` daemons.
 - **Cross-target identical bytes:** #183's gate diffs every sealed variant across
   daemon targets (this decision only adds the variants to that set).
 - **Evidence:** record raw and encoded sizes per asset and as a dist total into
@@ -499,7 +519,9 @@ Documentation-contract criteria (`scripts/check-docs.mjs`):
   upper bounds; final #198 numbers come from the #183 artifact.
 - Brotli is available to the build toolchain as a pinnable, deterministic
   compressor. The decision as shipped seals **both** `br` and `gzip`
-  unconditionally and records **no** gzip-only fallback; if a deterministic
+  unconditionally at the coding level (the per-asset omission of a variant
+  that is not smaller than canonical, §4.4, is orthogonal to this) and
+  records **no** gzip-only fallback; if a deterministic
   Brotli genuinely cannot be pinned, that is a blocker to resolve — or a formal
   amendment to the canonical decision record — before #183 ships, not a silent
   gzip-only build.
