@@ -2015,3 +2015,140 @@ fn a_sink_can_fail_at_finalization_and_publishes_nothing() {
         "a failed staging commit mints no artifact"
     );
 }
+
+/// The **source** can fail after the reader is open — a staging file reaped, a
+/// native read erroring partway through — which is the upload mirror of a sink
+/// failing mid-download: the uploader must stop sending DATA and settle without
+/// reaping bytes a retry still needs.
+#[test]
+fn a_staged_read_can_fail_after_the_reader_is_open() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("blob.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    let mut reader = block_on(services.files().read_staged(&blob)).expect("reader");
+    assert_eq!(
+        block_on(reader.next_chunk(4)).expect("first pull"),
+        Some(b"0123".to_vec())
+    );
+    controller.force_error(
+        Capability::StagedReadChunk,
+        CapabilityError::Failed(FailureKind::Unreadable),
+    );
+    assert_eq!(
+        block_on(reader.next_chunk(4)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "the source failed mid-upload"
+    );
+    // The failure consumed no position, and the bytes are still staged for a
+    // retry — the upload must not reap them on a source error.
+    assert_eq!(
+        block_on(reader.next_chunk(4)).expect("the next pull"),
+        Some(b"4567".to_vec())
+    );
+    assert!(block_on(services.files().read_staged(&blob)).is_ok());
+}
+
+// ---- D4: abandoned picker handles are releasable ------------------------
+
+/// A pick the user abandons must be releasable: the service holds the real
+/// `File`/path/`content://` grant behind an opaque token, and nothing else
+/// tells it the object is dead. A `Drop` guard cannot do it — the handle is
+/// `Clone`, so no copy knows it is the last.
+#[test]
+fn abandoned_picks_and_targets_can_be_discarded() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(
+        block_on(services.files().discard_source(src.clone())),
+        Ok(())
+    );
+    assert!(
+        controller
+            .effects()
+            .iter()
+            .any(|e| matches!(e, RecordedEffect::DiscardedSource)),
+        "the release is recorded"
+    );
+    // Final, and the object is gone: staging it now fails closed.
+    assert_eq!(
+        block_on(services.files().discard_source(src.clone())).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a discard is final"
+    );
+    assert_eq!(
+        block_on(
+            services
+                .files()
+                .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
+        )
+        .err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a discarded source cannot be staged"
+    );
+
+    controller.arm_export_target(ExportTargetKind::AndroidDocument, "out.bin");
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        block_on(services.files().discard_export_target(target.clone())),
+        Ok(())
+    );
+    assert!(
+        block_on(services.files().export_sink(target, &ct)).is_err(),
+        "a discarded target cannot be written to"
+    );
+}
+
+/// Staging consumes the source, so the service does not keep the picked object
+/// alive after it has been copied — and the same pick cannot be staged twice.
+#[test]
+fn staging_consumes_the_picked_source() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let again = src.clone();
+    assert!(settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct)
+    )
+    .is_ok());
+    assert_eq!(
+        block_on(services.files().stage_for_share(
+            again.clone(),
+            1024,
+            ProgressSink::discard(),
+            &ct
+        ))
+        .err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a staged source is consumed"
+    );
+    assert_eq!(
+        block_on(services.files().discard_source(again)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "and needs no discard"
+    );
+}

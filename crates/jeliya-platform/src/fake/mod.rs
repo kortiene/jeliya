@@ -728,6 +728,48 @@ impl Files for FakePlatform {
         })
     }
 
+    fn discard_source(&self, src: PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        let inner = self.inner.clone();
+        let token = src.token();
+        Box::pin(async move {
+            // The private entry IS the retained file object; dropping it is the
+            // whole point. Fails closed for a forged, already-staged, or
+            // already-discarded source, exactly as `release_staged` does.
+            if inner
+                .sources
+                .lock()
+                .expect("sources poisoned")
+                .remove(&token.get())
+                .is_none()
+            {
+                return Err(CapabilityError::Failed(FailureKind::Unreadable));
+            }
+            inner.record(RecordedEffect::DiscardedSource);
+            Ok(())
+        })
+    }
+
+    fn discard_export_target(
+        &self,
+        target: ExportTarget,
+    ) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        let inner = self.inner.clone();
+        let token = target.token();
+        Box::pin(async move {
+            if inner
+                .export_targets
+                .lock()
+                .expect("export targets poisoned")
+                .remove(&token.get())
+                .is_none()
+            {
+                return Err(CapabilityError::Failed(FailureKind::Unreadable));
+            }
+            inner.record(RecordedEffect::DiscardedExportTarget);
+            Ok(())
+        })
+    }
+
     fn stage_for_share(
         &self,
         src: PickedSource,
@@ -756,10 +798,14 @@ impl Files for FakePlatform {
             if let Some(error) = bound {
                 return Err(error);
             }
+            // `src` was taken by value, so this consumes the service's private
+            // entry too: the picked object cannot be staged twice, and an
+            // abandoned pick is released through `discard_source` instead of
+            // lingering for the service's lifetime.
             let (bytes, streamed) = {
-                let sources = inner.sources.lock().expect("sources poisoned");
-                match sources.get(&src.token().get()) {
-                    Some(body) => (body.bytes.clone(), body.streamed),
+                let mut sources = inner.sources.lock().expect("sources poisoned");
+                match sources.remove(&src.token().get()) {
+                    Some(body) => (body.bytes, body.streamed),
                     // The source vanished before staging.
                     None => return Err(CapabilityError::Failed(FailureKind::Unreadable)),
                 }
@@ -835,10 +881,11 @@ impl Files for FakePlatform {
                 .get(&token.get())
                 .cloned();
             match bytes {
-                Some(bytes) => {
-                    Ok(Box::new(FakeStagedReader { bytes, offset: 0 })
-                        as Box<dyn StagedBlobReader>)
-                }
+                Some(bytes) => Ok(Box::new(FakeStagedReader {
+                    inner,
+                    bytes,
+                    offset: 0,
+                }) as Box<dyn StagedBlobReader>),
                 None => Err(CapabilityError::Failed(FailureKind::Unreadable)),
             }
         })
@@ -1135,6 +1182,7 @@ impl ShareSink for FakeShareSink {
 /// generous caller exercises multiple chunks — the same "bounded, never the
 /// whole file at once" contract the staging copy holds.
 struct FakeStagedReader {
+    inner: Arc<FakeInner>,
     bytes: Arc<Vec<u8>>,
     offset: usize,
 }
@@ -1148,7 +1196,15 @@ impl StagedBlobReader for FakeStagedReader {
         &mut self,
         max_len: usize,
     ) -> BoxFuture<'_, Result<Option<Vec<u8>>, CapabilityError>> {
+        // The source can fail after the reader is open — a staging file reaped
+        // or a native read erroring partway through the upload. Bound at call
+        // time like every other scripted outcome, and the position is not
+        // consumed, so the failure is observable without corrupting the read.
+        let bound = self.inner.take_forced(Capability::StagedReadChunk);
         Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
             // Before the EOF check, so the rule is position-independent: a
             // zero bound would otherwise yield an endless run of empty
             // non-EOF chunks with the offset never advancing — a credit-driven

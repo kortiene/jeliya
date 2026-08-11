@@ -56,6 +56,11 @@ pub enum Capability {
     /// [`crate::files::ShareSink::commit`] — the same finalization failure on
     /// the inbound staging path; no [`crate::FetchedArtifact`] is minted.
     ShareSinkCommit,
+    /// [`crate::StagedBlobReader::next_chunk`] — the **source** failing
+    /// mid-upload, the mirror of a sink failing mid-download: the staged file
+    /// became unreadable after the reader was opened, so the uploader must stop
+    /// sending DATA and settle without reaping bytes a retry still needs.
+    StagedReadChunk,
     /// [`crate::Files::share_content`].
     ShareContent,
     /// [`crate::Share::share`].
@@ -121,6 +126,11 @@ pub enum RecordedEffect {
         /// The committed bytes, in write order.
         bytes: Vec<u8>,
     },
+    /// An abandoned picked source was released, dropping the file object or
+    /// URI grant the service held for it.
+    DiscardedSource,
+    /// An abandoned export target was released, dropping its write grant.
+    DiscardedExportTarget,
     /// A staged blob's bytes were released after the daemon's `file.share`
     /// settled — the outbound "delete after share" reap. Carries nothing: the
     /// staging location never leaves the service (§K1).

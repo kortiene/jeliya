@@ -335,6 +335,13 @@ impl LifecycleBus {
     /// pending loss count becomes a `Lagged` marker directly **before** the
     /// run it interrupted — a repeat accumulates into that marker rather than
     /// growing the buffer.
+    ///
+    /// The marker therefore precedes the whole run even when the loss happened
+    /// *between* two of its Backs. That is a deliberate, bounded approximation,
+    /// not an oversight: placing it exactly would split the run, costing a slot
+    /// per loss episode, and an alternating Back/loss burst would grow the
+    /// mailbox without bound. See [`LifecycleSubscription`] for the contract
+    /// this trades against.
     fn append_back_saturated(state: &mut SubscriberState) {
         let absorbed = match state.buffer.back_mut() {
             Some(Slot::Backs { count }) => {
@@ -408,10 +415,22 @@ impl std::fmt::Debug for LifecycleBus {
 /// An independent, live view of the lifecycle event stream.
 ///
 /// Implements [`Stream`]. Each [`Lifecycle::subscribe`] returns a distinct
-/// subscription; every one observes every control intent, and a
-/// [`LifecycleDelivery::Lagged`] marker occupies the position where any
-/// ordinary-event loss occurred. Yields `None` once the bus has closed and the
-/// mailbox is drained.
+/// subscription and every one observes every control intent, in order.
+///
+/// A [`LifecycleDelivery::Lagged`] marker reports ordinary-event loss at the
+/// position it occurred, with **one bounded exception**: a loss that happens
+/// while a run-length-encoded Back run sits at the tail is reported
+/// immediately *before* that run rather than inside it, so the emission
+/// `Back, dropped ordinary, Back` is observed as `Lagged{1}, Back, Back`.
+/// Splitting the run to place the marker exactly would cost a slot per loss
+/// episode and an adversarial alternation would then grow the mailbox without
+/// bound — the very thing the run encoding exists to prevent (§K8 requires
+/// lossless *and* bounded). Reporting early rather than late is the safer of
+/// the two placements: the consumer reconciles its state before acting on the
+/// Backs. Backs are never reordered relative to each other or to any other
+/// control intent, and none is ever lost.
+///
+/// Yields `None` once the bus has closed and the mailbox is drained.
 pub struct LifecycleSubscription {
     state: Arc<Mutex<SubscriberState>>,
 }
@@ -607,6 +626,11 @@ mod tests {
     }
 
     #[test]
+    /// Pins the bounded approximation documented on [`LifecycleSubscription`]:
+    /// a loss between two absorbed Backs is reported immediately BEFORE the
+    /// run, not inside it, because splitting the run per loss episode would
+    /// make the mailbox unbounded. This test exists to make that trade
+    /// explicit and to catch it silently changing.
     fn the_lagged_marker_sits_directly_before_the_absorbing_back_run() {
         let bus = LifecycleBus::new();
         let sub = bus.subscribe();

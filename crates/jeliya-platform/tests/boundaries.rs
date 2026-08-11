@@ -736,8 +736,12 @@ fn no_shared_ui_selection_reaches_the_implementation_surface() {
             "jeliya-ui",
             "--features",
             selection,
+            // ALL edge kinds, not `no-dev`: a dev-dependency enabling the
+            // feature unifies it into the same graph when the workspace's
+            // tests are built, so excluding dev edges would let a member open
+            // the door through `[dev-dependencies]` unseen.
             "--edges",
-            "no-dev",
+            "all",
             // Same format note as the default-graph test above.
             "--prefix",
             "none",
@@ -817,8 +821,12 @@ fn no_workspace_member_resolves_the_implementation_feature() {
             "-p",
             &name,
             "--all-features",
+            // ALL edge kinds, not `no-dev`: a dev-dependency enabling the
+            // feature unifies it into the same graph when the workspace's
+            // tests are built, so excluding dev edges would let a member open
+            // the door through `[dev-dependencies]` unseen.
             "--edges",
-            "no-dev",
+            "all",
             // Same format note as the default-graph test above.
             "--prefix",
             "none",

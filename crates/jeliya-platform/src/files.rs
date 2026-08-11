@@ -641,6 +641,33 @@ pub trait Files {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Option<PickedSource>, CapabilityError>>;
 
+    /// Release a [`PickedSource`] the caller will not stage — the picker half
+    /// of the same custody rule [`Files::release_staged`] states for staging.
+    ///
+    /// A pick that succeeds hands the component an opaque token while the
+    /// producing service keeps the real `File`, path, or `content://` grant in
+    /// its private table. If the user then navigates away, nothing tells the
+    /// service the object is dead, and repeated abandoned picks retain file
+    /// objects and URI grants for the service's lifetime. A guard cannot solve
+    /// it — [`PickedSource`] is `Clone`, so a `Drop` impl cannot know which
+    /// copy was the last — which is why the release is explicit.
+    ///
+    /// Consuming the handle by value makes it final; a source this service did
+    /// not produce, or one already staged or discarded, fails
+    /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable).
+    /// [`Files::stage_for_share`] consumes its source the same way, so a staged
+    /// pick needs no discard.
+    fn discard_source(&self, src: PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>>;
+
+    /// Release an [`ExportTarget`] the caller will not write to — the same rule
+    /// for the destination side, where an Android SAF create-document grant is
+    /// the resource being held. [`Files::export_sink`] consumes the target, so
+    /// only an abandoned one needs this.
+    fn discard_export_target(
+        &self,
+        target: ExportTarget,
+    ) -> BoxFuture<'_, Result<(), CapabilityError>>;
+
     /// Turn a [`PickedSource`] into a daemon-shareable [`ShareableBlob`].
     ///
     /// The copy is **bounded, size-enforced, and cancel-cleans-up**: the size
@@ -658,6 +685,11 @@ pub trait Files {
     /// A blob that *was* staged is the caller's to release: the bytes live
     /// until [`Files::release_staged`] is called, because only the UI knows
     /// whether the daemon's `file.share` settled.
+    ///
+    /// The **source** is consumed either way: it is taken by value, and the
+    /// service drops its private entry whatever the outcome, so an abandoned
+    /// pick is released with [`Files::discard_source`] rather than by retrying
+    /// this.
     fn stage_for_share(
         &self,
         src: PickedSource,
