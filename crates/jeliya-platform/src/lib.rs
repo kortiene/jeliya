@@ -96,27 +96,51 @@ pub mod implementation;
 pub use cancel::CancelToken;
 pub use clipboard::{Clipboard, Share, ShareAnchor, ShareAttachment, ShareContent};
 pub use error::{Availability, CapabilityError, FailureKind};
-/// The forgery boundary in one sentence: a shared component compiled with
-/// **default features** cannot construct a [`ShareableBlob`] — the factory
-/// surface exists only behind the default-off `implementation` feature.
+/// The forgery boundary, stated in two tiers — because Cargo **feature
+/// unification** makes the one-sentence version false in exactly the builds
+/// this crate exists to serve.
+///
+/// **Tier 1 — any graph without an implementation crate** (the default build,
+/// the `fake` build, every CI job, `jeliya-ui` on its own): the factory module
+/// is not compiled at all, and a [`ShareableBlob`] is literally not
+/// constructible. The `compile_fail` doctest below pins that.
+///
+/// **Tier 2 — a unified target binary.** When an M3–M5 target crate enables
+/// `implementation`, Cargo unifies the feature onto the single
+/// `jeliya-platform` instance *every* crate in that binary links, the shared
+/// UI's included, so the module is compiled in and tier 1 no longer applies.
+/// Three enforcements replace the vanished compile-time absence:
+///
+/// 1. **Path-addressed factories.** They are free functions in
+///    `implementation`, never inherent methods, so no call site can reach one
+///    without spelling that module — and `tests/boundaries.rs` scans every
+///    non-door workspace member's source for exactly that token.
+/// 2. **A dependency edge, which never unifies.** `jeliya-platform-implementation`
+///    is the sole manifest permitted to enable the feature, and a `cargo tree`
+///    test asserts the shared UI graph carries no edge to it.
+/// 3. **Minted-token registries that fail closed.** A handle a service did not
+///    mint resolves nowhere — the runtime gate that holds regardless of how the
+///    features resolved. Fake tokens carry issuer provenance, so even another
+///    service's genuine handle fails closed.
 #[cfg_attr(
     not(feature = "implementation"),
     doc = r#"
 
 ```compile_fail
-use jeliya_platform::files::BlobToken;
-use jeliya_platform::ShareableBlob;
-
-// Neither the token wrapper nor the factory exists on default features.
-let _ = ShareableBlob::for_implementation(BlobToken::from_raw(7), 10);
+// The factory module does not exist on default features, so neither the
+// token wrapper nor the constructor can be named.
+let _ = jeliya_platform::implementation::shareable_blob(
+    jeliya_platform::implementation::blob_token_from_raw(7),
+    10,
+);
 ```
 "#
 )]
 pub use files::ShareableBlob;
 pub use files::{
-    BlobToken, ExportTarget, ExportTargetKind, ExportToken, FileName, FileObjectKind, FileSink,
-    Files, LocalFileRef, Mime, PickedSource, ProgressSink, SourceToken, StageProgress,
-    StagedBlobReader,
+    ArtifactToken, BlobToken, ExportTarget, ExportTargetKind, ExportToken, FetchedArtifact,
+    FileName, FileObjectKind, FileSink, Files, InvalidFileName, LocalFileRef, Mime, PickedSource,
+    ProgressSink, ShareSink, SourceToken, StageProgress, StagedBlobReader,
 };
 pub use launcher::{SafeExternalUrl, UnsafeUrl, UrlLauncher};
 pub use lifecycle::{

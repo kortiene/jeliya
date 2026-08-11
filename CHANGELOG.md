@@ -28,12 +28,22 @@
   a staged blob, and `FileSink`s from `export_sink`/`open_sink` accept
   `file.read` DATA chunks (write-resolution is credit-advance; dropping an
   uncommitted sink deletes the partial artifact) — the retired
-  v1 local-file HTTP edge is unrepresentable. Clipboard writes are
+  v1 local-file HTTP edge is unrepresentable. Sharing a room file uses the
+  same byte discipline in the third direction: `share_sink` accepts the
+  pumped `file.read` stream and `commit` mints a `FetchedArtifact` the OS
+  share sheet accepts, so `ShareContent` carries only handles to bytes the
+  producing service custodies — never a bare `(RoomId, FileId)` the platform
+  has no way to read — and a successful share consumes the artifact.
+  `FileName` is validated, not merely promised: `FileName::parse` fails
+  closed on separators, `.`/`..`, empty, and control characters, so a
+  peer-supplied name cannot carry path traversal into a native sink. Text
+  language and formatting locale are two independent preference keys, per the
+  product contract's "text locale != formatting locale from day one". Clipboard writes are
   asynchronous (a browser denial is the `writeText` promise rejection), and a
   default-off `implementation` feature exposes path-free factories so the
   M3–M5 target crates (separate crates by design) can construct
-  `PickedSource`/`ExportTarget`/`ShareableBlob` without any path crossing the
-  boundary — `jeliya-ui` is scanned to never enable it. It ships a
+  `PickedSource`/`ExportTarget`/`ShareableBlob`/`FetchedArtifact` without any
+  path crossing the boundary. It ships a
   deterministic in-process fake for every service (`feature = "fake"`) in
   browser/desktop/Android shapes, scriptable for
   denied/unavailable/cancelled outcomes; scripted picker/dialog/share
@@ -47,6 +57,20 @@
   signature. Target implementations (browser web-sys, desktop dialogs, Android
   SAF/JNI) follow in M3–M5 behind the unchanged facade. The decision is
   recorded at `docs/dioxus-architecture.md` §"Decision 4".
+
+- New workspace crate `crates/jeliya-platform-implementation` — the single
+  blessed door to those factories (#174 §K4). Cargo unifies features per
+  package across a build graph, so a default-off feature is not a boundary in
+  a target binary: the moment any crate enables `implementation`, the factory
+  module is compiled into the one `jeliya-platform` instance the shared UI
+  also links. A dependency edge does not unify, so the boundary is one — this
+  crate is the only manifest permitted to enable the feature, the factories
+  are path-addressed free functions (so a call site must spell
+  `implementation`, which a workspace-wide code scan rejects outside the
+  door), and a `cargo tree` test asserts the shared UI graph has no edge to
+  it. Underneath all three, minted-token registries fail closed on any handle
+  a service did not mint, so a forged or cross-service handle resolves
+  nowhere.
 
 - `crates/jeliya-ui` adopts that canonical contract (#174): its former
   provisional local seam (`src/services.rs` and `WebPlatformServices`) is

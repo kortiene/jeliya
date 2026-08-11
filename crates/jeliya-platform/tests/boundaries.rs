@@ -154,37 +154,330 @@ fn no_retired_local_file_url_in_source() {
     );
 }
 
-/// The shared-component crate must never reach the `implementation` factory
-/// surface: `jeliya-ui`'s manifest must not enable the feature, and its source
-/// must not name the factory tokens — the compile-time forgery boundary (§K4)
-/// only holds if the shared graph stays on default features.
+/// The crates permitted to reach the `implementation` factory surface.
+///
+/// Adding a name here is the deliberate, reviewable act that admits an M3–M5
+/// target crate; nothing outside this list may enable the feature, depend on
+/// the door crate, or spell the `implementation` path.
+const IMPLEMENTATION_DOOR_CRATES: [&str; 1] = ["jeliya-platform-implementation"];
+
+/// Whether a manifest admits the `implementation` factory surface.
+///
+/// Cargo has two spellings for the same thing and a boundary check must catch
+/// both: the inline form (`jeliya-platform = { …, features = ["implementation"]
+/// }`) and the split-table form, where the dependency name is on the `[…]`
+/// header line and `features` is on its own line — so the header is tracked
+/// rather than each line judged alone. A dependency on the door crate counts
+/// too, since that is a transitive door. Inline comments are stripped so prose
+/// about the rule (including this crate's own manifest notes) cannot trip it.
+fn manifest_opens_the_implementation_door(manifest: &str) -> bool {
+    let mut table_names_platform = false;
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            table_names_platform = code.contains("jeliya-platform");
+            if table_names_platform && code.contains("implementation") {
+                return true;
+            }
+            continue;
+        }
+        if code.contains("jeliya-platform") && code.contains("implementation") {
+            return true;
+        }
+        if table_names_platform && code.contains("implementation") {
+            return true;
+        }
+    }
+    false
+}
+
+/// A copy of `text` with comments and string literals blanked out, so a token
+/// scan matches **code**, never prose.
+///
+/// Comment-stripping alone is not enough here: `jeliya-ui`'s composition test
+/// says "never forks the implementation" inside an assertion message, and a
+/// boundary check that goes red on an English sentence is a check somebody
+/// eventually deletes. Handles line and block comments, ordinary string
+/// literals with escapes, and raw strings with any number of hashes. Character
+/// literals are left alone: a `char` cannot hold the token being scanned for,
+/// and skipping them avoids mistaking a lifetime for one.
+fn code_only(text: &str) -> String {
+    let bytes: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        // Line comment.
+        if c == '/' && bytes.get(i + 1) == Some(&'/') {
+            while i < bytes.len() && bytes[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment (nesting, as Rust allows).
+        if c == '/' && bytes.get(i + 1) == Some(&'*') {
+            let mut depth = 1;
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == '/' && bytes.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == '*' && bytes.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    if bytes[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // Raw string: r, r#, r##, … followed by a quote.
+        if c == 'r' {
+            let mut hashes = 0;
+            while bytes.get(i + 1 + hashes) == Some(&'#') {
+                hashes += 1;
+            }
+            if bytes.get(i + 1 + hashes) == Some(&'"') {
+                i += 2 + hashes;
+                let closing: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                let closing: Vec<char> = closing.chars().collect();
+                while i < bytes.len() {
+                    if bytes[i..].starts_with(closing.as_slice()) {
+                        i += closing.len();
+                        break;
+                    }
+                    if bytes[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        // Ordinary string literal.
+        if c == '"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == '"' {
+                    i += 1;
+                    break;
+                }
+                if bytes[i] == '\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Every workspace member directory beside this crate (any sibling holding a
+/// `Cargo.toml`).
+fn sibling_crate_dirs() -> Vec<std::path::PathBuf> {
+    let crates_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(crates_dir).expect("readable crates dir") {
+        let path = entry.expect("dir entry").path();
+        if path.join("Cargo.toml").is_file() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    dirs
+}
+
+/// **No crate but the blessed door may reach the `implementation` factory
+/// surface** (§K4).
+///
+/// This replaces a narrower check that scanned only `jeliya-ui`'s manifest, and
+/// it is the boundary that actually holds under Cargo **feature unification**:
+/// once any crate in a target binary enables `implementation`, the module is
+/// compiled into the one `jeliya-platform` instance every crate links, so
+/// "`jeliya-ui` does not enable the feature" stops meaning "`jeliya-ui` cannot
+/// call the factories". Two things still hold, and this test asserts both:
+/// only the door crate's manifest may open the door, and no shared crate may
+/// spell the `implementation` path — which is why those factories are free
+/// functions rather than inherent methods, since a free function cannot be
+/// reached without naming its module.
+///
+/// The third leg — the dependency edge, which unification cannot touch — is
+/// [`the_shared_ui_graph_has_no_edge_to_the_implementation_door`].
 #[test]
-fn jeliya_ui_never_enables_the_implementation_feature() {
-    let ui_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../jeliya-ui"));
-    let manifest =
-        std::fs::read_to_string(ui_dir.join("Cargo.toml")).expect("readable jeliya-ui manifest");
-    // Scan non-comment manifest lines only, so prose about the rule cannot
-    // trip it; any dependency/feature line naming the feature does.
-    let enabled = manifest
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .any(|line| line.contains("implementation"));
-    assert!(
-        !enabled,
-        "jeliya-ui/Cargo.toml must not enable jeliya-platform/implementation"
-    );
+fn only_the_door_crate_reaches_the_implementation_surface() {
     let mut offenders = Vec::new();
-    for path in rust_sources(&ui_dir.join("src")) {
-        let text = std::fs::read_to_string(&path).expect("readable jeliya-ui source");
-        for (index, line) in text.lines().enumerate() {
-            if line.contains("for_implementation") || line.contains("from_raw") {
-                offenders.push(format!("{}:{}", path.display(), index + 1));
+    for dir in sibling_crate_dirs() {
+        let crate_name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf-8 crate dir");
+        // The contract crate itself defines the surface; the door crate is
+        // allowlisted by construction.
+        if crate_name == "jeliya-platform" || IMPLEMENTATION_DOOR_CRATES.contains(&crate_name) {
+            continue;
+        }
+        let manifest =
+            std::fs::read_to_string(dir.join("Cargo.toml")).expect("readable member manifest");
+        if manifest_opens_the_implementation_door(&manifest) {
+            offenders.push(format!(
+                "{crate_name}/Cargo.toml opens the implementation door"
+            ));
+        }
+        // Only crates that consume the contract can spell its factory path.
+        // Scanning every member would be wrong, not merely noisy: `from_raw`
+        // and the word "implementation" appear legitimately elsewhere in the
+        // workspace (jeliyad/src/serve.rs, for one).
+        if !manifest.contains("jeliya-platform") {
+            continue;
+        }
+        for sub in ["src", "tests", "examples"] {
+            for path in rust_sources(&dir.join(sub)) {
+                let text = std::fs::read_to_string(&path).expect("readable member source");
+                // Code only: the rule is described in prose — in comments and
+                // in at least one assertion message — across these crates, and
+                // describing it must not trip it.
+                for (index, line) in code_only(&text).lines().enumerate() {
+                    if line.contains("implementation") {
+                        offenders.push(format!(
+                            "{}:{} spells the implementation factory path",
+                            path.display(),
+                            index + 1
+                        ));
+                    }
+                }
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "jeliya-ui source names an implementation-factory token: {offenders:?}"
+        "only {IMPLEMENTATION_DOOR_CRATES:?} may reach jeliya-platform's implementation \
+         surface: {offenders:#?}"
+    );
+}
+
+/// The manifest checker must fail closed on **both** Cargo spellings, and the
+/// split-table form is exactly what a line-at-a-time check misses. Pins the
+/// contract against a regression to the previous checker, which read only
+/// `jeliya-ui/Cargo.toml` for a bare `implementation` substring and so passed
+/// this fixture vacuously.
+#[test]
+fn the_manifest_checker_detects_both_door_spellings() {
+    let inline = r#"
+[dependencies]
+jeliya-api = { path = "../jeliya-api" }
+jeliya-platform = { path = "../jeliya-platform", features = ["implementation"] }
+"#;
+    let split_table = r#"
+[dependencies.jeliya-platform]
+path = "../jeliya-platform"
+features = ["implementation"]
+"#;
+    let transitive = r#"
+[dependencies]
+jeliya-platform-implementation = { path = "../jeliya-platform-implementation" }
+"#;
+    let feature_table = r#"
+[features]
+ui = ["jeliya-platform/implementation"]
+"#;
+    for (label, fixture) in [
+        ("inline features", inline),
+        ("split dependency table", split_table),
+        ("transitive door dependency", transitive),
+        ("feature-table forward", feature_table),
+    ] {
+        assert!(
+            manifest_opens_the_implementation_door(fixture),
+            "the checker must trip on the {label} spelling"
+        );
+    }
+
+    // …and must not trip on prose or on an ordinary contract dependency.
+    let clean = r#"
+# jeliya-ui must never enable jeliya-platform/implementation.
+[dependencies]
+jeliya-platform = { path = "../jeliya-platform", optional = true } # not implementation
+
+[features]
+ui = ["dep:jeliya-platform", "jeliya-platform/fake"]
+"#;
+    assert!(
+        !manifest_opens_the_implementation_door(clean),
+        "comments and ordinary contract dependencies must not trip the checker"
+    );
+}
+
+/// The source scan must see **code and only code**: prose about the boundary —
+/// in comments, in an assertion message, in a raw-string fixture — must not
+/// trip it, while every import spelling that could actually reach the factories
+/// must. The alias and brace-list forms are the ones a naive `implementation::`
+/// substring check would miss.
+#[test]
+fn the_source_scan_sees_code_and_not_prose() {
+    let prose = r##"
+//! The implementation crate is the only door.
+/// A component never forks the implementation.
+/* implementation, described in a block comment */
+fn main() {
+    assert!(true, "prop cloning never forks the implementation");
+    let _fixture = r#"features = ["implementation"]"#;
+}
+"##;
+    assert!(
+        !code_only(prose).contains("implementation"),
+        "prose about the rule must not trip the scan:\n{}",
+        code_only(prose)
+    );
+
+    for reaching in [
+        "use jeliya_platform::implementation::shareable_blob;",
+        "use jeliya_platform::implementation as door;",
+        "use jeliya_platform::{files, implementation};",
+        "let b = jeliya_platform::implementation::blob_token_from_raw(7);",
+    ] {
+        assert!(
+            code_only(reaching).contains("implementation"),
+            "a reaching spelling must trip the scan: {reaching}"
+        );
+    }
+}
+
+/// The third leg of §K4 under feature unification: a **dependency edge**.
+///
+/// Unlike a feature, an edge never unifies — so asserting that the shared UI's
+/// graph does not reach `jeliya-platform-implementation` is a claim that stays
+/// true in every target binary, however the features resolve.
+#[test]
+fn the_shared_ui_graph_has_no_edge_to_the_implementation_door() {
+    let tree = tree(&[
+        "--locked",
+        "-p",
+        "jeliya-ui",
+        "--features",
+        "ui",
+        "--edges",
+        "no-dev",
+        // Same format note as the default-graph test above.
+        "--prefix",
+        "none",
+    ]);
+    assert!(
+        !tree
+            .lines()
+            .any(|line| line.starts_with("jeliya-platform-implementation")),
+        "the shared UI graph must carry no edge to the implementation door:\n{tree}"
     );
 }
 

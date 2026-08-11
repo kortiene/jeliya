@@ -219,7 +219,10 @@ its own crate, `crates/jeliya-platform` — a cloneable facade over object-safe
 capability traits, a closed outcome taxonomy (`Unavailable`/`Denied`/
 `Cancelled`/typed failures, so a cancellation never becomes success), safe
 path/URL types, and deterministic browser/desktop/Android fakes. `jeliya-ui`
-re-exports it; target implementations follow in M3–M5.
+re-exports it; target implementations follow in M3–M5, reaching the crate's
+path-free construction factories only through the one door crate
+`crates/jeliya-platform-implementation` (a Cargo feature unifies across a
+build graph and so cannot hold that boundary; a dependency edge can).
 
 ## Decision 5 — one embedded artifact
 
@@ -460,7 +463,7 @@ The slices that carry this record:
 | #163 | The Iroh-free `jeliya-api` contract. | Landed |
 | #167 | The lifecycle-aware client seam (`crates/jeliya-client`) and its deterministic mock. | Landed |
 | #176 | The shared `jeliya-ui` crate: pinned Dioxus 0.7, reproducible wasm artifact, daemon embed guard, and Iroh-free dependency graph. Documented in [Dioxus web build and reproducibility](dioxus-web-build.md). | Landed |
-| #174 | Injectable `PlatformServices` — the contract crate (`crates/jeliya-platform`) and its deterministic browser/desktop/Android fakes; `jeliya-ui` re-exports it. Target implementations follow in M3–M5. | Landed |
+| #174 | Injectable `PlatformServices` — the contract crate (`crates/jeliya-platform`), its deterministic browser/desktop/Android fakes, and the `crates/jeliya-platform-implementation` door crate that gates the construction factories; `jeliya-ui` re-exports the contract. Target implementations follow in M3–M5. | Landed |
 | #183 | The one content-addressed embedded artifact. | Planned |
 | #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |
 

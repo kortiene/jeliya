@@ -37,6 +37,8 @@ pub enum Capability {
     ExportSink,
     /// [`crate::Files::open_sink`].
     OpenSink,
+    /// [`crate::Files::share_sink`].
+    ShareSink,
     /// [`crate::Files::share_content`].
     ShareContent,
     /// [`crate::Share::share`].
@@ -86,6 +88,18 @@ pub enum RecordedEffect {
         /// The display name the artifact was opened under.
         name: FileName,
         /// The peer-declared content type — untrusted, an opener hint only.
+        declared: Option<Mime>,
+        /// The committed bytes, in write order.
+        bytes: Vec<u8>,
+    },
+    /// A share sink was committed: a fetched room file reached the service's
+    /// own staging custody and became attachable. Same commit-only discipline
+    /// as [`RecordedEffect::ExportedLocal`] — a dropped, uncommitted share sink
+    /// records nothing and mints no handle.
+    StagedFetched {
+        /// The display name the artifact was materialized under.
+        name: String,
+        /// The peer-declared content type — untrusted, a share-sheet hint only.
         declared: Option<Mime>,
         /// The committed bytes, in write order.
         bytes: Vec<u8>,
@@ -155,9 +169,15 @@ impl Recorder {
 #[derive(Default)]
 pub struct Script {
     forced: HashMap<Capability, VecDeque<CapabilityError>>,
-    /// When set, the next preference/secret write reports
+    /// While set, **every** preference/secret write reports
     /// [`crate::WriteOutcome::SessionOnly`] even on a persistent shape, so the
     /// write-honesty invariant (§K6) is exercisable.
+    ///
+    /// A latch, not a one-shot: it models a durability *regime* (storage that
+    /// stopped persisting), which in reality persists across writes — unlike
+    /// the per-call action outcomes the `forced` queues above model. It stays
+    /// in force until cleared, and recovery is scripted explicitly via
+    /// [`Script::set_force_session_only`]`(false)`.
     force_session_only: bool,
 }
 
@@ -174,7 +194,8 @@ impl Script {
             .and_then(VecDeque::pop_front)
     }
 
-    /// Set whether the next writes report session-only durability.
+    /// Set whether writes report session-only durability. A latch: the value
+    /// holds until set again — not a one-shot queue entry.
     pub fn set_force_session_only(&mut self, force: bool) {
         self.force_session_only = force;
     }

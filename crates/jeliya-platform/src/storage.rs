@@ -65,8 +65,16 @@ pub enum PreferenceKey {
         /// The room the marker is for.
         room_id: RoomId,
     },
-    /// The text/formatting locale override.
-    Locale,
+    /// The UI text-language override (a BCP-47 tag). Unset follows the
+    /// platform's preferred languages, falling back to English.
+    TextLocale,
+    /// The date/number formatting-locale override, **independent of
+    /// [`PreferenceKey::TextLocale`] from day one**: a Bambara UI on a French
+    /// system still formats dates the French way, so one value cannot stand for
+    /// both. Unset follows the platform locale, falling back to the resolved
+    /// text locale. That fallback resolution is the UI l10n seam's business;
+    /// this store holds two independent optional values and nothing more.
+    FormattingLocale,
 }
 
 /// The result of a preference write.

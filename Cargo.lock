@@ -2936,6 +2936,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jeliya-platform-implementation"
+version = "0.0.0"
+dependencies = [
+ "jeliya-platform",
+]
+
+[[package]]
 name = "jeliya-ui"
 version = "0.0.0"
 dependencies = [

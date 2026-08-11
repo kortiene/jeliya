@@ -1,0 +1,19 @@
+[package]
+name = "jeliya-platform-implementation"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The single blessed door to jeliya-platform's implementation-facing factory surface (#174 §K4). The M3–M5 target crates depend on this crate to construct PickedSource/ExportTarget/ShareableBlob/FetchedArtifact from tokens they mint; it is the only manifest in the workspace permitted to enable jeliya-platform's `implementation` feature, and tests/boundaries.rs in jeliya-platform enforces that. Shared components depend on jeliya-platform directly and never on this crate — a dependency edge, unlike a Cargo feature, does not unify."
+
+[dependencies]
+# The ONLY manifest in the workspace allowed to write this line. Cargo unifies
+# features per package across a build graph, so enabling `implementation`
+# anywhere compiles the factory module into the single `jeliya-platform`
+# instance a target binary links — including the one the shared UI uses. That is
+# precisely why the boundary is a *dependency edge* to this crate rather than
+# the feature flag itself: edges do not unify. See this crate's lib.rs.
+jeliya-platform = { path = "../jeliya-platform", features = ["implementation"] }
+
+[lints]
+workspace = true

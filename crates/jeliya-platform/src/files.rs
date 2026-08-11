@@ -16,25 +16,33 @@
 //!   [`Files::stage_for_share`]. A shared component cannot construct one under
 //!   default features, so the daemon's anti-exfiltration invariant is
 //!   preserved at the type level (the UI cannot forge a daemon path). The
-//!   M3–M5 target crates construct these through the path-free factories
-//!   behind the default-off `implementation` feature; a token the producing
-//!   service did not mint fails closed at resolution.
+//!   M3–M5 target crates construct these through the path-free factories the
+//!   `jeliya-platform-implementation` door crate re-exports; a token the
+//!   producing service did not mint fails closed at resolution, which is what
+//!   holds even where Cargo feature unification compiles that surface in.
 //! - [`ExportTarget`] — a *destination* for a fetched file (a place to write),
 //!   distinct from a [`PickedSource`] (a place to read).
 //! - [`LocalFileRef`] — a typed reference to a room file, `(RoomId, FileId)` —
-//!   the identifier pair the UI feeds to the client seam's `file.read` and the
-//!   only file identity [`crate::ShareAttachment::Local`] carries. In protocol
-//!   v2 file bytes travel the byte-stream framing (`docs/protocol-v2.md`
-//!   §file.read), not an HTTP URL, so no token-carrying URL exists to resolve;
-//!   the daemon-token half of §K5 is enforced by
-//!   [`crate::storage::SecretStore`] custody alone.
+//!   the identifier pair the UI feeds to the client seam's `file.read`. In
+//!   protocol v2 file bytes travel the byte-stream framing
+//!   (`docs/protocol-v2.md` §file.read), not an HTTP URL, so no token-carrying
+//!   URL exists to resolve; the daemon-token half of §K5 is enforced by
+//!   [`crate::storage::SecretStore`] custody alone. It is an *identity*, not an
+//!   attachment: sharing a room file means pumping its bytes through
+//!   [`Files::share_sink`] into the service's own custody first.
+//! - [`FetchedArtifact`] — the counterpart of a [`ShareableBlob`] on the
+//!   *inbound* side: a handle to bytes the service itself custodies after the
+//!   UI pumped a `file.read` stream into a [`ShareSink`], and the only file
+//!   identity [`crate::ShareAttachment::Fetched`] carries.
 //!
-//! Bytes cross this boundary through two small object-safe traits, never
+//! Bytes cross this boundary through three small object-safe traits, never
 //! through paths: [`StagedBlobReader`] (the **pull** side — the v2 upload
-//! stream pulls exactly what CREDIT permits from a staged blob) and
-//! [`FileSink`] (the **push** side — the UI pumps `file.read` DATA chunks into
-//! a platform destination). Only bytes and identifiers cross; every spelling
-//! stays inside the producing service.
+//! stream pulls exactly what CREDIT permits from a staged blob), [`FileSink`]
+//! (the **push** side — the UI pumps `file.read` DATA chunks into a platform
+//! destination), and [`ShareSink`] (the same push shape, but committing into
+//! the *service's own* staging custody so the share sheet has a real artifact
+//! to offer). Only bytes and identifiers cross; every spelling stays inside the
+//! producing service.
 
 use jeliya_api::{FileId, RoomId};
 
@@ -45,13 +53,73 @@ use crate::BoxFuture;
 
 /// A user-facing display name for a picked or exported file. A newtype, not a
 /// path: it is meant to be *shown*, and carries no directory information.
+///
+/// The invariant is **enforced, not promised**: [`FileName::parse`] is the only
+/// constructor, and the value it admits is a non-empty single path component —
+/// no `/` or `\` separator, not `.` or `..`, no control characters. A platform
+/// sink may therefore join it under a directory it owns without re-checking for
+/// traversal, because a name that could navigate out of that directory is not
+/// representable.
+///
+/// What this type deliberately does **not** do — a sink materializing a real
+/// artifact must still apply its own platform naming rules:
+///
+/// - no Unicode normalization (NFC/NFD) or case folding;
+/// - no Windows reserved-device-name filtering (`CON`, `NUL`, `AUX`, …);
+/// - no trailing-dot or trailing-space trimming (Windows strips these);
+/// - no `:` filtering (a Windows drive letter or alternate data stream);
+/// - no length cap (filesystems differ);
+/// - no hidden-file policy (a leading `.` is a legal name).
+///
+/// The guarantee is exactly one thing: the name cannot navigate directories.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FileName(String);
 
+/// Why a string was rejected as a [`FileName`].
+///
+/// The rejected string is **not** carried (§K1, mirroring
+/// [`UnsafeUrl`](crate::launcher::UnsafeUrl)): a peer-supplied name that failed
+/// validation must not leak into a log or error string.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+pub enum InvalidFileName {
+    /// The name was empty.
+    #[error("file name is empty")]
+    Empty,
+    /// The name contained a `/` or `\` path separator.
+    #[error("file name contains a path separator")]
+    Separator,
+    /// The whole name was `.` or `..` — a path-navigation component.
+    #[error("file name is a path-navigation component")]
+    PathComponent,
+    /// The name contained a control character (NUL, C0, DEL, or C1).
+    #[error("file name contains a control character")]
+    Control,
+}
+
 impl FileName {
-    /// Wrap a display name.
-    pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
+    /// Parse and validate a display name, **failing closed**: a peer- or
+    /// caller-provided name that carries path syntax is rejected rather than
+    /// normalized, so no caller can be surprised by a silently rewritten name.
+    ///
+    /// Rejects an empty name, the navigation components `.` and `..`, any name
+    /// containing `/` or `\`, and any name containing a control character. See
+    /// the type docs for what validation deliberately leaves to the platform.
+    pub fn parse(name: impl Into<String>) -> Result<Self, InvalidFileName> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(InvalidFileName::Empty);
+        }
+        // Whole-name navigation only: `a..b` and `..hidden` are ordinary names.
+        if name == "." || name == ".." {
+            return Err(InvalidFileName::PathComponent);
+        }
+        if name.contains(['/', '\\']) {
+            return Err(InvalidFileName::Separator);
+        }
+        if name.chars().any(char::is_control) {
+            return Err(InvalidFileName::Control);
+        }
+        Ok(Self(name))
     }
 
     /// The display name as a string.
@@ -140,6 +208,20 @@ impl ExportToken {
 pub struct BlobToken(u64);
 
 impl BlobToken {
+    pub(crate) fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// An opaque handle to a fetched artifact the service custodies for sharing.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ArtifactToken(u64);
+
+impl ArtifactToken {
     pub(crate) fn new(id: u64) -> Self {
         Self(id)
     }
@@ -252,14 +334,17 @@ impl ExportTarget {
 
 /// A daemon-shareable handle, produced **only** by [`Files::stage_for_share`].
 ///
-/// It is the sole value the daemon's `file.share` operation accepts. A shared
-/// component cannot construct one (the constructor is crate-private under
-/// default features; target implementation crates use the path-free
-/// `for_implementation` factory behind the `implementation` feature), so the
+/// It is the sole value the daemon's `file.share` operation accepts, so the
 /// daemon's anti-exfiltration invariant — `file.share` refuses any path outside
 /// the daemon data dir — is preserved at the type level: the UI cannot forge a
-/// daemon path, because it holds only this opaque token, and a token the
-/// producing service did not mint fails closed at resolution.
+/// daemon path, because it holds only this opaque token.
+///
+/// The constructor is crate-private; target implementation crates reach the
+/// path-free factory through `jeliya-platform-implementation`. The re-export of
+/// this type at the crate root states in two tiers what that boundary does and
+/// does not guarantee once Cargo unifies features in a target binary — in
+/// short, a token the producing service did not mint **fails closed at
+/// resolution**, which is the guarantee that survives unification.
 #[derive(Clone)]
 pub struct ShareableBlob {
     token: BlobToken,
@@ -297,15 +382,80 @@ impl std::fmt::Debug for ShareableBlob {
     }
 }
 
+/// A handle to a **fetched** room file the service now custodies, produced
+/// **only** by committing a [`ShareSink`] from [`Files::share_sink`].
+///
+/// It is the inbound mirror of [`ShareableBlob`]: where a shareable blob is the
+/// one value the *daemon's* `file.share` accepts, a fetched artifact is the one
+/// value the *platform's* share sheet accepts for a room file
+/// ([`crate::ShareAttachment::Fetched`]). The two are deliberately distinct
+/// types so the directions cannot be crossed — a fetched artifact must never
+/// flow back into [`Files::read_staged`] or the daemon's share.
+///
+/// The artifact lives in the service's private staging area (an Android
+/// protected staging dir, a desktop temp staging dir, a browser in-memory
+/// blob); the location is never reachable from here. A successful share
+/// consumes it — "delete after share", the same reaping discipline staging has
+/// — so a re-share of the same handle fails closed rather than offering bytes
+/// the service no longer owns.
+#[derive(Clone)]
+pub struct FetchedArtifact {
+    token: ArtifactToken,
+    name: FileName,
+    size: u64,
+}
+
+impl FetchedArtifact {
+    pub(crate) fn new(token: ArtifactToken, name: FileName, size: u64) -> Self {
+        Self { token, name, size }
+    }
+
+    /// The display name the artifact was materialized under.
+    pub fn name(&self) -> &FileName {
+        &self.name
+    }
+
+    /// The artifact's size in bytes.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(crate) fn token(&self) -> ArtifactToken {
+        self.token
+    }
+}
+
+impl PartialEq for FetchedArtifact {
+    fn eq(&self, other: &Self) -> bool {
+        self.token == other.token
+    }
+}
+
+impl std::fmt::Debug for FetchedArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Opaque like `ShareableBlob`: the staging location never renders
+        // (§K1). The display name is user-facing by construction, so it is
+        // safe to show; the token and the path are not.
+        f.debug_struct("FetchedArtifact")
+            .field("name", &self.name)
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A typed reference to a room file, `(RoomId, FileId)`.
 ///
 /// This is the identifier pair the UI hands to the client seam's `file.read`
-/// operation and the only file identity [`crate::ShareAttachment::Local`]
-/// carries. It is deliberately **not** a URL: in protocol v2 the retired
+/// operation. It is deliberately **not** a URL: in protocol v2 the retired
 /// `GET /api/files/local` HTTP edge does not exist — file bytes travel the
 /// byte-stream framing, pumped into a [`FileSink`] from
-/// [`Files::export_sink`] / [`Files::open_sink`] — so there is no
-/// token-carrying URL to resolve and no daemon token near this type (§K5).
+/// [`Files::export_sink`] / [`Files::open_sink`], or into a [`ShareSink`] from
+/// [`Files::share_sink`] — so there is no token-carrying URL to resolve and no
+/// daemon token near this type (§K5).
+///
+/// It is an identity, never an attachment: a [`crate::ShareContent`] carries a
+/// [`FetchedArtifact`] whose bytes the service already holds, so the platform
+/// never has to resolve an id it cannot read.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LocalFileRef {
     room_id: RoomId,
@@ -395,6 +545,14 @@ pub trait StagedBlobReader {
     /// The next chunk, at most `max_len` bytes. `Ok(None)` is clean EOF;
     /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable) if the
     /// staged bytes vanished mid-read (the staged file was reaped).
+    ///
+    /// `max_len` **must be nonzero**: a puller with no credit must not pull.
+    /// Implementations reject a zero bound with
+    /// [`FailureKind::Io`](crate::FailureKind::Io) rather than returning an
+    /// empty chunk, so a zero bound can never masquerade as progress or as EOF
+    /// — an adapter deriving the bound from currently available credit would
+    /// otherwise spin forever on empty non-EOF chunks. The read position is not
+    /// consumed, so a later bounded pull still yields the correct next bytes.
     fn next_chunk(
         &mut self,
         max_len: usize,
@@ -426,6 +584,31 @@ pub trait FileSink {
     /// [`Files::open_sink`], commit also invokes the platform opener on the
     /// finished artifact.
     fn commit(self: Box<Self>) -> BoxFuture<'static, Result<(), CapabilityError>>;
+}
+
+/// A push-shaped byte destination that commits into the **service's own**
+/// staging custody, produced by [`Files::share_sink`] — the platform half of
+/// sharing a fetched room file.
+///
+/// Same push shape and same credit contract as [`FileSink`]: the UI drives the
+/// client seam's `file.read` and pumps each DATA chunk in, advancing stream
+/// credit only as each `write` resolves. It is a **separate trait** because the
+/// destination is different in kind: a [`FileSink`] commits to a user-chosen
+/// destination and yields nothing, while committing here yields a
+/// [`FetchedArtifact`] the service can subsequently hand to the share sheet.
+/// An export or open sink must never be able to fabricate one.
+///
+/// **Drop is abort (§D12/K2):** dropping an uncommitted share sink deletes the
+/// partial artifact and mints no handle, exactly as [`FileSink`] and
+/// [`Files::stage_for_share`] do.
+pub trait ShareSink {
+    /// Append one chunk. Resolution is acceptance — advance stream credit
+    /// only after it resolves `Ok`.
+    fn write(&mut self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), CapabilityError>>;
+
+    /// Materialize the bytes in the service's private staging area and mint the
+    /// [`FetchedArtifact`] that names them.
+    fn commit(self: Box<Self>) -> BoxFuture<'static, Result<FetchedArtifact, CapabilityError>>;
 }
 
 /// The files capability: pick a source, stage it for the daemon to share,
@@ -510,6 +693,27 @@ pub trait Files {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>>;
 
+    /// Open a [`ShareSink`] for a room file the user wants to share — the
+    /// platform half of sharing fetched bytes.
+    ///
+    /// The UI drives the client seam's `file.read` for a [`LocalFileRef`] and
+    /// pumps the DATA chunks in under CREDIT; [`ShareSink::commit`]
+    /// materializes them in the service's private staging area and returns the
+    /// [`FetchedArtifact`] to attach as
+    /// [`crate::ShareAttachment::Fetched`]. This is why a room file needs no
+    /// URL and no client seam inside the platform service (§K5/§K11): the only
+    /// thing that crosses is bytes the UI already had.
+    ///
+    /// `declared` is the peer-declared content type — an **untrusted hint** for
+    /// the share sheet's type negotiation, never a trust decision, exactly as
+    /// in [`Files::open_sink`].
+    fn share_sink(
+        &self,
+        name: FileName,
+        declared: Option<Mime>,
+        ct: &CancelToken,
+    ) -> BoxFuture<'_, Result<Box<dyn ShareSink>, CapabilityError>>;
+
     /// Share content through the platform (the OS share sheet / a file share).
     /// Dismissing the sheet is [`CapabilityError::Cancelled`], not `Ok`.
     fn share_content(
@@ -517,4 +721,57 @@ pub trait Files {
         content: ShareContent,
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<(), CapabilityError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name that could navigate directories is **unrepresentable**: with
+    /// [`FileName::parse`] the sole constructor, `open_sink` /
+    /// `pick_export_target` / the implementation factories cannot receive path
+    /// syntax through the "supposedly safe" type — the same fail-closed
+    /// enforcement [`crate::launcher::SafeExternalUrl`] has for schemes.
+    #[test]
+    fn file_name_rejects_path_syntax_and_unshowable_names() {
+        for (bad, why) in [
+            ("", InvalidFileName::Empty),
+            (".", InvalidFileName::PathComponent),
+            ("..", InvalidFileName::PathComponent),
+            ("../evil", InvalidFileName::Separator),
+            ("..\\evil", InvalidFileName::Separator),
+            ("a/b", InvalidFileName::Separator),
+            ("/etc/passwd", InvalidFileName::Separator),
+            ("C:\\boot.ini", InvalidFileName::Separator),
+            ("a\0b", InvalidFileName::Control),
+            ("a\nb", InvalidFileName::Control),
+        ] {
+            assert_eq!(
+                FileName::parse(bad).unwrap_err(),
+                why,
+                "{bad:?} must be rejected as {why:?}"
+            );
+        }
+    }
+
+    /// Only the *whole* name `.`/`..` navigates; dots elsewhere are ordinary
+    /// characters, and validation normalizes nothing.
+    #[test]
+    fn file_name_accepts_ordinary_display_names() {
+        for good in ["report.pdf", "a..b", "résumé (final).txt", "..hidden.."] {
+            assert!(FileName::parse(good).is_ok(), "{good:?} must parse");
+        }
+    }
+
+    /// §K1: the error renders a discriminant only — a rejected peer-supplied
+    /// name never rides the error into a log.
+    #[test]
+    fn invalid_file_name_carries_no_payload() {
+        let rendered = format!("{}", InvalidFileName::Separator);
+        assert_eq!(rendered, "file name contains a path separator");
+        assert!(
+            !rendered.contains('/') && !rendered.contains('\\'),
+            "the error must not echo the rejected name: {rendered}"
+        );
+    }
 }

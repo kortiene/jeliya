@@ -30,8 +30,9 @@ use crate::cancel::{CancelToken, Cancelled};
 use crate::clipboard::{Clipboard, Share, ShareAttachment, ShareContent};
 use crate::error::{Availability, CapabilityError, FailureKind};
 use crate::files::{
-    ExportTarget, ExportTargetKind, FileName, FileObjectKind, FileSink, Files, Mime, PickedSource,
-    ProgressSink, ShareableBlob, SourceToken, StageProgress, StagedBlobReader,
+    ArtifactToken, ExportTarget, ExportTargetKind, FetchedArtifact, FileName, FileObjectKind,
+    FileSink, Files, Mime, PickedSource, ProgressSink, ShareSink, ShareableBlob, SourceToken,
+    StageProgress, StagedBlobReader,
 };
 use crate::launcher::{SafeExternalUrl, UrlLauncher};
 use crate::lifecycle::{Lifecycle, LifecycleBus, LifecycleEvent, LifecycleSubscription};
@@ -52,6 +53,17 @@ pub use shapes::Shape;
 /// mid-copy limit enforcement); the contract is "bounded, never the whole file
 /// at once", which any positive chunk size satisfies.
 const STAGE_CHUNK_BYTES: usize = 8;
+
+/// Distinct ids handed out to fakes, packed into the high half of every token
+/// they mint.
+///
+/// A token therefore carries **issuer provenance**: two fakes running the same
+/// call sequence no longer mint the same numbers, so one service's handle can
+/// never resolve in another's registries — the cross-service half of the §K4
+/// fail-closed gate, which a per-instance counter alone cannot give. Ids start
+/// at 1, so every minted token has a nonzero high half and can never collide
+/// with a small forged raw value.
+static NEXT_SERVICE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// The bytes and streaming disposition behind one picked source.
 struct SourceBody {
@@ -79,10 +91,18 @@ struct FakeInner {
     /// here, so a blob the service did not stage can neither be read nor
     /// shared (the anti-forgery half of §K4).
     staged_blobs: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
+    /// Fetched-artifact tokens this service minted → the committed bytes — the
+    /// fake's stand-in for the private staging area a [`ShareSink`] commits
+    /// into. `share` resolves a [`FetchedArtifact`] through here (and consumes
+    /// it on success), so an artifact this service did not materialize is not
+    /// shareable.
+    share_artifacts: Mutex<HashMap<u64, Vec<u8>>>,
     pending_pick: Mutex<Option<PickedSource>>,
     pending_export: Mutex<Option<ExportTarget>>,
     /// The open scripted dialogs awaiting controller advancement (§6).
     dialogs: Mutex<DialogQueue>,
+    /// This fake's issuer id — see [`NEXT_SERVICE_ID`].
+    service_id: u64,
     next_id: AtomicU64,
 }
 
@@ -99,15 +119,26 @@ impl FakeInner {
             sources: Mutex::new(HashMap::new()),
             export_targets: Mutex::new(HashMap::new()),
             staged_blobs: Mutex::new(HashMap::new()),
+            share_artifacts: Mutex::new(HashMap::new()),
             pending_pick: Mutex::new(None),
             pending_export: Mutex::new(None),
             dialogs: Mutex::new(DialogQueue::default()),
+            service_id: NEXT_SERVICE_ID.fetch_add(1, Ordering::Relaxed),
             next_id: AtomicU64::new(1),
         }
     }
 
+    /// Mint the next opaque id for this service: the issuer id in the high
+    /// half, a per-service counter in the low half. Packed rather than drawn
+    /// from one flat global counter so a *forged* small raw token (the §K4
+    /// forgery test's `7777`) can never collide with a minted id no matter how
+    /// many tokens the process mints. Determinism is untouched — token values
+    /// are opaque and never recorded or asserted on.
     fn next_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        let local = self.next_id.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(local < 1 << 32, "fake token space exhausted");
+        debug_assert!(self.service_id < 1 << 32, "fake service space exhausted");
+        (self.service_id << 32) | local
     }
 
     fn record(&self, effect: RecordedEffect) {
@@ -138,17 +169,25 @@ impl FakeInner {
         }
     }
 
-    /// Whether a [`ShareContent`]'s blob attachment (if any) was staged by this
-    /// service. A blob this service never minted is not shareable — the
-    /// anti-forgery half of §K4, checked against the minted-token registry.
-    fn blob_is_staged(&self, content: &ShareContent) -> bool {
+    /// Whether a [`ShareContent`]'s attachment (if any) names bytes this
+    /// service holds. An attachment this service never minted is not
+    /// shareable — the anti-forgery half of §K4, checked against the
+    /// minted-token registries. Matched exhaustively on purpose: a new
+    /// attachment kind must decide how it resolves rather than default to
+    /// "shareable".
+    fn attachment_is_staged(&self, content: &ShareContent) -> bool {
         match &content.attachment {
             Some(ShareAttachment::Blob(blob)) => self
                 .staged_blobs
                 .lock()
                 .expect("staged blobs poisoned")
                 .contains_key(&blob.token().get()),
-            _ => true,
+            Some(ShareAttachment::Fetched(artifact)) => self
+                .share_artifacts
+                .lock()
+                .expect("share artifacts poisoned")
+                .contains_key(&artifact.token().get()),
+            None => true,
         }
     }
 
@@ -157,11 +196,16 @@ impl FakeInner {
     /// registering — the mock's dispatch discipline — so release order can
     /// never re-pair outcomes with calls.
     fn open_dialog(self: &Arc<Self>, capability: Capability, ct: &CancelToken) -> DialogTurn {
-        let ticket = self
+        // The guard is a statement temporary: it is dropped at the end of this
+        // `let`, so the waker loop below runs lock-free.
+        let (ticket, wakers) = self
             .dialogs
             .lock()
             .expect("dialogs poisoned")
             .open(capability);
+        for waker in wakers {
+            waker.wake();
+        }
         DialogTurn {
             inner: Arc::clone(self),
             ticket,
@@ -197,7 +241,16 @@ struct OpenDialog {
 }
 
 impl DialogQueue {
-    fn open(&mut self, capability: Capability) -> u64 {
+    /// Register a dialog and return its ticket plus the waiters to wake.
+    ///
+    /// **The wakers are returned, not woken here.** Every waker in this fake is
+    /// invoked only after the queue lock is released: an inline-executor waker
+    /// that immediately re-polls would otherwise re-enter and re-lock this
+    /// non-reentrant mutex on the same thread. That is the discipline
+    /// `jeliya-client`'s event bus fixed in `event.rs` (collect under the lock,
+    /// wake after the guard drops), and the fake follows it so it stays
+    /// executor-agnostic.
+    fn open(&mut self, capability: Capability) -> (u64, Vec<Waker>) {
         let ticket = self.next_ticket;
         self.next_ticket += 1;
         self.open.push(OpenDialog {
@@ -207,10 +260,8 @@ impl DialogQueue {
             waker: None,
         });
         // A parked pending_dialog() waiter resumes BECAUSE a dialog opened.
-        for (_, waker) in self.waiters.drain() {
-            waker.wake();
-        }
-        ticket
+        let wakers = self.waiters.drain().map(|(_, waker)| waker).collect();
+        (ticket, wakers)
     }
 
     fn withdraw(&mut self, ticket: u64) {
@@ -237,16 +288,16 @@ impl DialogQueue {
         }
     }
 
-    fn deliver_next(&mut self) -> bool {
+    /// Release the oldest un-advanced dialog, returning whether one was
+    /// released and the waker to invoke **after** the caller drops the queue
+    /// guard (see [`DialogQueue::open`]).
+    fn deliver_next(&mut self) -> (bool, Option<Waker>) {
         match self.open.iter_mut().find(|dialog| !dialog.released) {
             Some(dialog) => {
                 dialog.released = true;
-                if let Some(waker) = dialog.waker.take() {
-                    waker.wake();
-                }
-                true
+                (true, dialog.waker.take())
             }
-            None => false,
+            None => (false, None),
         }
     }
 }
@@ -344,12 +395,22 @@ impl FakeController {
 
     /// Arm the next [`Files::pick`] to return a source of the shape's kind,
     /// carrying `bytes` for a later [`Files::stage_for_share`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is not a valid [`FileName`]. Controller seeds are
+    /// test-authored, so an invalid seed is a test bug worth failing fast on —
+    /// unlike a peer-supplied name, which the contract rejects as an error.
     pub fn arm_pick(&self, name: &str, mime: Option<Mime>, bytes: Vec<u8>) {
         self.arm_pick_of_kind(name, self.inner.shape.source_kind(), mime, bytes);
     }
 
     /// Arm the next [`Files::pick`] with an explicit object kind (to exercise a
     /// cross-shape source).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is not a valid [`FileName`] (see [`arm_pick`](Self::arm_pick)).
     pub fn arm_pick_of_kind(
         &self,
         name: &str,
@@ -366,11 +427,22 @@ impl FakeController {
                 streamed: matches!(kind, FileObjectKind::ContentUri),
             },
         );
-        let source = PickedSource::new(SourceToken::new(id), FileName::new(name), size, mime, kind);
+        let source = PickedSource::new(
+            SourceToken::new(id),
+            FileName::parse(name).expect("armed file name must be a valid FileName"),
+            size,
+            mime,
+            kind,
+        );
         *self.inner.pending_pick.lock().expect("pick poisoned") = Some(source);
     }
 
     /// Arm the next [`Files::pick_export_target`] to return a target of `kind`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `suggested` is not a valid [`FileName`] (see
+    /// [`arm_pick`](Self::arm_pick)).
     pub fn arm_export_target(&self, kind: ExportTargetKind, suggested: &str) {
         let id = self.inner.next_id();
         // Register the minted token so a later `export_sink` can resolve the
@@ -383,7 +455,7 @@ impl FakeController {
         let target = ExportTarget::new(
             crate::files::ExportToken::new(id),
             kind,
-            FileName::new(suggested),
+            FileName::parse(suggested).expect("armed export name must be a valid FileName"),
         );
         *self.inner.pending_export.lock().expect("export poisoned") = Some(target);
     }
@@ -398,8 +470,12 @@ impl FakeController {
             .force(capability, error);
     }
 
-    /// Make the next preference/secret writes report
-    /// [`WriteOutcome::SessionOnly`] even on a persistent shape (§K6).
+    /// Make preference/secret writes report [`WriteOutcome::SessionOnly`] even
+    /// on a persistent shape (§K6), until called again with `false`.
+    ///
+    /// A durability-regime latch, not a one-shot script entry: it models
+    /// storage that stopped persisting, so it spans both stores and every
+    /// write. To observe recovery, clear it and write again.
     pub fn force_writes_session_only(&self, force: bool) {
         self.inner
             .script
@@ -422,11 +498,19 @@ impl FakeController {
     /// on the operation's next poll — the fake's `MockController::deliver_next`.
     /// Returns `false` when no dialog is awaiting advancement.
     pub fn deliver_next(&self) -> bool {
-        self.inner
+        // Same wake-after-unlock discipline as `open_dialog`: the guard is a
+        // statement temporary, so a waker that synchronously re-polls the
+        // released operation cannot deadlock on the queue lock.
+        let (delivered, waker) = self
+            .inner
             .dialogs
             .lock()
             .expect("dialogs poisoned")
-            .deliver_next()
+            .deliver_next();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        delivered
     }
 
     /// The dialogs currently open, in call order — diagnostics for ordering
@@ -599,13 +683,19 @@ impl Files for FakePlatform {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<ShareableBlob, CapabilityError>> {
         let inner = self.inner.clone();
+        // A pre-fired token never starts the operation and consumes nothing —
+        // the dispatch-after-stop rule `pick` documents, applied uniformly.
+        if ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
+        // Bind this call's scripted outcome NOW, in call order: a script says
+        // "the next call fails", so poll order must not re-pair it with a
+        // different call. The clone is still needed for the mid-copy checks.
+        let bound = inner.take_forced(Capability::Stage);
         let ct = ct.clone();
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::Stage) {
+            if let Some(error) = bound {
                 return Err(error);
-            }
-            if ct.is_cancelled() {
-                return Err(CapabilityError::Cancelled);
             }
             let (bytes, streamed) = {
                 let sources = inner.sources.lock().expect("sources poisoned");
@@ -731,13 +821,13 @@ impl Files for FakePlatform {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>> {
         let inner = self.inner.clone();
-        let ct = ct.clone();
+        if ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
+        let bound = inner.take_forced(Capability::ExportSink);
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::ExportSink) {
+            if let Some(error) = bound {
                 return Err(error);
-            }
-            if ct.is_cancelled() {
-                return Err(CapabilityError::Cancelled);
             }
             // Resolve the destination through the minted-token registry,
             // consuming it; a forged or re-used `ExportTarget` has no entry
@@ -767,19 +857,43 @@ impl Files for FakePlatform {
         ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Box<dyn FileSink>, CapabilityError>> {
         let inner = self.inner.clone();
-        let ct = ct.clone();
+        if ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
+        let bound = inner.take_forced(Capability::OpenSink);
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::OpenSink) {
+            if let Some(error) = bound {
                 return Err(error);
-            }
-            if ct.is_cancelled() {
-                return Err(CapabilityError::Cancelled);
             }
             Ok(Box::new(FakeFileSink {
                 inner,
                 dest: SinkDest::Open { name, declared },
                 written: Vec::new(),
             }) as Box<dyn FileSink>)
+        })
+    }
+
+    fn share_sink(
+        &self,
+        name: FileName,
+        declared: Option<Mime>,
+        ct: &CancelToken,
+    ) -> BoxFuture<'_, Result<Box<dyn ShareSink>, CapabilityError>> {
+        let inner = self.inner.clone();
+        if ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
+        let bound = inner.take_forced(Capability::ShareSink);
+        Box::pin(async move {
+            if let Some(error) = bound {
+                return Err(error);
+            }
+            Ok(Box::new(FakeShareSink {
+                inner,
+                name,
+                declared,
+                written: Vec::new(),
+            }) as Box<dyn ShareSink>)
         })
     }
 
@@ -841,6 +955,50 @@ impl FileSink for FakeFileSink {
     }
 }
 
+/// The fake's [`ShareSink`]: accumulates the pumped `file.read` bytes in
+/// memory and, on commit, materializes them in the service's registry — the
+/// fake's stand-in for a protected staging directory. Dropped uncommitted it
+/// records **nothing** and mints no handle, the same drop-is-abort honesty
+/// [`FakeFileSink`] has (§D12/K2).
+struct FakeShareSink {
+    inner: Arc<FakeInner>,
+    name: FileName,
+    declared: Option<Mime>,
+    written: Vec<u8>,
+}
+
+impl ShareSink for FakeShareSink {
+    fn write(&mut self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), CapabilityError>> {
+        Box::pin(async move {
+            self.written.extend_from_slice(&chunk);
+            Ok(())
+        })
+    }
+
+    fn commit(self: Box<Self>) -> BoxFuture<'static, Result<FetchedArtifact, CapabilityError>> {
+        Box::pin(async move {
+            let this = *self;
+            let id = this.inner.next_id();
+            let size = this.written.len() as u64;
+            this.inner.record(RecordedEffect::StagedFetched {
+                name: this.name.as_str().to_owned(),
+                declared: this.declared,
+                bytes: this.written.clone(),
+            });
+            this.inner
+                .share_artifacts
+                .lock()
+                .expect("share artifacts poisoned")
+                .insert(id, this.written);
+            Ok(FetchedArtifact::new(
+                ArtifactToken::new(id),
+                this.name,
+                size,
+            ))
+        })
+    }
+}
+
 /// The fake's [`StagedBlobReader`]: bounded pulls over the staged bytes. The
 /// per-pull bound is `max_len` capped by [`STAGE_CHUNK_BYTES`], so even a
 /// generous caller exercises multiple chunks — the same "bounded, never the
@@ -860,6 +1018,15 @@ impl StagedBlobReader for FakeStagedReader {
         max_len: usize,
     ) -> BoxFuture<'_, Result<Option<Vec<u8>>, CapabilityError>> {
         Box::pin(async move {
+            // Before the EOF check, so the rule is position-independent: a
+            // zero bound would otherwise yield an endless run of empty
+            // non-EOF chunks with the offset never advancing — a credit-driven
+            // puller with no credit spinning instead of waiting. Neither
+            // `Ok(None)` (a lie about EOF) nor a clamp (a lie about "at most
+            // max_len") is honest, so it fails.
+            if max_len == 0 {
+                return Err(CapabilityError::Failed(FailureKind::Io));
+            }
             if self.offset >= self.bytes.len() {
                 return Ok(None);
             }
@@ -1006,11 +1173,15 @@ impl Clipboard for FakePlatform {
         // Not a dialog (§6 scopes controller advancement to picker/dialog/
         // share), so the outcome resolves on first poll — but only through
         // the returned future, matching how a browser denial arrives as the
-        // writeText promise's rejection.
+        // writeText promise's rejection. The outcome is nonetheless BOUND at
+        // call time: a script says "the next call fails", so two futures
+        // created in call order must keep their outcomes however they are
+        // polled.
         let inner = self.inner.clone();
         let text = text.to_owned();
+        let bound = inner.take_forced(Capability::Clipboard);
         Box::pin(async move {
-            if let Some(error) = inner.take_forced(Capability::Clipboard) {
+            if let Some(error) = bound {
                 return Err(error);
             }
             inner.record(RecordedEffect::ClipboardWrite { text });
@@ -1039,7 +1210,7 @@ impl FakePlatform {
             None if content.is_empty() => {
                 return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
             }
-            None if !inner.blob_is_staged(&content) => {
+            None if !inner.attachment_is_staged(&content) => {
                 return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
             }
             None => Ok(content),
@@ -1047,7 +1218,20 @@ impl FakePlatform {
         let turn = inner.open_dialog(capability, ct);
         Box::pin(async move {
             turn.await?;
-            inner.record(RecordedEffect::Shared { content: bound? });
+            let content = bound?;
+            // A completed share consumes a fetched artifact — "delete after
+            // share", mirroring `export_sink`'s consumed target — so re-sharing
+            // the same handle fails closed. A dismissal settles as `Cancelled`
+            // above and never reaches here, leaving the artifact staged for a
+            // retry that needs no second download.
+            if let Some(ShareAttachment::Fetched(artifact)) = &content.attachment {
+                inner
+                    .share_artifacts
+                    .lock()
+                    .expect("share artifacts poisoned")
+                    .remove(&artifact.token().get());
+            }
+            inner.record(RecordedEffect::Shared { content });
             Ok(())
         })
     }
@@ -1121,7 +1305,8 @@ impl WindowActions for FakePlatform {
 // ---- PendingDialog -------------------------------------------------------
 
 /// Future returned by [`FakeController::pending_dialog`]: ready when at least
-/// one scripted dialog is open and awaiting advancement.
+/// one scripted dialog is open and **not yet released** — that is, one
+/// [`FakeController::deliver_next`] would actually advance.
 pub struct PendingDialog {
     inner: Arc<FakeInner>,
     /// This waiter's slot, once parked: a re-poll REPLACES it (no duplicates),
@@ -1136,7 +1321,11 @@ impl Future for PendingDialog {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = self.get_mut();
         let mut queue = this.inner.dialogs.lock().expect("dialogs poisoned");
-        if !queue.open.is_empty() {
+        // Only a dialog still AWAITING advancement counts. A released entry
+        // lingers in `open` until its operation's next poll removes it, and it
+        // is already spoken for: `deliver_next` skips it, so resolving here
+        // would hand a controller loop a dialog it cannot deliver.
+        if queue.open.iter().any(|dialog| !dialog.released) {
             if let Some(id) = this.waiter.take() {
                 queue.waiters.remove(&id);
             }

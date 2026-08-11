@@ -347,6 +347,19 @@ jobs:
           cargo clippy --locked -p jeliya-platform --features fake --all-targets -- -D warnings
           cargo test --locked -p jeliya-platform --features fake
 
+      # The `implementation` factory surface (#174 §K4) is default-off, so the
+      # workspace run compiles it to nothing. Lint and test it explicitly, and
+      # again together with `fake` — that combination is what compiles the
+      # forged-token case in tests/capabilities.rs, the one that proves a
+      # factory-built handle the service never minted fails closed. The door
+      # crate is built on its own so its re-export cannot rot silently.
+      - name: jeliya-platform implementation surface and its door crate
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p jeliya-platform --features implementation --all-targets -- -D warnings
+          cargo clippy --locked -p jeliya-platform-implementation --all-targets -- -D warnings
+          cargo test --locked -p jeliya-platform --features fake,implementation
+
       # The extended no-`cfg` boundary: the shared component
       # (examples/shared_component.rs) compiles against the injected
       # PlatformServices for both a native target and wasm32-unknown-unknown with

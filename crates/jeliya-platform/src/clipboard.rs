@@ -15,12 +15,15 @@
 //!   [`CapabilityError::Cancelled`], not `Ok`.
 //!
 //! The daemon token stays native (§K5): a [`ShareContent`] carries a typed
-//! [`LocalFileRef`] or [`ShareableBlob`], never a URL — no raw location is
+//! [`FetchedArtifact`] or [`ShareableBlob`], never a URL — no raw location is
 //! representable in share content, and no token ever crosses this surface.
+//! Both attachment kinds are handles to bytes the *producing service* already
+//! custodies, so presenting the sheet never requires resolving an identifier
+//! the platform cannot read.
 
 use crate::cancel::CancelToken;
 use crate::error::CapabilityError;
-use crate::files::{LocalFileRef, ShareableBlob};
+use crate::files::{FetchedArtifact, ShareableBlob};
 use crate::BoxFuture;
 
 /// An anchor rectangle for popover presentation of the share sheet (iPad).
@@ -39,14 +42,18 @@ pub struct ShareAnchor {
 
 /// A file attachment carried by [`ShareContent`].
 ///
-/// Either a daemon-fetched local copy ([`LocalFileRef`], resolved to a
-/// token-carrying URL inside the service) or a freshly staged
-/// [`ShareableBlob`]. A raw path is not representable, so a component cannot
-/// attach an arbitrary file.
+/// Either a room file the UI already fetched into the service's custody
+/// ([`FetchedArtifact`], minted by committing a
+/// [`ShareSink`](crate::files::ShareSink)) or a freshly staged
+/// [`ShareableBlob`]. Neither a raw path nor a bare `(RoomId, FileId)` is
+/// representable, so a component can neither attach an arbitrary file nor ask
+/// the platform to resolve bytes it has no way to read — every attachment names
+/// bytes the producing service holds, which extends the anti-forgery property
+/// to the share sheet.
 #[derive(Clone, PartialEq, Debug)]
 pub enum ShareAttachment {
-    /// A daemon-fetched local copy.
-    Local(LocalFileRef),
+    /// A room file fetched into the service's staging custody.
+    Fetched(FetchedArtifact),
     /// A staged, daemon-shareable blob.
     Blob(ShareableBlob),
 }
