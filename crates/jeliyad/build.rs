@@ -43,6 +43,31 @@ fn main() {
         );
     }
 
+    // The marker records the canonical toolchain; a leftover dist built by an
+    // older rustc or wasm-bindgen is a stale, noncanonical artifact the
+    // marker itself carries enough information to reject. The expected
+    // values come from the same single sources the canonical build uses:
+    // pinned_rustc from scripts/build-web.sh, wasm-bindgen from Cargo.lock.
+    let pinned_rustc = read_pinned_rustc(&manifest);
+    let locked_wbg = read_locked_wasm_bindgen(&manifest);
+    for (key, expected) in [
+        ("rustc", pinned_rustc.as_str()),
+        ("wasm_bindgen", locked_wbg.as_str()),
+    ] {
+        let recorded = marker.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix(&format!("{key}="))
+                .map(str::to_owned)
+        });
+        if recorded.as_deref() != Some(expected) {
+            fail(&format!(
+                "the embedded UI marker records {key}={} but the canonical pin is {key}={expected} — \
+                 the artifact is stale; rerun scripts/build-web.sh",
+                recorded.as_deref().unwrap_or("<missing>")
+            ));
+        }
+    }
+
     let index = match std::fs::read_to_string(dist.join("index.html")) {
         Ok(text) => text,
         Err(_) => fail("the embedded UI has no index.html"),
@@ -75,23 +100,44 @@ fn main() {
     // a `type="text/plain"` script, an ordinary attribute, or prose is not
     // executable, and accepting it would embed a shell whose init never runs.
     let scripts = module_script_bodies(&index);
-    let mut module_refs = collect_refs(&scripts, &[".wasm", ".js"]);
+    // A path must PARTICIPATE in executable code, not merely sit in a string
+    // literal: the .js glue as an import target (`import … from '<path>'`),
+    // the .wasm module in value/argument position (`init({ module_or_path:
+    // '<path>' })` or a direct call argument). Whitespace is NORMALIZED to
+    // single spaces (never removed — full compaction fuses `init from` into
+    // `initfrom` and destroys the very boundaries being checked).
+    let normalized_scripts = scripts.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut module_refs: Vec<String> = collect_refs(&scripts, &[".wasm", ".js"])
+        .into_iter()
+        .filter(|r| {
+            ['\'', '"'].iter().any(|quote| {
+                executable_position(
+                    &normalized_scripts,
+                    &format!("{quote}{r}{quote}"),
+                    r.ends_with(".js"),
+                )
+            })
+        })
+        .collect();
     if !module_refs.iter().any(|r| r.ends_with(".wasm")) {
         fail(
-            "the embedded index.html has no active module script referencing a root-relative \
-             .wasm module — it is not the Dioxus shell",
+            "the embedded index.html has no active module script loading a root-relative .wasm \
+             module in executable position — it is not the Dioxus shell",
         );
     }
     if !module_refs.iter().any(|r| r.ends_with(".js")) {
         fail(
-            "the embedded index.html has no active module script referencing root-relative .js \
+            "the embedded index.html has no active module script importing root-relative .js \
              bindgen glue — it is not the Dioxus shell",
         );
     }
-    // A stylesheet reference counts only inside an active
-    // `<link rel="stylesheet">` tag: `/styles.css` in a meta attribute or
+    // A stylesheet reference counts only as the HREF of an active
+    // `<link rel="stylesheet">` tag: `/styles.css` in a data attribute or
     // prose applies no design system.
-    let stylesheet_refs = collect_refs(&stylesheet_link_tags(&index), &[".css"]);
+    let stylesheet_refs: Vec<String> = stylesheet_link_hrefs(&index)
+        .into_iter()
+        .filter(|href| href.starts_with('/') && href.ends_with(".css"))
+        .collect();
     if stylesheet_refs.is_empty() {
         fail(
             "the embedded index.html has no active stylesheet link referencing a root-relative \
@@ -205,6 +251,58 @@ fn module_script_bodies(html: &str) -> String {
 /// Extract `<link ...>` tag texts whose attributes include
 /// `rel="stylesheet"` (run after comment stripping; ASCII-lowercased shadow
 /// for case). Only an active stylesheet link applies the design system.
+/// Whether one quoted-path occurrence sits in EXECUTABLE position within the
+/// (single-space-normalized) module script text: for the .js glue, as the
+/// target of `import`/`… from` (with an identifier boundary before the
+/// keyword, so `xfrom '/a.js'` does not count); for the .wasm module, in
+/// value/argument position (directly after `:`, `(`, or `,`, optional space).
+fn executable_position(normalized: &str, quoted: &str, is_js: bool) -> bool {
+    let mut from = 0;
+    while let Some(rel) = normalized[from..].find(quoted) {
+        let at = from + rel;
+        let before = normalized[..at].trim_end();
+        let ok = if is_js {
+            let keyword = ["from", "import"].into_iter().find(|k| before.ends_with(k));
+            keyword.is_some_and(|k| {
+                before[..before.len() - k.len()]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+            })
+        } else {
+            matches!(before.chars().next_back(), Some(':' | '(' | ','))
+        };
+        if ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+fn stylesheet_link_hrefs(html: &str) -> Vec<String> {
+    // Whitespace is NORMALIZED (single spaces), never removed: full
+    // compaction destroys attribute boundaries, and `href="` would match
+    // inside `data-href="`. With single-space separation the ` href=` prefix
+    // carries its boundary.
+    stylesheet_link_tags(html)
+        .lines()
+        .filter_map(|tag| {
+            let normalized = tag.split_whitespace().collect::<Vec<_>>().join(" ");
+            for quote in ['"', '\''] {
+                let prefix = format!(" href={quote}");
+                if let Some(start) = normalized.find(&prefix) {
+                    let rest = &normalized[start + prefix.len()..];
+                    if let Some(end) = rest.find(quote) {
+                        return Some(rest[..end].to_owned());
+                    }
+                }
+            }
+            None
+        })
+        .collect()
+}
+
 fn stylesheet_link_tags(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::new();
@@ -269,6 +367,47 @@ fn strip_js_comments(text: &str) -> String {
         }
     }
     out
+}
+
+/// The canonical compiler pin, read from its single source of truth in
+/// scripts/build-web.sh (`pinned_rustc="X"`), so this guard and the build
+/// recipe cannot drift apart.
+fn read_pinned_rustc(manifest: &std::path::Path) -> String {
+    let script = manifest.join("../../scripts/build-web.sh");
+    let text = std::fs::read_to_string(&script)
+        .unwrap_or_else(|_| fail("cannot read scripts/build-web.sh for the rustc pin"));
+    text.lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pinned_rustc=\"")
+                .and_then(|rest| rest.strip_suffix('"'))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| fail("scripts/build-web.sh no longer declares pinned_rustc"))
+}
+
+/// The locked wasm-bindgen version from the workspace Cargo.lock — the same
+/// derivation build-web.sh performs.
+fn read_locked_wasm_bindgen(manifest: &std::path::Path) -> String {
+    let lock = manifest.join("../../Cargo.lock");
+    let text = std::fs::read_to_string(&lock)
+        .unwrap_or_else(|_| fail("cannot read Cargo.lock for the wasm-bindgen pin"));
+    let mut found = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line == "name = \"wasm-bindgen\"" {
+            found = true;
+        } else if found {
+            if let Some(version) = line
+                .strip_prefix("version = \"")
+                .and_then(|rest| rest.strip_suffix('"'))
+            {
+                return version.to_owned();
+            }
+            found = false;
+        }
+    }
+    fail("Cargo.lock does not lock wasm-bindgen")
 }
 
 fn fail(message: &str) -> ! {
