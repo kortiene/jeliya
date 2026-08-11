@@ -112,14 +112,25 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                                 // connection could be refused with a
                                 // non-retryable error, ending this task
                                 // before recovery. Prove leave-and-re-enter
-                                // from the EVENTS themselves: a state-only
-                                // wait would deadlock when both transitions
-                                // buffered before this future resumed (the
-                                // current state is already Ready again and
-                                // the drained queue never wakes it).
-                                let mut left_ready = false;
+                                // from evidence dated AFTER this failure: a
+                                // FRESH subscription (the long-lived one may
+                                // hold pre-dispatch transitions that would
+                                // impersonate the recovery) plus the current
+                                // state as the leave witness when the
+                                // Interrupted event outran the subscribe.
+                                // Residual honesty: a full leave-and-re-enter
+                                // completing entirely between the settlement
+                                // and this subscribe is indistinguishable
+                                // without kernel sequencing (#270's problem)
+                                // and parks this task until the next
+                                // transition — quiescent, never a busy loop.
+                                let mut recovery = handle.subscribe();
+                                let mut left_ready = handle.state() != State::Ready;
                                 loop {
-                                    match ready.next().await {
+                                    if left_ready && handle.state() == State::Ready {
+                                        break;
+                                    }
+                                    match recovery.next().await {
                                         Some(ClientEvent::StateChanged { to, .. }) => {
                                             if to != State::Ready {
                                                 left_ready = true;

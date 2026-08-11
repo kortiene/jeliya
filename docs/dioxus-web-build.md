@@ -118,22 +118,21 @@ cargo build --release -p jeliyad --features embed-ui
 
 - `jeliya-ui`'s `PlatformServices` is a **provisional seam pending #174**; when
   #174 lands, the local seam is replaced by a re-export.
-- The release `Build UI` step (`.github/workflows/release.yml`) **is** flipped
-  here to `scripts/build-web.sh` — required, because the fail-closed `embed-ui`
-  guard in `crates/jeliyad/build.rs` would otherwise abort every release daemon
-  build. What is **not** done here is the rest of the release-line cutover:
-  `scripts/check-release.mjs`'s `embedded_ui` npm contract and the
-  `scripts/realnet-evidence.mjs` fresh-source evidence build still record the
-  React `ui/dist` npm path — a fresh evidence run now fails closed at the embed
-  guard rather than signing evidence that mis-attests the embedded artifact —
-  and rewriting them onto the Dioxus toolchain is #183 (sealed-manifest and
-  attestation schema) / #200 (React removal, release-line cutover; Open
-  Question O-2). A release cut from `main` therefore embeds the mock-composed
-  foundation shell: it reaches `Ready` against the deterministic mock and
-  performs no daemon operation. That does not regress the release line — since
-  the protocol-v2 cutover the daemon is v2-only and refuses the v1 React UI
-  with `426 protocol_unsupported` at the handshake — and release-from-main
-  stays a non-functional product until the live browser transport (#168/#171)
-  and the sealed artifact (#183) land. `v0.6.0`, cut from its own tag, is
-  unaffected. `ui/` (React) stays intact and its per-client gates keep running
-  until #200 — no React artifact or build is *required* by #176.
+- The release line (`.github/workflows/release.yml`) is **not** flipped by
+  #176 — the [architecture record](dioxus-architecture.md) keeps the React
+  `ui/dist` archive as the shipped artifact until #200, and shipping the
+  mock-composed foundation shell on a tag would present a fake `Ready` that
+  performs no daemon operation. The consequence is stated plainly: because
+  the daemon's `embed-ui` build now embeds `crates/jeliya-ui/dist` behind the
+  fail-closed `build.rs` guard, a release attempted from `main` **fails
+  closed at that guard** (the release runner builds only the React archive) —
+  it does not build, rather than shipping either non-working UI. That does
+  not regress the line: since the protocol-v2 cutover the daemon is v2-only
+  and refuses the v1 React UI with `426 protocol_unsupported` at the
+  handshake, so release-from-main has been a non-functional product since
+  then and stays one until the live browser transport (#168/#171), the
+  sealed artifact (#183), and the release-line cutover (#200) land.
+  `scripts/check-release.mjs`'s `embedded_ui` npm contract and
+  `scripts/realnet-evidence.mjs` continue to record the React path
+  unchanged. `v0.6.0`, cut from its own tag, is unaffected. `ui/` (React)
+  stays intact and its per-client gates keep running until #200.

@@ -55,10 +55,12 @@ fn main() {
     // stale, differently named file would stand in for the one the shell
     // actually loads — so validate the exact root-relative references
     // index.html makes (they are root-relative by the SPA-fallback contract
-    // stated in index.html itself). HTML comments are stripped first: a
-    // commented-out module script still carries its quoted paths, and
-    // accepting them would embed a shell whose init never runs.
-    let index = strip_html_comments(&index);
+    // stated in index.html itself). HTML and JavaScript comments are
+    // stripped first: a commented-out module script — or commented-out
+    // import/init statements inside an active script — still carries its
+    // quoted paths, and accepting them would embed a shell whose init never
+    // runs.
+    let index = strip_js_comments(&strip_html_comments(&index));
     let module_refs: Vec<&str> = {
         let mut refs: Vec<&str> = index
             .split(['"', '\''])
@@ -134,6 +136,39 @@ fn strip_html_comments(html: &str) -> String {
         }
     }
     out.push_str(rest);
+    out
+}
+
+/// Remove `/* ... */` spans and `//`-to-end-of-line comments so commented-out
+/// import/init statements cannot satisfy the reference checks. A `//` directly
+/// preceded by `:` is kept (a URL scheme separator, `https://…`, not a
+/// comment) — a guard heuristic, not a JS parser; the canonical shell keeps
+/// no protocol-relative references. An unterminated block comment drops the
+/// remainder — fail-closed.
+fn strip_js_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            match text[i + 2..].find("*/") {
+                Some(end) => i += 2 + end + 2,
+                None => return out,
+            }
+        } else if bytes[i] == b'/'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'/'
+            && (i == 0 || bytes[i - 1] != b':')
+        {
+            match text[i..].find('\n') {
+                Some(end) => i += end,
+                None => return out,
+            }
+        } else {
+            out.push(text[i..].chars().next().expect("in-bounds char"));
+            i += text[i..].chars().next().expect("in-bounds char").len_utf8();
+        }
+    }
     out
 }
 

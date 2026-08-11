@@ -123,6 +123,14 @@ fi
 # `[build] target-dir` in $CARGO_HOME/config.toml would otherwise send the
 # compile elsewhere while this script reads the default path.
 target_dir="${CARGO_TARGET_DIR:-$repo/target}"
+# Absolute, before cargo runs from the isolated directory: cargo resolves a
+# relative CARGO_TARGET_DIR against ITS cwd (the temp dir), while this script
+# reads the artifact relative to the repo — a relative value would compile
+# into one tree and read a stale (or absent) wasm from another.
+case "$target_dir" in
+  /*) ;;
+  *) target_dir="$repo/$target_dir" ;;
+esac
 export CARGO_TARGET_DIR="$target_dir"
 
 echo "==> cargo build --locked --release -p jeliya-ui --features web (wasm32)"
