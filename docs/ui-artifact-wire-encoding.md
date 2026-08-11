@@ -172,7 +172,11 @@ target.
   manifest **before** serving. Canonical-corrupt must fail exactly as
   variant-corrupt does: a contract that refuses a bad variant but serves a bad
   canonical with `200` is not fail-closed. The manifest-less bare directory
-  remains the one exempt state — nothing is sealed there.
+  remains the one exempt state — nothing is sealed there — and selecting it
+  requires **both** metadata files absent, the manifest and its
+  detached-digest sidecar: either one orphaned (a sidecar without a
+  manifest, or the reverse) proves the directory was meant to be sealed and
+  fails closed, never the unverified dev state.
 - **A valid manifest is an allow-list.** A request path that, after resolution
   (entry lookup first, then the route-like `index.html` fallback on a miss),
   matches no manifest entry is answered **404** — never read from
@@ -282,7 +286,12 @@ its sealed variants, and the manifest carries shared provenance:
   from a canonical serialization; the exact scheme is #183's to fix. A digest
   stored inside the very bytes it covers is a fixed point no producer can
   compute. **Both sources verify this digest at load, before accepting the
-  manifest**: recompute over the loaded bytes and compare — a missing or
+  manifest**, recomputing per scheme: for the detached sidecar, over the
+  loaded serialized manifest bytes exactly as stored; for an in-manifest
+  field, over the canonical serialization that **excludes the field** — the
+  same canonicalization the producer used, since recomputing over raw bytes
+  with the field still present can never reproduce the sealed value. A
+  missing or
   mismatched detached digest fails closed exactly as an unparsable manifest
   does, never a fall-through to accepting the manifest's metadata (for `Dir`
   that is the partial-copy/skew detection this record promises; for
@@ -301,7 +310,10 @@ its sealed variants, and the manifest carries shared provenance:
     segments are further restricted to a **portable alphabet**: lowercase
     ASCII letters, digits, `_`, `-`, and interior `.` (no leading or trailing
     dot, and no Windows-reserved device name such as `con`, `nul`, `aux`,
-    `com1`–`com9`, `lpt1`–`lpt9`). This makes byte equality the collision
+    `com1`–`com9`, `lpt1`–`lpt9`; each segment at most **255 bytes**, the
+    common filesystem component bound, so no sealed path exists that a `Dir`
+    filesystem cannot materialize while an embedded map holds it). This
+    makes byte equality the collision
     key by construction: with only lowercase ASCII sealed, case-fold aliasing
     (`assets/App.js` vs `assets/app.js` on Windows/default-macOS), Unicode
     NFC/NFD aliasing (macOS normalizes), and Win32 trailing-dot/space
@@ -370,7 +382,10 @@ its sealed variants, and the manifest carries shared provenance:
   reloading; then enforce the allow-list on the resulting target (with a
   valid manifest an unlisted non-route-like path is a **404**, never a
   filesystem or embed fallback), parse `Accept-Encoding`
-  (coding tokens compare **case-insensitively** — `GZIP` ≡ `gzip`, RFC 9110
+  (**all** `Accept-Encoding` field values combine first — a request may
+  validly split the list across repeated header fields, and reading a single
+  `HeaderMap` value silently ignores later offers; coding tokens compare
+  **case-insensitively** — `GZIP` ≡ `gzip`, RFC 9110
   §8.4.1; `q=0` excludes a coding; unknown codings are ignored; `*` matches every
   coding not explicitly listed — so a bare `*` accepts the sealed codings and
   `*;q=0` excludes them, RFC 9110 §12.5.3; nonzero weights do **not** reorder),
@@ -381,7 +396,13 @@ its sealed variants, and the manifest carries shared provenance:
   its sealed digest (the variant digest or `identity.digest`), and build the
   response with `Content-Type` (decoded type),
   `Content-Encoding` (when not identity), the encoded `Content-Length` (set
-  automatically from the served in-memory bytes), and `Vary: Accept-Encoding`.
+  automatically from the served in-memory bytes), `Vary: Accept-Encoding`,
+  and — for the **root document only** — an explicit non-cacheable policy
+  (`Cache-Control: no-cache` at minimum): hashed assets are immutable per
+  digest and may cache indefinitely, but
+  [the entry point must not be](first-release-distribution.md), or a stale
+  cached shell outlives its own generation and requests hashed assets the
+  new manifest no longer lists.
 - Keep the SPA fallback (`index.html` for extension-less routes) on the same
   negotiated path.
 - **Leave `local_file`, `share_upload`, `session`, `health`, `preflight`,
@@ -416,6 +437,9 @@ when the daemon serves its value faithfully. The rows:
 - `Accept-Encoding: GZIP` → assert `Content-Encoding: gzip`: content-coding
   tokens are case-insensitive (RFC 9110 §8.4.1) — pinned so a literal token
   comparison cannot satisfy the contract by serving identity.
+- Two header fields, `Accept-Encoding: br;q=0` then `Accept-Encoding: gzip`
+  → assert `Content-Encoding: gzip`: repeated field values combine before
+  parsing — an implementation reading a single header value must fail.
 - No `Accept-Encoding` → assert **no** `Content-Encoding`, body equals the
   canonical bytes, SHA-256 equals `identity.digest`.
 - `Accept-Encoding: br;q=0, gzip` → assert gzip chosen, not br.
@@ -470,7 +494,14 @@ when the daemon serves its value faithfully. The rows:
   And a validly sealed manifest whose **advertised aggregate canonical
   digest does not match the value derived from its own entries** fails
   closed — the derived value, never the advertised field, is what
-  exact-version rejection compares.
+  exact-version rejection compares. A **sidecar-only** directory (detached
+  digest present, manifest missing) likewise fails closed — never the
+  unverified dev state.
+- **Entry-point cache policy:** the root document carries the explicit
+  non-cacheable policy on both the identity and encoded branches — a cached
+  entry point outlives its own generation
+  ([first-release-distribution](first-release-distribution.md)); hashed
+  assets stay cacheable by digest.
 - **Allow-list:** with an extra file (for example `debug.html`) placed in the
   `Dir` source but absent from the manifest, requesting it returns **404** —
   never a `200` with unverified bytes; the manifest-less bare directory

@@ -236,7 +236,9 @@ shipped bytes are intact, not that they parse).
   does not serve what it has"); the trust root is build-pinned for `Embedded`
   and operator-supplied for `Dir`.
 - The distinction the doc must draw sharply: *manifest definitively absent* →
-  the unsealed dev-only state. *Manifest present but invalid* → fail closed.
+  the unsealed dev-only state — where "absent" means **both** metadata files
+  are missing, the manifest and its detached-digest sidecar; either one
+  orphaned proves sealing intent and fails closed. *Manifest present but invalid* → fail closed.
   With a valid manifest: *no offered encoding sealed* → serve (verified)
   canonical; *any served representation corrupt/absent* → fail closed. What the
   check proves differs by source: tamper/packaging detection for `Embedded`
@@ -354,7 +356,10 @@ its sealed variants, and the manifest carries shared provenance:
   manifest, carried alongside) or stored in a field excluded from a canonical
   serialization; the exact scheme is #183's. A digest stored inside the bytes
   it covers is an uncomputable fixed point. Both sources **verify this digest
-  at load, before accepting the manifest** — missing or mismatched fails
+  at load, before accepting the manifest**, recomputing per scheme — the
+  detached sidecar verifies over the serialized bytes as stored; an
+  in-manifest field verifies over the canonical serialization that excludes
+  the field (the producer's canonicalization) — missing or mismatched fails
   closed exactly as unparsable does (Dir: partial-copy/skew detection;
   Embedded: packaging-defect evidence), never a fall-through to trusting the
   metadata and never a collapse into the manifest-less dev state.
@@ -367,7 +372,9 @@ its sealed variants, and the manifest carries shared provenance:
     `..\`/`C:\` on Windows and escape the artifact directory), and segments
     are restricted to a **portable alphabet**: lowercase ASCII letters,
     digits, `_`, `-`, interior `.` (no leading/trailing dot, no
-    Windows-reserved device name `con`/`nul`/`aux`/`com1`–`9`/`lpt1`–`9`).
+    Windows-reserved device name `con`/`nul`/`aux`/`com1`–`9`/`lpt1`–`9`;
+    each segment at most **255 bytes**, the common filesystem component
+    bound, so every sealed path is materializable on a `Dir` filesystem).
     Byte equality is then the collision key by construction — case-fold,
     Unicode NFC/NFD, and Win32 trailing-dot/space aliasing are
     unrepresentable, so no filesystem can treat two sealed paths as one
@@ -429,7 +436,9 @@ its sealed variants, and the manifest carries shared provenance:
   then enforce the allow-list on the resulting target (with a valid manifest
   an unlisted non-route-like path is a **404**, never a filesystem or embed
   fallback), parse
-  `Accept-Encoding` (coding tokens compare **case-insensitively** — `GZIP` ≡
+  `Accept-Encoding` (**all** field values combine first — a valid request
+  may split the list across repeated header fields; coding tokens compare
+  **case-insensitively** — `GZIP` ≡
   `gzip`, RFC 9110 §8.4.1; `q=0` excludes a coding; unknown codings are ignored; `*`
   matches every coding not explicitly listed — bare `*` accepts the sealed
   codings, `*;q=0` excludes them, RFC 9110 §12.5.3; nonzero weights do not
@@ -438,7 +447,10 @@ its sealed variants, and the manifest carries shared provenance:
   chosen representation — variant or canonical — against its sealed digest
   (§4.5), and build the response with `Content-Type`
   (decoded type), `Content-Encoding` (when not identity), the encoded
-  `Content-Length` (auto from `Full<Bytes>`), and `Vary: Accept-Encoding`.
+  `Content-Length` (auto from `Full<Bytes>`), `Vary: Accept-Encoding`, and —
+  root document only — an explicit non-cacheable policy (`Cache-Control:
+  no-cache` at minimum): hashed assets cache indefinitely by digest, the
+  entry point must not (`first-release-distribution.md`).
 - Keep the SPA fallback (`index.html` for extension-less routes, line 916) on the
   same negotiated path.
 - **Leave `local_file`, `share_upload`, `session`, `health`, `preflight`,
@@ -477,6 +489,8 @@ when the daemon serves its value faithfully. The rows:
 - `Accept-Encoding: GZIP` → assert `Content-Encoding: gzip` — content-coding
   tokens are case-insensitive (RFC 9110 §8.4.1); a literal token comparison
   must fail this row.
+- Two header fields `br;q=0` + `gzip` → assert gzip: repeated field values
+  combine before parsing; a single-value read must fail this row.
 - No `Accept-Encoding` → assert **no** `Content-Encoding`, body == canonical
   bytes, SHA-256 == `identity.digest`.
 - `Accept-Encoding: br;q=0, gzip` → assert gzip chosen, not br.
@@ -508,10 +522,14 @@ when the daemon serves its value faithfully. The rows:
 - **Fail-closed, manifest:** a present-but-truncated/unparsable manifest →
   fail closed, never a collapse into the "no manifest" dev state; likewise a
   valid-JSON manifest whose detached digest is missing or mismatched
-  (load-time digest verification, both sources), and a validly sealed
+  (load-time digest verification, both sources), a validly sealed
   manifest whose advertised aggregate canonical digest does not match the
   value derived from its own entries (exact-version rejection compares the
-  derived value, never the advertised field).
+  derived value, never the advertised field), and a sidecar-only directory
+  (digest present, manifest missing) — never the dev state.
+- **Entry-point cache policy:** the root document carries the explicit
+  non-cacheable policy on identity and encoded branches; hashed assets stay
+  cacheable by digest (`first-release-distribution.md` invariant).
 - **Allow-list:** an extra file (for example `debug.html`) in the `Dir` source
   but absent from the manifest → **404**, never a `200` with unverified bytes;
   the manifest-less bare directory serving that same file stays the dev-only
