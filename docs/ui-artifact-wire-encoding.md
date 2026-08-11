@@ -173,8 +173,9 @@ target.
   variant-corrupt does: a contract that refuses a bad variant but serves a bad
   canonical with `200` is not fail-closed. The manifest-less bare directory
   remains the one exempt state — nothing is sealed there.
-- **A valid manifest is an allow-list.** A request path that, after SPA-fallback
-  resolution, matches no manifest entry is answered **404** — never read from
+- **A valid manifest is an allow-list.** A request path that, after resolution
+  (entry lookup first, then the route-like `index.html` fallback on a miss),
+  matches no manifest entry is answered **404** — never read from
   the directory or the embed and served unverified. An extra, stale, or
   hand-added file in a `--ui-dir` (or a leftover compiled-in asset) is not
   servable content; only the manifest-less bare directory serves unlisted
@@ -289,7 +290,10 @@ its sealed variants, and the manifest carries shared provenance:
     params }` where `coding` is `br` or `gzip`, omitted or empty when no variant
     is smaller than canonical. `path` is the artifact-relative location of the
     sealed variant bytes, validated by the same containment rules as the asset
-    `path` and forbidden from colliding with any canonical asset `path`; for
+    `path` and required to be **unique across the entire artifact namespace**
+    — no collision with any canonical asset `path`, any other variant `path`,
+    or the manifest and its detached-digest sidecar, so materializing the
+    artifact directory can never overwrite one representation with another; for
     `Embedded` the same key addresses the compiled-in variant lookup. The
     concrete layout convention (for example `<path>.br` / `<path>.gz` suffixing)
     remains #183's choice — the contract requires only that the choice is
@@ -318,12 +322,15 @@ its sealed variants, and the manifest carries shared provenance:
 
 - Give `UiSource` access to the parsed manifest for both variants — compiled-in
   for `Embedded`, loaded from the `--ui-dir` for `Dir`.
-- Change the load/serve path so `serve_static` negotiates: resolve the SPA
-  fallback first (an extension-less route resolves to `index.html`, exactly as
-  today — a deep link such as `/rooms/r-99` must keep reloading), then resolve
-  the **resulting asset path** against the manifest's entry set (with a valid
-  manifest an unlisted resolved path is a **404**, never a filesystem or embed
-  fallback), parse `Accept-Encoding`
+- Change the load/serve path so `serve_static` negotiates: look the requested
+  path up against the manifest's entry set **first** (a sealed extension-less
+  asset such as a `LICENSE` entry stays reachable, never shadowed by the
+  fallback); only when it matches no entry **and** is route-like
+  (extension-less) fall back to `index.html` — the baseline's
+  lookup-then-fallback order, so a deep link such as `/rooms/r-99` keeps
+  reloading; then enforce the allow-list on the resulting target (with a
+  valid manifest an unlisted non-route-like path is a **404**, never a
+  filesystem or embed fallback), parse `Accept-Encoding`
   (`q=0` excludes a coding; unknown codings are ignored; `*` matches every
   coding not explicitly listed — so a bare `*` accepts the sealed codings and
   `*;q=0` excludes them, RFC 9110 §12.5.3; nonzero weights do **not** reorder),
@@ -354,7 +361,11 @@ only on the Brotli branch must fail these tests. Every row — identity and
 encoded alike — also asserts the response `Content-Type` equals the manifest's
 sealed `content_type` (the canonical decoded type: `application/wasm` for the
 wasm asset, never `application/octet-stream` and never a type derived from a
-variant `path`). The rows:
+variant `path`). Because the response and the manifest could agree on a wrong
+value, the matrix additionally validates every entry's sealed `content_type`
+**independently** against the canonical extension-to-MIME mapping
+(`guess_mime`'s characterized table) — a mislabeled manifest must fail even
+when the daemon serves its value faithfully. The rows:
 
 - `Accept-Encoding: br, gzip` → assert `Content-Encoding: br`, `Content-Length`
   equals the sealed `br` bytes, `Vary: Accept-Encoding` present, and
@@ -410,7 +421,9 @@ variant `path`). The rows:
   serving that same file stays the dev-only contrast. In the same run, a deep
   link such as `/rooms/r-99` still resolves through the SPA fallback to the
   sealed `index.html` and serves it negotiated as usual — the allow-list
-  applies to the resolved asset path, never to the raw route.
+  applies to the resolved asset path, never to the raw route. A sealed
+  extension-less asset in the manifest (for example a `LICENSE` entry) is
+  served, not shadowed: entry lookup precedes the route-like fallback.
 - **Security regression:** `GET /api/files/local?...` with `Accept-Encoding: br,
   gzip` returns **no** `Content-Encoding` and the inert-attachment headers are
   unchanged.
