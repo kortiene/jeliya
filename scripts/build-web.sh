@@ -39,12 +39,13 @@ export CARGO_INCREMENTAL=0
 # would make cargo invoke a compiler other than the one the pin below
 # validates (rustc on PATH), letting a noncanonical compiler pass every gate.
 unset CARGO_ENCODED_RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
-# Cargo also accepts profile and rustflags overrides from the environment
-# (CARGO_PROFILE_RELEASE_OPT_LEVEL=0, CARGO_BUILD_RUSTFLAGS,
-# CARGO_TARGET_<T>_RUSTFLAGS, ...) — each changes the emitted wasm while the
-# marker records only the standard pins, invisible to the determinism check
-# for the same both-samples-inherit-it reason. Strip them all.
-for cargo_var in $(compgen -e | grep -E '^CARGO_(PROFILE_|BUILD_RUSTFLAGS$|BUILD_RUSTDOCFLAGS$|TARGET_.*_RUSTFLAGS$)' || true); do
+# Cargo also accepts profile, rustflags, and compiler overrides from the
+# environment (CARGO_PROFILE_RELEASE_OPT_LEVEL=0, CARGO_BUILD_RUSTFLAGS,
+# CARGO_TARGET_<T>_RUSTFLAGS, CARGO_BUILD_RUSTC and its wrapper forms, ...) —
+# each changes the emitted wasm or the invoked compiler while the marker
+# records only the standard pins, invisible to the determinism check for the
+# same both-samples-inherit-it reason. Strip them all.
+for cargo_var in $(compgen -e | grep -E '^CARGO_(PROFILE_|BUILD_RUSTFLAGS$|BUILD_RUSTDOCFLAGS$|BUILD_RUSTC(_WRAPPER|_WORKSPACE_WRAPPER)?$|TARGET_.*_RUSTFLAGS$)' || true); do
   unset "$cargo_var"
 done
 export RUSTFLAGS="--remap-path-prefix=$repo=. --remap-path-prefix=$HOME=~"
