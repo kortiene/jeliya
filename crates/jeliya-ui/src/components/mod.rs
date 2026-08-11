@@ -13,7 +13,9 @@
 use dioxus::prelude::*;
 use jeliya_api::RoomRow;
 
-/// The connecting/boot indicator shown before the client is usable.
+/// The full-viewport status cover shown when the shell is not mounted:
+/// initial activation ("connecting…") and the stop/failure states, each with
+/// its own honest label — never a generic "connecting" over a terminal state.
 #[component]
 pub fn BootScreen(target: String) -> Element {
     rsx! {

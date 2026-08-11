@@ -47,31 +47,47 @@ fn main() {
         Ok(text) => text,
         Err(_) => fail("the embedded UI has no index.html"),
     };
-    if !index.contains(".wasm") {
-        fail("the embedded index.html does not load a wasm module — it is not the Dioxus shell");
-    }
     // The HTML referencing a wasm URL is not the same as the module being
-    // there: a marked-but-incomplete directory (wasm or JS glue deleted,
+    // there: a marked-but-incomplete directory (a referenced module deleted,
     // marker and index intact) must fail the build, not ship a UI that 404s
-    // on every load. Require at least one non-empty .wasm and .js file.
-    let mut has_wasm = false;
-    let mut has_js = false;
-    if let Ok(entries) = std::fs::read_dir(&dist) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let nonempty = entry.metadata().map(|m| m.len() > 0).unwrap_or(false);
-            match path.extension().and_then(|e| e.to_str()) {
-                Some("wasm") if nonempty => has_wasm = true,
-                Some("js") if nonempty => has_js = true,
-                _ => {}
-            }
+    // on every load. "Some non-empty .wasm/.js exists" is not enough either —
+    // a stale, differently named module would stand in for the one the shell
+    // actually imports — so validate the exact root-relative modules
+    // index.html references (they are root-relative by the SPA-fallback
+    // contract stated in index.html itself).
+    let module_refs: Vec<&str> = {
+        let mut refs: Vec<&str> = index
+            .split(['"', '\''])
+            .filter(|t| t.starts_with('/') && (t.ends_with(".wasm") || t.ends_with(".js")))
+            .collect();
+        refs.sort_unstable();
+        refs.dedup();
+        refs
+    };
+    if !module_refs.iter().any(|r| r.ends_with(".wasm")) {
+        fail(
+            "the embedded index.html references no root-relative .wasm module — it is not the \
+             Dioxus shell",
+        );
+    }
+    if !module_refs.iter().any(|r| r.ends_with(".js")) {
+        fail(
+            "the embedded index.html references no root-relative .js bindgen glue — it is not \
+             the Dioxus shell",
+        );
+    }
+    for reference in &module_refs {
+        let module = dist.join(reference.trim_start_matches('/'));
+        println!("cargo:rerun-if-changed={}", module.display());
+        let nonempty = std::fs::metadata(&module)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        if !nonempty {
+            fail(&format!(
+                "the embedded UI is missing or has an empty {reference} — a module index.html \
+                 loads; the artifact is incomplete"
+            ));
         }
-    }
-    if !has_wasm {
-        fail("the embedded UI has no non-empty .wasm module — the artifact is incomplete");
-    }
-    if !has_js {
-        fail("the embedded UI has no non-empty .js bindgen glue — the artifact is incomplete");
     }
     // Reject a React/Vite signature outright: a Vite dev entry, a Vite HMR
     // client, or a React source module must never be the embedded artifact.

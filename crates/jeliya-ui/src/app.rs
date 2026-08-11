@@ -76,16 +76,33 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
 
     let snapshot = ui();
     let lifecycle = format!("{:?}", snapshot.lifecycle);
-    let ready = matches!(snapshot.lifecycle, State::Ready);
 
-    // Until Ready, the boot screen is the component ROOT (as the React shell
-    // renders it), never a child of the `.app` grid: auto-placed inside the
-    // two-column grid, its `height: var(--vh-full)` would blow up the first
-    // `auto` row and collapse the sidebar/center instead of covering them.
-    // All hooks are declared above, so the early return is order-safe.
-    if !ready {
+    // Outside the shell, the boot screen is the component ROOT (as the React
+    // shell renders it), never a child of the `.app` grid: auto-placed inside
+    // the two-column grid, its `height: var(--vh-full)` would blow up the
+    // first `auto` row and collapse the sidebar/center instead of covering
+    // them. All hooks are declared above, so the early return is order-safe.
+    //
+    // The "connecting" cover is reserved for initial activation. `Interrupted`
+    // was Ready and is recovering, so the shell stays mounted (`StatusFooter`
+    // reports the state) rather than hiding the rooms behind a boot screen;
+    // the stop and failure states render their own honest label — a terminal
+    // state that claims to be connecting would be a lie the client never
+    // recovers from — plus any recorded notice, which the Ready-only shell
+    // would otherwise swallow.
+    let boot_target = match snapshot.lifecycle {
+        State::Ready | State::Interrupted => None,
+        State::Idle | State::Connecting => Some("connecting to the local daemon…"),
+        State::Stopping => Some("stopping — draining accepted work…"),
+        State::Stopped => Some("stopped"),
+        State::Failed => Some("the client failed and will not retry"),
+    };
+    if let Some(target) = boot_target {
         return rsx! {
-            BootScreen { target: "connecting to the local daemon…".to_string() }
+            BootScreen { target: target.to_string() }
+            if let Some(notice) = snapshot.notice.as_ref() {
+                div { class: "error-note", id: "notice", "{notice}" }
+            }
         };
     }
 
