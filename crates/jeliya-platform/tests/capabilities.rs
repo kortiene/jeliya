@@ -2876,3 +2876,166 @@ fn in_flight_shares_count_as_retained() {
         "the completed share consumed them"
     );
 }
+
+/// An invalid staged handle reports its own failure and consumes no scripted
+/// open failure — the same validation-before-script rule the share sheet and
+/// the zero-bound pull follow.
+#[test]
+fn an_invalid_staged_handle_consumes_no_open_failure() {
+    let (a, a_ctl) = fake::desktop();
+    let (b, b_ctl) = fake::desktop();
+    let ct = CancelToken::new();
+    // A blob belonging to another service.
+    a_ctl.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&a_ctl, a.files().pick(&ct)).unwrap().unwrap();
+    let foreign = settle(
+        &a_ctl,
+        a.files()
+            .stage_for_share(src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+
+    b_ctl.force_error(
+        Capability::ReadStaged,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(b.files().read_staged(&foreign)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "a foreign blob reports the anti-forgery failure, not the script"
+    );
+
+    // The script is still queued for the first VALID open.
+    b_ctl.arm_pick("own.bin", None, b"mine".to_vec());
+    let own_src = settle(&b_ctl, b.files().pick(&ct)).unwrap().unwrap();
+    let own = settle(
+        &b_ctl,
+        b.files()
+            .stage_for_share(own_src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    assert_eq!(
+        block_on(b.files().read_staged(&own)).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "the untouched script lands on the next valid open"
+    );
+}
+
+/// Writing to an already-cancelled sink must not eat the scripted
+/// partial-transfer failure: a buggy adapter that keeps writing would otherwise
+/// make the next fresh sink unexpectedly succeed.
+#[test]
+fn a_pre_cancelled_sink_consumes_no_script() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out.bin");
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    let mut sink = block_on(services.files().export_sink(target, &ct)).expect("sink opens");
+    controller.force_error(
+        Capability::FileSinkWrite,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    ct.cancel();
+    // The adapter wrongly keeps writing after cancellation.
+    assert_eq!(
+        block_on(sink.write(b"after".to_vec())).err(),
+        Some(CapabilityError::Cancelled),
+        "cancellation wins, and the script is untouched"
+    );
+    assert_eq!(
+        block_on(sink.commit()).err(),
+        Some(CapabilityError::Cancelled)
+    );
+
+    // A fresh sink still meets the scripted failure.
+    let fresh = CancelToken::new();
+    controller.arm_export_target(ExportTargetKind::NativePath, "out2.bin");
+    let target = settle(
+        &controller,
+        services
+            .files()
+            .pick_export_target(name("out2.bin"), &fresh),
+    )
+    .unwrap()
+    .unwrap();
+    let mut sink = block_on(services.files().export_sink(target, &fresh)).expect("sink opens");
+    assert_eq!(
+        block_on(sink.write(b"chunk".to_vec())).err(),
+        Some(CapabilityError::Failed(FailureKind::Io)),
+        "the script was preserved for the sink that really writes"
+    );
+}
+
+/// The progress contract: `transferred` counts bytes copied *so far*, reports
+/// arrive one per bounded chunk, and a sink that cancels from the report gets
+/// the figure for the chunk that had just landed, with the partial discarded.
+///
+/// Note on scope, because it matters for how much this test proves: the
+/// *ordering* fix behind it — appending a chunk to the partial before
+/// announcing it, so the figure is never ahead of the bytes — has **no
+/// externally observable difference** in the fake. A cancelled stage records
+/// nothing by design (§D5), so the partial is never surfaced to compare
+/// against. This test therefore pins the progress contract itself, not the
+/// internal ordering; the ordering matters because the M3–M5 implementations
+/// read this fake as the reference for what `transferred` means.
+#[test]
+fn progress_reports_only_bytes_already_copied() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    // 10 bytes copied through an 8-byte buffer: two reports, 8 then 10.
+    controller.arm_pick("doc.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sink = {
+        let seen = Rc::clone(&seen);
+        ProgressSink::new(move |p| seen.borrow_mut().push(p.transferred))
+    };
+    let blob = settle(
+        &controller,
+        services.files().stage_for_share(src, 1024, sink, &ct),
+    )
+    .expect("stage ok");
+    assert_eq!(*seen.borrow(), vec![8, 10]);
+    assert_eq!(blob.size(), 10);
+
+    // Cancelling from the report: the last figure announced is exactly what had
+    // been copied, and the partial is discarded rather than recorded.
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let sink = {
+        let seen = Rc::clone(&seen);
+        let ct = ct.clone();
+        ProgressSink::new(move |p| {
+            seen.borrow_mut().push(p.transferred);
+            ct.cancel();
+        })
+    };
+    assert_eq!(
+        block_on(services.files().stage_for_share(src, 1024, sink, &ct)).err(),
+        Some(CapabilityError::Cancelled)
+    );
+    assert_eq!(
+        *seen.borrow(),
+        vec![8],
+        "the cancelling observer was told exactly what had been copied"
+    );
+    assert!(
+        controller.staged().is_empty(),
+        "a cancelled stage records nothing"
+    );
+}

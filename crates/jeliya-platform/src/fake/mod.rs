@@ -1125,6 +1125,12 @@ impl Files for FakePlatform {
                         limit,
                     }));
                 }
+                // Accumulate BEFORE reporting: `transferred` is documented as
+                // bytes copied so far, and a progress sink that cancels would
+                // otherwise be told a chunk landed that never entered the
+                // partial artifact. The partial is still discarded on every
+                // early return — it is only recorded on success.
+                staged.extend_from_slice(chunk);
                 // Report progress BEFORE the cancel check, so a progress sink
                 // that fires the token mid-copy is observed on the very next
                 // check — the deterministic "cancel mid-stream" path.
@@ -1135,7 +1141,6 @@ impl Files for FakePlatform {
                 if ct.is_cancelled() {
                     return Err(CapabilityError::Cancelled);
                 }
-                staged.extend_from_slice(chunk);
             }
             if copied == 0 {
                 return Err(CapabilityError::Failed(FailureKind::FileEmpty));
@@ -1160,21 +1165,27 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<Box<dyn StagedBlobReader>, CapabilityError>> {
         let inner = self.inner.clone();
         let token = blob.token();
+        // Token resolution stays inside the service, and comes FIRST: a blob
+        // this service did not stage (a forged token, another service's blob,
+        // one already released) fails closed on its own and must not consume
+        // an open failure scripted for the next valid open — the same
+        // validation-before-script rule the share sheet and the zero-bound
+        // pull follow.
+        let bytes = inner
+            .staged_blobs
+            .lock()
+            .expect("staged blobs poisoned")
+            .get(&token.get())
+            .cloned();
+        if bytes.is_none() {
+            return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
+        }
         // Opening is its own failure moment, before any byte is pulled.
         let bound = inner.take_forced(Capability::ReadStaged);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
             }
-            // Token resolution stays inside the service: a blob this service
-            // did not stage (a forged token, another service's blob) fails
-            // closed — never an empty Ok reader.
-            let bytes = inner
-                .staged_blobs
-                .lock()
-                .expect("staged blobs poisoned")
-                .get(&token.get())
-                .cloned();
             match bytes {
                 Some(bytes) => Ok(Box::new(FakeStagedReader {
                     inner,
@@ -1406,6 +1417,13 @@ impl FileSink for FakeFileSink {
         // differently from one that never opens — stop advancing CREDIT, abort
         // the stream, drop the artifact — so it has to be scriptable, and the
         // chunk that failed is NOT accumulated.
+        // A token already fired before this call means the operation never
+        // starts, so it consumes no script — the same dispatch-after-stop rule
+        // the rest of the file follows. The in-body check below still covers a
+        // token that fires between the call and the first poll.
+        if self.ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
         let bound = self.inner.take_forced(Capability::FileSinkWrite);
         Box::pin(async move {
             // Cancellation reaches the transfer, not just its opening: a
@@ -1427,6 +1445,13 @@ impl FileSink for FakeFileSink {
         // own path: the caller has nothing left to send and must still not
         // report success. Nothing is recorded, so the artifact was never
         // published.
+        // A token already fired before this call means the operation never
+        // starts, so it consumes no script — the same dispatch-after-stop rule
+        // the rest of the file follows. The in-body check below still covers a
+        // token that fires between the call and the first poll.
+        if self.ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
         let bound = self.inner.take_forced(Capability::FileSinkCommit);
         let this_ct = self.ct.clone();
         Box::pin(async move {
@@ -1474,6 +1499,13 @@ struct FakeShareSink {
 impl ShareSink for FakeShareSink {
     fn write(&mut self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), CapabilityError>> {
         // Same mid-transfer failure path as [`FakeFileSink::write`].
+        // A token already fired before this call means the operation never
+        // starts, so it consumes no script — the same dispatch-after-stop rule
+        // the rest of the file follows. The in-body check below still covers a
+        // token that fires between the call and the first poll.
+        if self.ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
         let bound = self.inner.take_forced(Capability::ShareSinkWrite);
         Box::pin(async move {
             // Cancellation reaches the transfer, not just its opening: a
@@ -1494,6 +1526,13 @@ impl ShareSink for FakeShareSink {
         // Same finalization path as [`FakeFileSink::commit`]: no artifact is
         // minted and nothing is recorded, so a failed staging commit cannot be
         // mistaken for a shareable artifact.
+        // A token already fired before this call means the operation never
+        // starts, so it consumes no script — the same dispatch-after-stop rule
+        // the rest of the file follows. The in-body check below still covers a
+        // token that fires between the call and the first poll.
+        if self.ct.is_cancelled() {
+            return Box::pin(async { Err(CapabilityError::Cancelled) });
+        }
         let bound = self.inner.take_forced(Capability::ShareSinkCommit);
         let this_ct = self.ct.clone();
         Box::pin(async move {
