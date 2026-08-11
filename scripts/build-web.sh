@@ -57,7 +57,8 @@ done
 # exists today) would still apply, as a reviewed file should.
 real_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 iso_cargo_home="$(mktemp -d)"
-trap 'rm -rf "$iso_cargo_home"' EXIT
+staging=""
+trap 'rm -rf "$iso_cargo_home" "$staging"' EXIT
 for shared in registry git; do
   if [ -d "$real_cargo_home/$shared" ]; then
     ln -s "$real_cargo_home/$shared" "$iso_cargo_home/$shared"
@@ -163,28 +164,37 @@ if [ -e "$out" ] && [ ! -f "$out/.dioxus-artifact" ] && [ -n "$(ls -A "$out" 2>/
   echo "      pass a new or empty directory, or a previous build output." >&2
   exit 1
 fi
-rm -rf "$out"
-mkdir -p "$out"
+# STAGE, then swap: an interrupted run must never leave $out half-written
+# (marker-less), or every later invocation would refuse it as unrelated data
+# and the canonical build could not recover without manual deletion. $out is
+# only ever replaced by a COMPLETE, marker-bearing tree; the trap removes an
+# abandoned staging directory.
+staging="$(mktemp -d "${out}.staging.XXXXXX" 2>/dev/null || mktemp -d)"
 wasm-bindgen \
   --target web \
   --no-typescript \
-  --out-dir "$out" \
+  --out-dir "$staging" \
   "$target_dir/wasm32-unknown-unknown/release/$crate.wasm"
 
 echo "==> assets (canonical, single-source)"
-cp "$repo/crates/jeliya-ui/index.html" "$out/index.html"
+cp "$repo/crates/jeliya-ui/index.html" "$staging/index.html"
 # The one canonical stylesheet, consumed from its single source (§7, AC-4).
-cp "$repo/ui/src/styles.css" "$out/styles.css"
+cp "$repo/ui/src/styles.css" "$staging/styles.css"
 
 # The build-time artifact marker the daemon embed guard checks for (§9). Pure
 # static content so it never perturbs determinism; #183 later replaces it with
-# a content-addressed sealed manifest.
-cat > "$out/.dioxus-artifact" <<EOF
+# a content-addressed sealed manifest. Written LAST within the staging tree —
+# a tree without it is by definition incomplete and never reaches $out.
+cat > "$staging/.dioxus-artifact" <<EOF
 renderer=dioxus-web
 crate=jeliya-ui
 rustc=$pinned_rustc
 wasm_bindgen=$locked_wbg
 EOF
+
+rm -rf "$out"
+mv "$staging" "$out"
+staging=""
 
 echo
 echo "==> artifact ($out)"

@@ -31,6 +31,17 @@ fn main() {
         "cargo:rerun-if-changed={}",
         dist.join("index.html").display()
     );
+    // The expected-toolchain checks below read these two files; without
+    // rerun tracking, editing the pin would not re-trigger the guard on an
+    // incremental build and a now-stale artifact would stay embedded.
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("../../scripts/build-web.sh").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("../../Cargo.lock").display()
+    );
 
     let marker = std::fs::read_to_string(dist.join(".dioxus-artifact")).unwrap_or_default();
     if !marker
@@ -107,15 +118,20 @@ fn main() {
     // single spaces (never removed — full compaction fuses `init from` into
     // `initfrom` and destroys the very boundaries being checked).
     let normalized_scripts = scripts.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The initializer identifiers this shell imports (`import NAME from
+    // '<glue>.js'`): the wasm path must appear inside a CALL of one of them —
+    // a path parked in an unused object literal initializes nothing.
+    let init_idents = imported_default_idents(&normalized_scripts);
     let mut module_refs: Vec<String> = collect_refs(&scripts, &[".wasm", ".js"])
         .into_iter()
         .filter(|r| {
             ['\'', '"'].iter().any(|quote| {
-                executable_position(
-                    &normalized_scripts,
-                    &format!("{quote}{r}{quote}"),
-                    r.ends_with(".js"),
-                )
+                let quoted = format!("{quote}{r}{quote}");
+                if r.ends_with(".js") {
+                    executable_position(&normalized_scripts, &quoted, true)
+                } else {
+                    inside_initializer_call(&normalized_scripts, &quoted, &init_idents)
+                }
             })
         })
         .collect();
@@ -276,6 +292,52 @@ fn executable_position(normalized: &str, quoted: &str, is_js: bool) -> bool {
             return true;
         }
         from = at + 1;
+    }
+    false
+}
+
+/// The default-import identifiers of the module script (`import NAME from
+/// '...'`), which are the only initializers the shell can call.
+fn imported_default_idents(normalized: &str) -> Vec<String> {
+    let mut idents = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = normalized[from..].find("import ") {
+        let at = from + rel + "import ".len();
+        let ident: String = normalized[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if !ident.is_empty() {
+            idents.push(ident);
+        }
+        from = at;
+    }
+    idents
+}
+
+/// Whether the quoted wasm path occurs inside a call of one of the imported
+/// initializers: after `NAME(` (identifier boundary before NAME) and before
+/// the next `)`. A guard heuristic — the canonical shell's
+/// `init({ module_or_path: '<wasm>' })` shape — not a JS parser.
+fn inside_initializer_call(normalized: &str, quoted: &str, idents: &[String]) -> bool {
+    for ident in idents {
+        let call = format!("{ident}(");
+        let mut from = 0;
+        while let Some(rel) = normalized[from..].find(&call) {
+            let at = from + rel;
+            let boundary = normalized[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'));
+            if boundary {
+                let after = &normalized[at + call.len()..];
+                let span = after.find(')').map_or(after, |end| &after[..end]);
+                if span.contains(quoted) {
+                    return true;
+                }
+            }
+            from = at + call.len();
+        }
     }
     false
 }
