@@ -477,6 +477,13 @@ impl Future for PendingCall {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let mut inner = self.inner.lock().expect("mock poisoned");
+        // A dropped call future cancels its sender but leaves its queue
+        // entry until a delivery purges it — canceled work is not pending
+        // work, and reporting it ready would let a driver spend its
+        // delivery on a purge and finish before a real call dispatches.
+        inner
+            .pending
+            .retain(|pending| !pending.sender.is_canceled());
         if !inner.pending.is_empty() || inner.stopping {
             return Poll::Ready(());
         }

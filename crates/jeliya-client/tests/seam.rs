@@ -1703,3 +1703,46 @@ fn pending_call_wakes_on_dispatch_and_resolves_on_stop() {
     block_on(handle.stop());
     assert!((&mut parked).now_or_never().is_some());
 }
+
+/// A dropped (canceled) call is not pending work: `pending_call` must not
+/// resolve for a queue entry whose caller has gone away, or a driver spends
+/// its delivery purging a corpse and stops before the real call dispatches.
+#[test]
+fn pending_call_ignores_canceled_calls() {
+    let (handle, controller) = MockScript::new()
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&empty_room_list()),
+        )
+        .on(
+            "room.list",
+            Program::reply_ok::<RoomList>(&empty_room_list()),
+        )
+        .build();
+    handle.start();
+    controller.set_state(State::Ready);
+
+    // Register a call, then drop its future: the sender cancels but the
+    // queue entry lingers until something purges it.
+    let mut canceled = Box::pin(handle.call::<RoomList>(RoomList {}, Dedup::None));
+    assert!(canceled.as_mut().now_or_never().is_none());
+    drop(canceled);
+
+    // The corpse must not read as pending work.
+    assert!(controller.pending_call().now_or_never().is_none());
+
+    // A real dispatch still resolves the waiter and settles.
+    let waiter = controller.pending_call();
+    let call = handle.call::<RoomList>(RoomList {}, Dedup::None);
+    let reply = block_on(async {
+        let ((), reply) = futures::join!(
+            async {
+                waiter.await;
+                while controller.deliver_next() {}
+            },
+            call,
+        );
+        reply
+    });
+    assert!(reply.is_ok(), "the live call settles: {reply:?}");
+}

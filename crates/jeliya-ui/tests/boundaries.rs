@@ -221,7 +221,7 @@ fn no_cfg_target_forks_in_shared_components() {
 /// escapes both graph checks, so the manifest scan is the only gate that
 /// sees it. Belt-and-suspenders at the manifest level complementing the
 /// `wasm_web_graph_is_free_of_iroh_and_native_crates` graph check.
-const BANNED_MANIFEST_CRATES: [&str; 13] = [
+const BANNED_MANIFEST_CRATES: [&str; 14] = [
     "jeliya-core",
     "jeliyad",
     "jeliya-ffi",
@@ -235,6 +235,12 @@ const BANNED_MANIFEST_CRATES: [&str; 13] = [
     "openssl-sys",
     "native-tls",
     "tungstenite",
+    // Not native, but the raw-JSON boundary's manifest door: a RENAMED
+    // dependency (`json = { package = "serde_json" }`) exposes
+    // `json::Value` with no `serde_json` spelling for the source scans to
+    // see. The quoted prefix-open match catches the rename; the bare
+    // prefix catches a direct declaration.
+    "serde_json",
 ];
 
 #[test]
@@ -276,7 +282,7 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
                         || trimmed.contains(&format!("'{banned}"))
                     {
                         panic!(
-                            "Cargo.toml dependency table names native crate '{banned}' — \
+                            "Cargo.toml dependency table names forbidden crate '{banned}' — \
                              it must never enter jeliya-ui's graph (line: {line})"
                         );
                     }
@@ -298,7 +304,7 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
                 || trimmed.contains(&format!("'{banned}"))
             {
                 panic!(
-                    "Cargo.toml [dependencies] declares native crate '{banned}' directly — \
+                    "Cargo.toml [dependencies] declares forbidden crate '{banned}' directly — \
                      it must never enter jeliya-ui's graph (line: {line})"
                 );
             }
