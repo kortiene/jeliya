@@ -378,7 +378,9 @@ its sealed variants, and the manifest carries shared provenance:
     digits, `_`, `-`, interior `.` (no leading/trailing dot, no
     Windows-reserved device name `con`/`nul`/`aux`/`com1`–`9`/`lpt1`–`9`;
     each segment at most **255 bytes**, the common filesystem component
-    bound, so every sealed path is materializable on a `Dir` filesystem).
+    bound, and each complete relative path at most **1024 bytes** —
+    individually valid segments can still compose a pathname no filesystem
+    accepts — so every sealed path is materializable on a `Dir` filesystem).
     Byte equality is then the collision key by construction — case-fold,
     Unicode NFC/NFD, and Win32 trailing-dot/space aliasing are
     unrepresentable, so no filesystem can treat two sealed paths as one
