@@ -192,7 +192,15 @@ fn crate_manifest_has_no_direct_native_crate_dependency() {
     for line in manifest.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
-            in_deps = trimmed == "[dependencies]" || trimmed == "[dev-dependencies]";
+            // Every dependency table counts, including build-dependencies
+            // and target-specific tables like
+            // [target.'cfg(not(target_arch = "wasm32"))'.dependencies] — a
+            // banned crate declared there is as much a direct dependency as
+            // one in [dependencies].
+            in_deps = trimmed == "[dependencies]"
+                || trimmed == "[dev-dependencies]"
+                || trimmed == "[build-dependencies]"
+                || (trimmed.starts_with("[target.") && trimmed.ends_with("dependencies]"));
             continue;
         }
         if !in_deps || trimmed.starts_with('#') {
@@ -224,7 +232,19 @@ fn scan_dir(dir: &std::path::Path, offenders: &mut Vec<String>) {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                if line.contains("serde_json::Value") || line.contains("serde_json::value::Value") {
+                let fully_qualified =
+                    line.contains("serde_json::Value") || line.contains("serde_json::value::Value");
+                // A grouped or aliased import (`use serde_json::{Value}`,
+                // `use serde_json::Value as Json`) brings the type into
+                // scope without either fully qualified spelling; any `use`
+                // of serde_json naming Value is the same boundary breach.
+                let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+                let imported = compact.contains("useserde_json::")
+                    && (compact.contains("Value,")
+                        || compact.contains("Value}")
+                        || compact.contains("Value;")
+                        || compact.contains("Valueas"));
+                if fully_qualified || imported {
                     offenders.push(format!("{}:{}", path.display(), index + 1));
                 }
             }

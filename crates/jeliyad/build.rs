@@ -8,6 +8,13 @@
 //! **no** Vite/React signature. A plain `cargo build` (no `embed-ui`) does
 //! nothing here. #183 later replaces this marker with a content-addressed
 //! sealed manifest and adds the runtime legacy-rejection.
+//!
+//! THREAT MODEL: this guard defends against ACCIDENTS — React output, a
+//! stale or half-built artifact, a commented-out or inert loader — not
+//! against an adversarial `index.html`. It is a string-level scanner, not an
+//! HTML/JS parser; an artifact CRAFTED to satisfy it while misbehaving is
+//! out of scope here, and the sealed content-addressed manifest (#183) is
+//! the integrity boundary that owns that case.
 
 use std::path::PathBuf;
 
@@ -118,23 +125,54 @@ fn main() {
     // single spaces (never removed — full compaction fuses `init from` into
     // `initfrom` and destroys the very boundaries being checked).
     let normalized_scripts = scripts.split_whitespace().collect::<Vec<_>>().join(" ");
-    // The initializer identifiers this shell imports (`import NAME from
-    // '<glue>.js'`): the wasm path must appear inside a CALL of one of them —
-    // a path parked in an unused object literal initializes nothing.
-    let init_idents = imported_default_idents(&normalized_scripts);
-    let mut module_refs: Vec<String> = collect_refs(&scripts, &[".wasm", ".js"])
-        .into_iter()
+    let all_refs = collect_refs(&scripts, &[".wasm", ".js"]);
+    // The .js glue must be an actual import target...
+    let js_refs: Vec<String> = all_refs
+        .iter()
+        .filter(|r| r.ends_with(".js"))
         .filter(|r| {
             ['\'', '"'].iter().any(|quote| {
-                let quoted = format!("{quote}{r}{quote}");
-                if r.ends_with(".js") {
-                    executable_position(&normalized_scripts, &quoted, true)
-                } else {
-                    inside_initializer_call(&normalized_scripts, &quoted, &init_idents)
-                }
+                executable_position(&normalized_scripts, &format!("{quote}{r}{quote}"), true)
             })
         })
+        .cloned()
         .collect();
+    // ...and the wasm path must appear inside a CALL of the initializer
+    // imported from ITS OWN glue — wasm-bindgen pairs `<stem>_bg.wasm` with
+    // `<stem>.js` by construction, so the accepted initializer for a given
+    // wasm is exactly the default import of the matching-stem glue. An
+    // unrelated import (even of another real dist .js) called with the wasm
+    // path initializes this module no more than an unused object literal
+    // does.
+    let imports = imported_default_idents(&normalized_scripts);
+    let wasm_refs: Vec<String> = all_refs
+        .iter()
+        .filter(|r| r.ends_with(".wasm"))
+        .filter(|r| {
+            let file = r.rsplit('/').next().unwrap_or(r);
+            let Some(stem) = file.strip_suffix("_bg.wasm") else {
+                return false;
+            };
+            let glue_file = format!("{stem}.js");
+            let glue_idents: Vec<String> = imports
+                .iter()
+                .filter(|(_, source)| {
+                    js_refs.iter().any(|jr| jr == source)
+                        && source.rsplit('/').next() == Some(glue_file.as_str())
+                })
+                .map(|(ident, _)| ident.clone())
+                .collect();
+            ['\'', '"'].iter().any(|quote| {
+                inside_initializer_call(
+                    &normalized_scripts,
+                    &format!("{quote}{r}{quote}"),
+                    &glue_idents,
+                )
+            })
+        })
+        .cloned()
+        .collect();
+    let mut module_refs: Vec<String> = [js_refs, wasm_refs].concat();
     if !module_refs.iter().any(|r| r.ends_with(".wasm")) {
         fail(
             "the embedded index.html has no active module script loading a root-relative .wasm \
@@ -296,23 +334,36 @@ fn executable_position(normalized: &str, quoted: &str, is_js: bool) -> bool {
     false
 }
 
-/// The default-import identifiers of the module script (`import NAME from
-/// '...'`), which are the only initializers the shell can call.
-fn imported_default_idents(normalized: &str) -> Vec<String> {
-    let mut idents = Vec::new();
-    let mut from = 0;
-    while let Some(rel) = normalized[from..].find("import ") {
-        let at = from + rel + "import ".len();
-        let ident: String = normalized[at..]
+/// The default-import bindings of the module script — `import NAME from
+/// '<source>'` — as (identifier, source) pairs, so a caller can require that
+/// the initializer it accepts was imported from a specific module.
+fn imported_default_idents(normalized: &str) -> Vec<(String, String)> {
+    let mut bindings = Vec::new();
+    let mut from_idx = 0;
+    while let Some(rel) = normalized[from_idx..].find("import ") {
+        let at = from_idx + rel + "import ".len();
+        let rest = &normalized[at..];
+        let ident: String = rest
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
             .collect();
         if !ident.is_empty() {
-            idents.push(ident);
+            let after_ident = rest[ident.len()..].trim_start();
+            if let Some(after_from) = after_ident.strip_prefix("from") {
+                let after_from = after_from.trim_start();
+                let mut chars = after_from.chars();
+                if let Some(quote) = chars.next() {
+                    if quote == '"' || quote == '\'' {
+                        if let Some(end) = after_from[1..].find(quote) {
+                            bindings.push((ident.clone(), after_from[1..1 + end].to_owned()));
+                        }
+                    }
+                }
+            }
         }
-        from = at;
+        from_idx = at;
     }
-    idents
+    bindings
 }
 
 /// Whether the quoted wasm path occurs inside a call of one of the imported

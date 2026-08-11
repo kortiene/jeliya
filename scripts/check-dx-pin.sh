@@ -17,14 +17,15 @@ cd "$repo"
 
 # The actual fetch surfaces: every workflow, every script, and the packaging
 # helpers — the contract forbids an unpinned fetch ANYWHERE, not only in the
-# canonical recipe. The `check-*.sh` guards only DEFINE these patterns (to
-# search for them), so they are excluded rather than flagged against
-# themselves.
+# canonical recipe. Only THIS script is excluded (its pattern definitions
+# would self-match); the other check-*.sh helpers are scanned like any
+# script — their pattern definitions live in grep invocations, which the
+# segment classifier already skips as diagnostics.
 # Backslash-newline continuations are joined first: `cargo install --locked \`
 # on one line and `dioxus-cli` on the next is one command, and a per-line scan
 # would see neither half match the predicate.
 scan() {
-  find .github/workflows scripts packaging -type f ! -name 'check-*.sh' -print0 2>/dev/null |
+  find .github/workflows scripts packaging -type f ! -name 'check-dx-pin.sh' -print0 2>/dev/null |
     xargs -0 sed -e ':a' -e '/\\$/{N;s/\\\n/ /;ba' -e '}' 2>/dev/null |
     grep -hE "$1" || true
 }
@@ -89,7 +90,7 @@ while IFS= read -r line; do
   # Literal numeric version ONLY: an action input has no validated shell
   # variable, and `@${{ vars.X }}` resolves at workflow time to whatever the
   # repository variable happens to hold — that is not a pin.
-  if ! grep -Eq '@[0-9]' <<<"$line"; then
+  if ! grep -Eq '@[0-9]+\.[0-9]+\.[0-9]+' <<<"$line"; then
     echo "FAIL: unpinned action-based tool install: $line"
     fail=1
   fi
