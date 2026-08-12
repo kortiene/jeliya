@@ -531,6 +531,37 @@ impl Drop for ArtifactClaim {
     }
 }
 
+/// A picked source a staging call has taken out of the registry and is copying
+/// from.
+///
+/// Staging consumes its source on every outcome, so this does **not** restore
+/// on drop the way [`CleanupClaim`] does — but the service is genuinely still
+/// holding the file/blob/URI grant for as long as the copy is in flight, so it
+/// registers in `in_flight_sources` and releases when the future completes or
+/// is dropped.
+struct StagingSource {
+    inner: Arc<FakeInner>,
+    token: u64,
+    body: SourceBody,
+}
+
+impl StagingSource {
+    fn new(inner: &Arc<FakeInner>, token: u64, body: SourceBody) -> Self {
+        FakeInner::hold_enter(&inner.in_flight_sources, token);
+        Self {
+            inner: Arc::clone(inner),
+            token,
+            body,
+        }
+    }
+}
+
+impl Drop for StagingSource {
+    fn drop(&mut self) {
+        FakeInner::hold_exit(&self.inner.in_flight_sources, self.token);
+    }
+}
+
 /// One registry entry a cleanup has reserved. Held out of its registry for the
 /// duration of the call so two cleanups of the same handle are decided by CALL
 /// order, not by which future the executor polls first — the fake's
@@ -661,6 +692,21 @@ fn union_len<V>(
 /// The private entries a fake is still holding — see
 /// [`FakeController::retained_handles`]. All zero means the service is holding
 /// no file object, grant, or staged byte on the caller's behalf.
+///
+/// **What is counted, and why that is the line.** These are the resources a
+/// caller can strand *by doing nothing*: each is named by an opaque handle, and
+/// forgetting the handle leaves the service owning the thing forever. So every
+/// registry is counted, and so is every guard that holds an entry *out* of its
+/// registry while an operation is in flight — an in-flight share's claim, a
+/// staged blob held by an open sheet or by an open or merely pending reader, a
+/// cleanup that has reserved its entry, a staging copy that has taken its
+/// source.
+///
+/// An open [`FileSink`] or [`ShareSink`] is deliberately **not** counted, and
+/// the distinction is the point: the caller holds the sink itself, so dropping
+/// it *is* the release (§D12/K2 drop-is-abort). There is no handle to forget
+/// and nothing to strand, which is exactly what makes it a different kind of
+/// resource from the ones above.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct RetainedHandles {
     /// Picked sources whose grant the service still owns.
@@ -1201,7 +1247,11 @@ impl Files for FakePlatform {
         let Some(body) = claimed else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
         };
-        let known_len = (!body.streamed).then(|| body.bytes.len() as u64);
+        // The grant is out of the registry but the service still holds it for
+        // as long as this copy is in flight — including before the future is
+        // first polled. Same rule as every other guard: hold it out, count it.
+        let body = StagingSource::new(&inner, src.token().get(), body);
+        let known_len = (!body.body.streamed).then(|| body.body.bytes.len() as u64);
         if let Some(len) = known_len {
             // Both known-size rejections happen here, before the script: a
             // source whose size is known up front fails on its own terms
@@ -1235,7 +1285,7 @@ impl Files for FakePlatform {
             if let Some(error) = bound {
                 return Err(error);
             }
-            let bytes = body.bytes;
+            let bytes = Arc::clone(&body.body.bytes);
             // The known-size limit was already enforced at call time, before
             // any copy, so the mid-copy check below can only ever fire for a
             // streamed source (`content://`), which has no authoritative size

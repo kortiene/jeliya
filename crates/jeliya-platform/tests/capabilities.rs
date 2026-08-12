@@ -3531,3 +3531,57 @@ fn a_pending_cleanup_reservation_counts_as_retained() {
     assert_eq!(block_on(services.files().release_staged(&blob)), Ok(()));
     assert_eq!(controller.retained_handles(), Default::default());
 }
+
+/// A staging copy has taken its source out of the registry but is still holding
+/// the grant while it runs — including before the future is first polled.
+#[test]
+fn a_pending_staging_copy_counts_as_retained() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(controller.retained_handles().sources, 1);
+
+    // Created, never polled: the service still owns the grant.
+    block_on(async {
+        let _pending = services
+            .files()
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct);
+        assert_eq!(
+            controller.retained_handles().sources,
+            1,
+            "a pending staging copy still holds the source"
+        );
+    });
+    // Dropped unpolled: staging consumes its source on every outcome, so the
+    // grant is gone — and the count says so.
+    assert_eq!(
+        controller.retained_handles().sources,
+        0,
+        "a dropped staging copy consumed the source"
+    );
+    assert_eq!(
+        block_on(services.files().discard_source(&src)).err(),
+        Some(CapabilityError::Failed(FailureKind::Unreadable)),
+        "nothing is left to discard"
+    );
+
+    // And a completed copy leaves the source consumed, the blob staged.
+    controller.arm_pick("second.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    assert_eq!(controller.retained_handles().sources, 0);
+    assert_eq!(controller.retained_handles().staged_blobs, 1);
+    assert_eq!(block_on(services.files().release_staged(&blob)), Ok(()));
+    assert_eq!(controller.retained_handles(), Default::default());
+}
