@@ -112,6 +112,15 @@ impl Sidecar {
             Ownership::Owned { child, stdin } => {
                 // Closing stdin is the graceful `--supervised` signal.
                 drop(stdin.take());
+                // Capture the pgid BEFORE the reaping wait: once `wait()` reaps the
+                // leader, `child.id()` is None and the isolated group can no longer
+                // be reached by pid. An overridden/future daemon could spawn a
+                // long-lived descendant into the group and then exit on stdin EOF;
+                // the reaped arms must sweep the group so a descendant cannot linger
+                // holding locks / writing state (and, if the leader removed
+                // `daemon.json`, be reported `Graceful`). The `Err(_elapsed)` arm
+                // force-kills the un-reaped child, so it already reaches the group.
+                let leader_pgid = child.id();
                 match tokio::time::timeout(self.timeouts.teardown, child.wait()).await {
                     // A zero exit is NOT itself proof of completed cleanup: the
                     // daemon discards its room-close result and only LOGS a failed
@@ -120,6 +129,9 @@ impl Sidecar {
                     // actually gone (its removal is the daemon's final step); a
                     // lingering portfile means cleanup did not finish → `Forced`.
                     Ok(Ok(status)) if status.success() => {
+                        if let Some(pgid) = leader_pgid {
+                            process::kill_reaped_process_group(pgid);
+                        }
                         // Only a CONFIRMED absence (`Ok(false)`) is `Graceful`; a
                         // lingering portfile OR a stat error (unreadable dir) is
                         // `Forced` — cleanup is not proven complete.
@@ -137,7 +149,12 @@ impl Sidecar {
                     // run — a stale `daemon.json` or half-written state may remain
                     // — so this is NOT graceful; report `Forced`, whose contract
                     // already warns that cleanup did not necessarily run.
-                    Ok(Ok(_status)) => Ok(Teardown::Forced),
+                    Ok(Ok(_status)) => {
+                        if let Some(pgid) = leader_pgid {
+                            process::kill_reaped_process_group(pgid);
+                        }
+                        Ok(Teardown::Forced)
+                    }
                     Ok(Err(e)) => Err(SupervisorError::Spawn(e)),
                     Err(_elapsed) => {
                         process::force_kill_tree(child)
@@ -499,6 +516,114 @@ mod tests {
         assert!(
             matches!(result, Err(SupervisorError::ShutdownTimedOut { .. })),
             "a pre-absent portfile must not report Graceful; got: {result:?}"
+        );
+    }
+
+    /// An OWNED daemon that spawned a long-lived descendant into its isolated
+    /// process group and then exits on stdin EOF must not orphan that descendant:
+    /// `Sidecar::shutdown` sweeps the group after reaping the leader.
+    /// Red-before/green-after: without the pgid capture + sweep on the owned
+    /// reaped arms, the `sleep 600` descendant survives the shutdown.
+    #[cfg(unix)]
+    #[test]
+    fn owned_shutdown_sweeps_a_descendant_left_by_the_leader() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!(
+            "sup-owned-forker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("descendant.pid");
+        let stub = dir.join("leader");
+        // Spawn a stdio-closed descendant, record its pid, then block on stdin
+        // until EOF (the shutdown signal) and exit 0.
+        let script = format!(
+            "#!/bin/sh\n\
+             sh -c 'exec >/dev/null 2>&1 <&-; echo $$ > \"{pf}\"; sleep 600' &\n\
+             i=0\n\
+             while [ ! -s \"{pf}\" ] && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.02; done\n\
+             cat >/dev/null\n\
+             exit 0\n",
+            pf = pidfile.display()
+        );
+        std::fs::write(&stub, script).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        let descendant = rt.block_on(async {
+            let mut cmd = tokio::process::Command::new(&stub);
+            cmd.stdin(Stdio::piped());
+            // Isolate the group exactly as the real spawn does, so the pgid==leader
+            // pid and the sweep reaches the descendant.
+            crate::process::configure_new_process_group(&mut cmd);
+            let mut child = cmd.spawn().expect("spawn leader");
+            let stdin = child.stdin.take();
+            // Wait for the descendant to record its pid before shutting down.
+            let mut pid = None;
+            for _ in 0..100 {
+                if let Ok(text) = std::fs::read_to_string(&pidfile) {
+                    if let Ok(n) = text.trim().parse::<u32>() {
+                        pid = Some(n);
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let portfile: crate::portfile::Portfile = serde_json::from_str(
+                r#"{"pid":1,"port":9,"protocol":2,"storage_generation":2,
+                   "data_dir":"/d","auth_token":"t"}"#,
+            )
+            .unwrap();
+            let sidecar = Sidecar {
+                portfile,
+                ownership: Ownership::Owned { child, stdin },
+                data_dir: dir.clone(),
+                expected: crate::generation::Generation::new(2, 2),
+                strict_portfile_perms: false,
+                timeouts: crate::supervisor::Timeouts {
+                    teardown: Duration::from_secs(5),
+                    ..crate::supervisor::Timeouts::default()
+                },
+            };
+            // `shutdown` drops stdin → the leader's `cat` hits EOF, exits, is
+            // reaped; the sweep then SIGKILLs the descendant with the group.
+            let _ = sidecar.shutdown().await;
+            pid.expect("descendant recorded its pid")
+        });
+
+        let mut alive = true;
+        for _ in 0..40 {
+            let up = std::process::Command::new("kill")
+                .args(["-0", &descendant.to_string()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !up {
+                alive = false;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if alive {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &descendant.to_string()])
+                .status();
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            !alive,
+            "the owned leader's descendant must be swept with the group (pid {descendant})"
         );
     }
 

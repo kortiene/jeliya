@@ -238,24 +238,26 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
     let path = portfile::portfile_path(data_dir);
     let deadline = tokio::time::Instant::now() + budget;
     loop {
+        // Check the DEADLINE before accepting absence, every iteration: the
+        // clamped sleep can wake at `deadline + ε`, and accepting a removal
+        // observed only then would report `Graceful` for cleanup that finished
+        // outside the budget. Past the deadline, refuse regardless of absence.
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
         // `try_exists`, not `Path::exists`: the latter maps a stat ERROR (an
         // unreadable dir mid-shutdown) to `false` — the same as genuine absence —
         // which would report cleanup complete when it may not be. Only a
-        // confirmed `Ok(false)` (the file is really gone) counts as removed; a
-        // stat error keeps waiting and, on timeout, yields the honest
-        // `ShutdownTimedOut`.
+        // confirmed `Ok(false)` (the file is really gone) — observed WITHIN the
+        // budget — counts as removed; a stat error keeps waiting and, on timeout,
+        // yields the honest `ShutdownTimedOut`.
         if matches!(path.try_exists(), Ok(false)) {
             return true;
         }
-        // Clamp the sleep to the budget REMAINING (mirroring `wait_health_dark`):
-        // a fixed 100 ms sleep can overrun a short/nearly-exhausted deadline, and
-        // because the loop re-checks absence at its TOP, a portfile removed AFTER
-        // the budget expired would then be wrongly accepted as `Graceful`. When
-        // nothing is left, refuse before sleeping.
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return false;
-        }
+        // Clamp the sleep to the budget REMAINING (mirroring `wait_health_dark`)
+        // so a fixed 100 ms sleep cannot overrun a short/nearly-exhausted deadline.
+        let remaining = deadline.saturating_duration_since(now);
         tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
     }
 }

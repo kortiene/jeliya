@@ -156,7 +156,18 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
 
     serde_json::from_str::<Portfile>(&raw).map_err(|e| SupervisorError::PortfileUnreadable {
         path,
-        why: format!("not a portfile: {e}"),
+        // Report only the content-free classification + position, NOT serde's
+        // Display: for a string supplied where a numeric field is expected it
+        // echoes the raw value (`invalid type: string "…"`), which — if the
+        // misplaced value is the bearer token — would reproduce the secret in a
+        // `PortfileUnreadable` a caller may log (the token-redaction boundary,
+        // §7.2). Mirrors the announcement parser.
+        why: format!(
+            "not a portfile ({:?} at line {} column {})",
+            e.classify(),
+            e.line(),
+            e.column()
+        ),
     })
 }
 
@@ -368,6 +379,33 @@ mod tests {
                 "an over-cap portfile must be rejected by the size cap, not a parse error; got: {why}"
             ),
             other => panic!("an over-cap portfile must be PortfileUnreadable; got: {other:?}"),
+        }
+    }
+
+    /// A malformed portfile that supplies a string where a numeric field is
+    /// expected must NOT echo that value into the `PortfileUnreadable` error: if
+    /// the misplaced value were the bearer token, serde's Display (`invalid type:
+    /// string "…"`) would leak it into a message a caller may log (§7.2).
+    /// Red-before/green-after: with `format!("not a portfile: {e}")` the marker
+    /// leaked; now only the content-free classification/position is reported.
+    #[test]
+    fn a_malformed_portfile_parse_error_does_not_echo_its_values() {
+        let dir = std::env::temp_dir().join(format!("sup-pf-redact-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A marker where `port` (a number) is expected — serde would echo it.
+        std::fs::write(
+            dir.join("daemon.json"),
+            r#"{"pid":1,"port":"PORTFILE_SECRET_MARKER","data_dir":"/d","auth_token":"t"}"#,
+        )
+        .unwrap();
+        let result = read_portfile(&dir, false);
+        std::fs::remove_dir_all(&dir).ok();
+        match result {
+            Err(SupervisorError::PortfileUnreadable { why, .. }) => assert!(
+                !why.contains("PORTFILE_SECRET_MARKER"),
+                "the malformed value must not reach the error message: {why}"
+            ),
+            other => panic!("a malformed portfile must be PortfileUnreadable; got: {other:?}"),
         }
     }
 }
