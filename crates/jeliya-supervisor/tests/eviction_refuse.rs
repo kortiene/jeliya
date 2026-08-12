@@ -1,0 +1,143 @@
+//! The security-critical eviction *refusal* path (#170, spec §6.7 / fault #14),
+//! proven without a real `jeliyad`.
+//!
+//! The issue names a hard non-goal: an incumbent whose generation is
+//! **incompatible** but whose ownership **cannot be proven** must be refused
+//! with the `GenerationMismatch` — nothing may be signalled, evicted, or
+//! respawned. "Only a proven-owned incumbent may be replaced" (an acceptance
+//! criterion) is precisely this refusal, and it is the branch the transport
+//! (#172) leans on before it is allowed to depend on this crate.
+//!
+//! Unlike the real-`jeliyad` matrix in `supervision.rs`, this case needs no live
+//! daemon at all: a **stub binary** that only prints `already_running` drives the
+//! public [`Supervisor::start_or_adopt`] into the adopt path, and a hand-written
+//! mismatched-generation portfile pointing at a **dead port** makes the
+//! agreement gate fail closed. So it lives here, always runs, and pins the
+//! refusal end to end through the public API.
+//!
+//! Why the assertion is a real regression detector (spec §8 "deliberate
+//! regressions"): the refuse branch is the *only* path that returns
+//! `GenerationMismatch` once eviction is opted in. If the `prove_owned` guard
+//! were removed — i.e. the crate signalled an unprovable incumbent anyway — the
+//! call would instead `SIGTERM` the fabricated PID and surface a `Handshake`
+//! error (`ESRCH`) or a `ShutdownTimedOut`, never `GenerationMismatch`. Asserting
+//! the exact variant (and the incompatible axis it carries) fails loudly on that
+//! regression.
+//!
+//! Unix-only: the eviction lever it guards (`sigterm_foreign`) and the stub's
+//! `#!/bin/sh` shim are both Unix; Windows eviction is deferred (OQ-5).
+
+#![cfg(unix)]
+
+use std::path::Path;
+use std::time::Duration;
+
+use jeliya_supervisor::{Generation, Supervisor, SupervisorConfig, SupervisorError, Timeouts};
+
+/// Short, bounded budgets so the dead-port health probe fails fast in CI rather
+/// than waiting out the production 30 s spawn / 500 ms connect defaults.
+fn short_timeouts() -> Timeouts {
+    Timeouts {
+        spawn: Duration::from_secs(5),
+        health_connect: Duration::from_millis(80),
+        health_read: Duration::from_millis(80),
+        teardown: Duration::from_millis(200),
+        evict: Duration::from_millis(200),
+    }
+}
+
+/// A stub "daemon": prints one `already_running` announcement (with the PID/port
+/// the portfile advertises, so the ready↔portfile agreement check passes) and
+/// exits 0, which is exactly the adopt path's incumbent-already-serving verdict.
+/// It never opens a socket, so nothing answers on `port`.
+fn write_stub(path: &Path, pid: u32, port: u16) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        "#!/bin/sh\necho '{{\"event\":\"already_running\",\"pid\":{pid},\"port\":{port}}}'\nexit 0\n"
+    );
+    std::fs::write(path, script).expect("write stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// Bind and immediately release a loopback port: nothing listens there, so the
+/// ownership probe (`prove_owned`) is refused a connection and returns `false`.
+fn dead_loopback_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let p = l.local_addr().expect("addr").port();
+    drop(l);
+    p
+}
+
+#[tokio::test]
+async fn fault14_unprovable_incompatible_incumbent_is_refused_without_signalling() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-f14-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+
+    // A PID far above any real one and a port with nothing listening: the
+    // refusal must not depend on either being live, and a high PID guarantees no
+    // real process is ever touched even if the guard regressed.
+    let dead_pid: u32 = 4_000_000_000;
+    let dead_port = dead_loopback_port();
+
+    let stub = root.join("jeliyad-stub");
+    write_stub(&stub, dead_pid, dead_port);
+
+    // Opt in to replacing a proven-owned incompatible incumbent (allow_evict).
+    // The point of the test is that this opt-in still refuses when ownership
+    // cannot be proven.
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub.clone()),
+        replace_incompatible: true,
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+
+    // A portfile that DECLARES an incompatible generation (protocol 1, no
+    // storage_generation — the v1 shape) so the agreement gate fails closed on
+    // the declared axis *before* any health probe (fault #6 ordering). No
+    // ws/http, so the loopback gate is skipped. Written to the canonical data
+    // dir the supervisor actually reads.
+    let portfile_json = format!(
+        r#"{{"pid":{dead_pid},"port":{dead_port},"protocol":1,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let result = sup.start_or_adopt().await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    match result {
+        Err(SupervisorError::GenerationMismatch { expected, actual }) => {
+            // The refusal carries the incompatible declared generation — proof
+            // the gate short-circuited on the declared axis and fed the refuse
+            // branch, rather than any health/eviction outcome.
+            assert_eq!(
+                expected,
+                Generation::new(2, 2),
+                "expected axis must be this build's generation"
+            );
+            assert_eq!(
+                actual.protocol,
+                Some(1),
+                "refusal must carry the incumbent's incompatible protocol"
+            );
+            assert_eq!(
+                actual.storage_generation, None,
+                "the v1 incumbent declares no storage_generation"
+            );
+        }
+        other => panic!(
+            "an unprovable incompatible incumbent must be REFUSED with GenerationMismatch and \
+             nothing signalled (spec §6.7 / fault #14); got: {other:?}"
+        ),
+    }
+}

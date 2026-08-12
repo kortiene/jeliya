@@ -1,0 +1,410 @@
+//! The agreement/skew logic shared by [`crate::TargetResolver::resolve`] and
+//! the supervisor's adopt/attach paths: read the portfile, then require
+//! loopback, a supported declared generation, a PID-bound health proof, and a
+//! supported served generation — in that order.
+//!
+//! **Ordering is load-bearing** and pinned by two fault cases that a naive
+//! order would confuse:
+//!
+//! - A portfile that *declares* an incompatible generation is a
+//!   `GenerationMismatch` **before** any health probe (fault #6: a v1 portfile
+//!   with no live daemon must fail-closed as a generation mismatch, not as a
+//!   `Stale` "nothing answered"). Clean-slate: never adopt, never migrate.
+//! - A portfile that declares a *supported* generation but has no matching
+//!   healthy daemon is `Stale` (fault #7): on a spawn path a fresh daemon heals
+//!   it; on a dial it is a transient retry.
+//!
+//! Eviction of a *proven-owned* incompatible incumbent (fault #13) does not go
+//! through here — it re-proves ownership independently via
+//! [`prove_owned`], because this function short-circuits on the declared
+//! mismatch before it would reach the health step.
+
+use std::path::Path;
+use std::time::Duration;
+
+use crate::error::SupervisorError;
+use crate::generation::Generation;
+use crate::health::{self, HealthReport};
+use crate::portfile::{self, Portfile};
+use crate::supervisor::Timeouts;
+use crate::target::advertised_endpoint_is_loopback;
+
+/// A portfile that passed every gate, plus the health response that proved it.
+#[derive(Debug)]
+pub(crate) struct Validated {
+    pub portfile: Portfile,
+    #[allow(dead_code)] // Held for callers that want the served generation; the
+    // adopt path reads it, the resolve path does not.
+    pub health: HealthReport,
+}
+
+/// Run the full gate for `data_dir` against `expected`. See the module note for
+/// the ordering rationale.
+pub(crate) async fn validate_portfile(
+    data_dir: &Path,
+    expected: Generation,
+    strict_portfile_perms: bool,
+    timeouts: &Timeouts,
+) -> Result<Validated, SupervisorError> {
+    let portfile = portfile::read_portfile(data_dir, strict_portfile_perms)?;
+
+    // 1. Loopback: a portfile advertising a non-loopback endpoint is refused
+    //    before any dial (spec §6.4 step 2 / §7.1).
+    if let Some(advertised) = non_loopback_endpoint(&portfile) {
+        return Err(SupervisorError::NonLoopback { advertised });
+    }
+
+    // 2. Declared generation: the portfile's own `protocol`+`storage_generation`
+    //    must match. Checked before health so a declared-incompatible portfile
+    //    fails closed even with no live daemon (fault #6).
+    if !expected.matches(portfile.declared_generation()) {
+        return Err(SupervisorError::GenerationMismatch {
+            expected,
+            actual: portfile.declared_generation(),
+        });
+    }
+
+    // 3. Health, PID-bound: the answering process on the advertised port must be
+    //    the portfile's PID. Defeats a recycled port (unrelated listener → PID
+    //    mismatch) and a recycled PID (no jeliyad on this port → probe fails).
+    let Some(report) =
+        health::probe_health(portfile.port, timeouts.health_connect, timeouts.health_read).await
+    else {
+        return Err(SupervisorError::Stale {
+            port: portfile.port,
+        });
+    };
+    if !report.proves_pid(portfile.pid) {
+        return Err(SupervisorError::Stale {
+            port: portfile.port,
+        });
+    }
+
+    // 4. Served generation, fail-closed: health's generation must also match.
+    //    Guards a portfile that lied and a daemon that changed generation under
+    //    a reused port (the second line of defense the kernel's generation
+    //    fence #168 backs up).
+    if !expected.matches(report.advertised_generation()) {
+        return Err(SupervisorError::GenerationMismatch {
+            expected,
+            actual: report.advertised_generation(),
+        });
+    }
+
+    Ok(Validated {
+        portfile,
+        health: report,
+    })
+}
+
+/// The first advertised endpoint (`ws` then `http`) that is present but not
+/// loopback, if any. Absent endpoints are fine — the resolver builds its own
+/// `127.0.0.1` dial URL; the check exists to catch a portfile that *advertises*
+/// a routable endpoint (fault #19).
+fn non_loopback_endpoint(portfile: &Portfile) -> Option<String> {
+    for candidate in [portfile.ws.as_deref(), portfile.http.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if !advertised_endpoint_is_loopback(candidate) {
+            return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
+/// Prove — independently of generation — that the process at `portfile.pid` is
+/// the live daemon on `portfile.port`. This is the ONLY gate that authorizes a
+/// signal to an incumbent the supervisor does not own: eviction (spec §6.7)
+/// calls it before any SIGTERM, so a recycled/dead PID or a foreign process
+/// (fault #14) is never signalled. Returns `false` on any doubt.
+pub(crate) async fn prove_owned(portfile: &Portfile, timeouts: &Timeouts) -> bool {
+    match health::probe_health(portfile.port, timeouts.health_connect, timeouts.health_read).await {
+        Some(report) => report.proves_pid(portfile.pid),
+        None => false,
+    }
+}
+
+/// Poll `/api/health` until the daemon at `pid`/`port` is gone (connection
+/// refused, or a different/absent PID answers), bounded by `budget`. Returns
+/// `true` if it went dark in time. Used to confirm an eviction or an adopted
+/// stop actually took effect before respawning (spec §6.7 / §6.9).
+pub(crate) async fn wait_health_dark(
+    pid: u32,
+    port: u16,
+    budget: Duration,
+    timeouts: &Timeouts,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let still_up =
+            match health::probe_health(port, timeouts.health_connect, timeouts.health_read).await {
+                Some(report) => report.proves_pid(pid),
+                None => false,
+            };
+        if !still_up {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    use crate::error::SupervisorError;
+    use crate::generation::Generation;
+    use crate::supervisor::Timeouts;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap()
+    }
+
+    /// Short health timeouts so tests that hit the "nothing answers" path do not
+    /// wait 30 s for the spawn or 500 ms per health connect in CI.
+    fn short() -> Timeouts {
+        Timeouts {
+            spawn: Duration::from_millis(200),
+            health_connect: Duration::from_millis(50),
+            health_read: Duration::from_millis(50),
+            teardown: Duration::from_millis(200),
+            evict: Duration::from_millis(200),
+        }
+    }
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sup-validate-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_portfile(dir: &std::path::Path, json: &str) {
+        let path = dir.join("daemon.json");
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(json.as_bytes()).unwrap();
+    }
+
+    // --- non_loopback_endpoint unit tests (private fn, visible inside module) ---
+
+    fn portfile_with_ws(ws: Option<&str>, http: Option<&str>) -> crate::portfile::Portfile {
+        let ws_field = ws.map(|v| format!(r#","ws":"{v}""#)).unwrap_or_default();
+        let http_field = http
+            .map(|v| format!(r#","http":"{v}""#))
+            .unwrap_or_default();
+        let json = format!(
+            r#"{{"pid":1,"port":9,"data_dir":"/d","auth_token":"t"{ws_field}{http_field}}}"#
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn non_loopback_endpoint_catches_non_loopback_ws() {
+        let pf = portfile_with_ws(Some("ws://1.2.3.4/ws"), None);
+        assert!(non_loopback_endpoint(&pf).is_some());
+    }
+
+    #[test]
+    fn non_loopback_endpoint_catches_non_loopback_http() {
+        let pf = portfile_with_ws(None, Some("http://10.0.0.1/"));
+        assert!(non_loopback_endpoint(&pf).is_some());
+    }
+
+    #[test]
+    fn non_loopback_endpoint_accepts_loopback_ws() {
+        let pf = portfile_with_ws(Some("ws://127.0.0.1:9/ws"), None);
+        assert!(non_loopback_endpoint(&pf).is_none());
+    }
+
+    #[test]
+    fn non_loopback_endpoint_returns_none_when_both_fields_absent() {
+        let pf = portfile_with_ws(None, None);
+        assert!(
+            non_loopback_endpoint(&pf).is_none(),
+            "no ws/http fields → no loopback violation"
+        );
+    }
+
+    #[test]
+    fn non_loopback_endpoint_lookalike_hostname_is_caught() {
+        // "127.0.0.1.evil.example" does not parse as an IP and is not "localhost"
+        // → refused exactly as the daemon's host_header_is_loopback logic would.
+        let pf = portfile_with_ws(Some("ws://127.0.0.1.evil.example/ws"), None);
+        assert!(non_loopback_endpoint(&pf).is_some());
+    }
+
+    // --- validate_portfile ordering tests (synthetic portfiles, no live daemon) ---
+
+    /// Fault case 19: NonLoopback is returned BEFORE the generation gate and BEFORE
+    /// any health probe — a non-loopback portfile must fail even with no daemon
+    /// at all, and even if the generation would match.
+    #[test]
+    fn fault19_non_loopback_portfile_fails_before_health() {
+        let dir = tmp_dir("f19");
+        write_portfile(
+            &dir,
+            r#"{"pid":1,"port":9,"protocol":2,"storage_generation":2,
+               "data_dir":"/d","auth_token":"t","ws":"ws://evil.example/ws"}"#,
+        );
+        let result = rt().block_on(validate_portfile(
+            &dir,
+            Generation::new(2, 2),
+            false,
+            &short(),
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::NonLoopback { .. })),
+            "expected NonLoopback, got: {result:?}"
+        );
+    }
+
+    /// Fault case 6 / spec §D3 (ordering invariant): a v1 portfile (missing
+    /// storage_generation) must yield GenerationMismatch BEFORE any health probe.
+    /// If the error were Stale instead, a clean-slate daemon could be adopted by
+    /// mistake on a spawn path that "heals" the Stale with a fresh spawn.
+    #[test]
+    fn fault6_v1_portfile_is_generation_mismatch_not_stale() {
+        let dir = tmp_dir("f6");
+        // v1 shape: schema, protocol:1, no storage_generation.
+        write_portfile(
+            &dir,
+            r#"{"schema":1,"pid":1,"port":9,"protocol":1,
+               "data_dir":"/d","auth_token":"t"}"#,
+        );
+        let result = rt().block_on(validate_portfile(
+            &dir,
+            Generation::new(2, 2),
+            false,
+            &short(),
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::GenerationMismatch { .. })),
+            "v1 portfile must be GenerationMismatch (not Stale); got: {result:?}"
+        );
+    }
+
+    /// A portfile whose declared generation matches but has no listener → Stale.
+    /// This is fault case 7. The key difference from fault 6: the generation gate
+    /// passes, so the health probe runs and fails, which is the correct Stale path.
+    #[test]
+    fn fault7_compatible_portfile_with_no_listener_is_stale() {
+        let dir = tmp_dir("f7");
+        // Grab a free port and immediately release it; nothing will answer there.
+        let free_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            p
+        };
+        write_portfile(
+            &dir,
+            &format!(
+                r#"{{"pid":99999,"port":{free_port},"protocol":2,"storage_generation":2,
+                   "data_dir":"/d","auth_token":"t"}}"#
+            ),
+        );
+        let result = rt().block_on(validate_portfile(
+            &dir,
+            Generation::new(2, 2),
+            false,
+            &short(),
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::Stale { .. })),
+            "compatible portfile with no listener must be Stale; got: {result:?}"
+        );
+    }
+
+    /// Fault case 5 (validate path): missing portfile → PortfileMissing.
+    #[test]
+    fn fault5_missing_portfile_returns_portfile_missing() {
+        let dir = tmp_dir("f5");
+        // No daemon.json created.
+        let result = rt().block_on(validate_portfile(
+            &dir,
+            Generation::new(2, 2),
+            false,
+            &short(),
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::PortfileMissing(_))),
+            "missing portfile must be PortfileMissing; got: {result:?}"
+        );
+    }
+
+    /// A truncated portfile (torn write) → PortfileUnreadable (validate path).
+    #[test]
+    fn truncated_portfile_is_portfile_unreadable() {
+        let dir = tmp_dir("trunc");
+        write_portfile(&dir, r#"{"pid": 1, "port":"#);
+        let result = rt().block_on(validate_portfile(
+            &dir,
+            Generation::new(2, 2),
+            false,
+            &short(),
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::PortfileUnreadable { .. })),
+            "truncated portfile must be PortfileUnreadable; got: {result:?}"
+        );
+    }
+
+    /// A portfile with absent ws/http fields must not raise NonLoopback — the
+    /// resolver builds its own 127.0.0.1 URL; these fields are informational only.
+    /// The test still yields GenerationMismatch or Stale (not NonLoopback).
+    #[test]
+    fn portfile_without_ws_or_http_field_skips_loopback_check() {
+        let dir = tmp_dir("nows");
+        write_portfile(
+            &dir,
+            r#"{"pid":1,"port":9,"protocol":1,"storage_generation":1,
+               "data_dir":"/d","auth_token":"t"}"#,
+        );
+        let result = rt().block_on(validate_portfile(
+            &dir,
+            Generation::new(2, 2),
+            false,
+            &short(),
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            !matches!(result, Err(SupervisorError::NonLoopback { .. })),
+            "no ws/http fields must not yield NonLoopback"
+        );
+    }
+
+    /// prove_owned returns false when nothing answers on the advertised port.
+    /// This is the gate that prevents signalling a recycled/foreign PID (fault #14).
+    #[test]
+    fn prove_owned_returns_false_when_nothing_answers() {
+        let free_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            p
+        };
+        let pf: crate::portfile::Portfile = serde_json::from_str(&format!(
+            r#"{{"pid":99999,"port":{free_port},"protocol":2,"storage_generation":2,
+               "data_dir":"/d","auth_token":"t"}}"#
+        ))
+        .unwrap();
+        let result = rt().block_on(prove_owned(&pf, &short()));
+        assert!(
+            !result,
+            "prove_owned must be false when nothing answers; a recycled PID must not be signalled"
+        );
+    }
+}

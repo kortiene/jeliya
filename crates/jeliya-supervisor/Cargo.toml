@@ -1,0 +1,41 @@
+[package]
+name = "jeliya-supervisor"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Reusable owned/adopted jeliyad supervisor for native control planes (#170): a headless, UI-agnostic process-ownership handle that spawns-or-adopts a supervised jeliyad, validates ready/portfile/health agreement (PID-on-advertised-port + protocol + storage generation), hands transports a freshly re-validated loopback dial target and redacted bearer token on every reconnect, and stops only owned daemons with bounded, process-tree-safe escalation. No Dioxus, no Iroh, no jeliya-core, no jeliya-client, no jeliyad binary; never reachable from a wasm32 build."
+
+[dependencies]
+# The single-definition discovery object lives in `jeliya-api` (protocol-v2
+# Layer 0 — "defined once in jeliya-api"); the supervisor reuses `Limits` so
+# there is one shape, and depends on nothing Iroh-bearing.
+jeliya-api = { path = "../jeliya-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Native async only: `process` for spawn/stdin-EOF parent-death, `net` for the
+# loopback health probe, `time` for every bounded wait, `io-util` for the ready
+# line and stderr drain, and `rt` for the `tokio::spawn` that drains stderr for
+# the daemon's life. `rt` enables the spawn API only — the CALLER still owns and
+# runs the runtime; the library never constructs one (no `rt-multi-thread`, no
+# `macros`, no `#[tokio::main]`).
+tokio = { version = "1", features = ["process", "net", "time", "io-util", "rt"] }
+url = "2"
+dirs = "6"
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+# Unsafe-free signalling: `killpg` (owned-teardown escalation to the child's
+# whole process group) and `kill` (the proven-owned eviction SIGTERM fallback).
+# nix wraps the libc calls, so this crate keeps `unsafe_code = "forbid"`. Its
+# transitive deps (libc, cfg-if, bitflags) are already in the workspace lock.
+nix = { version = "0.29", default-features = false, features = ["signal"] }
+
+[dev-dependencies]
+# `macros` (for `#[tokio::test]`) and `rt-multi-thread` (for the test harness
+# runtime) are test-only; the library itself uses neither (it borrows the
+# caller's runtime, never building one of its own).
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
