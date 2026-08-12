@@ -975,6 +975,87 @@ fn view() -> Element {
   );
 });
 
+test('literal scan: a macro-wrapped copy prop (format!) is flagged', () => {
+  // `label: format!("Delete {name}")` / `aria_label: format!(...)` construct copy
+  // directly in a copy-bearing prop; the wrapper peel must cross the macro `!`.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        SkipLink { anchor: "x", label: format!("Delete {name}") }
+        button { aria_label: format!("Remove account") }
+    }
+}
+`;
+  const copy = scanComponentLiterals('x.rs', source).filter((f) => f.code === 'copy-attribute');
+  assert.ok(copy.some((f) => /Delete/.test(f.message)), 'label: format!(...) copy must be flagged');
+  assert.ok(
+    copy.some((f) => /Remove account/.test(f.message)),
+    'aria_label: format!(...) copy must be flagged',
+  );
+});
+
+test('literal scan: a literal rendered as a braced RSX expression child is flagged', () => {
+  // `div { {message} }` renders the binding as a text node — copy regardless of the
+  // variable name (it need not be a copy-bearing prop such as `label`).
+  const source = `
+fn view() -> Element {
+    let message = "Delete account".to_string();
+    rsx! { div { {message} } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some((f) => /Delete account/.test(f.message)),
+    'a let-bound literal rendered as a {message} child must be flagged',
+  );
+  const named = `
+fn view() -> Element {
+    let text = "Remove account".to_string();
+    rsx! { section { {text} } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', named).some((f) => /Remove account/.test(f.message)),
+    'the identifier name is irrelevant for a braced expression child',
+  );
+  // A structural braced attribute value (`id: {anchor}`) stays clean.
+  const structural = `
+fn view() -> Element {
+    let anchor = "rooms-nav".to_string();
+    rsx! { div { id: {anchor} } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', structural).some((f) => /rooms-nav/.test(f.message)),
+    'a braced STRUCTURAL attribute value must not be flagged',
+  );
+});
+
+test('literal scan: a dynamic aria-describedby naming a DIFFERENT id is flagged', () => {
+  // Expression Field id, but the describedby references another identifier's hint,
+  // so the real `{field_id}-hint` is never referenced.
+  const wrong = `
+fn view() -> Element {
+    rsx! { Field { id: field_id.clone(), label: "Email", hint: "x",
+        input { id: field_id.clone(), aria_describedby: format!("{other_id}-hint") } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', wrong).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a dynamic describedby referencing a different id must be flagged',
+  );
+  // Referencing the SAME base identifier is accepted.
+  const right = `
+fn view() -> Element {
+    rsx! { Field { id: field_id.clone(), label: "Email", hint: "x",
+        input { id: field_id.clone(), aria_describedby: format!("{field_id}-hint") } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', right).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a dynamic describedby referencing the Field id must be accepted',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

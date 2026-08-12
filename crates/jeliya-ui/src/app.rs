@@ -438,10 +438,10 @@ pub fn AppRoot(
         // the lifecycle conditional so each is the SAME DOM node across boot↔shell
         // transitions, AND so a content announcement and a connection announcement
         // that fire in the same render do not overwrite each other. Visually hidden.
-        LiveRegion { id: "live-region".to_string(), announcer: announcers.content }
+        LiveRegion { id: "live-region".to_string(), message: announcers.content.message() }
         LiveRegion {
             id: "connection-live-region".to_string(),
-            announcer: announcers.connection,
+            message: announcers.connection.message(),
         }
     }
 }

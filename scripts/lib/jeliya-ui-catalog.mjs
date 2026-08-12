@@ -815,6 +815,23 @@ export function scanComponentLiterals(file, source) {
     if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyInterpolations.add(m[1]);
   }
 
+  // Dioxus braced EXPRESSION CHILDREN: `div { {message} }` renders the binding as a
+  // text node, so a `let message = "…"` behind it is copy REGARDLESS of the
+  // variable's name (it need not be a copy-bearing prop like `label`). Collect the
+  // identifier when the `{ident}` sits in CHILD position — its `{` follows the
+  // element body `{`, a sibling child's `}`, or a sibling string (blanked to `"` in
+  // the skeleton) — but NOT an attribute value (`attr: {x}`, preceded by `:`) or a
+  // component's own prop brace (`Comp { ident }`, whose `{` follows a name — that
+  // shorthand is handled above).
+  const braceIdentRe = /\{\s*([A-Za-z_]\w*)\s*\}/g;
+  for (let m = braceIdentRe.exec(skeleton); m; m = braceIdentRe.exec(skeleton)) {
+    if (m.index >= limit || !inRsx(m.index)) continue;
+    let p = m.index - 1;
+    while (p >= 0 && /\s/.test(skeleton[p])) p -= 1;
+    const pc = p >= 0 ? skeleton[p] : '';
+    if (pc === '{' || pc === '}' || pc === '"') copyInterpolations.add(m[1]);
+  }
+
   for (const literal of literals) {
     if (literal.start >= limit) continue;
     // Only literals inside RSX markup are copy candidates; Rust logic literals
@@ -857,11 +874,13 @@ export function scanComponentLiterals(file, source) {
       // Peel EVERY constructor layer: `hint: Some(String::from("…"))` nests the
       // literal in two calls, so keep walking back `ident(` wrappers until the prop
       // `:` (or a non-wrapper) is reached — stopping after one layer let a
-      // double-wrapped copy value slip the gate.
+      // double-wrapped copy value slip the gate. The callee token includes `!` so a
+      // MACRO wrapper — `label: format!("Delete {name}")` — is peeled too (its `!`
+      // would otherwise halt the walk before the prop colon and exempt the copy).
       let colon = before; // sits on the innermost '('
       while (skeleton[colon] === '(') {
         let ident = colon - 1;
-        while (ident >= 0 && /[A-Za-z0-9_:]/.test(skeleton[ident])) ident -= 1;
+        while (ident >= 0 && /[A-Za-z0-9_:!]/.test(skeleton[ident])) ident -= 1;
         while (ident >= 0 && /\s/.test(skeleton[ident])) ident -= 1;
         colon = ident; // char before the callee: another '(' peels again, ':' stops
       }
@@ -1012,7 +1031,7 @@ export function scanComponentLiterals(file, source) {
   // depth and quotes (with backslash escapes) so a top-level `,`/`}` terminates but
   // a comma NESTED in a call does not. Compared as raw text (a literal keeps its
   // quotes, so a literal id and an expression id never spuriously match).
-  const firstIdAttr = (from, to) => {
+  const firstAttrValue = (from, to, headSrc) => {
     let slice = source.slice(from, to);
     // Blank comment ranges inside the span so a commented `// id: "email"` is not
     // read as a real attribute (the id / hint association must compare live markup
@@ -1023,7 +1042,7 @@ export function scanComponentLiterals(file, source) {
       const b = Math.min(end, to) - from;
       slice = slice.slice(0, a) + ' '.repeat(b - a) + slice.slice(b);
     }
-    const head = /\bid\s*:\s*/.exec(slice);
+    const head = new RegExp(headSrc).exec(slice);
     if (!head) return null;
     const startVal = head.index + head[0].length;
     let depth = 0;
@@ -1043,6 +1062,13 @@ export function scanComponentLiterals(file, source) {
     }
     return slice.slice(startVal, i).trim() || null;
   };
+  // The FIRST `id:` value (quoted literal or a balanced expression like
+  // `field_id.clone()` / `make_id("email", suffix)`).
+  const firstIdAttr = (from, to) => firstAttrValue(from, to, '\\bid\\s*:\\s*');
+  // The `aria-describedby` value (quoted hyphen name OR the `aria_describedby`
+  // underscore alias Dioxus renders identically), read as a balanced expression.
+  const describedbyValue = (from, to) =>
+    firstAttrValue(from, to, '(?:"aria-describedby"|aria[-_]describedby)\\s*:\\s*');
   for (const el of RESERVED_FORM_CONTROLS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
@@ -1070,36 +1096,36 @@ export function scanComponentLiterals(file, source) {
       // When the Field supplies a HINT, the hint span is rendered OUTSIDE the
       // label with id `{id}-hint`, so the control must reference it via
       // `aria-describedby` or the hint is never exposed to assistive tech (§5.6).
-      // Verified exactly for a LITERAL Field id; an expression id is checked by
-      // attribute PRESENCE only (its `{id}-hint` value cannot be compared statically).
+      // A LITERAL Field id is checked exactly; an EXPRESSION id renders a dynamic
+      // `{id}-hint`, so its association must be dynamic AND reference the Field id's
+      // own base identifier — a literal or an expression naming a DIFFERENT id fails.
       const fieldProps = source.slice(field[0], controlOpen);
       const hasHint = /\bhint\s*:\s*(?!None\b)/.test(fieldProps);
       if (fieldId !== null && hasHint) {
-        const controlAttrs = source.slice(controlOpen, controlEnd);
-        // A LITERAL `aria-describedby` value (quoted or `aria_describedby` alias),
-        // for the exact-value check when the Field id is itself literal.
-        const describedbyLiteral =
-          /(?:"aria-describedby"|aria[-_]describedby)\s*:\s*"([^"]*)"/.exec(controlAttrs);
-        // Whether `aria-describedby` is set AT ALL — literal OR an expression value
-        // (`format!("{id}-hint")`), quoted OR underscore name. An expression id can
-        // only be verified by presence, so an expression-valued association must
-        // count rather than reading as absent.
-        const describedbyPresent =
-          /(?:"aria-describedby"|aria[-_]describedby)\s*:/.test(controlAttrs);
+        const describedby = describedbyValue(controlOpen, controlEnd);
         const literalId = /^"([^"]*)"$/.exec(fieldId);
+        const describedbyLiteral = describedby === null ? null : /^"([^"]*)"$/.exec(describedby);
         if (literalId) {
           const expected = `${literalId[1]}-hint`;
           if (!describedbyLiteral || describedbyLiteral[1] !== expected) {
-            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby: "${expected}"\` so the hint is exposed as a description; found \`${describedbyLiteral ? `"${describedbyLiteral[1]}"` : '(none)'}\``, 'literals'));
+            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby: "${expected}"\` so the hint is exposed as a description; found \`${describedby === null ? '(none)' : describedby}\``, 'literals'));
           }
-        } else if (!describedbyPresent || describedbyLiteral) {
+        } else if (describedby === null || describedbyLiteral) {
           // An EXPRESSION Field id renders a DYNAMIC hint id (`{id}-hint`), so the
           // association must itself be dynamic: a LITERAL `aria-describedby` (or a
-          // missing one) can never reference the runtime id and is flagged. An
-          // expression-valued `aria-describedby` is accepted (its exact target
-          // cannot be compared statically, but it is at least derived at runtime).
-          const found = describedbyLiteral ? `literal \`"${describedbyLiteral[1]}"\`` : 'no attribute';
+          // missing one) can never reference the runtime id.
+          const found = describedbyLiteral ? `literal \`${describedby}\`` : 'no attribute';
           findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with an expression \`id\` and a hint must set \`aria-describedby\` to a DYNAMIC value referencing the Field's \`{id}-hint\`; ${found} cannot name the runtime hint id`, 'literals'));
+        } else {
+          // A dynamic `aria-describedby` under an expression id must reference the
+          // SAME base identifier as the Field id, or it names a DIFFERENT control's
+          // hint (`id: field_id.clone()` with `aria_describedby: format!("{other_id}-hint")`
+          // leaves the real `{field_id}-hint` unreferenced). Compare the leading
+          // identifier of each expression.
+          const idBase = (fieldId.match(/[A-Za-z_]\w*/) || [])[0];
+          if (idBase && !new RegExp(`\\b${idBase}\\b`).test(describedby)) {
+            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\`'s \`aria-describedby\` (\`${describedby}\`) must reference the Field id's own \`{id}-hint\` (derived from \`${idBase}\`); it names a different id, so the hint is unassociated`, 'literals'));
+          }
         }
       }
     }
