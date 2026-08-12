@@ -202,18 +202,28 @@ pub(crate) async fn wait_health_dark(
 ) -> bool {
     let deadline = tokio::time::Instant::now() + budget;
     loop {
-        let still_up =
-            match health::probe_health(port, timeouts.health_connect, timeouts.health_read).await {
-                Some(report) => report.proves_pid(pid),
-                None => false,
-            };
+        // Clamp the probe to the budget REMAINING: a probe whose per-attempt
+        // connect/read timeout exceeds what is left — or a final probe that
+        // starts just before the deadline against a stalled listener — would
+        // otherwise run the full per-probe timeout PAST the deadline, so the
+        // whole eviction/stop budget could overrun by one probe.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let connect = timeouts.health_connect.min(remaining);
+        let read = timeouts.health_read.min(remaining);
+        let still_up = match health::probe_health(port, connect, read).await {
+            Some(report) => report.proves_pid(pid),
+            None => false,
+        };
         if !still_up {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
     }
 }
 

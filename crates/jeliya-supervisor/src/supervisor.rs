@@ -119,6 +119,18 @@ impl Supervisor {
         // regardless of `/var` vs `/private/var`, symlinks, or path spelling —
         // the daemon canonicalizes too.
         let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
+        // Reject a non-UTF-8 data-dir path up front. jeliyad records the path in
+        // its portfile via `display().to_string()`, which replaces non-UTF-8
+        // bytes lossily, so the recorded string could never round-trip to equal
+        // this canonical path — the data-dir binding would perpetually mismatch
+        // and no daemon here could ever be adopted. Fail closed with a clear
+        // reason instead of a confusing never-adopt loop.
+        if data_dir.to_str().is_none() {
+            return Err(SupervisorError::PortfileUnreadable {
+                path: data_dir.clone(),
+                why: "data dir path is not valid UTF-8; jeliyad records it lossily, so it can never round-trip for adoption".to_owned(),
+            });
+        }
 
         let (binary, binary_tried) = match config.binary {
             Some(explicit) if explicit.is_file() => (Some(explicit), Vec::new()),
@@ -250,12 +262,9 @@ impl Supervisor {
                     drop(stdin);
                     match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
                         Ok(Ok(status)) if !status.success() => return Err(SupervisorError::Wedged),
-                        Ok(Ok(_)) => {}
-                        _ => {
-                            let _ = process::force_kill_tree(&mut child).await;
-                        }
+                        Ok(Ok(_)) => return Err(e),
+                        _ => return Err(abandon_child(&mut child, e).await),
                     }
-                    return Err(e);
                 }
             };
 
@@ -264,10 +273,7 @@ impl Supervisor {
             let portfile = match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms)
             {
                 Ok(pf) => pf,
-                Err(e) => {
-                    let _ = process::force_kill_tree(&mut child).await;
-                    return Err(e);
-                }
+                Err(e) => return Err(abandon_child(&mut child, e).await),
             };
 
             match announced {
@@ -289,14 +295,16 @@ impl Supervisor {
                         Ok(Ok(status)) if status.success() => {}
                         Ok(Ok(_status)) => return Err(SupervisorError::Wedged),
                         Ok(Err(e)) => {
-                            let _ = process::force_kill_tree(&mut child).await;
-                            return Err(SupervisorError::Handshake(format!(
-                                "adopted-path child never exited: {e}"
-                            )));
+                            return Err(abandon_child(
+                                &mut child,
+                                SupervisorError::Handshake(format!(
+                                    "adopted-path child never exited: {e}"
+                                )),
+                            )
+                            .await)
                         }
                         Err(_elapsed) => {
-                            let _ = process::force_kill_tree(&mut child).await;
-                            return Err(SupervisorError::Wedged);
+                            return Err(abandon_child(&mut child, SupervisorError::Wedged).await)
                         }
                     }
                     self.finish_adopted(portfile, pid, port, allow_evict).await
@@ -314,12 +322,29 @@ impl Supervisor {
         ready_pid: u32,
         ready_port: u16,
     ) -> Result<Sidecar, SupervisorError> {
+        // The announced PID must be OUR spawned child's PID. A faulty or
+        // overridden binary could print a `ready` line quoting the PID of an
+        // existing compatible healthy daemon (matching its portfile) while being
+        // a different process; binding to `child.id()` refuses that impersonation.
+        let child_pid = child.id();
+        if child_pid != Some(ready_pid) {
+            return Err(abandon_child(
+                &mut child,
+                SupervisorError::Handshake(format!(
+                    "ready line announced pid {ready_pid}, but the spawned child is pid {child_pid:?} — the binary announced a PID that is not itself"
+                )),
+            )
+            .await);
+        }
         if portfile.pid != ready_pid || portfile.port != ready_port {
-            let _ = process::force_kill_tree(&mut child).await;
-            return Err(SupervisorError::Handshake(format!(
-                "ready line says pid {ready_pid} port {ready_port} but the portfile says pid {} port {}",
-                portfile.pid, portfile.port
-            )));
+            return Err(abandon_child(
+                &mut child,
+                SupervisorError::Handshake(format!(
+                    "ready line says pid {ready_pid} port {ready_port} but the portfile says pid {} port {}",
+                    portfile.pid, portfile.port
+                )),
+            )
+            .await);
         }
         // Full agreement gate (loopback, declared+served generation, health/PID).
         match validate::validate_portfile(
@@ -347,8 +372,7 @@ impl Supervisor {
                         "owned child announced pid {ready_pid} port {ready_port} but the validated portfile now serves pid {} port {} — a replacement daemon raced our spawn",
                         validated.portfile.pid, validated.portfile.port
                     ));
-                    let _ = process::force_kill_tree(&mut child).await;
-                    return Err(mismatch);
+                    return Err(abandon_child(&mut child, mismatch).await);
                 }
                 Ok(self.owned_sidecar(child, stdin, validated.portfile))
             }
@@ -356,8 +380,7 @@ impl Supervisor {
                 // A daemon WE spawned failed validation — the bundled binary
                 // drifted from `expected` (R6). Stop it (we own it) and surface
                 // the error rather than leaving a mispaired daemon running.
-                let _ = process::force_kill_tree(&mut child).await;
-                Err(e)
+                Err(abandon_child(&mut child, e).await)
             }
         }
     }
@@ -523,10 +546,20 @@ impl Supervisor {
         };
         let stdin = child.stdin.take();
 
-        if let Some(stderr) = child.stderr.take() {
+        if let Some(mut stderr) = child.stderr.take() {
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(_)) = lines.next_line().await {}
+                // Drain stderr in fixed RAW-BYTE chunks, not lines: a line reader
+                // grows its buffer without bound on an arbitrarily long line, and
+                // ERRORS OUT permanently on a non-UTF-8 byte — after which the
+                // drain stops and the daemon deadlocks once its stderr pipe fills
+                // (the whole reason this task exists). Bytes are discarded; the
+                // same records survive in `<data_dir>/logs`.
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = stderr.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                }
             });
         }
 
@@ -600,6 +633,20 @@ async fn read_announcement(
 
     serde_json::from_str::<ReadyLine>(&line)
         .map_err(|e| SupervisorError::Handshake(format!("unparseable announcement {line:?}: {e}")))
+}
+
+/// Force-kill a child we are ABANDONING during a startup failure, folding a kill
+/// failure into the surfaced error instead of dropping it: a child that cannot
+/// be signalled or reaped (e.g. wedged in an uninterruptible syscall) is a leak
+/// worth reporting. When the kill succeeds, the original `error` is returned
+/// unchanged.
+async fn abandon_child(child: &mut Child, error: SupervisorError) -> SupervisorError {
+    match process::force_kill_tree(child).await {
+        Ok(()) => error,
+        Err(kill_err) => SupervisorError::Handshake(format!(
+            "{error} (and the spawned child could not be killed — it may be leaked: {kill_err})"
+        )),
+    }
 }
 
 /// The default per-user data directory the daemon uses
