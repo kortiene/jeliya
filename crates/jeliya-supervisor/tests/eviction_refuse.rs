@@ -68,6 +68,82 @@ fn dead_loopback_port() -> u16 {
     p
 }
 
+/// A stub that prints `already_running` and then HANGS instead of exiting — the
+/// misbehaving/fault-injected incumbent the bounded already-running wait must
+/// survive. It never opens a socket; the long sleep outlives any test budget so
+/// the supervisor's own timeout (not the process) is what ends the wait.
+fn write_hanging_stub(path: &Path, pid: u32, port: u16) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        "#!/bin/sh\necho '{{\"event\":\"already_running\",\"pid\":{pid},\"port\":{port}}}'\nsleep 600\n"
+    );
+    std::fs::write(path, script).expect("write hanging stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// Fault #15-adjacent: a spawned binary that announces `already_running` and
+/// then never exits must NOT wedge `start_or_adopt` forever. The adopted-path
+/// child wait is bounded by `Timeouts::spawn`; on expiry the owned probe child
+/// is force-killed and `Wedged` is surfaced. Red-before/green-after: remove the
+/// `timeout(self.timeouts.spawn, child.wait())` wrap and this test hangs for the
+/// stub's full 600 s sleep (a CI timeout), never returning `Wedged`.
+#[tokio::test]
+async fn a_hanging_already_running_child_times_out_as_wedged() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-hang-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+
+    let pid: u32 = 4_000_000_001;
+    let port = dead_loopback_port();
+
+    let stub = root.join("jeliyad-hang");
+    write_hanging_stub(&stub, pid, port);
+
+    // A SHORT spawn budget so the bounded wait fires quickly; the stub sleeps
+    // far longer, so the supervisor's timeout is unambiguously what ends it.
+    let timeouts = Timeouts {
+        spawn: Duration::from_millis(600),
+        ..short_timeouts()
+    };
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub.clone()),
+        timeouts,
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+
+    // A portfile matching the announced pid/port (compatible generation) so the
+    // adopt path reaches the child wait rather than failing the earlier
+    // ready↔portfile agreement or portfile read.
+    let portfile_json = format!(
+        r#"{{"pid":{pid},"port":{port},"protocol":2,"storage_generation":2,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let started = std::time::Instant::now();
+    let result = sup.start_or_adopt().await;
+    let elapsed = started.elapsed();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        matches!(result, Err(SupervisorError::Wedged)),
+        "a hanging already_running child must surface Wedged, not hang; got: {result:?}"
+    );
+    // The bound actually fired: we returned in well under the stub's 600 s sleep.
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "the wait must be bounded by Timeouts::spawn, not the stub's lifetime (took {elapsed:?})"
+    );
+}
+
 #[tokio::test]
 async fn fault14_unprovable_incompatible_incumbent_is_refused_without_signalling() {
     let root = std::env::temp_dir().join(format!(

@@ -603,11 +603,7 @@ export function summarizeLogCollector(collector) {
 }
 
 function gitExecutionContext(sourceEnv = process.env) {
-  // No validateSourceBuildAmbient here: the git subprocess receives its own
-  // isolated env (only PATH + allowed proxies) — ambient vars like BASH_ENV
-  // are never forwarded, so rejecting them at this layer is a false positive.
-  // The check belongs only in sourceBuildEnvironment/certificationBuild where
-  // Cargo actually inherits the caller's environment.
+  validateSourceBuildAmbient(sourceEnv);
   const root = mkdtempSync(join(tmpdir(), "jeliya-git-inspection-"));
   try {
     const home = join(root, "home");
@@ -1768,11 +1764,9 @@ class RpcClient {
     this.closed = false;
   }
 
-  async connect(baseHttp, token, ready, timeoutMs = 30_000) {
+  async connect(baseHttp, token, timeoutMs = 30_000) {
     const wsBase = baseHttp.replace(/^http/, "ws").replace(/\/$/, "");
-    const v = ready?.protocol ?? 2;
-    const sg = ready?.storage_generation ?? 2;
-    const url = `${wsBase}/ws?v=${v}&sg=${sg}&token=${encodeURIComponent(token)}`;
+    const url = `${wsBase}/ws?token=${encodeURIComponent(token)}`;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       try {
@@ -1820,18 +1814,18 @@ class RpcClient {
         reject: (error) => { clearTimeout(timer); rejectPromise(error); },
       });
     });
-    this.ws.send(JSON.stringify({ id, op: method, "in": params }));
+    this.ws.send(JSON.stringify({ id, method, params }));
     return promise;
   }
 
   async call(method, params = {}, timeoutMs = 60_000) {
     const frame = await this.callRaw(method, params, timeoutMs);
     if (frame.ok !== true) {
-      const error = new Error(`${method} failed with ${frame.err?.code ?? "unknown"}`);
-      error.code = frame.err?.code;
+      const error = new Error(`${method} failed with ${frame.error?.code ?? "unknown"}`);
+      error.code = frame.error?.code;
       throw error;
     }
-    return frame.out;
+    return frame.result;
   }
 
   close() {
@@ -1881,7 +1875,7 @@ async function startLocalPeer({ role, binary, loopback, runId, resources, secret
     peer.token = token;
     const client = new RpcClient(role.toUpperCase());
     peer.client = client;
-    await client.connect(baseHttp, token, ready);
+    await client.connect(baseHttp, token);
     return peer;
   } catch (error) {
     throw error;
@@ -2093,12 +2087,13 @@ async function startRemotePeer({
   peer.token = token;
   const client = new RpcClient(role.toUpperCase());
   peer.client = client;
-  await client.connect(baseHttp, token, ready);
+  await client.connect(baseHttp, token);
   return peer;
 }
 
 async function ensureIdentity(peer) {
-  return peer.client.call("subject.ensure");
+  const status = await peer.client.call("daemon.status");
+  return status.identity ?? peer.client.call("identity.create");
 }
 
 async function waitTimeline(peer, roomId, predicate, what, timeoutMs = WAIT_MS) {
@@ -2185,8 +2180,8 @@ async function downloadLocalFile(peer, roomId, fileId) {
 
 async function expectRoomUnknown(client, method, params) {
   const frame = await client.callRaw(method, params);
-  if (frame.ok !== false || frame.err?.code !== "room_unknown") {
-    throw new Error(`${method} disclosed a foreign room or returned ${frame.err?.code ?? "success"}`);
+  if (frame.ok !== false || frame.error?.code !== "room_unknown") {
+    throw new Error(`${method} disclosed a foreign room or returned ${frame.error?.code ?? "success"}`);
   }
 }
 
@@ -2703,7 +2698,7 @@ async function stopResources(resources) {
   const stoppedPeers = new Map();
   for (const peer of resources.peers) {
     if (peer.client) {
-      try { await peer.client.call("daemon.stop", {}, 10_000); } catch { failures.push(`${peer.role}:shutdown`); }
+      try { await peer.client.call("daemon.shutdown", {}, 10_000); } catch { failures.push(`${peer.role}:shutdown`); }
       peer.client.close();
     }
   }

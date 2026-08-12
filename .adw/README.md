@@ -42,16 +42,6 @@ gate one command per string (the finalize list runs each entry separately). A
 `--test-cmd` that genuinely needs a chain must be wrapped:
 `--test-cmd 'bash -lc "cmd1 && cmd2"'`.
 
-**Shell env-var prefix syntax (`KEY=val cmd`) is supported.** Switchyard's
-`capture()` helper calls `stripEnvPrefix` before `spawnSync`, so leading
-`KEY=value` tokens are extracted from the argv, `$VAR` references in their
-values are expanded against the orchestrator's environment, and the remainder
-is used as the actual command. For example,
-`CARGO_TARGET_DIR=$HOME/.cache/foo cargo test` correctly spawns `cargo test`
-with `CARGO_TARGET_DIR` set to the expanded path. Shell operators (`&&`, `|`,
-`;`) are still not supported; chain commands with
-`--test-cmd 'bash -lc "cmd1 && cmd2"'`.
-
 The root `.gitignore` ignores `/agents/`: Switchyard writes per-run state to
 `agents/<adw-id>/` inside the (work)tree, and its `--worktree` preflight
 hard-fails if that path is not ignored.

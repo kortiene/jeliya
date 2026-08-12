@@ -198,13 +198,27 @@ impl Supervisor {
                 ReadyLine::AlreadyRunning { pid, port } => {
                     // Our spawned child bowed out with exit 0; the incumbent is
                     // the real one. Drop our stdin so the exiting child is not
-                    // held open, then await its exit.
+                    // held open, then await its exit — BOUNDED. Every wait in
+                    // this crate is time-boxed (spec §7.7): a mismatched or
+                    // fault-injected binary that prints `already_running` and
+                    // then hangs instead of exiting must not wedge
+                    // `start_or_adopt` forever despite `Timeouts::spawn`. On
+                    // expiry, force-kill the owned probe child (we spawned it)
+                    // and surface `Wedged`.
                     drop(stdin);
-                    let status = child.wait().await.map_err(|e| {
-                        SupervisorError::Handshake(format!("adopted-path child never exited: {e}"))
-                    })?;
-                    if !status.success() {
-                        return Err(SupervisorError::Wedged);
+                    match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
+                        Ok(Ok(status)) if status.success() => {}
+                        Ok(Ok(_status)) => return Err(SupervisorError::Wedged),
+                        Ok(Err(e)) => {
+                            let _ = process::force_kill_tree(&mut child).await;
+                            return Err(SupervisorError::Handshake(format!(
+                                "adopted-path child never exited: {e}"
+                            )));
+                        }
+                        Err(_elapsed) => {
+                            let _ = process::force_kill_tree(&mut child).await;
+                            return Err(SupervisorError::Wedged);
+                        }
                     }
                     self.finish_adopted(portfile, pid, port, allow_evict).await
                 }
@@ -237,7 +251,28 @@ impl Supervisor {
         )
         .await
         {
-            Ok(validated) => Ok(self.owned_sidecar(child, stdin, validated.portfile)),
+            Ok(validated) => {
+                // `validate_portfile` RE-READS the portfile, so it can observe a
+                // DIFFERENT daemon than the one we spawned: if our child exited
+                // right after its ready line and another launcher wrote a fresh
+                // portfile before this re-read, `validated.portfile` would carry
+                // the replacement's PID/port while `child`/`stdin` still refer to
+                // our original process. Marking that Owned would let `shutdown`
+                // signal only the dead original and leave the real daemon
+                // running. Bind the re-read identity back to OUR child's ready
+                // announcement; a drift means we no longer own the serving
+                // daemon, so refuse rather than mispair (the P2 the review
+                // names).
+                if validated.portfile.pid != ready_pid || validated.portfile.port != ready_port {
+                    let mismatch = SupervisorError::Handshake(format!(
+                        "owned child announced pid {ready_pid} port {ready_port} but the validated portfile now serves pid {} port {} — a replacement daemon raced our spawn",
+                        validated.portfile.pid, validated.portfile.port
+                    ));
+                    let _ = process::force_kill_tree(&mut child).await;
+                    return Err(mismatch);
+                }
+                Ok(self.owned_sidecar(child, stdin, validated.portfile))
+            }
             Err(e) => {
                 // A daemon WE spawned failed validation — the bundled binary
                 // drifted from `expected` (R6). Stop it (we own it) and surface

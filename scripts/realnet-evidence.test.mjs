@@ -956,9 +956,8 @@ test("log collection rejects streams destroyed before readable end", async () =>
 });
 
 test("SIGTERM produces failed evidence and completes run-owned cleanup", { timeout: 60_000 }, async () => {
-  const cargoTargetDir = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "target");
-  const binary = join(cargoTargetDir, "debug", "jeliyad");
-  assert.equal(existsSync(binary), true, `build ${binary} before the lifecycle test`);
+  const binary = join(process.cwd(), "target", "debug", "jeliyad");
+  assert.equal(existsSync(binary), true, "build target/debug/jeliyad before the lifecycle test");
   const evidenceDir = mkdtempSync(join(tmpdir(), "jeliya-signal-evidence-"));
   temporary.push(evidenceDir);
   const child = spawn(

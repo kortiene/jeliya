@@ -51,11 +51,47 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
     child.wait().await.map(|_| ())
 }
 
+/// A validated positive process id, safe to convert to the platform signal
+/// type. Constructed only through [`SignalPid::new`], which rejects the values
+/// whose `as i32` cast would change Unix signal semantics.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SignalPid(i32);
+
+#[cfg(unix)]
+impl SignalPid {
+    /// Reject a PID that cannot address exactly one real process before any
+    /// signal is derived from it. On Unix, `kill(pid, …)` reinterprets its
+    /// argument by sign: `0` addresses the **caller's** whole process group and
+    /// `-1`/other negatives address process *groups* — so a portfile `pid` of
+    /// `0`, or one above `i32::MAX` (whose `as i32` cast wraps negative), would
+    /// broadcast SIGTERM well beyond the intended incumbent. Only `1..=i32::MAX`
+    /// names a single process; everything else is refused here, before the cast
+    /// (the P1 the review names).
+    pub(crate) fn new(pid: u32) -> Option<Self> {
+        if pid >= 1 && pid <= i32::MAX as u32 {
+            Some(Self(pid as i32))
+        } else {
+            None
+        }
+    }
+
+    /// The validated value as the raw signal argument.
+    pub(crate) fn get(self) -> i32 {
+        self.0
+    }
+}
+
 /// Send SIGTERM to a **foreign** proven-owned incumbent (eviction fallback,
 /// spec §6.7). The caller MUST have proven, via a PID-bound health probe, that
 /// this PID is the daemon serving the exact data dir — this function does not
 /// re-check; it is the raw lever the eviction gate guards. Graceful (SIGTERM,
 /// never SIGKILL): an adopted/incumbent daemon runs its own teardown.
+///
+/// The PID is validated positive-and-representable before the signal is derived
+/// ([`SignalPid::new`]): `kill(0, …)`/negative wraps would signal a whole
+/// process group, so a `0`/overflowing portfile PID is refused rather than
+/// cast.
 ///
 /// Unix only. On other platforms a foreign process cannot be signalled without
 /// forbidden unsafe FFI, so eviction there requires the caller-supplied
@@ -65,7 +101,12 @@ pub(crate) fn sigterm_foreign(pid: u32) -> Result<(), SupervisorError> {
     {
         use nix::sys::signal::{kill, Signal};
         use nix::unistd::Pid;
-        kill(Pid::from_raw(pid as i32), Signal::SIGTERM).map_err(|errno| {
+        let signal_pid = SignalPid::new(pid).ok_or_else(|| {
+            SupervisorError::Handshake(format!(
+                "refusing to signal invalid incumbent pid {pid} (not a positive, representable process id)"
+            ))
+        })?;
+        kill(Pid::from_raw(signal_pid.get()), Signal::SIGTERM).map_err(|errno| {
             SupervisorError::Handshake(format!("could not SIGTERM incumbent pid {pid}: {errno}"))
         })
     }
@@ -76,5 +117,47 @@ pub(crate) fn sigterm_foreign(pid: u32) -> Result<(), SupervisorError> {
             "signal-based eviction is unavailable off Unix; supply a daemon.shutdown RPC"
                 .to_owned(),
         ))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_pid_rejects_zero() {
+        // `kill(0, sig)` signals the CALLER's whole process group — never a
+        // proven incumbent. A portfile PID of 0 must be refused before the cast.
+        assert!(SignalPid::new(0).is_none());
+    }
+
+    #[test]
+    fn signal_pid_rejects_values_above_i32_max() {
+        // `(u32 as i32)` wraps negative for anything over `i32::MAX`, and a
+        // negative kill target addresses a process GROUP. Refuse the whole
+        // overflowing range.
+        assert!(SignalPid::new(i32::MAX as u32 + 1).is_none());
+        assert!(SignalPid::new(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn signal_pid_accepts_the_representable_positive_range() {
+        assert_eq!(SignalPid::new(1).map(SignalPid::get), Some(1));
+        assert_eq!(
+            SignalPid::new(i32::MAX as u32).map(SignalPid::get),
+            Some(i32::MAX)
+        );
+        // A plausible real PID round-trips unchanged.
+        assert_eq!(SignalPid::new(4242).map(SignalPid::get), Some(4242));
+    }
+
+    #[test]
+    fn sigterm_foreign_refuses_pid_zero_without_signalling() {
+        // The public lever refuses pid 0 with a Handshake error rather than
+        // calling `kill(0, …)` (which would SIGTERM this test's own process
+        // group and abort the run). Reaching this assertion at all proves the
+        // guard fired before any signal.
+        let err = sigterm_foreign(0).expect_err("pid 0 must be refused");
+        assert!(matches!(err, SupervisorError::Handshake(_)));
     }
 }

@@ -16,6 +16,16 @@ use tokio::net::TcpStream;
 
 use crate::generation::SeenGeneration;
 
+/// The most of a health response we will ever buffer. The real `/api/health`
+/// body is a few hundred bytes; this ceiling is generous for headers + JSON yet
+/// small enough that a hostile or misdirected listener on a recycled port
+/// cannot make a probe allocate unbounded memory. The read timeout bounds
+/// *time*, not *bytes*, so without this a fast local listener could stream
+/// hundreds of MB before the deadline and OOM the supervising app (the P2 the
+/// review names). A response that would exceed the cap is rejected as "not a
+/// health response".
+const MAX_HEALTH_RESPONSE_BYTES: u64 = 64 * 1024;
+
 /// The fields the supervisor reads from `/api/health`. Unknown fields (port,
 /// version, min_protocol, limits) are ignored. `ok` and `pid` are required for
 /// a response to count as a live daemon at all; the generation axes are
@@ -74,8 +84,14 @@ pub(crate) async fn probe_health(
     if stream.write_all(request.as_bytes()).await.is_err() {
         return None;
     }
+    // Read through a fixed byte ceiling: `take` caps the bytes buffered
+    // regardless of how much the peer sends, so a fast/hostile listener cannot
+    // make this allocate without bound before the read timeout fires. If the
+    // peer sends exactly the cap we still parse it — an over-cap body simply
+    // fails to parse as the small health JSON and is rejected as "not healthy".
     let mut response = Vec::new();
-    match tokio::time::timeout(read_timeout, stream.read_to_end(&mut response)).await {
+    let mut limited = (&mut stream).take(MAX_HEALTH_RESPONSE_BYTES);
+    match tokio::time::timeout(read_timeout, limited.read_to_end(&mut response)).await {
         Ok(Ok(_)) => {}
         _ => return None,
     }
@@ -186,5 +202,58 @@ mod tests {
         // Missing \r\n\r\n means we cannot find the body.
         let raw = b"HTTP/1.1 200 OK{\"ok\":true,\"pid\":1}";
         assert!(parse_health_response(raw).is_none());
+    }
+
+    /// A listener whose 200 body places the only valid JSON PAST the byte cap is
+    /// rejected: the bounded read stops at the cap (all padding), so parsing the
+    /// truncated prefix yields no report. This is the red-before/green-after
+    /// witness for the cap — remove the `take(MAX_HEALTH_RESPONSE_BYTES)` and
+    /// `read_to_end` consumes the whole body, the trailing JSON parses, and the
+    /// probe wrongly reports a healthy pid 7 (and, at scale, buffers unbounded).
+    ///
+    /// A manually-built current-thread runtime (matching the `validate` unit
+    /// tests) keeps this off `#[tokio::test]`, so it does not depend on the
+    /// dev-only `macros` feature.
+    #[test]
+    fn an_oversized_health_body_is_bounded_and_rejected() {
+        use tokio::io::AsyncWriteExt as _;
+        use tokio::net::TcpListener;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+
+            let server = tokio::spawn(async move {
+                if let Ok((mut socket, _)) = listener.accept().await {
+                    // Header, then > cap bytes of ASCII-space padding, then the
+                    // only valid health JSON — which sits beyond the cap and
+                    // must never be reached.
+                    let mut body = vec![b' '; (MAX_HEALTH_RESPONSE_BYTES as usize) + 4096];
+                    body.extend_from_slice(br#"{"ok":true,"pid":7}"#);
+                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
+                    let _ = socket.write_all(&body).await;
+                    let _ = socket.shutdown().await;
+                }
+            });
+
+            let report = probe_health(
+                port,
+                Duration::from_millis(500),
+                // A generous read window so the failure is the CAP, not a timeout.
+                Duration::from_secs(2),
+            )
+            .await;
+            assert!(
+                report.is_none(),
+                "an over-cap body must be rejected: the valid JSON past the cap must never be reached"
+            );
+            let _ = server.await;
+        });
     }
 }

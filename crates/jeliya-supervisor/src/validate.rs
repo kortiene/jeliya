@@ -127,8 +127,15 @@ pub(crate) async fn prove_owned(portfile: &Portfile, timeouts: &Timeouts) -> boo
 
 /// Poll `/api/health` until the daemon at `pid`/`port` is gone (connection
 /// refused, or a different/absent PID answers), bounded by `budget`. Returns
-/// `true` if it went dark in time. Used to confirm an eviction or an adopted
-/// stop actually took effect before respawning (spec §6.7 / §6.9).
+/// `true` if it went dark in time. Used to confirm an eviction actually took
+/// effect before respawning (spec §6.7 / §6.9).
+///
+/// Note: a dark listener is **not** proof of completed cleanup — the daemon
+/// drops its listener at the *start* of `graceful_shutdown` and only then
+/// spends its room-close budget, removing `daemon.json` last. The eviction path
+/// respawns into a fresh daemon that heals any leftover portfile, so listener
+/// death is the right signal there; a caller that will *reuse the data dir*
+/// must instead wait for [`wait_portfile_removed`].
 pub(crate) async fn wait_health_dark(
     pid: u32,
     port: u16,
@@ -143,6 +150,27 @@ pub(crate) async fn wait_health_dark(
                 None => false,
             };
         if !still_up {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Poll until the daemon's `daemon.json` under `data_dir` is gone, bounded by
+/// `budget`. The daemon removes its portfile as the **final** step of
+/// `graceful_shutdown` — after it has dropped its listener AND finished closing
+/// rooms — so portfile absence is the completion signal a caller must see
+/// before it may safely reuse or remove the data dir (the P2 the review names:
+/// a bare health-dark check reports `Graceful` while the daemon is still writing
+/// state and holding its lock). Returns `true` if it was removed in time.
+pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> bool {
+    let path = portfile::portfile_path(data_dir);
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        if !path.exists() {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -383,6 +411,54 @@ mod tests {
         assert!(
             !matches!(result, Err(SupervisorError::NonLoopback { .. })),
             "no ws/http fields must not yield NonLoopback"
+        );
+    }
+
+    /// `wait_portfile_removed` returns true as soon as `daemon.json` is gone —
+    /// the completion signal `stop_adopted` waits for before promising a
+    /// `Graceful` teardown (a dark listener alone is premature: the daemon
+    /// removes the portfile only after closing rooms).
+    #[test]
+    fn wait_portfile_removed_returns_true_once_the_portfile_is_gone() {
+        let dir = tmp_dir("pf-gone");
+        write_portfile(
+            &dir,
+            r#"{"pid":1,"port":9,"data_dir":"/d","auth_token":"t"}"#,
+        );
+        let path = dir.join("daemon.json");
+        assert!(path.exists());
+        let dir_for_task = dir.clone();
+        let dir_for_wait = dir.clone();
+        let result = rt().block_on(async move {
+            // Remove the portfile after a short delay, as a graceful daemon
+            // does at the END of its shutdown.
+            let remover = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                std::fs::remove_file(dir_for_task.join("daemon.json")).unwrap();
+            });
+            let removed = wait_portfile_removed(&dir_for_wait, Duration::from_secs(2)).await;
+            let _ = remover.await;
+            removed
+        });
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(result, "must observe the portfile removal within budget");
+    }
+
+    /// `wait_portfile_removed` returns false when the portfile is never removed
+    /// within the budget — so `stop_adopted` surfaces `ShutdownTimedOut` rather
+    /// than a premature `Graceful` when cleanup stalls (the P2's honest verdict).
+    #[test]
+    fn wait_portfile_removed_times_out_when_the_portfile_persists() {
+        let dir = tmp_dir("pf-stays");
+        write_portfile(
+            &dir,
+            r#"{"pid":1,"port":9,"data_dir":"/d","auth_token":"t"}"#,
+        );
+        let result = rt().block_on(wait_portfile_removed(&dir, Duration::from_millis(200)));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            !result,
+            "a portfile that never disappears must time out, not report removed"
         );
     }
 

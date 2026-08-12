@@ -148,7 +148,20 @@ impl Sidecar {
             .map_err(|e| SupervisorError::Handshake(e.to_string()))?;
         // Confirm it actually went dark; we never signalled it, so the RPC is
         // the only lever and we must verify it took effect.
-        if validate::wait_health_dark(pid, port, self.timeouts.teardown, &self.timeouts).await {
+        let deadline = tokio::time::Instant::now() + self.timeouts.teardown;
+        if !validate::wait_health_dark(pid, port, self.timeouts.teardown, &self.timeouts).await {
+            return Err(SupervisorError::ShutdownTimedOut { pid });
+        }
+        // A dark listener is not a finished shutdown: the daemon drops its
+        // listener FIRST and only then closes rooms (~10s) and removes
+        // `daemon.json` last. `Graceful` invites the caller to reuse or remove
+        // the data dir, so wait for portfile removal — the true completion
+        // signal — within the REMAINING budget before promising it. On timeout
+        // the process is dark but may still hold its lock / be writing state, so
+        // `ShutdownTimedOut` is the honest verdict rather than a premature
+        // `Graceful`.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if validate::wait_portfile_removed(&self.data_dir, remaining).await {
             Ok(Teardown::Graceful)
         } else {
             Err(SupervisorError::ShutdownTimedOut { pid })
