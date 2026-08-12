@@ -87,23 +87,34 @@ impl Formats {
 
     /// A number with a fixed number of fractional digits under the formatting
     /// locale's separators (`1 234,56` / `1,234.56`).
+    ///
+    /// Rounds half **away from zero** to match the other client's
+    /// `Intl.NumberFormat` (ties-away), NOT Rust's `{:.*}` ties-to-even:
+    /// `decimal(2.25, 1)` is `2.3`, not `2.2` — and so `bytes(2_359_296)` (exactly
+    /// 2.25 MiB) shows `2.3 MB`, matching the React client. `f64::round` is
+    /// ties-away; scale, round to an integer, then SLICE the integer into
+    /// whole/fraction so no second (ties-to-even) rounding happens on the way out.
     pub fn decimal(self, value: f64, frac_digits: usize) -> String {
         let conventions = self.conventions();
-        // `{:.*}` rounds to `frac_digits`; a negative sign, if any, rides on the
-        // integer part and is preserved by splitting on the ASCII '.'.
-        let fixed = format!("{value:.frac_digits$}");
-        let (int_part, frac_part) = match fixed.split_once('.') {
-            Some((i, f)) => (i, Some(f)),
-            None => (fixed.as_str(), None),
-        };
-        let (sign, digits) = match int_part.strip_prefix('-') {
-            Some(rest) => ("-", rest),
-            None => ("", int_part),
-        };
-        let grouped = group_digits(digits, conventions.group);
-        match frac_part {
-            Some(frac) => format!("{sign}{grouped}{}{frac}", conventions.decimal),
-            None => format!("{sign}{grouped}"),
+        let negative = value.is_sign_negative() && value != 0.0;
+        let factor = 10f64.powi(frac_digits as i32);
+        // Round the scaled magnitude to the nearest integer, half away from zero.
+        let scaled = (value.abs() * factor).round();
+        // Render that non-negative integer, left-padded so there are at least
+        // `frac_digits` fractional places to slice off (e.g. `1` → `01` for a
+        // `0.1`, `0` → `00` for `0.0`).
+        let mut digits = format!("{scaled:.0}");
+        if digits.len() <= frac_digits {
+            digits = format!("{digits:0>width$}", width = frac_digits + 1);
+        }
+        let split = digits.len() - frac_digits;
+        let (int_digits, frac) = digits.split_at(split);
+        let grouped = group_digits(int_digits, conventions.group);
+        let sign = if negative { "-" } else { "" };
+        if frac_digits == 0 {
+            format!("{sign}{grouped}")
+        } else {
+            format!("{sign}{grouped}{}{frac}", conventions.decimal)
         }
     }
 
@@ -195,6 +206,33 @@ mod tests {
         assert_eq!(
             Formats::new(Locale::Fr, Locale::En).decimal(1234.56, 2),
             "1,234.56"
+        );
+    }
+
+    #[test]
+    fn decimal_rounds_half_away_from_zero_like_intl() {
+        // Rust's `{:.*}` is ties-to-even (`2.25` → `2.2`); the other client's
+        // Intl.NumberFormat is ties-AWAY (`2.25` → `2.3`). We must match Intl.
+        // These are EXACT halves in f64 (…x5 that is representable), so ties-away
+        // vs ties-to-even genuinely differ — the cases that matter.
+        let en = Formats::new(Locale::En, Locale::En);
+        assert_eq!(en.decimal(2.25, 1), "2.3");
+        assert_eq!(en.decimal(0.25, 1), "0.3");
+        assert_eq!(en.decimal(0.05, 1), "0.1");
+        assert_eq!(en.decimal(0.5, 0), "1");
+        assert_eq!(en.decimal(-2.25, 1), "-2.3");
+        // Non-tie values are unaffected; padding a bare fraction still works.
+        assert_eq!(en.decimal(2.24, 1), "2.2");
+        assert_eq!(en.decimal(0.0, 1), "0.0");
+    }
+
+    #[test]
+    fn bytes_round_half_away_matching_the_other_client() {
+        // 2_359_296 bytes is EXACTLY 2.25 MiB; the React client shows `2.3 MB`,
+        // so this port must too (ties-to-even would show `2.2 MB`).
+        assert_eq!(
+            Formats::new(Locale::En, Locale::En).bytes(2_359_296),
+            "2.3 MB"
         );
     }
 

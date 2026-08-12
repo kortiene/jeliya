@@ -14,6 +14,7 @@ import {
   identityExemption,
   parseCatalog,
   scanComponentLiterals,
+  slotsEqual,
 } from './lib/jeliya-ui-catalog.mjs';
 
 const EN = `
@@ -296,6 +297,46 @@ fn view() -> Element {
     !scanComponentLiterals('x.rs', notFlagged).some((f) => f.code === 'rust-text'),
     'a converted string used as a Rust statement must NOT be flagged as copy',
   );
+});
+
+test('literal scan: a format! RSX expression child is flagged', () => {
+  // `div { {format!("Delete account")} }` renders hardcoded copy via a macro
+  // call that IS the expression child; a `class:`/nested-call format! is not.
+  const flagged = `
+fn view() -> Element {
+    rsx! {
+        div { {format!("Delete account")} }
+    }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', flagged).some((f) => f.code === 'rust-text'),
+    'a format! expression child must be flagged',
+  );
+
+  // A `format!` used as a structural attribute VALUE (callee preceded by `:`) is
+  // not copy — the class is not user-visible text.
+  const attrValue = `
+fn view() -> Element {
+    rsx! {
+        div { class: format!("app pane-{}", pane), {body} }
+    }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', attrValue).some((f) => f.code === 'rust-text'),
+    'a format! attribute value must NOT be flagged as copy',
+  );
+});
+
+test('placeholder-parity: slotsEqual compares element-wise, not by join', () => {
+  // Distinct multisets must NOT collide: `['a','bc']` and `['ab','c']` both
+  // join to `'abc'`, so a delimiter-free join would call them equal and miss a
+  // renamed/dropped slot.
+  assert.equal(slotsEqual(['a', 'bc'], ['ab', 'c']), false);
+  assert.equal(slotsEqual(['n'], ['n']), true);
+  assert.equal(slotsEqual(['n'], ['n', 'n']), false);
+  assert.equal(slotsEqual([], []), true);
 });
 
 test('literal scan: a bare semantic ELEMENT outside a primitive is flagged', () => {

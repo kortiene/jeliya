@@ -395,11 +395,11 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
     // count is already a plural-parity finding).
     if (frEntry.slotsPerArm.length === enEntry.slotsPerArm.length) {
       for (let i = 0; i < frEntry.slotsPerArm.length; i += 1) {
-        if (frEntry.slotsPerArm[i].join('') !== enEntry.slotsPerArm[i].join('')) {
+        if (!slotsEqual(frEntry.slotsPerArm[i], enEntry.slotsPerArm[i])) {
           findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr arm ${i} placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
         }
       }
-    } else if (frEntry.slots.join('') !== enEntry.slots.join('')) {
+    } else if (!slotsEqual(frEntry.slots, enEntry.slots)) {
       findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
     }
   }
@@ -485,6 +485,15 @@ const RESERVED_SEMANTIC_ATTRS = new Set(['role', 'aria-modal', 'aria-live']);
  *  is legitimate). Matched lowercase, so the `Dialog` primitive COMPONENT (capital
  *  D) is never caught. */
 const RESERVED_SEMANTIC_ELEMENTS = new Set(['dialog']);
+
+/** Whether two placeholder-slot arrays are equal element-by-element. Compared
+ *  positionally, NOT by a delimiter-free join: `['a','bc']` and `['ab','c']`
+ *  both join to `'abc'`, so a join would call two distinct multisets equal and
+ *  miss a dropped/renamed slot (Rust lets an impl's parameter names differ from
+ *  the trait, so such a mismatch compiles). */
+export function slotsEqual(a, b) {
+  return a.length === b.length && a.every((slot, i) => slot === b[i]);
+}
 
 /** Basenames of the semantic-primitive source files, where the reserved
  *  attributes above are DEFINED and therefore allowed. */
@@ -581,6 +590,36 @@ function methodChainClosesSlot(skeleton, dotStart) {
   return skeleton[i] === '}';
 }
 
+/** Whether the call whose `(` is at `openParenIndex` is itself an RSX EXPRESSION
+ *  CHILD — `div { {format!("Delete account")} }` — rather than a prop/attr value
+ *  or a nested call argument. Walks back over the callee (ident / path / macro
+ *  `!`) to require an opening `{` immediately before it, and forward to require
+ *  the call's matching `)` to be immediately followed by that slot's `}`. So
+ *  `{ format!("…") }` (a visible text child, copy) is caught, while
+ *  `class: format!("app-{}", p)` (an attr value, callee preceded by `:`) and
+ *  `foo(bar("…"))` (a nested arg, callee preceded by `(`) are not. */
+function callIsExpressionChild(skeleton, openParenIndex) {
+  let i = openParenIndex - 1;
+  while (i >= 0 && /[\w:!]/.test(skeleton[i])) i -= 1; // callee ident / path / `!`
+  while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
+  if (skeleton[i] !== '{') return false; // not the opener of an expression slot
+  // The call must BE the whole slot: its matching `)` is followed only by `}`.
+  let depth = 0;
+  let j = openParenIndex;
+  for (; j < skeleton.length; j += 1) {
+    if (skeleton[j] === '(') depth += 1;
+    else if (skeleton[j] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        j += 1;
+        break;
+      }
+    }
+  }
+  while (j < skeleton.length && /\s/.test(skeleton[j])) j += 1;
+  return skeleton[j] === '}';
+}
+
 /** The index of the `}` matching the `{` at `openIndex` in `skeleton`, or -1. */
 function matchingBrace(skeleton, openIndex) {
   let depth = 0;
@@ -673,6 +712,16 @@ export function scanComponentLiterals(file, source) {
     // a copy-prop value (handled above) — is Rust logic embedded in RSX, not
     // markup text.
     if (skeleton[after] === '.') continue;
+    // A literal that is the argument of a call which IS the RSX expression child —
+    // `div { {format!("Delete account")} }` — is visible copy (a `format!` string
+    // is a normal way to render dynamic text), not Rust logic. Detect that the
+    // enclosing call is the whole `{ … }` slot before treating the argument as
+    // code; a `class: format!("app-{}", p)` attr value or a nested `foo(bar("…"))`
+    // arg is not, and stays exempt.
+    if (prev === '(' && callIsExpressionChild(skeleton, before)) {
+      findings.push(finding(file, line, 'rust-text', `RSX text expression is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
+      continue;
+    }
     // A literal that is a function/macro argument is likewise Rust code.
     if (prev === '(' || prev === '=' || prev === '&') continue;
 

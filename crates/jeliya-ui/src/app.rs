@@ -302,9 +302,9 @@ pub fn AppRoot(
     // Primary copy for a failed room-list read is friendly catalog text; the raw
     // `room.list:` detail lives ONLY in the Diagnostics disclosure. Terminal
     // failures get copy that does not promise a retry that will never happen (§5.8
-    // / the "no false recovery promise" rule). Computed BEFORE the boot branch so
-    // the boot/terminal cover shows the SAME friendly, localized copy — never the
-    // raw developer-facing diagnostic as primary text.
+    // / the "no false recovery promise" rule). Rendered only in the mounted shell,
+    // where the StatusFooter → Diagnostics disclosure the copy refers to actually
+    // exists (the boot/terminal cover shows no room-list notice).
     let room_error = snapshot
         .notice
         .as_ref()
@@ -340,10 +340,17 @@ pub fn AppRoot(
     // hooks are declared above, so this single return is order-safe.
     rsx! {
         if let Some(target) = boot_target {
+            // No room-list notice on the cover: the room.list error is a
+            // Ready-time read failure, orthogonal to why the client is
+            // stopping/failed, and the friendly copy refers to a Diagnostics
+            // disclosure this cover does not mount (a retryable notice would also
+            // promise a retry beneath a terminal `Failed`). The boot/terminal
+            // label is the honest primary message; the shell (with its
+            // StatusFooter → Diagnostics) is where a room.list failure and its raw
+            // detail belong.
             BootScreen {
                 target: target.to_string(),
-                // Friendly, localized copy — not the raw notice (§5.8).
-                notice: room_error.clone(),
+                notice: None,
             }
         } else {
             // Skip links are the FIRST focusable region and move focus (not just
