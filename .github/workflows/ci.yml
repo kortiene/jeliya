@@ -737,3 +737,64 @@ jobs:
             crates/jeliya-ui/e2e/playwright-report
             crates/jeliya-ui/e2e/test-results
           retention-days: 14
+
+  # ---- #177 Dioxus catalog / literal / French-typography gates ----
+  # Three independently-named contexts over ONE parser
+  # (scripts/lib/jeliya-ui-catalog.mjs) so each AC-7 concern is its own required
+  # branch-protection check (add them to `main` protection after this merges —
+  # spec §6.3). rustc already enforces key/placeholder parity between
+  # jeliya_ui::l10n::En and ::Fr in the jeliya-ui-web job; these gates are the
+  # defence in depth for what types cannot see. They read the Rust catalogs and
+  # components as TEXT (no Rust build), so they cost seconds.
+  ui-catalog:
+    name: jeliya-ui catalog parity (EN/FR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+      # The gate's own unit tests run FIRST — a gate whose rules are untested can
+      # pass by being broken (check-ui-i18n.test.mjs makes the same argument).
+      - name: Catalog gate self-tests + parity/empty/fr==en/plural
+        run: |
+          set -euo pipefail
+          node --test scripts/check-jeliya-ui-i18n.test.mjs
+          node scripts/check-jeliya-ui-i18n.mjs --only=catalog
+
+  ui-literal-copy:
+    name: jeliya-ui literal copy (no hardcoded UI strings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+      - name: No user-visible literal outside the catalog
+        run: node scripts/check-jeliya-ui-i18n.mjs --only=literals
+
+  ui-french-typography:
+    name: jeliya-ui French typography
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+      - name: U+202F / U+00A0 / U+2019 / U+2026 / guillemets over every fr value
+        run: node scripts/check-jeliya-ui-i18n.mjs --only=typography

@@ -9,13 +9,29 @@
 //! contains **no** platform business-logic `cfg` fork: which concrete
 //! `ClientHandle` and which `PlatformServices` implementation back these props
 //! is decided only in [`crate::compose`].
+//!
+//! #177 makes localization and accessibility structural: the root **provides**
+//! the resolved-locale and live-region contexts (resolving the two persisted
+//! locale preferences through the injected [`Preferences`](jeliya_platform::Preferences)
+//! capability), renders a properly landmarked page (skip links, a named `nav`,
+//! a `main` with one `h1`, a stable live region), and routes the raw failure
+//! detail into the Diagnostics dialog while primary copy stays friendly catalog
+//! text.
 
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::RoomList;
 use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
+use jeliya_platform::PreferenceKey;
 
-use crate::components::{BootScreen, EmptyCenter, RoomListItem, StatusFooter};
+use crate::components::{
+    use_announce_context, BootScreen, EmptyCenter, LiveRegion, MainRegion, NavLandmark,
+    RoomListItem, SkipLink, SkipLinks, StatusFooter,
+};
+use crate::l10n::{
+    catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
+    LocaleState,
+};
 use crate::state::UiState;
 use crate::PlatformServices;
 
@@ -29,11 +45,26 @@ use crate::PlatformServices;
 pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
     let mut ui = use_signal(UiState::new);
 
-    // Touch the injected services seam once on mount — a small, honest
-    // demonstration that platform authority is reached only through
-    // `PlatformServices`, never directly. Reading the storage durability is a
-    // side-effect-free platform fact through the canonical contract (#174).
-    use_hook(move || services.preferences().durability());
+    // Resolve the two persisted locale preferences through the injected
+    // `Preferences` capability (#174) — the platform-authority boundary a shared
+    // component may read, never `localStorage`/`cfg` directly (Decision-3). The
+    // platform language (browser `navigator.languages` / OS locale) is injected
+    // at composition later, exactly as the live `WsWeb` transport is; until then
+    // it is `None`, so an unset preference resolves to the fallback locale. The
+    // concrete storage keys are the platform contract's `TextLocale` /
+    // `FormattingLocale` (#178 owns their browser namespace).
+    let preferences = services.preferences();
+    let text_pref = preferences.get(&PreferenceKey::TextLocale);
+    let formatting_pref = preferences.get(&PreferenceKey::FormattingLocale);
+    let initial_locale =
+        LocaleState::resolve(text_pref.as_deref(), formatting_pref.as_deref(), None, None);
+
+    // Provide the resolved-locale and live-region contexts to the whole subtree.
+    // `use_locale_context` returns the switch signal (a settings surface, a later
+    // slice, assigns it to change locale live); the foundation proves the wiring
+    // and the per-render resolution that makes a switch apply with no restart.
+    let locale = use_locale_context(initial_locale);
+    let announcer = use_announce_context();
 
     use_future(move || {
         let handle = handle.clone();
@@ -99,9 +130,11 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                             // the next recovery to Ready; every other error
                             // is a genuine reply or refusal and is recorded
                             // once — retrying those could loop forever on a
-                            // persistent failure.
+                            // persistent failure. The recorded notice is the
+                            // RAW, secret-scrubbed detail (the Diagnostics
+                            // dialog's content); primary copy stays friendly.
                             Err(error @ CallError::Disconnected { .. }) => {
-                                ui.write().set_notice(format!("room.list: {error:?}"));
+                                ui.write().set_notice(diagnostic_notice(&error));
                                 // A Disconnected settlement can outrun the
                                 // lifecycle event — the seam permits settling
                                 // pending calls before publishing
@@ -144,7 +177,7 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                             }
                             Err(error) => {
                                 let mut state = ui.write();
-                                state.set_notice(format!("room.list: {error:?}"));
+                                state.set_notice(diagnostic_notice(&error));
                                 // The read has ANSWERED — with a terminal
                                 // error this task will not retry — so the
                                 // loading state must end: leaving
@@ -169,8 +202,25 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
         }
     });
 
+    // Announce the loaded room count through the single stable live region, once
+    // per change: the effect re-runs only when the room list or the locale
+    // changes, and `Announcer::announce` coalesces, so a list that re-renders
+    // many times still announces once (the checklist's failure mode, designed
+    // out structurally — §5.6).
+    use_effect(move || {
+        let snapshot = ui.read();
+        let resolved = locale.read();
+        if snapshot.rooms_loaded {
+            let count = snapshot.rooms.len() as u64;
+            let formatted = Formats::new(resolved.text, resolved.formatting).count(count);
+            let category = plural_category(resolved.text, count);
+            let message = catalog_for(resolved.text).rooms_count(&formatted, category);
+            announcer.announce(message);
+        }
+    });
+
+    let strings = use_strings();
     let snapshot = ui();
-    let lifecycle = format!("{:?}", snapshot.lifecycle);
 
     // Outside the shell, the boot screen is the component ROOT (as the React
     // shell renders it), never a child of the `.app` grid: auto-placed inside
@@ -183,14 +233,14 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
     // reports the state) rather than hiding the rooms behind a boot screen;
     // the stop and failure states render their own honest label — a terminal
     // state that claims to be connecting would be a lie the client never
-    // recovers from — plus any recorded notice, which the Ready-only shell
-    // would otherwise swallow.
+    // recovers from. Labels are catalog copy, so the cover speaks the resolved
+    // locale.
     let boot_target = match snapshot.lifecycle {
         State::Ready | State::Interrupted => None,
-        State::Idle | State::Connecting => Some("connecting to the local daemon…"),
-        State::Stopping => Some("stopping — draining accepted work…"),
-        State::Stopped => Some("stopped"),
-        State::Failed => Some("the client failed and will not retry"),
+        State::Idle | State::Connecting => Some(strings.boot_connecting()),
+        State::Stopping => Some(strings.boot_stopping()),
+        State::Stopped => Some(strings.boot_stopped()),
+        State::Failed => Some(strings.boot_failed()),
     };
     if let Some(target) = boot_target {
         return rsx! {
@@ -201,44 +251,62 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
         };
     }
 
+    // Primary copy for a failed room-list read is friendly catalog text; the raw
+    // detail lives only in the Diagnostics dialog (carried via `StatusFooter`).
+    let room_error = snapshot
+        .notice
+        .as_ref()
+        .map(|_| ErrorDisplay::room_list_failure(strings).message);
+    let rooms_label = strings.rooms_heading().to_string();
+    let skip_rooms = strings.skip_to_rooms().to_string();
+    let skip_content = strings.skip_to_content().to_string();
+    let rooms_empty = strings.rooms_empty();
+    let rooms_loading = strings.rooms_loading();
+
     rsx! {
+        // Skip links are the FIRST focusable region on the page and move focus
+        // (not just scroll) to their `tabindex="-1"` landmark targets.
+        SkipLinks {
+            SkipLink { anchor: "rooms-nav".to_string(), label: skip_rooms }
+            SkipLink { anchor: "main-content".to_string(), label: skip_content }
+        }
         // A root pane state is always set (`pane-rooms`), because the shared
         // stylesheet hides `.sidebar`/`.center` on compact viewports unless a
         // pane is selected — a plain `app` root renders blank on a phone
         // system WebView, which is a target platform. The React client sets
         // `app pane-${pane}`; so does this.
         div { class: "app pane-rooms", id: "app-root",
-            nav { class: "sidebar", id: "sidebar",
+            // The sidebar is a NAMED navigation landmark, so landmark
+            // navigation can distinguish it from the main region and a skip
+            // link can move focus into it.
+            NavLandmark {
+                class: "sidebar".to_string(),
+                id: "rooms-nav".to_string(),
+                label: rooms_label,
                 // The notice lives in the SIDEBAR, not `.center`: on compact
                 // viewports `pane-rooms` hides `.center` entirely, and this
-                // slice's shell is fixed at `pane-rooms` — a notice rendered
-                // there would leave a phone showing a misleading "No rooms
-                // yet" while the one diagnostic that explains it is
-                // unreachable. The sidebar is the region visible in every
-                // pane layout this shell can produce.
-                if let Some(notice) = snapshot.notice.as_ref() {
-                    div { class: "error-note", id: "notice", "{notice}" }
+                // slice's shell is fixed at `pane-rooms`. Primary copy is the
+                // friendly message; the raw detail is in Diagnostics.
+                if let Some(message) = room_error.as_ref() {
+                    div { class: "error-note", id: "notice", "{message}" }
                 }
                 // `.rooms-list` is the scroll container the stylesheet
                 // styles (flex: 1, overflow-y: auto, min-height: 0). Rows as
                 // direct children of `.sidebar` would compress or clip once
-                // the list outgrows the viewport — desktop `.sidebar` does
-                // not scroll. Mirrors the React shell's nested container.
+                // the list outgrows the viewport. Mirrors the React shell.
                 div { class: "rooms-list", id: "rooms-list",
                     // On compact viewports `pane-rooms` shows ONLY the
-                    // sidebar (`.center` is hidden), so an empty room list
-                    // must render an empty state here or a phone lands on a
-                    // blank main area. Mirrors the React shell's
-                    // `rooms-empty muted` element.
+                    // sidebar, so an empty room list must render an empty
+                    // state here or a phone lands on a blank main area.
                     if snapshot.rooms.is_empty() {
                         // "No rooms yet" is an ANSWER, not a default: before
                         // the first room.list reply lands, an empty vector
                         // means "not answered yet", and claiming an empty
                         // account during a slow read would be false.
                         if snapshot.rooms_loaded {
-                            div { class: "rooms-empty muted", id: "rooms-empty", "No rooms yet" }
+                            div { class: "rooms-empty muted", id: "rooms-empty", "{rooms_empty}" }
                         } else {
-                            div { class: "rooms-empty muted", id: "rooms-loading", "Loading rooms…" }
+                            div { class: "rooms-empty muted", id: "rooms-loading", "{rooms_loading}" }
                         }
                     }
                     for room in snapshot.rooms.iter() {
@@ -249,17 +317,23 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                         }
                     }
                 }
-                // The footer sits at the BOTTOM of the sidebar's flex
-                // column (after the flex-1 rooms list), not as a loose
-                // `.app` child: the grid auto-places an unpositioned child
-                // into row 1 — the full-width strip the stylesheet reserves
-                // for `.conn-region` — which would render the footer above
-                // the sidebar and open an empty band over the center. The
-                // sidebar is also the one pane visible in every layout this
-                // shell produces, which is the point of the state label.
-                StatusFooter { lifecycle }
+                // The footer sits at the BOTTOM of the sidebar's flex column,
+                // reporting the connection state accessibly and hosting the
+                // Diagnostics disclosure that carries the raw failure detail.
+                StatusFooter { state: snapshot.lifecycle, detail: snapshot.notice.clone() }
             }
-            section { class: "center", id: "center", EmptyCenter {} }
+            // The one visible `<main>` landmark, carrying the single `<h1>`.
+            MainRegion { id: "main-content".to_string(), EmptyCenter {} }
+            // The single, stable polite live region for connection/content
+            // announcements. Visually hidden, so it does not disturb layout.
+            LiveRegion { message: announcer.message() }
         }
     }
+}
+
+/// The raw, secret-scrubbed detail recorded for the Diagnostics dialog. Keeps
+/// the `room.list:` context an operator needs while guaranteeing no token-shaped
+/// value reaches the recorded string (§5.8).
+fn diagnostic_notice(error: &CallError) -> String {
+    format!("room.list: {}", ErrorDisplay::diagnostic_detail(error))
 }

@@ -27,6 +27,10 @@ default = []
 ui = [
     "dep:dioxus",
     "dioxus/minimal",
+    # `mounted` is LOAD-BEARING for the dialog focus contract (#177): without
+    # it, `onmounted`/`set_focus` compile against the silent no-op fallback
+    # backing and never fire. It adds no dependency to the lockfile.
+    "dioxus/mounted",
     "dep:futures",
     "jeliya-client/mock",
     # The canonical platform-authority contract (#174) and its deterministic
