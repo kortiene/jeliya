@@ -60,8 +60,8 @@ pub(crate) async fn validate_portfile(
 
     // 1. Loopback: a portfile advertising a non-loopback endpoint is refused
     //    before any dial (spec §6.4 step 2 / §7.1).
-    if let Some(advertised) = non_loopback_endpoint(&portfile) {
-        return Err(SupervisorError::NonLoopback { advertised });
+    if let Some(field) = non_loopback_endpoint(&portfile) {
+        return Err(SupervisorError::NonLoopback { field });
     }
 
     // 2. Declared generation: the portfile's own `protocol`+`storage_generation`
@@ -159,13 +159,18 @@ fn token_is_well_formed(token: &str) -> bool {
 /// loopback, if any. Absent endpoints are fine — the resolver builds its own
 /// `127.0.0.1` dial URL; the check exists to catch a portfile that *advertises*
 /// a routable endpoint (fault #19).
-fn non_loopback_endpoint(portfile: &Portfile) -> Option<String> {
-    for candidate in [portfile.ws.as_deref(), portfile.http.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        if !advertised_endpoint_is_loopback(candidate) {
-            return Some(candidate.to_owned());
+fn non_loopback_endpoint(portfile: &Portfile) -> Option<&'static str> {
+    // Return only WHICH field failed, never the raw value: a corrupted portfile
+    // could carry a token in a swapped `ws`/`http` field, and the `NonLoopback`
+    // error is logged/displayed by callers (token-redaction boundary, §7.2).
+    for (field, candidate) in [
+        ("ws", portfile.ws.as_deref()),
+        ("http", portfile.http.as_deref()),
+    ] {
+        if let Some(value) = candidate {
+            if !advertised_endpoint_is_loopback(value) {
+                return Some(field);
+            }
         }
     }
     None
@@ -179,6 +184,26 @@ fn non_loopback_endpoint(portfile: &Portfile) -> Option<String> {
 pub(crate) async fn prove_owned(portfile: &Portfile, timeouts: &Timeouts) -> bool {
     match health::probe_health(portfile.port, timeouts.health_connect, timeouts.health_read).await {
         Some(report) => report.proves_pid(portfile.pid),
+        None => false,
+    }
+}
+
+/// Prove — for EVICTION — that the daemon at `portfile.pid`/`port` is live, owned
+/// (health PID match), AND actually SERVES a generation this build does not
+/// support. Eviction signals a foreign process, so it must confirm the incumbent
+/// is incompatible from its HEALTH, not merely from a portfile that *declares* it:
+/// a compatible daemon whose portfile was concurrently corrupted (or replaced) to
+/// declare an incompatible generation must never be SIGTERMed on the strength of
+/// the file alone. Returns `false` on any doubt.
+pub(crate) async fn prove_owned_incompatible(
+    portfile: &Portfile,
+    expected: Generation,
+    timeouts: &Timeouts,
+) -> bool {
+    match health::probe_health(portfile.port, timeouts.health_connect, timeouts.health_read).await {
+        Some(report) => {
+            report.proves_pid(portfile.pid) && !expected.matches(report.advertised_generation())
+        }
         None => false,
     }
 }

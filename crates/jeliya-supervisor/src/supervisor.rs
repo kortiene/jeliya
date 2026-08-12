@@ -508,11 +508,36 @@ impl Supervisor {
                 // the macOS target), so it is documented rather than partially
                 // mitigated. `SignalPid` still guarantees the value itself is a
                 // representable positive PID (never a group broadcast).
-                if validate::prove_owned(&portfile, &self.timeouts).await {
-                    process::sigterm_foreign(portfile.pid)?;
+                //
+                // Bind the ownership proof AND the SIGTERM to a FRESH single
+                // snapshot, not the outer `portfile`: `validate_portfile` re-read
+                // the file internally, so the mismatch may describe a portfile that
+                // was concurrently REPLACED after the outer read. Signalling
+                // `portfile.pid` here could then SIGTERM a still-live COMPATIBLE
+                // incumbent that the (now-replaced) mismatch never described. Re-read
+                // once and evict only if THAT snapshot is itself an incompatible
+                // incumbent bound to this dir whose HEALTH confirms an incompatible
+                // served generation (`prove_owned_incompatible`), so a portfile
+                // corrupted to merely DECLARE incompatible cannot doom a daemon that
+                // actually serves a supported generation.
+                let fresh =
+                    match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms) {
+                        Ok(pf) => pf,
+                        // The portfile vanished/tore under us — nothing proven to evict.
+                        Err(_) => {
+                            return Err(SupervisorError::GenerationMismatch { expected, actual })
+                        }
+                    };
+                let bound_and_incompatible = !self.expected.matches(fresh.declared_generation())
+                    && validate::data_dir_mismatch(&self.data_dir, &fresh.data_dir).is_none();
+                if bound_and_incompatible
+                    && validate::prove_owned_incompatible(&fresh, self.expected, &self.timeouts)
+                        .await
+                {
+                    process::sigterm_foreign(fresh.pid)?;
                     if validate::wait_health_dark(
-                        portfile.pid,
-                        portfile.port,
+                        fresh.pid,
+                        fresh.port,
                         self.timeouts.evict,
                         &self.timeouts,
                     )
@@ -522,11 +547,11 @@ impl Supervisor {
                         // now-free data dir.
                         self.start_or_adopt_inner(false, false).await
                     } else {
-                        Err(SupervisorError::ShutdownTimedOut { pid: portfile.pid })
+                        Err(SupervisorError::ShutdownTimedOut { pid: fresh.pid })
                     }
                 } else {
-                    // Unprovable incumbent (fault #14): fail closed, signal
-                    // nothing.
+                    // Unprovable (fault #14), drifted, or the live daemon actually
+                    // serves a compatible generation: fail closed, signal nothing.
                     Err(SupervisorError::GenerationMismatch { expected, actual })
                 }
             }

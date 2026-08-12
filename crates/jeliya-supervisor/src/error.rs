@@ -90,10 +90,13 @@ pub enum SupervisorError {
 
     /// A portfile advertising a non-loopback `ws`/`http` endpoint. Refused
     /// before any dial (spec §7.1).
-    #[error("portfile advertises a non-loopback endpoint: {advertised}")]
+    #[error("portfile's advertised {field} endpoint is not loopback")]
     NonLoopback {
-        /// The offending advertised endpoint.
-        advertised: String,
+        /// Which endpoint field (`ws` / `http`) advertised a non-loopback value.
+        /// The raw value is deliberately NOT stored: a corrupted portfile could
+        /// carry a token in a swapped `ws`/`http` field, and callers log/display
+        /// this error (the token-redaction boundary, §7.2).
+        field: &'static str,
     },
 
     /// The data dir's instance lock is held, no healthy daemon answers, and the
@@ -189,12 +192,16 @@ mod tests {
     }
 
     #[test]
-    fn non_loopback_error_mentions_the_advertised_endpoint() {
-        let e = SupervisorError::NonLoopback {
-            advertised: "ws://evil.example/ws".to_owned(),
-        };
+    fn non_loopback_error_names_the_field_without_leaking_its_value() {
+        // The error identifies WHICH field failed, never the raw value — a
+        // corrupted portfile could carry a token there (§7.2).
+        let e = SupervisorError::NonLoopback { field: "ws" };
         let d = format!("{e}");
-        assert!(d.contains("evil.example"), "display: {d}");
+        assert!(d.contains("ws"), "display names the field: {d}");
+        assert!(
+            !d.contains("://"),
+            "display must not reproduce the raw endpoint value: {d}"
+        );
     }
 
     #[test]

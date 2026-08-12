@@ -759,3 +759,89 @@ async fn an_adopted_path_leader_that_spawned_a_descendant_reaps_the_group() {
         "the adopted-path descendant must be reaped with the group (pid {descendant})"
     );
 }
+
+/// A background health server proving `pid` with a COMPATIBLE (protocol 2,
+/// storage_generation 2) generation.
+async fn spawn_compatible_health(pid: u32) -> (u16, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind health");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let body =
+                format!("{{\"ok\":true,\"pid\":{pid},\"protocol\":2,\"storage_generation\":2}}");
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    (port, handle)
+}
+
+/// A live daemon that SERVES a compatible generation but whose portfile was
+/// corrupted/replaced to DECLARE an incompatible one must NOT be evicted:
+/// eviction proves incompatibility from HEALTH, not the portfile's declaration,
+/// so a concurrent portfile swap cannot doom a still-live compatible incumbent.
+///
+/// Red-before/green-after: with the old PID-only `prove_owned`, the health proves
+/// the pid → the compatible daemon's pid is SIGTERMed (an ESRCH `Handshake` here,
+/// since the pid is not a real process); the served-generation guard
+/// (`prove_owned_incompatible`) instead yields `GenerationMismatch`, signalling
+/// nothing.
+#[tokio::test]
+async fn a_compatible_daemon_with_an_incompatible_portfile_is_not_evicted() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-declonly-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+
+    // A representable, non-existent pid: a SIGTERM to it fails with ESRCH, so if
+    // the eviction path were entered the result would be `Handshake`, not a
+    // refusal — the red-before witness.
+    let pid: u32 = 2_000_000_000;
+    let (port, health) = spawn_compatible_health(pid).await;
+
+    let stub = root.join("jeliyad-stub");
+    write_stub(&stub, pid, port);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub),
+        replace_incompatible: true,
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+
+    // The portfile DECLARES an incompatible generation (protocol 1) at the live,
+    // COMPATIBLE-serving pid/port.
+    let portfile_json = format!(
+        r#"{{"pid":{pid},"port":{port},"protocol":1,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let result = sup.start_or_adopt().await;
+    health.abort();
+    let _ = std::fs::remove_dir_all(&root);
+
+    match result {
+        Err(SupervisorError::GenerationMismatch { .. }) => {}
+        other => panic!(
+            "a compatible-serving daemon must not be evicted on a declared-only mismatch \
+             (nothing signalled); got: {other:?}"
+        ),
+    }
+}
