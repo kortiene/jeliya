@@ -8,11 +8,14 @@
 //! When two DISTINCT transitions are enqueued before Dioxus renders (a buffered
 //! `Interrupted` then `Ready` consumed without yielding), a single latest-string
 //! signal would let the recovery write clobber the interruption before the DOM
-//! ever published it. The queue instead drains **one message per committed render**
-//! ([`LiveRegion`]'s post-render effect), so every distinct message is exposed to
-//! assistive tech for at least one frame. The region node is stable (always
-//! present, only its text changes) so assistive tech tracks it rather than
-//! re-discovering a new node.
+//! ever published it. The queue instead advances **one message per committed
+//! render** ([`LiveRegion`]'s post-render effect), draining each INTERMEDIATE
+//! message after it has been shown for a frame while **retaining the LAST** as the
+//! region's stable current text — so every distinct message is exposed to assistive
+//! tech for at least one frame, yet a coalescing content region keeps displaying
+//! its settled value (e.g. `0 rooms`) rather than clearing itself. The region node
+//! is stable (always present, only its text changes) so assistive tech tracks it
+//! rather than re-discovering a new node.
 
 use dioxus::prelude::*;
 use std::collections::VecDeque;
@@ -30,6 +33,21 @@ fn push_announcement(queue: &mut VecDeque<String>, last: &mut String, message: S
     last.clone_from(&message);
     queue.push_back(message);
     true
+}
+
+/// One drain step, run after a render commits: drop the just-rendered FRONT only
+/// when a later message is queued behind it, so the region advances through
+/// intermediate announcements (each got its committed frame) but RETAINS the last
+/// as its stable current text — a coalescing content region must keep showing its
+/// settled value rather than clear itself. Returns whether the queue changed. Pure,
+/// so the "publish every distinct message, keep the last" policy is unit-testable.
+fn drain_rendered_front(queue: &mut VecDeque<String>) -> bool {
+    if queue.len() > 1 {
+        queue.pop_front();
+        true
+    } else {
+        false
+    }
 }
 
 /// A handle to one announcement region. `Copy`, so it rides in props and closures.
@@ -70,13 +88,16 @@ impl Announcer {
         self.queue.read().front().cloned().unwrap_or_default()
     }
 
-    /// Drop the just-published front so the next queued message becomes current on
-    /// the following render; no-op when empty. Called from [`LiveRegion`]'s
-    /// post-render effect.
+    /// Advance past the just-rendered front so the NEXT queued message becomes
+    /// current on the following render, but keep the LAST message displayed (the
+    /// region is a stable node showing the most recent announcement). No-op when
+    /// zero or one message is pending. Called from [`LiveRegion`]'s post-render
+    /// effect.
     fn advance(&self) {
-        if self.queue.peek().front().is_some() {
-            let mut queue = self.queue;
-            queue.write().pop_front();
+        let mut queue = self.queue.peek().clone();
+        if drain_rendered_front(&mut queue) {
+            let mut sig = self.queue;
+            sig.set(queue);
         }
     }
 }
@@ -193,7 +214,7 @@ pub fn LiveRegion(
 
 #[cfg(test)]
 mod tests {
-    use super::push_announcement;
+    use super::{drain_rendered_front, push_announcement};
     use std::collections::VecDeque;
 
     fn run(messages: &[&str]) -> (Vec<String>, String) {
@@ -203,6 +224,27 @@ mod tests {
             push_announcement(&mut queue, &mut last, (*m).to_string());
         }
         (queue.into_iter().collect(), last)
+    }
+
+    /// Simulate the render→drain loop: record the front the DOM shows each frame,
+    /// then drain, until it stabilizes. Returns the ordered frames published and
+    /// the message the region is LEFT displaying.
+    fn published_frames(messages: &[&str]) -> (Vec<String>, Option<String>) {
+        let mut queue = VecDeque::new();
+        let mut last = String::new();
+        for m in messages {
+            push_announcement(&mut queue, &mut last, (*m).to_string());
+        }
+        let mut frames = Vec::new();
+        loop {
+            if let Some(front) = queue.front() {
+                frames.push(front.clone());
+            }
+            if !drain_rendered_front(&mut queue) {
+                break;
+            }
+        }
+        (frames, queue.front().cloned())
     }
 
     #[test]
@@ -246,5 +288,29 @@ mod tests {
             kept,
             vec!["A".to_string(), "B".to_string(), "A".to_string()]
         );
+    }
+
+    #[test]
+    fn every_distinct_message_is_published_and_the_last_is_retained() {
+        // A buffered Interrupted→Reconnected pair: BOTH reach the DOM (each gets a
+        // committed frame), and the region is LEFT showing the recovery.
+        let (frames, shown) = published_frames(&["Connection interrupted", "Reconnected"]);
+        assert_eq!(
+            frames,
+            vec![
+                "Connection interrupted".to_string(),
+                "Reconnected".to_string()
+            ]
+        );
+        assert_eq!(shown.as_deref(), Some("Reconnected"));
+    }
+
+    #[test]
+    fn a_single_settled_announcement_is_retained_as_stable_text() {
+        // The a11y contract: a coalescing content region shows its settled value
+        // (`0 rooms`) once and KEEPS displaying it — it must not clear itself.
+        let (frames, shown) = published_frames(&["0 rooms"]);
+        assert_eq!(frames, vec!["0 rooms".to_string()]);
+        assert_eq!(shown.as_deref(), Some("0 rooms"));
     }
 }
