@@ -203,6 +203,13 @@ impl Supervisor {
             // eviction path (`already_running` → prove-owned → SIGTERM →
             // respawn), which is where a live incompatible incumbent is replaced.
             // (`gate_incompatible` is also false on the eviction respawn itself.)
+            // When the gate DEFERS to eviction for a live incompatible incumbent,
+            // remember the declared incompatible generation. It gates the post-
+            // spawn `ready` path below: the incumbent could exit in the window
+            // between our prove and the spawn, letting our fresh daemon acquire
+            // the dir and announce `ready` — so the eviction never runs — and this
+            // is what still refuses opening the incompatible storage.
+            let mut deferred_incompatible: Option<crate::generation::SeenGeneration> = None;
             if gate_incompatible {
                 match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms) {
                     // No portfile → nothing to gate; proceed to spawn.
@@ -225,7 +232,9 @@ impl Supervisor {
                                 && validate::data_dir_mismatch(&self.data_dir, &existing.data_dir)
                                     .is_none()
                                 && validate::prove_owned(&existing, &self.timeouts).await;
-                            if !live_replaceable {
+                            if live_replaceable {
+                                deferred_incompatible = Some(declared);
+                            } else {
                                 return Err(SupervisorError::GenerationMismatch {
                                     expected: self.expected,
                                     actual: declared,
@@ -278,6 +287,23 @@ impl Supervisor {
 
             match announced {
                 ReadyLine::Ready { pid, port } => {
+                    // The gate deferred on a LIVE incompatible incumbent, but the
+                    // spawn announced `ready` (our OWN fresh daemon), not
+                    // `already_running`. So the incumbent released the lock between
+                    // our prove and this spawn, our daemon acquired the dir and
+                    // overwrote the incompatible portfile — the eviction the
+                    // clean-slate reset requires never ran. Refuse rather than open
+                    // incompatible storage.
+                    if let Some(declared) = deferred_incompatible {
+                        return Err(abandon_child(
+                            &mut child,
+                            SupervisorError::GenerationMismatch {
+                                expected: self.expected,
+                                actual: declared,
+                            },
+                        )
+                        .await);
+                    }
                     self.finish_owned(child, stdin, portfile, pid, port).await
                 }
                 ReadyLine::AlreadyRunning { pid, port } => {

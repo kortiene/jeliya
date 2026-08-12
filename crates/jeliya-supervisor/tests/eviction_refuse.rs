@@ -412,3 +412,103 @@ async fn fault14_unprovable_incompatible_incumbent_is_refused_without_signalling
         ),
     }
 }
+
+/// A background loopback listener that answers `/api/health` as a LIVE daemon
+/// proving `pid` with an INCOMPATIBLE (protocol 1) generation. It loops so the
+/// gate's `prove_owned` probe (and any re-probe) is answered; the returned
+/// handle is aborted by the test once the supervisor has run.
+async fn spawn_incompatible_health(pid: u32) -> (u16, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind health");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            // Drain the request (best-effort), then answer a v1 health body that
+            // proves the incumbent PID on an incompatible protocol.
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let body = format!("{{\"ok\":true,\"pid\":{pid},\"protocol\":1}}");
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    (port, handle)
+}
+
+/// Round-8 P1 (gate→spawn TOCTOU): when `replace_incompatible` defers to the
+/// eviction path for a LIVE incompatible incumbent, that incumbent can exit in
+/// the window between the `prove_owned` probe and the `spawn`. Our own fresh
+/// daemon then acquires the directory and announces `ready` (not
+/// `already_running`), so the `already_running` eviction path never runs. The
+/// supervisor must FAIL CLOSED with `GenerationMismatch` rather than open the
+/// incompatible storage the clean-slate reset was meant to discard.
+///
+/// Red-before/green-after: without the `deferred_incompatible` gate on the
+/// `ready` branch, the announcement drives `finish_owned` — standing in for a
+/// real fresh daemon that announced its own pid and wrote a v2 portfile, which
+/// would open the incompatible data dir. This stub announces a FOREIGN pid, so
+/// pre-fix the call surfaces `Handshake` (never `GenerationMismatch`); the fix
+/// is the only path that returns `GenerationMismatch` carrying protocol 1.
+#[tokio::test]
+async fn a_live_incompatible_incumbent_freeing_the_dir_before_spawn_is_refused() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-toctou-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+
+    // A stub that announces `ready` (our OWN fresh daemon) — the race outcome:
+    // the incumbent freed the dir, so the spawn is not `already_running`.
+    let stub = root.join("jeliyad-fresh");
+    write_ready_stub(&stub);
+
+    // A live incumbent whose health proves an incompatible generation, so the
+    // gate's `prove_owned` succeeds and it DEFERS to eviction.
+    let incumbent_pid: u32 = 4_000_000_002;
+    let (live_port, health) = spawn_incompatible_health(incumbent_pid).await;
+
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub),
+        replace_incompatible: true,
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+
+    // A v1 (incompatible) portfile recording THIS dir and pointing at the LIVE
+    // health server, so the gate proves the incumbent live and defers.
+    let portfile_json = format!(
+        r#"{{"pid":{incumbent_pid},"port":{live_port},"protocol":1,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let result = sup.start_or_adopt().await;
+    health.abort();
+    let _ = std::fs::remove_dir_all(&root);
+
+    match result {
+        Err(SupervisorError::GenerationMismatch { actual, .. }) => {
+            assert_eq!(
+                actual.protocol,
+                Some(1),
+                "the refusal must carry the incompatible incumbent's protocol"
+            );
+        }
+        other => panic!(
+            "a live incompatible incumbent that frees the dir before the spawn must fail closed \
+             with GenerationMismatch, not open incompatible storage; got: {other:?}"
+        ),
+    }
+}
