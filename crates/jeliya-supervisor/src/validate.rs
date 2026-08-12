@@ -354,6 +354,38 @@ pub(crate) fn lock_handle_is_held(handle: Option<&mut fd_lock::RwLock<std::fs::F
     }
 }
 
+/// Snapshot a HELD `daemon.lock` handle for [`crate::Sidecar::stop_adopted`],
+/// BOUNDED and OFF the async executor. Opening the lock file is blocking FS I/O
+/// that on a stalled NFS/FUSE mount can hang indefinitely (`open` on a hung mount
+/// blocks), so the open — and the [`lock_handle_is_held`] probe — run on
+/// `spawn_blocking`, capped at `deadline`. The snapshot therefore counts INSIDE
+/// the teardown budget instead of stalling an executor thread BEFORE the deadline
+/// even exists. Returns the handle ONLY if the live daemon currently HOLDS the
+/// lock; a missing/unopenable lock, a lock we could take exclusively (a
+/// replaced/unlinked inode), OR a stall past the deadline all yield `None`, which
+/// the completion gate maps to a fail-closed `ShutdownTimedOut`.
+pub(crate) async fn snapshot_held_lock(
+    data_dir: &Path,
+    deadline: tokio::time::Instant,
+) -> Option<fd_lock::RwLock<std::fs::File>> {
+    let dir = data_dir.to_path_buf();
+    let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let join = tokio::task::spawn_blocking(move || {
+        let mut handle = open_lock_handle(&dir);
+        if lock_handle_is_held(handle.as_mut()) {
+            handle
+        } else {
+            None
+        }
+    });
+    match tokio::time::timeout(budget, join).await {
+        Ok(Ok(handle)) => handle,
+        // A stalled open/probe (hung mount) or a panicked blocking task — fail
+        // closed: the exit proof could not be captured within the budget.
+        _ => None,
+    }
+}
+
 /// Poll a PRE-OPENED lock handle until it can be taken exclusively — i.e. the
 /// daemon RELEASED it (process exited) — bounded by `budget`. Portfile removal is
 /// NOT the daemon's final act: it removes the portfile, THEN flushes logs and only
@@ -870,6 +902,46 @@ mod tests {
         drop(guard);
         drop(snap);
         drop(daemon_lock);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `snapshot_held_lock` captures the daemon-held lock (bounded, off-executor)
+    /// and FAILS CLOSED (`None`) when the lock is not held or absent — the same
+    /// contract as the pre-round-19 inline open + `lock_handle_is_held`, now moved
+    /// off the runtime thread so a stalled mount cannot hang it.
+    #[test]
+    fn snapshot_held_lock_captures_held_and_fails_closed_otherwise() {
+        let dir = tmp_dir("snapheld");
+        let lock_path = dir.join(LOCKFILE_NAME);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        let mut daemon_lock = fd_lock::RwLock::new(file);
+
+        let snap = |dir: &std::path::Path| {
+            rt().block_on(async {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                snapshot_held_lock(dir, deadline).await
+            })
+        };
+
+        // Not held yet → None (fail closed).
+        assert!(snap(&dir).is_none(), "an unheld lock must not be captured");
+
+        // The daemon holds it exclusively → captured.
+        let guard = daemon_lock.try_write().expect("daemon holds the lock");
+        assert!(snap(&dir).is_some(), "a daemon-held lock must be captured");
+        drop(guard);
+        drop(daemon_lock);
+
+        // Absent lock → None (fail closed).
+        std::fs::remove_file(&lock_path).ok();
+        assert!(snap(&dir).is_none(), "an absent lock must not be captured");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

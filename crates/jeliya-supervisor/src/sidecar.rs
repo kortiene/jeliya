@@ -139,25 +139,24 @@ impl Sidecar {
                     // actually gone (its removal is the daemon's final step); a
                     // lingering portfile means cleanup did not finish → `Forced`.
                     Ok(Ok(status)) if status.success() => {
-                        // Sweep the isolated group and CONFIRM it is gone (bounded):
-                        // a descendant that outlived the reaped leader may still hold
-                        // the data-dir lock, so its survival must downgrade the
-                        // verdict, not be silently discarded.
-                        let swept = match leader_pgid {
-                            Some(pgid) => process::kill_reaped_process_group(pgid).await.is_ok(),
-                            None => true,
-                        };
+                        // Sweep the isolated group and CONFIRM, bounded, that it is
+                        // gone. A descendant that outlived the reaped leader may
+                        // still hold the data-dir lock — which would BLOCK the next
+                        // start — so its survival is a teardown FAILURE, not a
+                        // `Forced` the caller can retry over. Propagate it.
+                        if let Some(pgid) = leader_pgid {
+                            process::kill_reaped_process_group(pgid).await?;
+                        }
                         // `Graceful` ONLY on a present→absent transition: the
                         // portfile was there before the signal and is confirmed
                         // gone now (its removal is the daemon's final step). An
                         // already-absent portfile, a lingering one, or a stat error
-                        // (unreadable dir) is `Forced` — cleanup is not proven — as
-                        // is a process group that did not disappear.
+                        // (unreadable dir) is `Forced` — cleanup is not proven.
                         let removed = matches!(
                             crate::portfile::portfile_path(&data_dir).try_exists(),
                             Ok(false)
                         );
-                        if portfile_present_before && removed && swept {
+                        if portfile_present_before && removed {
                             Ok(Teardown::Graceful)
                         } else {
                             Ok(Teardown::Forced)
@@ -169,11 +168,13 @@ impl Sidecar {
                     // — so this is NOT graceful; report `Forced`, whose contract
                     // already warns that cleanup did not necessarily run.
                     Ok(Ok(_status)) => {
-                        // Already non-`Graceful`; await the bounded group sweep (no
-                        // longer fire-and-forget) so we do not return over a live
-                        // subtree, but `Forced` — "cleanup not proven" — stands.
+                        // A group that survived SIGKILL past the grace window (a
+                        // descendant still holding locks / writing state) is a
+                        // teardown FAILURE the caller must see, NOT a `Forced` it can
+                        // treat as complete — propagate the verified failure rather
+                        // than discarding it.
                         if let Some(pgid) = leader_pgid {
-                            let _ = process::kill_reaped_process_group(pgid).await;
+                            process::kill_reaped_process_group(pgid).await?;
                         }
                         Ok(Teardown::Forced)
                     }
@@ -232,30 +233,28 @@ impl Sidecar {
             crate::portfile::portfile_path(&self.data_dir).try_exists(),
             Ok(true)
         );
-        // Snapshot a handle to the CURRENT `daemon.lock` inode BEFORE the RPC, so
-        // the completion check (below) follows the original inode the daemon holds
-        // even if a cleanup tool unlinks/replaces the path during shutdown.
-        let mut lock_before = validate::open_lock_handle(&self.data_dir);
-        // Verify the snapshot is actually the daemon-held lock. A live adopted
-        // daemon must be holding `daemon.lock` right now, so it must NOT be
-        // exclusively lockable. If it is (the path was unlinked and replaced before
-        // the snapshot, so we captured a fresh unrelated inode), discard it: the
-        // completion gate then sees `None` and fails closed, rather than reading
-        // the replacement's trivial "release" as the daemon's exit.
-        if !validate::lock_handle_is_held(lock_before.as_mut()) {
-            lock_before = None;
-        }
-        // The whole adopted stop is time-boxed by `teardown`, RPC included: a
-        // caller-supplied invoker whose transport stalls must not wedge shutdown
-        // just because its own future has no timeout. Start the deadline BEFORE
-        // the RPC and bound the RPC against it, so a never-resolving invoker
-        // surfaces `ShutdownTimedOut` rather than hanging here forever.
+        // The whole adopted stop is time-boxed by `teardown` — RPC, lock snapshot,
+        // and all polling stages included. Start the deadline FIRST so every
+        // blocking stage counts against it; in particular the lock snapshot below
+        // touches a possibly-stalled mount and must not run unbounded before the
+        // deadline even exists.
         let deadline = validate::deadline_from(self.timeouts.teardown);
-        // Ask the daemon to shut itself down over the caller's RPC. A failure
-        // here is surfaced as the dedicated `ShutdownRpcFailed` — NOT `Handshake`
-        // (a startup-announcement error) — so a caller can apply shutdown-
-        // specific retry/reporting policy. The caller decides whether to retry.
-        match tokio::time::timeout(self.timeouts.teardown, shutdown_rpc()).await {
+        // Snapshot a HELD handle to the current `daemon.lock` inode BEFORE the RPC,
+        // so the completion check (below) follows the original inode the daemon
+        // holds even if a cleanup tool unlinks/replaces the path during shutdown.
+        // BOUNDED and OFF the executor (an `open` on a stalled NFS/FUSE mount blocks
+        // indefinitely): a snapshot that is absent, the wrong inode (unlink/replace),
+        // or times out all yield `None`, and the completion gate then fails closed
+        // rather than reading a non-daemon lock's release as the daemon's exit.
+        let mut lock_before = validate::snapshot_held_lock(&self.data_dir, deadline).await;
+        // Ask the daemon to shut itself down over the caller's RPC, bounded by the
+        // budget REMAINING after the snapshot so its time counts against `teardown`,
+        // not on top of it. A caller-supplied invoker whose transport stalls must
+        // not wedge shutdown just because its own future has no timeout. A failure
+        // here is the dedicated `ShutdownRpcFailed` — NOT `Handshake` (a startup
+        // error) — so a caller can apply shutdown-specific retry/reporting policy.
+        let rpc_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(rpc_budget, shutdown_rpc()).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(SupervisorError::ShutdownRpcFailed(e.to_string())),
             Err(_elapsed) => return Err(SupervisorError::ShutdownTimedOut { pid }),

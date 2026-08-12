@@ -59,12 +59,16 @@ pub(crate) fn configure_new_process_group(cmd: &mut Command) {
 /// failed — the error is surfaced (no longer silently discarded) so the caller
 /// learns the signal did not land instead of blocking.
 pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
+    // Capture the group BEFORE the reaping `wait()`: once the leader is reaped
+    // `child.id()` is `None`, so the group (needed for the post-reap existence
+    // check) can no longer be recovered.
     #[cfg(unix)]
-    if let Some(pid) = child.id() {
+    let group = child.id().map(|pid| nix::unistd::Pid::from_raw(pid as i32));
+    #[cfg(unix)]
+    if let Some(group) = group {
         use nix::sys::signal::{killpg, Signal};
-        use nix::unistd::Pid;
         // The child leads its own group (pgid == pid); signal the group.
-        let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        let _ = killpg(group, Signal::SIGKILL);
     }
     // Ensure the child handle itself is signalled and then reaped, so `wait`
     // cannot block on a survivor if the group signal missed. The `start_kill`
@@ -72,7 +76,25 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
     // error is the one worth surfacing on timeout.
     let kill_result = child.start_kill();
     match tokio::time::timeout(REAP_GRACE, child.wait()).await {
-        Ok(reaped) => reaped.map(|_| ()),
+        Ok(reaped) => {
+            reaped?;
+            // The LEADER reaped, but a descendant wedged in an uninterruptible
+            // syscall may still live in the isolated group, holding the data-dir
+            // lock. Verify the group is gone (bounded) before reporting success, so
+            // a caller never treats teardown as complete over a surviving subtree.
+            #[cfg(unix)]
+            if let Some(group) = group {
+                if !wait_group_gone(group).await {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "child reaped but its process group did not terminate within the \
+                         cleanup window (a descendant is likely wedged in an uninterruptible \
+                         syscall, still holding the data-dir lock)",
+                    ));
+                }
+            }
+            Ok(())
+        }
         Err(_elapsed) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             match kill_result {
@@ -106,7 +128,6 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
 pub(crate) async fn kill_reaped_process_group(pgid: u32) -> Result<(), SupervisorError> {
     #[cfg(unix)]
     {
-        use nix::errno::Errno;
         use nix::sys::signal::{killpg, Signal};
         use nix::unistd::Pid;
         let Some(valid) = SignalPid::new(pgid) else {
@@ -116,28 +137,41 @@ pub(crate) async fn kill_reaped_process_group(pgid: u32) -> Result<(), Superviso
         };
         let group = Pid::from_raw(valid.get());
         let _ = killpg(group, Signal::SIGKILL);
-        // SIGKILL only QUEUES the signal; a descendant wedged in an
-        // uninterruptible (`D`-state) syscall — e.g. a `data_dir` on a hung mount
-        // — receives it only when the syscall returns, which may be never. So poll
-        // the group's existence (the null signal `killpg(_, None)` sends nothing;
-        // `ESRCH` means no member remains) until it is gone or the bound expires,
-        // and surface a survivor as a real cleanup failure rather than reporting a
-        // clean stop over a live subtree that may still hold the data-dir lock.
-        let deadline = tokio::time::Instant::now() + REAP_GRACE;
-        loop {
-            if matches!(killpg(group, None), Err(Errno::ESRCH)) {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(SupervisorError::GroupCleanupTimedOut { pgid });
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+        if wait_group_gone(group).await {
+            Ok(())
+        } else {
+            Err(SupervisorError::GroupCleanupTimedOut { pgid })
         }
     }
     #[cfg(not(unix))]
     {
         let _ = pgid;
         Ok(())
+    }
+}
+
+/// Poll a process GROUP's existence until it is empty — `killpg(group, None)`
+/// (the null signal, which delivers nothing) returns `ESRCH` once no member
+/// remains — or [`REAP_GRACE`] expires. Returns `true` iff the group disappeared
+/// within the bound. `SIGKILL` only QUEUES for a descendant wedged in an
+/// uninterruptible (`D`-state) syscall — e.g. a `data_dir` on a hung mount — which
+/// receives it only when the syscall returns (maybe never), so BOTH reaped-group
+/// cleanup paths ([`kill_reaped_process_group`] and [`force_kill_tree`]) share this
+/// check to avoid reporting a clean stop over a live subtree still holding the
+/// data-dir lock.
+#[cfg(unix)]
+async fn wait_group_gone(group: nix::unistd::Pid) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::killpg;
+    let deadline = tokio::time::Instant::now() + REAP_GRACE;
+    loop {
+        if matches!(killpg(group, None), Err(Errno::ESRCH)) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -283,5 +317,30 @@ mod tests {
             rt.block_on(kill_reaped_process_group(0)).is_ok(),
             "an invalid pgid is a no-op Ok (nothing to reclaim)"
         );
+    }
+
+    /// `force_kill_tree` SIGKILLs the child's group, reaps the leader, AND confirms
+    /// (bounded) the group is gone before returning `Ok`. Here a plain long-lived
+    /// child dies, so the post-reap group check passes. The surviving-group `Err`
+    /// path is not deterministically reproducible (`SIGKILL` cannot be caught), so
+    /// it is covered structurally by the shared `wait_group_gone` poll.
+    #[cfg(unix)]
+    #[test]
+    fn force_kill_tree_kills_a_child_and_confirms_the_group_gone() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "sleep 600"]).kill_on_drop(false);
+            configure_new_process_group(&mut cmd);
+            let mut child = cmd.spawn().expect("spawn a long-lived child");
+            let result = force_kill_tree(&mut child).await;
+            assert!(
+                result.is_ok(),
+                "killing a plain child and confirming its group gone must succeed; got: {result:?}"
+            );
+        });
     }
 }
