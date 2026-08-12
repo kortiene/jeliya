@@ -321,13 +321,21 @@ pub(crate) fn open_lock_handle(data_dir: &Path) -> Option<fd_lock::RwLock<std::f
 /// could wedge its restart. Polling the SAME handle (a fd on the original inode),
 /// not reopening by path, means a cleanup tool unlinking/replacing `daemon.lock`
 /// cannot fool the check — the fd still refers to the inode the daemon holds.
-/// A `None` handle (no lock existed before the RPC) is treated as released.
+///
+/// A `None` handle FAILS CLOSED (returns `false`): the pre-RPC snapshot collapses
+/// both "the lock was absent" and "opening it failed" to `None`, and an adopted
+/// daemon we just stopped is contracted to hold `daemon.lock` until it exits — so
+/// a missing snapshot means the exit proof could not be captured, NOT that the
+/// process is gone. Treating it as released would let `stop_adopted` promise
+/// `Graceful` while the daemon may still be flushing logs under the unlinked lock
+/// inode; the honest verdict is "unproven", which the caller maps to
+/// `ShutdownTimedOut`.
 pub(crate) async fn wait_lock_handle_released(
     handle: Option<&mut fd_lock::RwLock<std::fs::File>>,
     budget: Duration,
 ) -> bool {
     let Some(lock) = handle else {
-        return true;
+        return false;
     };
     let deadline = tokio::time::Instant::now() + budget;
     loop {
@@ -766,6 +774,20 @@ mod tests {
         drop(daemon_lock);
         std::fs::remove_dir_all(&dir).ok();
         assert!(freed, "a freed lock must be observed as released");
+    }
+
+    /// A `None` lock snapshot FAILS CLOSED. If `stop_adopted` could not capture a
+    /// handle to `daemon.lock` before the RPC (the file was absent or could not be
+    /// opened), the daemon's exit cannot be proven, so completion must NOT be
+    /// reported. Red-before: the pre-fix `None` arm returned `true` (treated as
+    /// released), which let an adopted stop promise `Graceful` while the daemon may
+    /// still hold the unlinked lock inode while flushing logs.
+    #[test]
+    fn wait_lock_handle_released_fails_closed_without_a_snapshot() {
+        assert!(
+            !rt().block_on(wait_lock_handle_released(None, Duration::from_millis(50))),
+            "a missing lock snapshot is unproven, not released"
+        );
     }
 
     /// prove_owned returns false when nothing answers on the advertised port.

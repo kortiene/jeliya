@@ -142,8 +142,13 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
             });
         }
     };
-    match file.metadata() {
-        Ok(meta) if meta.is_file() => {}
+    // One `fstat` on the descriptor we just opened, reused for BOTH the
+    // regular-file check and (in strict mode) the permission check below. Binding
+    // it here — rather than re-`stat`ing the path later — is what closes the
+    // strict-mode TOCTOU: another process may swap `daemon.json` after this open,
+    // but the mode we vet is the mode of the very inode we read the token from.
+    let meta = match file.metadata() {
+        Ok(meta) if meta.is_file() => meta,
         Ok(_) => {
             return Err(SupervisorError::PortfileUnreadable {
                 path,
@@ -156,7 +161,7 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
                 why: err.to_string(),
             });
         }
-    }
+    };
     let mut raw = String::new();
     if let Err(err) = file.take(MAX_PORTFILE_BYTES + 1).read_to_string(&mut raw) {
         // A non-UTF-8 body reaches here as `InvalidData` — still "not a readable
@@ -177,12 +182,12 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
 
     #[cfg(unix)]
     if strict {
-        if let Err(why) = enforce_owner_only(&path) {
+        if let Err(why) = enforce_owner_only(&meta) {
             return Err(SupervisorError::PortfileUnreadable { path, why });
         }
     }
     #[cfg(not(unix))]
-    let _ = strict;
+    let _ = (strict, &meta);
 
     serde_json::from_str::<Portfile>(&raw).map_err(|e| SupervisorError::PortfileUnreadable {
         path,
@@ -204,13 +209,16 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
 /// On Unix, refuse a portfile any group/other bit can read: the token lives in
 /// it, and a `0640`/`0644` portfile leaks the token to another local user.
 /// Defense-in-depth only — see the module note on the loopback threat model.
+///
+/// Takes the [`Metadata`] already `fstat`ed from the OPEN descriptor, never a
+/// fresh path `stat`: the mode vetted here must belong to the exact inode the
+/// token was read from, or a swap of `daemon.json` between read and check would
+/// let a group-readable file pass while its token is returned (the strict-mode
+/// TOCTOU).
 #[cfg(unix)]
-fn enforce_owner_only(path: &Path) -> Result<(), String> {
+fn enforce_owner_only(meta: &std::fs::Metadata) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(path)
-        .map_err(|e| format!("could not stat the portfile: {e}"))?
-        .permissions()
-        .mode();
+    let mode = meta.permissions().mode();
     // Any bit outside owner rwx (0o700) means group/other can see the token.
     if mode & 0o077 != 0 {
         return Err(format!(
@@ -384,6 +392,52 @@ mod tests {
         assert!(
             result.is_ok(),
             "strict mode must accept a 0600 portfile; got: {result:?}"
+        );
+    }
+
+    /// The strict-mode permission gate must vet the INODE THE TOKEN WAS READ FROM
+    /// (the open descriptor), never a fresh `stat` of the path: otherwise a swap of
+    /// `daemon.json` between the read and the check lets a group-readable file pass
+    /// the gate while its token is returned from the ORIGINAL file (the strict-mode
+    /// TOCTOU). We open an owner-only 0600 portfile, then rebind the PATH to a 0644
+    /// decoy. `enforce_owner_only` receives the fd's metadata, so it still sees the
+    /// original 0600 inode and accepts; a path re-`stat` (the pre-fix behaviour)
+    /// would see the 0644 decoy and wrongly reject — so `via_fd.is_ok()` fails if
+    /// anyone re-introduces the path stat, and the decoy assertion pins the
+    /// divergence the test relies on.
+    #[cfg(unix)]
+    #[test]
+    fn strict_perm_gate_follows_the_opened_descriptor_not_the_path() {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("sup-pf-toctou-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.json");
+        // The real, owner-only portfile we open and read the token from.
+        std::fs::write(&path, v2_portfile_json(7420)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true)
+            .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW);
+        let file = opts.open(&path).unwrap();
+        let meta = file.metadata().unwrap();
+
+        // Swap the PATH to a group-readable decoy AFTER the open; the fd still
+        // refers to the original 0600 inode.
+        let decoy = dir.join("decoy.json");
+        std::fs::write(&decoy, v2_portfile_json(7420)).unwrap();
+        std::fs::set_permissions(&decoy, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::rename(&decoy, &path).unwrap();
+
+        let via_fd = enforce_owner_only(&meta);
+        let via_path_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            via_fd.is_ok(),
+            "the gate must accept the 0600 inode it opened, regardless of a path swap; got: {via_fd:?}"
+        );
+        assert_eq!(
+            via_path_mode, 0o644,
+            "the path now resolves to the 0644 decoy — the divergence this test relies on"
         );
     }
 

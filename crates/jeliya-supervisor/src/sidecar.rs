@@ -279,7 +279,10 @@ impl Sidecar {
         // instant the portfile vanishes could wedge its restart on the still-held
         // lock, so confirm the lock is RELEASED (the process fully exited) — via
         // the handle snapshotted BEFORE the RPC (the original inode) — before
-        // promising `Graceful`.
+        // promising `Graceful`. If that snapshot is absent (the lock was already
+        // gone, or could not be opened, before the RPC), the exit proof was never
+        // captured: `wait_lock_handle_released` fails closed and we report
+        // `ShutdownTimedOut` rather than a premature `Graceful`.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if validate::wait_lock_handle_released(lock_before.as_mut(), remaining).await {
             Ok(Teardown::Graceful)
