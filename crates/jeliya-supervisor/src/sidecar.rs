@@ -110,6 +110,16 @@ impl Sidecar {
         match &mut self.ownership {
             Ownership::Adopted => Ok(Teardown::LeftRunning),
             Ownership::Owned { child, stdin } => {
+                // Snapshot portfile presence BEFORE the shutdown signal: `Graceful`
+                // requires a present→absent TRANSITION (the daemon's final step),
+                // not mere absence — an already-absent `daemon.json` (external
+                // delete / prior partial shutdown) does not prove this run's
+                // cleanup completed, and jeliyad treats a missing portfile during
+                // removal as success. Mirrors the adopted path.
+                let portfile_present_before = matches!(
+                    crate::portfile::portfile_path(&data_dir).try_exists(),
+                    Ok(true)
+                );
                 // Closing stdin is the graceful `--supervised` signal.
                 drop(stdin.take());
                 // Capture the pgid BEFORE the reaping wait: once `wait()` reaps the
@@ -132,13 +142,16 @@ impl Sidecar {
                         if let Some(pgid) = leader_pgid {
                             process::kill_reaped_process_group(pgid);
                         }
-                        // Only a CONFIRMED absence (`Ok(false)`) is `Graceful`; a
-                        // lingering portfile OR a stat error (unreadable dir) is
-                        // `Forced` — cleanup is not proven complete.
-                        if matches!(
+                        // `Graceful` ONLY on a present→absent transition: the
+                        // portfile was there before the signal and is confirmed
+                        // gone now (its removal is the daemon's final step). An
+                        // already-absent portfile, a lingering one, or a stat error
+                        // (unreadable dir) is `Forced` — cleanup is not proven.
+                        let removed = matches!(
                             crate::portfile::portfile_path(&data_dir).try_exists(),
                             Ok(false)
-                        ) {
+                        );
+                        if portfile_present_before && removed {
                             Ok(Teardown::Graceful)
                         } else {
                             Ok(Teardown::Forced)
@@ -431,6 +444,57 @@ mod tests {
             teardown,
             Teardown::Forced,
             "a zero exit that left the portfile is not Graceful — cleanup did not finish"
+        );
+    }
+
+    /// An owned shutdown must report `Forced`, not `Graceful`, when `daemon.json`
+    /// was ALREADY absent before the signal: mere absence does not prove THIS
+    /// run's cleanup ran (jeliyad treats a missing portfile during removal as
+    /// success, and an overridden child can exit 0 with no cleanup). Red-before/
+    /// green-after: without the present→absent transition, a zero-exiting child
+    /// with no portfile reports `Graceful`.
+    #[test]
+    fn owned_shutdown_with_a_pre_absent_portfile_is_forced() {
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!("sup-owned-preabsent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // No daemon.json is written — pre-absent before the shutdown.
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        let teardown = rt.block_on(async {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c").arg("exit 0").stdin(Stdio::piped());
+            let mut child = cmd.spawn().expect("spawn stub child");
+            let stdin = child.stdin.take();
+            let portfile: crate::portfile::Portfile = serde_json::from_str(
+                r#"{"pid":1,"port":9,"protocol":2,"storage_generation":2,
+                   "data_dir":"/d","auth_token":"t"}"#,
+            )
+            .unwrap();
+            let sidecar = Sidecar {
+                portfile,
+                ownership: Ownership::Owned { child, stdin },
+                data_dir: dir.clone(),
+                expected: crate::generation::Generation::new(2, 2),
+                strict_portfile_perms: false,
+                timeouts: crate::supervisor::Timeouts {
+                    teardown: Duration::from_secs(5),
+                    ..crate::supervisor::Timeouts::default()
+                },
+            };
+            sidecar.shutdown().await.expect("shutdown resolves")
+        });
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            teardown,
+            Teardown::Forced,
+            "a pre-absent portfile must not report Graceful — the transition proves nothing"
         );
     }
 

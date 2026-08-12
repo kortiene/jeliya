@@ -202,25 +202,35 @@ pub(crate) async fn wait_health_dark(
 ) -> bool {
     let deadline = tokio::time::Instant::now() + budget;
     loop {
-        // Clamp the probe to the budget REMAINING: a probe whose per-attempt
-        // connect/read timeout exceeds what is left — or a final probe that
-        // starts just before the deadline against a stalled listener — would
-        // otherwise run the full per-probe timeout PAST the deadline, so the
-        // whole eviction/stop budget could overrun by one probe.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return false;
         }
-        let connect = timeouts.health_connect.min(remaining);
-        let read = timeouts.health_read.min(remaining);
-        let still_up = match health::probe_health(port, connect, read).await {
-            Some(report) => report.proves_pid(pid),
-            None => false,
+        // Bound the ENTIRE probe (connect + write + read) by the remaining budget,
+        // not each phase independently: clamping connect and read to `remaining`
+        // separately let a slow connect FOLLOWED BY a stalled read run for ~2×
+        // what was left. The outer `timeout(remaining, …)` caps the whole
+        // operation; the per-phase `health_connect`/`health_read` stay as the
+        // normal per-attempt bounds inside it.
+        let still_up = match tokio::time::timeout(
+            remaining,
+            health::probe_health(port, timeouts.health_connect, timeouts.health_read),
+        )
+        .await
+        {
+            // Answered "not this daemon" WITHIN budget → dark.
+            Ok(Some(report)) => report.proves_pid(pid),
+            Ok(None) => false,
+            // The probe outran the remaining budget: we cannot conclude dark (the
+            // daemon may be up but slow) and we are at/past the deadline, so stop.
+            Err(_elapsed) => return false,
         };
         if !still_up {
             return true;
         }
-        if tokio::time::Instant::now() >= deadline {
+        // Recompute after the probe; if the deadline passed, stop before sleeping.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
             return false;
         }
         tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;

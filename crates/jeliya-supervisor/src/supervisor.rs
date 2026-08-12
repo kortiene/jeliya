@@ -117,8 +117,20 @@ impl Supervisor {
         })?;
         // Canonical form so lock/portfile identity compares like-with-like
         // regardless of `/var` vs `/private/var`, symlinks, or path spelling —
-        // the daemon canonicalizes too.
-        let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
+        // the daemon canonicalizes too. FAIL CLOSED on a canonicalize error rather
+        // than storing the unverified (possibly relative) path: `resolve` promises
+        // a canonical dir, and a fallback path would either mismatch the absolute
+        // one jeliyad records (spurious `DataDirMismatch`) or, if relative, let a
+        // later CWD change redirect portfile access and spawning elsewhere.
+        let data_dir = match data_dir.canonicalize() {
+            Ok(canonical) => canonical,
+            Err(e) => {
+                return Err(SupervisorError::PortfileUnreadable {
+                    path: data_dir,
+                    why: format!("could not canonicalize the data dir: {e}"),
+                });
+            }
+        };
         // Reject a non-UTF-8 data-dir path up front. jeliyad records the path in
         // its portfile via `display().to_string()`, which replaces non-UTF-8
         // bytes lossily, so the recorded string could never round-trip to equal
