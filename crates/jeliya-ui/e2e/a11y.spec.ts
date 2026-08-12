@@ -198,9 +198,14 @@ test("the connection live region announces the settled room count exactly once",
 // >=24px GAP from its neighbor's boundary on at least one axis (the spacing
 // exception, measured boundary-to-boundary as the retiring check does — not
 // center distance). Skip links are visually hidden until focused, so only
-// currently-visible controls are measured — rendered geometry, not CSS.
+// currently-visible controls are measured — rendered geometry, not CSS. NATIVE
+// form controls (`input`/`textarea`/`select`, e.g. inside the Field primitive)
+// are interactive targets too, so they are measured alongside buttons and links —
+// a compact Field input that regresses below the 24px floor must be caught.
 async function assertTargetGeometry(page: Page, where: string): Promise<void> {
-  const targets = page.locator("button:visible, a:visible, [role='button']:visible");
+  const targets = page.locator(
+    "button:visible, a:visible, input:visible, textarea:visible, select:visible, [role='button']:visible",
+  );
   const boxes = [];
   for (const target of await targets.all()) {
     const box = await target.boundingBox();

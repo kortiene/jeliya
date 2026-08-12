@@ -100,10 +100,21 @@ pub fn scrub_secrets(text: String) -> String {
             let end = match out[cursor..].chars().next() {
                 Some(quote @ ('"' | '\'')) => {
                     let after = cursor + quote.len_utf8();
-                    out[after..]
-                        .find(quote)
-                        .map(|offset| after + offset + quote.len_utf8())
-                        .unwrap_or(out.len())
+                    // Find the UNESCAPED closing quote: a backslash escapes the next
+                    // char, so a `\"` INSIDE the value (Debug output escapes embedded
+                    // quotes) does NOT close it — otherwise `token="abc\"SECRET"`
+                    // would stop at the escaped quote and leak `SECRET`.
+                    let mut end = out.len();
+                    let mut chars = out[after..].char_indices();
+                    while let Some((offset, c)) = chars.next() {
+                        if c == '\\' {
+                            chars.next(); // skip the escaped char
+                        } else if c == quote {
+                            end = after + offset + quote.len_utf8();
+                            break;
+                        }
+                    }
+                    end
                 }
                 _ if whole_field => {
                     // A whole-field credential (a scheme-based `Authorization`) may
@@ -237,6 +248,18 @@ mod tests {
         // Surrounding structure is preserved.
         let s = scrub_secrets(r#"connect failed token="abc123secret" then done"#.to_string());
         assert!(s.contains("connect failed") && s.contains("done"), "{s}");
+        // An ESCAPED quote inside a quoted value (Debug escapes embedded quotes)
+        // does NOT close it — the value must be redacted through the UNESCAPED
+        // closing quote, or the tail after `\"` leaks (a P1).
+        let escaped = scrub_secrets(r#"token="abc\"VISIBLE_SECRET" then done"#.to_string());
+        assert!(
+            !escaped.contains("VISIBLE_SECRET"),
+            "escaped-quote token leaked: {escaped}"
+        );
+        assert!(
+            escaped.contains("done"),
+            "structure after must survive: {escaped}"
+        );
     }
 
     #[test]

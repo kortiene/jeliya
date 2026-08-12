@@ -777,6 +777,204 @@ fn view() -> Element {
   assert.deepEqual(scanComponentLiterals('x.rs', source), []);
 });
 
+test('literal scan: Unicode-letter copy (accents, CJK) is recognized as UI text', () => {
+  // An ASCII-only `{2,}` predicate silently skips short accented / non-Latin copy
+  // ("Été", "删除账户"), especially on the French surface — Unicode letters count.
+  for (const copy of ['Été', 'Ça', 'Удалить', '删除账户']) {
+    const source = `
+fn view() -> Element {
+    rsx! { div { "${copy}" } }
+}
+`;
+    assert.ok(
+      scanComponentLiterals('fr.rs', source).some((f) => f.code === 'rust-text'),
+      `Unicode copy must be flagged: ${copy}`,
+    );
+  }
+});
+
+test('literal scan: a Dioxus aria_label underscore alias is a copy attribute', () => {
+  // Dioxus renders `aria_label` as `aria-label`, so the underscore alias carrying a
+  // hardcoded accessible name must be flagged like the quoted hyphen spelling.
+  const source = `
+fn view() -> Element {
+    rsx! { button { aria_label: "Delete account" } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some((f) => f.code === 'copy-attribute'),
+    'aria_label (underscore alias) carrying copy must be flagged',
+  );
+});
+
+test('literal scan: Dioxus aria_live/aria_modal underscore aliases are reserved', () => {
+  // Those aliases render `aria-live`/`aria-modal`, so ad-hoc markup using them must
+  // still trip the reserved-attribute gate (Decision-6) it would bypass by spelling.
+  for (const attr of ['aria_live', 'aria_modal']) {
+    const source = `
+fn view() -> Element {
+    rsx! { div { ${attr}: "polite", "x" } }
+}
+`;
+    assert.ok(
+      scanComponentLiterals('rogue.rs', source).some((f) => f.code === 'raw-semantic'),
+      `${attr} (renders ${attr.replace('_', '-')}) in ad-hoc markup must be flagged`,
+    );
+  }
+});
+
+test('placeholder-parity: a wildcard `_` plural arm is classified as the remaining category', () => {
+  // EN carries {n} only in the explicit One arm; FR carries it only in a wildcard
+  // `_ => …` arm (its Other). Without wildcard classification the FR wildcard
+  // literal inherits the One marker, so both categories spuriously balance and the
+  // per-category placeholder mismatch is missed.
+  const en = `impl Catalog for En {
+    fn chosen(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("{n} chosen"),
+        PluralCategory::Other => format!("none chosen"),
+      }
+    }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn chosen(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("aucun choisi"),
+        _ => format!("{n} choisis"),
+      }
+    }
+  }`;
+  assert.ok(
+    checkCatalogs({ en: parseCatalog(en, 'en.rs'), fr: parseCatalog(fr, 'fr.rs'), allowlist: {} }).some(
+      (f) => f.code === 'placeholder-parity',
+    ),
+    'a {n} misplaced into a wildcard Other arm must trip per-category parity',
+  );
+});
+
+test('literal scan: a copy prop double-wrapped in nested constructors is flagged', () => {
+  // `hint: Some(String::from("…"))` nests the literal in TWO constructors; the
+  // walk-back must peel both to the prop colon, or the copy slips as a call arg.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        Field { id: "pw".to_string(), label: "Password".to_string(),
+                hint: Some(String::from("Use eight characters")) }
+    }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some(
+      (f) => f.code === 'copy-attribute' && /Use eight characters/.test(f.message),
+    ),
+    'a double-wrapped hint literal must be flagged',
+  );
+});
+
+test('literal scan: a literal passed through a shorthand copy prop is flagged', () => {
+  // `SkipLink { label }` desugars to `label: label`, so the backing `let label = "…"`
+  // must be caught even though no interpolation literal appears inside rsx!.
+  const source = `
+fn view() -> Element {
+    let label = "Skip to rooms".to_string();
+    rsx! { SkipLink { anchor: "rooms-nav", label } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some((f) => /Skip to rooms/.test(f.message)),
+    'a let-bound literal flowing through a shorthand copy prop must be flagged',
+  );
+  // A STRUCTURAL shorthand prop (`anchor`) backed by a literal stays clean.
+  const structural = `
+fn view() -> Element {
+    let anchor = "rooms-nav".to_string();
+    rsx! { SkipLink { anchor, label: strings.skip_to_rooms() } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', structural).some((f) => /rooms-nav/.test(f.message)),
+    'a structural shorthand prop must not be flagged',
+  );
+});
+
+test('literal scan: a commented-out control id is not accepted as the real id', () => {
+  // The control's real id was removed, leaving `// id: "email",` (comma INSIDE the
+  // comment, codex's exact shape). Reading the raw slice extracts a clean "email"
+  // that matches the Field and stays green; firstIdAttr must mask the comment, so
+  // the control has NO id and its label names nothing.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        Field { id: "email", label: "Email",
+            input {
+                // id: "email",
+                r#type: "text"
+            }
+        }
+    }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some((f) => f.code === 'form-control-id-mismatch'),
+    'a control whose only id is in a comment must be flagged (no real association)',
+  );
+});
+
+test('literal scan: a nav named only by a look-alike attribute is still flagged', () => {
+  // `data-aria-label` / `aria-label-extra` contain the substring `aria-label` but
+  // name no landmark — the check must require the exact attribute token.
+  for (const attr of ['"data-aria-label"', '"aria-label-extra"']) {
+    const source = `
+fn view() -> Element {
+    rsx! { nav { ${attr}: "test-hook", a { href: "#", "Home" } } }
+}
+`;
+    assert.ok(
+      scanComponentLiterals('shell.rs', source).some(
+        (f) => f.code === 'raw-semantic-element' && /nav/.test(f.message),
+      ),
+      `a nav with only ${attr} must be flagged as unnamed`,
+    );
+  }
+  // A real `aria_label` underscore alias DOES name it (renders aria-label).
+  const aliased = `
+fn view() -> Element {
+    rsx! { nav { aria_label: "Primary", a { href: "#", "Home" } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('shell.rs', aliased).some((f) => f.code === 'raw-semantic-element'),
+    'a nav named via the aria_label alias must not be flagged',
+  );
+});
+
+test('literal scan: an expression-id hinted control needs a DYNAMIC aria-describedby', () => {
+  // With an expression Field id the rendered hint id is dynamic (`{id}-hint`), so a
+  // hardcoded literal `aria-describedby` can never reference it and is flagged.
+  const literalWrong = `
+fn view() -> Element {
+    rsx! { Field { id: field_id.clone(), label: "Email", hint: "we never share it",
+        input { id: field_id.clone(), "aria-describedby": "wrong" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', literalWrong).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a literal aria-describedby under an expression id cannot reference the dynamic hint',
+  );
+  // A DYNAMIC (expression-valued) describedby is accepted — its target cannot be
+  // compared statically, but it is at least derived at runtime.
+  const dynamicOk = `
+fn view() -> Element {
+    rsx! { Field { id: field_id.clone(), label: "Email", hint: "we never share it",
+        input { id: field_id.clone(), aria_describedby: format!("{field_id}-hint") } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', dynamicOk).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a dynamic aria-describedby under an expression id must be accepted',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

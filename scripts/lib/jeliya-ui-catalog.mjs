@@ -293,11 +293,21 @@ export function parseCatalog(source, file) {
     let slotsByCategory = null;
     if (isPlural) {
       const bodyText = skeleton.slice(open, close);
-      const markers = [];
-      const catRe = /PluralCategory::(One|Other)\b/g;
+      // Recognize BOTH an explicit `PluralCategory::One`/`Other` arm AND a wildcard
+      // `_ =>` arm. Without the wildcard, literals in a `_ => …` (a common way to
+      // write the `Other` arm) inherit the LAST explicit marker's category (One),
+      // so EN could place `{n}` in the explicit One arm while FR places it in the
+      // wildcard arm and still pass per-category parity. A `_` covers the category
+      // NOT explicitly present (Other when One is explicit, else One).
+      const raw = [];
+      const explicitCats = new Set();
+      const catRe = /PluralCategory::(One|Other)\b|\b_\s*=>/g;
       for (let m = catRe.exec(bodyText); m; m = catRe.exec(bodyText)) {
-        markers.push({ at: open + m.index, cat: m[1] });
+        raw.push({ at: open + m.index, cat: m[1] ?? null });
+        if (m[1]) explicitCats.add(m[1]);
       }
+      const wildcardCat = explicitCats.has('One') ? 'Other' : 'One';
+      const markers = raw.map((r) => ({ at: r.at, cat: r.cat ?? wildcardCat }));
       const valuesByCat = { One: [], Other: [] };
       for (const p of parts) {
         let cat = null;
@@ -509,6 +519,16 @@ const COPY_ATTRS = new Set([
   'title',
 ]);
 
+/** Dioxus renders the identifier form `aria_label` as the HTML `aria-label`, so
+ *  BOTH spellings reach the DOM. Normalize the underscore ARIA aliases to their
+ *  hyphen rendering before matching a copy/reserved attribute — otherwise
+ *  `button { aria_label: "…" }` or `div { aria_live: … }` bypasses the gate. Only
+ *  the `aria_` prefix is rewritten; a Rust prop like `close_label` keeps its
+ *  underscore. */
+function normalizeAttrName(attr) {
+  return attr === null ? null : attr.replace(/^aria_/, 'aria-');
+}
+
 /** Reserved semantic RSX attributes that must be provided by a shared primitive
  *  (Decision-6), never re-declared as raw markup — a raw `role: "dialog"` /
  *  `aria-live` region skips the primitive's focus/announce behaviour. Flagged
@@ -568,9 +588,12 @@ function ownedConstructs(file) {
   return NO_OWNED_CONSTRUCTS;
 }
 
-/** Letters that survive `{…}` interpolation are real copy. */
+/** Letters that survive `{…}` interpolation are real copy. Uses UNICODE letters
+ *  (`\p{L}`), not ASCII only: short accented/non-Latin labels — `Été`, `Ça`,
+ *  `Удалить`, `删除账户` — are valid rendered copy the scan must not skip (and the
+ *  new French surface makes short accented labels common). */
 function bareLetters(text) {
-  return /[A-Za-z]{2,}/.test(text.replace(/\{[^}]*\}/g, ' '));
+  return /\p{L}{2,}/u.test(text.replace(/\{[^}]*\}/g, ' '));
 }
 
 /** The identifier or quoted attribute name immediately before the `:` at
@@ -772,7 +795,7 @@ export function scanComponentLiterals(file, source) {
     let isCopy;
     if (prevChar === ':') {
       const attr = attrNameBefore(source, at);
-      isCopy = attr !== null && COPY_ATTRS.has(attr);
+      isCopy = attr !== null && COPY_ATTRS.has(normalizeAttrName(attr));
     } else {
       // A text child: not an attr value, not a call arg / binding, not a method
       // receiver (`"x".to_string()`).
@@ -780,6 +803,16 @@ export function scanComponentLiterals(file, source) {
     }
     if (!isCopy) continue;
     for (const m of literal.value.matchAll(/\{(\w+)\}/g)) copyInterpolations.add(m[1]);
+  }
+
+  // Dioxus SHORTHAND props: `SkipLink { label }` desugars to `label: label`, so a
+  // copy-bearing prop written as a bare identifier (between `{`/`,` and `,`/`}`,
+  // with no `:`) still flows that identifier into copy. Collect it so a backing
+  // `let label = "Skip to rooms"` is caught like the explicit `label: label` form.
+  const shorthandRe = /[{,]\s*([A-Za-z_]\w*)\s*(?=[,}])/g;
+  for (let m = shorthandRe.exec(skeleton); m; m = shorthandRe.exec(skeleton)) {
+    if (m.index >= limit || !inRsx(m.index)) continue;
+    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyInterpolations.add(m[1]);
   }
 
   for (const literal of literals) {
@@ -810,7 +843,7 @@ export function scanComponentLiterals(file, source) {
     // must NOT exempt it — that was the catalog bypass.
     if (prev === ':') {
       const attr = attrNameBefore(source, before);
-      if (attr && COPY_ATTRS.has(attr)) {
+      if (attr && COPY_ATTRS.has(normalizeAttrName(attr))) {
         findings.push(finding(file, line, 'copy-attribute', `${attr} takes a literal, not a catalog message: ${literal.value.slice(0, 60)}`, 'literals'));
       }
       continue; // structural attribute or a non-copy prop
@@ -821,13 +854,20 @@ export function scanComponentLiterals(file, source) {
     // value of a copy-bearing prop, flag it: the wrapper is the normal spelling
     // for an `Option<String>`/`String` prop and must not exempt the copy.
     if (prev === '(') {
-      let ident = before - 1;
-      while (ident >= 0 && /[A-Za-z0-9_:]/.test(skeleton[ident])) ident -= 1;
-      let colon = ident;
-      while (colon >= 0 && /\s/.test(skeleton[colon])) colon -= 1;
+      // Peel EVERY constructor layer: `hint: Some(String::from("…"))` nests the
+      // literal in two calls, so keep walking back `ident(` wrappers until the prop
+      // `:` (or a non-wrapper) is reached — stopping after one layer let a
+      // double-wrapped copy value slip the gate.
+      let colon = before; // sits on the innermost '('
+      while (skeleton[colon] === '(') {
+        let ident = colon - 1;
+        while (ident >= 0 && /[A-Za-z0-9_:]/.test(skeleton[ident])) ident -= 1;
+        while (ident >= 0 && /\s/.test(skeleton[ident])) ident -= 1;
+        colon = ident; // char before the callee: another '(' peels again, ':' stops
+      }
       if (skeleton[colon] === ':') {
         const attr = attrNameBefore(source, colon);
-        if (attr && COPY_ATTRS.has(attr)) {
+        if (attr && COPY_ATTRS.has(normalizeAttrName(attr))) {
           findings.push(finding(file, line, 'copy-attribute', `${attr} takes a wrapped literal, not a catalog message: ${literal.value.slice(0, 60)}`, 'literals'));
         }
         continue;
@@ -922,7 +962,12 @@ export function scanComponentLiterals(file, source) {
   // `"aria-live"` has its content blanked in the skeleton).
   for (const attr of RESERVED_SEMANTIC_ATTRS) {
     if (owned.has(attr)) continue;
-    const re = new RegExp(`(?:\\b${attr}\\b|"${attr}")\\s*:`, 'g');
+    // Match BOTH spellings of an ARIA attribute: the HTML hyphen form
+    // (`aria-live`, quoted in RSX) AND Dioxus's identifier alias (`aria_live:`),
+    // which renders identically — otherwise the underscore form bypasses the
+    // reserved-attribute gate.
+    const pat = attr.replace(/-/g, '[-_]');
+    const re = new RegExp(`(?:\\b${pat}\\b|"${pat}")\\s*:`, 'g');
     for (let m = re.exec(source); m; m = re.exec(source)) {
       if (m.index >= limit || !inRsx(m.index) || inComment(m.index)) continue;
       const line = lineOf(source, m.index);
@@ -968,7 +1013,16 @@ export function scanComponentLiterals(file, source) {
   // a comma NESTED in a call does not. Compared as raw text (a literal keeps its
   // quotes, so a literal id and an expression id never spuriously match).
   const firstIdAttr = (from, to) => {
-    const slice = source.slice(from, to);
+    let slice = source.slice(from, to);
+    // Blank comment ranges inside the span so a commented `// id: "email"` is not
+    // read as a real attribute (the id / hint association must compare live markup
+    // only — same exclusion the reserved-attribute and nav paths apply).
+    for (const { start, end } of comments) {
+      if (end <= from || start >= to) continue;
+      const a = Math.max(start, from) - from;
+      const b = Math.min(end, to) - from;
+      slice = slice.slice(0, a) + ' '.repeat(b - a) + slice.slice(b);
+    }
     const head = /\bid\s*:\s*/.exec(slice);
     if (!head) return null;
     const startVal = head.index + head[0].length;
@@ -1022,15 +1076,30 @@ export function scanComponentLiterals(file, source) {
       const hasHint = /\bhint\s*:\s*(?!None\b)/.test(fieldProps);
       if (fieldId !== null && hasHint) {
         const controlAttrs = source.slice(controlOpen, controlEnd);
-        const describedby = /"aria-describedby"\s*:\s*"([^"]*)"/.exec(controlAttrs);
+        // A LITERAL `aria-describedby` value (quoted or `aria_describedby` alias),
+        // for the exact-value check when the Field id is itself literal.
+        const describedbyLiteral =
+          /(?:"aria-describedby"|aria[-_]describedby)\s*:\s*"([^"]*)"/.exec(controlAttrs);
+        // Whether `aria-describedby` is set AT ALL — literal OR an expression value
+        // (`format!("{id}-hint")`), quoted OR underscore name. An expression id can
+        // only be verified by presence, so an expression-valued association must
+        // count rather than reading as absent.
+        const describedbyPresent =
+          /(?:"aria-describedby"|aria[-_]describedby)\s*:/.test(controlAttrs);
         const literalId = /^"([^"]*)"$/.exec(fieldId);
         if (literalId) {
           const expected = `${literalId[1]}-hint`;
-          if (!describedby || describedby[1] !== expected) {
-            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby: "${expected}"\` so the hint is exposed as a description; found \`${describedby ? `"${describedby[1]}"` : '(none)'}\``, 'literals'));
+          if (!describedbyLiteral || describedbyLiteral[1] !== expected) {
+            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby: "${expected}"\` so the hint is exposed as a description; found \`${describedbyLiteral ? `"${describedbyLiteral[1]}"` : '(none)'}\``, 'literals'));
           }
-        } else if (!describedby) {
-          findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby\` referencing the Field's \`{id}-hint\` so the hint is exposed as a description`, 'literals'));
+        } else if (!describedbyPresent || describedbyLiteral) {
+          // An EXPRESSION Field id renders a DYNAMIC hint id (`{id}-hint`), so the
+          // association must itself be dynamic: a LITERAL `aria-describedby` (or a
+          // missing one) can never reference the runtime id and is flagged. An
+          // expression-valued `aria-describedby` is accepted (its exact target
+          // cannot be compared statically, but it is at least derived at runtime).
+          const found = describedbyLiteral ? `literal \`"${describedbyLiteral[1]}"\`` : 'no attribute';
+          findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with an expression \`id\` and a hint must set \`aria-describedby\` to a DYNAMIC value referencing the Field's \`{id}-hint\`; ${found} cannot name the runtime hint id`, 'literals'));
         }
       }
     }
@@ -1075,7 +1144,11 @@ export function scanComponentLiterals(file, source) {
         const to = Math.min(end, attrEnd) - attrsStart;
         attrs = attrs.slice(0, from) + ' '.repeat(to - from) + attrs.slice(to);
       }
-      if (/aria-label\b|aria-labelledby\b/.test(attrs)) continue;
+      // Require a REAL accessible-name attribute, not a substring: `data-aria-label`
+      // must not satisfy it. Anchor the leading edge (no `-`/word char before `aria`,
+      // so `data-aria-label` is rejected) and require a trailing `:` (allowing the
+      // `aria_label` alias and an optional closing quote of `"aria-label"`).
+      if (/(?<![-\w])aria[-_]label(?:ledby)?"?\s*:/.test(attrs)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       findings.push(finding(file, line, 'raw-semantic-element', 'raw unnamed `nav` must carry an accessible name (aria-label/aria-labelledby) or come from the NavLandmark primitive (Decision-6)', 'literals'));
