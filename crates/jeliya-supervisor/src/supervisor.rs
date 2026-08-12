@@ -170,7 +170,7 @@ impl Supervisor {
                     tried: self.binary_tried.clone(),
                 })?;
 
-            let (mut child, stdin, mut lines) = self.spawn(&binary)?;
+            let (mut child, stdin, mut lines) = self.spawn(&binary).await?;
             let announced = match read_announcement(&mut lines, self.timeouts.spawn).await {
                 Ok(line) => line,
                 Err(e) => {
@@ -412,7 +412,7 @@ impl Supervisor {
     /// group. Drains stderr forever on a background task — an unread full stderr
     /// pipe deadlocks the daemon's synchronous tracing layer (the same records
     /// survive in `<data_dir>/logs`).
-    fn spawn(&self, binary: &Path) -> Result<SpawnedDaemon, SupervisorError> {
+    async fn spawn(&self, binary: &Path) -> Result<SpawnedDaemon, SupervisorError> {
         std::fs::create_dir_all(&self.data_dir).map_err(|e| {
             SupervisorError::PortfileUnreadable {
                 path: self.data_dir.clone(),
@@ -438,7 +438,25 @@ impl Supervisor {
             .kill_on_drop(false);
         process::configure_new_process_group(&mut cmd);
 
-        let mut child = cmd.spawn().map_err(SupervisorError::Spawn)?;
+        // Retry a transient ETXTBSY ("Text file busy", errno 26). A binary that
+        // was just written — a freshly installed/updated jeliyad, or (in the
+        // tests) a stub whose write-fd is momentarily held by a sibling
+        // process's fork before its exec — cannot be exec'd until that writer
+        // fd is gone. It clears within milliseconds, so a short bounded backoff
+        // turns a spurious hard failure into a successful spawn.
+        let mut child = {
+            let mut attempts = 0u32;
+            loop {
+                match cmd.spawn() {
+                    Ok(c) => break c,
+                    Err(e) if e.raw_os_error() == Some(26) && attempts < 10 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(e) => return Err(SupervisorError::Spawn(e)),
+                }
+            }
+        };
         let stdin = child.stdin.take();
 
         if let Some(stderr) = child.stderr.take() {
