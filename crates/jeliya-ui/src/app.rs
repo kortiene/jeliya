@@ -81,7 +81,7 @@ pub fn AppRoot(
     // slice, assigns it to change locale live); the foundation proves the wiring
     // and the per-render resolution that makes a switch apply with no restart.
     let locale = use_locale_context(initial_locale);
-    let announcer = use_announce_context();
+    let announcers = use_announce_context();
 
     // `<html lang>` is set from the resolved text locale at composition
     // (`compose::apply_document_lang`, web-sys, web target only), so assistive
@@ -229,11 +229,11 @@ pub fn AppRoot(
         }
     });
 
-    // Announce the loaded room count through the single stable live region, once
-    // per change: the effect re-runs only when the room list or the locale
-    // changes, and `Announcer::announce` coalesces, so a list that re-renders
-    // many times still announces once (the checklist's failure mode, designed
-    // out structurally — §5.6).
+    // Announce the loaded room count through the stable CONTENT region, once per
+    // change: the effect re-runs only when the room list or the locale changes,
+    // and `Announcer::announce` coalesces, so a list that re-renders many times
+    // still announces once (the checklist's failure mode, designed out
+    // structurally — §5.6).
     use_effect(move || {
         let snapshot = ui.read();
         let resolved = locale.read();
@@ -242,19 +242,20 @@ pub fn AppRoot(
             let formatted = Formats::new(resolved.text, resolved.formatting).count(count);
             let category = plural_category(resolved.text, count);
             let message = catalog_for(resolved.text).rooms_count(&formatted, category);
-            announcer.announce(message);
+            announcers.content.announce(message);
         }
     });
 
-    // Announce a connection PROBLEM or a RECOVERY from one through the same
-    // polite region, so a screen-reader user not on the footer still hears it —
-    // `StatusIndicator` has no live semantics (§5.6). The happy boot path
-    // (`Idle`/`Connecting` → `Ready`) is deliberately NOT announced: reaching
-    // Ready for the first time is not a change worth interrupting a user for,
-    // and announcing it would fight the room-count announcement for the one
-    // region. Only a drop to Interrupted/Failed/Stopped, or a return to Ready
-    // AFTER such a drop, is announced. `Announcer` coalesces, so a state that
-    // re-renders many times still announces once.
+    // Announce a connection PROBLEM or a RECOVERY from one through the dedicated
+    // CONNECTION region (separate from the content region, so a status change and
+    // a room-count update in the same render never overwrite each other), so a
+    // screen-reader user not on the footer still hears it — `StatusIndicator` has
+    // no live semantics (§5.6). The happy boot path (`Idle`/`Connecting` →
+    // `Ready`) is deliberately NOT announced: reaching Ready for the first time is
+    // not a change worth interrupting a user for. Only a drop to
+    // Interrupted/Failed/Stopped, or a return to Ready AFTER such a drop, is
+    // announced. `Announcer` coalesces, so a state that re-renders many times
+    // still announces once.
     let mut prev_lifecycle = use_signal(|| Option::<State>::None);
     use_effect(move || {
         let state = ui.read().lifecycle;
@@ -273,26 +274,28 @@ pub fn AppRoot(
             );
         if is_problem || recovered {
             let word = crate::l10n::wire::status_for(catalog_for(resolved.text), state);
-            announcer.announce(catalog_for(resolved.text).conn_announcement(word));
+            announcers
+                .connection
+                .announce(catalog_for(resolved.text).conn_announcement(word));
         }
     });
 
-    // Announce a TERMINAL room-list failure through the same stable region. A
+    // Announce a TERMINAL room-list failure through the stable CONTENT region. A
     // terminal read error sets the notice while the lifecycle stays `Ready` and
     // `rooms_loaded` stays false, so NEITHER the room-count effect (gated on
     // `rooms_loaded`) NOR the lifecycle effect (gated on a lifecycle change)
     // fires — without this a screen-reader user would keep hearing only the
     // loading state while the friendly error sits silently in the DOM (§5.6). The
     // retryable-disconnect notice is deliberately NOT announced here: its
-    // Interrupted transition is already voiced by the lifecycle effect, so
-    // announcing it twice would fight for the one region. `Announcer` coalesces,
-    // so a re-rendering shell still announces once.
+    // Interrupted transition is already voiced by the lifecycle effect (in the
+    // connection region), so announcing it again would be redundant. `Announcer`
+    // coalesces, so a re-rendering shell still announces once.
     use_effect(move || {
         let snapshot = ui.read();
         let resolved = locale.read();
         if snapshot.notice.is_some() && snapshot.notice_terminal {
             let message = ErrorDisplay::room_list_failure(catalog_for(resolved.text), true).message;
-            announcer.announce(message);
+            announcers.content.announce(message);
         }
     });
 
@@ -415,10 +418,15 @@ pub fn AppRoot(
                 section { class: "center", id: "center", EmptyCenter {} }
             }
         }
-        // The single, stable polite live region for connection/content
-        // announcements — OUTSIDE the lifecycle conditional so one DOM node
-        // persists across boot↔shell transitions. Visually hidden.
-        LiveRegion { message: announcer.message() }
+        // TWO stable polite live regions — content and connection — both OUTSIDE
+        // the lifecycle conditional so each is the SAME DOM node across boot↔shell
+        // transitions, AND so a content announcement and a connection announcement
+        // that fire in the same render do not overwrite each other. Visually hidden.
+        LiveRegion { id: "live-region".to_string(), message: announcers.content.message() }
+        LiveRegion {
+            id: "connection-live-region".to_string(),
+            message: announcers.connection.message(),
+        }
     }
 }
 

@@ -86,7 +86,7 @@ dioxus = { version = "=0.7.9", default-features = false, optional = true }
 # (`navigator.language`) at composition to seed locale resolution (#177). Already
 # in the lock via `dioxus-web`; declaring it directly only enables the
 # Window/Navigator bindings and never enters the default/`ui`/MSRV graph.
-web-sys = { version = "0.3.103", optional = true, features = ["Window", "Navigator", "Document", "Element"] }
+web-sys = { version = "0.3.103", optional = true, features = ["Window", "Navigator", "Document", "Element", "Location"] }
 # Executor-agnostic, wasm32-safe async primitives for the app root's event
 # consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.

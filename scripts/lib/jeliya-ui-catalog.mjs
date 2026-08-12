@@ -495,15 +495,32 @@ export function slotsEqual(a, b) {
   return a.length === b.length && a.every((slot, i) => slot === b[i]);
 }
 
-/** Basenames of the semantic-primitive source files, where the reserved
- *  attributes above are DEFINED and therefore allowed. */
-const PRIMITIVE_FILES = new Set([
-  'a11y.rs',
-  'dialog.rs',
-  'live_region.rs',
-  'nav.rs',
-  'status.rs',
+/** The reserved constructs each PRIMITIVE source file legitimately DEFINES, keyed
+ *  by an exact repo path SUFFIX (not a basename). Scoping matters two ways
+ *  (Decision-6): a future `components/legacy/dialog.rs` must NOT be exempted just
+ *  for sharing the basename `dialog.rs`, and a primitive must be exempt ONLY for
+ *  the constructs it owns — an ad-hoc `aria-live` added to `status.rs` must still
+ *  be flagged. Values name the reserved attributes and/or the `nav` element token
+ *  a file owns; the `dialog` ELEMENT is owned by NO file (the Dialog primitive
+ *  renders `div role="dialog"`, not a `<dialog>`), so it is always flagged. */
+const PRIMITIVE_OWNERSHIP = new Map([
+  ['components/dialog.rs', new Set(['role', 'aria-modal'])],
+  ['components/live_region.rs', new Set(['role', 'aria-live'])],
+  ['components/nav.rs', new Set(['nav'])],
 ]);
+
+const NO_OWNED_CONSTRUCTS = new Set();
+
+/** The reserved constructs `file` may define, by exact path-suffix match (so
+ *  `.../components/dialog.rs` matches but `.../components/legacy/dialog.rs` and a
+ *  same-basename file elsewhere do not). Empty for non-primitive files. */
+function ownedConstructs(file) {
+  const normalized = file.replace(/\\/g, '/');
+  for (const [suffix, owned] of PRIMITIVE_OWNERSHIP) {
+    if (normalized === suffix || normalized.endsWith(`/${suffix}`)) return owned;
+  }
+  return NO_OWNED_CONSTRUCTS;
+}
 
 /** Letters that survive `{…}` interpolation are real copy. */
 function bareLetters(text) {
@@ -620,6 +637,33 @@ function callIsExpressionChild(skeleton, openParenIndex) {
   return skeleton[j] === '}';
 }
 
+/** If the char at `eqIndex` is the `=` of a `let <name> = …` (or `let mut
+ *  <name> = …`) binding, return `<name>`; else null. The name is an identifier,
+ *  so it is not blanked in the skeleton. */
+function letBindingName(skeleton, eqIndex) {
+  let i = eqIndex - 1;
+  while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
+  const nameEnd = i + 1;
+  while (i >= 0 && /\w/.test(skeleton[i])) i -= 1;
+  const name = skeleton.slice(i + 1, nameEnd);
+  if (!name) return null;
+  let j = i;
+  while (j >= 0 && /\s/.test(skeleton[j])) j -= 1;
+  const keywordEndsAt = (kw, at) => {
+    const start = at - kw.length + 1;
+    return (
+      start >= 0 &&
+      skeleton.slice(start, at + 1) === kw &&
+      (start === 0 || !/\w/.test(skeleton[start - 1]))
+    );
+  };
+  if (keywordEndsAt('mut', j)) {
+    j -= 3;
+    while (j >= 0 && /\s/.test(skeleton[j])) j -= 1;
+  }
+  return keywordEndsAt('let', j) ? name : null;
+}
+
 /** The index of the `}` matching the `{` at `openIndex` in `skeleton`, or -1. */
 function matchingBrace(skeleton, openIndex) {
   let depth = 0;
@@ -646,6 +690,33 @@ export function scanComponentLiterals(file, source) {
   const exempt = (line) =>
     (lines[line - 1] ?? '').includes('i18n-exempt') || (lines[line - 2] ?? '').includes('i18n-exempt');
   const findings = [];
+
+  // Identifiers interpolated into an RSX COPY position — a text child
+  // (`div { "{label}" }`) or a copy-bearing attribute value
+  // (`SkipLink { label: "{x}" }`). A `let`-bound literal that flows into one of
+  // these is copy (checked after the main loop). Structural interpolations
+  // (`id: "{x}"`, `class: "app-{x}"`) are deliberately NOT collected, so binding a
+  // structural id/class stays exempt.
+  const copyInterpolations = new Set();
+  for (const literal of literals) {
+    if (literal.start >= limit || !inRsx(literal.start)) continue;
+    let at = literal.start - 1;
+    while (at >= 0 && /\s/.test(skeleton[at])) at -= 1;
+    const prevChar = at >= 0 ? skeleton[at] : '';
+    let after = literal.end;
+    while (after < skeleton.length && /\s/.test(skeleton[after])) after += 1;
+    let isCopy;
+    if (prevChar === ':') {
+      const attr = attrNameBefore(source, at);
+      isCopy = attr !== null && COPY_ATTRS.has(attr);
+    } else {
+      // A text child: not an attr value, not a call arg / binding, not a method
+      // receiver (`"x".to_string()`).
+      isCopy = prevChar !== '(' && prevChar !== '=' && prevChar !== '&' && skeleton[after] !== '.';
+    }
+    if (!isCopy) continue;
+    for (const m of literal.value.matchAll(/\{(\w+)\}/g)) copyInterpolations.add(m[1]);
+  }
 
   for (const literal of literals) {
     if (literal.start >= limit) continue;
@@ -728,46 +799,63 @@ export function scanComponentLiterals(file, source) {
     findings.push(finding(file, line, 'rust-text', `RSX text is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
   }
 
-  // Reserved-semantic scan (Decision-6): a raw `role`/`aria-modal`/`aria-live`
-  // RSX attribute outside a primitive file re-declares semantics that must come
-  // from a shared primitive (a raw `role: "dialog"` skips focus containment; a
-  // raw `aria-live` skips the announce-once region). Exempt the primitive files
-  // that DEFINE these. Attribute names are matched from the raw source (a quoted
-  // name like `"aria-live"` has its content blanked in the skeleton).
-  const base = file.split(/[/\\]/).pop();
-  if (!PRIMITIVE_FILES.has(base)) {
-    for (const attr of RESERVED_SEMANTIC_ATTRS) {
-      // `role:` (bare ident) or `"aria-live":` (quoted). Search the raw source
-      // only inside RSX ranges, before the test module.
-      const re = new RegExp(`(?:\\b${attr}\\b|"${attr}")\\s*:`, 'g');
-      for (let m = re.exec(source); m; m = re.exec(source)) {
-        if (m.index >= limit || !inRsx(m.index)) continue;
-        const line = lineOf(source, m.index);
-        if (exempt(line)) continue;
-        findings.push(finding(file, line, 'raw-semantic', `raw \`${attr}\` must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
-      }
-    }
+  // A hardcoded literal ASSIGNED to a `let` binding that is then interpolated into
+  // RSX copy (`let label = "Delete account"; div { "{label}" }`) lives OUTSIDE the
+  // rsx! range, so the range-only scan above misses it. Flag such a binding when
+  // its name is interpolated in a copy position. A catalog-derived binding
+  // (`let x = strings.foo()`) has no string-literal RHS, so it is never matched.
+  for (const literal of literals) {
+    if (literal.start >= limit || inRsx(literal.start)) continue; // in-RSX handled above
+    if (!bareLetters(literal.value)) continue;
+    let at = literal.start - 1;
+    while (at >= 0 && /\s/.test(skeleton[at])) at -= 1;
+    if (skeleton[at] !== '=') continue;
+    const boundName = letBindingName(skeleton, at);
+    if (!boundName || !copyInterpolations.has(boundName)) continue;
+    const line = lineOf(source, literal.start);
+    if (exempt(line)) continue;
+    findings.push(finding(file, line, 'rust-text', `a literal bound to \`${boundName}\` is rendered as RSX copy but is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
+  }
 
-    // Reserved semantic ELEMENTS (Decision-6): the reserved ATTRIBUTE scan above
-    // catches a raw `role`/`aria-live`, but a bare semantic ELEMENT sets those
-    // implicitly. A `dialog { … }` (or an UNNAMED `nav { … }`) outside a primitive
-    // bypasses the Dialog focus/Escape contract or the named-navigation contract
-    // while all three text gates stay green. Match element openers (`name {`) in
-    // the SKELETON so a `dialog {` inside a blanked string never matches.
-    for (const el of RESERVED_SEMANTIC_ELEMENTS) {
-      const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
-      for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
-        if (m.index >= limit || !inRsx(m.index)) continue;
-        const line = lineOf(source, m.index);
-        if (exempt(line)) continue;
-        findings.push(finding(file, line, 'raw-semantic-element', `raw \`${el}\` element must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
-      }
-    }
+  // Reserved-semantic scan (Decision-6): raw semantics must come from a shared
+  // primitive, and a primitive is exempt ONLY for the exact constructs it owns
+  // (an ad-hoc `aria-live` in `status.rs` is still flagged; a same-basename file
+  // in another directory is NOT exempt).
+  const owned = ownedConstructs(file);
 
-    // `nav` must be a NAMED landmark. Flag a bare `nav { … }` outside a primitive
-    // ONLY when its element body carries no accessible name (`aria-label` /
-    // `aria-labelledby`) — the app shell's named nav is legitimate, an unnamed one
-    // bypasses the named-navigation contract the NavLandmark primitive provides.
+  // Reserved ATTRIBUTES (`role`/`aria-modal`/`aria-live`): flag unless THIS file
+  // owns that specific attribute. Names matched from the raw source (a quoted
+  // `"aria-live"` has its content blanked in the skeleton).
+  for (const attr of RESERVED_SEMANTIC_ATTRS) {
+    if (owned.has(attr)) continue;
+    const re = new RegExp(`(?:\\b${attr}\\b|"${attr}")\\s*:`, 'g');
+    for (let m = re.exec(source); m; m = re.exec(source)) {
+      if (m.index >= limit || !inRsx(m.index)) continue;
+      const line = lineOf(source, m.index);
+      if (exempt(line)) continue;
+      findings.push(finding(file, line, 'raw-semantic', `raw \`${attr}\` must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
+    }
+  }
+
+  // Reserved semantic ELEMENTS: a bare `dialog { … }` sets dialog semantics
+  // implicitly. NO primitive owns the `dialog` element (Dialog renders `div
+  // role="dialog"`), so it is flagged EVERYWHERE. Match element openers in the
+  // SKELETON so a `dialog {` inside a blanked string never matches.
+  for (const el of RESERVED_SEMANTIC_ELEMENTS) {
+    const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
+    for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+      if (m.index >= limit || !inRsx(m.index)) continue;
+      const line = lineOf(source, m.index);
+      if (exempt(line)) continue;
+      findings.push(finding(file, line, 'raw-semantic-element', `raw \`${el}\` element must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
+    }
+  }
+
+  // `nav` must be a NAMED landmark, and only the NavLandmark primitive (which
+  // OWNS `nav`) may render a bare one. Elsewhere, flag a `nav { … }` whose body
+  // carries no accessible name (`aria-label`/`aria-labelledby`) — the app shell's
+  // named nav is legitimate, an unnamed one bypasses the named-navigation contract.
+  if (!owned.has('nav')) {
     const navRe = /\bnav\s*\{/g;
     for (let m = navRe.exec(skeleton); m; m = navRe.exec(skeleton)) {
       if (m.index >= limit || !inRsx(m.index)) continue;

@@ -76,6 +76,16 @@ export async function gotoReadyShell(page: Page): Promise<void> {
   await expect(page.locator("#rooms-loading")).not.toBeAttached();
 }
 
+// Load the app into the deterministic BOOT/terminal cover fixture
+// (`?boot=<state>`, honored by WebRoot) and wait until the cover is mounted and
+// the shell is NOT — so the boot branch, unreachable once the mock settles, can
+// be axe-swept.
+export async function gotoBootCover(page: Page, state: string): Promise<void> {
+  await page.goto(`/?boot=${state}`);
+  await expect(page.locator("#boot-screen")).toBeVisible();
+  await expect(page.locator("#app-root")).not.toBeAttached();
+}
+
 // Open the Diagnostics dialog from the status footer and wait until its panel
 // holds focus (initial focus is asynchronous: the panel focuses itself from
 // its onmounted handler).

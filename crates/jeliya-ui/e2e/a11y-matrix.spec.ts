@@ -4,6 +4,7 @@ import AxeBuilder from "@axe-core/playwright";
 import {
   attachJson,
   expectCleanNetwork,
+  gotoBootCover,
   gotoReadyShell,
   installNoNetworkGuard,
   openDiagnostics,
@@ -15,11 +16,10 @@ import {
 // violation, attaching moderate/minor findings as advisory evidence.
 //
 // Foundation states swept: the settled landmarked shell (empty rooms answer,
-// empty center, skip links, live region, status footer) and the Diagnostics
-// dialog. The boot cover is NOT deterministically reachable in the shipped
-// artifact — the mock composition drives Ready without an externally
-// observable hold point — so sweeping it waits for a fault-injectable
-// composition (spec §7 records this).
+// empty center, skip links, live region, status footer), the Diagnostics
+// dialog, AND the boot/terminal cover — reached deterministically via WebRoot's
+// `?boot=<state>` fixture so the BootScreen branch cannot gain a critical/serious
+// violation while this required check stays green.
 
 const TAGS = [
   "wcag2a",
@@ -108,4 +108,14 @@ test("the Diagnostics dialog passes the axe sweep", async ({ page }, testInfo) =
   await gotoReadyShell(page);
   await openDiagnostics(page);
   await sweep(page, testInfo, "diagnostics-dialog");
+});
+
+test("the terminal (failed) boot cover passes the axe sweep", async ({ page }, testInfo) => {
+  await gotoBootCover(page, "failed");
+  await sweep(page, testInfo, "boot-cover-failed");
+});
+
+test("the connecting boot cover passes the axe sweep", async ({ page }, testInfo) => {
+  await gotoBootCover(page, "connecting");
+  await sweep(page, testInfo, "boot-cover-connecting");
 });

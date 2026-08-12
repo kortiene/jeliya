@@ -20,3 +20,26 @@ pub const MIDDLE_DOT: &str = "·";
 pub const ENDONYM_EN: &str = "English";
 /// French endonym.
 pub const ENDONYM_FR: &str = "Français";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::l10n::{Catalog, En, Fr};
+
+    /// These never-translate tokens are the AUTHORITATIVE spellings, so the
+    /// catalogs must agree with them. `client_status` consumes `MIDDLE_DOT`
+    /// directly; `app_name` keeps a string literal (the text-based catalog gate
+    /// requires one), so this test is what makes `BRAND` load-bearing — a brand or
+    /// shell-token change that updates only one side fails here.
+    #[test]
+    fn the_catalogs_agree_with_the_never_translate_tokens() {
+        assert_eq!(En.app_name(), BRAND, "EN brand must be the canonical token");
+        assert_eq!(Fr.app_name(), BRAND, "FR brand must be the canonical token");
+        for status in [En.client_status("Ready"), Fr.client_status("Ready")] {
+            assert!(
+                status.contains(MIDDLE_DOT),
+                "the status line must use the canonical middle dot: {status}"
+            );
+        }
+    }
+}

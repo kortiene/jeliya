@@ -267,8 +267,24 @@ fn view() -> Element {
 `;
   const codes = scanComponentLiterals('rogue.rs', source).map((f) => f.code);
   assert.ok(codes.includes('raw-semantic'), 'raw role/aria-live must be flagged');
-  // In a PRIMITIVE file the same markup is allowed (that is where it is defined).
-  assert.ok(!scanComponentLiterals('dialog.rs', source).some((f) => f.code === 'raw-semantic'));
+
+  // A primitive is exempt ONLY for the constructs it owns, matched by EXACT path
+  // suffix. `components/dialog.rs` owns role + aria-modal, so those are allowed…
+  const inDialog = scanComponentLiterals('components/dialog.rs', source);
+  assert.ok(
+    !inDialog.some((f) => f.code === 'raw-semantic' && /role|aria-modal/.test(f.message)),
+    'dialog.rs may define role/aria-modal',
+  );
+  // …but it does NOT own aria-live, so an ad-hoc one there is still flagged.
+  assert.ok(
+    inDialog.some((f) => f.code === 'raw-semantic' && /aria-live/.test(f.message)),
+    'an aria-live in dialog.rs (which does not own it) must still be flagged',
+  );
+  // A same-basename file in another directory is NOT exempt.
+  assert.ok(
+    scanComponentLiterals('components/legacy/dialog.rs', source).some((f) => f.code === 'raw-semantic'),
+    'a legacy/dialog.rs must not inherit the primitive exemption',
+  );
 });
 
 test('literal scan: a converted RSX text expression is flagged', () => {
@@ -339,6 +355,44 @@ test('placeholder-parity: slotsEqual compares element-wise, not by join', () => 
   assert.equal(slotsEqual([], []), true);
 });
 
+test('literal scan: a let-bound literal interpolated into RSX copy is flagged', () => {
+  // The literal lives OUTSIDE rsx! but renders as copy via `{label}`.
+  const flagged = `
+fn view() -> Element {
+    let label = "Delete account";
+    rsx! { div { "{label}" } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', flagged).some((f) => f.code === 'rust-text'),
+    'a let-bound literal rendered as RSX copy must be flagged',
+  );
+
+  // A catalog-derived binding (no string-literal RHS) is NOT flagged.
+  const catalogDerived = `
+fn view() -> Element {
+    let label = strings.rooms_heading().to_string();
+    rsx! { div { "{label}" } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', catalogDerived).some((f) => f.code === 'rust-text'),
+    'a catalog-derived binding must not be flagged',
+  );
+
+  // A binding interpolated ONLY into a STRUCTURAL attribute (id/class) is not copy.
+  const structural = `
+fn view() -> Element {
+    let anchor = "rooms-nav";
+    rsx! { div { id: "{anchor}" } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', structural).some((f) => f.code === 'rust-text'),
+    'a binding used only in a structural attribute must not be flagged',
+  );
+});
+
 test('literal scan: a bare semantic ELEMENT outside a primitive is flagged', () => {
   // A bare `dialog { … }` bypasses the Dialog primitive's focus/Escape contract;
   // an UNNAMED `nav { … }` bypasses the named-navigation contract.
@@ -352,9 +406,24 @@ fn view() -> Element {
 `;
   const codes = scanComponentLiterals('rogue.rs', source).map((f) => f.code);
   assert.ok(codes.includes('raw-semantic-element'), 'a bare dialog/unnamed nav must be flagged');
-  // In the PRIMITIVE files that DEFINE these, the same markup is allowed.
-  assert.ok(!scanComponentLiterals('dialog.rs', source).some((f) => f.code === 'raw-semantic-element'));
-  assert.ok(!scanComponentLiterals('nav.rs', source).some((f) => f.code === 'raw-semantic-element'));
+  // The NavLandmark primitive OWNS the `nav` element, so a bare nav is allowed
+  // there — but the `dialog` ELEMENT is owned by NO file (Dialog renders `div
+  // role="dialog"`), so it is flagged EVERYWHERE, including components/dialog.rs.
+  const inNav = scanComponentLiterals('components/nav.rs', source);
+  assert.ok(
+    !inNav.some((f) => f.code === 'raw-semantic-element' && /nav/.test(f.message)),
+    'nav.rs may render a bare nav element',
+  );
+  assert.ok(
+    inNav.some((f) => f.code === 'raw-semantic-element' && /dialog/.test(f.message)),
+    'the dialog element is owned by no primitive and is flagged even in nav.rs',
+  );
+  assert.ok(
+    scanComponentLiterals('components/dialog.rs', source).some(
+      (f) => f.code === 'raw-semantic-element' && /dialog/.test(f.message),
+    ),
+    'a bare dialog element is flagged even in components/dialog.rs (Dialog uses div role=dialog)',
+  );
 });
 
 test('literal scan: a NAMED nav landmark is not flagged', () => {

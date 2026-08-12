@@ -17,6 +17,9 @@ impl Catalog for Fr {
         "fr"
     }
     fn app_name(&self) -> &'static str {
+        // The catalog gate (text-based) requires a string literal here; the
+        // `tokens::BRAND` equality is enforced by a test (see `tokens.rs`), so a
+        // brand change that does not update both fails CI.
         "Jeliya"
     }
 
@@ -169,7 +172,10 @@ impl Catalog for Fr {
     }
 
     fn client_status(&self, lifecycle: &str) -> String {
-        format!("client · {lifecycle}")
+        format!(
+            "client {dot} {lifecycle}",
+            dot = crate::l10n::tokens::MIDDLE_DOT
+        )
     }
 
     fn rooms_count(&self, count_display: &str, category: PluralCategory) -> String {

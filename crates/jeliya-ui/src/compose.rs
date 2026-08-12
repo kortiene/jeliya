@@ -99,13 +99,50 @@ pub fn WebRoot() -> Element {
             // stays parked (quiescent, no busy loop) and the e2e settle
             // assertion reports the missing read.
             composition.handle.start();
-            composition.controller.set_state(State::Ready);
-            drive_scripted_replies(&composition.controller, SCRIPTED_MOUNT_READS).await;
+            // Deterministic BOOT/terminal fixture for the offline a11y matrix:
+            // `?boot=<state>` drives the mock to that lifecycle (leaving the
+            // BootScreen cover mounted) instead of the Ready shell, so the boot
+            // branch — otherwise never reached once the mock settles — can be
+            // axe-swept. Absent or unrecognized → the normal Ready shell + read.
+            // Harmless in production (a curious user only sees the honest cover).
+            match boot_fixture_state() {
+                Some(state) => composition.controller.set_state(state),
+                None => {
+                    composition.controller.set_state(State::Ready);
+                    drive_scripted_replies(&composition.controller, SCRIPTED_MOUNT_READS).await;
+                }
+            }
         }
     });
 
     rsx! {
         AppRoot { handle, services, platform_locale: platform_locale() }
+    }
+}
+
+/// The lifecycle a `?boot=<state>` query parameter requests, for the a11y matrix's
+/// deterministic boot/terminal fixture (web target only; `None` everywhere else
+/// and for any absent/unrecognized value → the normal Ready shell).
+fn boot_fixture_state() -> Option<State> {
+    #[cfg(feature = "web")]
+    {
+        let search = web_sys::window()?.location().search().ok()?;
+        // A tiny hand-parse (no url crate): find `boot=` in the query string.
+        let value = search
+            .trim_start_matches('?')
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("boot="))?;
+        match value {
+            "connecting" => Some(State::Connecting),
+            "stopping" => Some(State::Stopping),
+            "stopped" => Some(State::Stopped),
+            "failed" => Some(State::Failed),
+            _ => None,
+        }
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        None
     }
 }
 
