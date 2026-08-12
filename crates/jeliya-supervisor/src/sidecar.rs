@@ -139,19 +139,25 @@ impl Sidecar {
                     // actually gone (its removal is the daemon's final step); a
                     // lingering portfile means cleanup did not finish → `Forced`.
                     Ok(Ok(status)) if status.success() => {
-                        if let Some(pgid) = leader_pgid {
-                            process::kill_reaped_process_group(pgid);
-                        }
+                        // Sweep the isolated group and CONFIRM it is gone (bounded):
+                        // a descendant that outlived the reaped leader may still hold
+                        // the data-dir lock, so its survival must downgrade the
+                        // verdict, not be silently discarded.
+                        let swept = match leader_pgid {
+                            Some(pgid) => process::kill_reaped_process_group(pgid).await.is_ok(),
+                            None => true,
+                        };
                         // `Graceful` ONLY on a present→absent transition: the
                         // portfile was there before the signal and is confirmed
                         // gone now (its removal is the daemon's final step). An
                         // already-absent portfile, a lingering one, or a stat error
-                        // (unreadable dir) is `Forced` — cleanup is not proven.
+                        // (unreadable dir) is `Forced` — cleanup is not proven — as
+                        // is a process group that did not disappear.
                         let removed = matches!(
                             crate::portfile::portfile_path(&data_dir).try_exists(),
                             Ok(false)
                         );
-                        if portfile_present_before && removed {
+                        if portfile_present_before && removed && swept {
                             Ok(Teardown::Graceful)
                         } else {
                             Ok(Teardown::Forced)
@@ -163,8 +169,11 @@ impl Sidecar {
                     // — so this is NOT graceful; report `Forced`, whose contract
                     // already warns that cleanup did not necessarily run.
                     Ok(Ok(_status)) => {
+                        // Already non-`Graceful`; await the bounded group sweep (no
+                        // longer fire-and-forget) so we do not return over a live
+                        // subtree, but `Forced` — "cleanup not proven" — stands.
                         if let Some(pgid) = leader_pgid {
-                            process::kill_reaped_process_group(pgid);
+                            let _ = process::kill_reaped_process_group(pgid).await;
                         }
                         Ok(Teardown::Forced)
                     }

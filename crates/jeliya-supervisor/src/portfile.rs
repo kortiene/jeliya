@@ -18,7 +18,9 @@
 //! - `schema`, if present, is **ignored**: a v1 portfile is caught by the
 //!   generation check, not by a schema number.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -31,7 +33,15 @@ pub(crate) const PORTFILE_NAME: &str = "daemon.json";
 
 /// A parsed portfile. Unknown fields are ignored (serde default), so a newer
 /// daemon that adds informational fields still reads cleanly.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Debug` is MANUAL, not derived: every field except `auth_token` is
+/// attacker-influenced content read from `daemon.json`, and a syntactically valid
+/// but corrupted portfile can carry the bearer token in a swapped `ws`/`http`/
+/// `data_dir`/`version` field. A derived `Debug` would print those verbatim,
+/// defeating the crate's all-`Debug` token-redaction boundary (§7.2) that
+/// `Redacted<String>` gives `auth_token` alone. The manual impl withholds every
+/// child-controlled STRING (keeping the safe numeric fields for diagnostics).
+#[derive(Clone, Deserialize)]
 pub struct Portfile {
     /// The advertised daemon PID.
     pub pid: u32,
@@ -88,9 +98,74 @@ impl Portfile {
     }
 }
 
+impl fmt::Debug for Portfile {
+    /// Withholds every CHILD-CONTROLLED STRING (`http`/`ws`/`data_dir`/`version`),
+    /// any of which a corrupted portfile could carry the bearer token in, while
+    /// keeping the safe numeric/structured fields for diagnostics. `auth_token`
+    /// stays wrapped in its own `Redacted` `Debug`. See the type note (§7.2).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // A present string is shown as this marker (preserving `Some`/`None`, i.e.
+        // whether the field was set) but never its value.
+        const REDACTED: &str = "<redacted>";
+        f.debug_struct("Portfile")
+            .field("pid", &self.pid)
+            .field("port", &self.port)
+            .field("protocol", &self.protocol)
+            .field("storage_generation", &self.storage_generation)
+            .field("http", &self.http.as_ref().map(|_| REDACTED))
+            .field("ws", &self.ws.as_ref().map(|_| REDACTED))
+            .field("data_dir", &REDACTED)
+            .field("auth_token", &self.auth_token)
+            .field("version", &self.version.as_ref().map(|_| REDACTED))
+            .field("min_protocol", &self.min_protocol)
+            .field("limits", &self.limits)
+            .field("started_at_ms", &self.started_at_ms)
+            .finish()
+    }
+}
+
 /// The absolute portfile path within a data dir.
 pub(crate) fn portfile_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PORTFILE_NAME)
+}
+
+/// Bound on a single portfile read, off the async executor. A regular-file read
+/// on a stalled network/FUSE mount can block indefinitely — `O_NONBLOCK` does NOT
+/// make regular-file reads nonblocking — and `read_portfile` runs on the Tokio
+/// executor via `TargetResolver::resolve` and the startup paths, so an unbounded
+/// read would wedge an executor worker, defeating the crate's "every wait is
+/// time-boxed" contract (§7.7). Mirrors `process::REAP_GRACE`'s stalled-mount
+/// rationale.
+const PORTFILE_READ_GRACE: Duration = Duration::from_secs(5);
+
+/// [`read_portfile`], but bounded and OFF the async executor: the blocking file
+/// I/O runs on `spawn_blocking` and the caller-visible wait is capped at
+/// [`PORTFILE_READ_GRACE`]. A stalled mount can still leak the blocking-pool
+/// thread, but the CALLER surfaces a `PortfileUnreadable` timeout rather than
+/// hanging an executor worker. EVERY async caller must use this; the synchronous
+/// [`read_portfile`] remains for the blocking body and for tests.
+pub(crate) async fn read_portfile_bounded(
+    data_dir: &Path,
+    strict: bool,
+) -> Result<Portfile, SupervisorError> {
+    let owned_dir = data_dir.to_path_buf();
+    let join = tokio::task::spawn_blocking(move || read_portfile(&owned_dir, strict));
+    match tokio::time::timeout(PORTFILE_READ_GRACE, join).await {
+        Ok(Ok(result)) => result,
+        // The blocking task itself panicked (or was cancelled) — surface it as an
+        // unreadable portfile, never a hang.
+        Ok(Err(join_err)) => Err(SupervisorError::PortfileUnreadable {
+            path: portfile_path(data_dir),
+            why: format!("portfile read task failed: {join_err}"),
+        }),
+        Err(_elapsed) => Err(SupervisorError::PortfileUnreadable {
+            path: portfile_path(data_dir),
+            why: format!(
+                "portfile read exceeded the {}s bound (data dir on a stalled mount?)",
+                PORTFILE_READ_GRACE.as_secs()
+            ),
+        }),
+    }
 }
 
 /// Read and parse the portfile from `data_dir`, whole (a `0600` atomic
@@ -439,6 +514,62 @@ mod tests {
             via_path_mode, 0o644,
             "the path now resolves to the 0644 decoy — the divergence this test relies on"
         );
+    }
+
+    /// The manual `Debug` withholds every child-controlled STRING so a corrupted
+    /// portfile that carried the bearer token in a swapped `ws`/`http`/`data_dir`/
+    /// `version` field cannot leak it through diagnostics (§7.2). Red-before: a
+    /// derived `Debug` printed those fields verbatim.
+    #[test]
+    fn debug_withholds_token_bearing_child_strings() {
+        let secret = "s3cr3t".repeat(10);
+        let pf = Portfile {
+            pid: 1,
+            port: 2,
+            protocol: Some(2),
+            storage_generation: Some(2),
+            http: Some(secret.clone()),
+            ws: Some(secret.clone()),
+            data_dir: secret.clone(),
+            auth_token: Redacted::new(secret.clone()),
+            version: Some(secret.clone()),
+            min_protocol: None,
+            limits: None,
+            started_at_ms: None,
+        };
+        let rendered = format!("{pf:?}");
+        assert!(
+            !rendered.contains(&secret),
+            "Debug must not leak a token from any child-controlled string: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "Debug must mark redacted strings: {rendered}"
+        );
+        // The safe numeric fields survive for diagnostics.
+        assert!(
+            rendered.contains("pid: 1"),
+            "safe numeric fields stay: {rendered}"
+        );
+    }
+
+    /// `read_portfile_bounded` returns the same parsed portfile as the sync read
+    /// for a well-formed file (the bound only fires on a stalled read, which is not
+    /// deterministically reproducible in a unit test — the guarantee is structural:
+    /// `spawn_blocking` + `timeout`).
+    #[test]
+    fn read_portfile_bounded_returns_the_parsed_portfile() {
+        let dir = std::env::temp_dir().join(format!("sup-pf-bounded-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("daemon.json"), v2_portfile_json(7421)).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(read_portfile_bounded(&dir, false));
+        std::fs::remove_dir_all(&dir).ok();
+        let portfile = result.expect("a bounded read of a valid portfile returns it");
+        assert_eq!(portfile.port, 7421);
     }
 
     /// An over-cap `daemon.json` is refused with `PortfileUnreadable` WITHOUT

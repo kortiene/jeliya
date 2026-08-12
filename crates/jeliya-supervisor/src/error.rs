@@ -105,6 +105,18 @@ pub enum SupervisorError {
     #[error("the data dir is locked but no healthy daemon answered; retry in a moment")]
     Wedged,
 
+    /// A reaped daemon's process GROUP did not disappear within the bounded
+    /// cleanup window after `SIGKILL` — a descendant is likely wedged in an
+    /// uninterruptible (`D`-state) syscall (e.g. a `data_dir` on a hung mount) and
+    /// may still hold the data-dir lock. Surfaced rather than silently discarded
+    /// so a caller never reports a clean stop over a surviving subtree
+    /// (spec §6.3 / §7.7).
+    #[error("process group {pgid} did not terminate within its bounded cleanup window")]
+    GroupCleanupTimedOut {
+        /// The leader pgid whose group outlived the cleanup bound.
+        pgid: u32,
+    },
+
     /// An adopted daemon or a proven-owned incumbent survived its bounded stop.
     #[error("daemon pid {pid} did not stop within its bounded budget")]
     ShutdownTimedOut {

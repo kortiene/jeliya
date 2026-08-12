@@ -244,7 +244,9 @@ impl Supervisor {
             // there is no additional "incompatible storage" invariant for it to
             // enforce beyond that served-generation gate.
             if gate_incompatible {
-                match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms) {
+                match portfile::read_portfile_bounded(&self.data_dir, self.strict_portfile_perms)
+                    .await
+                {
                     // No portfile → nothing to gate; proceed to spawn.
                     Err(SupervisorError::PortfileMissing(_)) => {}
                     // A truncated / malformed / permission-denied portfile is
@@ -313,13 +315,13 @@ impl Supervisor {
                     match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
                         Ok(Ok(status)) if !status.success() => {
                             if let Some(pgid) = leader_pgid {
-                                process::kill_reaped_process_group(pgid);
+                                let _ = process::kill_reaped_process_group(pgid).await;
                             }
                             return Err(SupervisorError::Wedged);
                         }
                         Ok(Ok(_)) => {
                             if let Some(pgid) = leader_pgid {
-                                process::kill_reaped_process_group(pgid);
+                                let _ = process::kill_reaped_process_group(pgid).await;
                             }
                             return Err(e);
                         }
@@ -330,11 +332,13 @@ impl Supervisor {
 
             // The portfile is written before the announcement, so it is readable
             // the instant the line parses.
-            let portfile = match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms)
-            {
-                Ok(pf) => pf,
-                Err(e) => return Err(abandon_child(&mut child, e).await),
-            };
+            let portfile =
+                match portfile::read_portfile_bounded(&self.data_dir, self.strict_portfile_perms)
+                    .await
+                {
+                    Ok(pf) => pf,
+                    Err(e) => return Err(abandon_child(&mut child, e).await),
+                };
 
             match announced {
                 ReadyLine::Ready { pid, port } => {
@@ -366,13 +370,21 @@ impl Supervisor {
                     let leader_pgid = child.id();
                     match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
                         Ok(Ok(status)) if status.success() => {
+                            // Our probe child bowed out cleanly; we now fall through
+                            // to ADOPT the incumbent. Confirm the isolated group is
+                            // gone FIRST — a leaked descendant could still hold the
+                            // data-dir lock and wreck the adopt — propagating a
+                            // bounded cleanup failure instead of adopting over it.
                             if let Some(pgid) = leader_pgid {
-                                process::kill_reaped_process_group(pgid);
+                                process::kill_reaped_process_group(pgid).await?;
                             }
                         }
                         Ok(Ok(_status)) => {
+                            // Already returning `Wedged`; await the bounded sweep so
+                            // we do not return over a live subtree, but the primary
+                            // error stands.
                             if let Some(pgid) = leader_pgid {
-                                process::kill_reaped_process_group(pgid);
+                                let _ = process::kill_reaped_process_group(pgid).await;
                             }
                             return Err(SupervisorError::Wedged);
                         }
@@ -520,17 +532,29 @@ impl Supervisor {
                 // served generation (`prove_owned_incompatible`), so a portfile
                 // corrupted to merely DECLARE incompatible cannot doom a daemon that
                 // actually serves a supported generation.
-                let fresh =
-                    match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms) {
-                        Ok(pf) => pf,
-                        // The portfile vanished/tore under us — nothing proven to evict.
-                        Err(_) => {
-                            return Err(SupervisorError::GenerationMismatch { expected, actual })
-                        }
-                    };
-                let bound_and_incompatible = !self.expected.matches(fresh.declared_generation())
-                    && validate::data_dir_mismatch(&self.data_dir, &fresh.data_dir).is_none();
-                if bound_and_incompatible
+                let fresh = match portfile::read_portfile_bounded(
+                    &self.data_dir,
+                    self.strict_portfile_perms,
+                )
+                .await
+                {
+                    Ok(pf) => pf,
+                    // The portfile vanished/tore under us — nothing proven to evict.
+                    Err(_) => return Err(SupervisorError::GenerationMismatch { expected, actual }),
+                };
+                // Evict iff the fresh snapshot is bound to THIS dir and its HEALTH
+                // proves both the PID and an incompatible SERVED generation
+                // (`prove_owned_incompatible`). Do NOT additionally require the
+                // DECLARATION to mismatch: a daemon whose portfile declares the
+                // expected generation but whose health advertises an incompatible
+                // one (the inverse portfile/health skew) is just as un-adoptable,
+                // and the served proof is what makes eviction safe. The declaration
+                // adds nothing — a portfile corrupted to merely DECLARE incompatible
+                // is already refused here because its health serves a SUPPORTED
+                // generation (`prove_owned_incompatible` returns false).
+                let bound_to_dir =
+                    validate::data_dir_mismatch(&self.data_dir, &fresh.data_dir).is_none();
+                if bound_to_dir
                     && validate::prove_owned_incompatible(&fresh, self.expected, &self.timeouts)
                         .await
                 {

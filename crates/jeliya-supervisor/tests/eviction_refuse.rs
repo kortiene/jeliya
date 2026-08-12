@@ -621,6 +621,79 @@ async fn a_live_incompatible_incumbent_freeing_the_dir_before_spawn_defers_to_fi
     }
 }
 
+/// The INVERSE portfile/health skew (round-18): a fresh portfile DECLARES the
+/// EXPECTED generation, but the PID-bound HEALTH response advertises an
+/// INCOMPATIBLE served generation. `validate_portfile` returns `GenerationMismatch`
+/// on the served axis, so the eviction arm is entered — and it must EVICT, because
+/// `prove_owned_incompatible` proves BOTH the PID and the served incompatibility.
+/// The eviction decision must NOT additionally require the DECLARATION to mismatch
+/// (the bug: `bound_and_incompatible` did, so this skew fell through to a bare
+/// refusal even under `replace_incompatible`).
+///
+/// Proven with a huge (unsignalable) incumbent pid: eviction is ATTEMPTED, so
+/// `sigterm_foreign` refuses the invalid pid with a `Handshake`, NOT the
+/// `GenerationMismatch` a non-eviction returns. Red-before: with the declared-
+/// mismatch precondition the result was `GenerationMismatch`; green-after it is a
+/// non-`GenerationMismatch` eviction attempt.
+#[tokio::test]
+async fn a_compatible_declaration_with_incompatible_served_generation_is_evicted() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-invskew-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+
+    // Health serves protocol 1 (incompatible) and proves the incumbent PID.
+    let incumbent_pid: u32 = 4_000_000_004;
+    let (live_port, health) = spawn_incompatible_health(incumbent_pid).await;
+
+    // A stub that announces `already_running` for the LIVE incumbent (its pid/port
+    // must match the portfile so `finish_adopted`'s handshake passes and the adopt
+    // path — where the eviction arm lives — is entered).
+    let stub = root.join("jeliyad-stub");
+    write_stub(&stub, incumbent_pid, live_port);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub),
+        replace_incompatible: true,
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+
+    // The portfile DECLARES the expected generation (protocol 2, storage 2) — only
+    // the SERVED generation is incompatible.
+    let portfile_json = format!(
+        r#"{{"pid":{incumbent_pid},"port":{live_port},"protocol":2,"storage_generation":2,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let result = sup.start_or_adopt().await;
+    health.abort();
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Eviction must be ATTEMPTED — a served-incompatible incumbent is un-adoptable
+    // even though its declaration is fine — so the result is NOT a bare
+    // GenerationMismatch refusal.
+    assert!(
+        !matches!(result, Err(SupervisorError::GenerationMismatch { .. })),
+        "a compatible declaration with an incompatible SERVED generation must be evicted, \
+         not refused on the declaration; got: {result:?}"
+    );
+    // The unsignalable (huge) incumbent pid makes the eviction attempt itself the
+    // observable outcome (a Handshake refusing the invalid pid), never a clean adopt.
+    assert!(
+        result.is_err(),
+        "the eviction attempt on an unsignalable pid must surface an error; got: {result:?}"
+    );
+}
+
 /// A stub that emits a JSON-looking but MALFORMED announcement carrying a marker
 /// (a string where a `port` number is required, so serde's own Display would echo
 /// the value), then exits 0. Proves the surfaced error reproduces neither the raw

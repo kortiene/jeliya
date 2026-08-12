@@ -85,31 +85,59 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
-/// Best-effort SIGKILL of a spawned leader's **process group** by its pgid
-/// (`pgid == the leader's pid`, set at spawn), for the early-exit paths where the
-/// leader has ALREADY been reaped — so [`force_kill_tree`] (which reads the live
-/// `child.id()`) can no longer reach the group. A leader that spawned a
-/// descendant and then exited leaves that descendant holding the data-dir lock in
-/// the group we isolated; killing the group reclaims it before the caller retries.
+/// SIGKILL a spawned leader's **process group** by its pgid (`pgid == the
+/// leader's pid`, set at spawn) and VERIFY, bounded, that the group is gone —
+/// for the early-exit paths where the leader has ALREADY been reaped, so
+/// [`force_kill_tree`] (which reads the live `child.id()`) can no longer reach the
+/// group. A leader that spawned a descendant and then exited leaves that
+/// descendant holding the data-dir lock in the group we isolated; killing the
+/// group reclaims it before the caller retries.
 ///
 /// The pgid must be captured from `child.id()` BEFORE the reaping `wait()`. A
 /// process group persists while any member lives, so if a descendant survives the
-/// group is intact and this reaches exactly it; if the group is already empty,
-/// `killpg` returns `ESRCH` and is ignored. The recycled-pgid TOCTOU is the same
-/// bounded, same-uid window the eviction path documents (§6.7). No-op off Unix
-/// (single-process daemon; group isolation is deferred with Windows, OQ-5).
-pub(crate) fn kill_reaped_process_group(pgid: u32) {
+/// group is intact and this reaches exactly it. After the signal it polls the
+/// group's existence (`killpg(_, None)` → `ESRCH` once empty) up to [`REAP_GRACE`]
+/// and returns [`SupervisorError::GroupCleanupTimedOut`] if a member outlives the
+/// bound — no longer silently discarding the result, so a caller never reports a
+/// clean stop over a surviving subtree. An already-empty group returns `Ok`
+/// immediately. The recycled-pgid TOCTOU is the same bounded, same-uid window the
+/// eviction path documents (§6.7). No-op (always `Ok`) off Unix (single-process
+/// daemon; group isolation is deferred with Windows, OQ-5).
+pub(crate) async fn kill_reaped_process_group(pgid: u32) -> Result<(), SupervisorError> {
     #[cfg(unix)]
     {
+        use nix::errno::Errno;
         use nix::sys::signal::{killpg, Signal};
         use nix::unistd::Pid;
-        if let Some(valid) = SignalPid::new(pgid) {
-            let _ = killpg(Pid::from_raw(valid.get()), Signal::SIGKILL);
+        let Some(valid) = SignalPid::new(pgid) else {
+            // An invalid pgid names no group (and must never be signalled — the
+            // `SignalPid` guard); there is nothing to reclaim.
+            return Ok(());
+        };
+        let group = Pid::from_raw(valid.get());
+        let _ = killpg(group, Signal::SIGKILL);
+        // SIGKILL only QUEUES the signal; a descendant wedged in an
+        // uninterruptible (`D`-state) syscall — e.g. a `data_dir` on a hung mount
+        // — receives it only when the syscall returns, which may be never. So poll
+        // the group's existence (the null signal `killpg(_, None)` sends nothing;
+        // `ESRCH` means no member remains) until it is gone or the bound expires,
+        // and surface a survivor as a real cleanup failure rather than reporting a
+        // clean stop over a live subtree that may still hold the data-dir lock.
+        let deadline = tokio::time::Instant::now() + REAP_GRACE;
+        loop {
+            if matches!(killpg(group, None), Err(Errno::ESRCH)) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(SupervisorError::GroupCleanupTimedOut { pgid });
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
     #[cfg(not(unix))]
     {
         let _ = pgid;
+        Ok(())
     }
 }
 
@@ -220,5 +248,40 @@ mod tests {
         // guard fired before any signal.
         let err = sigterm_foreign(0).expect_err("pid 0 must be refused");
         assert!(matches!(err, SupervisorError::Handshake(_)));
+    }
+
+    /// The bounded sweep CONFIRMS an already-empty group is gone (returns `Ok`)
+    /// rather than firing and returning blind. A child spawned as its own group
+    /// leader and then reaped leaves an empty group, so the existence poll sees
+    /// `ESRCH` immediately. An invalid pgid (0) is a no-op `Ok` (nothing to
+    /// reclaim, and `SignalPid` refuses to signal it). The surviving-group timeout
+    /// path is not deterministically reproducible in a test — `SIGKILL` cannot be
+    /// caught — so it is covered structurally by the bounded poll.
+    #[cfg(unix)]
+    #[test]
+    fn kill_reaped_process_group_confirms_an_empty_group_is_gone() {
+        use std::os::unix::process::CommandExt;
+        // A child that is its OWN group leader (pgid == pid); reap it so the group
+        // is empty.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn a child in its own group");
+        let pgid = child.id();
+        child.wait().expect("reap the child");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(
+            rt.block_on(kill_reaped_process_group(pgid)).is_ok(),
+            "an empty (reaped) group must be confirmed gone within the bound"
+        );
+        assert!(
+            rt.block_on(kill_reaped_process_group(0)).is_ok(),
+            "an invalid pgid is a no-op Ok (nothing to reclaim)"
+        );
     }
 }

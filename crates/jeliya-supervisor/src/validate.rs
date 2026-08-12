@@ -63,7 +63,7 @@ pub(crate) async fn validate_portfile(
     strict_portfile_perms: bool,
     timeouts: &Timeouts,
 ) -> Result<Validated, SupervisorError> {
-    let portfile = portfile::read_portfile(data_dir, strict_portfile_perms)?;
+    let portfile = portfile::read_portfile_bounded(data_dir, strict_portfile_perms).await?;
 
     // 0. Data-dir binding: the portfile must record THIS directory. A
     //    `daemon.json` copied/restored from another install keeps the original's
