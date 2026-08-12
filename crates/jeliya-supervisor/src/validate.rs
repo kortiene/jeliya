@@ -139,7 +139,6 @@ pub(crate) fn data_dir_mismatch(resolved: &Path, recorded: &str) -> Option<Super
         None
     } else {
         Some(SupervisorError::DataDirMismatch {
-            recorded: recorded.to_owned(),
             resolved: resolved.to_path_buf(),
         })
     }
@@ -294,6 +293,51 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
         // so a fixed 100 ms sleep cannot overrun a short/nearly-exhausted deadline.
         let remaining = deadline.saturating_duration_since(now);
         tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
+    }
+}
+
+/// The daemon's advisory lock file name, matching `jeliyad`'s `LOCKFILE_NAME`.
+pub(crate) const LOCKFILE_NAME: &str = "daemon.lock";
+
+/// Poll until `<data_dir>/daemon.lock` can be taken exclusively — i.e. the daemon
+/// RELEASED it — bounded by `budget`. Portfile removal is NOT the daemon's final
+/// act: it removes the portfile, THEN flushes logs and only then `process::exit`s
+/// (jeliyad `main.rs`), holding `daemon.lock` until exit. A caller that reuses the
+/// data dir the instant the portfile vanishes could wedge its restart on the
+/// still-held lock, so an adopted `Graceful` must confirm the lock is free (the
+/// process fully exited). Uses the SAME `fd-lock` advisory lock the daemon holds,
+/// so the observation matches its protocol exactly. Returns `true` if the lock
+/// went free (or never existed) within `budget`.
+pub(crate) async fn wait_lock_released(data_dir: &Path, budget: Duration) -> bool {
+    let lock_path = data_dir.join(LOCKFILE_NAME);
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        {
+            // Taking the daemon's exclusive lock succeeds only once it is released
+            // (the process exited). The guard drops at the end of the `if`, so the
+            // brief hold does not block the next start.
+            Ok(file) => {
+                if fd_lock::RwLock::new(file).try_write().is_ok() {
+                    return true;
+                }
+            }
+            // No lock file → nothing holds it (the daemon exited / never created
+            // it here).
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return true,
+            // Cannot open it (e.g. permissions on a shared dir): keep waiting
+            // rather than spin, and time out honestly if it never frees.
+            Err(_) => {}
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::sleep(Duration::from_millis(50).min(remaining)).await;
     }
 }
 
@@ -650,6 +694,49 @@ mod tests {
             "g{}",
             "a".repeat(63)
         ))); // non-hex
+    }
+
+    /// A corrupted portfile that placed a secret in `data_dir` (swapped fields)
+    /// must not leak it: `DataDirMismatch` records only the resolved dir, never the
+    /// child-controlled recorded value. Red-before/green-after: the error used to
+    /// carry `recorded`, whose Display reproduced it.
+    #[test]
+    fn data_dir_mismatch_does_not_leak_the_recorded_value() {
+        let err = data_dir_mismatch(std::path::Path::new("/real/dir"), "DATA_DIR_SECRET_MARKER")
+            .expect("a mismatching recorded dir must be DataDirMismatch");
+        let shown = format!("{err}");
+        assert!(
+            !shown.contains("DATA_DIR_SECRET_MARKER"),
+            "the recorded value must not reach the error: {shown}"
+        );
+    }
+
+    /// `wait_lock_released` returns false while the daemon's lock is HELD and true
+    /// once it is free — the completion proof an adopted `Graceful` needs beyond
+    /// portfile removal (the daemon holds `daemon.lock` past the portfile removal).
+    #[test]
+    fn wait_lock_released_waits_for_the_lock_to_free() {
+        let dir = tmp_dir("lockwait");
+        let lock_path = dir.join(LOCKFILE_NAME);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        let mut lock = fd_lock::RwLock::new(file);
+        let guard = lock.try_write().expect("take the lock as the daemon does");
+
+        // While HELD, a short budget must time out (not report released).
+        let held = rt().block_on(wait_lock_released(&dir, Duration::from_millis(200)));
+        assert!(!held, "a held lock must not be reported released");
+
+        // Release, then it must observe the free lock.
+        drop(guard);
+        let freed = rt().block_on(wait_lock_released(&dir, Duration::from_secs(2)));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(freed, "a freed lock must be observed as released");
     }
 
     /// prove_owned returns false when nothing answers on the advertised port.

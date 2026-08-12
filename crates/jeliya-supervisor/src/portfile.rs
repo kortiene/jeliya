@@ -115,8 +115,32 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
     const MAX_PORTFILE_BYTES: u64 = 64 * 1024;
 
     let path = portfile_path(data_dir);
+    // Stat FIRST (does not open, so it cannot block): a portfile REPLACED by a
+    // FIFO or another special file would otherwise make `File::open` (and then
+    // `read_to_string`) block forever waiting for a writer/EOF — OUTSIDE every
+    // configured timeout and on the caller's executor thread — despite the byte
+    // cap. Only a REGULAR file is opened and read.
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            return Err(SupervisorError::PortfileUnreadable {
+                path,
+                why: "portfile is not a regular file (FIFO, device, or directory?) — refusing to open it".to_owned(),
+            });
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(SupervisorError::PortfileMissing(path));
+        }
+        Err(err) => {
+            return Err(SupervisorError::PortfileUnreadable {
+                path,
+                why: err.to_string(),
+            });
+        }
+    }
     let file = match std::fs::File::open(&path) {
         Ok(file) => file,
+        // Raced with removal between the stat and the open.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(SupervisorError::PortfileMissing(path));
         }
@@ -379,6 +403,27 @@ mod tests {
                 "an over-cap portfile must be rejected by the size cap, not a parse error; got: {why}"
             ),
             other => panic!("an over-cap portfile must be PortfileUnreadable; got: {other:?}"),
+        }
+    }
+
+    /// A `daemon.json` that is NOT a regular file is refused BEFORE any blocking
+    /// open/read. A directory stands in here (easy to create and non-blocking); a
+    /// FIFO — the real hazard — would otherwise block `File::open` forever waiting
+    /// for a writer, outside every configured timeout.
+    #[test]
+    fn a_non_regular_portfile_is_refused() {
+        let dir = std::env::temp_dir().join(format!("sup-pf-nonreg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Make `daemon.json` itself a DIRECTORY (not a regular file).
+        std::fs::create_dir_all(dir.join("daemon.json")).unwrap();
+        let result = read_portfile(&dir, false);
+        std::fs::remove_dir_all(&dir).ok();
+        match result {
+            Err(SupervisorError::PortfileUnreadable { why, .. }) => assert!(
+                why.contains("regular"),
+                "a non-regular portfile must be refused as not-a-regular-file; got: {why}"
+            ),
+            other => panic!("a non-regular portfile must be PortfileUnreadable; got: {other:?}"),
         }
     }
 

@@ -245,14 +245,22 @@ impl Sidecar {
         // be closing rooms / holding its lock — the very premature verdict this
         // guard exists to avoid. With no process handle for an adopted daemon and
         // the listener already dark, completion cannot be proven in that case, so
-        // the honest verdict is `ShutdownTimedOut`. (A lock-release proof would
-        // remain valid across a pre-absent portfile but needs a cross-crate
-        // lock-protocol assumption against `jeliyad`'s `daemon.lock`; deferred.)
+        // the honest verdict is `ShutdownTimedOut`.
         if !portfile_present_before {
             return Err(SupervisorError::ShutdownTimedOut { pid });
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if validate::wait_portfile_removed(&self.data_dir, remaining).await {
+        if !validate::wait_portfile_removed(&self.data_dir, remaining).await {
+            return Err(SupervisorError::ShutdownTimedOut { pid });
+        }
+        // Portfile removal is NOT the daemon's final act: it removes the portfile,
+        // THEN flushes logs and only then `process::exit`s (jeliyad `main.rs`),
+        // holding `daemon.lock` until exit. A caller that reuses the dir the
+        // instant the portfile vanishes could wedge its restart on the still-held
+        // lock, so confirm the lock is RELEASED (the process fully exited) — via
+        // the same `fd-lock` the daemon holds — before promising `Graceful`.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if validate::wait_lock_released(&self.data_dir, remaining).await {
             Ok(Teardown::Graceful)
         } else {
             Err(SupervisorError::ShutdownTimedOut { pid })

@@ -23,6 +23,11 @@ tokio = { version = "1", features = ["process", "net", "time", "io-util", "rt"] 
 url = "2"
 dirs = "6"
 thiserror = "2"
+# The SAME advisory-lock crate `jeliyad` uses for its `daemon.lock` (jeliyad
+# Cargo.toml `fd-lock = "4"`), so the supervisor observes lock release with the
+# identical protocol: an adopted stop confirms the daemon has fully exited (lock
+# released) — not merely removed its portfile — before promising `Graceful`.
+fd-lock = "4"
 
 [target.'cfg(unix)'.dependencies]
 # Unsafe-free signalling: `killpg` (owned-teardown escalation to the child's

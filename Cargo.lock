@@ -2947,6 +2947,7 @@ name = "jeliya-supervisor"
 version = "0.0.0"
 dependencies = [
  "dirs",
+ "fd-lock",
  "jeliya-api",
  "nix",
  "serde",

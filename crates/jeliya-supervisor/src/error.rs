@@ -125,11 +125,12 @@ pub enum SupervisorError {
     /// this supervisor to — and, with eviction, could SIGTERM — the *original*
     /// daemon. Refused: a portfile is only trusted for the exact directory it
     /// records (spec §4 D2 — identity binds to the portfile's location).
-    #[error("portfile records data dir {recorded} but this supervisor resolved {resolved}")]
+    #[error("portfile records a different data dir than {resolved}")]
     DataDirMismatch {
-        /// The `data_dir` the portfile recorded.
-        recorded: String,
-        /// The directory this supervisor actually manages.
+        /// The directory this supervisor actually manages. The portfile's RECORDED
+        /// value is deliberately NOT stored: a corrupted portfile could carry a
+        /// token in a swapped `data_dir` field, and callers log this error, so
+        /// reproducing it would bypass the token-redaction boundary (§7.2).
         resolved: PathBuf,
     },
 }
