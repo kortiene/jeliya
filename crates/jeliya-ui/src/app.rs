@@ -53,6 +53,13 @@ pub fn AppRoot(
     /// catalog with no stored preference (Decision-5).
     #[props(default)]
     platform_locale: Option<String>,
+    /// Injected side effect that applies the resolved TEXT-locale BCP-47 tag to
+    /// the document (`<html lang>`), called reactively whenever the resolved
+    /// locale changes. The web target passes a `web-sys` setter here; other
+    /// targets pass `None`. Kept as an injected callback so this shared component
+    /// stays free of `web-sys`/`cfg` (Decision-3).
+    #[props(default)]
+    on_locale_lang: Option<Callback<String>>,
 ) -> Element {
     let mut ui = use_signal(UiState::new);
 
@@ -83,13 +90,20 @@ pub fn AppRoot(
     let locale = use_locale_context(initial_locale);
     let announcers = use_announce_context();
 
-    // `<html lang>` is set from the resolved text locale at composition
-    // (`compose::apply_document_lang`, web-sys, web target only), so assistive
-    // tech reads the page in its actual language rather than the static `en` in
-    // index.html (§5.1). It is set there, not here, to keep this shared
-    // component free of `web-sys`/`cfg`; a reactive update on a live locale
-    // switch rides with that later slice (there is no switch UI in this
-    // foundation yet).
+    // `<html lang>` tracks the resolved TEXT locale REACTIVELY: the injected
+    // `on_locale_lang` callback (a `web-sys` setter on the web target; `None`
+    // elsewhere) is called on mount AND whenever the locale signal changes, so a
+    // live locale switch updates the document language too — assistive tech reads
+    // the page in its actual language rather than index.html's static `en` (§5.1).
+    // The side effect is INJECTED so this shared component stays free of
+    // `web-sys`/`cfg` (Decision-3); the switch UI is a later slice, the wiring is
+    // proven now.
+    use_effect(move || {
+        let tag = locale.read().text.tag().to_string();
+        if let Some(apply) = on_locale_lang {
+            apply.call(tag);
+        }
+    });
 
     use_future(move || {
         let handle = handle.clone();

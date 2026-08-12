@@ -82,6 +82,12 @@ export const IDENTICAL_ALLOWLIST = Object.freeze({
   client_status:
     '“client” is the same word in French; the status line is the brand-neutral ' +
     '“client · {état}” framing with the state word supplied localized.',
+  wire_path_direct:
+    'Tier-2 protocol token (docs/glossary-fr.md): `direct` is rendered verbatim ' +
+    'as the daemon reports it, identical in every language.',
+  wire_path_relay:
+    'Tier-2 protocol token (docs/glossary-fr.md): `relay` is rendered verbatim ' +
+    'as the daemon reports it, identical in every language.',
 });
 
 /** Stands in for a `{…}` format slot when a message is compared or
@@ -838,8 +844,22 @@ export function scanComponentLiterals(file, source) {
     if (!bareLetters(literal.value)) continue;
     let at = literal.start - 1;
     while (at >= 0 && /\s/.test(skeleton[at])) at -= 1;
-    if (skeleton[at] !== '=') continue;
-    const boundName = letBindingName(skeleton, at);
+    const prevChar = at >= 0 ? skeleton[at] : '';
+    // The literal is a `let` binding's RHS either DIRECTLY (`let x = "…"`) or
+    // WRAPPED in a constructor (`let x = String::from("…")` / `format!("…")`) —
+    // both create the `String` later interpolated as copy. For the wrapped case,
+    // walk back over the callee to the `=`.
+    let eqIndex = -1;
+    if (prevChar === '=') {
+      eqIndex = at;
+    } else if (prevChar === '(') {
+      let i = at - 1;
+      while (i >= 0 && /[\w:!]/.test(skeleton[i])) i -= 1; // callee ident / path / `!`
+      while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
+      if (skeleton[i] === '=') eqIndex = i;
+    }
+    if (eqIndex < 0) continue;
+    const boundName = letBindingName(skeleton, eqIndex);
     if (!boundName || !copyInterpolations.has(boundName)) continue;
     const line = lineOf(source, literal.start);
     if (exempt(line)) continue;

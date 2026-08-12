@@ -117,11 +117,8 @@ impl Catalog for En {
         format!("Connection status: {status}")
     }
 
-    fn wire_role_owner(&self) -> &'static str {
-        "Owner"
-    }
-    fn wire_role_agent(&self) -> &'static str {
-        "Agent"
+    fn wire_role_authority(&self) -> &'static str {
+        "Authority"
     }
     fn wire_role_member(&self) -> &'static str {
         "Member"
@@ -142,10 +139,12 @@ impl Catalog for En {
         "Unknown"
     }
     fn wire_path_direct(&self) -> &'static str {
-        "Direct"
+        // Tier-2 protocol token: rendered EXACTLY as the daemon reports it
+        // (docs/glossary-fr.md), identical in every language.
+        "direct"
     }
     fn wire_path_relay(&self) -> &'static str {
-        "Relay"
+        "relay"
     }
 
     fn format_percent(&self, n: &str) -> String {

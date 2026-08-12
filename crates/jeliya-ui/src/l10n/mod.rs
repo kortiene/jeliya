@@ -254,10 +254,9 @@ pub trait Catalog {
     /// connection loss or recovery (§5.6).
     fn conn_announcement(&self, status: &str) -> String;
 
-    /// Wire role `owner`.
-    fn wire_role_owner(&self) -> &'static str;
-    /// Wire role `agent`.
-    fn wire_role_agent(&self) -> &'static str;
+    /// Wire role `authority` — the room's authority (jeliya_api's `Role::Authority`;
+    /// the v1 `owner` spelling is retired). Translatable display, NOT a Tier-2 token.
+    fn wire_role_authority(&self) -> &'static str;
     /// Wire role `member`.
     fn wire_role_member(&self) -> &'static str;
     /// Wire member status `active` (signed membership).

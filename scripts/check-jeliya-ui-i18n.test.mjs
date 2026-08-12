@@ -400,6 +400,21 @@ fn view() -> Element {
     'a let-bound literal rendered as RSX copy must be flagged',
   );
 
+  // A CONSTRUCTOR-wrapped binding (`String::from(...)`, `format!(...)`) is also
+  // flagged — both create the String later interpolated as copy.
+  for (const rhs of ['String::from("Delete account")', 'format!("Delete account")']) {
+    const wrapped = `
+fn view() -> Element {
+    let label = ${rhs};
+    rsx! { div { "{label}" } }
+}
+`;
+    assert.ok(
+      scanComponentLiterals('x.rs', wrapped).some((f) => f.code === 'rust-text'),
+      `a constructor-wrapped copy binding must be flagged: ${rhs}`,
+    );
+  }
+
   // A catalog-derived binding (no string-literal RHS) is NOT flagged.
   const catalogDerived = `
 fn view() -> Element {

@@ -118,11 +118,8 @@ impl Catalog for Fr {
         format!("État de la connexion\u{00a0}: {status}")
     }
 
-    fn wire_role_owner(&self) -> &'static str {
-        "Propriétaire"
-    }
-    fn wire_role_agent(&self) -> &'static str {
-        "Agent"
+    fn wire_role_authority(&self) -> &'static str {
+        "Autorité"
     }
     fn wire_role_member(&self) -> &'static str {
         "Membre"
@@ -143,10 +140,12 @@ impl Catalog for Fr {
         "Inconnu"
     }
     fn wire_path_direct(&self) -> &'static str {
+        // Tier-2 protocol token: kept VERBATIM as the daemon reports it
+        // (docs/glossary-fr.md decision — `direct`/`relay` are never translated).
         "direct"
     }
     fn wire_path_relay(&self) -> &'static str {
-        "relais"
+        "relay"
     }
 
     fn format_percent(&self, n: &str) -> String {

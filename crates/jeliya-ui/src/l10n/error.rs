@@ -72,7 +72,16 @@ impl ErrorDisplay {
 /// every string that reaches primary copy OR a DOM attribute via diagnostics.
 pub fn scrub_secrets(text: String) -> String {
     let mut out = text;
-    for marker in ["token=", "bearer ", "authorization:", "secret="] {
+    // `whole_field` = the credential can contain spaces, so its value must be
+    // redacted to a STRUCTURAL boundary, not the first whitespace. `Authorization`
+    // is a scheme + payload (`Basic dXNlcjpwYXNz`): stopping at the space after the
+    // scheme would leave the payload. `token`/`secret`/`bearer` are single tokens.
+    for (marker, whole_field) in [
+        ("token=", false),
+        ("bearer ", false),
+        ("authorization:", true),
+        ("secret=", false),
+    ] {
         while let Some(at) = out.to_ascii_lowercase().find(marker) {
             let start = at + marker.len();
             // Skip whitespace between the marker and the value (`Authorization:
@@ -96,10 +105,21 @@ pub fn scrub_secrets(text: String) -> String {
                         .map(|offset| after + offset + quote.len_utf8())
                         .unwrap_or(out.len())
                 }
-                _ => out[cursor..]
-                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '}' | ',' | ')'))
-                    .map(|offset| cursor + offset)
-                    .unwrap_or(out.len()),
+                _ => {
+                    let is_boundary = |c: char| {
+                        if whole_field {
+                            // A whole-field value may contain spaces; stop only at a
+                            // structural delimiter or end of line.
+                            matches!(c, '"' | '\'' | '}' | ',' | ')' | '\n' | '\r')
+                        } else {
+                            c.is_whitespace() || matches!(c, '"' | '\'' | '}' | ',' | ')')
+                        }
+                    };
+                    out[cursor..]
+                        .find(is_boundary)
+                        .map(|offset| cursor + offset)
+                        .unwrap_or(out.len())
+                }
             };
             // Redact from the marker through the value (leaving surrounding
             // structure intact).
@@ -170,6 +190,9 @@ mod tests {
             r#"secret='abc123secret'"#,
             r#"Authorization: "abc123secret""#,
             "token=abc123secret trailing",
+            // Scheme-based (unquoted) Authorization: the WHOLE field is the
+            // credential — stopping at the space after `Basic` would leak the payload.
+            "Authorization: Basic abc123secret, next",
         ] {
             let scrubbed = scrub_secrets(input.to_string());
             assert!(

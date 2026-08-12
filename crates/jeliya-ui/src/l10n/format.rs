@@ -123,8 +123,13 @@ impl Formats {
     /// narrow no-break space, English writes `42%`. So it follows the FORMATTING
     /// locale, not the text locale — text=EN/format=FR yields `42 %`, and
     /// text=FR/format=EN yields `42%`.
-    pub fn percent(self, whole: u64) -> String {
-        catalog_for(self.formatting).format_percent(&self.count(whole))
+    pub fn percent(self, value: f64, frac_digits: usize) -> String {
+        // Accept a FRACTIONAL value and the caller's precision (`frac_digits`), so
+        // `12.3456` with 4 digits renders `12.3456%` / `12,3456 %` — the retiring
+        // client preserves fractional percentages, and a `u64`-only API could not
+        // represent them. Reuses `decimal` (grouping + locale-aware rounding);
+        // `format_percent` then applies the locale's percent spacing.
+        catalog_for(self.formatting).format_percent(&self.decimal(value, frac_digits))
     }
 
     /// A byte size. The number follows the formatting locale; the unit WORD
@@ -239,19 +244,33 @@ mod tests {
     #[test]
     fn percent_spacing_follows_the_formatting_locale() {
         // English formatting: no space. French formatting: U+202F before `%`.
-        assert_eq!(Formats::new(Locale::En, Locale::En).percent(42), "42%");
+        assert_eq!(Formats::new(Locale::En, Locale::En).percent(42.0, 0), "42%");
         assert_eq!(
-            Formats::new(Locale::Fr, Locale::Fr).percent(42),
+            Formats::new(Locale::Fr, Locale::Fr).percent(42.0, 0),
             "42\u{202f}%"
         );
         // Percent spacing is a FORMATTING convention (like the group/decimal
         // separators), NOT text vocabulary: it follows the formatting locale
         // regardless of the text locale. French words + English formatting →
         // `42%`; English words + French formatting → `42 %`.
-        assert_eq!(Formats::new(Locale::Fr, Locale::En).percent(42), "42%");
+        assert_eq!(Formats::new(Locale::Fr, Locale::En).percent(42.0, 0), "42%");
         assert_eq!(
-            Formats::new(Locale::En, Locale::Fr).percent(42),
+            Formats::new(Locale::En, Locale::Fr).percent(42.0, 0),
             "42\u{202f}%"
+        );
+    }
+
+    #[test]
+    fn percent_preserves_fractional_values() {
+        // A fractional percentage keeps its digits under the formatting locale's
+        // separators (the retiring client shows `12.3456%`).
+        assert_eq!(
+            Formats::new(Locale::En, Locale::En).percent(12.3456, 4),
+            "12.3456%"
+        );
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::Fr).percent(12.3456, 4),
+            "12,3456\u{202f}%"
         );
     }
 

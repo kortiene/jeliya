@@ -30,11 +30,12 @@ pub fn status_for(strings: &dyn Catalog, state: State) -> &'static str {
     }
 }
 
-/// A member role label. Unknown roles pass through raw.
+/// A member role label. The closed `jeliya_api::Role` vocabulary is exactly
+/// `authority` / `member` (the v1 `owner` and the non-role `agent` are retired).
+/// Unknown roles pass through raw.
 pub fn role_label(strings: &dyn Catalog, role: &str) -> String {
     match role {
-        "owner" => strings.wire_role_owner().to_string(),
-        "agent" => strings.wire_role_agent().to_string(),
+        "authority" => strings.wire_role_authority().to_string(),
         "member" => strings.wire_role_member().to_string(),
         other => other.to_string(),
     }
@@ -71,21 +72,34 @@ mod tests {
     #[test]
     fn unknown_values_pass_through_raw() {
         // A future role/status/path the client has never heard of renders as
-        // itself, never as a fabricated label or a crash.
+        // itself, never as a fabricated label or a crash. `owner`/`agent` are now
+        // in this category — retired vocabulary, so they pass through raw.
         assert_eq!(role_label(&En, "observer"), "observer");
+        assert_eq!(role_label(&En, "owner"), "owner");
         assert_eq!(member_status_label(&En, "suspended"), "suspended");
         assert_eq!(peer_path_label(&En, "mesh"), "mesh");
     }
 
     #[test]
-    fn known_values_are_never_the_wire_value_itself() {
-        // The label a known value maps to is a designed word, distinct from the
-        // wire constant (case and spelling both differ).
-        assert_eq!(role_label(&En, "owner"), "Owner");
-        assert_ne!(role_label(&En, "owner"), "owner");
+    fn the_canonical_role_maps_to_a_designed_label() {
+        // The label a known ROLE maps to is a designed word, distinct from the
+        // wire constant (roles are translatable display, not Tier-2 tokens).
+        assert_eq!(role_label(&En, "authority"), "Authority");
+        assert_eq!(role_label(&Fr, "authority"), "Autorité");
+        assert_eq!(role_label(&En, "member"), "Member");
+        assert_ne!(role_label(&Fr, "authority"), "authority");
         assert_eq!(member_status_label(&En, "active"), "Member");
-        assert_eq!(peer_path_label(&Fr, "relay"), "relais");
-        assert_ne!(peer_path_label(&Fr, "relay"), "relay");
+    }
+
+    #[test]
+    fn tier2_path_tokens_are_rendered_verbatim() {
+        // `direct`/`relay` are Tier-2 protocol tokens (docs/glossary-fr.md):
+        // rendered EXACTLY as the daemon reports, IDENTICAL in every language —
+        // the deliberate exception to "labels differ from wire values".
+        assert_eq!(peer_path_label(&En, "relay"), "relay");
+        assert_eq!(peer_path_label(&Fr, "relay"), "relay");
+        assert_eq!(peer_path_label(&En, "direct"), "direct");
+        assert_eq!(peer_path_label(&Fr, "direct"), "direct");
     }
 
     #[test]

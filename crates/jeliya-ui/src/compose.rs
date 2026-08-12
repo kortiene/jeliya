@@ -74,14 +74,13 @@ pub fn WebRoot() -> Element {
     let handle = composition.handle.clone();
     let services = composition.services.clone();
 
-    // Set `<html lang>` once from the resolved locale (web target only). A
-    // `use_hook` runs exactly once on mount — the right place for a one-shot
-    // boot side effect that must not re-run every render.
+    // The injected `<html lang>` setter AppRoot calls REACTIVELY on the resolved
+    // locale (mount and any live switch). Confined here (web-sys); never in the
+    // shared AppRoot (Decision-3). Other targets pass `None`.
     #[cfg(feature = "web")]
-    {
-        let lang_services = composition.services.clone();
-        use_hook(move || apply_document_lang(&lang_services, platform_locale().as_deref()));
-    }
+    let on_locale_lang = Some(use_callback(|tag: String| set_document_lang(&tag)));
+    #[cfg(not(feature = "web"))]
+    let on_locale_lang: Option<Callback<String>> = None;
 
     use_future(move || {
         let composition = composition.clone();
@@ -116,7 +115,7 @@ pub fn WebRoot() -> Element {
     });
 
     rsx! {
-        AppRoot { handle, services, platform_locale: platform_locale() }
+        AppRoot { handle, services, platform_locale: platform_locale(), on_locale_lang }
     }
 }
 
@@ -133,7 +132,16 @@ pub fn WebRoot() -> Element {
 fn boot_fixture_state() -> Option<State> {
     #[cfg(feature = "web")]
     {
-        let search = web_sys::window()?.location().search().ok()?;
+        let location = web_sys::window()?.location();
+        // DEV/TEST ONLY: the fixture must never activate in production, or a shared
+        // link / redirect / future product query parameter carrying `?boot=…` could
+        // disable the app. Gate it on a LOOPBACK host — the e2e serves from
+        // 127.0.0.1, a real deployment never does.
+        let host = location.hostname().ok()?;
+        if host != "127.0.0.1" && host != "localhost" && host != "[::1]" {
+            return None;
+        }
+        let search = location.search().ok()?;
         // A tiny hand-parse (no url crate): find `boot=` in the query string.
         let value = search
             .trim_start_matches('?')
@@ -194,29 +202,18 @@ fn first_supported_language_tag(tags: impl Iterator<Item = String>) -> Option<St
         .find(|tag| crate::l10n::Locale::from_tag(tag).is_some())
 }
 
-/// Set `<html lang>` from the resolved TEXT locale (the same resolution
-/// `AppRoot` performs), web target only. Called once at composition so the
-/// document element reports the page's actual language instead of index.html's
-/// static `en` (#177 §5.1). Confined here — never in a shared component — so no
-/// `web-sys`/`cfg` leaks into `AppRoot`. A reactive re-set on a live locale
-/// switch rides with that later slice; the foundation has no switch UI yet.
+/// Set `<html lang>` to `tag`, web target only. Injected into `AppRoot` as the
+/// `on_locale_lang` callback so the document language tracks the resolved TEXT
+/// locale REACTIVELY (mount and any live switch), while the `web-sys` access stays
+/// confined here — never in the shared `AppRoot` (Decision-3; #177 §5.1). `AppRoot`
+/// owns the locale resolution and hands the resolved tag to this setter.
 #[cfg(feature = "web")]
-fn apply_document_lang(services: &PlatformServices, platform: Option<&str>) {
-    use jeliya_platform::PreferenceKey;
-    let preferences = services.preferences();
-    let text = preferences.get(&PreferenceKey::TextLocale);
-    let formatting = preferences.get(&PreferenceKey::FormattingLocale);
-    let state = crate::l10n::LocaleState::resolve(
-        text.as_deref(),
-        formatting.as_deref(),
-        platform,
-        platform,
-    );
+fn set_document_lang(tag: &str) {
     if let Some(element) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.document_element())
     {
-        let _ = element.set_attribute("lang", state.text.tag());
+        let _ = element.set_attribute("lang", tag);
     }
 }
 
