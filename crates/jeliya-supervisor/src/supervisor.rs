@@ -643,12 +643,13 @@ impl Supervisor {
     /// pipe deadlocks the daemon's synchronous tracing layer (the same records
     /// survive in `<data_dir>/logs`).
     async fn spawn(&self, binary: &Path) -> Result<SpawnedDaemon, SupervisorError> {
-        std::fs::create_dir_all(&self.data_dir).map_err(|e| {
-            SupervisorError::PortfileUnreadable {
-                path: self.data_dir.clone(),
-                why: format!("could not create the data dir: {e}"),
-            }
-        })?;
+        // The data dir is already created AND canonicalized by `Supervisor::resolve`
+        // (fail-closed there), so no `create_dir_all` here: a second one would be a
+        // redundant synchronous `stat`+`mkdir` on the executor thread that, on a
+        // stalled NFS/FUSE mount, could hang `start_or_adopt` indefinitely — and on
+        // a current-thread runtime wedge every other task — BEFORE the announcement
+        // timeout is even established. The daemon (`--data-dir`) recreates the dir if
+        // it vanished after resolve.
 
         let mut cmd = Command::new(binary);
         cmd.arg("--supervised")

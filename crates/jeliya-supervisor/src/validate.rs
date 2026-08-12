@@ -375,8 +375,16 @@ pub(crate) fn open_lock_handle(data_dir: &Path) -> Option<fd_lock::RwLock<std::f
 /// leaves the lock held. `None` (no handle) is not held.
 pub(crate) fn lock_handle_is_held(handle: Option<&mut fd_lock::RwLock<std::fs::File>>) -> bool {
     match handle {
-        // `try_write` err (would-block) == someone else holds it == the daemon.
-        Some(lock) => lock.try_write().is_err(),
+        // Held ONLY when `try_write` fails with `WouldBlock` (another owner — the
+        // daemon — holds the advisory lock). Any OTHER error (`Interrupted`, a
+        // transient filesystem error) is NOT proof of the daemon's hold: treating
+        // it as held could retain an unrelated replacement inode whose later
+        // release would report a premature `Graceful`. Fail closed — only
+        // `WouldBlock` counts.
+        Some(lock) => matches!(
+            lock.try_write(),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+        ),
         None => false,
     }
 }

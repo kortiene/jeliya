@@ -104,7 +104,17 @@ pub(crate) async fn probe_health(
 fn parse_health_response(response: &[u8]) -> Option<HealthReport> {
     let text = String::from_utf8_lossy(response);
     let (head, body) = text.split_once("\r\n\r\n")?;
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
+    // Parse the status-line TOKENS, not a prefix: `head.starts_with("HTTP/1.1 200")`
+    // also accepts a malformed/extension status like `HTTP/1.1 2000 Not Healthy`,
+    // which would let a non-200 listener on a recycled port pass as a live daemon
+    // (and satisfy the pre-eviction ownership proof). Require the status token to
+    // equal EXACTLY `200`.
+    let mut status_line = head.lines().next()?.split_whitespace();
+    let version = status_line.next()?;
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        return None;
+    }
+    if status_line.next()? != "200" {
         return None;
     }
     serde_json::from_str::<HealthReport>(body.trim()).ok()
@@ -127,6 +137,30 @@ mod tests {
         );
         assert_eq!(report.advertised_generation().protocol, Some(2));
         assert_eq!(report.advertised_generation().storage_generation, Some(2));
+    }
+
+    /// The status TOKEN must equal exactly `200`: a prefix check accepted an
+    /// extension/malformed status like `HTTP/1.1 2000 Not Healthy` with an
+    /// otherwise-valid body, letting a non-200 listener on a recycled port pass as
+    /// a live daemon (and satisfy the pre-eviction ownership proof).
+    #[test]
+    fn a_non_200_status_with_a_valid_body_is_rejected() {
+        let body = "{\"ok\":true,\"pid\":99,\"port\":7420,\"protocol\":2,\
+            \"min_protocol\":2,\"storage_generation\":2}";
+        for status in [
+            "2000 Not Healthy",
+            "500 Internal Server Error",
+            "204 No Content",
+        ] {
+            let raw = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\r\n{body}");
+            assert!(
+                parse_health_response(raw.as_bytes()).is_none(),
+                "status `{status}` must not parse as a healthy 200"
+            );
+        }
+        // The exact-200 path still parses.
+        let ok = format!("HTTP/1.1 200 OK\r\n\r\n{body}");
+        assert!(parse_health_response(ok.as_bytes()).is_some());
     }
 
     #[test]
