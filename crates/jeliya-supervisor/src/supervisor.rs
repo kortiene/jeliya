@@ -675,10 +675,53 @@ impl Supervisor {
         // process's fork before its exec — cannot be exec'd until that writer
         // fd is gone. It clears within milliseconds, so a short bounded backoff
         // turns a spurious hard failure into a successful spawn.
+        //
+        // Each `spawn()` runs OFF the executor via `spawn_blocking`, bounded by the
+        // spawn deadline: `Command::spawn` is synchronous and, because fork+exec
+        // reports exec failure back over a pipe, it BLOCKS the caller until the
+        // child execs — so an executable on a stalled NFS/FUSE mount would hang this
+        // thread (wedging a current-thread runtime) BEFORE `read_announcement`
+        // establishes the spawn timeout. On timeout we detach a cleanup task that
+        // awaits the still-running spawn and kills any child a late exec produces,
+        // so a stalled spawn never leaks a daemon.
+        let spawn_deadline = validate::deadline_from(self.timeouts.spawn);
         let mut child = {
             let mut attempts = 0u32;
             loop {
-                match cmd.spawn() {
+                let remaining =
+                    spawn_deadline.saturating_duration_since(tokio::time::Instant::now());
+                let mut join = tokio::task::spawn_blocking(move || {
+                    let result = cmd.spawn();
+                    (cmd, result)
+                });
+                let (returned, result) = tokio::select! {
+                    joined = &mut join => match joined {
+                        Ok(pair) => pair,
+                        Err(join_err) => {
+                            return Err(SupervisorError::Spawn(std::io::Error::other(format!(
+                                "process-creation task failed: {join_err}"
+                            ))))
+                        }
+                    },
+                    _ = tokio::time::sleep(remaining) => {
+                        // The spawn is still running (a stalled exec). Detach a task
+                        // that awaits it and kills any child it eventually produces
+                        // — the `JoinHandle` is kept (not dropped) so a late exec is
+                        // reaped, not orphaned with `kill_on_drop(false)`.
+                        tokio::spawn(async move {
+                            if let Ok((_, Ok(mut late))) = join.await {
+                                let _ = late.start_kill();
+                                let _ = late.wait().await;
+                            }
+                        });
+                        return Err(SupervisorError::Spawn(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "process creation exceeded the spawn budget (executable on a stalled mount?)",
+                        )));
+                    }
+                };
+                cmd = returned;
+                match result {
                     Ok(c) => break c,
                     Err(e) if e.raw_os_error() == Some(26) && attempts < 10 => {
                         attempts += 1;

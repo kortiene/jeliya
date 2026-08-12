@@ -326,7 +326,13 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
 pub(crate) async fn portfile_present(data_dir: &Path, deadline: tokio::time::Instant) -> bool {
     let path = portfile::portfile_path(data_dir);
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-    let probe = tokio::task::spawn_blocking(move || matches!(path.try_exists(), Ok(true)));
+    let probe = tokio::task::spawn_blocking(move || {
+        // Reject a result observed AFTER the deadline: tokio's `timeout` polls the
+        // joined probe BEFORE its timer, so at a zero/exhausted budget a completed
+        // `stat` could otherwise be accepted out-of-budget. Gate on the deadline
+        // inside the task, after the (possibly slow) `stat`.
+        matches!(path.try_exists(), Ok(true)) && tokio::time::Instant::now() < deadline
+    });
     matches!(tokio::time::timeout(budget, probe).await, Ok(Ok(true)))
 }
 
@@ -340,7 +346,12 @@ pub(crate) async fn portfile_present(data_dir: &Path, deadline: tokio::time::Ins
 pub(crate) async fn portfile_absent(data_dir: &Path, deadline: tokio::time::Instant) -> bool {
     let path = portfile::portfile_path(data_dir);
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-    let probe = tokio::task::spawn_blocking(move || matches!(path.try_exists(), Ok(false)));
+    let probe = tokio::task::spawn_blocking(move || {
+        // See `portfile_present`: reject an absence observed after the deadline so
+        // `shutdown`/`stop_adopted` cannot report `Graceful` for an out-of-budget
+        // exit.
+        matches!(path.try_exists(), Ok(false)) && tokio::time::Instant::now() < deadline
+    });
     matches!(tokio::time::timeout(budget, probe).await, Ok(Ok(true)))
 }
 
@@ -842,6 +853,26 @@ mod tests {
         );
         assert!(!probe(&dir), "a present portfile is not absent");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A ZERO/exhausted budget must NOT accept even a genuinely-absent portfile:
+    /// the deadline is checked INSIDE the probe (after the `stat`), so a result
+    /// observed out-of-budget is rejected — otherwise tokio's `timeout` (which
+    /// polls the joined probe before its timer) could accept it and let `shutdown`
+    /// report a premature `Graceful`.
+    #[test]
+    fn portfile_absent_rejects_an_out_of_budget_result() {
+        let dir = tmp_dir("pf-absent-zero"); // no portfile → genuinely absent
+        let confirmed = rt().block_on(async {
+            // The deadline is already NOW: any result is out-of-budget.
+            let deadline = tokio::time::Instant::now();
+            portfile_absent(&dir, deadline).await
+        });
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            !confirmed,
+            "a zero budget must not accept even a confirmed-absent portfile"
+        );
     }
 
     /// `wait_portfile_removed` returns false when the portfile is never removed
