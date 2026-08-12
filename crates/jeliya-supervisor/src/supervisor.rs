@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader, Lines, Take};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::error::SupervisorError;
@@ -192,18 +192,33 @@ impl Supervisor {
             // respawn), which is where a live incompatible incumbent is replaced.
             // (`gate_incompatible` is also false on the eviction respawn itself.)
             if gate_incompatible {
-                if let Ok(existing) =
-                    portfile::read_portfile(&self.data_dir, self.strict_portfile_perms)
-                {
-                    let declared = existing.declared_generation();
-                    if !self.expected.matches(declared) {
-                        let live_replaceable = self.replace_incompatible
-                            && validate::prove_owned(&existing, &self.timeouts).await;
-                        if !live_replaceable {
-                            return Err(SupervisorError::GenerationMismatch {
-                                expected: self.expected,
-                                actual: declared,
-                            });
+                match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms) {
+                    // No portfile → nothing to gate; proceed to spawn.
+                    Err(SupervisorError::PortfileMissing(_)) => {}
+                    // A truncated / malformed / permission-denied portfile is
+                    // EVIDENCE, not absence — silently spawning over it discards
+                    // it. Fail closed with the read error (the eviction respawn,
+                    // gate_incompatible=false, is unaffected).
+                    Err(e) => return Err(e),
+                    Ok(existing) => {
+                        let declared = existing.declared_generation();
+                        if !self.expected.matches(declared) {
+                            // Defer to eviction ONLY for a live incumbent bound to
+                            // THIS directory. A COPIED portfile recording a foreign
+                            // data_dir whose original daemon is still live would
+                            // otherwise `prove_owned` true and get the ORIGINAL
+                            // SIGTERMed — so the data-dir binding gates the
+                            // replaceable check, not just the dial path.
+                            let live_replaceable = self.replace_incompatible
+                                && validate::data_dir_mismatch(&self.data_dir, &existing.data_dir)
+                                    .is_none()
+                                && validate::prove_owned(&existing, &self.timeouts).await;
+                            if !live_replaceable {
+                                return Err(SupervisorError::GenerationMismatch {
+                                    expected: self.expected,
+                                    actual: declared,
+                                });
+                            }
                         }
                     }
                 }
@@ -519,14 +534,30 @@ impl Supervisor {
             .stdout
             .take()
             .ok_or_else(|| SupervisorError::Handshake("no stdout pipe".to_owned()))?;
-        Ok((child, stdin, BufReader::new(stdout).lines()))
+        Ok((
+            child,
+            stdin,
+            BufReader::new(stdout.take(MAX_ANNOUNCEMENT_BYTES)).lines(),
+        ))
     }
 }
 
 /// The pieces [`Supervisor::spawn`] hands back: the child process, its held
 /// stdin (the parent-death pipe, kept for the daemon's life), and a line reader
 /// over its stdout for the announcement.
-type SpawnedDaemon = (Child, Option<ChildStdin>, Lines<BufReader<ChildStdout>>);
+/// The most of a daemon's stdout we will buffer looking for the announcement
+/// line: a corrupt/overridden daemon that writes an arbitrarily long line with
+/// no newline would otherwise grow `next_line`'s buffer without bound until the
+/// spawn timeout (which caps time, not bytes). The real ready line is a few
+/// hundred bytes; capping the read at 64 KiB turns a hostile stream into a
+/// bounded, unparseable partial that fails the handshake.
+const MAX_ANNOUNCEMENT_BYTES: u64 = 64 * 1024;
+
+type SpawnedDaemon = (
+    Child,
+    Option<ChildStdin>,
+    Lines<BufReader<Take<ChildStdout>>>,
+);
 
 /// The daemon's first stdout line. Extra fields (http, ws, version, protocol,
 /// storage_generation, limits, data_dir, portfile) are ignored — the generation
@@ -541,7 +572,7 @@ enum ReadyLine {
 /// Read the first stdout line that starts with `{` (skipping any stray
 /// human-readable output), parse it as a [`ReadyLine`], all within `budget`.
 async fn read_announcement(
-    lines: &mut Lines<BufReader<ChildStdout>>,
+    lines: &mut Lines<BufReader<Take<ChildStdout>>>,
     budget: Duration,
 ) -> Result<ReadyLine, SupervisorError> {
     let line = tokio::time::timeout(budget, async {

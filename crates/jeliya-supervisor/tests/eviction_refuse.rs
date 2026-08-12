@@ -226,6 +226,41 @@ async fn a_stale_incompatible_portfile_is_refused_even_with_replace_enabled() {
     );
 }
 
+/// A MALFORMED (truncated) `daemon.json` is evidence, not absence: the pre-spawn
+/// gate must fail closed with the read error rather than spawn a fresh daemon
+/// that silently overwrites it.
+#[tokio::test]
+async fn a_malformed_portfile_is_not_silently_overwritten() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-torn-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    let stub = root.join("jeliyad-fresh");
+    write_ready_stub(&stub);
+    // A torn write: valid-JSON prefix, no close.
+    std::fs::write(data.join("daemon.json"), r#"{"pid": 1, "port":"#).expect("write torn portfile");
+
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub),
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+    let result = sup.start_or_adopt().await;
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        matches!(result, Err(SupervisorError::PortfileUnreadable { .. })),
+        "a malformed portfile must fail closed, not be overwritten; got: {result:?}"
+    );
+}
+
 /// A stub that announces a valid `ready` line and then blocks — a "fresh
 /// daemon". Used to prove the pre-spawn gate fires WITHOUT spawning it (if it
 /// were spawned, the announcement would drive the owned path, not a refusal).

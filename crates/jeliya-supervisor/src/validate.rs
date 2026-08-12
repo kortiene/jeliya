@@ -101,6 +101,20 @@ pub(crate) async fn validate_portfile(
         });
     }
 
+    // 5. Bearer token shape (last, so it only rejects an otherwise-VALID, LIVE
+    //    daemon's portfile — the corrupt-token case). jeliyad's token is 32
+    //    CSPRNG bytes hex-encoded — 64 lowercase hex chars
+    //    (`lifecycle::generate_token`). A corrupted token (empty / wrong length /
+    //    non-hex) still parses as a `String`, so without this the resolver hands
+    //    back an "apparently valid" target that every WebSocket handshake then
+    //    rejects — a failure far from its cause. Refuse it here as unusable.
+    if !token_is_well_formed(portfile.token()) {
+        return Err(SupervisorError::PortfileUnreadable {
+            path: portfile::portfile_path(data_dir),
+            why: "auth_token is not a 64-char lowercase-hex bearer token".to_owned(),
+        });
+    }
+
     Ok(Validated {
         portfile,
         health: report,
@@ -116,7 +130,7 @@ pub(crate) async fn validate_portfile(
 /// exact match, treated as a mismatch: a portfile pointing at a directory that
 /// is not the one in hand is never trusted. Returns the error to raise, or
 /// `None` when they match.
-fn data_dir_mismatch(resolved: &Path, recorded: &str) -> Option<SupervisorError> {
+pub(crate) fn data_dir_mismatch(resolved: &Path, recorded: &str) -> Option<SupervisorError> {
     let recorded_path = Path::new(recorded);
     let recorded_canonical = recorded_path
         .canonicalize()
@@ -129,6 +143,16 @@ fn data_dir_mismatch(resolved: &Path, recorded: &str) -> Option<SupervisorError>
             resolved: resolved.to_path_buf(),
         })
     }
+}
+
+/// Whether `token` has jeliyad's bearer-token shape: exactly 64 lowercase hex
+/// characters (32 CSPRNG bytes hex-encoded). Rejects empty, wrong-length, and
+/// non-hex tokens that would authenticate no handshake.
+fn token_is_well_formed(token: &str) -> bool {
+    token.len() == 64
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// The first advertised endpoint (`ws` then `http`) that is present but not
@@ -204,7 +228,13 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
     let path = portfile::portfile_path(data_dir);
     let deadline = tokio::time::Instant::now() + budget;
     loop {
-        if !path.exists() {
+        // `try_exists`, not `Path::exists`: the latter maps a stat ERROR (an
+        // unreadable dir mid-shutdown) to `false` — the same as genuine absence —
+        // which would report cleanup complete when it may not be. Only a
+        // confirmed `Ok(false)` (the file is really gone) counts as removed; a
+        // stat error keeps waiting and, on timeout, yields the honest
+        // `ShutdownTimedOut`.
+        if matches!(path.try_exists(), Ok(false)) {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -549,6 +579,24 @@ mod tests {
             !result,
             "a portfile that never disappears must time out, not report removed"
         );
+    }
+
+    #[test]
+    fn token_is_well_formed_accepts_only_64_lowercase_hex() {
+        // 64 lowercase hex = 32 CSPRNG bytes hex-encoded (jeliyad's token).
+        let good = "0123456789abcdef".repeat(4);
+        assert_eq!(good.len(), 64);
+        assert!(super::token_is_well_formed(&good));
+        // Malformed: empty, too short, too long, uppercase, non-hex.
+        assert!(!super::token_is_well_formed(""));
+        assert!(!super::token_is_well_formed("deadbeef"));
+        assert!(!super::token_is_well_formed(&"a".repeat(63)));
+        assert!(!super::token_is_well_formed(&"a".repeat(65)));
+        assert!(!super::token_is_well_formed(&"A".repeat(64))); // uppercase
+        assert!(!super::token_is_well_formed(&format!(
+            "g{}",
+            "a".repeat(63)
+        ))); // non-hex
     }
 
     /// prove_owned returns false when nothing answers on the advertised port.

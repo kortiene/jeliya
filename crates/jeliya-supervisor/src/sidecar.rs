@@ -120,10 +120,16 @@ impl Sidecar {
                     // actually gone (its removal is the daemon's final step); a
                     // lingering portfile means cleanup did not finish → `Forced`.
                     Ok(Ok(status)) if status.success() => {
-                        if crate::portfile::portfile_path(&data_dir).exists() {
-                            Ok(Teardown::Forced)
-                        } else {
+                        // Only a CONFIRMED absence (`Ok(false)`) is `Graceful`; a
+                        // lingering portfile OR a stat error (unreadable dir) is
+                        // `Forced` — cleanup is not proven complete.
+                        if matches!(
+                            crate::portfile::portfile_path(&data_dir).try_exists(),
+                            Ok(false)
+                        ) {
                             Ok(Teardown::Graceful)
+                        } else {
+                            Ok(Teardown::Forced)
                         }
                     }
                     // The daemon exited abnormally (crashed / was externally
