@@ -330,6 +330,20 @@ pub(crate) async fn portfile_present(data_dir: &Path, deadline: tokio::time::Ins
     matches!(tokio::time::timeout(budget, probe).await, Ok(Ok(true)))
 }
 
+/// A bounded, off-executor "is the portfile CONFIRMED absent?" probe — the
+/// single-shot counterpart to [`portfile_present`] for the owned `shutdown`
+/// present→absent completion check. Only a confirmed `Ok(false)` (`try_exists`
+/// says the file is really gone) observed WITHIN the budget is `true`; a stat
+/// ERROR, a timeout, or a still-present file all return `false`, so cleanup that
+/// cannot be confirmed within `teardown` reports `Forced`, never a premature
+/// `Graceful`.
+pub(crate) async fn portfile_absent(data_dir: &Path, deadline: tokio::time::Instant) -> bool {
+    let path = portfile::portfile_path(data_dir);
+    let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let probe = tokio::task::spawn_blocking(move || matches!(path.try_exists(), Ok(false)));
+    matches!(tokio::time::timeout(budget, probe).await, Ok(Ok(true)))
+}
+
 /// The daemon's advisory lock file name, matching `jeliyad`'s `LOCKFILE_NAME`.
 pub(crate) const LOCKFILE_NAME: &str = "daemon.lock";
 
@@ -434,13 +448,20 @@ pub(crate) async fn wait_lock_handle_released(
     let poll = tokio::task::spawn_blocking(move || {
         let deadline = std::time::Instant::now() + budget;
         loop {
+            // Check the DEADLINE before attempting/accepting the lock, every
+            // iteration: a release observed only AFTER the budget expired is an
+            // out-of-budget exit and must NOT be reported as released (→ `Graceful`).
+            // Accepting `try_write` first would let a late release win — and the
+            // outer `timeout` cannot close that race, because tokio's `Timeout`
+            // polls the joined future BEFORE its timer, so a completed blocking task
+            // (especially at a zero remaining budget) wins even when both are ready.
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
             // A successful exclusive lock means the daemon released it; the guard
             // drops immediately, so the brief hold does not block the next start.
             if lock.try_write().is_ok() {
                 return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -794,6 +815,27 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `portfile_absent` confirms absence bounded and OFF the executor (the owned
+    /// `shutdown` present→absent completion probe). Only a confirmed-gone portfile
+    /// is `true`; a present one is `false`.
+    #[test]
+    fn portfile_absent_confirms_absence_bounded() {
+        let dir = tmp_dir("pf-absent");
+        let probe = |dir: &std::path::Path| {
+            rt().block_on(async {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                portfile_absent(dir, deadline).await
+            })
+        };
+        assert!(probe(&dir), "a missing portfile is confirmed absent");
+        write_portfile(
+            &dir,
+            r#"{"pid":1,"port":9,"data_dir":"/d","auth_token":"t"}"#,
+        );
+        assert!(!probe(&dir), "a present portfile is not absent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// `wait_portfile_removed` returns false when the portfile is never removed
     /// within the budget — so `stop_adopted` surfaces `ShutdownTimedOut` rather
     /// than a premature `Graceful` when cleanup stalls (the P2's honest verdict).
@@ -901,6 +943,36 @@ mod tests {
         drop(daemon_lock);
         std::fs::remove_dir_all(&dir).ok();
         assert!(freed, "a freed lock must be observed as released");
+    }
+
+    /// A ZERO budget must NOT accept even a FREE lock: the deadline is checked
+    /// BEFORE `try_write`, so a release only observable out-of-budget is never
+    /// reported as the daemon's exit (a premature `Graceful`). Pins the
+    /// deadline-first ordering (the try-write-first order let a late release win,
+    /// and tokio's `Timeout` polls the joined future before its timer, so the outer
+    /// bound could not close that race).
+    #[test]
+    fn wait_lock_handle_released_rejects_a_zero_budget_release() {
+        let dir = tmp_dir("lockzero");
+        let lock_path = dir.join(LOCKFILE_NAME);
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        // Nobody holds it — `try_write` WOULD succeed — but a zero budget is
+        // out-of-budget, so the deadline-first check refuses it.
+        let free = open_lock_handle(&dir).expect("open the lock handle");
+        assert!(
+            !rt().block_on(wait_lock_handle_released(
+                Some(free),
+                Duration::from_millis(0)
+            )),
+            "a zero budget must not accept even a free lock"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A `None` lock snapshot FAILS CLOSED. If `stop_adopted` could not capture a

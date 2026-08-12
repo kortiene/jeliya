@@ -110,16 +110,20 @@ impl Sidecar {
         match &mut self.ownership {
             Ownership::Adopted => Ok(Teardown::LeftRunning),
             Ownership::Owned { child, stdin } => {
+                // Time-box the WHOLE owned teardown — portfile probes included —
+                // within one `teardown`. Start the deadline FIRST so the metadata
+                // probes below count against it and cannot run unbounded on a
+                // stalled mount before the timeout exists (mirrors the adopted path).
+                let deadline = validate::deadline_from(self.timeouts.teardown);
                 // Snapshot portfile presence BEFORE the shutdown signal: `Graceful`
                 // requires a present→absent TRANSITION (the daemon's final step),
                 // not mere absence — an already-absent `daemon.json` (external
                 // delete / prior partial shutdown) does not prove this run's
                 // cleanup completed, and jeliyad treats a missing portfile during
-                // removal as success. Mirrors the adopted path.
-                let portfile_present_before = matches!(
-                    crate::portfile::portfile_path(&data_dir).try_exists(),
-                    Ok(true)
-                );
+                // removal as success. BOUNDED and OFF the executor (`try_exists` is a
+                // `stat` that blocks on a stalled mount and would otherwise keep
+                // stdin open, leaving the daemon running).
+                let portfile_present_before = validate::portfile_present(&data_dir, deadline).await;
                 // Closing stdin is the graceful `--supervised` signal.
                 drop(stdin.take());
                 // Capture the pgid BEFORE the reaping wait: once `wait()` reaps the
@@ -131,7 +135,11 @@ impl Sidecar {
                 // `daemon.json`, be reported `Graceful`). The `Err(_elapsed)` arm
                 // force-kills the un-reaped child, so it already reaches the group.
                 let leader_pgid = child.id();
-                match tokio::time::timeout(self.timeouts.teardown, child.wait()).await {
+                // Bound the reaping wait by the budget REMAINING after the presence
+                // probe, so the probe's time counts against `teardown` rather than
+                // on top of it.
+                let wait_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+                match tokio::time::timeout(wait_budget, child.wait()).await {
                     // A zero exit is NOT itself proof of completed cleanup: the
                     // daemon discards its room-close result and only LOGS a failed
                     // `daemon.json` removal, so it can exit 0 with cleanup
@@ -151,11 +159,10 @@ impl Sidecar {
                         // portfile was there before the signal and is confirmed
                         // gone now (its removal is the daemon's final step). An
                         // already-absent portfile, a lingering one, or a stat error
-                        // (unreadable dir) is `Forced` — cleanup is not proven.
-                        let removed = matches!(
-                            crate::portfile::portfile_path(&data_dir).try_exists(),
-                            Ok(false)
-                        );
+                        // (unreadable dir) is `Forced` — cleanup is not proven. This
+                        // probe is BOUNDED and OFF the executor too (a stalled mount
+                        // must not hang here after `child.wait()` completed).
+                        let removed = validate::portfile_absent(&data_dir, deadline).await;
                         if portfile_present_before && removed {
                             Ok(Teardown::Graceful)
                         } else {
@@ -399,6 +406,7 @@ mod tests {
     /// reported as `Forced`, not `Graceful`: cleanup may not have run. Red-before:
     /// the pre-fix `shutdown()` returned `Graceful` for any `Ok(status)`,
     /// regardless of `status.success()`.
+    #[cfg(unix)] // spawns a real `sh` child (Unix-only; Windows uses a different teardown)
     #[test]
     fn shutdown_reports_forced_for_an_abnormal_owned_exit() {
         use std::process::Stdio;
@@ -444,6 +452,7 @@ mod tests {
     /// An owned daemon that exits ZERO but leaves its `daemon.json` behind did
     /// not finish cleanup, so `shutdown` must report `Forced`, not `Graceful`.
     /// Red-before: before the portfile-removal check, any zero exit → `Graceful`.
+    #[cfg(unix)] // spawns a real `sh` child (Unix-only; Windows uses a different teardown)
     #[test]
     fn shutdown_reports_forced_when_a_zero_exit_leaves_the_portfile() {
         use std::process::Stdio;
@@ -500,6 +509,7 @@ mod tests {
     /// success, and an overridden child can exit 0 with no cleanup). Red-before/
     /// green-after: without the present→absent transition, a zero-exiting child
     /// with no portfile reports `Graceful`.
+    #[cfg(unix)] // spawns a real `sh` child (Unix-only; Windows uses a different teardown)
     #[test]
     fn owned_shutdown_with_a_pre_absent_portfile_is_forced() {
         use std::process::Stdio;
