@@ -415,6 +415,20 @@ fn view() -> Element {
     );
   }
 
+  // A `const`/`static`-bound copy literal interpolated into RSX is also flagged.
+  for (const decl of ['const LABEL: &str = "Delete account";', 'static LABEL: &str = "Delete account";']) {
+    const constBound = `
+${decl}
+fn view() -> Element {
+    rsx! { div { "{LABEL}" } }
+}
+`;
+    assert.ok(
+      scanComponentLiterals('x.rs', constBound).some((f) => f.code === 'rust-text'),
+      `a ${decl.split(' ')[0]}-bound copy literal must be flagged`,
+    );
+  }
+
   // A catalog-derived binding (no string-literal RHS) is NOT flagged.
   const catalogDerived = `
 fn view() -> Element {
@@ -490,6 +504,25 @@ fn view() -> Element {
   assert.ok(
     !scanComponentLiterals('app.rs', source).some((f) => f.code === 'raw-semantic-element'),
     'a named nav landmark must not be flagged',
+  );
+
+  // A nav that is itself UNNAMED but contains a named DESCENDANT (e.g. an icon
+  // button) is still flagged — the descendant's name does not name the landmark.
+  const descendantNamed = `
+fn view() -> Element {
+    rsx! {
+        nav {
+            class: "rooms-list",
+            button { "aria-label": "{close_label}", "x" }
+        }
+    }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('rogue.rs', descendantNamed).some(
+      (f) => f.code === 'raw-semantic-element' && /nav/.test(f.message),
+    ),
+    'an unnamed nav with a named descendant must still be flagged',
   );
 });
 

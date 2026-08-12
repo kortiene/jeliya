@@ -290,6 +290,11 @@ pub trait Catalog {
     fn format_today(&self) -> &'static str;
     /// The "yesterday" day-divider label (vocabulary, text locale).
     fn format_yesterday(&self) -> &'static str;
+    /// The month name for `1..=12` (vocabulary, text locale): English `January`,
+    /// French `janvier`. `None` outside that range — a total function so a stray
+    /// index degrades ([`format::Formats::date`] renders just the day) instead of
+    /// crashing a render; callers pass 1–12.
+    fn month_name(&self, month: u32) -> Option<&'static str>;
 
     /// The status footer sentence: `client · {lifecycle}`.
     fn client_status(&self, lifecycle: &str) -> String;

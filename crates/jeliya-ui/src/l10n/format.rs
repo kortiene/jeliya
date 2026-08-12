@@ -16,17 +16,15 @@
 //! (resolved to a supported convention in [`super::LocaleState::resolve`]), so
 //! widening later changes this table, not the call sites.
 //!
-//! Scope of THIS foundation slice: number, percent, and byte formatting (the
-//! D4 decision) plus the `Today`/`Yesterday` relative-time vocabulary — exactly
-//! what the shell renders today. The spec's full formatting table (§5.2) also
-//! lists a clock and a general day/date formatter; those are the documented
-//! **extension point of this same seam**, added when the first timeline/event
-//! surface needs them (the slice that also wires the palette hash into avatars).
-//! They are deliberately not pre-built here: a formatter with no caller is a
-//! guessed API, and the EN/FR date/clock conventions (`2 January` vs
-//! `2 janvier`, 12h vs 24h) are decisions that surface belongs to. Adding them
-//! extends `Formats` and this table — it does not redesign the call sites, which
-//! is the property the seam exists to guarantee.
+//! Scope of THIS foundation slice: the full §4-D4 EN/FR convention table —
+//! number, percent, and byte formatting, the `Today`/`Yesterday` relative-time
+//! vocabulary, plus `clock` (English 12-hour / French 24-hour) and `date` (day +
+//! localized month name, `2 January` / `2 janvier`). Only broad CLDR coverage for
+//! an arbitrary THIRD formatting locale (e.g. `de-CH`, which React got free from
+//! `Intl`) is still deferred — to a product-surface slice and its `icu4x`
+//! dependency decision (spec §14 Q2). The seam accepts any tag upstream, so
+//! widening later changes this table, not the call sites — the property the seam
+//! exists to guarantee.
 
 use super::{catalog_for, Catalog, Locale};
 
@@ -152,10 +150,8 @@ impl Formats {
         }
     }
 
-    /// Today / Yesterday, from the text locale (vocabulary). Real calendar dates
-    /// for older days need a date library and arrive with the first product
-    /// surface that renders them (spec §14 Q2); the foundation ships the two
-    /// relative labels the design system uses for dividers.
+    /// Today / Yesterday, from the text locale (vocabulary) — the relative day
+    /// dividers the design system uses. Absolute dates use [`Formats::date`].
     pub fn today(self) -> &'static str {
         self.strings().format_today()
     }
@@ -163,6 +159,40 @@ impl Formats {
     /// The "yesterday" divider label, from the text locale.
     pub fn yesterday(self) -> &'static str {
         self.strings().format_yesterday()
+    }
+
+    /// A clock time under the FORMATTING locale's convention: English 12-hour with
+    /// AM/PM (`2:30 PM`), French 24-hour (`14:30`). 12h-vs-24h is a regional
+    /// FORMATTING fact (§4-D4), so it follows the formatting locale. Inputs are
+    /// wrapped into range (`hour24 % 24`, `minute % 60`) so a caller cannot panic
+    /// this seam.
+    pub fn clock(self, hour24: u32, minute: u32) -> String {
+        let hour24 = hour24 % 24;
+        let minute = minute % 60;
+        match self.formatting {
+            Locale::En => {
+                let (hour12, period) = match hour24 {
+                    0 => (12, "AM"),
+                    1..=11 => (hour24, "AM"),
+                    12 => (12, "PM"),
+                    _ => (hour24 - 12, "PM"),
+                };
+                format!("{hour12}:{minute:02} {period}")
+            }
+            Locale::Fr => format!("{hour24:02}:{minute:02}"),
+        }
+    }
+
+    /// A day + month in the day-month ORDER both supported locales use (§4-D4):
+    /// `2 January` / `2 janvier`. The month NAME is vocabulary (text locale); the
+    /// day-month order is the shared convention. An out-of-range month has no name
+    /// (`Catalog::month_name` returns `None`), so it degrades to the bare day
+    /// rather than panicking — callers pass a validated 1..=12.
+    pub fn date(self, day: u32, month: u32) -> String {
+        match self.strings().month_name(month) {
+            Some(name) => format!("{day} {name}"),
+            None => day.to_string(),
+        }
     }
 }
 
@@ -272,6 +302,43 @@ mod tests {
             Formats::new(Locale::Fr, Locale::Fr).percent(12.3456, 4),
             "12,3456\u{202f}%"
         );
+    }
+
+    #[test]
+    fn clock_follows_the_formatting_locale_convention() {
+        let en = Formats::new(Locale::En, Locale::En);
+        assert_eq!(en.clock(14, 30), "2:30 PM");
+        assert_eq!(en.clock(0, 0), "12:00 AM"); // midnight
+        assert_eq!(en.clock(12, 5), "12:05 PM"); // noon
+        assert_eq!(en.clock(9, 0), "9:00 AM");
+        let fr = Formats::new(Locale::Fr, Locale::Fr);
+        assert_eq!(fr.clock(14, 30), "14:30");
+        assert_eq!(fr.clock(0, 0), "00:00");
+        assert_eq!(fr.clock(9, 5), "09:05");
+        // 12h/24h is a FORMATTING convention, so it follows the formatting locale.
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::En).clock(14, 30),
+            "2:30 PM"
+        );
+        assert_eq!(Formats::new(Locale::En, Locale::Fr).clock(14, 30), "14:30");
+        // Out-of-range inputs wrap rather than panic.
+        assert_eq!(en.clock(26, 61), en.clock(2, 1));
+    }
+
+    #[test]
+    fn date_uses_the_text_locale_month_name_in_day_month_order() {
+        assert_eq!(Formats::new(Locale::En, Locale::En).date(2, 1), "2 January");
+        assert_eq!(Formats::new(Locale::Fr, Locale::Fr).date(2, 1), "2 janvier");
+        // The month NAME follows the TEXT locale; the day-month order is shared.
+        assert_eq!(Formats::new(Locale::Fr, Locale::En).date(14, 8), "14 août");
+        assert_eq!(
+            Formats::new(Locale::En, Locale::Fr).date(14, 8),
+            "14 August"
+        );
+        // An out-of-range month has no name; the seam degrades to the bare day
+        // instead of panicking or emitting a trailing space.
+        assert_eq!(Formats::new(Locale::En, Locale::En).date(14, 0), "14");
+        assert_eq!(Formats::new(Locale::En, Locale::En).date(14, 13), "14");
     }
 
     #[test]

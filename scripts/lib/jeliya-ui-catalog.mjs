@@ -672,31 +672,39 @@ function callIsExpressionChild(skeleton, openParenIndex) {
   return skeleton[j] === '}';
 }
 
-/** If the char at `eqIndex` is the `=` of a `let <name> = …` (or `let mut
- *  <name> = …`) binding, return `<name>`; else null. The name is an identifier,
- *  so it is not blanked in the skeleton. */
+/** The name bound at the `=` at `eqIndex`, if it is a `let [mut] <name> = …`,
+ *  `const <NAME>: <TYPE> = …`, or `static <NAME>: <TYPE> = …` declaration; else
+ *  null. All three are common ways to hold copy later interpolated into RSX. The
+ *  name is an identifier, so it is not blanked in the skeleton. */
 function letBindingName(skeleton, eqIndex) {
   let i = eqIndex - 1;
   while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
   const nameEnd = i + 1;
   while (i >= 0 && /\w/.test(skeleton[i])) i -= 1;
   const name = skeleton.slice(i + 1, nameEnd);
-  if (!name) return null;
-  let j = i;
-  while (j >= 0 && /\s/.test(skeleton[j])) j -= 1;
-  const keywordEndsAt = (kw, at) => {
-    const start = at - kw.length + 1;
-    return (
-      start >= 0 &&
-      skeleton.slice(start, at + 1) === kw &&
-      (start === 0 || !/\w/.test(skeleton[start - 1]))
-    );
-  };
-  if (keywordEndsAt('mut', j)) {
-    j -= 3;
+  if (name) {
+    let j = i;
     while (j >= 0 && /\s/.test(skeleton[j])) j -= 1;
+    const keywordEndsAt = (kw, at) => {
+      const start = at - kw.length + 1;
+      return (
+        start >= 0 &&
+        skeleton.slice(start, at + 1) === kw &&
+        (start === 0 || !/\w/.test(skeleton[start - 1]))
+      );
+    };
+    if (keywordEndsAt('mut', j)) {
+      j -= 3;
+      while (j >= 0 && /\s/.test(skeleton[j])) j -= 1;
+    }
+    if (keywordEndsAt('let', j)) return name;
   }
-  return keywordEndsAt('let', j) ? name : null;
+  // `const NAME: TYPE =` / `static NAME: TYPE =` — the type sits between the name
+  // and `=`, so the plain-word walk-back above lands on the type, not the name.
+  const decl = /\b(?:const|static)\s+([A-Za-z_]\w*)\s*:\s*[^=;{}]*$/.exec(
+    skeleton.slice(0, eqIndex),
+  );
+  return decl ? decl[1] : null;
 }
 
 /** The index of the `}` matching the `{` at `openIndex` in `skeleton`, or -1. */
@@ -910,11 +918,21 @@ export function scanComponentLiterals(file, source) {
       if (m.index >= limit || !inRsx(m.index)) continue;
       const openBrace = m.index + m[0].length - 1;
       const close = matchingBrace(skeleton, openBrace);
-      // Search the raw SOURCE (a quoted `"aria-label"` name is blanked in the
-      // skeleton). A nested named child could mask an unnamed parent nav — a
-      // rare, SAFE false negative preferred over false-positiving a named nav.
-      const body = source.slice(openBrace, close === -1 ? source.length : close);
-      if (/aria-label\b|aria-labelledby\b/.test(body)) continue;
+      // Inspect ONLY the nav's OWN attribute list, not its subtree: a descendant's
+      // `aria-label` (e.g. an icon button) does not name the nav landmark.
+      // Attributes precede the first nested `{` (a child element / expression
+      // body); interpolation braces inside string VALUES are blanked in the
+      // skeleton, so the first skeleton `{` is a real child opener. Read the raw
+      // SOURCE over that span (a quoted `"aria-label"` name is blanked in skeleton).
+      let attrEnd = close === -1 ? skeleton.length : close;
+      for (let j = openBrace + 1; j < attrEnd; j += 1) {
+        if (skeleton[j] === '{') {
+          attrEnd = j;
+          break;
+        }
+      }
+      const attrs = source.slice(openBrace + 1, attrEnd);
+      if (/aria-label\b|aria-labelledby\b/.test(attrs)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       findings.push(finding(file, line, 'raw-semantic-element', 'raw unnamed `nav` must carry an accessible name (aria-label/aria-labelledby) or come from the NavLandmark primitive (Decision-6)', 'literals'));

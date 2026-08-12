@@ -168,6 +168,26 @@ impl Catalog for En {
     fn format_yesterday(&self) -> &'static str {
         "Yesterday"
     }
+    fn month_name(&self, month: u32) -> Option<&'static str> {
+        match month {
+            1 => Some("January"),
+            2 => Some("February"),
+            3 => Some("March"),
+            4 => Some("April"),
+            5 => Some("May"),
+            6 => Some("June"),
+            7 => Some("July"),
+            8 => Some("August"),
+            9 => Some("September"),
+            10 => Some("October"),
+            11 => Some("November"),
+            12 => Some("December"),
+            // Out-of-range guard: unreachable for a validated 1..=12 month (the
+            // domain of the Gregorian calendar). `None`, not a panic — a total
+            // function keeps a stray index from crashing a render.
+            _ => None,
+        }
+    }
 
     fn client_status(&self, lifecycle: &str) -> String {
         format!(
