@@ -10,7 +10,7 @@
 //! The `Owned`/`Adopted` split is the whole point (spec §5.1): a supervisor that
 //! stops "the daemon" without knowing whether it started it will stop someone
 //! else's. An adopted daemon is left running by [`Sidecar::shutdown`]; the only
-//! lever that reaches it is the protocol `daemon.shutdown`
+//! lever that reaches it is the protocol `daemon.stop`
 //! ([`Sidecar::stop_adopted`]), never a signal.
 
 use std::fmt;
@@ -110,7 +110,15 @@ impl Sidecar {
                 // Closing stdin is the graceful `--supervised` signal.
                 drop(stdin.take());
                 match tokio::time::timeout(self.timeouts.teardown, child.wait()).await {
-                    Ok(Ok(_status)) => Ok(Teardown::Graceful),
+                    // A clean (zero) exit ran the daemon's own teardown: portfile
+                    // removed, state flushed → `Graceful`.
+                    Ok(Ok(status)) if status.success() => Ok(Teardown::Graceful),
+                    // The daemon exited abnormally (crashed / was externally
+                    // killed) before or during shutdown. Its cleanup may not have
+                    // run — a stale `daemon.json` or half-written state may remain
+                    // — so this is NOT graceful; report `Forced`, whose contract
+                    // already warns that cleanup did not necessarily run.
+                    Ok(Ok(_status)) => Ok(Teardown::Forced),
                     Ok(Err(e)) => Err(SupervisorError::Spawn(e)),
                     Err(_elapsed) => {
                         process::force_kill_tree(child)
@@ -124,7 +132,7 @@ impl Sidecar {
     }
 
     /// Stop an **adopted** daemon through the protocol, using a caller-supplied
-    /// `daemon.shutdown` invoker (the supervisor does not link the client). No
+    /// `daemon.stop` invoker (the supervisor does not link the client). No
     /// signal is ever sent — an adopted daemon is never SIGKILLed by the client.
     /// Polls `/api/health` until the daemon goes dark, bounded; on timeout,
     /// [`SupervisorError::ShutdownTimedOut`].
@@ -195,11 +203,14 @@ impl Sidecar {
 pub enum Teardown {
     /// Adopted daemon: nothing was done, deliberately.
     LeftRunning,
-    /// The daemon exited within its budget (stdin EOF for owned, `daemon.shutdown`
+    /// The daemon exited within its budget (stdin EOF for owned, `daemon.stop`
     /// for adopted). It ran its own cleanup and removed its portfile.
     Graceful,
-    /// Owned daemon: the graceful path timed out and its process group was
-    /// SIGKILLed. No cleanup ran, so a stale `daemon.json` may remain.
+    /// Owned daemon: cleanup did NOT necessarily run. Either the graceful path
+    /// timed out and the process group was SIGKILLed, or the daemon exited
+    /// abnormally (crash / external kill) on its own. A stale `daemon.json` or
+    /// half-written state may remain (the next start's health check discards a
+    /// stale portfile).
     Forced,
 }
 
@@ -262,6 +273,52 @@ mod tests {
         );
         assert_eq!(sidecar.pid(), 1);
         assert_eq!(sidecar.port(), 9);
+    }
+
+    /// An owned daemon that exits ABNORMALLY (non-zero) during shutdown must be
+    /// reported as `Forced`, not `Graceful`: cleanup may not have run. Red-before:
+    /// the pre-fix `shutdown()` returned `Graceful` for any `Ok(status)`,
+    /// regardless of `status.success()`.
+    #[test]
+    fn shutdown_reports_forced_for_an_abnormal_owned_exit() {
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // A child that exits non-zero on its own (not via our SIGKILL).
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c").arg("exit 3").stdin(Stdio::piped());
+            let mut child = cmd.spawn().expect("spawn stub child");
+            let stdin = child.stdin.take();
+
+            let portfile: crate::portfile::Portfile = serde_json::from_str(
+                r#"{"pid":1,"port":9,"protocol":2,"storage_generation":2,
+                   "data_dir":"/d","auth_token":"t"}"#,
+            )
+            .unwrap();
+            let sidecar = Sidecar {
+                portfile,
+                ownership: Ownership::Owned { child, stdin },
+                data_dir: std::path::PathBuf::from("/d"),
+                expected: crate::generation::Generation::new(2, 2),
+                strict_portfile_perms: false,
+                timeouts: crate::supervisor::Timeouts {
+                    teardown: Duration::from_secs(5),
+                    ..crate::supervisor::Timeouts::default()
+                },
+            };
+            let teardown = sidecar.shutdown().await.expect("shutdown resolves");
+            assert_eq!(
+                teardown,
+                Teardown::Forced,
+                "an abnormal (non-zero) owned exit is not Graceful — cleanup may not have run"
+            );
+        });
     }
 
     /// A never-resolving `shutdown_rpc` must not wedge `stop_adopted`: it is

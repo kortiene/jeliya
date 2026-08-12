@@ -63,13 +63,21 @@ fn binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let repo_bin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("target/debug/jeliyad");
-    if repo_bin.is_file() {
-        return Some(repo_bin);
+    // Honor CARGO_TARGET_DIR first: the tests routinely run under a custom
+    // target dir (CI and local both do), and looking ONLY at the default
+    // `target/debug` there means the binary is never found and these
+    // real-daemon tests silently skip — passing while covering nothing. Fall
+    // back to the default workspace `target/debug`.
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        candidates.push(PathBuf::from(dir).join("debug").join("jeliyad"));
     }
-    None
+    candidates.push(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/debug/jeliyad"),
+    );
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// Build a [`Supervisor`] pointing at `dir` with the given binary.

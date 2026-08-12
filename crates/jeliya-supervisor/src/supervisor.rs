@@ -174,8 +174,23 @@ impl Supervisor {
             let announced = match read_announcement(&mut lines, self.timeouts.spawn).await {
                 Ok(line) => line,
                 Err(e) => {
-                    // We own this child; do not leak it on a handshake failure.
-                    let _ = process::force_kill_tree(&mut child).await;
+                    // No announcement. The daemon may have exited WITHOUT one
+                    // because the data-dir lock is held with no healthy daemon:
+                    // jeliyad's `wait_for_free_lock` exits non-zero and silent in
+                    // that case, so stdout closes before any line. That is the
+                    // retryable `Wedged` verdict ("starting, retry in a moment"),
+                    // not a generic handshake failure. Drop our stdin and read the
+                    // child's exit (bounded); a non-zero exit is `Wedged`. A zero
+                    // exit or a still-running child (force-killed) keeps the
+                    // original handshake error.
+                    drop(stdin);
+                    match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
+                        Ok(Ok(status)) if !status.success() => return Err(SupervisorError::Wedged),
+                        Ok(Ok(_)) => {}
+                        _ => {
+                            let _ = process::force_kill_tree(&mut child).await;
+                        }
+                    }
                     return Err(e);
                 }
             };

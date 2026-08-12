@@ -310,7 +310,16 @@ jobs:
       - name: Rust clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # The jeliya-supervisor real-daemon tests (tests/supervision.rs) locate
+      # `jeliyad` and SKIP when it is absent — a silent skip in CI reads as green
+      # while covering nothing. Build it first and point the tests at it via
+      # `JELIYAD_BIN`, so the full spawn/adopt/stop lifecycle actually runs.
+      - name: Build jeliyad (the supervisor real-daemon tests require it)
+        run: cargo build --locked -p jeliyad
+
       - name: Rust tests
+        env:
+          JELIYAD_BIN: ${{ github.workspace }}/target/debug/jeliyad
         run: cargo test --locked --workspace
 
       # The jeliya-client seam behaviour suite is behind the default-off `mock`

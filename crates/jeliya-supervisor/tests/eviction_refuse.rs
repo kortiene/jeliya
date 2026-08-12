@@ -81,6 +81,50 @@ fn write_hanging_stub(path: &Path, pid: u32, port: u16) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
 }
 
+/// A stub that exits NON-ZERO without printing anything — jeliyad's lock-held
+/// `wait_for_free_lock` path (the data dir is locked with no healthy daemon, so
+/// it exits 1 silently). `start_or_adopt` must map this to the retryable
+/// `Wedged`, not a generic handshake failure.
+fn write_silent_exit_stub(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, "#!/bin/sh\nexit 1\n").expect("write silent stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// A spawned binary that exits non-zero WITHOUT announcing surfaces `Wedged`
+/// (retryable), not `Handshake`. Red-before: without the exit-status check on
+/// the read-announcement error path, the stdout EOF is a bare `Handshake`.
+#[tokio::test]
+async fn a_silent_nonzero_exit_surfaces_wedged_not_handshake() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-wedged-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    let stub = root.join("jeliyad-wedged");
+    write_silent_exit_stub(&stub);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data),
+        binary: Some(stub),
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+    let result = sup.start_or_adopt().await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        matches!(result, Err(SupervisorError::Wedged)),
+        "a silent non-zero exit must be Wedged (retryable), not Handshake; got: {result:?}"
+    );
+}
+
 /// Fault #15-adjacent: a spawned binary that announces `already_running` and
 /// then never exits must NOT wedge `start_or_adopt` forever. The adopted-path
 /// child wait is bounded by `Timeouts::spawn`; on expiry the owned probe child

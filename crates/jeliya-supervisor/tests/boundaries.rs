@@ -14,12 +14,16 @@ use std::process::Command;
 /// Crates the supervisor's own graph must never reach: Iroh (and the Iroh-bearing
 /// core/daemon), the client seam and codec (transport/RPC lives elsewhere), and
 /// the whole renderer family.
-const BANNED_GRAPH_CRATES: [&str; 8] = [
+const BANNED_GRAPH_CRATES: [&str; 9] = [
     "iroh",
     "jeliya-core",
     "jeliyad",
     "jeliya-ffi",
     "jeliya-client",
+    // The protocol codec: transport/RPC lives in the client/codec, not the
+    // supervisor (which only speaks loopback discovery). The module note claims
+    // this is banned, so the list must actually enforce it.
+    "jeliya-codec",
     "dioxus",
     "wry",
     "tao",
