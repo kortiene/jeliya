@@ -13,9 +13,21 @@
 //! current daemon is a single process (it spawns no descendants), so this is
 //! functionally correct today and the group escalation is future-proofing.
 
+use std::time::Duration;
+
 use tokio::process::{Child, Command};
 
 use crate::error::SupervisorError;
+
+/// How long to wait for a SIGKILLed child to be reaped before giving up. A
+/// killed process reaps effectively instantly UNLESS it is wedged in an
+/// uninterruptible (`D` state) syscall — e.g. a `data_dir` on a hung
+/// network/FUSE mount — where SIGKILL is delivered only when the syscall
+/// returns, which may be never. Without a bound the reap `wait()` inherits that
+/// hang, defeating the crate's "every wait is time-boxed" contract, so the reap
+/// is capped and a stuck child is surfaced as an error rather than hanging the
+/// caller forever.
+const REAP_GRACE: Duration = Duration::from_secs(5);
 
 /// Put the child in its **own** process group at spawn (`pgid == child pid` on
 /// Unix), so it is isolated from the supervisor's controlling-terminal signals
@@ -33,10 +45,19 @@ pub(crate) fn configure_new_process_group(cmd: &mut Command) {
     }
 }
 
-/// SIGKILL the owned child's whole process group and reap it. On Unix, `killpg`
-/// on the child's pgid (set at spawn) tears down any descendant with it; a
-/// direct `start_kill` backs it up in case the group is already gone. On
+/// SIGKILL the owned child's whole process group and reap it, BOUNDED. On Unix,
+/// `killpg` on the child's pgid (set at spawn) tears down any descendant with
+/// it; a direct `start_kill` backs it up in case the group is already gone. On
 /// non-Unix, a plain kill of the child handle.
+///
+/// `child.id()` is the OS-assigned pid of a `Child` this process spawned and
+/// still holds un-reaped, so it is always a positive `pid_t` and never needs the
+/// [`SignalPid`] guard (which exists for attacker-supplied portfile PIDs).
+///
+/// The reap is capped at [`REAP_GRACE`]: an unkillable `D`-state child would
+/// otherwise hang `wait()` forever. On expiry — or if `start_kill` itself
+/// failed — the error is surfaced (no longer silently discarded) so the caller
+/// learns the signal did not land instead of blocking.
 pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
@@ -46,9 +67,22 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
         let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
     }
     // Ensure the child handle itself is signalled and then reaped, so `wait`
-    // cannot block on a survivor if the group signal missed.
-    let _ = child.start_kill();
-    child.wait().await.map(|_| ())
+    // cannot block on a survivor if the group signal missed. The `start_kill`
+    // result is kept: if it failed, the reap is the more likely to hang, so its
+    // error is the one worth surfacing on timeout.
+    let kill_result = child.start_kill();
+    match tokio::time::timeout(REAP_GRACE, child.wait()).await {
+        Ok(reaped) => reaped.map(|_| ()),
+        Err(_elapsed) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            match kill_result {
+                Ok(()) => "child was SIGKILLed but did not reap within the grace window \
+                           (likely wedged in an uninterruptible syscall)"
+                    .to_owned(),
+                Err(e) => format!("could not signal the child ({e}) and it did not reap"),
+            },
+        )),
+    }
 }
 
 /// A validated positive process id, safe to convert to the platform signal

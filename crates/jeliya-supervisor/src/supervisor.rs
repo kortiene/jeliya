@@ -312,6 +312,18 @@ impl Supervisor {
                 // Re-prove ownership independently (the validation short-circuited
                 // on the declared mismatch before its own health step), so a
                 // recycled/dead PID or foreign process is never signalled.
+                //
+                // Residual window (accepted): there is an unavoidable TOCTOU gap
+                // between `prove_owned` and the SIGTERM — the proven PID could, in
+                // principle, exit and be recycled onto an unrelated same-uid
+                // process in that window. The blast radius is bounded by the
+                // loopback threat model: the signal carries this process's uid, so
+                // a cross-uid victim gets EPERM, and a same-uid attacker could
+                // `kill` directly anyway. Closing it fully needs a pidfd
+                // (Linux-only) or a `/proc/<pid>/comm` recheck (not portable to
+                // the macOS target), so it is documented rather than partially
+                // mitigated. `SignalPid` still guarantees the value itself is a
+                // representable positive PID (never a group broadcast).
                 if validate::prove_owned(&portfile, &self.timeouts).await {
                     process::sigterm_foreign(portfile.pid)?;
                     if validate::wait_health_dark(

@@ -107,6 +107,20 @@ pub enum SupervisorError {
         /// The PID that outlived its stop budget.
         pid: u32,
     },
+
+    /// The portfile records a data dir different from the one this supervisor
+    /// resolved. A `daemon.json` copied/restored from another install keeps the
+    /// original's `data_dir` (and PID/port/token), so validating it would attach
+    /// this supervisor to — and, with eviction, could SIGTERM — the *original*
+    /// daemon. Refused: a portfile is only trusted for the exact directory it
+    /// records (spec §4 D2 — identity binds to the portfile's location).
+    #[error("portfile records data dir {recorded} but this supervisor resolved {resolved}")]
+    DataDirMismatch {
+        /// The `data_dir` the portfile recorded.
+        recorded: String,
+        /// The directory this supervisor actually manages.
+        resolved: PathBuf,
+    },
 }
 
 #[cfg(test)]

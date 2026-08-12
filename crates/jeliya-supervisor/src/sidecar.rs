@@ -141,15 +141,25 @@ impl Sidecar {
         }
         let pid = self.portfile.pid;
         let port = self.portfile.port;
+        // The whole adopted stop is time-boxed by `teardown`, RPC included: a
+        // caller-supplied invoker whose transport stalls must not wedge shutdown
+        // just because its own future has no timeout. Start the deadline BEFORE
+        // the RPC and bound the RPC against it, so a never-resolving invoker
+        // surfaces `ShutdownTimedOut` rather than hanging here forever.
+        let deadline = tokio::time::Instant::now() + self.timeouts.teardown;
         // Ask the daemon to shut itself down over the caller's RPC. A failure
         // here is surfaced, not swallowed — the caller decides whether to retry.
-        shutdown_rpc()
-            .await
-            .map_err(|e| SupervisorError::Handshake(e.to_string()))?;
+        match tokio::time::timeout(self.timeouts.teardown, shutdown_rpc()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(SupervisorError::Handshake(e.to_string())),
+            Err(_elapsed) => return Err(SupervisorError::ShutdownTimedOut { pid }),
+        }
         // Confirm it actually went dark; we never signalled it, so the RPC is
-        // the only lever and we must verify it took effect.
-        let deadline = tokio::time::Instant::now() + self.timeouts.teardown;
-        if !validate::wait_health_dark(pid, port, self.timeouts.teardown, &self.timeouts).await {
+        // the only lever and we must verify it took effect. Bound by the budget
+        // REMAINING after the RPC, so the whole adopted stop stays within one
+        // `teardown` rather than one-per-stage.
+        let after_rpc = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if !validate::wait_health_dark(pid, port, after_rpc, &self.timeouts).await {
             return Err(SupervisorError::ShutdownTimedOut { pid });
         }
         // A dark listener is not a finished shutdown: the daemon drops its
@@ -252,6 +262,54 @@ mod tests {
         );
         assert_eq!(sidecar.pid(), 1);
         assert_eq!(sidecar.port(), 9);
+    }
+
+    /// A never-resolving `shutdown_rpc` must not wedge `stop_adopted`: it is
+    /// bounded by `teardown` and surfaces `ShutdownTimedOut`. Red-before: the
+    /// pre-fix `stop_adopted` awaited `shutdown_rpc()` with no timeout (the
+    /// deadline was created only after it resolved), so this hangs forever
+    /// without the bound. A manual current-thread runtime keeps it off the
+    /// dev-only `macros` feature.
+    #[test]
+    fn stop_adopted_bounds_a_never_resolving_rpc() {
+        use std::time::Duration;
+
+        let portfile: crate::portfile::Portfile = serde_json::from_str(
+            r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,
+               "data_dir":"/d","auth_token":"t"}"#,
+        )
+        .unwrap();
+        let sidecar = Sidecar {
+            portfile,
+            ownership: Ownership::Adopted,
+            data_dir: std::path::PathBuf::from("/d"),
+            expected: crate::generation::Generation::new(2, 2),
+            strict_portfile_perms: false,
+            timeouts: crate::supervisor::Timeouts {
+                teardown: Duration::from_millis(150),
+                ..crate::supervisor::Timeouts::default()
+            },
+        };
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let result = rt.block_on(sidecar.stop_adopted(|| {
+            // An invoker whose transport never answers.
+            Box::pin(std::future::pending::<Result<(), CallerRpcError>>())
+        }));
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { pid: 4242 })),
+            "a stalled RPC must surface ShutdownTimedOut, not hang; got: {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the RPC wait must be bounded by teardown (~150ms), took {elapsed:?}"
+        );
     }
 
     #[test]

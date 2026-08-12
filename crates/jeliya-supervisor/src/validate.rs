@@ -48,6 +48,16 @@ pub(crate) async fn validate_portfile(
 ) -> Result<Validated, SupervisorError> {
     let portfile = portfile::read_portfile(data_dir, strict_portfile_perms)?;
 
+    // 0. Data-dir binding: the portfile must record THIS directory. A
+    //    `daemon.json` copied/restored from another install keeps the original's
+    //    pid/port/token/data_dir, so without this a copy's supervisor would pass
+    //    validation against the ORIGINAL live daemon (and could SIGTERM it under
+    //    eviction). Checked first, before any dial or signal (spec §4 D2:
+    //    identity binds to the portfile's recorded location).
+    if let Some(mismatch) = data_dir_mismatch(data_dir, &portfile.data_dir) {
+        return Err(mismatch);
+    }
+
     // 1. Loopback: a portfile advertising a non-loopback endpoint is refused
     //    before any dial (spec §6.4 step 2 / §7.1).
     if let Some(advertised) = non_loopback_endpoint(&portfile) {
@@ -95,6 +105,30 @@ pub(crate) async fn validate_portfile(
         portfile,
         health: report,
     })
+}
+
+/// Whether the portfile's recorded `data_dir` fails to match `resolved` (the
+/// directory this supervisor manages, already canonicalized in
+/// `Supervisor::resolve`). Both sides are canonicalized before comparison so
+/// `/var` vs `/private/var`, symlinks, and path spelling compare like-with-like
+/// — the daemon canonicalizes its own recorded `data_dir` too. A recorded path
+/// that no longer exists (canonicalize fails) is compared raw and, absent an
+/// exact match, treated as a mismatch: a portfile pointing at a directory that
+/// is not the one in hand is never trusted. Returns the error to raise, or
+/// `None` when they match.
+fn data_dir_mismatch(resolved: &Path, recorded: &str) -> Option<SupervisorError> {
+    let recorded_path = Path::new(recorded);
+    let recorded_canonical = recorded_path
+        .canonicalize()
+        .unwrap_or_else(|_| recorded_path.to_path_buf());
+    if recorded_canonical == resolved || recorded_path == resolved {
+        None
+    } else {
+        Some(SupervisorError::DataDirMismatch {
+            recorded: recorded.to_owned(),
+            resolved: resolved.to_path_buf(),
+        })
+    }
 }
 
 /// The first advertised endpoint (`ws` then `http`) that is present but not
@@ -277,10 +311,14 @@ mod tests {
     #[test]
     fn fault19_non_loopback_portfile_fails_before_health() {
         let dir = tmp_dir("f19");
+        // `data_dir` records THIS dir so the data-dir binding check passes and
+        // the loopback gate is what fires (the behavior under test).
         write_portfile(
             &dir,
-            r#"{"pid":1,"port":9,"protocol":2,"storage_generation":2,
-               "data_dir":"/d","auth_token":"t","ws":"ws://evil.example/ws"}"#,
+            &format!(
+                r#"{{"pid":1,"port":9,"protocol":2,"storage_generation":2,
+                   "data_dir":{dir:?},"auth_token":"t","ws":"ws://evil.example/ws"}}"#
+            ),
         );
         let result = rt().block_on(validate_portfile(
             &dir,
@@ -305,8 +343,10 @@ mod tests {
         // v1 shape: schema, protocol:1, no storage_generation.
         write_portfile(
             &dir,
-            r#"{"schema":1,"pid":1,"port":9,"protocol":1,
-               "data_dir":"/d","auth_token":"t"}"#,
+            &format!(
+                r#"{{"schema":1,"pid":1,"port":9,"protocol":1,
+                   "data_dir":{dir:?},"auth_token":"t"}}"#
+            ),
         );
         let result = rt().block_on(validate_portfile(
             &dir,
@@ -338,7 +378,7 @@ mod tests {
             &dir,
             &format!(
                 r#"{{"pid":99999,"port":{free_port},"protocol":2,"storage_generation":2,
-                   "data_dir":"/d","auth_token":"t"}}"#
+                   "data_dir":{dir:?},"auth_token":"t"}}"#
             ),
         );
         let result = rt().block_on(validate_portfile(
@@ -351,6 +391,45 @@ mod tests {
         assert!(
             matches!(result, Err(SupervisorError::Stale { .. })),
             "compatible portfile with no listener must be Stale; got: {result:?}"
+        );
+    }
+
+    /// The data-dir-copy attack: a `daemon.json` copied from another install
+    /// records the ORIGINAL's data dir (and a live pid/port). Validating it
+    /// against a DIFFERENT resolved dir must fail closed with `DataDirMismatch`
+    /// BEFORE any health probe or signal — otherwise the copy's supervisor would
+    /// attach to (or, under eviction, SIGTERM) the original daemon. The recorded
+    /// dir here points at a live loopback listener to prove the refusal does not
+    /// depend on the daemon being dead: the binding gate fires first.
+    #[test]
+    fn a_portfile_recording_a_foreign_data_dir_is_refused_before_health() {
+        let resolved = tmp_dir("ddbind-resolved");
+        let foreign = tmp_dir("ddbind-foreign");
+        // A live listener on the recorded port so a missing-listener path cannot
+        // be what fails: the mismatch must short-circuit before the probe.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let live_port = listener.local_addr().unwrap().port();
+        // The portfile records `foreign`, not `resolved`, but is written INTO
+        // `resolved` (as a copy would be).
+        write_portfile(
+            &resolved,
+            &format!(
+                r#"{{"pid":1,"port":{live_port},"protocol":2,"storage_generation":2,
+                   "data_dir":{foreign:?},"auth_token":"t"}}"#
+            ),
+        );
+        let result = rt().block_on(validate_portfile(
+            &resolved,
+            Generation::new(2, 2),
+            false,
+            &short(),
+        ));
+        drop(listener);
+        std::fs::remove_dir_all(&resolved).ok();
+        std::fs::remove_dir_all(&foreign).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::DataDirMismatch { .. })),
+            "a portfile recording a foreign data dir must be DataDirMismatch; got: {result:?}"
         );
     }
 
@@ -392,14 +471,18 @@ mod tests {
 
     /// A portfile with absent ws/http fields must not raise NonLoopback — the
     /// resolver builds its own 127.0.0.1 URL; these fields are informational only.
-    /// The test still yields GenerationMismatch or Stale (not NonLoopback).
+    /// The test still yields GenerationMismatch (not NonLoopback). `data_dir`
+    /// records this dir so the check under test (loopback-skip) is reached, not
+    /// short-circuited by the data-dir binding gate.
     #[test]
     fn portfile_without_ws_or_http_field_skips_loopback_check() {
         let dir = tmp_dir("nows");
         write_portfile(
             &dir,
-            r#"{"pid":1,"port":9,"protocol":1,"storage_generation":1,
-               "data_dir":"/d","auth_token":"t"}"#,
+            &format!(
+                r#"{{"pid":1,"port":9,"protocol":1,"storage_generation":1,
+                   "data_dir":{dir:?},"auth_token":"t"}}"#
+            ),
         );
         let result = rt().block_on(validate_portfile(
             &dir,
@@ -411,6 +494,12 @@ mod tests {
         assert!(
             !matches!(result, Err(SupervisorError::NonLoopback { .. })),
             "no ws/http fields must not yield NonLoopback"
+        );
+        // And specifically NOT DataDirMismatch — the binding gate must accept a
+        // portfile that records this very dir.
+        assert!(
+            !matches!(result, Err(SupervisorError::DataDirMismatch { .. })),
+            "a portfile recording this dir must pass the data-dir binding gate"
         );
     }
 

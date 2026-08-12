@@ -137,10 +137,12 @@ async fn a_hanging_already_running_child_times_out_as_wedged() {
         matches!(result, Err(SupervisorError::Wedged)),
         "a hanging already_running child must surface Wedged, not hang; got: {result:?}"
     );
-    // The bound actually fired: we returned in well under the stub's 600 s sleep.
+    // The bound actually fired near the 600ms spawn budget, not merely "under
+    // 600s". A few seconds tolerates CI scheduling slop while still proving the
+    // wait is tied to Timeouts::spawn rather than a looser hardcoded value.
     assert!(
-        elapsed < Duration::from_secs(30),
-        "the wait must be bounded by Timeouts::spawn, not the stub's lifetime (took {elapsed:?})"
+        elapsed < Duration::from_secs(5),
+        "the wait must be bounded by Timeouts::spawn (~600ms), not the stub's lifetime (took {elapsed:?})"
     );
 }
 
