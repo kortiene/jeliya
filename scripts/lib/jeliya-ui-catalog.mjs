@@ -121,6 +121,7 @@ function unescapeRust(raw) {
 export function scanRustSource(source) {
   const masked = Array.from(source);
   const literals = [];
+  const comments = [];
   const blank = (from, to) => {
     for (let i = from; i < to; i += 1) if (masked[i] !== '\n') masked[i] = ' ';
   };
@@ -131,6 +132,7 @@ export function scanRustSource(source) {
     if (ch === '/' && source[i + 1] === '/') {
       const end = source.indexOf('\n', i);
       const stop = end === -1 ? source.length : end;
+      comments.push({ start: i, end: stop });
       blank(i, stop);
       i = stop;
       continue;
@@ -138,6 +140,7 @@ export function scanRustSource(source) {
     if (ch === '/' && source[i + 1] === '*') {
       const end = source.indexOf('*/', i + 2);
       const stop = end === -1 ? source.length : end + 2;
+      comments.push({ start: i, end: stop });
       blank(i, stop);
       i = stop;
       continue;
@@ -197,7 +200,7 @@ export function scanRustSource(source) {
       if (skeleton[at] !== '\n') skeleton[at] = ' ';
     }
   }
-  return { skeleton: skeleton.join(''), literals };
+  return { skeleton: skeleton.join(''), literals, comments };
 }
 
 function lineOf(source, index) {
@@ -521,6 +524,14 @@ const RESERVED_SEMANTIC_ATTRS = new Set(['role', 'aria-modal', 'aria-live']);
  *  D) is never caught. */
 const RESERVED_SEMANTIC_ELEMENTS = new Set(['dialog']);
 
+/** Raw form CONTROLS that must be wrapped by the `Field` primitive (§5.6), which
+ *  supplies the `label[for]`/`id` association and `aria-describedby` hint linkage.
+ *  A bare `input`/`textarea`/`select` skips that accessible-name path
+ *  (Decision-6). `Field` takes the control as `children`, so a control is
+ *  legitimate ONLY inside a `Field { … }` invocation; anywhere else it is flagged.
+ *  The foundation ships no form yet, so this currently guards the first one. */
+const RESERVED_FORM_CONTROLS = new Set(['input', 'textarea', 'select']);
+
 /** Whether two placeholder-slot arrays are equal element-by-element. Compared
  *  positionally, NOT by a delimiter-free join: `['a','bc']` and `['ab','c']`
  *  both join to `'abc'`, so a join would call two distinct multisets equal and
@@ -673,9 +684,11 @@ function callIsExpressionChild(skeleton, openParenIndex) {
 }
 
 /** The name bound at the `=` at `eqIndex`, if it is a `let [mut] <name> = …`,
- *  `const <NAME>: <TYPE> = …`, or `static <NAME>: <TYPE> = …` declaration; else
- *  null. All three are common ways to hold copy later interpolated into RSX. The
- *  name is an identifier, so it is not blanked in the skeleton. */
+ *  `let [mut] <name>: <TYPE> = …`, `const <NAME>: <TYPE> = …`, or
+ *  `static <NAME>: <TYPE> = …` declaration; else null. All are common ways to hold
+ *  copy later interpolated into RSX — including a typed `let`, whose annotation
+ *  would otherwise hide the name from the walk-back. The name is an identifier, so
+ *  it is not blanked in the skeleton. */
 function letBindingName(skeleton, eqIndex) {
   let i = eqIndex - 1;
   while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
@@ -699,9 +712,12 @@ function letBindingName(skeleton, eqIndex) {
     }
     if (keywordEndsAt('let', j)) return name;
   }
-  // `const NAME: TYPE =` / `static NAME: TYPE =` — the type sits between the name
-  // and `=`, so the plain-word walk-back above lands on the type, not the name.
-  const decl = /\b(?:const|static)\s+([A-Za-z_]\w*)\s*:\s*[^=;{}]*$/.exec(
+  // TYPED bindings — `let [mut] NAME: TYPE =`, `const NAME: TYPE =`, or
+  // `static NAME: TYPE =`. The type annotation sits between the name and `=`, so
+  // the plain-word walk-back above lands on the TYPE, not the name (and, for a
+  // typed `let`, never reaches the `let` keyword), missing the binding. Match the
+  // keyword + name + `: TYPE` directly instead.
+  const decl = /\b(?:let(?:\s+mut)?|const|static)\s+([A-Za-z_]\w*)\s*:\s*[^=;{}]*$/.exec(
     skeleton.slice(0, eqIndex),
   );
   return decl ? decl[1] : null;
@@ -722,7 +738,7 @@ function matchingBrace(skeleton, openIndex) {
 
 /** Report user-visible literals in one Rust component/app source. */
 export function scanComponentLiterals(file, source) {
-  const { skeleton, literals } = scanRustSource(source);
+  const { skeleton, literals, comments } = scanRustSource(source);
   const lines = source.split('\n');
   // Test modules are not shipped copy; skip everything from the first
   // `#[cfg(test)]` onward.
@@ -730,6 +746,11 @@ export function scanComponentLiterals(file, source) {
   const limit = testAt === -1 ? source.length : testAt;
   const ranges = rsxRanges(skeleton);
   const inRsx = (pos) => ranges.some(([start, end]) => pos >= start && pos < end);
+  // A position inside a `//`/`/* */` comment, per the Rust scanner. The reserved
+  // attribute scan matches the RAW source (to catch a quoted `"aria-live"`, whose
+  // content is blanked in the skeleton), so it must exclude comments itself — a
+  // comment documenting `role:`/`aria-live:` renders no attribute.
+  const inComment = (pos) => comments.some(({ start, end }) => pos >= start && pos < end);
   const exempt = (line) =>
     (lines[line - 1] ?? '').includes('i18n-exempt') || (lines[line - 2] ?? '').includes('i18n-exempt');
   const findings = [];
@@ -887,7 +908,7 @@ export function scanComponentLiterals(file, source) {
     if (owned.has(attr)) continue;
     const re = new RegExp(`(?:\\b${attr}\\b|"${attr}")\\s*:`, 'g');
     for (let m = re.exec(source); m; m = re.exec(source)) {
-      if (m.index >= limit || !inRsx(m.index)) continue;
+      if (m.index >= limit || !inRsx(m.index) || inComment(m.index)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       findings.push(finding(file, line, 'raw-semantic', `raw \`${attr}\` must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
@@ -905,6 +926,32 @@ export function scanComponentLiterals(file, source) {
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       findings.push(finding(file, line, 'raw-semantic-element', `raw \`${el}\` element must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
+    }
+  }
+
+  // Reserved FORM CONTROLS (`input`/`textarea`/`select`): each must be wrapped by
+  // the `Field` primitive, which owns the label association. `Field` renders the
+  // control as `children`, so a control is legitimate ONLY inside a `Field { … }`
+  // invocation; flag one anywhere else. Compute the `Field` invocation ranges from
+  // the SKELETON (a `Field {` in a blanked string/comment never counts), then a
+  // control opener outside every such range is raw.
+  const fieldRanges = [];
+  {
+    const re = /\bField\s*\{/g;
+    for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+      const open = m.index + m[0].length - 1;
+      const close = matchingBrace(skeleton, open);
+      if (close !== -1) fieldRanges.push([open, close]);
+    }
+  }
+  const insideField = (pos) => fieldRanges.some(([open, close]) => pos > open && pos < close);
+  for (const el of RESERVED_FORM_CONTROLS) {
+    const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
+    for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+      if (m.index >= limit || !inRsx(m.index) || insideField(m.index)) continue;
+      const line = lineOf(source, m.index);
+      if (exempt(line)) continue;
+      findings.push(finding(file, line, 'raw-form-control', `raw \`${el}\` must be wrapped by the \`Field\` primitive (§5.6) for label association, not rendered ad-hoc (Decision-6)`, 'literals'));
     }
   }
 

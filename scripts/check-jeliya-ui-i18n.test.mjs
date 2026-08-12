@@ -429,6 +429,25 @@ fn view() -> Element {
     );
   }
 
+  // A TYPED `let` binding (with an annotation, optional `mut`) — the type sits
+  // between the name and `=`, so the plain-word walk-back would otherwise land on
+  // the type and miss the binding.
+  for (const decl of [
+    'let label: &str = "Delete account";',
+    'let mut label: String = String::from("Delete account");',
+  ]) {
+    const typedLet = `
+fn view() -> Element {
+    ${decl}
+    rsx! { div { "{label}" } }
+}
+`;
+    assert.ok(
+      scanComponentLiterals('x.rs', typedLet).some((f) => f.code === 'rust-text'),
+      `a typed let-bound copy literal must be flagged: ${decl}`,
+    );
+  }
+
   // A catalog-derived binding (no string-literal RHS) is NOT flagged.
   const catalogDerived = `
 fn view() -> Element {
@@ -451,6 +470,61 @@ fn view() -> Element {
   assert.ok(
     !scanComponentLiterals('x.rs', structural).some((f) => f.code === 'rust-text'),
     'a binding used only in a structural attribute must not be flagged',
+  );
+});
+
+test('literal scan: a raw form control outside a Field is flagged, inside is not', () => {
+  // A bare `input`/`textarea`/`select` bypasses the Field primitive's label
+  // association (Decision-6, §5.6).
+  for (const el of ['input', 'textarea', 'select']) {
+    const rogue = `
+fn view() -> Element {
+    rsx! { div { ${el} { id: "email" } } }
+}
+`;
+    assert.ok(
+      scanComponentLiterals('rogue.rs', rogue).some((f) => f.code === 'raw-form-control'),
+      `a raw ${el} outside a Field must be flagged`,
+    );
+  }
+  // The SAME control wrapped by `Field { … }` (which owns label association) is
+  // legitimate — Field renders the control as children.
+  const wrapped = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", input { id: "email" } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', wrapped).some((f) => f.code === 'raw-form-control'),
+    'a control inside a Field invocation must not be flagged',
+  );
+});
+
+test('literal scan: a reserved attr in a COMMENT is not flagged; a real one is', () => {
+  // A comment documenting `role:`/`aria-live:` renders no attribute — the scan
+  // must exclude comment ranges even though it matches the raw source (to catch a
+  // quoted `"aria-live"`).
+  const commented = `
+fn view() -> Element {
+    rsx! {
+        // role: dialog semantics belong in the Dialog primitive
+        div { /* aria-live: polite is owned by the status primitive */ "x" }
+    }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', commented).some((f) => f.code === 'raw-semantic'),
+    'a reserved attr named only inside a comment must not be flagged',
+  );
+  // A real (uncommented) reserved attr in the same shape is still flagged.
+  const real = `
+fn view() -> Element {
+    rsx! { div { role: "dialog", "x" } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('rogue.rs', real).some((f) => f.code === 'raw-semantic'),
+    'a real raw role attr must still be flagged',
   );
 });
 

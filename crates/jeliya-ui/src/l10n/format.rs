@@ -88,27 +88,21 @@ impl Formats {
     /// locale's separators (`1 234,56` / `1,234.56`).
     ///
     /// Rounds half **away from zero** to match the other client's
-    /// `Intl.NumberFormat` (ties-away), NOT Rust's `{:.*}` ties-to-even:
+    /// `Intl.NumberFormat` (default `halfExpand`), NOT Rust's `{:.*}` ties-to-even:
     /// `decimal(2.25, 1)` is `2.3`, not `2.2` — and so `bytes(2_359_296)` (exactly
-    /// 2.25 MiB) shows `2.3 MB`, matching the React client. `f64::round` is
-    /// ties-away; scale, round to an integer, then SLICE the integer into
-    /// whole/fraction so no second (ties-to-even) rounding happens on the way out.
+    /// 2.25 MiB) shows `2.3 MB`, matching the React client.
+    ///
+    /// Rounds on the DECIMAL value, not a binary `* 10^n` scaling. `Intl` rounds
+    /// the shortest decimal that round-trips to the `f64` (what the user typed), so
+    /// `decimal(1.005, 2)` must be `1.01` like `Intl` — a binary scale gives
+    /// `1.005 * 100 = 100.4999…` and would round to `1.00`, differing across
+    /// clients. Rust's `{}` yields that shortest decimal; [`round_decimal_string`]
+    /// then rounds its DIGITS, so no binary representation error creeps in.
     pub fn decimal(self, value: f64, frac_digits: usize) -> String {
         let conventions = self.conventions();
         let negative = value.is_sign_negative() && value != 0.0;
-        let factor = 10f64.powi(frac_digits as i32);
-        // Round the scaled magnitude to the nearest integer, half away from zero.
-        let scaled = (value.abs() * factor).round();
-        // Render that non-negative integer, left-padded so there are at least
-        // `frac_digits` fractional places to slice off (e.g. `1` → `01` for a
-        // `0.1`, `0` → `00` for `0.0`).
-        let mut digits = format!("{scaled:.0}");
-        if digits.len() <= frac_digits {
-            digits = format!("{digits:0>width$}", width = frac_digits + 1);
-        }
-        let split = digits.len() - frac_digits;
-        let (int_digits, frac) = digits.split_at(split);
-        let grouped = group_digits(int_digits, conventions.group);
+        let (int_digits, frac) = round_decimal_string(value.abs(), frac_digits);
+        let grouped = group_digits(&int_digits, conventions.group);
         let sign = if negative { "-" } else { "" };
         if frac_digits == 0 {
             format!("{sign}{grouped}")
@@ -234,6 +228,67 @@ impl Formats {
     }
 }
 
+/// Round the shortest decimal representation of a NON-NEGATIVE `value` to
+/// `places` fractional digits, half away from zero, returning
+/// `(integer_digits, fractional_digits)` as digit strings (the fraction padded to
+/// exactly `places`). Rounds the DECIMAL value — the shortest string that
+/// round-trips to the `f64`, which is what `Intl.NumberFormat` rounds — rather
+/// than a binary `* 10^n` scale, so inputs like `1.005` (stored as `1.00499…`)
+/// round to `1.01`, matching the other client instead of drifting to `1.00`.
+fn round_decimal_string(value: f64, places: usize) -> (String, String) {
+    // `{}` gives the shortest round-tripping decimal, never scientific notation
+    // for the finite magnitudes this seam formats. Guard non-finite defensively.
+    if !value.is_finite() {
+        return ("0".to_owned(), "0".repeat(places));
+    }
+    let text = format!("{value}");
+    let (int_part, frac_part) = match text.split_once('.') {
+        Some((int_part, frac_part)) => (int_part.to_owned(), frac_part.to_owned()),
+        None => (text, String::new()),
+    };
+    // Enough fractional digits already? Just pad to `places`, no rounding.
+    if frac_part.len() <= places {
+        let mut frac = frac_part;
+        while frac.len() < places {
+            frac.push('0');
+        }
+        return (int_part, frac);
+    }
+    // Keep `places` fractional digits; the first dropped digit decides rounding.
+    // `halfExpand` (Intl's default) rounds up on a first-dropped digit >= 5 for a
+    // non-negative magnitude, regardless of the tail.
+    let round_up = frac_part.as_bytes()[places] >= b'5';
+    // One digit vector spanning integer + kept fraction, for carry propagation.
+    let mut digits: Vec<u8> = int_part
+        .bytes()
+        .chain(frac_part.bytes().take(places))
+        .map(|b| b - b'0')
+        .collect();
+    if round_up {
+        let mut at = digits.len();
+        loop {
+            if at == 0 {
+                digits.insert(0, 1);
+                break;
+            }
+            at -= 1;
+            if digits[at] == 9 {
+                digits[at] = 0;
+            } else {
+                digits[at] += 1;
+                break;
+            }
+        }
+    }
+    let split = digits.len() - places;
+    let to_str = |ds: &[u8]| ds.iter().map(|d| (d + b'0') as char).collect::<String>();
+    // Strip leading zeros from the integer part, keeping at least one digit.
+    let int_str = to_str(&digits[..split]);
+    let int_norm = int_str.trim_start_matches('0');
+    let int_norm = if int_norm.is_empty() { "0" } else { int_norm };
+    (int_norm.to_owned(), to_str(&digits[split..]))
+}
+
 /// Insert `separator` every three digits from the right of a run of ASCII
 /// digits. Operates on the digit string only (sign and fraction handled by the
 /// caller), so it is convention-agnostic and reused by `count` and `decimal`.
@@ -297,6 +352,32 @@ mod tests {
         // Non-tie values are unaffected; padding a bare fraction still works.
         assert_eq!(en.decimal(2.24, 1), "2.2");
         assert_eq!(en.decimal(0.0, 1), "0.0");
+    }
+
+    #[test]
+    fn decimal_rounds_by_decimal_value_not_binary_scaling() {
+        // Inputs whose binary `f64` sits JUST BELOW a half-way boundary (e.g.
+        // `1.005` is stored as `1.00499…`). `Intl.NumberFormat` rounds the decimal
+        // the user typed (`halfExpand`), so these must round UP to match the other
+        // client; a binary `* 10^n` scale (`1.005 * 100 = 100.4999…`) would round
+        // DOWN and diverge. Values cross-checked against `Intl.NumberFormat`.
+        let en = Formats::new(Locale::En, Locale::En);
+        assert_eq!(en.decimal(1.005, 2), "1.01");
+        assert_eq!(en.decimal(2.005, 2), "2.01");
+        assert_eq!(en.decimal(1.015, 2), "1.02");
+        assert_eq!(en.decimal(1.025, 2), "1.03");
+        assert_eq!(en.decimal(2.675, 2), "2.68");
+        assert_eq!(en.decimal(0.005, 2), "0.01");
+        // Carry propagation across the decimal point and through a run of 9s.
+        assert_eq!(en.decimal(9.995, 2), "10.00");
+        assert_eq!(en.decimal(99.995, 2), "100.00");
+        // `percent` shares the same rounding path.
+        assert_eq!(en.percent(1.005, 2), "1.01%");
+        // Grouping still applies after decimal rounding under fr formatting.
+        assert_eq!(
+            Formats::new(Locale::En, Locale::Fr).decimal(1234.005, 2),
+            "1\u{202f}234,01"
+        );
     }
 
     #[test]
