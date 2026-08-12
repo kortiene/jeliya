@@ -74,13 +74,35 @@ pub fn scrub_secrets(text: String) -> String {
     let mut out = text;
     for marker in ["token=", "bearer ", "authorization:", "secret="] {
         while let Some(at) = out.to_ascii_lowercase().find(marker) {
-            // Redact from the marker to the next whitespace/quote/brace — the
-            // span a credential would occupy — leaving structure intact.
             let start = at + marker.len();
-            let end = out[start..]
-                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '}' | ',' | ')'))
-                .map(|offset| start + offset)
-                .unwrap_or(out.len());
+            // Skip whitespace between the marker and the value (`Authorization:
+            // "abc"`), then find the value's end. A QUOTED value must be redacted
+            // THROUGH its closing quote: the opening quote is itself a delimiter,
+            // so stopping at the first delimiter would strip only the marker and
+            // leave the credential (`token="abc"` → the `"abc"` would survive).
+            let mut cursor = start;
+            while out[cursor..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == ' ' || c == '\t')
+            {
+                cursor += 1; // space/tab are one byte
+            }
+            let end = match out[cursor..].chars().next() {
+                Some(quote @ ('"' | '\'')) => {
+                    let after = cursor + quote.len_utf8();
+                    out[after..]
+                        .find(quote)
+                        .map(|offset| after + offset + quote.len_utf8())
+                        .unwrap_or(out.len())
+                }
+                _ => out[cursor..]
+                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '}' | ',' | ')'))
+                    .map(|offset| cursor + offset)
+                    .unwrap_or(out.len()),
+            };
+            // Redact from the marker through the value (leaving surrounding
+            // structure intact).
             out.replace_range(at..end, "«redacted»");
         }
     }
@@ -137,5 +159,30 @@ mod tests {
         assert!(scrubbed.contains("«redacted»"));
         assert!(scrubbed.contains("connect failed"));
         assert!(scrubbed.contains("next"));
+    }
+
+    #[test]
+    fn scrub_secrets_redacts_quoted_and_spaced_credentials() {
+        // A QUOTED value: the opening quote is a delimiter, so a naive
+        // stop-at-first-delimiter left the credential behind (`"abc123secret"`).
+        for input in [
+            r#"token="abc123secret""#,
+            r#"secret='abc123secret'"#,
+            r#"Authorization: "abc123secret""#,
+            "token=abc123secret trailing",
+        ] {
+            let scrubbed = scrub_secrets(input.to_string());
+            assert!(
+                !scrubbed.contains("abc123secret"),
+                "credential leaked from {input:?}: {scrubbed}"
+            );
+            assert!(
+                scrubbed.contains("«redacted»"),
+                "no redaction marker for {input:?}: {scrubbed}"
+            );
+        }
+        // Surrounding structure is preserved.
+        let s = scrub_secrets(r#"connect failed token="abc123secret" then done"#.to_string());
+        assert!(s.contains("connect failed") && s.contains("done"), "{s}");
     }
 }

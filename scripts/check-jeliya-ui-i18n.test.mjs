@@ -345,6 +345,38 @@ fn view() -> Element {
   );
 });
 
+test('placeholder-parity: plural arms are keyed by category, not source order', () => {
+  // One uses {a}, Other uses {b}. EN lists One first; FR lists Other first.
+  const en = `impl Catalog for En {
+    fn n(&self, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("{a} thing"),
+        PluralCategory::Other => format!("{b} things"),
+      }
+    }
+  }`;
+  const frReordered = `impl Catalog for Fr {
+    fn n(&self, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::Other => format!("{b} choses"),
+        PluralCategory::One => format!("{a} chose"),
+      }
+    }
+  }`;
+  const check = (frSrc) =>
+    checkCatalogs({
+      en: parseCatalog(en, 'en.rs'),
+      fr: parseCatalog(frSrc, 'fr.rs'),
+      allowlist: {},
+    }).filter((f) => f.code === 'placeholder-parity');
+  // Reordered arms with matching per-category slots must NOT trip parity
+  // (a source-index comparison would misalign fr Other against en One).
+  assert.deepEqual(check(frReordered), [], 'reordered plural arms must compare by category');
+  // A genuine per-category slot drop IS still caught.
+  const frDropsOne = frReordered.replace('{a} chose', 'chose');
+  assert.ok(check(frDropsOne).length > 0, 'an fr One dropping {a} must trip placeholder-parity');
+});
+
 test('placeholder-parity: slotsEqual compares element-wise, not by join', () => {
   // Distinct multisets must NOT collide: `['a','bc']` and `['ab','c']` both
   // join to `'abc'`, so a delimiter-free join would call them equal and miss a

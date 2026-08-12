@@ -123,6 +123,13 @@ pub fn WebRoot() -> Element {
 /// The lifecycle a `?boot=<state>` query parameter requests, for the a11y matrix's
 /// deterministic boot/terminal fixture (web target only; `None` everywhere else
 /// and for any absent/unrecognized value → the normal Ready shell).
+///
+/// Only `connecting` and `failed` are accepted: `MockController::set_state`
+/// deliberately PANICS on `Stopping`/`Stopped` (those carry the settled-work
+/// guarantee only `ClientHandle::stop()` provides), so driving them here would
+/// crash the app rather than render a cover. The BootScreen structure the a11y
+/// matrix sweeps is identical across cover states (only the label differs), so
+/// `failed` (terminal) + `connecting` (initial) cover the branch.
 fn boot_fixture_state() -> Option<State> {
     #[cfg(feature = "web")]
     {
@@ -134,8 +141,6 @@ fn boot_fixture_state() -> Option<State> {
             .find_map(|pair| pair.strip_prefix("boot="))?;
         match value {
             "connecting" => Some(State::Connecting),
-            "stopping" => Some(State::Stopping),
-            "stopped" => Some(State::Stopped),
             "failed" => Some(State::Failed),
             _ => None,
         }

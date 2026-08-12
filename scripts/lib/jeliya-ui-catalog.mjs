@@ -277,6 +277,32 @@ export function parseCatalog(source, file) {
     if (entries.has(name)) {
       errors.push(finding(file, lineOf(source, open), 'catalog-duplicate-key', `duplicate method: ${name}`, 'catalog'));
     }
+    // For a plural method, group each literal by its PluralCategory arm (One /
+    // Other) rather than by SOURCE POSITION, so a locale that lists the arms in a
+    // different order is still compared category-against-category (parity would
+    // otherwise misalign fr `Other` against en `One`).
+    let slotsByCategory = null;
+    if (isPlural) {
+      const bodyText = skeleton.slice(open, close);
+      const markers = [];
+      const catRe = /PluralCategory::(One|Other)\b/g;
+      for (let m = catRe.exec(bodyText); m; m = catRe.exec(bodyText)) {
+        markers.push({ at: open + m.index, cat: m[1] });
+      }
+      const valuesByCat = { One: [], Other: [] };
+      for (const p of parts) {
+        let cat = null;
+        for (const mk of markers) {
+          if (mk.at <= p.start) cat = mk.cat;
+          else break;
+        }
+        if (cat) valuesByCat[cat].push(p.value);
+      }
+      slotsByCategory = {
+        One: slotSet(valuesByCat.One),
+        Other: slotSet(valuesByCat.Other),
+      };
+    }
     entries.set(name, {
       key: name,
       line: lineOf(source, match.index),
@@ -284,6 +310,7 @@ export function parseCatalog(source, file) {
       values: parts.map((p) => collapseSlots(p.value)),
       slots: slotSet(parts.map((p) => p.value)),
       slotsPerArm: parts.map((p) => slotSet([p.value])),
+      slotsByCategory,
     });
     methodRe.lastIndex = close;
   }
@@ -393,10 +420,12 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
     // use {n} (same [n, n] multiset) while one rendered arm actually drops or
     // doubles a slot. Compare arm-by-arm when the arm counts line up (a differing
     // count is already a plural-parity finding).
-    if (frEntry.slotsPerArm.length === enEntry.slotsPerArm.length) {
-      for (let i = 0; i < frEntry.slotsPerArm.length; i += 1) {
-        if (!slotsEqual(frEntry.slotsPerArm[i], enEntry.slotsPerArm[i])) {
-          findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr arm ${i} placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
+    if (frEntry.isPlural && enEntry.isPlural && frEntry.slotsByCategory && enEntry.slotsByCategory) {
+      // Compare PER CATEGORY (One/Other), not by source order — a reordered arm
+      // list must not misalign the comparison.
+      for (const cat of ['One', 'Other']) {
+        if (!slotsEqual(frEntry.slotsByCategory[cat], enEntry.slotsByCategory[cat])) {
+          findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr ${cat} placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
         }
       }
     } else if (!slotsEqual(frEntry.slots, enEntry.slots)) {

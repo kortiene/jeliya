@@ -21,21 +21,33 @@ let guard: NetworkGuard;
 
 test.beforeEach(async ({ page, baseURL }) => {
   guard = await installNoNetworkGuard(page, baseURL);
-  // The announce-once witness must be installed BEFORE the app boots: it
-  // records every distinct text the live region ever holds, so a region that
-  // announced per-render (the coalescing failure mode) is caught even though
-  // the final DOM looks identical.
+  // The announce-once witness must be installed BEFORE the app boots. It records
+  // both TEXT changes and NODE (re)mounts of the live region: a region that
+  // re-announced per render, OR was remounted (a new node) carrying the same
+  // message, is an announce-once regression assistive tech can miss — and a
+  // dedup on distinct-consecutive-text alone would hide the remount.
   await page.addInitScript(() => {
-    const log: string[] = [];
-    (window as unknown as { __liveRegionLog: string[] }).__liveRegionLog = log;
+    const log: { type: string; text: string }[] = [];
+    (window as unknown as { __liveRegionLog: typeof log }).__liveRegionLog = log;
+    let lastNode: Element | null = null;
+    let lastText: string | null = null;
     new MutationObserver(() => {
       const region = document.getElementById("live-region");
       if (region === null) {
         return;
       }
       const text = region.textContent ?? "";
-      if (log.length === 0 || log[log.length - 1] !== text) {
-        log.push(text);
+      if (region !== lastNode) {
+        // A (re)mount of the region node — recorded even if the text is
+        // unchanged, so a stable-node regression is visible.
+        log.push({ type: "mount", text });
+        lastNode = region;
+        lastText = text;
+        return;
+      }
+      if (text !== lastText) {
+        log.push({ type: "text", text });
+        lastText = text;
       }
     // Observe the Document node, not `documentElement`: an init script runs
     // before the document has a root element, so observing the (always
@@ -162,14 +174,23 @@ test("the connection live region announces the settled room count exactly once",
   await expect(region).toHaveAttribute("aria-atomic", "true");
   await expect(region).toHaveText("0 rooms");
 
-  // The witness recorded every distinct text the region ever held. A
-  // coalescing announcer yields exactly one transition: "" → "0 rooms". More
-  // entries mean the announce-once contract broke (per-render re-announce);
-  // the checklist's exact failure mode.
+  // The witness recorded TEXT changes and NODE (re)mounts. A coalescing announcer
+  // on ONE stable node yields: the region mounted exactly once, and "0 rooms"
+  // reached exactly once — a remount (mount count > 1) or a re-announce ("0 rooms"
+  // more than once) is the checklist's exact failure mode.
   const log = await page.evaluate(
-    () => (window as unknown as { __liveRegionLog: string[] }).__liveRegionLog,
+    () =>
+      (window as unknown as { __liveRegionLog: { type: string; text: string }[] })
+        .__liveRegionLog,
   );
-  expect(log.filter((entry) => entry !== "")).toEqual(["0 rooms"]);
+  expect(
+    log.filter((entry) => entry.type === "mount").length,
+    "the live region must be mounted once, never remounted",
+  ).toBe(1);
+  expect(
+    log.filter((entry) => entry.text === "0 rooms").length,
+    "the settled room count must be announced exactly once",
+  ).toBe(1);
 });
 
 test("visible interactive targets meet the compact target-size floors", async ({ page }, testInfo) => {
