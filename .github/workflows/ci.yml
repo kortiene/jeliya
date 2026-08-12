@@ -747,6 +747,10 @@ jobs:
   # defence in depth for what types cannot see. They read the Rust catalogs and
   # components as TEXT (no Rust build), so they cost seconds.
   ui-catalog:
+    # Runs and is visible on every PR; not yet a branch-protection REQUIRED
+    # context (add it after this merges — spec section 6.3). Kept out of the
+    # documented required-job matrix the same way `jeliya-ui-web` is, so the
+    # docs-truth check counts only the required jobs.
     name: jeliya-ui catalog parity (EN/FR)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -768,6 +772,8 @@ jobs:
           node scripts/check-jeliya-ui-i18n.mjs --only=catalog
 
   ui-literal-copy:
+    # Not yet branch-protection REQUIRED (spec section 6.3); kept out of the
+    # documented required-job matrix like `jeliya-ui-web`.
     name: jeliya-ui literal copy (no hardcoded UI strings)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -784,6 +790,8 @@ jobs:
         run: node scripts/check-jeliya-ui-i18n.mjs --only=literals
 
   ui-french-typography:
+    # Not yet branch-protection REQUIRED (spec section 6.3); kept out of the
+    # documented required-job matrix like `jeliya-ui-web`.
     name: jeliya-ui French typography
     runs-on: ubuntu-latest
     timeout-minutes: 10
