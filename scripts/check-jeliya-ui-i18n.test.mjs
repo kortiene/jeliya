@@ -573,6 +573,26 @@ fn view() -> Element {
     !scanComponentLiterals('x.rs', exprMatch).some((f) => f.code === 'form-control-id-mismatch'),
     'matching expression-valued ids must be clean',
   );
+  // A comma NESTED inside a call must not truncate the id expression: differing
+  // arguments after the nested comma are a real mismatch.
+  const nestedComma = `
+fn view() -> Element {
+    rsx! { Field { id: make_id("email", a), label: "Email", input { id: make_id("email", b) } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', nestedComma).some((f) => f.code === 'form-control-id-mismatch'),
+    'ids differing only after a nested comma must be flagged (balanced parse)',
+  );
+  const nestedCommaMatch = `
+fn view() -> Element {
+    rsx! { Field { id: make_id("email", a), label: "Email", input { id: make_id("email", a) } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', nestedCommaMatch).some((f) => f.code === 'form-control-id-mismatch'),
+    'identical nested-comma id expressions must be clean',
+  );
 });
 
 test('literal scan: an unnamed nav named only in a comment is flagged', () => {

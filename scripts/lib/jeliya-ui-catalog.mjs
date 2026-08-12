@@ -961,14 +961,33 @@ export function scanComponentLiterals(file, source) {
     }
   }
   // Extract the FIRST `id:` attribute value in `source[from..to)`, or null. The
-  // value is either a quoted literal (`"email"`) OR an EXPRESSION
-  // (`field_id.clone()`, up to the next `,`/`}`) — an expression-valued id must not
-  // slip the mismatch check, so capture both forms and compare them as raw text
-  // (a literal keeps its quotes, so a literal id and an expression id never
-  // spuriously match). Used for both the Field's own id and the control's id.
+  // value is a quoted literal (`"email"`) OR an EXPRESSION (`field_id.clone()`,
+  // `make_id("email", suffix)`) — an expression-valued id must not slip the
+  // mismatch check, so read the COMPLETE BALANCED expression: track `()`/`[]`/`{}`
+  // depth and quotes (with backslash escapes) so a top-level `,`/`}` terminates but
+  // a comma NESTED in a call does not. Compared as raw text (a literal keeps its
+  // quotes, so a literal id and an expression id never spuriously match).
   const firstIdAttr = (from, to) => {
-    const match = /\bid\s*:\s*("[^"]*"|[^,}]+)/.exec(source.slice(from, to));
-    return match ? match[1].trim() : null;
+    const slice = source.slice(from, to);
+    const head = /\bid\s*:\s*/.exec(slice);
+    if (!head) return null;
+    const startVal = head.index + head[0].length;
+    let depth = 0;
+    let quote = null;
+    let i = startVal;
+    for (; i < slice.length; i += 1) {
+      const c = slice[i];
+      if (quote) {
+        if (c === '\\') i += 1; // skip the escaped char (incl. an escaped quote)
+        else if (c === quote) quote = null;
+        continue;
+      }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[' || c === '{') depth += 1;
+      else if (c === ')' || c === ']') depth -= 1;
+      else if (depth === 0 && (c === ',' || c === '}')) break;
+    }
+    return slice.slice(startVal, i).trim() || null;
   };
   for (const el of RESERVED_FORM_CONTROLS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');

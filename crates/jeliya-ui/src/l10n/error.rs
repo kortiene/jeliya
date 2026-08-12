@@ -112,22 +112,33 @@ pub fn scrub_secrets(text: String) -> String {
                     // (`username="a", response="b"`), so stopping at a `"`/`,` would
                     // leave the rest exposed. Redact through the actual FIELD
                     // terminator — a structural container close or end of line/input.
-                    // QUOTE-AWARE: a `}`/`)`/newline INSIDE a quoted parameter
-                    // (`username="a)"`) is part of the value, not the terminator, so
-                    // track quoting and stop only at an UNQUOTED one.
+                    // QUOTE-AWARE, ESCAPE-AWARE: a `}`/`)`/newline INSIDE a quoted
+                    // parameter (`username="a)"`) is part of the value, not the
+                    // terminator; and a BACKSLASH-ESCAPED quote (`"a\""` — Debug
+                    // output escapes embedded quotes) does NOT close the quote, so a
+                    // following structural char stays inside the value. Track both,
+                    // and stop only at an UNQUOTED terminator.
+                    let chars: Vec<(usize, char)> = out[cursor..].char_indices().collect();
                     let mut in_quote: Option<char> = None;
                     let mut terminator = None;
-                    for (offset, c) in out[cursor..].char_indices() {
-                        match in_quote {
-                            Some(q) if c == q => in_quote = None,
-                            Some(_) => {}
-                            None if c == '"' || c == '\'' => in_quote = Some(c),
-                            None if matches!(c, '}' | ')' | '\n' | '\r') => {
-                                terminator = Some(cursor + offset);
-                                break;
+                    let mut k = 0;
+                    while k < chars.len() {
+                        let (offset, c) = chars[k];
+                        if let Some(q) = in_quote {
+                            if c == '\\' {
+                                k += 2; // skip the escaped char (an escaped quote never closes)
+                                continue;
                             }
-                            None => {}
+                            if c == q {
+                                in_quote = None;
+                            }
+                        } else if c == '"' || c == '\'' {
+                            in_quote = Some(c);
+                        } else if matches!(c, '}' | ')' | '\n' | '\r') {
+                            terminator = Some(cursor + offset);
+                            break;
                         }
+                        k += 1;
                     }
                     terminator.unwrap_or(out.len())
                 }
@@ -261,6 +272,16 @@ mod tests {
         assert!(
             !quoted.contains("deadbeefcafe"),
             "quoted-delimiter digest leaked: {quoted}"
+        );
+        // A BACKSLASH-ESCAPED quote inside a value (Debug output escapes embedded
+        // quotes) does not close the quote, so a following `)` stays inside the
+        // value and must not terminate the redaction early.
+        let escaped = scrub_secrets(
+            r#"Authorization: Digest username="a\")", response="deadbeefcafe""#.to_string(),
+        );
+        assert!(
+            !escaped.contains("deadbeefcafe"),
+            "escaped-quote digest leaked: {escaped}"
         );
     }
 }
