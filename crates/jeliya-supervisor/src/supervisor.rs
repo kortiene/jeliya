@@ -707,11 +707,15 @@ impl Supervisor {
                         // The spawn is still running (a stalled exec). Detach a task
                         // that awaits it and kills any child it eventually produces
                         // — the `JoinHandle` is kept (not dropped) so a late exec is
-                        // reaped, not orphaned with `kill_on_drop(false)`.
+                        // reaped, not orphaned with `kill_on_drop(false)`. Use the
+                        // process-GROUP teardown (`force_kill_tree` SIGKILLs the whole
+                        // isolated group and reaps, bounded), not `start_kill` on the
+                        // leader alone: a late child could already have spawned
+                        // descendants that would otherwise survive holding the
+                        // data-dir lock after the timeout is reported.
                         tokio::spawn(async move {
                             if let Ok((_, Ok(mut late))) = join.await {
-                                let _ = late.start_kill();
-                                let _ = late.wait().await;
+                                let _ = process::force_kill_tree(&mut late).await;
                             }
                         });
                         return Err(SupervisorError::Spawn(std::io::Error::new(
