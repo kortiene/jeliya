@@ -270,6 +270,72 @@ fn view() -> Element {
   assert.ok(!scanComponentLiterals('dialog.rs', source).some((f) => f.code === 'raw-semantic'));
 });
 
+test('literal scan: a converted RSX text expression is flagged', () => {
+  // `div { {"Delete account".to_string()} }` renders hardcoded copy as a text
+  // node; the trailing `.to_string()` must not exempt it (the converted-child
+  // bypass). A statement block with a trailing `;` is NOT an expression child.
+  const flagged = `
+fn view() -> Element {
+    rsx! {
+        div { {"Delete account".to_string()} }
+    }
+}
+`;
+  const codes = scanComponentLiterals('x.rs', flagged).map((f) => f.code);
+  assert.ok(codes.includes('rust-text'), 'a converted text expression child must be flagged');
+
+  // A genuine Rust statement (trailing `;`) inside a block is NOT a text child.
+  const notFlagged = `
+fn view() -> Element {
+    rsx! {
+        button { onclick: move |_| { let _ = "log".to_string(); }, {greeting} }
+    }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', notFlagged).some((f) => f.code === 'rust-text'),
+    'a converted string used as a Rust statement must NOT be flagged as copy',
+  );
+});
+
+test('literal scan: a bare semantic ELEMENT outside a primitive is flagged', () => {
+  // A bare `dialog { … }` bypasses the Dialog primitive's focus/Escape contract;
+  // an UNNAMED `nav { … }` bypasses the named-navigation contract.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        dialog { "{message}" }
+        nav { "rooms" }
+    }
+}
+`;
+  const codes = scanComponentLiterals('rogue.rs', source).map((f) => f.code);
+  assert.ok(codes.includes('raw-semantic-element'), 'a bare dialog/unnamed nav must be flagged');
+  // In the PRIMITIVE files that DEFINE these, the same markup is allowed.
+  assert.ok(!scanComponentLiterals('dialog.rs', source).some((f) => f.code === 'raw-semantic-element'));
+  assert.ok(!scanComponentLiterals('nav.rs', source).some((f) => f.code === 'raw-semantic-element'));
+});
+
+test('literal scan: a NAMED nav landmark is not flagged', () => {
+  // A `nav` carrying an accessible name is the landmark contract, so the app
+  // shell's named nav must pass (no false positive).
+  const source = `
+fn view() -> Element {
+    rsx! {
+        nav {
+            class: "rooms-list",
+            "aria-label": "{rooms_label}",
+            div { "child" }
+        }
+    }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('app.rs', source).some((f) => f.code === 'raw-semantic-element'),
+    'a named nav landmark must not be flagged',
+  );
+});
+
 test('literal scan: an i18n-exempt line is honored', () => {
   const source = `
 fn view() -> Element {

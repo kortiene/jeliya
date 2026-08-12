@@ -277,22 +277,45 @@ pub fn AppRoot(
         }
     });
 
+    // Announce a TERMINAL room-list failure through the same stable region. A
+    // terminal read error sets the notice while the lifecycle stays `Ready` and
+    // `rooms_loaded` stays false, so NEITHER the room-count effect (gated on
+    // `rooms_loaded`) NOR the lifecycle effect (gated on a lifecycle change)
+    // fires — without this a screen-reader user would keep hearing only the
+    // loading state while the friendly error sits silently in the DOM (§5.6). The
+    // retryable-disconnect notice is deliberately NOT announced here: its
+    // Interrupted transition is already voiced by the lifecycle effect, so
+    // announcing it twice would fight for the one region. `Announcer` coalesces,
+    // so a re-rendering shell still announces once.
+    use_effect(move || {
+        let snapshot = ui.read();
+        let resolved = locale.read();
+        if snapshot.notice.is_some() && snapshot.notice_terminal {
+            let message = ErrorDisplay::room_list_failure(catalog_for(resolved.text), true).message;
+            announcer.announce(message);
+        }
+    });
+
     let strings = use_strings();
     let snapshot = ui();
 
-    // Outside the shell, the boot screen is the component ROOT (as the React
-    // shell renders it), never a child of the `.app` grid: auto-placed inside
-    // the two-column grid, its `height: var(--vh-full)` would blow up the
-    // first `auto` row and collapse the sidebar/center instead of covering
-    // them. All hooks are declared above, so the early return is order-safe.
-    //
-    // The "connecting" cover is reserved for initial activation. `Interrupted`
-    // was Ready and is recovering, so the shell stays mounted (`StatusFooter`
-    // reports the state) rather than hiding the rooms behind a boot screen;
-    // the stop and failure states render their own honest label — a terminal
-    // state that claims to be connecting would be a lie the client never
-    // recovers from. Labels are catalog copy, so the cover speaks the resolved
-    // locale.
+    // Primary copy for a failed room-list read is friendly catalog text; the raw
+    // `room.list:` detail lives ONLY in the Diagnostics disclosure. Terminal
+    // failures get copy that does not promise a retry that will never happen (§5.8
+    // / the "no false recovery promise" rule). Computed BEFORE the boot branch so
+    // the boot/terminal cover shows the SAME friendly, localized copy — never the
+    // raw developer-facing diagnostic as primary text.
+    let room_error = snapshot
+        .notice
+        .as_ref()
+        .map(|_| ErrorDisplay::room_list_failure(strings, snapshot.notice_terminal).message);
+
+    // The boot/terminal cover: initial activation ("connecting…") and the
+    // stop/failure states, each with its own honest label. `Interrupted` was
+    // Ready and is recovering, so the shell stays mounted (`StatusFooter` reports
+    // it) rather than hiding the rooms behind a cover; the stop/failure states
+    // render their own label — a "connecting" cover over a terminal state would be
+    // a lie. Labels are catalog copy, so the cover speaks the resolved locale.
     let boot_target = match snapshot.lifecycle {
         State::Ready | State::Interrupted => None,
         State::Idle | State::Connecting => Some(strings.boot_connecting()),
@@ -300,115 +323,95 @@ pub fn AppRoot(
         State::Stopped => Some(strings.boot_stopped()),
         State::Failed => Some(strings.boot_failed()),
     };
-    if let Some(target) = boot_target {
-        return rsx! {
-            BootScreen {
-                target: target.to_string(),
-                notice: snapshot.notice.clone(),
-            }
-            // Keep the live region mounted in the boot/terminal path too: a
-            // previously-mounted shell that drops to Failed/Stopped renders
-            // BootScreen, and the lifecycle-announce effect writes those
-            // transitions into the announcer — without a region here they would
-            // never be voiced.
-            LiveRegion { message: announcer.message() }
-        };
-    }
-
-    // Primary copy for a failed room-list read is friendly catalog text; the raw
-    // detail lives only in the Diagnostics dialog (carried via `StatusFooter`).
-    // Terminal failures get copy that does not promise a retry that will never
-    // happen (§5.8 / the "no false recovery promise" rule).
-    let room_error = snapshot
-        .notice
-        .as_ref()
-        .map(|_| ErrorDisplay::room_list_failure(strings, snapshot.notice_terminal).message);
     let rooms_label = strings.rooms_heading().to_string();
     let skip_rooms = strings.skip_to_rooms().to_string();
     let app_name = strings.app_name();
     let rooms_empty = strings.rooms_empty();
     let rooms_loading = strings.rooms_loading();
 
+    // ONE render tree with ONE stable live region. The boot/terminal cover and the
+    // mounted shell are the two arms of a single lifecycle conditional; the
+    // `LiveRegion` sits OUTSIDE it, so it is the SAME template node — the SAME DOM
+    // element — across a boot↔shell transition (`Ready`→`Failed`/`Stopped` and
+    // back). Assistive tech then tracks one stable region rather than observing a
+    // node removed and a different one mounted mid-announcement (§5.6). The boot
+    // cover stays a ROOT child (never inside the `.app` grid, whose
+    // `height: var(--vh-full)` a nested full-viewport cover would blow up); all
+    // hooks are declared above, so this single return is order-safe.
     rsx! {
-        // Skip links are the FIRST focusable region on the page and move focus
-        // (not just scroll) to their `tabindex="-1"` landmark targets. Only
-        // "skip to rooms" is offered: the rooms list is the foundation's one
-        // meaningful content region and is visible on every viewport. A
-        // "skip to content" link is deliberately NOT offered — the center is an
-        // empty placeholder here AND `pane-rooms` hides it on compact, so its
-        // target would be an unfocusable `display:none` node. The Room Workbench
-        // port adds that link with the real content it points at.
-        SkipLinks {
-            SkipLink { anchor: "rooms-nav".to_string(), label: skip_rooms }
-        }
-        // A root pane state is always set (`pane-rooms`), because the shared
-        // stylesheet hides `.sidebar`/`.center` on compact viewports unless a
-        // pane is selected — a plain `app` root renders blank on a phone
-        // system WebView, which is a target platform. The React client sets
-        // `app pane-${pane}`; so does this.
-        div { class: "app pane-rooms", id: "app-root",
-            // The page's single `<h1>`, at the always-rendered root (never a
-            // pane-hidden region). Visually hidden because the visible headings
-            // (the room-list nav's accessible name, the centre's h2) already
-            // show on screen; the h1 names the page for assistive tech.
-            h1 { class: "visually-hidden", "{app_name}" }
-            // The rooms pane is the PRIMARY content of this rooms-first
-            // foundation, so it is the `<main>` landmark — and `pane-rooms`
-            // keeps it visible on EVERY viewport (including compact), so every
-            // viewport has a main landmark in the accessibility tree (the fix
-            // for the compact main gap: the old `.center`-as-main was
-            // `display:none` on compact). The room list within is a `<nav>`.
-            main { class: "sidebar", id: "main-content", tabindex: "-1",
-                // The notice lives here, not the `.center` detail pane, because
-                // `pane-rooms` hides `.center` on compact. Terminal failures get
-                // copy that does not promise a retry (§5.8); the raw detail is
-                // in Diagnostics.
-                if let Some(message) = room_error.as_ref() {
-                    div { class: "error-note", id: "notice", "{message}" }
-                }
-                // `.rooms-list` is the scroll container the stylesheet styles
-                // (flex: 1, overflow-y: auto, min-height: 0). A NAMED `nav` so
-                // landmark navigation can find the room list and the skip link
-                // can move focus into it.
-                nav {
-                    class: "rooms-list",
-                    id: "rooms-nav",
-                    tabindex: "-1",
-                    "aria-label": "{rooms_label}",
-                    // Loading vs empty is shown ONLY when there is no notice: a
-                    // terminal room.list failure is neither "loading" nor an
-                    // empty account (the error note above is the state), so the
-                    // shell must not render "No rooms yet" or announce 0 rooms
-                    // for a failed load.
-                    if snapshot.rooms.is_empty() && snapshot.notice.is_none() {
-                        // "No rooms yet" is an ANSWER, not a default: before the
-                        // first reply an empty vector means "not answered yet".
-                        if snapshot.rooms_loaded {
-                            div { class: "rooms-empty muted", id: "rooms-empty", "{rooms_empty}" }
-                        } else {
-                            div { class: "rooms-empty muted", id: "rooms-loading", "{rooms_loading}" }
-                        }
-                    }
-                    for room in snapshot.rooms.iter() {
-                        RoomListItem {
-                            key: "{room.room_id}",
-                            room: room.clone(),
-                            selected: false,
-                        }
-                    }
-                }
-                // The footer sits at the BOTTOM of the main pane's flex column,
-                // reporting the connection state accessibly and hosting the
-                // Diagnostics disclosure that carries the raw failure detail.
-                StatusFooter { state: snapshot.lifecycle, detail: snapshot.notice.clone() }
+        if let Some(target) = boot_target {
+            BootScreen {
+                target: target.to_string(),
+                // Friendly, localized copy — not the raw notice (§5.8).
+                notice: room_error.clone(),
             }
-            // The desktop-only detail pane — a plain `<section>` (NOT a second
-            // landmark), `display:none` on compact. Carries the centre's h2.
-            section { class: "center", id: "center", EmptyCenter {} }
-            // The single, stable polite live region for connection/content
-            // announcements. Visually hidden, so it does not disturb layout.
-            LiveRegion { message: announcer.message() }
+        } else {
+            // Skip links are the FIRST focusable region and move focus (not just
+            // scroll) to their `tabindex="-1"` landmark targets. Only "skip to
+            // rooms" is offered: the rooms list is the one meaningful content
+            // region and is visible on every viewport; a "skip to content" link
+            // would point at the compact-hidden empty center.
+            SkipLinks {
+                SkipLink { anchor: "rooms-nav".to_string(), label: skip_rooms }
+            }
+            // A root pane state is always set (`pane-rooms`): the shared stylesheet
+            // hides `.sidebar`/`.center` on compact viewports unless a pane is
+            // selected, so a plain `app` root renders blank on a phone WebView.
+            div { class: "app pane-rooms", id: "app-root",
+                // The page's single `<h1>`, at the always-rendered root. Visually
+                // hidden because the visible headings already show on screen; it
+                // names the page for assistive tech.
+                h1 { class: "visually-hidden", "{app_name}" }
+                // The rooms pane is the PRIMARY content, so it is the `<main>`
+                // landmark — and `pane-rooms` keeps it visible on EVERY viewport,
+                // so every viewport has a main landmark (the fix for the compact
+                // main gap). The room list within is a NAMED `<nav>`.
+                main { class: "sidebar", id: "main-content", tabindex: "-1",
+                    // The notice lives here, not the `.center` pane (hidden on
+                    // compact). Terminal failures get copy that does not promise a
+                    // retry (§5.8); the raw detail is in Diagnostics.
+                    if let Some(message) = room_error.as_ref() {
+                        div { class: "error-note", id: "notice", "{message}" }
+                    }
+                    nav {
+                        class: "rooms-list",
+                        id: "rooms-nav",
+                        tabindex: "-1",
+                        "aria-label": "{rooms_label}",
+                        // Loading vs empty is shown ONLY when there is no notice: a
+                        // terminal failure is neither "loading" nor an empty
+                        // account, so the shell must not render "No rooms yet" or
+                        // announce 0 rooms for a failed load.
+                        if snapshot.rooms.is_empty() && snapshot.notice.is_none() {
+                            // "No rooms yet" is an ANSWER, not a default: before the
+                            // first reply an empty vector means "not answered yet".
+                            if snapshot.rooms_loaded {
+                                div { class: "rooms-empty muted", id: "rooms-empty", "{rooms_empty}" }
+                            } else {
+                                div { class: "rooms-empty muted", id: "rooms-loading", "{rooms_loading}" }
+                            }
+                        }
+                        for room in snapshot.rooms.iter() {
+                            RoomListItem {
+                                key: "{room.room_id}",
+                                room: room.clone(),
+                                selected: false,
+                            }
+                        }
+                    }
+                    // The footer reports the connection state accessibly and hosts
+                    // the Diagnostics disclosure carrying the raw failure detail.
+                    StatusFooter { state: snapshot.lifecycle, detail: snapshot.notice.clone() }
+                }
+                // The desktop-only detail pane — a plain `<section>` (NOT a second
+                // landmark), `display:none` on compact. Carries the centre's h2.
+                section { class: "center", id: "center", EmptyCenter {} }
+            }
         }
+        // The single, stable polite live region for connection/content
+        // announcements — OUTSIDE the lifecycle conditional so one DOM node
+        // persists across boot↔shell transitions. Visually hidden.
+        LiveRegion { message: announcer.message() }
     }
 }
 

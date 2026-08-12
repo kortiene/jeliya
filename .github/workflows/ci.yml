@@ -741,11 +741,19 @@ jobs:
   # ---- #177 Dioxus catalog / literal / French-typography gates ----
   # Three independently-named contexts over ONE parser
   # (scripts/lib/jeliya-ui-catalog.mjs) so each AC-7 concern is its own required
-  # branch-protection check (add them to `main` protection after this merges —
-  # spec §6.3). rustc already enforces key/placeholder parity between
+  # branch-protection check. rustc already enforces key/placeholder parity between
   # jeliya_ui::l10n::En and ::Fr in the jeliya-ui-web job; these gates are the
   # defence in depth for what types cannot see. They read the Rust catalogs and
   # components as TEXT (no Rust build), so they cost seconds.
+  #
+  # IMPORTANT (branch protection): GitHub matches a required status check by its
+  # check-RUN NAME, which is each job's `name:` value — NOT the job id. Add these
+  # exact contexts to `main` protection after this merges (spec §6.3):
+  #   - "jeliya-ui catalog parity (EN/FR)"                  (job ui-catalog)
+  #   - "jeliya-ui literal copy (no hardcoded UI strings)"  (job ui-literal-copy)
+  #   - "jeliya-ui French typography"                       (job ui-french-typography)
+  #   - "jeliya-ui accessibility matrix (axe + keyboard)"   (job ui-a11y-foundation)
+  # Requiring the job ids instead would never bind (no run publishes that name).
   ui-catalog:
     # Runs and is visible on every PR; not yet a branch-protection REQUIRED
     # context (add it after this merges — spec section 6.3). Kept out of the
@@ -811,9 +819,10 @@ jobs:
     # The independently-named accessibility context AC-7 requires: the offline
     # axe + keyboard/focus matrix over the foundation routes at four viewports.
     # It also runs inside `jeliya-ui-web`'s full playwright pass, but that job is
-    # not a11y-specific; this one exists so maintainers can add the documented
-    # `ui-a11y-foundation` context to branch protection (spec section 6.3). Kept
-    # out of the documented required-job matrix like `jeliya-ui-web` until then.
+    # not a11y-specific; this one exists so maintainers can require the check-run
+    # name "jeliya-ui accessibility matrix (axe + keyboard)" in branch protection
+    # (spec section 6.3) — the `name:` below is the context, NOT the `ui-a11y-foundation`
+    # job id. Kept out of the documented required-job matrix like `jeliya-ui-web` until then.
     name: jeliya-ui accessibility matrix (axe + keyboard)
     runs-on: ubuntu-latest
     timeout-minutes: 30

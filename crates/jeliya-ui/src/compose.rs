@@ -110,19 +110,46 @@ pub fn WebRoot() -> Element {
 }
 
 /// The platform UI language tag to seed locale resolution with — the ONE place
-/// a target reads it (Decision-5): the browser's `navigator.language` on the web
+/// a target reads it (Decision-5): the browser's language preference on the web
 /// target, `None` elsewhere (the M4 desktop/Android bins inject their own OS
 /// locale here later). Confining the `web-sys` read to composition keeps
 /// [`crate::AppRoot`] and every shared component free of `web-sys`/`cfg`.
+///
+/// Reads the ORDERED `navigator.languages` list, not just `navigator.language`:
+/// a browser configured as `['de-DE', 'fr-FR']` must reach French (its next
+/// SUPPORTED preference), not fall to English on the unsupported primary tag. We
+/// return the first tag whose primary subtag this app supports; `navigator.language`
+/// is the fallback, then `None`. The narrowing to a supported catalog still
+/// happens in `LocaleState::resolve` — this only chooses WHICH platform tag to
+/// feed it.
 fn platform_locale() -> Option<String> {
     #[cfg(feature = "web")]
     {
-        web_sys::window()?.navigator().language()
+        let navigator = web_sys::window()?.navigator();
+        // `navigator.languages` is the user's ordered preference list; pick the
+        // first entry this app can actually render (so a supported non-primary
+        // preference is honored before the English fallback), else fall back to
+        // the primary `navigator.language` tag.
+        let languages = navigator.languages();
+        let ordered = (0..languages.length()).filter_map(|i| languages.get(i).as_string());
+        first_supported_language_tag(ordered).or_else(|| navigator.language())
     }
     #[cfg(not(feature = "web"))]
     {
         None
     }
+}
+
+/// The first tag in `tags` whose primary subtag this app supports, else `None`.
+/// The ordered-preference selection behind [`platform_locale`], factored out pure
+/// so it is testable without a browser: `['de-DE', 'fr-FR']` yields `fr-FR` (the
+/// user's next SUPPORTED preference), not the unsupported German primary that
+/// would otherwise fall through to English. The narrowing to a catalog still
+/// happens in `LocaleState::resolve`; this only chooses which tag to feed it.
+#[cfg(any(feature = "web", test))]
+fn first_supported_language_tag(tags: impl Iterator<Item = String>) -> Option<String> {
+    tags.into_iter()
+        .find(|tag| crate::l10n::Locale::from_tag(tag).is_some())
 }
 
 /// Set `<html lang>` from the resolved TEXT locale (the same resolution
@@ -229,5 +256,23 @@ pub fn NativeRoot() -> Element {
 
     rsx! {
         AppRoot { handle, services, platform_locale: platform_locale() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_supported_language_tag;
+
+    #[test]
+    fn first_supported_language_tag_honors_the_ordered_preference() {
+        let of = |v: &[&str]| first_supported_language_tag(v.iter().map(|s| s.to_string()));
+        // Unsupported primary, supported secondary → the secondary (not English).
+        assert_eq!(of(&["de-DE", "fr-FR"]), Some("fr-FR".to_string()));
+        // The first SUPPORTED tag wins.
+        assert_eq!(of(&["en-US", "fr-FR"]), Some("en-US".to_string()));
+        assert_eq!(of(&["fr", "en"]), Some("fr".to_string()));
+        // No supported entry → None (caller falls back to navigator.language).
+        assert_eq!(of(&["de-DE", "es-ES"]), None);
+        assert_eq!(of(&[]), None);
     }
 }

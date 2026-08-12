@@ -477,6 +477,15 @@ const COPY_ATTRS = new Set([
  *  everywhere EXCEPT the primitive files that legitimately define them. */
 const RESERVED_SEMANTIC_ATTRS = new Set(['role', 'aria-modal', 'aria-live']);
 
+/** Reserved semantic ELEMENT names that must come from a shared primitive
+ *  (Decision-6). A bare `dialog { … }` outside a primitive skips the Dialog
+ *  primitive's focus containment / Escape handling — there is no legitimate bare
+ *  use, so it is always flagged. `nav` is handled separately below (flagged only
+ *  when UNNAMED — a named landmark IS the contract, so the app shell's named nav
+ *  is legitimate). Matched lowercase, so the `Dialog` primitive COMPONENT (capital
+ *  D) is never caught. */
+const RESERVED_SEMANTIC_ELEMENTS = new Set(['dialog']);
+
 /** Basenames of the semantic-primitive source files, where the reserved
  *  attributes above are DEFINED and therefore allowed. */
 const PRIMITIVE_FILES = new Set([
@@ -540,6 +549,49 @@ function rsxRanges(skeleton) {
     }
   }
   return ranges;
+}
+
+/** From a method-chain `.` at `dotStart`, walk `.ident(...)` / `.ident()` /
+ *  `.ident` segments (with balanced call parens) and report whether the chain is
+ *  immediately followed by the `}` that closes its RSX expression slot — i.e. the
+ *  braces wrap ONLY a converted string literal, as an expression text child does.
+ *  Distinguishes `{ "x".to_string() }` (a copy child → true) from a statement
+ *  block like `{ "x".to_string(); … }` (→ false, the next token is `;`). */
+function methodChainClosesSlot(skeleton, dotStart) {
+  let i = dotStart;
+  while (i < skeleton.length && skeleton[i] === '.') {
+    i += 1; // past '.'
+    while (i < skeleton.length && /\w/.test(skeleton[i])) i += 1; // method ident
+    while (i < skeleton.length && /\s/.test(skeleton[i])) i += 1;
+    if (skeleton[i] === '(') {
+      let depth = 0;
+      for (; i < skeleton.length; i += 1) {
+        if (skeleton[i] === '(') depth += 1;
+        else if (skeleton[i] === ')') {
+          depth -= 1;
+          if (depth === 0) {
+            i += 1;
+            break;
+          }
+        }
+      }
+    }
+    while (i < skeleton.length && /\s/.test(skeleton[i])) i += 1;
+  }
+  return skeleton[i] === '}';
+}
+
+/** The index of the `}` matching the `{` at `openIndex` in `skeleton`, or -1. */
+function matchingBrace(skeleton, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < skeleton.length; i += 1) {
+    if (skeleton[i] === '{') depth += 1;
+    else if (skeleton[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
 }
 
 /** Report user-visible literals in one Rust component/app source. */
@@ -607,6 +659,16 @@ export function scanComponentLiterals(file, source) {
         continue;
       }
     }
+    // A method-receiver literal that is itself an RSX EXPRESSION CHILD — e.g.
+    // `div { {"Delete account".to_string()} }` — is user-visible copy rendered as
+    // a text node, NOT Rust logic. The opening `{` of the expression slot precedes
+    // it (prev === '{') and the whole conversion chain closes that slot, so a
+    // trailing `.to_string()`/`.into()` must not exempt it — that was the bypass a
+    // bare `{ "…" }` child would otherwise be caught by. Classify it as copy.
+    if (skeleton[after] === '.' && prev === '{' && methodChainClosesSlot(skeleton, after)) {
+      findings.push(finding(file, line, 'rust-text', `RSX text expression is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
+      continue;
+    }
     // A literal that is a method receiver (`"x".to_string()`) reached HERE — not
     // a copy-prop value (handled above) — is Rust logic embedded in RSX, not
     // markup text.
@@ -635,6 +697,41 @@ export function scanComponentLiterals(file, source) {
         if (exempt(line)) continue;
         findings.push(finding(file, line, 'raw-semantic', `raw \`${attr}\` must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
       }
+    }
+
+    // Reserved semantic ELEMENTS (Decision-6): the reserved ATTRIBUTE scan above
+    // catches a raw `role`/`aria-live`, but a bare semantic ELEMENT sets those
+    // implicitly. A `dialog { … }` (or an UNNAMED `nav { … }`) outside a primitive
+    // bypasses the Dialog focus/Escape contract or the named-navigation contract
+    // while all three text gates stay green. Match element openers (`name {`) in
+    // the SKELETON so a `dialog {` inside a blanked string never matches.
+    for (const el of RESERVED_SEMANTIC_ELEMENTS) {
+      const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
+      for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+        if (m.index >= limit || !inRsx(m.index)) continue;
+        const line = lineOf(source, m.index);
+        if (exempt(line)) continue;
+        findings.push(finding(file, line, 'raw-semantic-element', `raw \`${el}\` element must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
+      }
+    }
+
+    // `nav` must be a NAMED landmark. Flag a bare `nav { … }` outside a primitive
+    // ONLY when its element body carries no accessible name (`aria-label` /
+    // `aria-labelledby`) — the app shell's named nav is legitimate, an unnamed one
+    // bypasses the named-navigation contract the NavLandmark primitive provides.
+    const navRe = /\bnav\s*\{/g;
+    for (let m = navRe.exec(skeleton); m; m = navRe.exec(skeleton)) {
+      if (m.index >= limit || !inRsx(m.index)) continue;
+      const openBrace = m.index + m[0].length - 1;
+      const close = matchingBrace(skeleton, openBrace);
+      // Search the raw SOURCE (a quoted `"aria-label"` name is blanked in the
+      // skeleton). A nested named child could mask an unnamed parent nav — a
+      // rare, SAFE false negative preferred over false-positiving a named nav.
+      const body = source.slice(openBrace, close === -1 ? source.length : close);
+      if (/aria-label\b|aria-labelledby\b/.test(body)) continue;
+      const line = lineOf(source, m.index);
+      if (exempt(line)) continue;
+      findings.push(finding(file, line, 'raw-semantic-element', 'raw unnamed `nav` must carry an accessible name (aria-label/aria-labelledby) or come from the NavLandmark primitive (Decision-6)', 'literals'));
     }
   }
   return findings;
