@@ -887,6 +887,22 @@ export function scanComponentLiterals(file, source) {
       while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
       if (skeleton[i] === '=') eqIndex = i;
     }
+    // The literal may sit ANYWHERE in a `let NAME = <RHS>` — inside an `if/else`,
+    // a `match` arm, or a block — where the char before it is `{`/`>`/etc., not
+    // `=`/`(` (e.g. a conditional `let label = if c { "Delete" } else { "Remove" }`).
+    // Walk back to the enclosing STATEMENT (nearest `;`) and, if the innermost
+    // `let NAME =` opens before the literal within it, associate the literal with
+    // NAME so conditionally-assigned copy cannot bypass the check.
+    if (eqIndex < 0) {
+      let stmtStart = literal.start - 1;
+      while (stmtStart >= 0 && skeleton[stmtStart] !== ';') stmtStart -= 1;
+      stmtStart += 1;
+      const stmt = skeleton.slice(stmtStart, literal.start);
+      const letRe = /\blet\s+(?:mut\s+)?[A-Za-z_]\w*\s*(?::\s*[^=;{}]*)?=/g;
+      let lastLet = null;
+      for (let mm = letRe.exec(stmt); mm; mm = letRe.exec(stmt)) lastLet = mm;
+      if (lastLet) eqIndex = stmtStart + lastLet.index + lastLet[0].length - 1;
+    }
     if (eqIndex < 0) continue;
     const boundName = letBindingName(skeleton, eqIndex);
     if (!boundName || !copyInterpolations.has(boundName)) continue;
@@ -944,12 +960,15 @@ export function scanComponentLiterals(file, source) {
       if (close !== -1) fieldRanges.push([open, close]);
     }
   }
-  // Extract the FIRST `id: "…"` string-attribute value in `source[from..to)`, or
-  // null. Used both for a Field's own id (props precede its child elements) and
-  // for a control's id.
+  // Extract the FIRST `id:` attribute value in `source[from..to)`, or null. The
+  // value is either a quoted literal (`"email"`) OR an EXPRESSION
+  // (`field_id.clone()`, up to the next `,`/`}`) — an expression-valued id must not
+  // slip the mismatch check, so capture both forms and compare them as raw text
+  // (a literal keeps its quotes, so a literal id and an expression id never
+  // spuriously match). Used for both the Field's own id and the control's id.
   const firstIdAttr = (from, to) => {
-    const match = /\bid\s*:\s*"([^"]*)"/.exec(source.slice(from, to));
-    return match ? match[1] : null;
+    const match = /\bid\s*:\s*("[^"]*"|[^,}]+)/.exec(source.slice(from, to));
+    return match ? match[1].trim() : null;
   };
   for (const el of RESERVED_FORM_CONTROLS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
@@ -973,7 +992,7 @@ export function scanComponentLiterals(file, source) {
       const fieldId = firstIdAttr(field[0], controlOpen);
       const controlId = firstIdAttr(controlOpen, controlEnd);
       if (fieldId !== null && controlId !== fieldId) {
-        findings.push(finding(file, line, 'form-control-id-mismatch', `\`${el}\` inside \`Field\` must set \`id: "${fieldId}"\` to match the Field's \`label[for]\`; found \`${controlId === null ? '(no id)' : controlId}\``, 'literals'));
+        findings.push(finding(file, line, 'form-control-id-mismatch', `\`${el}\` inside \`Field\` must set \`id\` to match the Field's \`id\` (\`${fieldId}\`) so its \`label[for]\` names it; found \`${controlId === null ? '(no id)' : controlId}\``, 'literals'));
       }
     }
   }

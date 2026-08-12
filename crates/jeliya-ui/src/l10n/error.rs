@@ -105,22 +105,35 @@ pub fn scrub_secrets(text: String) -> String {
                         .map(|offset| after + offset + quote.len_utf8())
                         .unwrap_or(out.len())
                 }
-                _ => {
-                    let is_boundary = |c: char| {
-                        if whole_field {
-                            // A whole-field credential (a scheme-based
-                            // `Authorization`) may contain spaces AND value
-                            // punctuation: a `Digest` field is quote- and
-                            // comma-delimited internally (`username="a", response="b"`),
-                            // so stopping at a `"` or `,` would leave the rest of the
-                            // credential exposed. Redact through the actual FIELD
-                            // terminator — a structural container close or end of
-                            // line/input — never value punctuation.
-                            matches!(c, '}' | ')' | '\n' | '\r')
-                        } else {
-                            c.is_whitespace() || matches!(c, '"' | '\'' | '}' | ',' | ')')
+                _ if whole_field => {
+                    // A whole-field credential (a scheme-based `Authorization`) may
+                    // contain spaces AND value punctuation: a `Digest` field is
+                    // quote- and comma-delimited internally
+                    // (`username="a", response="b"`), so stopping at a `"`/`,` would
+                    // leave the rest exposed. Redact through the actual FIELD
+                    // terminator — a structural container close or end of line/input.
+                    // QUOTE-AWARE: a `}`/`)`/newline INSIDE a quoted parameter
+                    // (`username="a)"`) is part of the value, not the terminator, so
+                    // track quoting and stop only at an UNQUOTED one.
+                    let mut in_quote: Option<char> = None;
+                    let mut terminator = None;
+                    for (offset, c) in out[cursor..].char_indices() {
+                        match in_quote {
+                            Some(q) if c == q => in_quote = None,
+                            Some(_) => {}
+                            None if c == '"' || c == '\'' => in_quote = Some(c),
+                            None if matches!(c, '}' | ')' | '\n' | '\r') => {
+                                terminator = Some(cursor + offset);
+                                break;
+                            }
+                            None => {}
                         }
-                    };
+                    }
+                    terminator.unwrap_or(out.len())
+                }
+                _ => {
+                    let is_boundary =
+                        |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '}' | ',' | ')');
                     out[cursor..]
                         .find(is_boundary)
                         .map(|offset| cursor + offset)
@@ -239,6 +252,15 @@ mod tests {
         assert!(
             bounded.contains("tail"),
             "structure after `}}` must survive: {bounded}"
+        );
+        // A `)` / `}` INSIDE a quoted parameter is part of the VALUE, not the field
+        // terminator: the redaction must not stop there and leak the rest.
+        let quoted = scrub_secrets(
+            r#"Authorization: Digest username="a)}", response="deadbeefcafe""#.to_string(),
+        );
+        assert!(
+            !quoted.contains("deadbeefcafe"),
+            "quoted-delimiter digest leaked: {quoted}"
         );
     }
 }

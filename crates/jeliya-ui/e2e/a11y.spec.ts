@@ -202,8 +202,9 @@ test("visible interactive targets meet the compact target-size floors", async ({
 
   // Hit-test the real geometry of every visible interactive control (WCAG
   // 2.5.8): at least 24×24 always; a target under 44px in either dimension
-  // must not have another interactive target's center within 24px of its own
-  // (the spacing exception). Skip links are visually hidden until focused, so
+  // must keep a >=24px GAP from its neighbor's boundary on at least one axis
+  // (the spacing exception, measured boundary-to-boundary as the retiring check
+  // does — not center distance). Skip links are visually hidden until focused, so
   // only currently-visible controls are measured — measuring rendered
   // geometry, not CSS declarations.
   const targets = page.locator("button:visible, a:visible, [role='button']:visible");
@@ -232,12 +233,18 @@ test("visible interactive targets meet the compact target-size floors", async ({
         continue;
       }
       const b = boxes[j];
-      const dx = a.x + a.width / 2 - (b.x + b.width / 2);
-      const dy = a.y + a.height / 2 - (b.y + b.height / 2);
-      const distance = Math.sqrt(dx * dx + dy * dy);
+      // Measure the GAP between the rectangle BOUNDARIES on whichever axis
+      // separates them, NOT the center distance (as the retiring
+      // `ui/e2e/a11y.spec.ts` does): two 24px controls touching edge-to-edge have
+      // centers 24px apart yet ZERO breathing room, which a center-distance check
+      // would wrongly pass. Overlap on an axis contributes a negative gap, so two
+      // boxes must be clear by >=24px on at least ONE axis.
+      const vertical = Math.max(a.y - (b.y + b.height), b.y - (a.y + a.height));
+      const horizontal = Math.max(a.x - (b.x + b.width), b.x - (a.x + a.width));
+      const gap = Math.max(vertical, horizontal);
       expect(
-        distance,
-        `sub-44px target needs 24px of breathing room from its neighbor (got ${distance.toFixed(1)}px)`,
+        gap,
+        `sub-44px target needs a 24px gap from its neighbor's boundary (got ${gap.toFixed(1)}px)`,
       ).toBeGreaterThanOrEqual(24);
     }
   }

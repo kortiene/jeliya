@@ -448,6 +448,32 @@ fn view() -> Element {
     );
   }
 
+  // CONDITIONALLY-assigned copy: the literals sit inside an `if/else` in the
+  // binding RHS (preceded by `{`, not `=`), so they must still be associated with
+  // the interpolated binding.
+  const conditional = `
+fn view() -> Element {
+    let label = if destructive { "Delete account" } else { "Remove account" };
+    rsx! { div { "{label}" } }
+}
+`;
+  assert.equal(
+    scanComponentLiterals('x.rs', conditional).filter((f) => f.code === 'rust-text').length,
+    2,
+    'both conditional-copy literals must be flagged',
+  );
+  // The same shape with catalog-derived arms (no string literals) is clean.
+  const conditionalCatalog = `
+fn view() -> Element {
+    let label = if destructive { strings.err_unknown_title() } else { strings.rooms_heading() };
+    rsx! { div { "{label}" } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', conditionalCatalog).some((f) => f.code === 'rust-text'),
+    'a conditional catalog-derived binding must not be flagged',
+  );
+
   // A catalog-derived binding (no string-literal RHS) is NOT flagged.
   const catalogDerived = `
 fn view() -> Element {
@@ -526,6 +552,26 @@ fn view() -> Element {
   assert.ok(
     scanComponentLiterals('x.rs', missing).some((f) => f.code === 'form-control-id-mismatch'),
     'a control with no id inside a Field must be flagged',
+  );
+  // EXPRESSION-valued ids (a reusable field): different expressions mismatch,
+  // identical ones are clean — an expression id must not slip the check.
+  const exprMismatch = `
+fn view() -> Element {
+    rsx! { Field { id: field_id.clone(), label: "Email", input { id: other_id.clone() } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', exprMismatch).some((f) => f.code === 'form-control-id-mismatch'),
+    'differing expression-valued ids must be flagged',
+  );
+  const exprMatch = `
+fn view() -> Element {
+    rsx! { Field { id: field_id.clone(), label: "Email", input { id: field_id.clone() } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', exprMatch).some((f) => f.code === 'form-control-id-mismatch'),
+    'matching expression-valued ids must be clean',
   );
 });
 
