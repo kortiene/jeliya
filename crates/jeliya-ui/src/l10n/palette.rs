@@ -169,6 +169,42 @@ mod tests {
         }
     }
 
+    /// The palette colours that ARE canonical design tokens must equal
+    /// `assets/design-tokens.json` — otherwise a change to `accent`/`blue`/`red`/
+    /// `ink-dim` there leaves these hardcoded copies (and the identity fixture,
+    /// which validates only against them) silently divergent, exactly the drift
+    /// the single-source token file exists to prevent. Read the shared tokens
+    /// with the same dependency-free parser (the crate forbids `serde_json`).
+    #[test]
+    fn shared_colours_match_the_canonical_design_tokens() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/design-tokens.json");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let colors: std::collections::HashMap<String, String> =
+            read_string_map(&source, "color").into_iter().collect();
+        let token = |name: &str| -> &str {
+            colors
+                .get(name)
+                .unwrap_or_else(|| panic!("design-tokens.json color.{name} missing"))
+                .as_str()
+        };
+        // Each tint that shares a CSS token must equal that token's value.
+        assert_eq!(TINT_ACCENT, token("accent"), "TINT_ACCENT vs color.accent");
+        assert_eq!(TINT_BLUE, token("blue"), "TINT_BLUE vs color.blue");
+        assert_eq!(TINT_RED, token("red"), "TINT_RED vs color.red");
+        assert_eq!(TINT_DIM, token("ink-dim"), "TINT_DIM vs color.ink-dim");
+        // The avatar palette shares accent and blue with the tokens too.
+        assert!(
+            AVATAR_PALETTE.contains(&token("accent")),
+            "avatar palette must carry the canonical accent"
+        );
+        assert!(
+            AVATAR_PALETTE.contains(&token("blue")),
+            "avatar palette must carry the canonical blue"
+        );
+    }
+
     #[test]
     fn file_tints_match_the_shared_fixture() {
         let source = fixture();

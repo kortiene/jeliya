@@ -35,11 +35,19 @@ pub fn Dialog(
     on_close: EventHandler<()>,
     children: Element,
 ) -> Element {
-    // The panel's mounted handle, so the sentinels can pull focus back to it.
+    // The panel's mounted handle, for INITIAL focus (never a destructive
+    // control). The close button's handle, for the sentinels: the dialog's
+    // only tabbable control is the close button (the body is non-interactive
+    // content), so a sentinel redirects focus to IT, which cycles correctly in
+    // both directions — Shift+Tab from the close button lands back on the close
+    // button rather than dead-ending on the `tabindex="-1"` panel. (A dialog
+    // with multiple interactive controls needs first/last-tabbable DOM queries;
+    // this foundation dialog has exactly one.)
     let mut panel = use_signal(|| None::<MountedEvent>);
+    let mut close_btn = use_signal(|| None::<MountedEvent>);
 
-    let refocus_panel = move || {
-        if let Some(element) = panel() {
+    let refocus_control = move || {
+        if let Some(element) = close_btn() {
             spawn(async move {
                 let _ = element.set_focus(true).await;
             });
@@ -60,12 +68,12 @@ pub fn Dialog(
                 }
             },
             // Leading focus sentinel: reached by Shift+Tab from the first
-            // control; send focus back into the panel.
+            // control; redirect to the close control so reverse traversal cycles.
             div {
                 class: "visually-hidden",
                 id: "dialog-sentinel-lead",
                 tabindex: "0",
-                onfocus: move |_| refocus_panel(),
+                onfocus: move |_| refocus_control(),
             }
             div {
                 class: "modal",
@@ -86,8 +94,13 @@ pub fn Dialog(
                     button {
                         class: "icon-btn",
                         "aria-label": "{close_label}",
+                        onmounted: move |evt: MountedEvent| close_btn.set(Some(evt)),
                         onclick: move |_| on_close.call(()),
-                        "{close_label}"
+                        // A glyph, not the localized word: `.icon-btn` is a fixed
+                        // 26x26 target, so rendering `Close`/`Fermer` inside it
+                        // overflows the border. `close_label` is the accessible
+                        // name (aria-label); the `×` is decorative (aria-hidden).
+                        span { "aria-hidden": "true", "\u{00d7}" }
                     }
                 }
                 div { class: "modal-body", {children} }
@@ -97,7 +110,7 @@ pub fn Dialog(
                 class: "visually-hidden",
                 id: "dialog-sentinel-trail",
                 tabindex: "0",
-                onfocus: move |_| refocus_panel(),
+                onfocus: move |_| refocus_control(),
             }
         }
     }

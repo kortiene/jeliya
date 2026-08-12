@@ -283,6 +283,7 @@ export function parseCatalog(source, file) {
       isPlural,
       values: parts.map((p) => collapseSlots(p.value)),
       slots: slotSet(parts.map((p) => p.value)),
+      slotsPerArm: parts.map((p) => slotSet([p.value])),
     });
     methodRe.lastIndex = close;
   }
@@ -363,10 +364,14 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
     }
   }
 
-  // Rule 2 — no empty value, in either catalog.
+  // Rule 2 — no empty value, in either catalog. `some`, not `every`: a plural
+  // whose ONE arm is empty (`One => ""` with a nonempty `Other`) renders a blank
+  // message for that count, so ANY empty rendered branch fails — not only an
+  // all-empty method.
+  const isEmptyValue = (v) => v.replace(new RegExp(SLOT, 'g'), '').trim() === '';
   for (const locale of [en, fr]) {
     for (const entry of locale.entries.values()) {
-      const empty = entry.values.length === 0 || entry.values.every((v) => v.replace(new RegExp(SLOT, 'g'), '').trim() === '');
+      const empty = entry.values.length === 0 || entry.values.some(isEmptyValue);
       if (empty) {
         findings.push(finding(locale.file, entry.line, 'value-empty', `${entry.key}: value is empty or whitespace-only`, 'catalog'));
       }
@@ -382,11 +387,20 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
     } else if (frEntry.isPlural && (frEntry.values.length < 2 || enEntry.values.length < 2)) {
       findings.push(finding(fr.file, frEntry.line, 'plural-parity', `${key}: a plural message must render both categories (one/other) in both locales`, 'catalog'));
     }
-    // Placeholder parity: EN and FR must interpolate the SAME format slots.
-    // Rust permits an unused argument, so a translation that drops/renames a
-    // `{…}` slot compiles; this is the check that catches it.
-    if (frEntry.slots.join('') !== enEntry.slots.join('')) {
-      findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders [${frEntry.slots.join(', ')}] differ from en [${enEntry.slots.join(', ')}] — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
+    // Placeholder parity: EN and FR must interpolate the SAME format slots — and
+    // PER ARM, not pooled across the method. Pooling would let a French plural
+    // One => "article" + Other => "{n}{n} articles" match English arms that each
+    // use {n} (same [n, n] multiset) while one rendered arm actually drops or
+    // doubles a slot. Compare arm-by-arm when the arm counts line up (a differing
+    // count is already a plural-parity finding).
+    if (frEntry.slotsPerArm.length === enEntry.slotsPerArm.length) {
+      for (let i = 0; i < frEntry.slotsPerArm.length; i += 1) {
+        if (frEntry.slotsPerArm[i].join('') !== enEntry.slotsPerArm[i].join('')) {
+          findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr arm ${i} placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
+        }
+      }
+    } else if (frEntry.slots.join('') !== enEntry.slots.join('')) {
+      findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
     }
   }
 
@@ -448,11 +462,29 @@ const COPY_ATTRS = new Set([
   'aria-roledescription',
   'aria-valuetext',
   'close_label',
+  'hint',
   'label',
+  'optional_label',
   'placeholder',
   'summary',
   'target',
   'title',
+]);
+
+/** Reserved semantic RSX attributes that must be provided by a shared primitive
+ *  (Decision-6), never re-declared as raw markup — a raw `role: "dialog"` /
+ *  `aria-live` region skips the primitive's focus/announce behaviour. Flagged
+ *  everywhere EXCEPT the primitive files that legitimately define them. */
+const RESERVED_SEMANTIC_ATTRS = new Set(['role', 'aria-modal', 'aria-live']);
+
+/** Basenames of the semantic-primitive source files, where the reserved
+ *  attributes above are DEFINED and therefore allowed. */
+const PRIMITIVE_FILES = new Set([
+  'a11y.rs',
+  'dialog.rs',
+  'live_region.rs',
+  'nav.rs',
+  'status.rs',
 ]);
 
 /** Letters that survive `{…}` interpolation are real copy. */
@@ -557,6 +589,24 @@ export function scanComponentLiterals(file, source) {
       }
       continue; // structural attribute or a non-copy prop
     }
+    // A copy-prop value WRAPPED in a constructor — `hint: Some("…".to_string())`,
+    // `label: String::from("…")`, `Cow::Borrowed("…")` — reaches here with
+    // `prev === '('`. Walk back over the wrapper identifier and, if it is the
+    // value of a copy-bearing prop, flag it: the wrapper is the normal spelling
+    // for an `Option<String>`/`String` prop and must not exempt the copy.
+    if (prev === '(') {
+      let ident = before - 1;
+      while (ident >= 0 && /[A-Za-z0-9_:]/.test(skeleton[ident])) ident -= 1;
+      let colon = ident;
+      while (colon >= 0 && /\s/.test(skeleton[colon])) colon -= 1;
+      if (skeleton[colon] === ':') {
+        const attr = attrNameBefore(source, colon);
+        if (attr && COPY_ATTRS.has(attr)) {
+          findings.push(finding(file, line, 'copy-attribute', `${attr} takes a wrapped literal, not a catalog message: ${literal.value.slice(0, 60)}`, 'literals'));
+        }
+        continue;
+      }
+    }
     // A literal that is a method receiver (`"x".to_string()`) reached HERE — not
     // a copy-prop value (handled above) — is Rust logic embedded in RSX, not
     // markup text.
@@ -565,6 +615,27 @@ export function scanComponentLiterals(file, source) {
     if (prev === '(' || prev === '=' || prev === '&') continue;
 
     findings.push(finding(file, line, 'rust-text', `RSX text is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
+  }
+
+  // Reserved-semantic scan (Decision-6): a raw `role`/`aria-modal`/`aria-live`
+  // RSX attribute outside a primitive file re-declares semantics that must come
+  // from a shared primitive (a raw `role: "dialog"` skips focus containment; a
+  // raw `aria-live` skips the announce-once region). Exempt the primitive files
+  // that DEFINE these. Attribute names are matched from the raw source (a quoted
+  // name like `"aria-live"` has its content blanked in the skeleton).
+  const base = file.split(/[/\\]/).pop();
+  if (!PRIMITIVE_FILES.has(base)) {
+    for (const attr of RESERVED_SEMANTIC_ATTRS) {
+      // `role:` (bare ident) or `"aria-live":` (quoted). Search the raw source
+      // only inside RSX ranges, before the test module.
+      const re = new RegExp(`(?:\\b${attr}\\b|"${attr}")\\s*:`, 'g');
+      for (let m = re.exec(source); m; m = re.exec(source)) {
+        if (m.index >= limit || !inRsx(m.index)) continue;
+        const line = lineOf(source, m.index);
+        if (exempt(line)) continue;
+        findings.push(finding(file, line, 'raw-semantic', `raw \`${attr}\` must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
+      }
+    }
   }
   return findings;
 }

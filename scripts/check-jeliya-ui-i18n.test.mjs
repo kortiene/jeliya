@@ -146,6 +146,25 @@ test('rule: placeholder parity — a dropped/renamed format slot is flagged', ()
   assert.ok(!checkCatalogs(catalogs(EN, FR_GOOD)).some((f) => f.code === 'placeholder-parity'));
 });
 
+test('rule 2: a plural with ONE empty arm is reported (not only all-empty)', () => {
+  // `One => ""` with a nonempty Other renders blank for that count.
+  const frOneEmpty = FR_GOOD.replace('format!("{n} article")', '""');
+  assert.ok(
+    checkCatalogs({ ...catalogs(EN, frOneEmpty), allowlist: {} }).some((f) => f.code === 'value-empty'),
+    'an empty single plural arm must trip value-empty',
+  );
+});
+
+test('rule: placeholder parity is PER ARM, not pooled', () => {
+  // Pooled slots would let One dropping {n} hide behind Other doubling it. Drop
+  // {n} from the fr One arm only: EN One has {n}, fr One has none → per-arm flag.
+  const frArm = FR_GOOD.replace('format!("{n} article")', 'format!("article")');
+  assert.ok(
+    checkCatalogs({ ...catalogs(EN, frArm), allowlist: {} }).some((f) => f.code === 'placeholder-parity'),
+    'a per-arm slot mismatch must trip placeholder-parity',
+  );
+});
+
 test('rule 5: a plural method reduced to one arm is reported', () => {
   const frOneArm = FR_GOOD.replace(
     /fn items[\s\S]*?\n    \}\n/,
@@ -159,7 +178,7 @@ test('literal scan: an RSX text node and a copy attribute are flagged', () => {
   const source = `
 fn view() -> Element {
     rsx! {
-        div { class: "x", role: "dialog", "Hello world" }
+        div { class: "x", "Hello world" }
         img { "aria-label": "Delete account" }
     }
 }
@@ -191,6 +210,22 @@ fn view() -> Element {
   );
 });
 
+test('literal scan: a copy prop wrapped in Some(...).to_string() is flagged', () => {
+  // `hint: Some("…".to_string())` / `optional_label: Some("…".into())` are the
+  // normal spellings for Option<String> copy props and must not be exempted as
+  // function arguments.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        Field { id: "pw".to_string(), label: "Password".to_string(),
+                hint: Some("Use eight characters".to_string()) }
+    }
+}
+`;
+  const codes = scanComponentLiterals('x.rs', source).map((f) => f.code);
+  assert.ok(codes.filter((c) => c === 'copy-attribute').length >= 2, 'label + hint flagged');
+});
+
 test('literal scan: a copy-prop literal with a trailing .to_string() is still flagged', () => {
   // `.to_string()`/`.into()` is the normal spelling for a String prop, so it
   // must NOT exempt a hardcoded copy prop — while a STRUCTURAL prop stays clean.
@@ -210,12 +245,29 @@ test('literal scan: interpolation, structural attrs, and format! args are clean'
 fn view(greeting: String) -> Element {
     let _ = format!("room.list: {}", greeting);
     rsx! {
-        div { class: "sidebar", id: "main", role: "dialog", tabindex: "-1", "{greeting}" }
+        div { class: "sidebar", id: "main", tabindex: "-1", "{greeting}" }
         a { class: "skip-link", href: "#main", "aria-label": "{greeting}" }
     }
 }
 `;
   assert.deepEqual(scanComponentLiterals('x.rs', source), []);
+});
+
+test('literal scan: a raw reserved-semantic attr outside a primitive is flagged', () => {
+  // A raw `role`/`aria-live`/`aria-modal` must come from a shared primitive
+  // (Decision-6); an ad-hoc one bypasses focus containment / announce-once.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        div { role: "dialog", "aria-modal": "true", "x" }
+        div { "aria-live": "polite" }
+    }
+}
+`;
+  const codes = scanComponentLiterals('rogue.rs', source).map((f) => f.code);
+  assert.ok(codes.includes('raw-semantic'), 'raw role/aria-live must be flagged');
+  // In a PRIMITIVE file the same markup is allowed (that is where it is defined).
+  assert.ok(!scanComponentLiterals('dialog.rs', source).some((f) => f.code === 'raw-semantic'));
 });
 
 test('literal scan: an i18n-exempt line is honored', () => {
