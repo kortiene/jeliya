@@ -620,3 +620,142 @@ async fn a_live_incompatible_incumbent_freeing_the_dir_before_spawn_defers_to_fi
         ),
     }
 }
+
+/// A stub that emits a JSON-looking but MALFORMED announcement carrying a marker
+/// (a string where a `port` number is required, so serde's own Display would echo
+/// the value), then exits 0. Proves the surfaced error reproduces neither the raw
+/// line nor the serde value.
+fn write_leaky_stub(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(
+        path,
+        "#!/bin/sh\necho '{\"event\":\"ready\",\"pid\":1,\"port\":\"SUPERVISOR_SECRET_MARKER\"}'\nexit 0\n",
+    )
+    .expect("write leaky stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// A malformed announcement must NOT leak child-controlled content into the
+/// surfaced error (spec §7.2 token-redaction boundary): a corrupted/overridden
+/// daemon could stuff a token into the line. Red-before/green-after: the earlier
+/// error embedded the raw line (`{line:?}`) — and echoing the serde error would
+/// reproduce the mis-typed value — so the marker reached the error; now only the
+/// content-free category/position is reported.
+#[tokio::test]
+async fn a_malformed_announcement_does_not_leak_its_contents() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-leak-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    let stub = root.join("jeliyad-leak");
+    write_leaky_stub(&stub);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data),
+        binary: Some(stub),
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+    let result = sup.start_or_adopt().await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    let rendered = format!("{result:?}");
+    assert!(
+        result.is_err(),
+        "a malformed announcement must be an error; got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("SUPERVISOR_SECRET_MARKER"),
+        "the announcement contents must never reach the surfaced error: {rendered}"
+    );
+}
+
+/// A stub that announces `already_running`, spawns a stdio-closed descendant into
+/// its process group, records its pid, then exits 0 — the adopted-path twin of
+/// the forker stub.
+fn write_adopt_forking_stub(path: &Path, pidfile: &Path, pid: u32, port: u16) {
+    use std::os::unix::fs::PermissionsExt;
+    let pf = pidfile.display();
+    let script = format!(
+        "#!/bin/sh\n\
+         echo '{{\"event\":\"already_running\",\"pid\":{pid},\"port\":{port}}}'\n\
+         sh -c 'exec >/dev/null 2>&1 <&-; echo $$ > \"{pf}\"; sleep 600' &\n\
+         i=0\n\
+         while [ ! -s \"{pf}\" ] && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.02; done\n\
+         exit 0\n"
+    );
+    std::fs::write(path, script).expect("write adopt forking stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// Fault #5, adopted path: a faulty binary that announces `already_running`,
+/// spawns a descendant into the isolated group, and exits 0 must not orphan that
+/// descendant. The adopted-path wait sweeps the group before adopting/returning.
+/// Red-before/green-after: without the pre-wait pgid capture + sweep on this arm,
+/// the `sleep 600` descendant survives `start_or_adopt`.
+#[tokio::test]
+async fn an_adopted_path_leader_that_spawned_a_descendant_reaps_the_group() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-adopt-forker-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    let pidfile = root.join("descendant.pid");
+    let announced_pid: u32 = 4_000_000_003;
+    let dead_port = dead_loopback_port();
+    let stub = root.join("jeliyad-adopt-forker");
+    write_adopt_forking_stub(&stub, &pidfile, announced_pid, dead_port);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub),
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+    // A portfile matching the announced pid/port so the adopt path reaches the
+    // wait arm; finish_adopted later fails the dead-port health probe, but the
+    // group sweep runs in the wait arm before that.
+    let portfile_json = format!(
+        r#"{{"pid":{announced_pid},"port":{dead_port},"protocol":2,"storage_generation":2,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let _ = sup.start_or_adopt().await;
+
+    let descendant: u32 = std::fs::read_to_string(&pidfile)
+        .expect("descendant recorded its pid")
+        .trim()
+        .parse()
+        .expect("pid is a number");
+    let mut alive = true;
+    for _ in 0..40 {
+        if !pid_is_alive(descendant) {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if alive {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &descendant.to_string()])
+            .status();
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        !alive,
+        "the adopted-path descendant must be reaped with the group (pid {descendant})"
+    );
+}

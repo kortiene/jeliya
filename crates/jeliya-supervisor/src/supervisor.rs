@@ -133,7 +133,22 @@ impl Supervisor {
         }
 
         let (binary, binary_tried) = match config.binary {
-            Some(explicit) if explicit.is_file() => (Some(explicit), Vec::new()),
+            // Bind to the ABSOLUTE canonical path, not the caller's (possibly
+            // relative) spelling: a relative path stored here re-resolves against
+            // the CWD at `start_or_adopt` time, which the process may have changed
+            // since — spawning a different file, or failing, despite resolution
+            // having succeeded. `canonical_binary` also follows symlinks to the
+            // real target it validated.
+            Some(explicit) if explicit.is_file() => match canonical_binary(&explicit) {
+                Some(canonical) => (Some(canonical), Vec::new()),
+                None => (
+                    None,
+                    vec![format!(
+                        "explicit binary {} (could not canonicalize)",
+                        explicit.display()
+                    )],
+                ),
+            },
             Some(explicit) => (
                 None,
                 vec![format!("explicit binary {}", explicit.display())],
@@ -330,9 +345,25 @@ impl Supervisor {
                     // expiry, force-kill the owned probe child (we spawned it)
                     // and surface `Wedged`.
                     drop(stdin);
+                    // Capture the pgid BEFORE the reaping wait: our probe child
+                    // bowed out, but a faulty/overridden binary could have spawned
+                    // a descendant into the isolated group first. The reaped arms
+                    // (adopt, or `Wedged`) must sweep the group so nothing lingers
+                    // on the data-dir lock; the `abandon_child` arms leave the child
+                    // un-reaped, so `force_kill_tree` already reaches it.
+                    let leader_pgid = child.id();
                     match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
-                        Ok(Ok(status)) if status.success() => {}
-                        Ok(Ok(_status)) => return Err(SupervisorError::Wedged),
+                        Ok(Ok(status)) if status.success() => {
+                            if let Some(pgid) = leader_pgid {
+                                process::kill_reaped_process_group(pgid);
+                            }
+                        }
+                        Ok(Ok(_status)) => {
+                            if let Some(pgid) = leader_pgid {
+                                process::kill_reaped_process_group(pgid);
+                            }
+                            return Err(SupervisorError::Wedged);
+                        }
                         Ok(Err(e)) => {
                             return Err(abandon_child(
                                 &mut child,
@@ -670,8 +701,23 @@ async fn read_announcement(
     .await
     .map_err(|_| SupervisorError::Handshake(format!("no announcement within {budget:?}")))??;
 
-    serde_json::from_str::<ReadyLine>(&line)
-        .map_err(|e| SupervisorError::Handshake(format!("unparseable announcement {line:?}: {e}")))
+    serde_json::from_str::<ReadyLine>(&line).map_err(|e| {
+        // Do NOT echo the raw line OR the serde error's Display: both reproduce
+        // unvalidated, child-controlled content up to MAX_ANNOUNCEMENT_BYTES that a
+        // corrupted/overridden daemon could stuff with an `auth_token` or other
+        // sensitive value (serde's Display echoes a mis-typed field VALUE, e.g.
+        // `invalid type: string "…"`). Callers log or display a Handshake error,
+        // so either would bypass the crate's token-redaction boundary (spec §7.2).
+        // Report only the CONTENT-FREE classification and position plus the
+        // withheld byte count.
+        SupervisorError::Handshake(format!(
+            "the daemon's announcement was not valid JSON ({:?} at line {} column {}); {} bytes of raw output withheld (unvalidated child content)",
+            e.classify(),
+            e.line(),
+            e.column(),
+            line.len()
+        ))
+    })
 }
 
 /// Force-kill a child we are ABANDONING during a startup failure, folding a kill
@@ -708,10 +754,14 @@ fn default_data_dir() -> PathBuf {
 fn resolve_jeliyad() -> Result<PathBuf, Vec<String>> {
     let mut tried = Vec::new();
 
+    // Every resolved candidate is canonicalized (absolute, symlink-resolved)
+    // before it is returned, so a relative `JELIYAD_BIN` cannot re-resolve against
+    // a changed CWD at spawn time and the stored path always names the exact file
+    // that was validated.
     if let Some(explicit) = std::env::var_os("JELIYAD_BIN") {
         let path = PathBuf::from(explicit);
-        if path.is_file() {
-            return Ok(path);
+        if let Some(canonical) = canonical_binary(&path) {
+            return Ok(canonical);
         }
         tried.push(format!("JELIYAD_BIN={}", path.display()));
     }
@@ -719,8 +769,8 @@ fn resolve_jeliyad() -> Result<PathBuf, Vec<String>> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let bundled = dir.join(bundled_name());
-            if bundled.is_file() {
-                return Ok(bundled);
+            if let Some(canonical) = canonical_binary(&bundled) {
+                return Ok(canonical);
             }
             tried.push(bundled.display().to_string());
         }
@@ -732,8 +782,8 @@ fn resolve_jeliyad() -> Result<PathBuf, Vec<String>> {
             .join("../..")
             .join("target/debug")
             .join(bundled_name());
-        if repo.is_file() {
-            return Ok(repo);
+        if let Some(canonical) = canonical_binary(&repo) {
+            return Ok(canonical);
         }
         tried.push(repo.display().to_string());
     }
@@ -741,6 +791,18 @@ fn resolve_jeliyad() -> Result<PathBuf, Vec<String>> {
     tried.push("(the target/debug fallback is debug-only)".to_owned());
 
     Err(tried)
+}
+
+/// Canonicalize a candidate daemon path to an ABSOLUTE, symlink-resolved target
+/// and confirm it is a file. Returns `None` when the path is not a file or can no
+/// longer be canonicalized (racing removal / permissions), so the caller records
+/// it as tried rather than storing a relative spelling that would re-resolve
+/// against a possibly-changed CWD — or a symlink that could be repointed —
+/// between resolution and the eventual `spawn`.
+fn canonical_binary(path: &Path) -> Option<PathBuf> {
+    path.canonicalize()
+        .ok()
+        .filter(|resolved| resolved.is_file())
 }
 
 /// The daemon's file name for the current platform.
@@ -755,6 +817,42 @@ fn bundled_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `canonical_binary` binds to an ABSOLUTE, symlink-resolved, `..`-free path
+    /// for a real file, so a stored binary path cannot re-resolve against a
+    /// changed CWD at spawn time; a non-file yields `None`.
+    #[test]
+    fn canonical_binary_resolves_a_file_to_an_absolute_path() {
+        let dir = std::env::temp_dir().join(format!("sup-canon-{}", std::process::id()));
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let bin = sub.join("jeliyad");
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        // A non-canonical spelling of the same file (a `..` round-trip).
+        let noncanonical = sub.join("..").join("sub").join("jeliyad");
+        assert!(
+            noncanonical.to_string_lossy().contains(".."),
+            "the input must be non-canonical to prove resolution happened"
+        );
+        let resolved = canonical_binary(&noncanonical).expect("a real file canonicalizes");
+        assert!(
+            resolved.is_absolute(),
+            "resolved path must be absolute: {resolved:?}"
+        );
+        assert!(
+            !resolved.to_string_lossy().contains("/../"),
+            "resolved path must be canonical (no ..): {resolved:?}"
+        );
+        // A path that is not a file yields None (recorded as tried, not stored).
+        assert!(canonical_binary(&dir.join("does-not-exist")).is_none());
+        assert!(
+            canonical_binary(&dir).is_none(),
+            "a directory is not a binary"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn ready_line_parses_both_verdicts() {

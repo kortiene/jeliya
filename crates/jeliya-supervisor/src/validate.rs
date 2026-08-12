@@ -247,10 +247,16 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
         if matches!(path.try_exists(), Ok(false)) {
             return true;
         }
-        if tokio::time::Instant::now() >= deadline {
+        // Clamp the sleep to the budget REMAINING (mirroring `wait_health_dark`):
+        // a fixed 100 ms sleep can overrun a short/nearly-exhausted deadline, and
+        // because the loop re-checks absence at its TOP, a portfile removed AFTER
+        // the budget expired would then be wrongly accepted as `Graceful`. When
+        // nothing is left, refuse before sleeping.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
             return false;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
     }
 }
 
