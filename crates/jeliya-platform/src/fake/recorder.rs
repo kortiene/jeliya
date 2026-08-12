@@ -106,6 +106,13 @@ pub enum RecordedEffect {
         /// The staged bytes (the fake's stand-in for the staging file).
         bytes: Vec<u8>,
     },
+    /// A save dialog was opened with this suggested name — recorded when the
+    /// call is made, so the *requested* name is observable independently of
+    /// whatever target the controller armed as the answer.
+    RequestedExportName {
+        /// The name the caller suggested.
+        suggested: String,
+    },
     /// An export target was chosen.
     PickedExport {
         /// The chosen target's kind.

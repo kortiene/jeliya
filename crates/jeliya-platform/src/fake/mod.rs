@@ -1123,6 +1123,14 @@ impl Files for FakePlatform {
         };
         let known_len = (!body.streamed).then(|| body.bytes.len() as u64);
         if let Some(len) = known_len {
+            // Both known-size rejections happen here, before the script: a
+            // source whose size is known up front fails on its own terms
+            // without stealing the outcome scripted for the next real call.
+            // A streamed source has neither figure yet, so its emptiness and
+            // its limit are both judged during the copy.
+            if len == 0 {
+                return Box::pin(async { Err(CapabilityError::Failed(FailureKind::FileEmpty)) });
+            }
             if len > limit {
                 return Box::pin(async move {
                     Err(CapabilityError::Failed(FailureKind::FileTooLarge {
@@ -1229,11 +1237,15 @@ impl Files for FakePlatform {
                 return Err(error);
             }
             match bytes {
-                Some(bytes) => Ok(Box::new(FakeStagedReader {
-                    inner,
-                    bytes,
-                    offset: 0,
-                }) as Box<dyn StagedBlobReader>),
+                Some(bytes) => {
+                    FakeInner::hold_enter(&inner.in_flight_blobs, token.get());
+                    Ok(Box::new(FakeStagedReader {
+                        inner,
+                        bytes,
+                        offset: 0,
+                        token: token.get(),
+                    }) as Box<dyn StagedBlobReader>)
+                }
                 None => Err(CapabilityError::Failed(FailureKind::Unreadable)),
             }
         })
@@ -1303,7 +1315,12 @@ impl Files for FakePlatform {
             )),
             _ => None,
         };
-        let _ = suggested;
+        // Record what the CALLER asked for, not just what the controller armed:
+        // otherwise a component that suggests the wrong download name looks
+        // correct, because the fake answers with the armed target regardless.
+        inner.record(RecordedEffect::RequestedExportName {
+            suggested: suggested.as_str().to_owned(),
+        });
         let turn = inner.open_dialog(Capability::PickExport, ct);
         Box::pin(async move {
             turn.await?;
@@ -1628,6 +1645,18 @@ struct FakeStagedReader {
     inner: Arc<FakeInner>,
     bytes: Arc<Vec<u8>>,
     offset: usize,
+    /// The blob this reader is serving. An open reader deliberately outlives
+    /// `release_staged` (an fd outliving an unlink), so it is still the service
+    /// holding those bytes and must be counted as such — otherwise a cleanup
+    /// test gets the same false clean bill that in-flight share tracking was
+    /// added to prevent.
+    token: u64,
+}
+
+impl Drop for FakeStagedReader {
+    fn drop(&mut self) {
+        FakeInner::hold_exit(&self.inner.in_flight_blobs, self.token);
+    }
 }
 
 impl StagedBlobReader for FakeStagedReader {

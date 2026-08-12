@@ -3192,3 +3192,107 @@ fn invalid_export_and_cleanup_consume_no_scripted_failure() {
         "the untouched script lands on the next valid cleanup"
     );
 }
+
+/// A known-empty source fails on its own terms before the script is touched —
+/// the same call-time validation a known-oversize one gets, since both figures
+/// are available before any copy.
+#[test]
+fn a_known_empty_source_consumes_no_scripted_failure() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.force_error(Capability::Stage, CapabilityError::Denied);
+    controller.arm_pick("empty.bin", None, Vec::new());
+    let empty = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(
+        block_on(
+            services
+                .files()
+                .stage_for_share(&empty, 1024, ProgressSink::discard(), &ct)
+        )
+        .err(),
+        Some(CapabilityError::Failed(FailureKind::FileEmpty)),
+        "an empty source reports FileEmpty, not the script"
+    );
+    // The script is still queued for the first call that really stages.
+    controller.arm_pick("ok.bin", None, b"fits".to_vec());
+    let ok = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(
+        block_on(
+            services
+                .files()
+                .stage_for_share(&ok, 1024, ProgressSink::discard(), &ct)
+        )
+        .err(),
+        Some(CapabilityError::Denied),
+        "the untouched script lands on the next valid staging call"
+    );
+}
+
+/// An open reader deliberately outlives `release_staged`, so it is still the
+/// service holding those bytes and must be counted as retained — the same
+/// honesty in-flight share tracking was added for.
+#[test]
+fn an_open_staged_reader_counts_as_retained() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("blob.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+
+    let mut reader = block_on(services.files().read_staged(&blob)).expect("reader");
+    assert_eq!(block_on(services.files().release_staged(&blob)), Ok(()));
+    assert_eq!(
+        controller.retained_handles().staged_blobs,
+        1,
+        "the registry entry is gone, but the open reader still holds the bytes"
+    );
+    // …and it really does keep serving them.
+    assert_eq!(
+        block_on(reader.next_chunk(4)).expect("pull"),
+        Some(b"0123".to_vec())
+    );
+    drop(reader);
+    assert_eq!(
+        controller.retained_handles(),
+        Default::default(),
+        "dropping the reader releases the last hold"
+    );
+}
+
+/// The name a component *asks* for is observable independently of the target
+/// the controller armed as the answer — otherwise a component that suggests the
+/// wrong download name looks correct.
+#[test]
+fn the_requested_export_name_is_recorded() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_export_target(ExportTargetKind::NativePath, "armed.bin");
+    let _ = settle(
+        &controller,
+        services
+            .files()
+            .pick_export_target(name("requested.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        controller.effects().iter().any(|e| matches!(
+            e,
+            RecordedEffect::RequestedExportName { suggested } if suggested == "requested.bin"
+        )),
+        "the caller's suggestion is recorded, not just the armed answer: {:?}",
+        controller.effects()
+    );
+}
