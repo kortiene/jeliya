@@ -24,7 +24,19 @@ default = []
 # deterministic mock, because #176 renders against the mock (the reference
 # behaviour) — the real browser transport (`WsWeb`) is #168 and slots in
 # behind the same `ClientHandle` later.
-ui = ["dep:dioxus", "dioxus/minimal", "dep:futures", "jeliya-client/mock"]
+ui = [
+    "dep:dioxus",
+    "dioxus/minimal",
+    "dep:futures",
+    "jeliya-client/mock",
+    # The canonical platform-authority contract (#174) and its deterministic
+    # fakes. `jeliya-platform` is renderer-agnostic and wasm32-clean by
+    # construction, so it enters the browser graph without pulling any native
+    # crate (asserted by `jeliya-platform`'s own boundary tests and this
+    # crate's wasm-graph check).
+    "dep:jeliya-platform",
+    "jeliya-platform/fake",
+]
 
 # The browser DOM renderer. Built ONLY for `wasm32-unknown-unknown`, in the
 # dedicated web job. It adds `dioxus/web` on top of `ui`; it must never pull
@@ -54,6 +66,12 @@ jeliya-api = { path = "../jeliya-api" }
 # the deterministic mock (enabled by the `ui` feature). No Iroh, no WebSocket,
 # no native transport enters through it.
 jeliya-client = { path = "../jeliya-client" }
+# The canonical injectable `PlatformServices` boundary (#174). Optional and
+# enabled only by the `ui` feature (with its `fake` feature), so the default
+# build stays renderer-free and this dependency never enters the MSRV
+# `--workspace --all-targets` graph. It is wasm32-clean and native-free by
+# construction, so it links in the browser `web` graph.
+jeliya-platform = { path = "../jeliya-platform", optional = true }
 # Optional and feature-gated, exactly like `jeliya-client`'s example dep, so a
 # bare `cargo check --all-targets` (MSRV + clippy) never compiles a renderer.
 # `default-features = false` keeps the base graph minimal; the `ui`/`web`
@@ -65,6 +83,13 @@ dioxus = { version = "=0.7.9", default-features = false, optional = true }
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
 
+[dev-dependencies]
+# Needed by the compose_shape integration test to name `Durability`, `Preferences`,
+# `PrivateDirectory`, and `WindowActions` — types that `jeliya-ui` re-exports only
+# partially. The `fake` feature is active transitively through the `ui` feature
+# (which enables `jeliya-platform/fake`), so the test binary sees the full library.
+jeliya-platform = { path = "../jeliya-platform" }
+
 # Underscored so the cargo artifact, the wasm-bindgen module, and the import in
 # `index.html` all agree on one name (the #158 spike's convention).
 [[bin]]
@@ -74,6 +99,14 @@ path = "src/bin/web.rs"
 # `web` feature (and thus `dioxus/web`) is enabled. `--all-targets` on the MSRV
 # and clippy jobs skips it because its required feature is off there.
 required-features = ["web"]
+
+# The composition-shape end-to-end test verifies that web_composition() and
+# native_composition() inject the correct PlatformServices shape (browser vs.
+# desktop) into AppRoot. It requires `ui` to compile (compose.rs is feature-gated
+# on `ui`).
+[[test]]
+name = "compose_shape"
+required-features = ["ui"]
 
 [lints]
 workspace = true

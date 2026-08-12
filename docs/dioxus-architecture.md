@@ -15,8 +15,8 @@ audience: ["contributors", "maintainers", "release-engineers"]
 
 **Status: DECIDED 2026-07-27. M1's typed-API slices have landed (the #165,
 #166, and #233 remainders stay open); the M2 entry seam (#167), the M2
-transport-independent kernel (#168), and the M3 web foundation (#176) are
-implemented.** Jeliya
+transport-independent kernel (#168), the M2 platform-authority boundary
+(#174), and the M3 web foundation (#176) are implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
 stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
 protocol and storage generation, and retires React, Flutter, the Dart
@@ -214,7 +214,15 @@ landed (shipped with the seam, #167) — `WsWeb`, `WsNative`, and
 **`PlatformServices`** (#174) keeps platform authority out of shared RSX
 components through one injectable boundary covering files, persistence,
 lifecycle, URLs, clipboard and share, navigation, and window actions. Local
-file paths and `content://` URIs are not interchangeable.
+file paths and `content://` URIs are not interchangeable. The contract lives in
+its own crate, `crates/jeliya-platform` — a cloneable facade over object-safe
+capability traits, a closed outcome taxonomy (`Unavailable`/`Denied`/
+`Cancelled`/typed failures, so a cancellation never becomes success), safe
+path/URL types, and deterministic browser/desktop/Android fakes. `jeliya-ui`
+re-exports it; target implementations follow in M3–M5, reaching the crate's
+path-free construction factories only through the one door crate
+`crates/jeliya-platform-implementation` (a Cargo feature unifies across a
+build graph and so cannot hold that boundary; a dependency edge can).
 
 ## Decision 5 — one embedded artifact
 
@@ -373,8 +381,10 @@ across two clean builds; its wasm graph excludes Iroh and every native crate at
 the lockfile level; the daemon embeds it through `embed-ui` behind a build-time
 guard that fails closed on React/Vite output. The reproducible-build contract,
 pinned versions, and commands are `docs/dioxus-web-build.md`. Two boundaries
-stay honest here: `jeliya-ui`'s `PlatformServices` is a **provisional seam
-pending #174** (adopted mechanically when #174's trait lands), and #176 does
+stay honest here: `jeliya-ui`'s `PlatformServices` is now the **canonical
+contract from `crates/jeliya-platform` (#174)**, re-exported by `jeliya-ui` and
+backed by a deterministic fake shape (the former provisional local seam is
+deleted), and #176 does
 **not** remove React or flip the tagged-release line — the sealed content-addressed
 manifest is #183, the Dioxus-side token gate is #177, and React removal / the
 release-line cutover is #200. `ui/` and its per-client gates stay intact until
@@ -453,7 +463,7 @@ The slices that carry this record:
 | #163 | The Iroh-free `jeliya-api` contract. | Landed |
 | #167 | The lifecycle-aware client seam (`crates/jeliya-client`) and its deterministic mock. | Landed |
 | #176 | The shared `jeliya-ui` crate: pinned Dioxus 0.7, reproducible wasm artifact, daemon embed guard, and Iroh-free dependency graph. Documented in [Dioxus web build and reproducibility](dioxus-web-build.md). | Landed |
-| #174 | Injectable `PlatformServices`. | Planned |
+| #174 | Injectable `PlatformServices` — the contract crate (`crates/jeliya-platform`), its deterministic browser/desktop/Android fakes, and the `crates/jeliya-platform-implementation` door crate that gates the construction factories; `jeliya-ui` re-exports the contract. Target implementations follow in M3–M5. | Landed |
 | #183 | The one content-addressed embedded artifact. | Planned |
 | #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |
 

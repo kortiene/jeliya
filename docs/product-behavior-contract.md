@@ -22,9 +22,11 @@ each requirement to the issue that must prove it. This record stays `draft`
 until #162 closes on review; until then the behaviors below are the proposed
 contract, not yet the reviewed one.
 
-**Every behavior below is a requirement on unwritten code against fresh
-state.** No Dioxus code exists in this tree. React and Flutter tests, closed
-issue #77, and the [Room Workbench](room-workbench.md),
+**Every behavior below is a requirement on code still to be built against fresh
+state.** The foundational crates now exist (`jeliya-api` #163,
+`jeliya-client` #167, `jeliya-platform` #174, `jeliya-ui` #176), but none of
+the product destinations, routes, or behaviors below are yet implemented.
+React and Flutter tests, closed issue #77, and the [Room Workbench](room-workbench.md),
 [Room attention](room-attention.md), and
 [Device-local self label](self-label.md) records were requirements-mining
 sources for this contract. They are not parity or compatibility authorities:
@@ -401,8 +403,11 @@ be a name no retiring client ever wrote.
 
 ## PlatformServices
 
-The injectable boundary itself is #174's to design. The product rules that
-bind it are fixed here:
+The injectable boundary itself is #174's to design; its contract now lives in
+`crates/jeliya-platform` (the cloneable facade, the object-safe capability
+traits, the closed outcome taxonomy, the safe path/URL types, and the
+deterministic browser/desktop/Android fakes). The product rules that bind it
+are fixed here:
 
 - **Native capability reaches surfaces only through the injected
   `PlatformServices` boundary** — files, persistence, lifecycle, URLs,

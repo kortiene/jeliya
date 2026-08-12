@@ -21,10 +21,11 @@
 //!   slots in behind the same handle later. **This crate does not open a
 //!   socket.**
 //! - [`PlatformServices`] — the injectable platform-authority boundary
-//!   (persistence, URLs, clipboard, navigation). **Provisional pending #174**:
-//!   this crate carries a minimal local seam with deterministic in-process
-//!   implementations; when #174 lands, `jeliya-ui` adopts the canonical trait
-//!   by replacing the local seam with a re-export — a mechanical change.
+//!   (files, persistence, lifecycle, URLs, clipboard/share, navigation, window
+//!   actions). This is now the **canonical** contract from
+//!   [`jeliya_platform`] (#174); `jeliya-ui` re-exports it and injects a
+//!   deterministic fake shape. The former provisional local seam has been
+//!   deleted.
 //!
 //! Boundaries this crate holds by construction (asserted in
 //! `tests/boundaries.rs`, mirroring `jeliya-api`/`jeliya-client`):
@@ -60,14 +61,18 @@ pub mod components;
 #[cfg(feature = "ui")]
 pub mod compose;
 #[cfg(feature = "ui")]
-mod services;
-#[cfg(feature = "ui")]
 mod state;
 
 #[cfg(feature = "ui")]
 pub use app::{AppRoot, AppRootProps};
+// The canonical platform-authority contract lives in `jeliya-platform` (#174).
+// `jeliya-ui` adopts it by re-export — the mechanical change #176 promised —
+// so a component names `jeliya_ui::PlatformServices` exactly as before, now
+// backed by the canonical crate. The former provisional `services.rs` seam and
+// `WebPlatformServices` are deleted; composition injects a deterministic fake
+// shape from `jeliya_platform::fake`.
 #[cfg(feature = "ui")]
-pub use services::{PlatformServices, PlatformServicesImpl, WebPlatformServices};
+pub use jeliya_platform::PlatformServices;
 #[cfg(feature = "ui")]
 pub use state::UiState;
 

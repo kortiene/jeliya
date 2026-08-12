@@ -24,7 +24,7 @@ use jeliya_client::mock::{MockController, MockScript, Program};
 use jeliya_client::{ClientHandle, State};
 
 use crate::app::AppRoot;
-use crate::services::PlatformServices;
+use crate::PlatformServices;
 
 /// A fully wired composition: the injected handle and services, plus the mock
 /// controller that drives the reference backend for #176.
@@ -56,7 +56,11 @@ pub fn web_composition() -> WebComposition {
         .build();
     WebComposition {
         handle,
-        services: PlatformServices::web_default(),
+        // The browser-shaped deterministic fake from the canonical
+        // `jeliya-platform` contract (#174): session-scoped preferences, no
+        // window actions, browser-blob sources. M3's live web-sys services
+        // replace it behind the unchanged facade.
+        services: PlatformServices::fake_browser(),
         controller: Rc::new(controller),
     }
 }
@@ -112,9 +116,9 @@ async fn drive_scripted_replies(controller: &MockController, expected: usize) {
 
 /// The native (system-WebView, M4: #186–#189) composition seam. This M3 slice
 /// defines the **boundary** only: the same deterministic mock behind the
-/// [`ClientHandle`], and the deterministic in-memory services standing in
-/// until #174's target implementations land. M4 replaces the internals — the
-/// live adapter behind the same handle, the desktop/Android
+/// [`ClientHandle`], and the canonical `jeliya-platform` desktop-shaped fake
+/// (#174) standing in until M4's target implementations land. M4 replaces the
+/// internals — the live adapter behind the same handle, the desktop/Android
 /// [`PlatformServices`], its renderer and `bin` — **at this seam**, without
 /// inventing the target-selection boundary.
 #[cfg(feature = "native")]
@@ -144,7 +148,10 @@ pub fn native_composition() -> NativeComposition {
         .build();
     NativeComposition {
         handle,
-        services: PlatformServices::web_default(),
+        // The desktop-shaped deterministic fake stands in until M4's real
+        // desktop/Android services land behind the same facade — persistent
+        // preferences, window actions, native-path sources.
+        services: PlatformServices::fake_desktop(),
         controller: Rc::new(controller),
     }
 }

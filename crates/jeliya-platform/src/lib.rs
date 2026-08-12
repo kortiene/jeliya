@@ -1,0 +1,181 @@
+//! The injectable `PlatformServices` boundary for the Jeliya clean-slate stack
+//! (#174).
+//!
+//! This crate is the **single platform-authority contract** the shared Dioxus
+//! UI uses, injected separately from [`jeliya_api`] view models and the
+//! [`jeliya_client`](https://docs.rs)`::ClientHandle` seam. The authoritative
+//! record of the decision is `docs/dioxus-architecture.md` §"Decision 4 — one
+//! seam, four adapters, one platform boundary" (and the layering table in
+//! §"Decision 3"); the product rules it enforces are
+//! `docs/product-behavior-contract.md` §"PlatformServices" and §"Preferences
+//! and device-local persistence". Where this crate and those records (or
+//! `docs/protocol-v2.md`) disagree, the record is right and this crate has a
+//! bug — say which in the PR, exactly as the architecture record requires of
+//! every slice that tests against it.
+//!
+//! It delivers, and asserts by construction:
+//!
+//! - **Capability-oriented traits whose types distinguish platform object
+//!   kinds.** A browser blob, a desktop filesystem path, and an Android
+//!   `content://` URI are different Rust object kinds behind one opaque
+//!   [`files::PickedSource`]; a shared component cannot read one as another
+//!   because it can reach neither spelling (only a
+//!   [`files::FileObjectKind`] discriminant).
+//! - **A closed outcome taxonomy that never collapses.** [`CapabilityError`]
+//!   keeps `Unavailable`, `Denied`, `Cancelled`, and typed failures apart, so a
+//!   cancellation can never read as a success (the security requirement
+//!   "cancellation must not become success").
+//! - **Safe path/URL types and an allowlisted external-URL launcher.**
+//!   [`launcher::SafeExternalUrl`] fails closed on any scheme outside a fixed
+//!   allowlist, so an un-vetted URL cannot reach the platform launcher.
+//! - **Explicit, honest storage ownership.** Preferences, secret custody, and
+//!   protected-directory facts are three separate concerns, and durability is a
+//!   queryable fact ([`storage::Durability`]) so the UI never pretends a
+//!   browser reload restored state.
+//! - **Representable lifecycle events.** App resume, process restoration, back,
+//!   navigation, and window events are a closed [`lifecycle::LifecycleEvent`]
+//!   model delivered on a loss-visible, bounded subscription.
+//! - **A deterministic in-process fake for every service** (behind the `fake`
+//!   feature), shaped as browser / desktop / Android fixtures and scriptable
+//!   for denied / unavailable / cancelled outcomes.
+//!
+//! Boundaries this crate holds by construction (asserted in
+//! `tests/boundaries.rs`, mirroring `jeliya-api`/`jeliya-client`/`jeliya-ui`):
+//!
+//! - **The library graph (default and `wasm32`) pulls no Iroh, `jeliya-core`,
+//!   `jeliyad`, `jeliya-ffi`, WebSocket crate, native transport,
+//!   `quinn`/`rustls`/`tokio`, `wry`/`tao`, `openssl-sys`, `native-tls`, or
+//!   Dioxus.** The contract is renderer-agnostic; a Dioxus prop needs only
+//!   `Clone + PartialEq`, which [`PlatformServices`] provides without depending
+//!   on Dioxus.
+//! - **No `serde_json::Value` in any public signature.** The crate consumes
+//!   `jeliya_api` value types and never a raw JSON door.
+//! - **No `tokio`, no wall clock, no `wasm-bindgen`-specific timing.**
+//!   Concurrency and the lifecycle fan-out are executor-agnostic and
+//!   `wasm32-unknown-unknown`-safe.
+//!
+//! This becomes the sole platform-authority contract for the new stack. Target
+//! implementations (browser web-sys, desktop file dialogs, Android SAF/JNI) are
+//! out of scope for this crate and land in M3–M5; the clean-slate cutover
+//! applies (each target reads only new-format services and preferences; old
+//! helpers and stored values are references only).
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+// The opaque-handle plumbing (the `SourceToken`/`ExportToken`/`BlobToken`
+// constructors and accessors, and the private `token` fields) is consumed by
+// the capability *implementations* — and the only implementations this crate
+// ships are the deterministic fakes, behind the default-off `fake` feature.
+// With no implementation compiled in, that crate-private plumbing is
+// legitimately unused, so — and only then — allow dead code rather than scatter
+// per-item attributes. When `fake` (or a future target impl) is compiled in,
+// this is a no-op and dead-code linting is fully active. Mirrors
+// `jeliya-client`'s `#![cfg_attr(not(feature = "mock"), allow(dead_code))]`.
+#![cfg_attr(not(feature = "fake"), allow(dead_code))]
+
+pub mod cancel;
+pub mod clipboard;
+pub mod error;
+pub mod files;
+pub mod launcher;
+pub mod lifecycle;
+pub mod navigation;
+mod services;
+pub mod storage;
+pub mod window;
+
+#[cfg(feature = "fake")]
+pub mod fake;
+
+// The implementation-facing factory surface for the M3–M5 target crates. The
+// feature gate lives here at the crate root — never in the contract surface
+// (§K10). Default-off: the shared-component graph cannot reach it.
+#[cfg(feature = "implementation")]
+pub mod implementation;
+
+pub use cancel::CancelToken;
+pub use clipboard::{Clipboard, Share, ShareAnchor, ShareAttachment, ShareContent};
+pub use error::{Availability, CapabilityError, FailureKind};
+/// The forgery boundary, stated in two tiers — because Cargo **feature
+/// unification** makes the one-sentence version false in exactly the builds
+/// this crate exists to serve.
+///
+/// **Tier 1 — any graph without an implementation crate**: the factory module
+/// is not compiled at all, and a [`ShareableBlob`] is literally not
+/// constructible. The `compile_fail` doctest below pins that, and it is the
+/// per-crate jobs (`-p jeliya-platform --features fake`, the wasm and MSRV
+/// selections, `jeliya-ui` on its own) that resolve this way.
+///
+/// A `--workspace` invocation does **not**: `jeliya-platform-implementation` is
+/// a workspace member, so selecting the whole workspace unifies
+/// `implementation` onto the one `jeliya-platform` every member links, and even
+/// the doctest that pins tier 1 is gated off (it is `cfg`'d on the feature
+/// being absent). That is not a leak — it is tier 2, below, which is exactly
+/// the condition the boundary is built for, and it is why the door crate is a
+/// member at all: so the workspace lock, the MSRV job, and clippy cover it.
+///
+/// **Tier 2 — a unified target binary.** When an M3–M5 target crate enables
+/// `implementation`, Cargo unifies the feature onto the single
+/// `jeliya-platform` instance *every* crate in that binary links, the shared
+/// UI's included, so the module is compiled in and tier 1 no longer applies.
+/// Three enforcements replace the vanished compile-time absence:
+///
+/// 1. **Path-addressed factories.** They are free functions in
+///    `implementation`, never inherent methods, so no call site can reach one
+///    without spelling that module — and `tests/boundaries.rs` scans every
+///    non-door workspace member's source for exactly that token.
+/// 2. **A dependency edge, which never unifies.** `jeliya-platform-implementation`
+///    is the sole manifest permitted to enable the feature, and a `cargo tree`
+///    test asserts the shared UI graph carries no edge to it.
+/// 3. **Minted-token registries that fail closed.** A handle a service did not
+///    mint resolves nowhere — the runtime gate that holds regardless of how the
+///    features resolved. Fake tokens carry issuer provenance, so even another
+///    service's genuine handle fails closed.
+#[cfg_attr(
+    not(feature = "implementation"),
+    doc = r#"
+
+```compile_fail
+// The factory module does not exist on default features, so neither the
+// token wrapper nor the constructor can be named.
+let _ = jeliya_platform::implementation::shareable_blob(
+    jeliya_platform::implementation::blob_token_from_raw(7),
+    10,
+);
+```
+"#
+)]
+pub use files::ShareableBlob;
+pub use files::{
+    ArtifactToken, BlobToken, ExportTarget, ExportTargetKind, ExportToken, FetchedArtifact,
+    FileName, FileObjectKind, FileSink, Files, InvalidFileName, LocalFileRef, Mime, PickedSource,
+    ProgressSink, ShareSink, SourceToken, StageProgress, StagedBlobReader,
+};
+pub use launcher::{SafeExternalUrl, UnsafeUrl, UrlLauncher};
+pub use lifecycle::{
+    BackgroundPhase, Lifecycle, LifecycleBus, LifecycleDelivery, LifecycleEvent,
+    LifecycleSubscription,
+};
+pub use navigation::{Navigation, RoomDest, Route, RouteParseError};
+pub use services::{Platform, PlatformServices};
+pub use storage::{
+    Durability, PreferenceKey, Preferences, PrivateDirectory, Secret, SecretKey, SecretStore,
+    WriteOutcome,
+};
+pub use window::{WindowActions, WindowCommand, WindowEvent};
+
+/// A boxed, `'a`-bounded future — the return shape every asynchronous
+/// capability method uses so the erased implementations stay behind
+/// `Arc<dyn …>` and the traits remain object-safe.
+///
+/// This is a `!Send` boxed future (the `LocalBoxFuture` shape), because the
+/// browser target is single-threaded and a future built over a `web-sys`
+/// handle is not `Send`; requiring `Send` here — as `futures::future::BoxFuture`
+/// does — would foreclose the M3 web implementation. It is spelled in `std` so
+/// the `!Send` bound is explicit at the definition and no `Send`-carrying alias
+/// can be reached by mistake.
+pub type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> + 'a>>;
+
+// Depend on `jeliya_api` for the ids and view-model types this crate traffics
+// in (`RoomId`, `FileId`, served limits). This crate re-exports none of them,
+// to avoid a second spelling — a component names `jeliya_api::RoomId` directly.

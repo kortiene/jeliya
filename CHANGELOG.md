@@ -4,6 +4,94 @@
 
 ### Added
 
+- New workspace crate `crates/jeliya-platform` — the single injectable
+  `PlatformServices` boundary for the clean-slate Dioxus stack (#156 program,
+  #174). One cloneable, renderer-agnostic facade carries object-safe capability
+  traits for files, persistence, lifecycle, URLs, clipboard/share, navigation,
+  and window actions, with a closed outcome taxonomy (`CapabilityError` keeps
+  `Unavailable`/`Denied`/`Cancelled`/typed failures apart, so a cancellation
+  never becomes success), safe path/URL types that distinguish a browser blob
+  from a desktop path from an Android `content://` URI, an allowlisted
+  fail-closed external-URL launcher, honest storage durability, and a
+  representable lifecycle-event model. `Route` is the canonical product route
+  family (`/rooms`, `/rooms/:roomId/{activity,people,agents,files,pipes}` with
+  typed file/pipe item selection, `/fleet`, `/settings`), parsed fail-closed
+  (malformed percent-escapes and empty interior segments are errors, stricter
+  by design than the web shell's total parse — the router maps `Err` to the
+  Rooms recovery state) and rendered byte-identically to the web shell's
+  `encodeURIComponent` spelling. Lifecycle control intents are lossless *and*
+  bounded: a saturated mailbox run-length-encodes a Back burst and absorbs a
+  restated close/restore into its still-undelivered twin, hard-capping the
+  mailbox at capacity plus a fixed control allowance. File bytes cross the
+  boundary as bytes, matching protocol v2's byte-stream framing: a
+  `StagedBlobReader` (pull, CREDIT-shaped) feeds the `file.share` upload from
+  a staged blob, and `FileSink`s from `export_sink`/`open_sink` accept
+  `file.read` DATA chunks (write-resolution is credit-advance; dropping an
+  uncommitted sink deletes the partial artifact) — the retired
+  v1 local-file HTTP edge is unrepresentable. Sharing a room file uses the
+  same byte discipline in the third direction: `share_sink` accepts the
+  pumped `file.read` stream and `commit` mints a `FetchedArtifact` the OS
+  share sheet accepts, so `ShareContent` carries only handles to bytes the
+  producing service custodies — never a bare `(RoomId, FileId)` the platform
+  has no way to read — and a successful share consumes the artifact. The
+  handle custody is explicit in both directions. Every handle that names
+  service-held bytes or a grant has exactly one release — `release_staged`,
+  `release_artifact`, `discard_source`, `discard_export_target` — and
+  consumption is the other half (`stage_for_share` drops its source on every
+  outcome, `export_sink` consumes its target, a successful share consumes the
+  artifact), so nothing is retained by a caller doing nothing. The signal
+  cannot be inferred: reaching EOF in a reader means the bytes were read, not
+  that the daemon accepted them, and dropping an opaque handle is invisible to
+  the service, so without an explicit release "delete after share" is
+  unimplementable.
+  `FileName` is validated, not merely promised: `FileName::parse` fails
+  closed on separators, `.`/`..`, empty, and control characters, so a
+  peer-supplied name cannot carry portable path syntax into a native sink —
+  with the platform-specific remainder (Windows `:` and trailing dots/spaces,
+  reserved device names, normalization, length caps) explicitly left to the
+  sink and documented as such, because those strings are ordinary file names
+  on the committed targets. Text
+  language and formatting locale are two independent preference keys, per the
+  product contract's "text locale != formatting locale from day one". Clipboard writes are
+  asynchronous (a browser denial is the `writeText` promise rejection), and a
+  default-off `implementation` feature exposes path-free factories so the
+  M3–M5 target crates (separate crates by design) can construct
+  `PickedSource`/`ExportTarget`/`ShareableBlob`/`FetchedArtifact` without any
+  path crossing the boundary. It ships a
+  deterministic in-process fake for every service (`feature = "fake"`) in
+  browser/desktop/Android shapes, scriptable for
+  denied/unavailable/cancelled outcomes; scripted picker/dialog/share
+  operations stay open until the test advances them via
+  `FakeController::deliver_next` (outcome bound at call time, cancellation
+  wins races, drop withdraws), so cancellation-vs-reply ordering is explicit,
+  never a race. A shared Dioxus component compiled against the fakes links for
+  both native and `wasm32-unknown-unknown` with no per-component `cfg`. No
+  Iroh, WebSocket, native transport, `wry`/`tao`, `openssl-sys`, or Dioxus
+  enters the library graph, and no `serde_json::Value` appears in any public
+  signature. Target implementations (browser web-sys, desktop dialogs, Android
+  SAF/JNI) follow in M3–M5 behind the unchanged facade. The decision is
+  recorded at `docs/dioxus-architecture.md` §"Decision 4".
+
+- New workspace crate `crates/jeliya-platform-implementation` — the single
+  blessed door to those factories (#174 §K4). Cargo unifies features per
+  package across a build graph, so a default-off feature is not a boundary in
+  a target binary: the moment any crate enables `implementation`, the factory
+  module is compiled into the one `jeliya-platform` instance the shared UI
+  also links. A dependency edge does not unify, so the boundary is one — this
+  crate is the only manifest permitted to enable the feature, the factories
+  are path-addressed free functions (so a call site must spell
+  `implementation`, which a workspace-wide code scan rejects outside the
+  door), and a `cargo tree` test asserts the shared UI graph has no edge to
+  it. Underneath all three, minted-token registries fail closed on any handle
+  a service did not mint, so a forged or cross-service handle resolves
+  nowhere.
+
+- `crates/jeliya-ui` adopts that canonical contract (#174): its former
+  provisional local seam (`src/services.rs` and `WebPlatformServices`) is
+  deleted and replaced by a re-export of `jeliya_platform::PlatformServices`,
+  with composition injecting a deterministic fake shape — the mechanical change
+  #176 promised, and no shared component gains a `cfg` fork.
+
 - New workspace crate `crates/jeliya-client` — the single UI-facing Rust client
   contract for the clean-slate Dioxus stack (#156 program, #167). Delivers
   compile-time request/output pairing (`ClientHandle::call<O: Operation>`
