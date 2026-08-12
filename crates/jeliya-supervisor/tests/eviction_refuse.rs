@@ -413,6 +413,100 @@ async fn fault14_unprovable_incompatible_incumbent_is_refused_without_signalling
     }
 }
 
+/// A stub that spawns a descendant INTO its own process group with stdio closed
+/// (so it does not hold the announcement pipe), has the descendant record its
+/// pid and then sleep far beyond the test, and finally exits NON-ZERO without
+/// announcing — the faulty/overridden binary of fault #5. The busy-wait ensures
+/// the pid is recorded before the leader exits, so the test can find it.
+fn write_forking_stub(path: &Path, pidfile: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let pf = pidfile.display();
+    let script = format!(
+        "#!/bin/sh\n\
+         sh -c 'exec >/dev/null 2>&1 <&-; echo $$ > \"{pf}\"; sleep 600' &\n\
+         i=0\n\
+         while [ ! -s \"{pf}\" ] && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.02; done\n\
+         exit 1\n"
+    );
+    std::fs::write(path, script).expect("write forking stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// Whether `pid` is still a live process (owned by this uid), via `kill -0`.
+fn pid_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Fault #5 (process-group hygiene): a faulty binary that spawns a descendant
+/// into the isolated process group and then exits non-zero WITHOUT announcing
+/// must not leave that descendant alive holding the data-dir lock. The
+/// reaped-leader early-exit arms sweep the group.
+///
+/// Red-before/green-after: without `kill_reaped_process_group` in the reaped
+/// arms, `start_or_adopt` reaps only the leader and returns `Wedged`, leaving the
+/// `sleep 600` descendant orphaned and alive; with the sweep it is SIGKILLed.
+#[tokio::test]
+async fn a_reaped_leader_that_spawned_a_descendant_reaps_the_group() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-forker-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    let pidfile = root.join("descendant.pid");
+    let stub = root.join("jeliyad-forker");
+    write_forking_stub(&stub, &pidfile);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data),
+        binary: Some(stub),
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+    let result = sup.start_or_adopt().await;
+    assert!(
+        matches!(result, Err(SupervisorError::Wedged)),
+        "a silent non-zero exit must surface Wedged; got: {result:?}"
+    );
+
+    let pid: u32 = std::fs::read_to_string(&pidfile)
+        .expect("descendant recorded its pid")
+        .trim()
+        .parse()
+        .expect("pid is a number");
+    // Poll for the SIGKILL to land (a killed process reaps within ms; the parent
+    // is gone so init reaps the zombie, after which `kill -0` reports dead).
+    let mut alive = true;
+    for _ in 0..40 {
+        if !pid_is_alive(pid) {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Best-effort cleanup of the descendant if the assertion is about to fail, so
+    // a regression does not leak a 10-minute sleep into the CI runner.
+    if alive {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        !alive,
+        "the descendant must be reaped with the process group, not orphaned (pid {pid})"
+    );
+}
+
 /// A background loopback listener that answers `/api/health` as a LIVE daemon
 /// proving `pid` with an INCOMPATIBLE (protocol 1) generation. It loops so the
 /// gate's `prove_owned` probe (and any re-probe) is answered; the returned
@@ -441,22 +535,28 @@ async fn spawn_incompatible_health(pid: u32) -> (u16, tokio::task::JoinHandle<()
     (port, handle)
 }
 
-/// Round-8 P1 (gate→spawn TOCTOU): when `replace_incompatible` defers to the
-/// eviction path for a LIVE incompatible incumbent, that incumbent can exit in
-/// the window between the `prove_owned` probe and the `spawn`. Our own fresh
-/// daemon then acquires the directory and announces `ready` (not
-/// `already_running`), so the `already_running` eviction path never runs. The
-/// supervisor must FAIL CLOSED with `GenerationMismatch` rather than open the
-/// incompatible storage the clean-slate reset was meant to discard.
+/// The gate→spawn race, resolved per spec §12 / §6.7 case 13: when
+/// `replace_incompatible` DEFERS to eviction for a proven-LIVE incompatible
+/// incumbent, that incumbent can exit in the window between the `prove_owned`
+/// probe and the `spawn`. Our own fresh daemon then acquires the directory and
+/// announces `ready` (not `already_running`). That daemon is the bundled
+/// binary — it serves THIS build's generation — so the deferred path must NOT
+/// short-circuit on the vanished incumbent's stale declared generation; it must
+/// hand the fresh daemon to `finish_owned`, whose served-generation/identity
+/// gate governs it. A real fresh daemon serving the expected generation is then
+/// ADOPTED (the incumbent evicted itself; end state = case 13's "new daemon
+/// matches expected generation"); the supervisor gates on the SERVED generation
+/// and never migrates on-disk state (§12 → #185).
 ///
-/// Red-before/green-after: without the `deferred_incompatible` gate on the
-/// `ready` branch, the announcement drives `finish_owned` — standing in for a
-/// real fresh daemon that announced its own pid and wrote a v2 portfile, which
-/// would open the incompatible data dir. This stub announces a FOREIGN pid, so
-/// pre-fix the call surfaces `Handshake` (never `GenerationMismatch`); the fix
-/// is the only path that returns `GenerationMismatch` carrying protocol 1.
+/// This stub announces a FOREIGN pid, so `finish_owned`'s child-PID identity
+/// check is what fires: the result is a `Handshake` identity error, NOT a
+/// `GenerationMismatch` carrying the incumbent's protocol 1. Red-before/
+/// green-after: with the earlier deferred-generation short-circuit on the
+/// `ready` branch the call returned `GenerationMismatch { protocol: 1 }`;
+/// governed by `finish_owned` it is a `Handshake`. Asserting "not
+/// GenerationMismatch, and a PID-identity Handshake" pins the corrected contract.
 #[tokio::test]
-async fn a_live_incompatible_incumbent_freeing_the_dir_before_spawn_is_refused() {
+async fn a_live_incompatible_incumbent_freeing_the_dir_before_spawn_defers_to_finish_owned() {
     let root = std::env::temp_dir().join(format!(
         "jeliya-sup-toctou-{}-{}",
         std::process::id(),
@@ -498,17 +598,25 @@ async fn a_live_incompatible_incumbent_freeing_the_dir_before_spawn_is_refused()
     health.abort();
     let _ = std::fs::remove_dir_all(&root);
 
+    // Must NOT refuse on the vanished incumbent's stale declared generation…
+    assert!(
+        !matches!(result, Err(SupervisorError::GenerationMismatch { .. })),
+        "the deferred path must be governed by finish_owned's served-generation gate, \
+         not short-circuited on the vanished incumbent's declared generation; got: {result:?}"
+    );
+    // …instead `finish_owned` runs and this foreign-pid stub fails its child-PID
+    // identity check — proving a real fresh daemon serving the expected
+    // generation would reach adoption (§6.7 case 13).
     match result {
-        Err(SupervisorError::GenerationMismatch { actual, .. }) => {
-            assert_eq!(
-                actual.protocol,
-                Some(1),
-                "the refusal must carry the incompatible incumbent's protocol"
+        Err(SupervisorError::Handshake(message)) => {
+            assert!(
+                message.contains("pid"),
+                "the refusal must be finish_owned's PID-identity check; got: {message}"
             );
         }
         other => panic!(
-            "a live incompatible incumbent that frees the dir before the spawn must fail closed \
-             with GenerationMismatch, not open incompatible storage; got: {other:?}"
+            "a deferred live-incompatible race that returns `ready` must be validated by \
+             finish_owned (a PID-identity Handshake for this foreign-pid stub); got: {other:?}"
         ),
     }
 }

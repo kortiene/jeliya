@@ -168,6 +168,15 @@ impl Sidecar {
         }
         let pid = self.portfile.pid;
         let port = self.portfile.port;
+        // Snapshot portfile presence BEFORE the RPC: the daemon removes
+        // `daemon.json` as the LAST step of graceful shutdown, so a present→absent
+        // transition is the completion proof below. If it is ALREADY absent here
+        // (a cleanup tool removed it, or a prior partial shutdown), its removal
+        // proves nothing — see the completion check.
+        let portfile_present_before = matches!(
+            crate::portfile::portfile_path(&self.data_dir).try_exists(),
+            Ok(true)
+        );
         // The whole adopted stop is time-boxed by `teardown`, RPC included: a
         // caller-supplied invoker whose transport stalls must not wedge shutdown
         // just because its own future has no timeout. Start the deadline BEFORE
@@ -199,6 +208,19 @@ impl Sidecar {
         // the process is dark but may still hold its lock / be writing state, so
         // `ShutdownTimedOut` is the honest verdict rather than a premature
         // `Graceful`.
+        //
+        // Removal is proof ONLY as a present→absent transition. If `daemon.json`
+        // was already absent before the RPC, `wait_portfile_removed` returns on
+        // its first poll and would promise `Graceful` while the daemon may still
+        // be closing rooms / holding its lock — the very premature verdict this
+        // guard exists to avoid. With no process handle for an adopted daemon and
+        // the listener already dark, completion cannot be proven in that case, so
+        // the honest verdict is `ShutdownTimedOut`. (A lock-release proof would
+        // remain valid across a pre-absent portfile but needs a cross-crate
+        // lock-protocol assumption against `jeliyad`'s `daemon.lock`; deferred.)
+        if !portfile_present_before {
+            return Err(SupervisorError::ShutdownTimedOut { pid });
+        }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if validate::wait_portfile_removed(&self.data_dir, remaining).await {
             Ok(Teardown::Graceful)
@@ -423,6 +445,60 @@ mod tests {
         assert!(
             matches!(result, Err(SupervisorError::ShutdownRpcFailed(_))),
             "an RPC error must be ShutdownRpcFailed, not Handshake; got: {result:?}"
+        );
+    }
+
+    /// `stop_adopted` must NOT report `Graceful` when `daemon.json` was ALREADY
+    /// absent before the RPC (a cleanup tool removed it, or a prior partial
+    /// shutdown): portfile removal is proof only as a present→absent transition,
+    /// so a pre-absent portfile yields the honest `ShutdownTimedOut`.
+    ///
+    /// Red-before/green-after: without the pre-absence guard,
+    /// `wait_portfile_removed` returns immediately on the missing file and the
+    /// call reports `Graceful` while the daemon (whose listener drops FIRST, ~10s
+    /// before cleanup finishes) may still be closing rooms / holding its lock.
+    #[test]
+    fn stop_adopted_with_a_pre_absent_portfile_is_not_graceful() {
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!("sup-adopt-preabsent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // No daemon.json is written — it is pre-absent. A dead port makes the
+        // health probe report dark immediately, so the completion check is reached.
+        let dead_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            p
+        };
+        let portfile: crate::portfile::Portfile = serde_json::from_str(&format!(
+            r#"{{"pid":4242,"port":{dead_port},"protocol":2,"storage_generation":2,
+               "data_dir":"/d","auth_token":"t"}}"#,
+        ))
+        .unwrap();
+        let sidecar = Sidecar {
+            portfile,
+            ownership: Ownership::Adopted,
+            data_dir: dir.clone(),
+            expected: crate::generation::Generation::new(2, 2),
+            strict_portfile_perms: false,
+            timeouts: crate::supervisor::Timeouts {
+                teardown: Duration::from_millis(300),
+                health_connect: Duration::from_millis(50),
+                health_read: Duration::from_millis(50),
+                ..crate::supervisor::Timeouts::default()
+            },
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        let result = rt.block_on(sidecar.stop_adopted(|| Box::pin(async { Ok(()) })));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { .. })),
+            "a pre-absent portfile must not report Graceful; got: {result:?}"
         );
     }
 

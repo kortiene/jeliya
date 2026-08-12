@@ -103,9 +103,20 @@ pub(crate) fn portfile_path(data_dir: &Path) -> PathBuf {
 /// a shared host must opt into `strict_portfile_perms`. (Non-strict is not
 /// "warn-and-proceed": there is nowhere to warn.)
 pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, SupervisorError> {
+    use std::io::Read as _;
+
+    // The real `daemon.json` is a few hundred bytes. A truncated/corrupt file,
+    // or an attacker-planted one in a shared data dir, must surface the typed
+    // `PortfileUnreadable` — not make `read_to_string` allocate the file's entire
+    // length first. Because this runs on startup AND on every reconnect, an
+    // accidental multi-gigabyte file would otherwise terminate the supervising
+    // app before parsing can reject it. Read through a fixed cap (one byte past,
+    // so an over-cap file is detected rather than silently truncated-then-parsed).
+    const MAX_PORTFILE_BYTES: u64 = 64 * 1024;
+
     let path = portfile_path(data_dir);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(SupervisorError::PortfileMissing(path));
         }
@@ -116,6 +127,23 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
             });
         }
     };
+    let mut raw = String::new();
+    if let Err(err) = file.take(MAX_PORTFILE_BYTES + 1).read_to_string(&mut raw) {
+        // A non-UTF-8 body reaches here as `InvalidData` — still "not a readable
+        // portfile", never a panic.
+        return Err(SupervisorError::PortfileUnreadable {
+            path,
+            why: err.to_string(),
+        });
+    }
+    if raw.len() as u64 > MAX_PORTFILE_BYTES {
+        return Err(SupervisorError::PortfileUnreadable {
+            path,
+            why: format!(
+                "portfile exceeds the {MAX_PORTFILE_BYTES}-byte cap for this JSON contract"
+            ),
+        });
+    }
 
     #[cfg(unix)]
     if strict {
@@ -316,5 +344,30 @@ mod tests {
             result.is_ok(),
             "strict mode must accept a 0600 portfile; got: {result:?}"
         );
+    }
+
+    /// An over-cap `daemon.json` is refused with `PortfileUnreadable` WITHOUT
+    /// parsing it. The body is a VALID portfile preceded by 70 KiB of whitespace,
+    /// so it is well-formed JSON that serde would happily parse — proving the cap,
+    /// not a parse error, is what fires. Red-before/green-after: without the
+    /// `take(cap+1)` bound `read_to_string` reads the whole file and serde returns
+    /// `Ok(portfile)` (JSON ignores the leading whitespace), silently allocating
+    /// the entire length; with the bound the read stops at the cap and the length
+    /// check rejects it.
+    #[test]
+    fn an_oversized_portfile_is_refused_before_parsing() {
+        let dir = std::env::temp_dir().join(format!("sup-pf-huge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let padded = format!("{}{}", " ".repeat(70 * 1024), v2_portfile_json(7420));
+        std::fs::write(dir.join("daemon.json"), padded).unwrap();
+        let result = read_portfile(&dir, false);
+        std::fs::remove_dir_all(&dir).ok();
+        match result {
+            Err(SupervisorError::PortfileUnreadable { why, .. }) => assert!(
+                why.contains("exceeds"),
+                "an over-cap portfile must be rejected by the size cap, not a parse error; got: {why}"
+            ),
+            other => panic!("an over-cap portfile must be PortfileUnreadable; got: {other:?}"),
+        }
     }
 }

@@ -203,13 +203,19 @@ impl Supervisor {
             // eviction path (`already_running` → prove-owned → SIGTERM →
             // respawn), which is where a live incompatible incumbent is replaced.
             // (`gate_incompatible` is also false on the eviction respawn itself.)
-            // When the gate DEFERS to eviction for a live incompatible incumbent,
-            // remember the declared incompatible generation. It gates the post-
-            // spawn `ready` path below: the incumbent could exit in the window
-            // between our prove and the spawn, letting our fresh daemon acquire
-            // the dir and announce `ready` — so the eviction never runs — and this
-            // is what still refuses opening the incompatible storage.
-            let mut deferred_incompatible: Option<crate::generation::SeenGeneration> = None;
+            //
+            // Deferring here does NOT special-case the post-spawn `ready` path. If
+            // the proven-live incumbent exits in the window between the prove and
+            // the spawn, our own fresh daemon acquires the dir and announces
+            // `ready`. That daemon is the bundled binary — it serves THIS build's
+            // generation — so `finish_owned`'s served-generation gate
+            // (`validate_portfile` step 4) governs it exactly as it governs any
+            // owned spawn: a match adopts it (the incumbent evicted itself; the end
+            // state is §6.7 case 13's "new daemon matches expected generation"), a
+            // drift fails closed. The supervisor gates on the SERVED generation and
+            // never lays out or migrates on-disk state (spec §12; that is #185), so
+            // there is no additional "incompatible storage" invariant for it to
+            // enforce beyond that served-generation gate.
             if gate_incompatible {
                 match portfile::read_portfile(&self.data_dir, self.strict_portfile_perms) {
                     // No portfile → nothing to gate; proceed to spawn.
@@ -232,9 +238,7 @@ impl Supervisor {
                                 && validate::data_dir_mismatch(&self.data_dir, &existing.data_dir)
                                     .is_none()
                                 && validate::prove_owned(&existing, &self.timeouts).await;
-                            if live_replaceable {
-                                deferred_incompatible = Some(declared);
-                            } else {
+                            if !live_replaceable {
                                 return Err(SupervisorError::GenerationMismatch {
                                     expected: self.expected,
                                     actual: declared,
@@ -269,9 +273,29 @@ impl Supervisor {
                     // exit or a still-running child (force-killed) keeps the
                     // original handshake error.
                     drop(stdin);
+                    // Capture the pgid (== leader pid) BEFORE the reaping wait:
+                    // once `wait()` reaps the leader, `child.id()` is None and the
+                    // isolated group can no longer be reached by pid. A faulty or
+                    // overridden binary may have spawned a descendant into this
+                    // group with its stdio closed and then exited; the reaped-leader
+                    // arms must sweep the group so no descendant keeps holding the
+                    // data-dir lock (or writing state) while the caller retries. The
+                    // `_` arm leaves the child un-reaped, so `abandon_child` →
+                    // `force_kill_tree` already reaches the group via `child.id()`.
+                    let leader_pgid = child.id();
                     match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
-                        Ok(Ok(status)) if !status.success() => return Err(SupervisorError::Wedged),
-                        Ok(Ok(_)) => return Err(e),
+                        Ok(Ok(status)) if !status.success() => {
+                            if let Some(pgid) = leader_pgid {
+                                process::kill_reaped_process_group(pgid);
+                            }
+                            return Err(SupervisorError::Wedged);
+                        }
+                        Ok(Ok(_)) => {
+                            if let Some(pgid) = leader_pgid {
+                                process::kill_reaped_process_group(pgid);
+                            }
+                            return Err(e);
+                        }
                         _ => return Err(abandon_child(&mut child, e).await),
                     }
                 }
@@ -287,23 +311,12 @@ impl Supervisor {
 
             match announced {
                 ReadyLine::Ready { pid, port } => {
-                    // The gate deferred on a LIVE incompatible incumbent, but the
-                    // spawn announced `ready` (our OWN fresh daemon), not
-                    // `already_running`. So the incumbent released the lock between
-                    // our prove and this spawn, our daemon acquired the dir and
-                    // overwrote the incompatible portfile — the eviction the
-                    // clean-slate reset requires never ran. Refuse rather than open
-                    // incompatible storage.
-                    if let Some(declared) = deferred_incompatible {
-                        return Err(abandon_child(
-                            &mut child,
-                            SupervisorError::GenerationMismatch {
-                                expected: self.expected,
-                                actual: declared,
-                            },
-                        )
-                        .await);
-                    }
+                    // Our own fresh daemon announced itself. `finish_owned`'s
+                    // served-generation gate governs it — including the deferred
+                    // race where a proven-live incompatible incumbent exited before
+                    // this spawn: the fresh daemon serves this build's generation,
+                    // so validation adopts it (§6.7 case 13) or fails closed on a
+                    // real drift, never on the vanished incumbent's stale portfile.
                     self.finish_owned(child, stdin, portfile, pid, port).await
                 }
                 ReadyLine::AlreadyRunning { pid, port } => {

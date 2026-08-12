@@ -8,20 +8,21 @@ use std::pin::Pin;
 use crate::generation::{Generation, SeenGeneration};
 
 /// A boxed, `'static` future the supervisor awaits inline. Not `Send`-bound: the
-/// caller's `daemon.shutdown` closure (which may hold a `!Send` `ClientHandle`)
+/// caller's `daemon.stop` closure (which may hold a `!Send` `ClientHandle`)
 /// is driven on the supervisor's own task, never moved across threads. Mirrors
 /// the std `BoxFuture` alias `jeliya-platform`/`jeliya-client` own.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-/// An error surfaced by the caller-supplied `daemon.shutdown` RPC closure. The
+/// An error surfaced by the caller-supplied `daemon.stop` RPC closure. The
 /// supervisor does not link the client, so it treats the RPC as opaque: any
-/// failure carries only a message.
+/// failure carries only a message. (`daemon.stop` is the v2 operation-registry
+/// name; the daemon exposes no `daemon.shutdown` route.)
 #[derive(Debug, Clone)]
 pub struct CallerRpcError(pub String);
 
 impl std::fmt::Display for CallerRpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "daemon.shutdown RPC failed: {}", self.0)
+        write!(f, "daemon.stop RPC failed: {}", self.0)
     }
 }
 
@@ -136,10 +137,21 @@ mod tests {
     use crate::generation::{Generation, SeenGeneration};
 
     #[test]
-    fn caller_rpc_error_display_contains_the_message() {
+    fn caller_rpc_error_display_names_the_daemon_stop_route() {
         let e = CallerRpcError("timed out".to_owned());
         let d = format!("{e}");
         assert!(d.contains("timed out"), "display: {d}");
+        // The v2 operation registry exposes `daemon.stop`; a consumer told
+        // `daemon.shutdown` would call a nonexistent route and leave the daemon
+        // running. The public error API must name the real one.
+        assert!(
+            d.contains("daemon.stop"),
+            "display must name daemon.stop: {d}"
+        );
+        assert!(
+            !d.contains("daemon.shutdown"),
+            "display must not name the nonexistent daemon.shutdown route: {d}"
+        );
     }
 
     #[test]

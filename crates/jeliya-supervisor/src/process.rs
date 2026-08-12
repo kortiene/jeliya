@@ -85,6 +85,34 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
+/// Best-effort SIGKILL of a spawned leader's **process group** by its pgid
+/// (`pgid == the leader's pid`, set at spawn), for the early-exit paths where the
+/// leader has ALREADY been reaped — so [`force_kill_tree`] (which reads the live
+/// `child.id()`) can no longer reach the group. A leader that spawned a
+/// descendant and then exited leaves that descendant holding the data-dir lock in
+/// the group we isolated; killing the group reclaims it before the caller retries.
+///
+/// The pgid must be captured from `child.id()` BEFORE the reaping `wait()`. A
+/// process group persists while any member lives, so if a descendant survives the
+/// group is intact and this reaches exactly it; if the group is already empty,
+/// `killpg` returns `ESRCH` and is ignored. The recycled-pgid TOCTOU is the same
+/// bounded, same-uid window the eviction path documents (§6.7). No-op off Unix
+/// (single-process daemon; group isolation is deferred with Windows, OQ-5).
+pub(crate) fn kill_reaped_process_group(pgid: u32) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{killpg, Signal};
+        use nix::unistd::Pid;
+        if let Some(valid) = SignalPid::new(pgid) {
+            let _ = killpg(Pid::from_raw(valid.get()), Signal::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+    }
+}
+
 /// A validated positive process id, safe to convert to the platform signal
 /// type. Constructed only through [`SignalPid::new`], which rejects the values
 /// whose `as i32` cast would change Unix signal semantics.
@@ -129,7 +157,7 @@ impl SignalPid {
 ///
 /// Unix only. On other platforms a foreign process cannot be signalled without
 /// forbidden unsafe FFI, so eviction there requires the caller-supplied
-/// `daemon.shutdown` RPC (deferred with Windows packaging, OQ-4/OQ-5).
+/// `daemon.stop` RPC (deferred with Windows packaging, OQ-4/OQ-5).
 pub(crate) fn sigterm_foreign(pid: u32) -> Result<(), SupervisorError> {
     #[cfg(unix)]
     {
@@ -148,8 +176,7 @@ pub(crate) fn sigterm_foreign(pid: u32) -> Result<(), SupervisorError> {
     {
         let _ = pid;
         Err(SupervisorError::Handshake(
-            "signal-based eviction is unavailable off Unix; supply a daemon.shutdown RPC"
-                .to_owned(),
+            "signal-based eviction is unavailable off Unix; supply a daemon.stop RPC".to_owned(),
         ))
     }
 }
