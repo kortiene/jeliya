@@ -52,13 +52,14 @@ test.afterEach(() => {
   expectCleanNetwork(guard);
 });
 
-test("the settled shell has exactly one main landmark and one h1", async ({ page }, testInfo) => {
+test("the settled shell has exactly one main landmark and one h1 on every viewport", async ({ page }, testInfo) => {
   await gotoReadyShell(page);
 
-  // The boot cover carries its own main/h1 while it is the component root;
-  // once Ready it must be UNMOUNTED (render.spec pins that), leaving exactly
-  // one of each in the DOM: the landmarked center and its "Choose a room"
-  // heading.
+  // Exactly one <main> and exactly one <h1> in the DOM — on EVERY viewport.
+  // The single h1 lives at the always-rendered root (not a pane-hidden region),
+  // so even on compact, where the `.center` main is display:none, an h1 is
+  // present in the accessibility tree. It is visually hidden by design (the
+  // visible headings are the nav's accessible name and the centre's h2).
   await expect(page.locator("main")).toHaveCount(1);
   await expect(page.locator("h1")).toHaveCount(1);
   await expect(page.locator("#boot-screen")).not.toBeAttached();
@@ -69,23 +70,26 @@ test("the settled shell has exactly one main landmark and one h1", async ({ page
   await expect(nav).toHaveAttribute("aria-label", /.+/);
 
   if (testInfo.project.name === "wide" || testInfo.project.name === "medium") {
-    // Desktop layouts show both panes: exactly one VISIBLE main and h1.
+    // Desktop layouts show both panes: the main landmark is visible and carries
+    // the visible section heading (an h2 under the root h1).
     await expect(page.locator("main:visible")).toHaveCount(1);
-    await expect(page.locator("h1:visible")).toHaveCount(1);
+    await expect(page.locator("main h2:visible")).toHaveCount(1);
   } else {
     // Compact/narrow is the pane contract (render.spec pins it): the fixed
-    // `pane-rooms` state shows ONLY the sidebar, so the main region (and its
-    // h1) is present but hidden until pane navigation arrives with the Room
-    // Workbench port.
+    // `pane-rooms` state shows ONLY the sidebar, so the main region is present
+    // but hidden until pane navigation arrives with the Room Workbench port.
     await expect(page.locator("main")).not.toBeVisible();
   }
 });
 
-test("skip links are the first tab stops and MOVE focus to their landmarks", async ({ page }, testInfo) => {
+test("the skip link is the first tab stop and MOVES focus to the rooms landmark", async ({ page }) => {
   await gotoReadyShell(page);
 
-  // First Tab from a fresh document lands on the first skip link — nothing
-  // may sit in the tab order before it.
+  // First Tab from a fresh document lands on the (only) skip link — nothing may
+  // sit in the tab order before it. The foundation offers one link, "skip to
+  // rooms": the rooms list is the one meaningful content region and is visible
+  // on every viewport, so the link is never broken (a "skip to content" link
+  // pointing at the compact-hidden `.center` is deliberately not offered).
   await page.keyboard.press("Tab");
   const first = await page.evaluate(() => {
     const active = document.activeElement;
@@ -101,23 +105,9 @@ test("skip links are the first tab stops and MOVE focus to their landmarks", asy
     .poll(async () => page.evaluate(() => document.activeElement?.id ?? "<none>"))
     .toBe("rooms-nav");
 
-  // The second skip link is the next tab stop and moves focus to main. Its
-  // target is only focusable where it is visible — the desktop layouts; on
-  // compact/narrow the fixed `pane-rooms` state hides the main region (see
-  // the landmark test), so the browser refuses the focus move there.
-  if (testInfo.project.name === "wide" || testInfo.project.name === "medium") {
-    await gotoReadyShell(page);
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Tab");
-    const second = await page.evaluate(
-      () => document.activeElement?.getAttribute("href") ?? "",
-    );
-    expect(second).toBe("#main-content");
-    await page.keyboard.press("Enter");
-    await expect
-      .poll(async () => page.evaluate(() => document.activeElement?.id ?? "<none>"))
-      .toBe("main-content");
-  }
+  // There is exactly one skip link — the next Tab must leave the skip-links
+  // container (no orphaned "skip to content" pointing at a hidden target).
+  await expect(page.locator(".skip-link")).toHaveCount(1);
 });
 
 test("the Diagnostics dialog traps focus, closes on Escape, and returns focus to its opener", async ({ page }) => {
@@ -255,4 +245,26 @@ test("the document title names the destination", async ({ page }) => {
   // the (never-translated) brand. Route-specific titles arrive with the
   // Room Workbench port.
   await expect(page).toHaveTitle("Jeliya");
+});
+
+test.describe("French browser locale", () => {
+  // Playwright's `locale` sets navigator.language, which the web composition
+  // reads (web-sys) and injects as the platform locale. This proves the whole
+  // chain end to end: browser language -> platform_locale -> LocaleState::resolve
+  // -> French catalog (#1) AND <html lang> (#3), with NO stored preference.
+  test.use({ locale: "fr-FR" });
+
+  test("navigator.language drives the French catalog and the document lang", async ({ page }) => {
+    await gotoReadyShell(page);
+
+    // #3: <html lang> tracks the resolved text locale (was permanently "en").
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.lang))
+      .toBe("fr");
+
+    // #1: a fresh fr-FR browser with no stored preference reaches the French
+    // catalog — `Aucun salon` is the sidebar empty state, visible on every
+    // viewport (the center is pane-hidden on compact).
+    await expect(page.locator("#rooms-empty")).toContainText("Aucun salon");
+  });
 });

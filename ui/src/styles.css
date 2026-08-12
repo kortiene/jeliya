@@ -1558,6 +1558,22 @@ button.sender-name:not(:disabled):hover {
   justify-self: start;
 }
 
+/* The Dioxus foundation sidebar footer (#177): the connection-status badge and
+   the Diagnostics disclosure on one bottom-anchored row. Layout only — colour
+   and control styling come from the canonical `.conn-badge`/`.dot`/`.btn`
+   classes it contains, so this defines no divergent token. `margin-top: auto`
+   floors it to the bottom of the sidebar's flex column. Only the Dioxus client
+   uses it; the React shell renders `.identity-footer` instead. */
+.status-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
 .identity-hex {
   flex: none;
   display: inline-flex;

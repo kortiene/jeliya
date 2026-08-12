@@ -32,11 +32,17 @@ pub struct ErrorDisplay;
 
 impl ErrorDisplay {
     /// The friendly copy for a failed room-list read — the foundation's one
-    /// primary error surface.
-    pub fn room_list_failure(strings: &dyn Catalog) -> FriendlyError {
+    /// primary error surface. `terminal` selects copy that does NOT promise a
+    /// recovery the shell will never perform (a refusal / timeout / decode
+    /// failure) versus the retryable-disconnect copy that may.
+    pub fn room_list_failure(strings: &dyn Catalog, terminal: bool) -> FriendlyError {
         FriendlyError {
             title: strings.err_room_list_title().to_string(),
-            message: strings.err_room_list_message().to_string(),
+            message: if terminal {
+                strings.err_room_list_terminal_message().to_string()
+            } else {
+                strings.err_room_list_message().to_string()
+            },
         }
     }
 
@@ -90,17 +96,31 @@ mod tests {
     #[test]
     fn friendly_copy_switches_with_the_catalog() {
         assert_eq!(
-            ErrorDisplay::room_list_failure(&En).title,
+            ErrorDisplay::room_list_failure(&En, false).title,
             "Couldn’t load rooms"
         );
         assert_eq!(
-            ErrorDisplay::room_list_failure(&Fr).title,
+            ErrorDisplay::room_list_failure(&Fr, false).title,
             "Échec du chargement des salons"
         );
         assert_ne!(
             ErrorDisplay::friendly_unknown(&En).message,
             ErrorDisplay::friendly_unknown(&Fr).message
         );
+    }
+
+    #[test]
+    fn terminal_and_retryable_room_list_copy_differ() {
+        // The terminal message must NOT promise a retry the shell won't perform;
+        // the retryable one may. They must be distinct copy in both locales.
+        for cat in [&En as &dyn Catalog, &Fr as &dyn Catalog] {
+            let retryable = ErrorDisplay::room_list_failure(cat, false).message;
+            let terminal = ErrorDisplay::room_list_failure(cat, true).message;
+            assert_ne!(
+                retryable, terminal,
+                "terminal room-list copy must differ from the retryable copy"
+            );
+        }
     }
 
     #[test]

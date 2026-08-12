@@ -81,6 +81,9 @@ impl Catalog for Fr {
     fn err_room_list_message(&self) -> &'static str {
         "La liste des salons ne s’est pas chargée. Jeliya réessaiera au retour de la connexion."
     }
+    fn err_room_list_terminal_message(&self) -> &'static str {
+        "La liste des salons n’a pas pu se charger. Ouvrez Diagnostics pour en savoir plus."
+    }
     fn err_unknown_title(&self) -> &'static str {
         "Une erreur est survenue"
     }
@@ -105,6 +108,11 @@ impl Catalog for Fr {
     }
     fn status_failed(&self) -> &'static str {
         "Déconnecté"
+    }
+
+    fn conn_announcement(&self, status: &str) -> String {
+        // French: a U+00A0 (no-break space) precedes the colon.
+        format!("État de la connexion\u{00a0}: {status}")
     }
 
     fn wire_role_owner(&self) -> &'static str {

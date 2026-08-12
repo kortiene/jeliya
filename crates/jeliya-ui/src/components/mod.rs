@@ -97,16 +97,17 @@ pub fn RoomListItem(room: RoomRow, selected: bool) -> Element {
     }
 }
 
-/// The empty-center placeholder shown when no room is open. Carries the one
-/// visible `<h1>` for the mounted shell (the boot cover carries the other, and
-/// the two never render at once).
+/// The empty-center placeholder shown when no room is open. Its heading is an
+/// `<h2>` under the shell's root `<h1>` (the page title): the centre is a
+/// section of the page, not the page itself, and making it an h1 would give the
+/// mounted shell two h1s on desktop.
 #[component]
 pub fn EmptyCenter() -> Element {
     let strings = use_strings();
     let choose = strings.center_choose_room();
     rsx! {
         div { class: "center-empty", id: "center-empty",
-            Heading { level: 1, class: "center-empty-title".to_string(), "{choose}" }
+            Heading { level: 2, class: "center-empty-title".to_string(), "{choose}" }
         }
     }
 }
@@ -136,10 +137,20 @@ pub fn StatusFooter(state: State, #[props(default)] detail: Option<String>) -> E
     let mut trigger = use_signal(|| None::<MountedEvent>);
 
     rsx! {
+        // `.status-footer` is defined in the canonical `ui/src/styles.css` (a
+        // layout-only rule: bottom-anchored flex row, tokens for spacing/border);
+        // both clients consume that single source, so this is not a divergent
+        // copy (AC-4). The status badge and the Diagnostics control themselves use
+        // canonical `.conn-badge`/`.dot`/`.btn` classes. `#status-footer` is the
+        // e2e/test hook.
         div { class: "status-footer", id: "status-footer",
             StatusIndicator { tone, label: footer }
+            // `btn btn-ghost btn-sm`: the canonical small ghost control the React
+            // shell uses (`btn` base = padding/border, `btn-ghost` = transparent
+            // tone, `btn-sm` = compact). `btn-ghost` alone is only the tone
+            // modifier and renders an unstyled browser-default button.
             button {
-                class: "btn-ghost",
+                class: "btn btn-ghost btn-sm",
                 id: "diagnostics-open",
                 onmounted: move |evt: MountedEvent| trigger.set(Some(evt)),
                 onclick: move |_| open.set(true),

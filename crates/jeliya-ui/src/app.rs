@@ -42,22 +42,39 @@ use crate::PlatformServices;
 /// paired with [`jeliya_api::RoomListOut`]), and renders a one-pane-aware shell
 /// whose class names are the ones `ui/src/styles.css` already styles.
 #[component]
-pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
+pub fn AppRoot(
+    handle: ClientHandle,
+    services: PlatformServices,
+    /// The platform's UI language tag (browser `navigator.language` / OS
+    /// locale), injected at composition (`compose.rs`) — never read from
+    /// `web-sys`/`cfg` in this shared component. `None` when the platform
+    /// exposes none. It is the second input to locale resolution after the
+    /// persisted preferences, so a fresh French-browser user reaches the French
+    /// catalog with no stored preference (Decision-5).
+    #[props(default)]
+    platform_locale: Option<String>,
+) -> Element {
     let mut ui = use_signal(UiState::new);
 
-    // Resolve the two persisted locale preferences through the injected
+    // Resolve the locale from the two persisted preferences AND the injected
+    // platform language, in that precedence (Decision-5, `LocaleState::resolve`):
+    // an explicit stored preference wins, else the platform language, else the
+    // fallback. Reading the persisted prefs goes through the injected
     // `Preferences` capability (#174) — the platform-authority boundary a shared
     // component may read, never `localStorage`/`cfg` directly (Decision-3). The
-    // platform language (browser `navigator.languages` / OS locale) is injected
-    // at composition later, exactly as the live `WsWeb` transport is; until then
-    // it is `None`, so an unset preference resolves to the fallback locale. The
-    // concrete storage keys are the platform contract's `TextLocale` /
-    // `FormattingLocale` (#178 owns their browser namespace).
+    // platform language arrives as a prop from composition (never `web-sys` here),
+    // so a fresh French-browser user with no stored preference reaches the French
+    // catalog. The concrete storage keys are the platform contract's
+    // `TextLocale` / `FormattingLocale` (#178 owns their browser namespace).
     let preferences = services.preferences();
     let text_pref = preferences.get(&PreferenceKey::TextLocale);
     let formatting_pref = preferences.get(&PreferenceKey::FormattingLocale);
-    let initial_locale =
-        LocaleState::resolve(text_pref.as_deref(), formatting_pref.as_deref(), None, None);
+    let initial_locale = LocaleState::resolve(
+        text_pref.as_deref(),
+        formatting_pref.as_deref(),
+        platform_locale.as_deref(),
+        platform_locale.as_deref(),
+    );
 
     // Provide the resolved-locale and live-region contexts to the whole subtree.
     // `use_locale_context` returns the switch signal (a settings surface, a later
@@ -65,6 +82,14 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
     // and the per-render resolution that makes a switch apply with no restart.
     let locale = use_locale_context(initial_locale);
     let announcer = use_announce_context();
+
+    // `<html lang>` is set from the resolved text locale at composition
+    // (`compose::apply_document_lang`, web-sys, web target only), so assistive
+    // tech reads the page in its actual language rather than the static `en` in
+    // index.html (§5.1). It is set there, not here, to keep this shared
+    // component free of `web-sys`/`cfg`; a reactive update on a live locale
+    // switch rides with that later slice (there is no switch UI in this
+    // foundation yet).
 
     use_future(move || {
         let handle = handle.clone();
@@ -120,7 +145,7 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                                 // attempt recorded, or the recovered shell
                                 // shows a stale connection-loss error next
                                 // to successfully loaded data forever.
-                                state.notice = None;
+                                state.clear_notice();
                                 return;
                             }
                             // An accepted call can still die mid-flight when
@@ -177,7 +202,11 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                             }
                             Err(error) => {
                                 let mut state = ui.write();
-                                state.set_notice(diagnostic_notice(&error));
+                                // TERMINAL: this task will not retry, so the
+                                // notice is recorded as terminal and the shell
+                                // shows copy that does not promise a recovery
+                                // that will never come.
+                                state.set_terminal_notice(diagnostic_notice(&error));
                                 // The read has ANSWERED — with a terminal
                                 // error this task will not retry — so the
                                 // loading state must end: leaving
@@ -219,6 +248,37 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
         }
     });
 
+    // Announce a connection PROBLEM or a RECOVERY from one through the same
+    // polite region, so a screen-reader user not on the footer still hears it —
+    // `StatusIndicator` has no live semantics (§5.6). The happy boot path
+    // (`Idle`/`Connecting` → `Ready`) is deliberately NOT announced: reaching
+    // Ready for the first time is not a change worth interrupting a user for,
+    // and announcing it would fight the room-count announcement for the one
+    // region. Only a drop to Interrupted/Failed/Stopped, or a return to Ready
+    // AFTER such a drop, is announced. `Announcer` coalesces, so a state that
+    // re-renders many times still announces once.
+    let mut prev_lifecycle = use_signal(|| Option::<State>::None);
+    use_effect(move || {
+        let state = ui.read().lifecycle;
+        let resolved = locale.read();
+        // `peek`, not a subscribing read: this effect WRITES `prev_lifecycle`,
+        // and subscribing to a signal it also writes would re-trigger itself
+        // forever (an infinite render loop that hangs the app). It must re-run
+        // only when the lifecycle or locale changes.
+        let previous = *prev_lifecycle.peek();
+        prev_lifecycle.set(Some(state));
+        let is_problem = matches!(state, State::Interrupted | State::Failed | State::Stopped);
+        let recovered = state == State::Ready
+            && matches!(
+                previous,
+                Some(State::Interrupted | State::Failed | State::Stopped)
+            );
+        if is_problem || recovered {
+            let word = crate::l10n::wire::status_for(catalog_for(resolved.text), state);
+            announcer.announce(catalog_for(resolved.text).conn_announcement(word));
+        }
+    });
+
     let strings = use_strings();
     let snapshot = ui();
 
@@ -253,22 +313,29 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
 
     // Primary copy for a failed room-list read is friendly catalog text; the raw
     // detail lives only in the Diagnostics dialog (carried via `StatusFooter`).
+    // Terminal failures get copy that does not promise a retry that will never
+    // happen (§5.8 / the "no false recovery promise" rule).
     let room_error = snapshot
         .notice
         .as_ref()
-        .map(|_| ErrorDisplay::room_list_failure(strings).message);
+        .map(|_| ErrorDisplay::room_list_failure(strings, snapshot.notice_terminal).message);
     let rooms_label = strings.rooms_heading().to_string();
     let skip_rooms = strings.skip_to_rooms().to_string();
-    let skip_content = strings.skip_to_content().to_string();
+    let app_name = strings.app_name();
     let rooms_empty = strings.rooms_empty();
     let rooms_loading = strings.rooms_loading();
 
     rsx! {
         // Skip links are the FIRST focusable region on the page and move focus
-        // (not just scroll) to their `tabindex="-1"` landmark targets.
+        // (not just scroll) to their `tabindex="-1"` landmark targets. Only
+        // "skip to rooms" is offered: the rooms list is the foundation's one
+        // meaningful content region and is visible on every viewport. A
+        // "skip to content" link is deliberately NOT offered — the center is an
+        // empty placeholder here AND `pane-rooms` hides it on compact, so its
+        // target would be an unfocusable `display:none` node. The Room Workbench
+        // port adds that link with the real content it points at.
         SkipLinks {
             SkipLink { anchor: "rooms-nav".to_string(), label: skip_rooms }
-            SkipLink { anchor: "main-content".to_string(), label: skip_content }
         }
         // A root pane state is always set (`pane-rooms`), because the shared
         // stylesheet hides `.sidebar`/`.center` on compact viewports unless a
@@ -276,6 +343,13 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
         // system WebView, which is a target platform. The React client sets
         // `app pane-${pane}`; so does this.
         div { class: "app pane-rooms", id: "app-root",
+            // The page's single `<h1>`, at the always-rendered root (never a
+            // pane-hidden region), so EVERY viewport — including compact, where
+            // the `.center` main is `display:none` — exposes exactly one h1 in
+            // the accessibility tree. Visually hidden because the visible
+            // section headings (the nav's accessible name, the centre's h2)
+            // already show on screen; the h1 names the page for assistive tech.
+            h1 { class: "visually-hidden", "{app_name}" }
             // The sidebar is a NAMED navigation landmark, so landmark
             // navigation can distinguish it from the main region and a skip
             // link can move focus into it.
@@ -322,7 +396,10 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                 // Diagnostics disclosure that carries the raw failure detail.
                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.notice.clone() }
             }
-            // The one visible `<main>` landmark, carrying the single `<h1>`.
+            // The `<main>` landmark. Visible on desktop; `pane-rooms` hides it on
+            // compact (a known limitation of this fixed-pane foundation shell —
+            // the pane-navigation slice exposes per-pane main content). It
+            // carries the centre's own h2, under the root h1.
             MainRegion { id: "main-content".to_string(), EmptyCenter {} }
             // The single, stable polite live region for connection/content
             // announcements. Visually hidden, so it does not disturb layout.

@@ -30,6 +30,12 @@ pub struct UiState {
     /// The most recent local-facing notice (a wire error or a local failure),
     /// or `None`.
     pub notice: Option<String>,
+    /// Whether the current [`notice`](Self::notice) is a TERMINAL failure — one
+    /// this component will not retry (a wire refusal, `Timeout`, `QueueFull`, a
+    /// decode failure). A retryable disconnect is `false`. The shell picks
+    /// recovery-promising vs terminal copy from this, so a user is never told
+    /// "we'll retry when the connection returns" for an error that never retries.
+    pub notice_terminal: bool,
 }
 
 impl UiState {
@@ -41,6 +47,7 @@ impl UiState {
             rooms: Vec::new(),
             rooms_loaded: false,
             notice: None,
+            notice_terminal: false,
         }
     }
 
@@ -62,9 +69,25 @@ impl UiState {
         self.rooms_loaded = true;
     }
 
-    /// Record a local-facing notice (a failed read or a wire error).
+    /// Record a RETRYABLE local-facing notice — a transient disconnect the read
+    /// task will retry on the next recovery to `Ready`. The shell may promise
+    /// recovery for this.
     pub fn set_notice(&mut self, notice: impl Into<String>) {
         self.notice = Some(notice.into());
+        self.notice_terminal = false;
+    }
+
+    /// Record a TERMINAL notice — a failure this component will not retry. The
+    /// shell must not promise recovery for it.
+    pub fn set_terminal_notice(&mut self, notice: impl Into<String>) {
+        self.notice = Some(notice.into());
+        self.notice_terminal = true;
+    }
+
+    /// Clear any notice (a successful read recovered the shell).
+    pub fn clear_notice(&mut self) {
+        self.notice = None;
+        self.notice_terminal = false;
     }
 }
 

@@ -110,6 +110,22 @@ test('rule 4: a plain space before % is flagged; U+202F passes', () => {
   assert.ok(!checkCatalogs(clean).some((f) => f.code === 'fr-narrow-space'));
 });
 
+test('rule 4: MISSING French spacing is flagged (not only wrong spacing)', () => {
+  // `Bonjour!` with no space before the mark, and `Bonjour:` with no space
+  // before the colon, must both be caught — the gate hole a wrong-space-only
+  // rule leaves open.
+  const frBang = FR_GOOD.replace('"Bonjour"', '"Bonjour!"');
+  assert.ok(
+    checkCatalogs({ ...catalogs(EN, frBang), allowlist: {} }).some((f) => f.code === 'fr-narrow-space'),
+    'no space before ! must trip fr-narrow-space',
+  );
+  const frColon = FR_GOOD.replace('"Bonjour"', '"Bonjour:"');
+  assert.ok(
+    checkCatalogs({ ...catalogs(EN, frColon), allowlist: {} }).some((f) => f.code === 'fr-no-break-space'),
+    'no space before : must trip fr-no-break-space',
+  );
+});
+
 test('rule 4: a straight apostrophe and three-dot ellipsis are flagged', () => {
   const frBad = FR_GOOD.replace('"Bonjour"', `"l'ami..."`);
   const { en, fr } = catalogs(EN, frBad);
@@ -139,6 +155,28 @@ fn view() -> Element {
   const codes = scanComponentLiterals('x.rs', source).map((f) => f.code);
   assert.ok(codes.includes('rust-text'));
   assert.ok(codes.includes('copy-attribute'));
+});
+
+test('literal scan: a hardcoded component copy PROP is flagged, structural props are not', () => {
+  // The bypass the wrong-set gate left open: `label`/`close_label`/`target` are
+  // component props carrying user-visible copy, so a literal on them belongs in
+  // the catalog; `anchor`/`id`/`class` are structural and must stay clean.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        SkipLink { anchor: "rooms-nav", label: "Skip to rooms" }
+        Dialog { close_label: "Close" }
+        BootScreen { target: "Connecting" }
+    }
+}
+`;
+  const codes = scanComponentLiterals('x.rs', source).map((f) => f.code);
+  assert.equal(codes.filter((c) => c === 'copy-attribute').length, 3, 'label + close_label + target');
+  // The structural `anchor`/`id`/`class` literals must NOT be flagged.
+  assert.ok(
+    !scanComponentLiterals('x.rs', source).some((f) => /anchor|rooms-nav/.test(f.text ?? '')),
+    'structural props stay clean',
+  );
 });
 
 test('literal scan: interpolation, structural attrs, and format! args are clean', () => {

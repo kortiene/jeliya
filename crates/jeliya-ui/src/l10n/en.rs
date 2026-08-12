@@ -81,6 +81,9 @@ impl Catalog for En {
     fn err_room_list_message(&self) -> &'static str {
         "The room list didn’t load. Jeliya will retry when the connection returns."
     }
+    fn err_room_list_terminal_message(&self) -> &'static str {
+        "The room list couldn’t load. Open Diagnostics for details."
+    }
     fn err_unknown_title(&self) -> &'static str {
         "Something went wrong"
     }
@@ -105,6 +108,10 @@ impl Catalog for En {
     }
     fn status_failed(&self) -> &'static str {
         "Disconnected"
+    }
+
+    fn conn_announcement(&self, status: &str) -> String {
+        format!("Connection status: {status}")
     }
 
     fn wire_role_owner(&self) -> &'static str {

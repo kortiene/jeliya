@@ -74,6 +74,15 @@ pub fn WebRoot() -> Element {
     let handle = composition.handle.clone();
     let services = composition.services.clone();
 
+    // Set `<html lang>` once from the resolved locale (web target only). A
+    // `use_hook` runs exactly once on mount — the right place for a one-shot
+    // boot side effect that must not re-run every render.
+    #[cfg(feature = "web")]
+    {
+        let lang_services = composition.services.clone();
+        use_hook(move || apply_document_lang(&lang_services, platform_locale().as_deref()));
+    }
+
     use_future(move || {
         let composition = composition.clone();
         async move {
@@ -96,7 +105,49 @@ pub fn WebRoot() -> Element {
     });
 
     rsx! {
-        AppRoot { handle, services }
+        AppRoot { handle, services, platform_locale: platform_locale() }
+    }
+}
+
+/// The platform UI language tag to seed locale resolution with — the ONE place
+/// a target reads it (Decision-5): the browser's `navigator.language` on the web
+/// target, `None` elsewhere (the M4 desktop/Android bins inject their own OS
+/// locale here later). Confining the `web-sys` read to composition keeps
+/// [`crate::AppRoot`] and every shared component free of `web-sys`/`cfg`.
+fn platform_locale() -> Option<String> {
+    #[cfg(feature = "web")]
+    {
+        web_sys::window()?.navigator().language()
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        None
+    }
+}
+
+/// Set `<html lang>` from the resolved TEXT locale (the same resolution
+/// `AppRoot` performs), web target only. Called once at composition so the
+/// document element reports the page's actual language instead of index.html's
+/// static `en` (#177 §5.1). Confined here — never in a shared component — so no
+/// `web-sys`/`cfg` leaks into `AppRoot`. A reactive re-set on a live locale
+/// switch rides with that later slice; the foundation has no switch UI yet.
+#[cfg(feature = "web")]
+fn apply_document_lang(services: &PlatformServices, platform: Option<&str>) {
+    use jeliya_platform::PreferenceKey;
+    let preferences = services.preferences();
+    let text = preferences.get(&PreferenceKey::TextLocale);
+    let formatting = preferences.get(&PreferenceKey::FormattingLocale);
+    let state = crate::l10n::LocaleState::resolve(
+        text.as_deref(),
+        formatting.as_deref(),
+        platform,
+        platform,
+    );
+    if let Some(element) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+    {
+        let _ = element.set_attribute("lang", state.text.tag());
     }
 }
 
@@ -177,6 +228,6 @@ pub fn NativeRoot() -> Element {
     });
 
     rsx! {
-        AppRoot { handle, services }
+        AppRoot { handle, services, platform_locale: platform_locale() }
     }
 }

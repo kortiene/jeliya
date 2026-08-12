@@ -294,17 +294,34 @@ export function identityExemption(key, text, allowlist = IDENTICAL_ALLOWLIST) {
 /** The French typography contract (docs/glossary-fr.md decision 7; §5.4), spelled
  *  with explicit escapes so a reviewer sees which invisible space each rule
  *  means. Run against the rendered value with slots collapsed to the sentinel. */
+/** Human name for the character just before a typography match, so the
+ *  message says whether it was a wrong space or no space at all. */
+function describePreceding(m) {
+  const i = m.index;
+  if (i === 0) return 'nothing (start of value)';
+  const c = m.input[i - 1];
+  if (c === ' ') return 'a plain space';
+  if (c === ' ') return 'U+00A0';
+  if (c === ' ') return 'U+202F';
+  return `'${c}' (U+${c.codePointAt(0).toString(16).padStart(4, '0')})`;
+}
+
 const TYPOGRAPHY = Object.freeze([
   {
     code: 'fr-narrow-space',
-    pattern: /([  ])([;!?%»])/,
+    // Any of ; ! ? % that is NOT immediately preceded by U+202F — this catches
+    // both the WRONG space (plain / U+00A0) and NO space at all (`Bonjour!`),
+    // since the contract requires exactly U+202F before these marks.
+    pattern: /(?<! )([;!?%])/,
     message: (m) =>
-      `space before "${m[2]}" must be U+202F (narrow no-break space), not ${m[1] === ' ' ? 'a plain space' : 'U+00A0'}`,
+      `"${m[1]}" must be preceded by U+202F (narrow no-break space); found ${describePreceding(m)}`,
   },
   {
     code: 'fr-no-break-space',
-    pattern: /[  ]:/,
-    message: () => 'space before ":" must be U+00A0 (no-break space), not a plain or narrow space',
+    // A colon NOT immediately preceded by U+00A0 — catches wrong space and no
+    // space (`Bonjour:`) alike.
+    pattern: /(?<! ):/,
+    message: (m) => `":" must be preceded by U+00A0 (no-break space); found ${describePreceding(m)}`,
   },
   { code: 'fr-apostrophe', pattern: /'/, message: () => 'straight apostrophe — French copy uses U+2019' },
   { code: 'fr-quotes', pattern: /["“”]/, message: () => 'double quotes — French copy uses guillemets « »' },
@@ -395,7 +412,14 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
 /** Copy-bearing RSX attributes / props. A literal assigned to one of these is
  *  user-visible copy that belongs in the catalog. Structural attributes
  *  (`class`, `id`, `href`, `role`, `tabindex`, `aria-live`, `aria-hidden`, …)
- *  are not listed and so are never flagged. */
+ *  are not listed and so are never flagged.
+ *
+ *  The list covers BOTH HTML attributes and this crate's semantic-primitive
+ *  component PROPS: `label` (SkipLink/NavLandmark/StatusIndicator),
+ *  `close_label` (Dialog), and `target` (BootScreen's already-localized status
+ *  line). A hardcoded literal on any of these is the exact catalog bypass the
+ *  gate exists to prevent — e.g. `SkipLink { label: "Skip to rooms" }` — so it
+ *  must be caught, not just HTML `alt`/`aria-label`. */
 const COPY_ATTRS = new Set([
   'alt',
   'aria-description',
@@ -403,8 +427,11 @@ const COPY_ATTRS = new Set([
   'aria-placeholder',
   'aria-roledescription',
   'aria-valuetext',
+  'close_label',
+  'label',
   'placeholder',
   'summary',
+  'target',
   'title',
 ]);
 

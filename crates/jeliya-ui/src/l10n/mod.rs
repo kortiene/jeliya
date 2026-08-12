@@ -224,8 +224,12 @@ pub trait Catalog {
 
     /// Friendly title for a failed room-list read (primary copy).
     fn err_room_list_title(&self) -> &'static str;
-    /// Friendly body for a failed room-list read (primary copy).
+    /// Friendly body for a RETRYABLE failed room-list read (a transient
+    /// disconnect the shell will retry on recovery) — may promise recovery.
     fn err_room_list_message(&self) -> &'static str;
+    /// Friendly body for a TERMINAL failed room-list read (a refusal / timeout /
+    /// decode failure the shell will NOT retry) — must not promise recovery.
+    fn err_room_list_terminal_message(&self) -> &'static str;
     /// Generic friendly title for an unrecognized error code.
     fn err_unknown_title(&self) -> &'static str;
     /// Generic friendly body for an unrecognized error code.
@@ -243,6 +247,12 @@ pub trait Catalog {
     fn status_stopped(&self) -> &'static str;
     /// Status vocabulary: failed / disconnected with no retry.
     fn status_failed(&self) -> &'static str;
+
+    /// A polite live-region announcement of a connection-lifecycle transition,
+    /// given the already-localized status word. Distinct from the visual footer
+    /// text so a screen-reader user not focused on the footer still hears a
+    /// connection loss or recovery (§5.6).
+    fn conn_announcement(&self, status: &str) -> String;
 
     /// Wire role `owner`.
     fn wire_role_owner(&self) -> &'static str;

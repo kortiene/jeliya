@@ -15,6 +15,18 @@
 //! table is exact and dependency-free. The seam accepts any tag upstream
 //! (resolved to a supported convention in [`super::LocaleState::resolve`]), so
 //! widening later changes this table, not the call sites.
+//!
+//! Scope of THIS foundation slice: number, percent, and byte formatting (the
+//! D4 decision) plus the `Today`/`Yesterday` relative-time vocabulary — exactly
+//! what the shell renders today. The spec's full formatting table (§5.2) also
+//! lists a clock and a general day/date formatter; those are the documented
+//! **extension point of this same seam**, added when the first timeline/event
+//! surface needs them (the slice that also wires the palette hash into avatars).
+//! They are deliberately not pre-built here: a formatter with no caller is a
+//! guessed API, and the EN/FR date/clock conventions (`2 January` vs
+//! `2 janvier`, 12h vs 24h) are decisions that surface belongs to. Adding them
+//! extends `Formats` and this table — it does not redesign the call sites, which
+//! is the property the seam exists to guarantee.
 
 use super::{catalog_for, Catalog, Locale};
 

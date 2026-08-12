@@ -2951,6 +2951,7 @@ dependencies = [
  "jeliya-api",
  "jeliya-client",
  "jeliya-platform",
+ "web-sys",
 ]
 
 [[package]]
