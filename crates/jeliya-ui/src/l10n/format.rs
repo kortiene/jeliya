@@ -228,15 +228,20 @@ impl Formats {
         if delta < 45_000 {
             return strings.format_just_now().to_owned();
         }
-        let mins = (delta + MIN / 2) / MIN;
+        // `saturating_add` for the half-unit rounding bias: the API accepts any
+        // `i64`, and an extreme `elapsed_ms` within half a unit of `i64::MAX` would
+        // otherwise overflow the addition (panic in debug, wrap to a nonsensical
+        // day count in release) before the divide. Saturating keeps the formatter
+        // total for its whole input type.
+        let mins = delta.saturating_add(MIN / 2) / MIN;
         if mins < 60 {
             return strings.format_minutes_ago(&self.count(mins as u64));
         }
-        let hours = (delta + HOUR / 2) / HOUR;
+        let hours = delta.saturating_add(HOUR / 2) / HOUR;
         if hours < 24 {
             return strings.format_hours_ago(&self.count(hours as u64));
         }
-        let days = (delta + DAY / 2) / DAY;
+        let days = delta.saturating_add(DAY / 2) / DAY;
         strings.format_days_ago(&self.count(days as u64))
     }
 }
@@ -545,6 +550,20 @@ mod tests {
         assert_eq!(en.rel_time(-120_000), "just now");
         let fr = Formats::new(Locale::Fr, Locale::Fr);
         assert_eq!(fr.rel_time(-1), "à l\u{2019}instant");
+    }
+
+    #[test]
+    fn rel_time_saturates_at_the_i64_limit_without_panicking() {
+        // An extreme `elapsed_ms` within half a unit of `i64::MAX` must not overflow
+        // the half-unit rounding addition (which would panic in debug / wrap in
+        // release). Red-before: the pre-fix `delta + DAY / 2` panicked here.
+        let en = Formats::new(Locale::En, Locale::En);
+        let rendered = en.rel_time(i64::MAX);
+        assert!(
+            rendered.ends_with("d ago"),
+            "an extreme elapsed renders a (gigantic but finite) days-ago string, never a \
+             panic; got: {rendered}"
+        );
     }
 
     #[test]

@@ -498,6 +498,66 @@ fn view() -> Element {
     !scanComponentLiterals('x.rs', wrapped).some((f) => f.code === 'raw-form-control'),
     'a control inside a Field invocation must not be flagged',
   );
+  // A matching id is fully clean (no raw-form-control AND no id-mismatch).
+  assert.deepEqual(
+    scanComponentLiterals('x.rs', wrapped).filter((f) =>
+      /raw-form-control|form-control-id-mismatch/.test(f.code),
+    ),
+    [],
+    'a control whose id matches the Field must be clean',
+  );
+  // A control inside a Field whose `id` does NOT match the Field's id — the
+  // generated `label[for]` would name nothing — is flagged.
+  const mismatch = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", input { id: "other" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', mismatch).some((f) => f.code === 'form-control-id-mismatch'),
+    'a control whose id mismatches the Field must be flagged',
+  );
+  // A control inside a Field with NO id at all is likewise flagged.
+  const missing = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", input { r#type: "text" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', missing).some((f) => f.code === 'form-control-id-mismatch'),
+    'a control with no id inside a Field must be flagged',
+  );
+});
+
+test('literal scan: an unnamed nav named only in a comment is flagged', () => {
+  // A comment mentioning `aria-label` before the nav's first child must NOT be
+  // read as a real accessible name.
+  const commented = `
+fn view() -> Element {
+    rsx! {
+        nav {
+            // aria-label: supplied later
+            a { href: "#", "Home" }
+        }
+    }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('shell.rs', commented).some(
+      (f) => f.code === 'raw-semantic-element' && /nav/.test(f.message),
+    ),
+    'a nav named only inside a comment must still be flagged as unnamed',
+  );
+  // A real aria-label attribute on the nav is not flagged.
+  const named = `
+fn view() -> Element {
+    rsx! { nav { "aria-label": "Primary", a { href: "#", "Home" } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('shell.rs', named).some((f) => f.code === 'raw-semantic-element'),
+    'a nav with a real aria-label must not be flagged',
+  );
 });
 
 test('literal scan: a reserved attr in a COMMENT is not flagged; a real one is', () => {

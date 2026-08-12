@@ -944,14 +944,37 @@ export function scanComponentLiterals(file, source) {
       if (close !== -1) fieldRanges.push([open, close]);
     }
   }
-  const insideField = (pos) => fieldRanges.some(([open, close]) => pos > open && pos < close);
+  // Extract the FIRST `id: "…"` string-attribute value in `source[from..to)`, or
+  // null. Used both for a Field's own id (props precede its child elements) and
+  // for a control's id.
+  const firstIdAttr = (from, to) => {
+    const match = /\bid\s*:\s*"([^"]*)"/.exec(source.slice(from, to));
+    return match ? match[1] : null;
+  };
   for (const el of RESERVED_FORM_CONTROLS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
-      if (m.index >= limit || !inRsx(m.index) || insideField(m.index)) continue;
+      if (m.index >= limit || !inRsx(m.index)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
-      findings.push(finding(file, line, 'raw-form-control', `raw \`${el}\` must be wrapped by the \`Field\` primitive (§5.6) for label association, not rendered ad-hoc (Decision-6)`, 'literals'));
+      const field = fieldRanges.find(([open, close]) => m.index > open && m.index < close);
+      if (!field) {
+        // Not inside any `Field` → a raw, unlabelled control.
+        findings.push(finding(file, line, 'raw-form-control', `raw \`${el}\` must be wrapped by the \`Field\` primitive (§5.6) for label association, not rendered ad-hoc (Decision-6)`, 'literals'));
+        continue;
+      }
+      // Inside a `Field`, but nesting alone is not enough: the Field renders
+      // `label[for="{id}"]`, so the CONTROL must set the SAME `id` or the label
+      // names nothing. Compare the Field's own `id` (its props precede the child
+      // control) with the control's `id`.
+      const controlOpen = m.index + m[0].length - 1;
+      const controlClose = matchingBrace(skeleton, controlOpen);
+      const controlEnd = controlClose === -1 ? source.length : controlClose;
+      const fieldId = firstIdAttr(field[0], controlOpen);
+      const controlId = firstIdAttr(controlOpen, controlEnd);
+      if (fieldId !== null && controlId !== fieldId) {
+        findings.push(finding(file, line, 'form-control-id-mismatch', `\`${el}\` inside \`Field\` must set \`id: "${fieldId}"\` to match the Field's \`label[for]\`; found \`${controlId === null ? '(no id)' : controlId}\``, 'literals'));
+      }
     }
   }
 
@@ -978,7 +1001,22 @@ export function scanComponentLiterals(file, source) {
           break;
         }
       }
-      const attrs = source.slice(openBrace + 1, attrEnd);
+      // Read the raw SOURCE over the attr span, then BLANK any comment ranges
+      // inside it: a comment like `// aria-label: supplied later` must NOT be read
+      // as a real accessible name (the reserved-attribute path already excludes
+      // comments; the nav path must too).
+      // Read the raw SOURCE over the attr span, then BLANK any comment ranges
+      // inside it: a comment like `// aria-label: supplied later` must NOT be read
+      // as a real accessible name (the reserved-attribute path already excludes
+      // comments; the nav path must too).
+      const attrsStart = openBrace + 1;
+      let attrs = source.slice(attrsStart, attrEnd);
+      for (const { start, end } of comments) {
+        if (end <= attrsStart || start >= attrEnd) continue;
+        const from = Math.max(start, attrsStart) - attrsStart;
+        const to = Math.min(end, attrEnd) - attrsStart;
+        attrs = attrs.slice(0, from) + ' '.repeat(to - from) + attrs.slice(to);
+      }
       if (/aria-label\b|aria-labelledby\b/.test(attrs)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;

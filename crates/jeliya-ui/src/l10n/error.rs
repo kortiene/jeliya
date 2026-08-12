@@ -108,9 +108,15 @@ pub fn scrub_secrets(text: String) -> String {
                 _ => {
                     let is_boundary = |c: char| {
                         if whole_field {
-                            // A whole-field value may contain spaces; stop only at a
-                            // structural delimiter or end of line.
-                            matches!(c, '"' | '\'' | '}' | ',' | ')' | '\n' | '\r')
+                            // A whole-field credential (a scheme-based
+                            // `Authorization`) may contain spaces AND value
+                            // punctuation: a `Digest` field is quote- and
+                            // comma-delimited internally (`username="a", response="b"`),
+                            // so stopping at a `"` or `,` would leave the rest of the
+                            // credential exposed. Redact through the actual FIELD
+                            // terminator — a structural container close or end of
+                            // line/input — never value punctuation.
+                            matches!(c, '}' | ')' | '\n' | '\r')
                         } else {
                             c.is_whitespace() || matches!(c, '"' | '\'' | '}' | ',' | ')')
                         }
@@ -207,5 +213,32 @@ mod tests {
         // Surrounding structure is preserved.
         let s = scrub_secrets(r#"connect failed token="abc123secret" then done"#.to_string());
         assert!(s.contains("connect failed") && s.contains("done"), "{s}");
+    }
+
+    #[test]
+    fn scrub_secrets_redacts_the_whole_digest_authorization_field() {
+        // Digest credentials are quote- AND comma-delimited within ONE field, so a
+        // whole-field redaction that stopped at the first `"`/`,` would leak the
+        // username, nonce, and response. The whole field must be redacted through
+        // its terminator (here, end of input).
+        let s = scrub_secrets(
+            r#"Authorization: Digest username="alice", nonce="n0nce", response="deadbeefcafe""#
+                .to_string(),
+        );
+        assert!(!s.contains("alice"), "digest username leaked: {s}");
+        assert!(!s.contains("n0nce"), "digest nonce leaked: {s}");
+        assert!(!s.contains("deadbeefcafe"), "digest response leaked: {s}");
+        assert!(s.contains("«redacted»"), "no redaction marker: {s}");
+        // A trailing structural close still bounds the redaction.
+        let bounded =
+            scrub_secrets(r#"{Authorization: Digest response="deadbeefcafe"} tail"#.to_string());
+        assert!(
+            !bounded.contains("deadbeefcafe"),
+            "bounded digest leaked: {bounded}"
+        );
+        assert!(
+            bounded.contains("tail"),
+            "structure after `}}` must survive: {bounded}"
+        );
     }
 }
