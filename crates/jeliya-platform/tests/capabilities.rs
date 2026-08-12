@@ -3449,3 +3449,85 @@ fn a_reserved_cleanup_entry_is_restored_on_failure_or_drop() {
     assert_eq!(block_on(services.files().discard_source(&src)), Ok(()));
     assert_eq!(controller.retained_handles(), Default::default());
 }
+
+/// A cleanup that has reserved its entry but not completed is still the service
+/// owning that resource — the reservation is held out of the registry, and
+/// dropping the future puts it back.
+///
+/// This closes the last place a guard could hold an entry out of a registry
+/// without appearing in `retained_handles`: every such guard now participates.
+#[test]
+fn a_pending_cleanup_reservation_counts_as_retained() {
+    let (services, controller) = fake::android();
+    let ct = CancelToken::new();
+
+    // A picked source — the last one, so a false report would read as zero.
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    assert_eq!(controller.retained_handles().sources, 1);
+    block_on(async {
+        let _pending = services.files().discard_source(&src);
+        assert_eq!(
+            controller.retained_handles().sources,
+            1,
+            "a reserved-but-unfinished cleanup still owns the grant"
+        );
+    });
+    assert_eq!(
+        controller.retained_handles().sources,
+        1,
+        "dropping the future restored it"
+    );
+    assert_eq!(block_on(services.files().discard_source(&src)), Ok(()));
+    assert_eq!(controller.retained_handles(), Default::default());
+
+    // The same for a fetched artifact, an export target, and a staged blob.
+    let mut sink =
+        block_on(services.files().share_sink(name("doc.bin"), None, &ct)).expect("share sink");
+    block_on(sink.write(b"payload".to_vec())).expect("chunk accepted");
+    let artifact = block_on(sink.commit()).expect("commit");
+    block_on(async {
+        let _pending = services.files().release_artifact(&artifact);
+        assert_eq!(controller.retained_handles().share_artifacts, 1);
+    });
+    assert_eq!(
+        block_on(services.files().release_artifact(&artifact)),
+        Ok(())
+    );
+
+    controller.arm_export_target(ExportTargetKind::AndroidDocument, "out.bin");
+    let target = settle(
+        &controller,
+        services.files().pick_export_target(name("out.bin"), &ct),
+    )
+    .unwrap()
+    .unwrap();
+    block_on(async {
+        let _pending = services.files().discard_export_target(&target);
+        assert_eq!(controller.retained_handles().export_targets, 1);
+    });
+    assert_eq!(
+        block_on(services.files().discard_export_target(&target)),
+        Ok(())
+    );
+
+    controller.arm_pick("blob.bin", None, b"bytes".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    block_on(async {
+        let _pending = services.files().release_staged(&blob);
+        assert_eq!(controller.retained_handles().staged_blobs, 1);
+    });
+    assert_eq!(block_on(services.files().release_staged(&blob)), Ok(()));
+    assert_eq!(controller.retained_handles(), Default::default());
+}

@@ -105,6 +105,15 @@ struct FakeInner {
     /// them in — otherwise it reports zero while a pending share still owns
     /// file bytes, which is exactly the false clean bill a cleanup test would
     /// believe.
+    ///
+    /// There is one of these per registry, and the rule is uniform: **any guard
+    /// that holds an entry out of its registry registers here for as long as it
+    /// does.** That covers an in-flight share's claim, a staged blob held by an
+    /// open sheet or an open (or merely pending) reader, and a cleanup that has
+    /// reserved its entry but not yet completed — all of which are the service
+    /// still owning the resource.
+    in_flight_sources: Mutex<HashMap<u64, usize>>,
+    in_flight_export_targets: Mutex<HashMap<u64, usize>>,
     in_flight_artifacts: Mutex<HashMap<u64, usize>>,
     in_flight_blobs: Mutex<HashMap<u64, usize>>,
     /// The open scripted dialogs awaiting controller advancement (§6).
@@ -128,6 +137,8 @@ impl FakeInner {
             export_targets: Mutex::new(HashMap::new()),
             staged_blobs: Mutex::new(HashMap::new()),
             share_artifacts: Mutex::new(HashMap::new()),
+            in_flight_sources: Mutex::new(HashMap::new()),
+            in_flight_export_targets: Mutex::new(HashMap::new()),
             in_flight_artifacts: Mutex::new(HashMap::new()),
             in_flight_blobs: Mutex::new(HashMap::new()),
             pending_pick: Mutex::new(None),
@@ -531,6 +542,18 @@ enum ReservedEntry {
     StagedBlob(Arc<Vec<u8>>),
 }
 
+impl ReservedEntry {
+    /// The in-flight map this kind of entry is counted in while reserved.
+    fn in_flight_map<'a>(&self, inner: &'a Arc<FakeInner>) -> &'a Mutex<HashMap<u64, usize>> {
+        match self {
+            ReservedEntry::Source(_) => &inner.in_flight_sources,
+            ReservedEntry::Artifact(_) => &inner.in_flight_artifacts,
+            ReservedEntry::ExportTarget(_) => &inner.in_flight_export_targets,
+            ReservedEntry::StagedBlob(_) => &inner.in_flight_blobs,
+        }
+    }
+}
+
 /// A reserved cleanup entry. Dropped without [`CleanupClaim::consume`] it puts
 /// the entry back, so a scripted failure or a dropped future leaves the handle
 /// exactly as it was and the caller can retry — the whole reason cleanup is
@@ -542,6 +565,18 @@ struct CleanupClaim {
 }
 
 impl CleanupClaim {
+    /// Reserve `entry`, counting it as retained until this claim is consumed or
+    /// dropped: a cleanup that has taken the entry out but not yet completed is
+    /// still the service owning that resource.
+    fn new(inner: &Arc<FakeInner>, token: u64, entry: ReservedEntry) -> Self {
+        FakeInner::hold_enter(entry.in_flight_map(inner), token);
+        Self {
+            inner: Arc::clone(inner),
+            token,
+            entry: Some(entry),
+        }
+    }
+
     /// The cleanup succeeded: the entry is gone for good.
     fn consume(mut self) {
         self.entry = None;
@@ -551,8 +586,15 @@ impl CleanupClaim {
 impl Drop for CleanupClaim {
     fn drop(&mut self) {
         let Some(entry) = self.entry.take() else {
+            // Consumed: the entry is gone, so the hold ends with it. `consume`
+            // cleared the payload but the count is still ours to release.
+            FakeInner::hold_exit(&self.inner.in_flight_sources, self.token);
+            FakeInner::hold_exit(&self.inner.in_flight_export_targets, self.token);
+            FakeInner::hold_exit(&self.inner.in_flight_artifacts, self.token);
+            FakeInner::hold_exit(&self.inner.in_flight_blobs, self.token);
             return;
         };
+        FakeInner::hold_exit(entry.in_flight_map(&self.inner), self.token);
         // Best-effort under poisoning, as everywhere in Drop.
         match entry {
             ReservedEntry::Source(body) => {
@@ -826,13 +868,16 @@ impl FakeController {
     /// exactly like a clean abort.
     pub fn retained_handles(&self) -> RetainedHandles {
         RetainedHandles {
-            sources: self.inner.sources.lock().expect("sources poisoned").len(),
-            export_targets: self
-                .inner
-                .export_targets
-                .lock()
-                .expect("export targets poisoned")
-                .len(),
+            sources: union_len(
+                &self.inner.sources,
+                &self.inner.in_flight_sources,
+                "sources poisoned",
+            ),
+            export_targets: union_len(
+                &self.inner.export_targets,
+                &self.inner.in_flight_export_targets,
+                "export targets poisoned",
+            ),
             staged_blobs: union_len(
                 &self.inner.staged_blobs,
                 &self.inner.in_flight_blobs,
@@ -1043,11 +1088,7 @@ impl Files for FakePlatform {
         let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
         };
-        let claim = CleanupClaim {
-            inner: inner.clone(),
-            token: token.get(),
-            entry: Some(ReservedEntry::Source(entry)),
-        };
+        let claim = CleanupClaim::new(&inner, token.get(), ReservedEntry::Source(entry));
         // Bound at CALL time, like every other scripted outcome. A failed
         // cleanup drops the claim, which puts the entry back so the caller can
         // retry.
@@ -1080,11 +1121,7 @@ impl Files for FakePlatform {
         let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
         };
-        let claim = CleanupClaim {
-            inner: inner.clone(),
-            token: token.get(),
-            entry: Some(ReservedEntry::Artifact(entry)),
-        };
+        let claim = CleanupClaim::new(&inner, token.get(), ReservedEntry::Artifact(entry));
         // Bound at CALL time, like every other scripted outcome. A failed
         // cleanup drops the claim, which puts the entry back so the caller can
         // retry.
@@ -1117,11 +1154,7 @@ impl Files for FakePlatform {
         let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
         };
-        let claim = CleanupClaim {
-            inner: inner.clone(),
-            token: token.get(),
-            entry: Some(ReservedEntry::ExportTarget(entry)),
-        };
+        let claim = CleanupClaim::new(&inner, token.get(), ReservedEntry::ExportTarget(entry));
         // Bound at CALL time, like every other scripted outcome. A failed
         // cleanup drops the claim, which puts the entry back so the caller can
         // retry.
@@ -1301,11 +1334,7 @@ impl Files for FakePlatform {
         let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
         };
-        let claim = CleanupClaim {
-            inner: inner.clone(),
-            token: token.get(),
-            entry: Some(ReservedEntry::StagedBlob(entry)),
-        };
+        let claim = CleanupClaim::new(&inner, token.get(), ReservedEntry::StagedBlob(entry));
         // Bound at CALL time, like every other scripted outcome. A failed
         // cleanup drops the claim, which puts the entry back so the caller can
         // retry.
