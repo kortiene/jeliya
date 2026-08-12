@@ -224,21 +224,19 @@ impl Sidecar {
         }
         let pid = self.portfile.pid;
         let port = self.portfile.port;
+        // The whole adopted stop is time-boxed by `teardown` — RPC, portfile and
+        // lock probes, and all polling stages included. Start the deadline FIRST so
+        // every blocking stage counts against it; the metadata probes below touch a
+        // possibly-stalled mount and must not run unbounded before the deadline even
+        // exists.
+        let deadline = validate::deadline_from(self.timeouts.teardown);
         // Snapshot portfile presence BEFORE the RPC: the daemon removes
         // `daemon.json` as the LAST step of graceful shutdown, so a present→absent
         // transition is the completion proof below. If it is ALREADY absent here
         // (a cleanup tool removed it, or a prior partial shutdown), its removal
-        // proves nothing — see the completion check.
-        let portfile_present_before = matches!(
-            crate::portfile::portfile_path(&self.data_dir).try_exists(),
-            Ok(true)
-        );
-        // The whole adopted stop is time-boxed by `teardown` — RPC, lock snapshot,
-        // and all polling stages included. Start the deadline FIRST so every
-        // blocking stage counts against it; in particular the lock snapshot below
-        // touches a possibly-stalled mount and must not run unbounded before the
-        // deadline even exists.
-        let deadline = validate::deadline_from(self.timeouts.teardown);
+        // proves nothing — see the completion check. BOUNDED and OFF the executor
+        // (`try_exists` is a `stat` that blocks on a stalled mount).
+        let portfile_present_before = validate::portfile_present(&self.data_dir, deadline).await;
         // Snapshot a HELD handle to the current `daemon.lock` inode BEFORE the RPC,
         // so the completion check (below) follows the original inode the daemon
         // holds even if a cleanup tool unlinks/replaces the path during shutdown.
@@ -246,7 +244,7 @@ impl Sidecar {
         // indefinitely): a snapshot that is absent, the wrong inode (unlink/replace),
         // or times out all yield `None`, and the completion gate then fails closed
         // rather than reading a non-daemon lock's release as the daemon's exit.
-        let mut lock_before = validate::snapshot_held_lock(&self.data_dir, deadline).await;
+        let lock_before = validate::snapshot_held_lock(&self.data_dir, deadline).await;
         // Ask the daemon to shut itself down over the caller's RPC, bounded by the
         // budget REMAINING after the snapshot so its time counts against `teardown`,
         // not on top of it. A caller-supplied invoker whose transport stalls must
@@ -301,7 +299,7 @@ impl Sidecar {
         // captured: `wait_lock_handle_released` fails closed and we report
         // `ShutdownTimedOut` rather than a premature `Graceful`.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if validate::wait_lock_handle_released(lock_before.as_mut(), remaining).await {
+        if validate::wait_lock_handle_released(lock_before, remaining).await {
             Ok(Teardown::Graceful)
         } else {
             Err(SupervisorError::ShutdownTimedOut { pid })

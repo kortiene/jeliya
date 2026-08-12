@@ -291,30 +291,43 @@ pub(crate) async fn wait_health_dark(
 /// state and holding its lock). Returns `true` if it was removed in time.
 pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> bool {
     let path = portfile::portfile_path(data_dir);
-    let deadline = deadline_from(budget);
-    loop {
-        // Check the DEADLINE before accepting absence, every iteration: the
-        // clamped sleep can wake at `deadline + ε`, and accepting a removal
-        // observed only then would report `Graceful` for cleanup that finished
-        // outside the budget. Past the deadline, refuse regardless of absence.
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return false;
+    // Poll OFF the async executor: `try_exists` is a pathname `stat`, which blocks
+    // indefinitely on a stalled NFS/FUSE mount, so an inline poll could hang an
+    // executor worker past `budget`. The blocking task polls with its own deadline;
+    // the outer `timeout` bounds the CALLER even if a single `stat` wedges.
+    let poll = tokio::task::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            // Check the DEADLINE before accepting absence: accepting a removal
+            // observed only past it would report `Graceful` for cleanup that
+            // finished outside the budget.
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            // `try_exists`, not `Path::exists`: the latter maps a stat ERROR (an
+            // unreadable dir mid-shutdown) to `false` — the same as genuine absence
+            // — which would report cleanup complete when it may not be. Only a
+            // confirmed `Ok(false)` counts as removed; a stat error keeps waiting.
+            if matches!(path.try_exists(), Ok(false)) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        // `try_exists`, not `Path::exists`: the latter maps a stat ERROR (an
-        // unreadable dir mid-shutdown) to `false` — the same as genuine absence —
-        // which would report cleanup complete when it may not be. Only a
-        // confirmed `Ok(false)` (the file is really gone) — observed WITHIN the
-        // budget — counts as removed; a stat error keeps waiting and, on timeout,
-        // yields the honest `ShutdownTimedOut`.
-        if matches!(path.try_exists(), Ok(false)) {
-            return true;
-        }
-        // Clamp the sleep to the budget REMAINING (mirroring `wait_health_dark`)
-        // so a fixed 100 ms sleep cannot overrun a short/nearly-exhausted deadline.
-        let remaining = deadline.saturating_duration_since(now);
-        tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
-    }
+    });
+    matches!(tokio::time::timeout(budget, poll).await, Ok(Ok(true)))
+}
+
+/// A bounded, off-executor "is the portfile present?" probe. `try_exists` is a
+/// pathname `stat` that blocks on a stalled NFS/FUSE mount, so it runs on
+/// `spawn_blocking` capped at `deadline`. Only a confirmed `Ok(true)` observed
+/// WITHIN the budget counts as present; a timeout, stat error, or genuine absence
+/// all return `false` — the fail-closed reading `stop_adopted` wants (a portfile
+/// whose presence cannot be confirmed cannot anchor the present→absent transition).
+pub(crate) async fn portfile_present(data_dir: &Path, deadline: tokio::time::Instant) -> bool {
+    let path = portfile::portfile_path(data_dir);
+    let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let probe = tokio::task::spawn_blocking(move || matches!(path.try_exists(), Ok(true)));
+    matches!(tokio::time::timeout(budget, probe).await, Ok(Ok(true)))
 }
 
 /// The daemon's advisory lock file name, matching `jeliyad`'s `LOCKFILE_NAME`.
@@ -403,26 +416,40 @@ pub(crate) async fn snapshot_held_lock(
 /// `Graceful` while the daemon may still be flushing logs under the unlinked lock
 /// inode; the honest verdict is "unproven", which the caller maps to
 /// `ShutdownTimedOut`.
+///
+/// Takes the handle BY VALUE and polls OFF the async executor: on an NFS/FUSE
+/// filesystem whose lock manager stalls, even a non-blocking `flock(LOCK_NB)`
+/// blocks in the syscall (its "non-blocking" is about lock CONTENTION, not a
+/// stalled server), so an inline poll could hang the executor past `budget`. The
+/// blocking task owns the handle and polls with its own deadline; the outer
+/// `timeout` bounds the CALLER even if a single probe wedges mid-syscall (the
+/// blocking thread may leak, but `stop_adopted` returns within `budget`).
 pub(crate) async fn wait_lock_handle_released(
-    handle: Option<&mut fd_lock::RwLock<std::fs::File>>,
+    handle: Option<fd_lock::RwLock<std::fs::File>>,
     budget: Duration,
 ) -> bool {
-    let Some(lock) = handle else {
+    let Some(mut lock) = handle else {
         return false;
     };
-    let deadline = deadline_from(budget);
-    loop {
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return false;
+    let poll = tokio::task::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            // A successful exclusive lock means the daemon released it; the guard
+            // drops immediately, so the brief hold does not block the next start.
+            if lock.try_write().is_ok() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
-        // A successful exclusive lock means the daemon released it; the guard is
-        // dropped immediately, so the brief hold does not block the next start.
-        if lock.try_write().is_ok() {
-            return true;
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        tokio::time::sleep(Duration::from_millis(50).min(remaining)).await;
+    });
+    match tokio::time::timeout(budget, poll).await {
+        Ok(Ok(released)) => released,
+        // A probe wedged on a stalled lock manager, or the task panicked — fail
+        // closed (unproven release → the caller reports `ShutdownTimedOut`).
+        _ => false,
     }
 }
 
@@ -745,6 +772,28 @@ mod tests {
         assert!(result, "must observe the portfile removal within budget");
     }
 
+    /// `portfile_present` confirms presence/absence bounded and OFF the executor
+    /// (the pre-RPC snapshot for `stop_adopted`). Only a confirmed present portfile
+    /// is `true`; absence is `false`.
+    #[test]
+    fn portfile_present_confirms_presence_and_absence_bounded() {
+        let dir = tmp_dir("pf-present");
+        write_portfile(
+            &dir,
+            r#"{"pid":1,"port":9,"data_dir":"/d","auth_token":"t"}"#,
+        );
+        let probe = |dir: &std::path::Path| {
+            rt().block_on(async {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                portfile_present(dir, deadline).await
+            })
+        };
+        assert!(probe(&dir), "a present portfile is confirmed present");
+        std::fs::remove_file(dir.join("daemon.json")).unwrap();
+        assert!(!probe(&dir), "an absent portfile is not present");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// `wait_portfile_removed` returns false when the portfile is never removed
     /// within the budget — so `stop_adopted` surfaces `ShutdownTimedOut` rather
     /// than a premature `Graceful` when cleanup stalls (the P2's honest verdict).
@@ -815,13 +864,18 @@ mod tests {
         let mut daemon_lock = fd_lock::RwLock::new(file);
         let guard = daemon_lock.try_write().expect("the daemon holds the lock");
 
-        // A handle snapshotted as `stop_adopted` does before the RPC.
-        let mut handle = open_lock_handle(&dir).expect("open the lock handle");
+        // `wait_lock_handle_released` takes the handle BY VALUE (it polls off the
+        // executor), so open a DISTINCT snapshot handle per phase — all BEFORE any
+        // unlink, so every one refers to the original held inode, exactly as
+        // `stop_adopted`'s single pre-RPC snapshot does.
+        let held = open_lock_handle(&dir).expect("open the lock handle");
+        let across_unlink = open_lock_handle(&dir).expect("open the lock handle");
+        let after_release = open_lock_handle(&dir).expect("open the lock handle");
 
         // While HELD, a short budget times out (not released).
         assert!(
             !rt().block_on(wait_lock_handle_released(
-                Some(&mut handle),
+                Some(held),
                 Duration::from_millis(200)
             )),
             "a held lock must not be reported released"
@@ -832,7 +886,7 @@ mod tests {
         std::fs::remove_file(&lock_path).ok();
         assert!(
             !rt().block_on(wait_lock_handle_released(
-                Some(&mut handle),
+                Some(across_unlink),
                 Duration::from_millis(200)
             )),
             "unlinking daemon.lock must not fool the completion check"
@@ -841,7 +895,7 @@ mod tests {
         // Release → observed as released.
         drop(guard);
         let freed = rt().block_on(wait_lock_handle_released(
-            Some(&mut handle),
+            Some(after_release),
             Duration::from_secs(2),
         ));
         drop(daemon_lock);

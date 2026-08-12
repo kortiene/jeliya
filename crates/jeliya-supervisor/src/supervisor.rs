@@ -315,13 +315,21 @@ impl Supervisor {
                     match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
                         Ok(Ok(status)) if !status.success() => {
                             if let Some(pgid) = leader_pgid {
-                                let _ = process::kill_reaped_process_group(pgid).await;
+                                // Propagate a verified group-cleanup failure: a
+                                // descendant surviving SIGKILL (still holding the
+                                // data-dir lock) must not be masked by `Wedged`/the
+                                // spawn error, which invite a retry that would wedge.
+                                process::kill_reaped_process_group(pgid).await?;
                             }
                             return Err(SupervisorError::Wedged);
                         }
                         Ok(Ok(_)) => {
                             if let Some(pgid) = leader_pgid {
-                                let _ = process::kill_reaped_process_group(pgid).await;
+                                // Propagate a verified group-cleanup failure: a
+                                // descendant surviving SIGKILL (still holding the
+                                // data-dir lock) must not be masked by `Wedged`/the
+                                // spawn error, which invite a retry that would wedge.
+                                process::kill_reaped_process_group(pgid).await?;
                             }
                             return Err(e);
                         }
@@ -384,7 +392,11 @@ impl Supervisor {
                             // we do not return over a live subtree, but the primary
                             // error stands.
                             if let Some(pgid) = leader_pgid {
-                                let _ = process::kill_reaped_process_group(pgid).await;
+                                // Propagate a verified group-cleanup failure: a
+                                // descendant surviving SIGKILL (still holding the
+                                // data-dir lock) must not be masked by `Wedged`/the
+                                // spawn error, which invite a retry that would wedge.
+                                process::kill_reaped_process_group(pgid).await?;
                             }
                             return Err(SupervisorError::Wedged);
                         }
