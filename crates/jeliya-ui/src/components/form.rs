@@ -37,6 +37,10 @@ pub fn Field(
             label { r#for: "{id}",
                 "{label}"
                 if let Some(optional_label) = optional_label {
+                    // An explicit space so the visual AND accessible label read
+                    // `Email (optional)`, not `Email(optional)` — the text node and
+                    // the marker span are otherwise adjacent with no whitespace.
+                    " "
                     span { class: "field-optional", "{optional_label}" }
                 }
             }

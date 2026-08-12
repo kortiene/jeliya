@@ -129,19 +129,33 @@ pub fn WebRoot() -> Element {
 /// crash the app rather than render a cover. The BootScreen structure the a11y
 /// matrix sweeps is identical across cover states (only the label differs), so
 /// `failed` (terminal) + `connecting` (initial) cover the branch.
+/// The `localStorage` marker an e2e harness sets (via `addInitScript`, before any
+/// app script runs) to arm the `?boot=<state>` fixture. Shared verbatim with
+/// `e2e/a11y-harness.ts`; changing it here means changing it there.
+#[cfg(feature = "web")]
+const BOOT_FIXTURE_MARKER: &str = "jeliya-e2e-boot-fixture";
+
 fn boot_fixture_state() -> Option<State> {
     #[cfg(feature = "web")]
     {
-        let location = web_sys::window()?.location();
-        // DEV/TEST ONLY: the fixture must never activate in production, or a shared
-        // link / redirect / future product query parameter carrying `?boot=…` could
-        // disable the app. Gate it on a LOOPBACK host — the e2e serves from
-        // 127.0.0.1, a real deployment never does.
-        let host = location.hostname().ok()?;
-        if host != "127.0.0.1" && host != "localhost" && host != "[::1]" {
+        let window = web_sys::window()?;
+        // DEV/TEST ONLY, gated on an EXPLICIT TEST MARKER — never the hostname. The
+        // packaged daemon serves this SAME production UI from `127.0.0.1`
+        // (`crates/jeliyad/src/serve.rs`), so a loopback-host gate would leave the
+        // fixture live in the real app, where a shared or retained `?boot=…` link
+        // could disable it. A `localStorage` marker only an e2e harness sets cannot
+        // be forged by a plain URL, so production — loopback or not — never arms it.
+        let armed = window
+            .local_storage()
+            .ok()
+            .flatten()
+            .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+            .as_deref()
+            == Some("1");
+        if !armed {
             return None;
         }
-        let search = location.search().ok()?;
+        let search = window.location().search().ok()?;
         // A tiny hand-parse (no url crate): find `boot=` in the query string.
         let value = search
             .trim_start_matches('?')

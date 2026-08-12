@@ -19,8 +19,9 @@
 //! Scope of THIS foundation slice: the full §4-D4 EN/FR convention table —
 //! number, percent, and byte formatting, the `Today`/`Yesterday` day-divider
 //! vocabulary, `clock` (English 12-hour / French 24-hour), `date` (day +
-//! localized month name, `2 January` / `2 janvier`), and `rel_time` (relative
-//! age, `just now` / `{n}m ago` / `il y a {n} min`). Only broad CLDR coverage for
+//! localized month name + year, `2 January 2026` / `2 janvier 2026`), and
+//! `rel_time` (relative age, `just now` / `{n}m ago` / `il y a {n} min`). Only
+//! broad CLDR coverage for
 //! an arbitrary THIRD formatting locale (e.g. `de-CH`, which React got free from
 //! `Intl`) is still deferred — to a product-surface slice and its `icu4x`
 //! dependency decision (spec §14 Q2). The seam accepts any tag upstream, so
@@ -99,6 +100,13 @@ impl Formats {
     /// clients. Rust's `{}` yields that shortest decimal; [`round_decimal_string`]
     /// then rounds its DIGITS, so no binary representation error creeps in.
     pub fn decimal(self, value: f64, frac_digits: usize) -> String {
+        // A non-finite value is surfaced as VISIBLY INVALID (matching
+        // `Intl.NumberFormat`: `NaN` / `∞` / `-∞`), never fabricated into a real
+        // `0` measurement — `percent(f64::NAN, 1)` must read `NaN%`, not `0.0%`,
+        // so a progress surface shows "unavailable" rather than fake progress.
+        if !value.is_finite() {
+            return non_finite_marker(value).to_owned();
+        }
         let conventions = self.conventions();
         let negative = value.is_sign_negative() && value != 0.0;
         let (int_digits, frac) = round_decimal_string(value.abs(), frac_digits);
@@ -178,14 +186,19 @@ impl Formats {
         }
     }
 
-    /// A day + month in the day-month ORDER both supported locales use (§4-D4):
-    /// `2 January` / `2 janvier`. The month NAME is vocabulary (text locale); the
-    /// day-month order is the shared convention. An out-of-range month has no name
+    /// An absolute date — day, month, and YEAR (§4-D4): `2 January 2026` /
+    /// `2 janvier 2026`. The month NAME is vocabulary (text locale); the day-month
+    /// order is the shared convention. The YEAR is INCLUDED so events from
+    /// different years are distinguishable (the retiring `dayLabel`'s absolute-date
+    /// path renders `year: 'numeric'`); it is never grouped (`2026`, not `2,026`),
+    /// matching `Intl`. Full month names are the accepted foundation simplification
+    /// versus `Intl`'s abbreviated months (broad CLDR coverage is the deferred
+    /// icu4x slice, §14 Q2). An out-of-range month has no name
     /// (`Catalog::month_name` returns `None`), so it degrades to the bare day
     /// rather than panicking — callers pass a validated 1..=12.
-    pub fn date(self, day: u32, month: u32) -> String {
+    pub fn date(self, day: u32, month: u32, year: i32) -> String {
         match self.strings().month_name(month) {
-            Some(name) => format!("{day} {name}"),
+            Some(name) => format!("{day} {name} {year}"),
             None => day.to_string(),
         }
     }
@@ -235,6 +248,19 @@ impl Formats {
 /// round-trips to the `f64`, which is what `Intl.NumberFormat` rounds — rather
 /// than a binary `* 10^n` scale, so inputs like `1.005` (stored as `1.00499…`)
 /// round to `1.01`, matching the other client instead of drifting to `1.00`.
+/// The visibly-invalid rendering of a NON-finite `f64`, matching
+/// `Intl.NumberFormat` (`NaN` / `∞` / `-∞`) and locale-independent. Used so the
+/// seam never converts an unavailable measurement into a real `0`.
+fn non_finite_marker(value: f64) -> &'static str {
+    if value.is_nan() {
+        "NaN"
+    } else if value > 0.0 {
+        "∞"
+    } else {
+        "-∞"
+    }
+}
+
 fn round_decimal_string(value: f64, places: usize) -> (String, String) {
     // `{}` gives the shortest round-tripping decimal, never scientific notation
     // for the finite magnitudes this seam formats. Guard non-finite defensively.
@@ -381,6 +407,22 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_values_render_as_visibly_invalid_not_zero() {
+        // A non-finite value must NOT be fabricated into a real `0` measurement:
+        // it renders visibly invalid (matching `Intl.NumberFormat`).
+        let en = Formats::new(Locale::En, Locale::En);
+        assert_eq!(en.decimal(f64::NAN, 2), "NaN");
+        assert_eq!(en.decimal(f64::INFINITY, 2), "\u{221e}");
+        assert_eq!(en.decimal(f64::NEG_INFINITY, 2), "-\u{221e}");
+        // `percent` shares the path — a NaN progress reads `NaN%`, never `0.0%`.
+        assert_eq!(en.percent(f64::NAN, 1), "NaN%");
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::Fr).percent(f64::INFINITY, 0),
+            "\u{221e}\u{202f}%"
+        );
+    }
+
+    #[test]
     fn bytes_round_half_away_matching_the_other_client() {
         // 2_359_296 bytes is EXACTLY 2.25 MiB; the React client shows `2.3 MB`,
         // so this port must too (ties-to-even would show `2.2 MB`).
@@ -446,18 +488,35 @@ mod tests {
 
     #[test]
     fn date_uses_the_text_locale_month_name_in_day_month_order() {
-        assert_eq!(Formats::new(Locale::En, Locale::En).date(2, 1), "2 January");
-        assert_eq!(Formats::new(Locale::Fr, Locale::Fr).date(2, 1), "2 janvier");
-        // The month NAME follows the TEXT locale; the day-month order is shared.
-        assert_eq!(Formats::new(Locale::Fr, Locale::En).date(14, 8), "14 août");
         assert_eq!(
-            Formats::new(Locale::En, Locale::Fr).date(14, 8),
-            "14 August"
+            Formats::new(Locale::En, Locale::En).date(2, 1, 2026),
+            "2 January 2026"
+        );
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::Fr).date(2, 1, 2026),
+            "2 janvier 2026"
+        );
+        // The year is NOT grouped (`2026`, not `2,026`) even under fr grouping.
+        assert_eq!(
+            Formats::new(Locale::En, Locale::Fr).date(2, 1, 2026),
+            "2 January 2026"
+        );
+        // The month NAME follows the TEXT locale; the day-month order is shared.
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::En).date(14, 8, 2026),
+            "14 août 2026"
+        );
+        assert_eq!(
+            Formats::new(Locale::En, Locale::Fr).date(14, 8, 2026),
+            "14 August 2026"
         );
         // An out-of-range month has no name; the seam degrades to the bare day
         // instead of panicking or emitting a trailing space.
-        assert_eq!(Formats::new(Locale::En, Locale::En).date(14, 0), "14");
-        assert_eq!(Formats::new(Locale::En, Locale::En).date(14, 13), "14");
+        assert_eq!(Formats::new(Locale::En, Locale::En).date(14, 0, 2026), "14");
+        assert_eq!(
+            Formats::new(Locale::En, Locale::En).date(14, 13, 2026),
+            "14"
+        );
     }
 
     #[test]

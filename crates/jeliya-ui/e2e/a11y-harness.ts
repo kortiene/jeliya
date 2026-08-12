@@ -10,6 +10,7 @@ import { expect, type Page, type TestInfo } from "@playwright/test";
 export interface NetworkGuard {
   webSockets: string[];
   apiRequests: string[];
+  offOrigin: string[];
 }
 
 export async function installNoNetworkGuard(
@@ -23,7 +24,7 @@ export async function installNoNetworkGuard(
   // emulation below is honored. The a11y specs assert `matchMedia` so a
   // future Playwright bump that changes this stays visible.
   await page.emulateMedia({ reducedMotion: "reduce" });
-  const guard: NetworkGuard = { webSockets: [], apiRequests: [] };
+  const guard: NetworkGuard = { webSockets: [], apiRequests: [], offOrigin: [] };
   const origin = baseURL === undefined ? undefined : new URL(baseURL).origin;
   await page.route("**/*", (route) => {
     const url = new URL(route.request().url());
@@ -38,6 +39,11 @@ export async function installNoNetworkGuard(
       }
       return route.continue();
     }
+    // An OFF-ORIGIN request (telemetry, a remote font, a CDN asset). Its failure
+    // may not break rendering, so aborting silently would let the suite stay
+    // green while the artifact is no longer network-silent. RECORD it so
+    // `expectCleanNetwork` fails on any external attempt.
+    guard.offOrigin.push(url.href);
     return route.abort();
   });
   await page.routeWebSocket(/.*/, () => {
@@ -57,6 +63,10 @@ export function expectCleanNetwork(guard: NetworkGuard): void {
   expect(
     guard.apiRequests,
     "the offline a11y suite must see no API-shaped same-origin traffic (mock boundary)",
+  ).toEqual([]);
+  expect(
+    guard.offOrigin,
+    "the offline a11y suite must attempt no off-origin requests (network-silent artifact)",
   ).toEqual([]);
 }
 
@@ -81,6 +91,14 @@ export async function gotoReadyShell(page: Page): Promise<void> {
 // the shell is NOT — so the boot branch, unreachable once the mock settles, can
 // be axe-swept.
 export async function gotoBootCover(page: Page, state: string): Promise<void> {
+  // The fixture activates ONLY on this explicit test marker — never the hostname
+  // (the packaged daemon serves the production UI from 127.0.0.1 too, so a
+  // hostname gate would leave `?boot=` live in the real app). Set it before any
+  // app script runs; the marker string is shared verbatim with
+  // `BOOT_FIXTURE_MARKER` in `src/compose.rs`.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("jeliya-e2e-boot-fixture", "1");
+  });
   await page.goto(`/?boot=${state}`);
   await expect(page.locator("#boot-screen")).toBeVisible();
   await expect(page.locator("#app-root")).not.toBeAttached();
