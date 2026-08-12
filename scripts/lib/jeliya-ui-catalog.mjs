@@ -1013,6 +1013,26 @@ export function scanComponentLiterals(file, source) {
       if (fieldId !== null && controlId !== fieldId) {
         findings.push(finding(file, line, 'form-control-id-mismatch', `\`${el}\` inside \`Field\` must set \`id\` to match the Field's \`id\` (\`${fieldId}\`) so its \`label[for]\` names it; found \`${controlId === null ? '(no id)' : controlId}\``, 'literals'));
       }
+      // When the Field supplies a HINT, the hint span is rendered OUTSIDE the
+      // label with id `{id}-hint`, so the control must reference it via
+      // `aria-describedby` or the hint is never exposed to assistive tech (§5.6).
+      // Verified exactly for a LITERAL Field id; an expression id is checked by
+      // attribute PRESENCE only (its `{id}-hint` value cannot be compared statically).
+      const fieldProps = source.slice(field[0], controlOpen);
+      const hasHint = /\bhint\s*:\s*(?!None\b)/.test(fieldProps);
+      if (fieldId !== null && hasHint) {
+        const controlAttrs = source.slice(controlOpen, controlEnd);
+        const describedby = /"aria-describedby"\s*:\s*"([^"]*)"/.exec(controlAttrs);
+        const literalId = /^"([^"]*)"$/.exec(fieldId);
+        if (literalId) {
+          const expected = `${literalId[1]}-hint`;
+          if (!describedby || describedby[1] !== expected) {
+            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby: "${expected}"\` so the hint is exposed as a description; found \`${describedby ? `"${describedby[1]}"` : '(none)'}\``, 'literals'));
+          }
+        } else if (!describedby) {
+          findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby\` referencing the Field's \`{id}-hint\` so the hint is exposed as a description`, 'literals'));
+        }
+      }
     }
   }
 

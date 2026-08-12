@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 import {
   expectCleanNetwork,
@@ -193,35 +193,28 @@ test("the connection live region announces the settled room count exactly once",
   ).toBe(1);
 });
 
-test("visible interactive targets meet the compact target-size floors", async ({ page }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "compact" && testInfo.project.name !== "narrow",
-    "target-size floors are the compact/narrow contract (§7)",
-  );
-  await gotoReadyShell(page);
-
-  // Hit-test the real geometry of every visible interactive control (WCAG
-  // 2.5.8): at least 24×24 always; a target under 44px in either dimension
-  // must keep a >=24px GAP from its neighbor's boundary on at least one axis
-  // (the spacing exception, measured boundary-to-boundary as the retiring check
-  // does — not center distance). Skip links are visually hidden until focused, so
-  // only currently-visible controls are measured — measuring rendered
-  // geometry, not CSS declarations.
+// Hit-test the real geometry of every visible interactive control (WCAG 2.5.8):
+// at least 24×24 always; a target under 44px in either dimension must keep a
+// >=24px GAP from its neighbor's boundary on at least one axis (the spacing
+// exception, measured boundary-to-boundary as the retiring check does — not
+// center distance). Skip links are visually hidden until focused, so only
+// currently-visible controls are measured — rendered geometry, not CSS.
+async function assertTargetGeometry(page: Page, where: string): Promise<void> {
   const targets = page.locator("button:visible, a:visible, [role='button']:visible");
   const boxes = [];
   for (const target of await targets.all()) {
     const box = await target.boundingBox();
-    // The 1px-clip visually-hidden pattern (skip links until focused) is not
-    // a pointer target — it expands to full size exactly when focused, which
-    // the skip-link test exercises — so it is excluded from hit-testing.
+    // The 1px-clip visually-hidden pattern (skip links until focused) is not a
+    // pointer target — it expands to full size exactly when focused — so it is
+    // excluded from hit-testing.
     if (box !== null && box.width > 2 && box.height > 2) {
       boxes.push(box);
     }
   }
-  expect(boxes.length, "the settled shell must expose at least one interactive control").toBeGreaterThan(0);
+  expect(boxes.length, `${where}: at least one interactive control`).toBeGreaterThan(0);
   for (const box of boxes) {
-    expect(box.width, `target width ${box.width} under the 24px floor`).toBeGreaterThanOrEqual(24);
-    expect(box.height, `target height ${box.height} under the 24px floor`).toBeGreaterThanOrEqual(24);
+    expect(box.width, `${where}: target width ${box.width} under the 24px floor`).toBeGreaterThanOrEqual(24);
+    expect(box.height, `${where}: target height ${box.height} under the 24px floor`).toBeGreaterThanOrEqual(24);
   }
   for (let i = 0; i < boxes.length; i += 1) {
     const a = boxes[i];
@@ -233,21 +226,34 @@ test("visible interactive targets meet the compact target-size floors", async ({
         continue;
       }
       const b = boxes[j];
-      // Measure the GAP between the rectangle BOUNDARIES on whichever axis
-      // separates them, NOT the center distance (as the retiring
-      // `ui/e2e/a11y.spec.ts` does): two 24px controls touching edge-to-edge have
-      // centers 24px apart yet ZERO breathing room, which a center-distance check
-      // would wrongly pass. Overlap on an axis contributes a negative gap, so two
-      // boxes must be clear by >=24px on at least ONE axis.
+      // The GAP between the rectangle BOUNDARIES on whichever axis separates them,
+      // NOT center distance: two 24px controls touching edge-to-edge have centers
+      // 24px apart yet ZERO breathing room. Overlap on an axis contributes a
+      // negative gap, so two boxes must be clear by >=24px on at least ONE axis.
       const vertical = Math.max(a.y - (b.y + b.height), b.y - (a.y + a.height));
       const horizontal = Math.max(a.x - (b.x + b.width), b.x - (a.x + a.width));
       const gap = Math.max(vertical, horizontal);
       expect(
         gap,
-        `sub-44px target needs a 24px gap from its neighbor's boundary (got ${gap.toFixed(1)}px)`,
+        `${where}: sub-44px target needs a 24px gap from its neighbor's boundary (got ${gap.toFixed(1)}px)`,
       ).toBeGreaterThanOrEqual(24);
     }
   }
+}
+
+test("visible interactive targets meet the compact target-size floors", async ({ page }, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "compact" && testInfo.project.name !== "narrow",
+    "target-size floors are the compact/narrow contract (§7)",
+  );
+  await gotoReadyShell(page);
+  await assertTargetGeometry(page, "settled shell");
+  // The Diagnostics dialog's controls must meet the SAME floors: the settled-shell
+  // sweep cannot see them (dialog closed), and the dialog axe sweep checks roles,
+  // not geometry — so a dialog control could regress below 24px or crowd a neighbor
+  // while this required context stays green.
+  await openDiagnostics(page);
+  await assertTargetGeometry(page, "diagnostics dialog");
 });
 
 test("reduced motion is forced for the whole a11y matrix", async ({ page }) => {

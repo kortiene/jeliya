@@ -593,6 +593,45 @@ fn view() -> Element {
     !scanComponentLiterals('x.rs', nestedCommaMatch).some((f) => f.code === 'form-control-id-mismatch'),
     'identical nested-comma id expressions must be clean',
   );
+  // When a Field supplies a HINT, the control must reference `{id}-hint` via
+  // aria-describedby or the hint is not exposed to assistive tech.
+  const hintMissing = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", hint: "we never share it", input { id: "email" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', hintMissing).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a hinted Field whose control omits aria-describedby must be flagged',
+  );
+  const hintWrong = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", hint: "x", input { id: "email", "aria-describedby": "other" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', hintWrong).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a control pointing aria-describedby elsewhere must be flagged',
+  );
+  const hintOk = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", hint: "x", input { id: "email", "aria-describedby": "email-hint" } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', hintOk).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a control referencing {id}-hint must be clean',
+  );
+  // A Field with NO hint needs no aria-describedby.
+  const noHint = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", input { id: "email" } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', noHint).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a hintless Field needs no aria-describedby',
+  );
 });
 
 test('literal scan: an unnamed nav named only in a comment is flagged', () => {

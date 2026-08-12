@@ -234,8 +234,40 @@ pub fn AppRoot(
             };
 
             let consume = async {
+                // Announce a connection PROBLEM (drop to Interrupted/Failed/Stopped)
+                // or a RECOVERY (return to Ready after such a drop) from EACH
+                // `StateChanged` EVENT, not from a render snapshot. The event loop
+                // can apply several lifecycle writes before Dioxus renders, so a
+                // render-effect could observe only the FINAL state (`previous == Ready`
+                // for a batched Interrupted→Ready) and announce NEITHER transition;
+                // deriving per event cannot miss one. The happy boot path
+                // (Idle/Connecting → Ready) is deliberately not announced. `Announcer`
+                // coalesces, so a repeated state still announces once. Announced
+                // through the dedicated CONNECTION region so a room-count update in
+                // the same render never overwrites it (`StatusIndicator` has no live
+                // semantics — §5.6). Room-count/notice announcements stay render-
+                // driven: they coalesce by design and are not transition-sensitive.
+                let mut prev = None::<State>;
                 while let Some(event) = events.next().await {
                     ui.write().apply_event(&event);
+                    if let ClientEvent::StateChanged { to, .. } = event {
+                        let is_problem =
+                            matches!(to, State::Interrupted | State::Failed | State::Stopped);
+                        let recovered = to == State::Ready
+                            && matches!(
+                                prev,
+                                Some(State::Interrupted | State::Failed | State::Stopped)
+                            );
+                        if is_problem || recovered {
+                            let resolved = locale.peek();
+                            let word =
+                                crate::l10n::wire::status_for(catalog_for(resolved.text), to);
+                            announcers
+                                .connection
+                                .announce(catalog_for(resolved.text).conn_announcement(word));
+                        }
+                        prev = Some(to);
+                    }
                 }
             };
 
@@ -260,39 +292,9 @@ pub fn AppRoot(
         }
     });
 
-    // Announce a connection PROBLEM or a RECOVERY from one through the dedicated
-    // CONNECTION region (separate from the content region, so a status change and
-    // a room-count update in the same render never overwrite each other), so a
-    // screen-reader user not on the footer still hears it — `StatusIndicator` has
-    // no live semantics (§5.6). The happy boot path (`Idle`/`Connecting` →
-    // `Ready`) is deliberately NOT announced: reaching Ready for the first time is
-    // not a change worth interrupting a user for. Only a drop to
-    // Interrupted/Failed/Stopped, or a return to Ready AFTER such a drop, is
-    // announced. `Announcer` coalesces, so a state that re-renders many times
-    // still announces once.
-    let mut prev_lifecycle = use_signal(|| Option::<State>::None);
-    use_effect(move || {
-        let state = ui.read().lifecycle;
-        let resolved = locale.read();
-        // `peek`, not a subscribing read: this effect WRITES `prev_lifecycle`,
-        // and subscribing to a signal it also writes would re-trigger itself
-        // forever (an infinite render loop that hangs the app). It must re-run
-        // only when the lifecycle or locale changes.
-        let previous = *prev_lifecycle.peek();
-        prev_lifecycle.set(Some(state));
-        let is_problem = matches!(state, State::Interrupted | State::Failed | State::Stopped);
-        let recovered = state == State::Ready
-            && matches!(
-                previous,
-                Some(State::Interrupted | State::Failed | State::Stopped)
-            );
-        if is_problem || recovered {
-            let word = crate::l10n::wire::status_for(catalog_for(resolved.text), state);
-            announcers
-                .connection
-                .announce(catalog_for(resolved.text).conn_announcement(word));
-        }
-    });
+    // (The connection PROBLEM/RECOVERY announcement is driven per `StateChanged`
+    // EVENT in the consume loop above, not by a render effect — a render snapshot
+    // can miss a batched Interrupted→Ready pair.)
 
     // Announce a TERMINAL room-list failure through the stable CONTENT region. A
     // terminal read error sets the notice while the lifecycle stays `Ready` and

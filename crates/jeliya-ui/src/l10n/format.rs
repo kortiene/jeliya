@@ -18,8 +18,9 @@
 //!
 //! Scope of THIS foundation slice: the full §4-D4 EN/FR convention table —
 //! number, percent, and byte formatting, the `Today`/`Yesterday` day-divider
-//! vocabulary, `clock` (English 12-hour / French 24-hour), `date` (day +
-//! localized month name + year, `2 January 2026` / `2 janvier 2026`), and
+//! vocabulary, `clock` (English 12-hour / French 24-hour), `date` (localized
+//! month name + day + year, ordered per the formatting locale — `August 14, 2026`
+//! / `14 août 2026`), and
 //! `rel_time` (relative age, `just now` / `{n}m ago` / `il y a {n} min`). Only
 //! broad CLDR coverage for
 //! an arbitrary THIRD formatting locale (e.g. `de-CH`, which React got free from
@@ -186,20 +187,28 @@ impl Formats {
         }
     }
 
-    /// An absolute date — day, month, and YEAR (§4-D4): `2 January 2026` /
-    /// `2 janvier 2026`. The month NAME is vocabulary (text locale); the day-month
-    /// order is the shared convention. The YEAR is INCLUDED so events from
-    /// different years are distinguishable (the retiring `dayLabel`'s absolute-date
-    /// path renders `year: 'numeric'`); it is never grouped (`2026`, not `2,026`),
-    /// matching `Intl`. Full month names are the accepted foundation simplification
-    /// versus `Intl`'s abbreviated months (broad CLDR coverage is the deferred
-    /// icu4x slice, §14 Q2). An out-of-range month has no name
-    /// (`Catalog::month_name` returns `None`), so it degrades to the bare day
-    /// rather than panicking — callers pass a validated 1..=12.
+    /// An absolute date — day, month name, and YEAR (§4-D4): English
+    /// `August 14, 2026`, French `14 août 2026`. The month NAME is vocabulary (TEXT
+    /// locale); the day-month ORDER and comma are a calendar CONVENTION, so they
+    /// follow the FORMATTING locale (the retiring `dayLabel` formats its
+    /// absolute-date path under `localeTag`) — English is month-day-comma, French is
+    /// day-month. So text=fr/format=en yields `août 14, 2026` and text=en/format=fr
+    /// yields `14 August 2026`. The YEAR is INCLUDED so events from different years
+    /// are distinguishable, and never grouped (`2026`, not `2,026`), matching
+    /// `Intl`. Full month names are the accepted foundation simplification versus
+    /// `Intl`'s abbreviated months (broad CLDR coverage is the deferred icu4x slice,
+    /// §14 Q2). An out-of-range month has no name (`Catalog::month_name` returns
+    /// `None`), so it degrades to the bare day rather than panicking — callers pass
+    /// a validated 1..=12.
     pub fn date(self, day: u32, month: u32, year: i32) -> String {
-        match self.strings().month_name(month) {
-            Some(name) => format!("{day} {name} {year}"),
-            None => day.to_string(),
+        let Some(name) = self.strings().month_name(month) else {
+            return day.to_string();
+        };
+        match self.formatting {
+            // English convention: `August 14, 2026`.
+            Locale::En => format!("{name} {day}, {year}"),
+            // French convention: `14 août 2026`.
+            Locale::Fr => format!("{day} {name} {year}"),
         }
     }
 
@@ -492,28 +501,30 @@ mod tests {
     }
 
     #[test]
-    fn date_uses_the_text_locale_month_name_in_day_month_order() {
+    fn date_month_name_follows_text_and_order_follows_formatting() {
+        // English formatting: `Month Day, Year`. French formatting: `Day Month Year`.
         assert_eq!(
             Formats::new(Locale::En, Locale::En).date(2, 1, 2026),
-            "2 January 2026"
+            "January 2, 2026"
         );
         assert_eq!(
             Formats::new(Locale::Fr, Locale::Fr).date(2, 1, 2026),
             "2 janvier 2026"
         );
-        // The year is NOT grouped (`2026`, not `2,026`) even under fr grouping.
-        assert_eq!(
-            Formats::new(Locale::En, Locale::Fr).date(2, 1, 2026),
-            "2 January 2026"
-        );
-        // The month NAME follows the TEXT locale; the day-month order is shared.
+        // The month NAME follows the TEXT locale; the ORDER follows the FORMATTING
+        // locale. text=fr/format=en → French month, English order; and the mirror.
         assert_eq!(
             Formats::new(Locale::Fr, Locale::En).date(14, 8, 2026),
-            "14 août 2026"
+            "août 14, 2026"
         );
         assert_eq!(
             Formats::new(Locale::En, Locale::Fr).date(14, 8, 2026),
             "14 August 2026"
+        );
+        // The year is NOT grouped (`2026`, not `2,026`) even under fr grouping.
+        assert_eq!(
+            Formats::new(Locale::En, Locale::Fr).date(2, 1, 2026),
+            "2 January 2026"
         );
         // An out-of-range month has no name; the seam degrades to the bare day
         // instead of panicking or emitting a trailing space.
