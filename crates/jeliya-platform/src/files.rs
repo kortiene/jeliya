@@ -557,7 +557,15 @@ pub trait StagedBlobReader {
 
     /// The next chunk, at most `max_len` bytes. `Ok(None)` is clean EOF;
     /// [`FailureKind::Unreadable`](crate::FailureKind::Unreadable) if the
-    /// staged bytes vanished mid-read (the staged file was reaped).
+    /// staged bytes became unreadable mid-read through **independent** I/O
+    /// loss — a device disappearing, a permission revoked underneath the open
+    /// reader.
+    ///
+    /// An explicit [`Files::release_staged`] is *not* such a case: an already
+    /// open reader keeps serving its bytes across the reap, exactly as an open
+    /// file descriptor outlives an unlink. An implementation must therefore not
+    /// re-check the registry on each pull, or it would break an upload whose
+    /// handle was released while its reader was still open.
     ///
     /// `max_len` **must be nonzero**: a puller with no credit must not pull.
     /// Implementations reject a zero bound with

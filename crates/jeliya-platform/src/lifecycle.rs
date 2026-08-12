@@ -201,8 +201,16 @@ impl SubscriberState {
 ///
 /// Any [`Lifecycle`] implementation (the fakes here; the M3–M5 targets later)
 /// owns one and calls [`LifecycleBus::emit`] as platform events arrive.
-/// Ordinary events overflow into a per-subscriber loss count; control intents
-/// are always appended distinctly and never coalesced.
+/// Ordinary events overflow into a per-subscriber loss count. Control intents
+/// are never *lost*, and the two kinds behave differently under saturation:
+/// every `BackRequested` is delivered distinctly (a burst is run-length
+/// encoded, one Back per poll, so none is merged away), while a
+/// `ProcessRestored` or a terminal window event restated **while an identical
+/// one is still undelivered** is absorbed into that pending intent. Coalescing
+/// only identical undelivered restatements is what keeps the mailbox inside its
+/// fixed control allowance without ever dropping an intent — resyncing twice
+/// for one restore, or closing twice for one close, would be redundant work,
+/// whereas two Backs mean two navigations.
 pub struct LifecycleBus {
     subscribers: Mutex<Vec<Weak<Mutex<SubscriberState>>>>,
     closed: AtomicBool,

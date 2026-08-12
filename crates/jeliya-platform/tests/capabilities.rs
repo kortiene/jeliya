@@ -3296,3 +3296,156 @@ fn the_requested_export_name_is_recorded() {
         controller.effects()
     );
 }
+
+/// An unpolled `read_staged` future already owns the bytes and can still yield
+/// a working reader later, so it is already the service holding them.
+#[test]
+fn a_pending_staged_open_counts_as_retained() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("blob.bin", None, b"0123456789".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+
+    block_on(async {
+        // Created, never polled.
+        let mut open = std::pin::pin!(services.files().read_staged(&blob));
+        assert_eq!(services.files().release_staged(&blob).await, Ok(()));
+        assert_eq!(
+            controller.retained_handles().staged_blobs,
+            1,
+            "the pending open still owns the bytes"
+        );
+        // …and it really does still produce a working reader.
+        let mut reader = match futures::poll!(open.as_mut()) {
+            Poll::Ready(Ok(reader)) => reader,
+            Poll::Ready(Err(error)) => panic!("the pending open still resolves: {error:?}"),
+            Poll::Pending => panic!("the pending open still resolves"),
+        };
+        assert_eq!(
+            reader.next_chunk(4).await.expect("pull"),
+            Some(b"0123".to_vec())
+        );
+    });
+    assert_eq!(
+        controller.retained_handles(),
+        Default::default(),
+        "dropping the reader releases the last hold"
+    );
+
+    // A pending open that is never polled at all releases on drop.
+    controller.arm_pick("second.bin", None, b"abcd".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+    let blob = settle(
+        &controller,
+        services
+            .files()
+            .stage_for_share(&src, 1024, ProgressSink::discard(), &ct),
+    )
+    .expect("stage ok");
+    block_on(async {
+        let _open = services.files().read_staged(&blob);
+        assert_eq!(controller.retained_handles().staged_blobs, 1);
+    });
+    assert_eq!(
+        controller.retained_handles().staged_blobs,
+        1,
+        "still staged"
+    );
+    assert_eq!(block_on(services.files().release_staged(&blob)), Ok(()));
+    assert_eq!(controller.retained_handles(), Default::default());
+}
+
+/// Two cleanups of the same handle are decided by CALL order, not by which
+/// future the executor polls first.
+#[test]
+fn concurrent_cleanups_are_decided_in_call_order() {
+    for poll_second_first in [false, true] {
+        let (services, controller) = fake::desktop();
+        let ct = CancelToken::new();
+        controller.arm_pick("doc.bin", None, b"payload".to_vec());
+        let src = settle(&controller, services.files().pick(&ct))
+            .expect("pick ok")
+            .expect("a source was picked");
+        block_on(async {
+            let mut first = std::pin::pin!(services.files().discard_source(&src));
+            let mut second = std::pin::pin!(services.files().discard_source(&src));
+            if poll_second_first {
+                assert!(
+                    matches!(
+                        futures::poll!(second.as_mut()),
+                        Poll::Ready(Err(CapabilityError::Failed(FailureKind::Unreadable)))
+                    ),
+                    "the second CALL loses regardless of poll order"
+                );
+            }
+            assert!(
+                matches!(futures::poll!(first.as_mut()), Poll::Ready(Ok(()))),
+                "the first CALL wins regardless of poll order"
+            );
+            if !poll_second_first {
+                assert!(matches!(
+                    futures::poll!(second.as_mut()),
+                    Poll::Ready(Err(CapabilityError::Failed(FailureKind::Unreadable)))
+                ));
+            }
+        });
+        assert_eq!(controller.retained_handles(), Default::default());
+        assert_eq!(
+            controller
+                .effects()
+                .iter()
+                .filter(|e| matches!(e, RecordedEffect::DiscardedSource))
+                .count(),
+            1,
+            "exactly one discard is recorded"
+        );
+    }
+}
+
+/// A cleanup that fails or is dropped puts the reserved entry back, so the
+/// handle is exactly as it was and the caller can retry.
+#[test]
+fn a_reserved_cleanup_entry_is_restored_on_failure_or_drop() {
+    let (services, controller) = fake::desktop();
+    let ct = CancelToken::new();
+    controller.arm_pick("doc.bin", None, b"payload".to_vec());
+    let src = settle(&controller, services.files().pick(&ct))
+        .expect("pick ok")
+        .expect("a source was picked");
+
+    // Dropped before it ever resolves.
+    block_on(async {
+        let _fut = services.files().discard_source(&src);
+    });
+    assert_eq!(
+        controller.retained_handles().sources,
+        1,
+        "a dropped cleanup restores the entry"
+    );
+
+    // Scripted failure.
+    controller.force_error(
+        Capability::Release,
+        CapabilityError::Failed(FailureKind::Io),
+    );
+    assert_eq!(
+        block_on(services.files().discard_source(&src)).err(),
+        Some(CapabilityError::Failed(FailureKind::Io))
+    );
+    assert_eq!(controller.retained_handles().sources, 1);
+
+    // The retry succeeds — only possible because the entry came back.
+    assert_eq!(block_on(services.files().discard_source(&src)), Ok(()));
+    assert_eq!(controller.retained_handles(), Default::default());
+}

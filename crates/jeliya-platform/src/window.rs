@@ -35,7 +35,12 @@ pub enum WindowEvent {
 }
 
 impl WindowEvent {
-    /// Whether this is a control intent that must never be lost or coalesced.
+    /// Whether this is a control intent that must never be **lost**.
+    ///
+    /// Not the same as never coalesced: a terminal window event restated while
+    /// an identical one is still undelivered is absorbed into it, because
+    /// acting on one close twice is redundant. See [`crate::LifecycleBus`] for
+    /// the rule and why Back intents differ.
     pub fn is_control(self) -> bool {
         matches!(self, WindowEvent::CloseRequested)
     }

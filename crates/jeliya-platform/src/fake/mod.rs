@@ -217,7 +217,11 @@ impl FakeInner {
     /// so a share that opened against real bytes stays honest. Returns `None`
     /// for a blob this service did not stage.
     fn hold_staged(self: &Arc<Self>, blob: &ShareableBlob) -> Option<BlobHold> {
-        let token = blob.token().get();
+        self.hold_staged_token(blob.token().get())
+    }
+
+    /// [`FakeInner::hold_staged`] by raw token.
+    fn hold_staged_token(self: &Arc<Self>, token: u64) -> Option<BlobHold> {
         let bytes = self
             .staged_blobs
             .lock()
@@ -516,12 +520,70 @@ impl Drop for ArtifactClaim {
     }
 }
 
+/// One registry entry a cleanup has reserved. Held out of its registry for the
+/// duration of the call so two cleanups of the same handle are decided by CALL
+/// order, not by which future the executor polls first — the fake's
+/// scheduling-independent contract.
+enum ReservedEntry {
+    Source(SourceBody),
+    Artifact(Vec<u8>),
+    ExportTarget(ExportTargetKind),
+    StagedBlob(Arc<Vec<u8>>),
+}
+
+/// A reserved cleanup entry. Dropped without [`CleanupClaim::consume`] it puts
+/// the entry back, so a scripted failure or a dropped future leaves the handle
+/// exactly as it was and the caller can retry — the whole reason cleanup is
+/// fallible and borrows its handle.
+struct CleanupClaim {
+    inner: Arc<FakeInner>,
+    token: u64,
+    entry: Option<ReservedEntry>,
+}
+
+impl CleanupClaim {
+    /// The cleanup succeeded: the entry is gone for good.
+    fn consume(mut self) {
+        self.entry = None;
+    }
+}
+
+impl Drop for CleanupClaim {
+    fn drop(&mut self) {
+        let Some(entry) = self.entry.take() else {
+            return;
+        };
+        // Best-effort under poisoning, as everywhere in Drop.
+        match entry {
+            ReservedEntry::Source(body) => {
+                if let Ok(mut m) = self.inner.sources.lock() {
+                    m.insert(self.token, body);
+                }
+            }
+            ReservedEntry::Artifact(bytes) => {
+                if let Ok(mut m) = self.inner.share_artifacts.lock() {
+                    m.insert(self.token, bytes);
+                }
+            }
+            ReservedEntry::ExportTarget(kind) => {
+                if let Ok(mut m) = self.inner.export_targets.lock() {
+                    m.insert(self.token, kind);
+                }
+            }
+            ReservedEntry::StagedBlob(bytes) => {
+                if let Ok(mut m) = self.inner.staged_blobs.lock() {
+                    m.insert(self.token, bytes);
+                }
+            }
+        }
+    }
+}
+
 /// A staged blob's bytes kept alive for the lifetime of one share sheet, and
 /// counted as retained while it lives — see [`FakeInner::hold_staged`].
 struct BlobHold {
     inner: Arc<FakeInner>,
     token: u64,
-    #[allow(dead_code)]
     bytes: Arc<Vec<u8>>,
 }
 
@@ -969,39 +1031,32 @@ impl Files for FakePlatform {
     fn discard_source(&self, src: &PickedSource) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = src.token();
-        // A handle this service does not hold reports its own `Unreadable` and
-        // consumes NO script — an invalid cleanup must not steal the failure
-        // scripted for the next valid one.
-        if !inner
+        // Reserve the entry NOW, in call order: two cleanups of the same
+        // handle must not be decided by which future is polled first, and a
+        // handle this service does not hold reports its own `Unreadable`
+        // without consuming a script scripted for the next valid cleanup.
+        let reserved = inner
             .sources
             .lock()
             .expect("sources poisoned")
-            .contains_key(&token.get())
-        {
+            .remove(&token.get());
+        let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
-        }
-        // Bound at CALL time, like every other scripted outcome: two cleanup
-        // futures created in call order must keep their outcomes however the
-        // executor polls them. A failed cleanup leaves the entry recoverable,
-        // so the caller can retry.
+        };
+        let claim = CleanupClaim {
+            inner: inner.clone(),
+            token: token.get(),
+            entry: Some(ReservedEntry::Source(entry)),
+        };
+        // Bound at CALL time, like every other scripted outcome. A failed
+        // cleanup drops the claim, which puts the entry back so the caller can
+        // retry.
         let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
             }
-
-            // The private entry IS the retained file object; dropping it is the
-            // whole point. Fails closed for a forged, already-staged, or
-            // already-discarded source, exactly as `release_staged` does.
-            if inner
-                .sources
-                .lock()
-                .expect("sources poisoned")
-                .remove(&token.get())
-                .is_none()
-            {
-                return Err(CapabilityError::Failed(FailureKind::Unreadable));
-            }
+            claim.consume();
             inner.record(RecordedEffect::DiscardedSource);
             Ok(())
         })
@@ -1013,36 +1068,32 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = artifact.token();
-        // A handle this service does not hold reports its own `Unreadable` and
-        // consumes NO script — an invalid cleanup must not steal the failure
-        // scripted for the next valid one.
-        if !inner
+        // Reserve the entry NOW, in call order: two cleanups of the same
+        // handle must not be decided by which future is polled first, and a
+        // handle this service does not hold reports its own `Unreadable`
+        // without consuming a script scripted for the next valid cleanup.
+        let reserved = inner
             .share_artifacts
             .lock()
             .expect("share artifacts poisoned")
-            .contains_key(&token.get())
-        {
+            .remove(&token.get());
+        let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
-        }
-        // Bound at CALL time, like every other scripted outcome: two cleanup
-        // futures created in call order must keep their outcomes however the
-        // executor polls them. A failed cleanup leaves the entry recoverable,
-        // so the caller can retry.
+        };
+        let claim = CleanupClaim {
+            inner: inner.clone(),
+            token: token.get(),
+            entry: Some(ReservedEntry::Artifact(entry)),
+        };
+        // Bound at CALL time, like every other scripted outcome. A failed
+        // cleanup drops the claim, which puts the entry back so the caller can
+        // retry.
         let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
             }
-
-            if inner
-                .share_artifacts
-                .lock()
-                .expect("share artifacts poisoned")
-                .remove(&token.get())
-                .is_none()
-            {
-                return Err(CapabilityError::Failed(FailureKind::Unreadable));
-            }
+            claim.consume();
             inner.record(RecordedEffect::ReleasedArtifact);
             Ok(())
         })
@@ -1054,36 +1105,32 @@ impl Files for FakePlatform {
     ) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = target.token();
-        // A handle this service does not hold reports its own `Unreadable` and
-        // consumes NO script — an invalid cleanup must not steal the failure
-        // scripted for the next valid one.
-        if !inner
+        // Reserve the entry NOW, in call order: two cleanups of the same
+        // handle must not be decided by which future is polled first, and a
+        // handle this service does not hold reports its own `Unreadable`
+        // without consuming a script scripted for the next valid cleanup.
+        let reserved = inner
             .export_targets
             .lock()
             .expect("export targets poisoned")
-            .contains_key(&token.get())
-        {
+            .remove(&token.get());
+        let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
-        }
-        // Bound at CALL time, like every other scripted outcome: two cleanup
-        // futures created in call order must keep their outcomes however the
-        // executor polls them. A failed cleanup leaves the entry recoverable,
-        // so the caller can retry.
+        };
+        let claim = CleanupClaim {
+            inner: inner.clone(),
+            token: token.get(),
+            entry: Some(ReservedEntry::ExportTarget(entry)),
+        };
+        // Bound at CALL time, like every other scripted outcome. A failed
+        // cleanup drops the claim, which puts the entry back so the caller can
+        // retry.
         let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
             }
-
-            if inner
-                .export_targets
-                .lock()
-                .expect("export targets poisoned")
-                .remove(&token.get())
-                .is_none()
-            {
-                return Err(CapabilityError::Failed(FailureKind::Unreadable));
-            }
+            claim.consume();
             inner.record(RecordedEffect::DiscardedExportTarget);
             Ok(())
         })
@@ -1221,73 +1268,53 @@ impl Files for FakePlatform {
         // an open failure scripted for the next valid open — the same
         // validation-before-script rule the share sheet and the zero-bound
         // pull follow.
-        let bytes = inner
-            .staged_blobs
-            .lock()
-            .expect("staged blobs poisoned")
-            .get(&token.get())
-            .cloned();
-        if bytes.is_none() {
+        // The hold is taken the moment the `Arc` is cloned, not when the
+        // future is polled: an unpolled open already owns the bytes and can
+        // still yield a working reader later, so it is already the service
+        // holding them. The guard's `Drop` covers a future that is never
+        // polled at all.
+        let Some(hold) = inner.hold_staged_token(token.get()) else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
-        }
+        };
         // Opening is its own failure moment, before any byte is pulled.
         let bound = inner.take_forced(Capability::ReadStaged);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
             }
-            match bytes {
-                Some(bytes) => {
-                    FakeInner::hold_enter(&inner.in_flight_blobs, token.get());
-                    Ok(Box::new(FakeStagedReader {
-                        inner,
-                        bytes,
-                        offset: 0,
-                        token: token.get(),
-                    }) as Box<dyn StagedBlobReader>)
-                }
-                None => Err(CapabilityError::Failed(FailureKind::Unreadable)),
-            }
+            Ok(Box::new(FakeStagedReader { hold, offset: 0 }) as Box<dyn StagedBlobReader>)
         })
     }
 
     fn release_staged(&self, blob: &ShareableBlob) -> BoxFuture<'_, Result<(), CapabilityError>> {
         let inner = self.inner.clone();
         let token = blob.token();
-        // A handle this service does not hold reports its own `Unreadable` and
-        // consumes NO script — an invalid cleanup must not steal the failure
-        // scripted for the next valid one.
-        if !inner
+        // Reserve the entry NOW, in call order: two cleanups of the same
+        // handle must not be decided by which future is polled first, and a
+        // handle this service does not hold reports its own `Unreadable`
+        // without consuming a script scripted for the next valid cleanup.
+        let reserved = inner
             .staged_blobs
             .lock()
             .expect("staged blobs poisoned")
-            .contains_key(&token.get())
-        {
+            .remove(&token.get());
+        let Some(entry) = reserved else {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Unreadable)) });
-        }
-        // Bound at CALL time, like every other scripted outcome: two cleanup
-        // futures created in call order must keep their outcomes however the
-        // executor polls them. A failed cleanup leaves the entry recoverable,
-        // so the caller can retry.
+        };
+        let claim = CleanupClaim {
+            inner: inner.clone(),
+            token: token.get(),
+            entry: Some(ReservedEntry::StagedBlob(entry)),
+        };
+        // Bound at CALL time, like every other scripted outcome. A failed
+        // cleanup drops the claim, which puts the entry back so the caller can
+        // retry.
         let bound = inner.take_forced(Capability::Release);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
             }
-
-            // The release is the reap: a blob this service never staged, or one
-            // already released, fails closed exactly as `read_staged` does.
-            // An already-open reader holds its own `Arc` and keeps working —
-            // the fake's stand-in for an fd outliving an unlink.
-            let released = inner
-                .staged_blobs
-                .lock()
-                .expect("staged blobs poisoned")
-                .remove(&token.get())
-                .is_some();
-            if !released {
-                return Err(CapabilityError::Failed(FailureKind::Unreadable));
-            }
+            claim.consume();
             inner.record(RecordedEffect::ReleasedStaged);
             Ok(())
         })
@@ -1642,26 +1669,17 @@ impl ShareSink for FakeShareSink {
 /// generous caller exercises multiple chunks — the same "bounded, never the
 /// whole file at once" contract the staging copy holds.
 struct FakeStagedReader {
-    inner: Arc<FakeInner>,
-    bytes: Arc<Vec<u8>>,
+    /// The bytes, plus the retention hold on them. An open reader deliberately
+    /// outlives `release_staged` (an fd outliving an unlink), so it is still
+    /// the service holding those bytes; the guard keeps `retained_handles`
+    /// honest for exactly as long as that is true, and releases on drop.
+    hold: BlobHold,
     offset: usize,
-    /// The blob this reader is serving. An open reader deliberately outlives
-    /// `release_staged` (an fd outliving an unlink), so it is still the service
-    /// holding those bytes and must be counted as such — otherwise a cleanup
-    /// test gets the same false clean bill that in-flight share tracking was
-    /// added to prevent.
-    token: u64,
-}
-
-impl Drop for FakeStagedReader {
-    fn drop(&mut self) {
-        FakeInner::hold_exit(&self.inner.in_flight_blobs, self.token);
-    }
 }
 
 impl StagedBlobReader for FakeStagedReader {
     fn size(&self) -> u64 {
-        self.bytes.len() as u64
+        self.hold.bytes.len() as u64
     }
 
     fn next_chunk(
@@ -1678,7 +1696,7 @@ impl StagedBlobReader for FakeStagedReader {
         if max_len == 0 {
             return Box::pin(async { Err(CapabilityError::Failed(FailureKind::Io)) });
         }
-        let bound = self.inner.take_forced(Capability::StagedReadChunk);
+        let bound = self.hold.inner.take_forced(Capability::StagedReadChunk);
         Box::pin(async move {
             if let Some(error) = bound {
                 return Err(error);
@@ -1693,13 +1711,13 @@ impl StagedBlobReader for FakeStagedReader {
             if max_len == 0 {
                 return Err(CapabilityError::Failed(FailureKind::Io));
             }
-            if self.offset >= self.bytes.len() {
+            if self.offset >= self.hold.bytes.len() {
                 return Ok(None);
             }
             let len = max_len
                 .min(STAGE_CHUNK_BYTES)
-                .min(self.bytes.len() - self.offset);
-            let chunk = self.bytes[self.offset..self.offset + len].to_vec();
+                .min(self.hold.bytes.len() - self.offset);
+            let chunk = self.hold.bytes[self.offset..self.offset + len].to_vec();
             self.offset += len;
             Ok(Some(chunk))
         })
