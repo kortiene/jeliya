@@ -134,6 +134,18 @@ test('rule 4: a straight apostrophe and three-dot ellipsis are flagged', () => {
   assert.ok(codes.has('fr-ellipsis'));
 });
 
+test('rule: placeholder parity — a dropped/renamed format slot is flagged', () => {
+  // EN's `pct` interpolates {n}; an FR that drops it still compiles in Rust
+  // (unused arg) but must be caught.
+  const frNoSlot = FR_GOOD.replace('format!("{n}\\u{202f}%")', 'format!("pourcent")');
+  assert.ok(
+    checkCatalogs({ ...catalogs(EN, frNoSlot), allowlist: {} }).some((f) => f.code === 'placeholder-parity'),
+    'an fr value dropping the {n} slot must trip placeholder-parity',
+  );
+  // The unmodified good catalog (matching slots) does not trip it.
+  assert.ok(!checkCatalogs(catalogs(EN, FR_GOOD)).some((f) => f.code === 'placeholder-parity'));
+});
+
 test('rule 5: a plural method reduced to one arm is reported', () => {
   const frOneArm = FR_GOOD.replace(
     /fn items[\s\S]*?\n    \}\n/,
@@ -177,6 +189,20 @@ fn view() -> Element {
     !scanComponentLiterals('x.rs', source).some((f) => /anchor|rooms-nav/.test(f.text ?? '')),
     'structural props stay clean',
   );
+});
+
+test('literal scan: a copy-prop literal with a trailing .to_string() is still flagged', () => {
+  // `.to_string()`/`.into()` is the normal spelling for a String prop, so it
+  // must NOT exempt a hardcoded copy prop — while a STRUCTURAL prop stays clean.
+  const source = `
+fn view() -> Element {
+    rsx! {
+        SkipLink { anchor: "rooms-nav".to_string(), label: "Skip to rooms".to_string() }
+    }
+}
+`;
+  const codes = scanComponentLiterals('x.rs', source).map((f) => f.code);
+  assert.equal(codes.filter((c) => c === 'copy-attribute').length, 1, 'label flagged, anchor not');
 });
 
 test('literal scan: interpolation, structural attrs, and format! args are clean', () => {

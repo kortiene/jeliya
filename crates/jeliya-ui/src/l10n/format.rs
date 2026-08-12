@@ -107,10 +107,13 @@ impl Formats {
         }
     }
 
-    /// A percentage. Spacing is locale-dependent and lives in the catalog:
-    /// French writes `42 %` with a narrow no-break space English does not have.
+    /// A percentage. The spacing before `%` is a FORMATTING convention (like the
+    /// group/decimal separators), not vocabulary: French writes `42 %` with a
+    /// narrow no-break space, English writes `42%`. So it follows the FORMATTING
+    /// locale, not the text locale — text=EN/format=FR yields `42 %`, and
+    /// text=FR/format=EN yields `42%`.
     pub fn percent(self, whole: u64) -> String {
-        self.strings().format_percent(&self.count(whole))
+        catalog_for(self.formatting).format_percent(&self.count(whole))
     }
 
     /// A byte size. The number follows the formatting locale; the unit WORD
@@ -196,19 +199,20 @@ mod tests {
     }
 
     #[test]
-    fn percent_spacing_is_french_narrow_space() {
-        // English: no space. French: U+202F before the sign.
+    fn percent_spacing_follows_the_formatting_locale() {
+        // English formatting: no space. French formatting: U+202F before `%`.
         assert_eq!(Formats::new(Locale::En, Locale::En).percent(42), "42%");
         assert_eq!(
             Formats::new(Locale::Fr, Locale::Fr).percent(42),
             "42\u{202f}%"
         );
-        // Independently switchable: French words, English formatting still keep
-        // the French percent spacing (spacing is text-locale vocabulary here,
-        // via the catalog) — the point of the seam is that each fact is owned by
-        // exactly one locale.
+        // Percent spacing is a FORMATTING convention (like the group/decimal
+        // separators), NOT text vocabulary: it follows the formatting locale
+        // regardless of the text locale. French words + English formatting →
+        // `42%`; English words + French formatting → `42 %`.
+        assert_eq!(Formats::new(Locale::Fr, Locale::En).percent(42), "42%");
         assert_eq!(
-            Formats::new(Locale::Fr, Locale::En).percent(42),
+            Formats::new(Locale::En, Locale::Fr).percent(42),
             "42\u{202f}%"
         );
     }

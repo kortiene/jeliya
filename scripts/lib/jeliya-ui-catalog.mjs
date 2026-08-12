@@ -212,6 +212,19 @@ function collapseSlots(text) {
   return text.replace(/\{[^{}]*\}/g, SLOT);
 }
 
+/** The sorted multiset of format placeholders across a value set (`{n}` -> "n").
+ *  Rust enforces only the method SIGNATURE and permits an unused argument, so a
+ *  translation that drops, renames, or duplicates a `{…}` slot still compiles;
+ *  comparing this set between EN and FR is what actually enforces placeholder
+ *  parity. */
+function slotSet(values) {
+  const slots = [];
+  for (const value of values) {
+    for (const match of value.matchAll(/\{([^{}]*)\}/g)) slots.push(match[1]);
+  }
+  return slots.sort();
+}
+
 function words(text) {
   return (
     text
@@ -269,6 +282,7 @@ export function parseCatalog(source, file) {
       line: lineOf(source, match.index),
       isPlural,
       values: parts.map((p) => collapseSlots(p.value)),
+      slots: slotSet(parts.map((p) => p.value)),
     });
     methodRe.lastIndex = close;
   }
@@ -367,6 +381,12 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
       findings.push(finding(fr.file, frEntry.line, 'plural-parity', `${key}: plural-ness differs between en and fr`, 'catalog'));
     } else if (frEntry.isPlural && (frEntry.values.length < 2 || enEntry.values.length < 2)) {
       findings.push(finding(fr.file, frEntry.line, 'plural-parity', `${key}: a plural message must render both categories (one/other) in both locales`, 'catalog'));
+    }
+    // Placeholder parity: EN and FR must interpolate the SAME format slots.
+    // Rust permits an unused argument, so a translation that drops/renames a
+    // `{…}` slot compiles; this is the check that catches it.
+    if (frEntry.slots.join('') !== enEntry.slots.join('')) {
+      findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders [${frEntry.slots.join(', ')}] differ from en [${enEntry.slots.join(', ')}] — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
     }
   }
 
@@ -519,7 +539,6 @@ export function scanComponentLiterals(file, source) {
     let after = literal.end;
     while (after < skeleton.length && /\s/.test(skeleton[after])) after += 1;
     if (skeleton[after] === ':') continue;
-    if (skeleton[after] === '.') continue; // `"x".to_string()` etc.
 
     // What precedes the opening quote (skeleton, so string contents can't fool
     // the look-behind)?
@@ -527,6 +546,10 @@ export function scanComponentLiterals(file, source) {
     while (before >= 0 && /\s/.test(skeleton[before])) before -= 1;
     const prev = before >= 0 ? skeleton[before] : '';
 
+    // A copy-bearing prop/attr VALUE (`label: "…"`) is checked BEFORE the
+    // method-receiver skip below: `label: "Skip to rooms".to_string()` is the
+    // normal spelling for a `String` prop, and a trailing `.to_string()`/`.into()`
+    // must NOT exempt it — that was the catalog bypass.
     if (prev === ':') {
       const attr = attrNameBefore(source, before);
       if (attr && COPY_ATTRS.has(attr)) {
@@ -534,8 +557,11 @@ export function scanComponentLiterals(file, source) {
       }
       continue; // structural attribute or a non-copy prop
     }
-    // A literal that is a function/macro argument or a method receiver is Rust
-    // code embedded in RSX (e.g. an `if`-let guard), not markup text.
+    // A literal that is a method receiver (`"x".to_string()`) reached HERE — not
+    // a copy-prop value (handled above) — is Rust logic embedded in RSX, not
+    // markup text.
+    if (skeleton[after] === '.') continue;
+    // A literal that is a function/macro argument is likewise Rust code.
     if (prev === '(' || prev === '=' || prev === '&') continue;
 
     findings.push(finding(file, line, 'rust-text', `RSX text is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));

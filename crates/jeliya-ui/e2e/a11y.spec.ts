@@ -55,30 +55,29 @@ test.afterEach(() => {
 test("the settled shell has exactly one main landmark and one h1 on every viewport", async ({ page }, testInfo) => {
   await gotoReadyShell(page);
 
-  // Exactly one <main> and exactly one <h1> in the DOM — on EVERY viewport.
-  // The single h1 lives at the always-rendered root (not a pane-hidden region),
-  // so even on compact, where the `.center` main is display:none, an h1 is
-  // present in the accessibility tree. It is visually hidden by design (the
-  // visible headings are the nav's accessible name and the centre's h2).
+  // Exactly one <main> and one <h1> in the DOM, and the main landmark is
+  // VISIBLE on EVERY viewport — the rooms pane is the main, and `pane-rooms`
+  // keeps it shown on compact too, so no viewport is left without a main in the
+  // accessibility tree. The single h1 lives at the always-rendered root
+  // (visually hidden; the visible headings are the room-list nav's name and the
+  // centre's h2).
   await expect(page.locator("main")).toHaveCount(1);
+  await expect(page.locator("main:visible")).toHaveCount(1);
   await expect(page.locator("h1")).toHaveCount(1);
   await expect(page.locator("#boot-screen")).not.toBeAttached();
 
-  // The sidebar is a NAMED navigation landmark, distinguishable from main.
+  // The room list is a NAMED navigation landmark inside main.
   const nav = page.locator("nav#rooms-nav");
   await expect(nav).toBeVisible();
   await expect(nav).toHaveAttribute("aria-label", /.+/);
 
   if (testInfo.project.name === "wide" || testInfo.project.name === "medium") {
-    // Desktop layouts show both panes: the main landmark is visible and carries
-    // the visible section heading (an h2 under the root h1).
-    await expect(page.locator("main:visible")).toHaveCount(1);
-    await expect(page.locator("main h2:visible")).toHaveCount(1);
+    // Desktop shows the detail pane too, carrying the visible h2 under the h1.
+    await expect(page.locator("#center h2:visible")).toHaveCount(1);
   } else {
-    // Compact/narrow is the pane contract (render.spec pins it): the fixed
-    // `pane-rooms` state shows ONLY the sidebar, so the main region is present
-    // but hidden until pane navigation arrives with the Room Workbench port.
-    await expect(page.locator("main")).not.toBeVisible();
+    // Compact/narrow is the pane contract (render.spec pins it): `pane-rooms`
+    // shows only the rooms (main) pane and hides the `.center` detail section.
+    await expect(page.locator("#center")).not.toBeVisible();
   }
 });
 

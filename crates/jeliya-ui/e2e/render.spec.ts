@@ -131,7 +131,8 @@ test.describe("compact viewport", () => {
 
     await expect(page.locator("#status-footer")).toContainText("Connected");
     await expect(page.locator("#rooms-nav")).toBeVisible();
-    const roomsList = page.locator("#rooms-list");
+    // The room list is the nav#rooms-nav itself (class .rooms-list).
+    const roomsList = page.locator("nav.rooms-list");
     await expect(roomsList).toBeVisible();
     // The scripted mount read must SETTLE, not merely render something:
     // `#rooms-loading` shares the `rooms-empty` class, so a class-based
@@ -142,6 +143,6 @@ test.describe("compact viewport", () => {
     await expect(page.locator("#rooms-empty")).toBeVisible();
     await expect(page.locator("#rooms-loading")).not.toBeAttached();
     // `pane-rooms` shows ONLY the sidebar on compact viewports.
-    await expect(page.locator("#main-content")).not.toBeVisible();
+    await expect(page.locator("#center")).not.toBeVisible();
   });
 });

@@ -25,8 +25,8 @@ use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
 use jeliya_platform::PreferenceKey;
 
 use crate::components::{
-    use_announce_context, BootScreen, EmptyCenter, LiveRegion, MainRegion, NavLandmark,
-    RoomListItem, SkipLink, SkipLinks, StatusFooter,
+    use_announce_context, BootScreen, EmptyCenter, LiveRegion, RoomListItem, SkipLink, SkipLinks,
+    StatusFooter,
 };
 use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
@@ -205,15 +205,13 @@ pub fn AppRoot(
                                 // TERMINAL: this task will not retry, so the
                                 // notice is recorded as terminal and the shell
                                 // shows copy that does not promise a recovery
-                                // that will never come.
+                                // that will never come. `rooms_loaded` stays
+                                // FALSE — a failed read is not a successful empty
+                                // result, so the shell must not announce "0
+                                // rooms" or render "No rooms yet"; the shell
+                                // gates loading/empty on `notice.is_none()`, so a
+                                // terminal notice shows neither (just the error).
                                 state.set_terminal_notice(diagnostic_notice(&error));
-                                // The read has ANSWERED — with a terminal
-                                // error this task will not retry — so the
-                                // loading state must end: leaving
-                                // rooms_loaded false would show
-                                // "Loading rooms…" forever next to the error
-                                // notice with nothing in flight.
-                                state.rooms_loaded = true;
                                 return;
                             }
                         }
@@ -308,6 +306,12 @@ pub fn AppRoot(
                 target: target.to_string(),
                 notice: snapshot.notice.clone(),
             }
+            // Keep the live region mounted in the boot/terminal path too: a
+            // previously-mounted shell that drops to Failed/Stopped renders
+            // BootScreen, and the lifecycle-announce effect writes those
+            // transitions into the announcer — without a region here they would
+            // never be voiced.
+            LiveRegion { message: announcer.message() }
         };
     }
 
@@ -344,39 +348,41 @@ pub fn AppRoot(
         // `app pane-${pane}`; so does this.
         div { class: "app pane-rooms", id: "app-root",
             // The page's single `<h1>`, at the always-rendered root (never a
-            // pane-hidden region), so EVERY viewport — including compact, where
-            // the `.center` main is `display:none` — exposes exactly one h1 in
-            // the accessibility tree. Visually hidden because the visible
-            // section headings (the nav's accessible name, the centre's h2)
-            // already show on screen; the h1 names the page for assistive tech.
+            // pane-hidden region). Visually hidden because the visible headings
+            // (the room-list nav's accessible name, the centre's h2) already
+            // show on screen; the h1 names the page for assistive tech.
             h1 { class: "visually-hidden", "{app_name}" }
-            // The sidebar is a NAMED navigation landmark, so landmark
-            // navigation can distinguish it from the main region and a skip
-            // link can move focus into it.
-            NavLandmark {
-                class: "sidebar".to_string(),
-                id: "rooms-nav".to_string(),
-                label: rooms_label,
-                // The notice lives in the SIDEBAR, not `.center`: on compact
-                // viewports `pane-rooms` hides `.center` entirely, and this
-                // slice's shell is fixed at `pane-rooms`. Primary copy is the
-                // friendly message; the raw detail is in Diagnostics.
+            // The rooms pane is the PRIMARY content of this rooms-first
+            // foundation, so it is the `<main>` landmark — and `pane-rooms`
+            // keeps it visible on EVERY viewport (including compact), so every
+            // viewport has a main landmark in the accessibility tree (the fix
+            // for the compact main gap: the old `.center`-as-main was
+            // `display:none` on compact). The room list within is a `<nav>`.
+            main { class: "sidebar", id: "main-content", tabindex: "-1",
+                // The notice lives here, not the `.center` detail pane, because
+                // `pane-rooms` hides `.center` on compact. Terminal failures get
+                // copy that does not promise a retry (§5.8); the raw detail is
+                // in Diagnostics.
                 if let Some(message) = room_error.as_ref() {
                     div { class: "error-note", id: "notice", "{message}" }
                 }
-                // `.rooms-list` is the scroll container the stylesheet
-                // styles (flex: 1, overflow-y: auto, min-height: 0). Rows as
-                // direct children of `.sidebar` would compress or clip once
-                // the list outgrows the viewport. Mirrors the React shell.
-                div { class: "rooms-list", id: "rooms-list",
-                    // On compact viewports `pane-rooms` shows ONLY the
-                    // sidebar, so an empty room list must render an empty
-                    // state here or a phone lands on a blank main area.
-                    if snapshot.rooms.is_empty() {
-                        // "No rooms yet" is an ANSWER, not a default: before
-                        // the first room.list reply lands, an empty vector
-                        // means "not answered yet", and claiming an empty
-                        // account during a slow read would be false.
+                // `.rooms-list` is the scroll container the stylesheet styles
+                // (flex: 1, overflow-y: auto, min-height: 0). A NAMED `nav` so
+                // landmark navigation can find the room list and the skip link
+                // can move focus into it.
+                nav {
+                    class: "rooms-list",
+                    id: "rooms-nav",
+                    tabindex: "-1",
+                    "aria-label": "{rooms_label}",
+                    // Loading vs empty is shown ONLY when there is no notice: a
+                    // terminal room.list failure is neither "loading" nor an
+                    // empty account (the error note above is the state), so the
+                    // shell must not render "No rooms yet" or announce 0 rooms
+                    // for a failed load.
+                    if snapshot.rooms.is_empty() && snapshot.notice.is_none() {
+                        // "No rooms yet" is an ANSWER, not a default: before the
+                        // first reply an empty vector means "not answered yet".
                         if snapshot.rooms_loaded {
                             div { class: "rooms-empty muted", id: "rooms-empty", "{rooms_empty}" }
                         } else {
@@ -391,16 +397,14 @@ pub fn AppRoot(
                         }
                     }
                 }
-                // The footer sits at the BOTTOM of the sidebar's flex column,
+                // The footer sits at the BOTTOM of the main pane's flex column,
                 // reporting the connection state accessibly and hosting the
                 // Diagnostics disclosure that carries the raw failure detail.
                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.notice.clone() }
             }
-            // The `<main>` landmark. Visible on desktop; `pane-rooms` hides it on
-            // compact (a known limitation of this fixed-pane foundation shell —
-            // the pane-navigation slice exposes per-pane main content). It
-            // carries the centre's own h2, under the root h1.
-            MainRegion { id: "main-content".to_string(), EmptyCenter {} }
+            // The desktop-only detail pane — a plain `<section>` (NOT a second
+            // landmark), `display:none` on compact. Carries the centre's h2.
+            section { class: "center", id: "center", EmptyCenter {} }
             // The single, stable polite live region for connection/content
             // announcements. Visually hidden, so it does not disturb layout.
             LiveRegion { message: announcer.message() }
