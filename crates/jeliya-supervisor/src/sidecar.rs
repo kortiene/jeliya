@@ -168,7 +168,23 @@ impl Sidecar {
                         }
                         Ok(Teardown::Forced)
                     }
-                    Ok(Err(e)) => Err(SupervisorError::Spawn(e)),
+                    Ok(Err(e)) => {
+                        // The wait itself failed while the child (and its isolated
+                        // group) may still be alive. `kill_on_drop(false)` means
+                        // nothing else reaps them, so force-kill the group like the
+                        // timeout arm — a faulty daemon must not linger holding the
+                        // data-dir lock after `shutdown` errors. Surface the wait
+                        // error, folding in any cleanup failure.
+                        match process::force_kill_tree(child).await {
+                            Ok(()) => Err(SupervisorError::Spawn(e)),
+                            Err(kill_err) => Err(SupervisorError::Spawn(std::io::Error::new(
+                                e.kind(),
+                                format!(
+                                    "child.wait() failed ({e}); group cleanup also failed ({kill_err})"
+                                ),
+                            ))),
+                        }
+                    }
                     Err(_elapsed) => {
                         process::force_kill_tree(child)
                             .await
@@ -207,6 +223,10 @@ impl Sidecar {
             crate::portfile::portfile_path(&self.data_dir).try_exists(),
             Ok(true)
         );
+        // Snapshot a handle to the CURRENT `daemon.lock` inode BEFORE the RPC, so
+        // the completion check (below) follows the original inode the daemon holds
+        // even if a cleanup tool unlinks/replaces the path during shutdown.
+        let mut lock_before = validate::open_lock_handle(&self.data_dir);
         // The whole adopted stop is time-boxed by `teardown`, RPC included: a
         // caller-supplied invoker whose transport stalls must not wedge shutdown
         // just because its own future has no timeout. Start the deadline BEFORE
@@ -258,9 +278,10 @@ impl Sidecar {
         // holding `daemon.lock` until exit. A caller that reuses the dir the
         // instant the portfile vanishes could wedge its restart on the still-held
         // lock, so confirm the lock is RELEASED (the process fully exited) — via
-        // the same `fd-lock` the daemon holds — before promising `Graceful`.
+        // the handle snapshotted BEFORE the RPC (the original inode) — before
+        // promising `Graceful`.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if validate::wait_lock_released(&self.data_dir, remaining).await {
+        if validate::wait_lock_handle_released(lock_before.as_mut(), remaining).await {
             Ok(Teardown::Graceful)
         } else {
             Err(SupervisorError::ShutdownTimedOut { pid })

@@ -115,32 +115,23 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
     const MAX_PORTFILE_BYTES: u64 = 64 * 1024;
 
     let path = portfile_path(data_dir);
-    // Stat FIRST (does not open, so it cannot block): a portfile REPLACED by a
-    // FIFO or another special file would otherwise make `File::open` (and then
-    // `read_to_string`) block forever waiting for a writer/EOF — OUTSIDE every
-    // configured timeout and on the caller's executor thread — despite the byte
-    // cap. Only a REGULAR file is opened and read.
-    match std::fs::metadata(&path) {
-        Ok(meta) if meta.is_file() => {}
-        Ok(_) => {
-            return Err(SupervisorError::PortfileUnreadable {
-                path,
-                why: "portfile is not a regular file (FIFO, device, or directory?) — refusing to open it".to_owned(),
-            });
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(SupervisorError::PortfileMissing(path));
-        }
-        Err(err) => {
-            return Err(SupervisorError::PortfileUnreadable {
-                path,
-                why: err.to_string(),
-            });
-        }
+    // Open NONBLOCKING (and no-symlink-follow on Unix), then validate the OPENED
+    // descriptor with `fstat` (via `File::metadata`, which stats the fd — not the
+    // pathname). A stat-then-open leaves a TOCTOU: another process could swap the
+    // regular file for a FIFO between the two path operations, and the open would
+    // block forever on the executor thread waiting for a writer. `O_NONBLOCK` makes
+    // a FIFO open return a fd immediately; the fstat then rejects it BEFORE any
+    // (blocking) read. `O_NOFOLLOW` refuses a symlinked `daemon.json` (the daemon
+    // writes a plain file). Only a REGULAR file is read.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW);
     }
-    let file = match std::fs::File::open(&path) {
+    let file = match opts.open(&path) {
         Ok(file) => file,
-        // Raced with removal between the stat and the open.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(SupervisorError::PortfileMissing(path));
         }
@@ -151,6 +142,21 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
             });
         }
     };
+    match file.metadata() {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            return Err(SupervisorError::PortfileUnreadable {
+                path,
+                why: "portfile is not a regular file (FIFO, device, or directory?) — refusing to read it".to_owned(),
+            });
+        }
+        Err(err) => {
+            return Err(SupervisorError::PortfileUnreadable {
+                path,
+                why: err.to_string(),
+            });
+        }
+    }
     let mut raw = String::new();
     if let Err(err) = file.take(MAX_PORTFILE_BYTES + 1).read_to_string(&mut raw) {
         // A non-UTF-8 body reaches here as `InvalidData` — still "not a readable

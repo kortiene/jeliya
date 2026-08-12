@@ -299,42 +299,46 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
 /// The daemon's advisory lock file name, matching `jeliyad`'s `LOCKFILE_NAME`.
 pub(crate) const LOCKFILE_NAME: &str = "daemon.lock";
 
-/// Poll until `<data_dir>/daemon.lock` can be taken exclusively — i.e. the daemon
-/// RELEASED it — bounded by `budget`. Portfile removal is NOT the daemon's final
-/// act: it removes the portfile, THEN flushes logs and only then `process::exit`s
-/// (jeliyad `main.rs`), holding `daemon.lock` until exit. A caller that reuses the
-/// data dir the instant the portfile vanishes could wedge its restart on the
-/// still-held lock, so an adopted `Graceful` must confirm the lock is free (the
-/// process fully exited). Uses the SAME `fd-lock` advisory lock the daemon holds,
-/// so the observation matches its protocol exactly. Returns `true` if the lock
-/// went free (or never existed) within `budget`.
-pub(crate) async fn wait_lock_released(data_dir: &Path, budget: Duration) -> bool {
-    let lock_path = data_dir.join(LOCKFILE_NAME);
+/// Open a handle to `<data_dir>/daemon.lock` bound to its CURRENT inode, for
+/// [`wait_lock_handle_released`]. Snapshot this BEFORE the stop RPC so the
+/// completion check follows the ORIGINAL inode the daemon holds — a cleanup tool
+/// unlinking or replacing the path afterward cannot substitute a different lock.
+/// `None` when the file is absent or cannot be opened.
+pub(crate) fn open_lock_handle(data_dir: &Path) -> Option<fd_lock::RwLock<std::fs::File>> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data_dir.join(LOCKFILE_NAME))
+        .ok()
+        .map(fd_lock::RwLock::new)
+}
+
+/// Poll a PRE-OPENED lock handle until it can be taken exclusively — i.e. the
+/// daemon RELEASED it (process exited) — bounded by `budget`. Portfile removal is
+/// NOT the daemon's final act: it removes the portfile, THEN flushes logs and only
+/// then `process::exit`s (jeliyad `main.rs`), holding `daemon.lock` until exit, so
+/// an adopted `Graceful` must confirm the lock is free or a caller reusing the dir
+/// could wedge its restart. Polling the SAME handle (a fd on the original inode),
+/// not reopening by path, means a cleanup tool unlinking/replacing `daemon.lock`
+/// cannot fool the check — the fd still refers to the inode the daemon holds.
+/// A `None` handle (no lock existed before the RPC) is treated as released.
+pub(crate) async fn wait_lock_handle_released(
+    handle: Option<&mut fd_lock::RwLock<std::fs::File>>,
+    budget: Duration,
+) -> bool {
+    let Some(lock) = handle else {
+        return true;
+    };
     let deadline = tokio::time::Instant::now() + budget;
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
             return false;
         }
-        match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-        {
-            // Taking the daemon's exclusive lock succeeds only once it is released
-            // (the process exited). The guard drops at the end of the `if`, so the
-            // brief hold does not block the next start.
-            Ok(file) => {
-                if fd_lock::RwLock::new(file).try_write().is_ok() {
-                    return true;
-                }
-            }
-            // No lock file → nothing holds it (the daemon exited / never created
-            // it here).
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return true,
-            // Cannot open it (e.g. permissions on a shared dir): keep waiting
-            // rather than spin, and time out honestly if it never frees.
-            Err(_) => {}
+        // A successful exclusive lock means the daemon released it; the guard is
+        // dropped immediately, so the brief hold does not block the next start.
+        if lock.try_write().is_ok() {
+            return true;
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         tokio::time::sleep(Duration::from_millis(50).min(remaining)).await;
@@ -711,11 +715,13 @@ mod tests {
         );
     }
 
-    /// `wait_lock_released` returns false while the daemon's lock is HELD and true
-    /// once it is free — the completion proof an adopted `Graceful` needs beyond
-    /// portfile removal (the daemon holds `daemon.lock` past the portfile removal).
+    /// The pre-opened lock handle tracks the ORIGINAL inode: it reports "not
+    /// released" while the daemon holds the lock — even after the PATH is unlinked
+    /// — and "released" once the daemon frees it. This is the completion proof an
+    /// adopted `Graceful` needs beyond portfile removal, hardened so a cleanup tool
+    /// unlinking/replacing `daemon.lock` cannot fool it.
     #[test]
-    fn wait_lock_released_waits_for_the_lock_to_free() {
+    fn wait_lock_handle_released_tracks_the_original_inode() {
         let dir = tmp_dir("lockwait");
         let lock_path = dir.join(LOCKFILE_NAME);
         let file = std::fs::OpenOptions::new()
@@ -725,16 +731,39 @@ mod tests {
             .truncate(false)
             .open(&lock_path)
             .unwrap();
-        let mut lock = fd_lock::RwLock::new(file);
-        let guard = lock.try_write().expect("take the lock as the daemon does");
+        let mut daemon_lock = fd_lock::RwLock::new(file);
+        let guard = daemon_lock.try_write().expect("the daemon holds the lock");
 
-        // While HELD, a short budget must time out (not report released).
-        let held = rt().block_on(wait_lock_released(&dir, Duration::from_millis(200)));
-        assert!(!held, "a held lock must not be reported released");
+        // A handle snapshotted as `stop_adopted` does before the RPC.
+        let mut handle = open_lock_handle(&dir).expect("open the lock handle");
 
-        // Release, then it must observe the free lock.
+        // While HELD, a short budget times out (not released).
+        assert!(
+            !rt().block_on(wait_lock_handle_released(
+                Some(&mut handle),
+                Duration::from_millis(200)
+            )),
+            "a held lock must not be reported released"
+        );
+
+        // Unlink the PATH: our handle still refers to the original inode the daemon
+        // holds, so absence of the path must NOT be read as release.
+        std::fs::remove_file(&lock_path).ok();
+        assert!(
+            !rt().block_on(wait_lock_handle_released(
+                Some(&mut handle),
+                Duration::from_millis(200)
+            )),
+            "unlinking daemon.lock must not fool the completion check"
+        );
+
+        // Release → observed as released.
         drop(guard);
-        let freed = rt().block_on(wait_lock_released(&dir, Duration::from_secs(2)));
+        let freed = rt().block_on(wait_lock_handle_released(
+            Some(&mut handle),
+            Duration::from_secs(2),
+        ));
+        drop(daemon_lock);
         std::fs::remove_dir_all(&dir).ok();
         assert!(freed, "a freed lock must be observed as released");
     }
