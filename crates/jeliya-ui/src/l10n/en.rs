@@ -189,6 +189,19 @@ impl Catalog for En {
         }
     }
 
+    fn format_just_now(&self) -> &'static str {
+        "just now"
+    }
+    fn format_minutes_ago(&self, n: &str) -> String {
+        format!("{n}m ago")
+    }
+    fn format_hours_ago(&self, n: &str) -> String {
+        format!("{n}h ago")
+    }
+    fn format_days_ago(&self, n: &str) -> String {
+        format!("{n}d ago")
+    }
+
     fn client_status(&self, lifecycle: &str) -> String {
         format!(
             "client {dot} {lifecycle}",

@@ -17,9 +17,10 @@
 //! widening later changes this table, not the call sites.
 //!
 //! Scope of THIS foundation slice: the full §4-D4 EN/FR convention table —
-//! number, percent, and byte formatting, the `Today`/`Yesterday` relative-time
-//! vocabulary, plus `clock` (English 12-hour / French 24-hour) and `date` (day +
-//! localized month name, `2 January` / `2 janvier`). Only broad CLDR coverage for
+//! number, percent, and byte formatting, the `Today`/`Yesterday` day-divider
+//! vocabulary, `clock` (English 12-hour / French 24-hour), `date` (day +
+//! localized month name, `2 January` / `2 janvier`), and `rel_time` (relative
+//! age, `just now` / `{n}m ago` / `il y a {n} min`). Only broad CLDR coverage for
 //! an arbitrary THIRD formatting locale (e.g. `de-CH`, which React got free from
 //! `Intl`) is still deferred — to a product-surface slice and its `icu4x`
 //! dependency decision (spec §14 Q2). The seam accepts any tag upstream, so
@@ -194,6 +195,43 @@ impl Formats {
             None => day.to_string(),
         }
     }
+
+    /// A relative age — `just now` / `{n}m ago` / `{n}h ago` / `{n}d ago`
+    /// (`à l’instant` / `il y a {n} min` / `il y a {n} h` / `il y a {n} j`) — for
+    /// display only, NEVER a liveness claim. The vocabulary follows the TEXT
+    /// locale; the number is grouped under the FORMATTING locale (via
+    /// [`Formats::count`]), the same text-vs-formatting split as the rest of the
+    /// seam.
+    ///
+    /// Takes the already-elapsed milliseconds so the seam stays pure (the wall
+    /// clock is the caller's — and the platform's — concern, never a shared
+    /// component's). `elapsed_ms` is SIGNED and CLAMPED at zero: a negative value
+    /// (a future timestamp from clock skew or a bad caller) renders `just now`,
+    /// never `-2m ago`. Buckets and half-up rounding mirror the retiring client
+    /// (`ui/src/l10n/formats.ts`): `< 45s` → just now; else minutes `< 60`; else
+    /// hours `< 24`; else days.
+    pub fn rel_time(self, elapsed_ms: i64) -> String {
+        let strings = self.strings();
+        let delta = elapsed_ms.max(0);
+        // Half-up rounding on non-negative integer milliseconds (matches JS
+        // `Math.round`): add half the unit before the truncating division.
+        const MIN: i64 = 60_000;
+        const HOUR: i64 = 3_600_000;
+        const DAY: i64 = 86_400_000;
+        if delta < 45_000 {
+            return strings.format_just_now().to_owned();
+        }
+        let mins = (delta + MIN / 2) / MIN;
+        if mins < 60 {
+            return strings.format_minutes_ago(&self.count(mins as u64));
+        }
+        let hours = (delta + HOUR / 2) / HOUR;
+        if hours < 24 {
+            return strings.format_hours_ago(&self.count(hours as u64));
+        }
+        let days = (delta + DAY / 2) / DAY;
+        strings.format_days_ago(&self.count(days as u64))
+    }
 }
 
 /// Insert `separator` every three digits from the right of a run of ASCII
@@ -339,6 +377,62 @@ mod tests {
         // instead of panicking or emitting a trailing space.
         assert_eq!(Formats::new(Locale::En, Locale::En).date(14, 0), "14");
         assert_eq!(Formats::new(Locale::En, Locale::En).date(14, 13), "14");
+    }
+
+    #[test]
+    fn rel_time_buckets_and_rounds_like_the_retiring_client() {
+        let en = Formats::new(Locale::En, Locale::En);
+        // `< 45s` is "just now"; the 45s boundary rounds up into the minutes
+        // bucket (round(45000/60000) = 1).
+        assert_eq!(en.rel_time(0), "just now");
+        assert_eq!(en.rel_time(44_999), "just now");
+        assert_eq!(en.rel_time(45_000), "1m ago");
+        // Half-up rounding on minutes (2.5 min → 3), matching JS `Math.round`.
+        assert_eq!(en.rel_time(150_000), "3m ago");
+        // Minutes roll into hours at 60, hours into days at 24.
+        assert_eq!(en.rel_time(59 * 60_000), "59m ago");
+        assert_eq!(en.rel_time(60 * 60_000), "1h ago");
+        assert_eq!(en.rel_time(23 * 3_600_000), "23h ago");
+        assert_eq!(en.rel_time(24 * 3_600_000), "1d ago");
+        assert_eq!(en.rel_time(3 * 86_400_000), "3d ago");
+    }
+
+    #[test]
+    fn rel_time_clamps_a_future_timestamp_to_just_now() {
+        // A negative elapsed (future timestamp: clock skew or a bad caller) is
+        // clamped to zero — "just now", never "-2m ago".
+        let en = Formats::new(Locale::En, Locale::En);
+        assert_eq!(en.rel_time(-120_000), "just now");
+        let fr = Formats::new(Locale::Fr, Locale::Fr);
+        assert_eq!(fr.rel_time(-1), "à l\u{2019}instant");
+    }
+
+    #[test]
+    fn rel_time_vocabulary_follows_text_and_number_follows_formatting() {
+        // Vocabulary from the TEXT locale, the grouped number from the FORMATTING
+        // locale. French words + English grouping vs the reverse.
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::Fr).rel_time(5 * 60_000),
+            "il y a 5 min"
+        );
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::En).rel_time(5 * 60_000),
+            "il y a 5 min"
+        );
+        assert_eq!(
+            Formats::new(Locale::En, Locale::En).rel_time(2 * 3_600_000),
+            "2h ago"
+        );
+        // A day count large enough to group proves the number follows the
+        // FORMATTING locale: French grouping inserts U+202F, English a comma.
+        assert_eq!(
+            Formats::new(Locale::En, Locale::Fr).rel_time(1234 * 86_400_000),
+            "1\u{202f}234d ago"
+        );
+        assert_eq!(
+            Formats::new(Locale::Fr, Locale::En).rel_time(1234 * 86_400_000),
+            "il y a 1,234 j"
+        );
     }
 
     #[test]

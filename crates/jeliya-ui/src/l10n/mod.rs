@@ -296,6 +296,21 @@ pub trait Catalog {
     /// crashing a render; callers pass 1–12.
     fn month_name(&self, month: u32) -> Option<&'static str>;
 
+    /// Relative-time vocabulary (text locale), the `< 45s` bucket:
+    /// English `just now`, French `à l’instant`. Selection lives in
+    /// [`format::Formats::rel_time`]; the number (when present) is grouped under
+    /// the formatting locale.
+    fn format_just_now(&self) -> &'static str;
+    /// Relative-time vocabulary: `{n}` minutes ago. English `{n}m ago`, French
+    /// `il y a {n} min`. `n` is pre-formatted under the formatting locale.
+    fn format_minutes_ago(&self, n: &str) -> String;
+    /// Relative-time vocabulary: `{n}` hours ago. English `{n}h ago`, French
+    /// `il y a {n} h`.
+    fn format_hours_ago(&self, n: &str) -> String;
+    /// Relative-time vocabulary: `{n}` days ago. English `{n}d ago`, French
+    /// `il y a {n} j`.
+    fn format_days_ago(&self, n: &str) -> String;
+
     /// The status footer sentence: `client · {lifecycle}`.
     fn client_status(&self, lifecycle: &str) -> String;
 

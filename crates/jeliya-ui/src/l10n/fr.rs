@@ -190,6 +190,19 @@ impl Catalog for Fr {
         }
     }
 
+    fn format_just_now(&self) -> &'static str {
+        "à l’instant"
+    }
+    fn format_minutes_ago(&self, n: &str) -> String {
+        format!("il y a {n} min")
+    }
+    fn format_hours_ago(&self, n: &str) -> String {
+        format!("il y a {n} h")
+    }
+    fn format_days_ago(&self, n: &str) -> String {
+        format!("il y a {n} j")
+    }
+
     fn client_status(&self, lifecycle: &str) -> String {
         format!(
             "client {dot} {lifecycle}",
