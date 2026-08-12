@@ -153,13 +153,11 @@ impl Supervisor {
     /// Blocks until the daemon has announced itself and passed validation, so an
     /// `Ok` sidecar is bound and answering — not still starting.
     pub async fn start_or_adopt(&self) -> Result<Sidecar, SupervisorError> {
-        // Gate a stale incompatible portfile before spawning over it — but ONLY
-        // when the caller did NOT opt into replacement. With
-        // `replace_incompatible = true` the flow instead reaches the eviction
-        // path (spawn → `already_running` → prove-owned → evict-or-refuse), which
-        // is where an incompatible incumbent is meant to be handled; gating there
-        // would pre-empt it. The eviction respawn passes `false` too.
-        self.start_or_adopt_inner(self.replace_incompatible, !self.replace_incompatible)
+        // Gate the initial entry: a stale incompatible portfile is refused before
+        // spawning over it. The gate itself defers to the eviction path only for
+        // a genuinely LIVE incompatible incumbent under `replace_incompatible`
+        // (see `start_or_adopt_inner`); the eviction respawn passes `false`.
+        self.start_or_adopt_inner(self.replace_incompatible, true)
             .await
     }
 
@@ -179,28 +177,34 @@ impl Supervisor {
                 })?;
 
             // Gate an INCOMPATIBLE existing portfile BEFORE spawning. If the data
-            // dir holds a v1 (or otherwise incompatible) `daemon.json` whose old
-            // daemon no longer holds the lock, spawning first lets the fresh v2
-            // daemon initialize and OVERWRITE `daemon.json` with v2 fields before
-            // we ever read it — so validation would see the replacement and
-            // succeed, silently discarding the clean-slate reset the mismatch is
-            // supposed to trigger. Read the evidence first: a present portfile
-            // that declares an incompatible generation fails closed as
-            // `GenerationMismatch` (clean-slate: v1 data is disposable, but the
-            // user gets the actionable reset, not a silent overwrite). A missing,
-            // torn, or already-compatible portfile falls through to the normal
-            // spawn/adopt path. Skipped on the eviction respawn, where replacing
-            // the incumbent's portfile is intended.
+            // dir holds a v1 (or otherwise incompatible) `daemon.json`, spawning
+            // first lets the fresh v2 daemon initialize and OVERWRITE it with v2
+            // fields before we ever read it — so validation would see the
+            // replacement and succeed, silently opening v1 storage and discarding
+            // the clean-slate reset the mismatch must trigger.
+            //
+            // The refusal fires for a STALE incompatible portfile REGARDLESS of
+            // `replace_incompatible`: with no live daemon there is nothing to
+            // evict, so `replace_incompatible` alone must NOT license a silent
+            // overwrite. It is skipped ONLY when the incumbent is genuinely LIVE
+            // and the caller opted into replacement — then the spawn reaches the
+            // eviction path (`already_running` → prove-owned → SIGTERM →
+            // respawn), which is where a live incompatible incumbent is replaced.
+            // (`gate_incompatible` is also false on the eviction respawn itself.)
             if gate_incompatible {
                 if let Ok(existing) =
                     portfile::read_portfile(&self.data_dir, self.strict_portfile_perms)
                 {
                     let declared = existing.declared_generation();
                     if !self.expected.matches(declared) {
-                        return Err(SupervisorError::GenerationMismatch {
-                            expected: self.expected,
-                            actual: declared,
-                        });
+                        let live_replaceable = self.replace_incompatible
+                            && validate::prove_owned(&existing, &self.timeouts).await;
+                        if !live_replaceable {
+                            return Err(SupervisorError::GenerationMismatch {
+                                expected: self.expected,
+                                actual: declared,
+                            });
+                        }
                     }
                 }
             }

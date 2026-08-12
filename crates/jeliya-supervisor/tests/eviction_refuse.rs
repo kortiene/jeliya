@@ -183,6 +183,49 @@ async fn a_stale_incompatible_portfile_is_refused_before_spawning() {
     }
 }
 
+/// The P1 corner: `replace_incompatible = true` must NOT license a silent
+/// overwrite of a STALE incompatible portfile (no live daemon). With no live
+/// incumbent the eviction path is never reached, so the gate must still fire —
+/// `replace_incompatible` defers to eviction only for a genuinely LIVE incumbent.
+#[tokio::test]
+async fn a_stale_incompatible_portfile_is_refused_even_with_replace_enabled() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-pregate2-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    let stub = root.join("jeliyad-fresh");
+    write_ready_stub(&stub);
+    let dead_port = dead_loopback_port();
+
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub),
+        // Opted into replacement — but the incumbent is STALE (dead port), so the
+        // gate, not a silent overwrite, is what must happen.
+        replace_incompatible: true,
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+    let portfile_json = format!(
+        r#"{{"schema":1,"pid":1,"port":{dead_port},"protocol":1,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let result = sup.start_or_adopt().await;
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        matches!(result, Err(SupervisorError::GenerationMismatch { .. })),
+        "a stale incompatible portfile must be refused even with replace_incompatible; got: {result:?}"
+    );
+}
+
 /// A stub that announces a valid `ready` line and then blocks — a "fresh
 /// daemon". Used to prove the pre-spawn gate fires WITHOUT spawning it (if it
 /// were spawned, the announcement would drive the owned path, not a refusal).
