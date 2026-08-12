@@ -153,12 +153,20 @@ impl Supervisor {
     /// Blocks until the daemon has announced itself and passed validation, so an
     /// `Ok` sidecar is bound and answering — not still starting.
     pub async fn start_or_adopt(&self) -> Result<Sidecar, SupervisorError> {
-        self.start_or_adopt_inner(self.replace_incompatible).await
+        // Gate a stale incompatible portfile before spawning over it — but ONLY
+        // when the caller did NOT opt into replacement. With
+        // `replace_incompatible = true` the flow instead reaches the eviction
+        // path (spawn → `already_running` → prove-owned → evict-or-refuse), which
+        // is where an incompatible incumbent is meant to be handled; gating there
+        // would pre-empt it. The eviction respawn passes `false` too.
+        self.start_or_adopt_inner(self.replace_incompatible, !self.replace_incompatible)
+            .await
     }
 
     fn start_or_adopt_inner<'a>(
         &'a self,
         allow_evict: bool,
+        gate_incompatible: bool,
     ) -> crate::error::BoxFuture<'a, Result<Sidecar, SupervisorError>> {
         // Boxed so the one-shot evict→respawn recursion has a concrete future
         // type (async fns cannot recurse without indirection).
@@ -170,17 +178,54 @@ impl Supervisor {
                     tried: self.binary_tried.clone(),
                 })?;
 
+            // Gate an INCOMPATIBLE existing portfile BEFORE spawning. If the data
+            // dir holds a v1 (or otherwise incompatible) `daemon.json` whose old
+            // daemon no longer holds the lock, spawning first lets the fresh v2
+            // daemon initialize and OVERWRITE `daemon.json` with v2 fields before
+            // we ever read it — so validation would see the replacement and
+            // succeed, silently discarding the clean-slate reset the mismatch is
+            // supposed to trigger. Read the evidence first: a present portfile
+            // that declares an incompatible generation fails closed as
+            // `GenerationMismatch` (clean-slate: v1 data is disposable, but the
+            // user gets the actionable reset, not a silent overwrite). A missing,
+            // torn, or already-compatible portfile falls through to the normal
+            // spawn/adopt path. Skipped on the eviction respawn, where replacing
+            // the incumbent's portfile is intended.
+            if gate_incompatible {
+                if let Ok(existing) =
+                    portfile::read_portfile(&self.data_dir, self.strict_portfile_perms)
+                {
+                    let declared = existing.declared_generation();
+                    if !self.expected.matches(declared) {
+                        return Err(SupervisorError::GenerationMismatch {
+                            expected: self.expected,
+                            actual: declared,
+                        });
+                    }
+                }
+            }
+
             let (mut child, stdin, mut lines) = self.spawn(&binary).await?;
             let announced = match read_announcement(&mut lines, self.timeouts.spawn).await {
                 Ok(line) => line,
                 Err(e) => {
-                    // No announcement. The daemon may have exited WITHOUT one
-                    // because the data-dir lock is held with no healthy daemon:
-                    // jeliyad's `wait_for_free_lock` exits non-zero and silent in
-                    // that case, so stdout closes before any line. That is the
-                    // retryable `Wedged` verdict ("starting, retry in a moment"),
-                    // not a generic handshake failure. Drop our stdin and read the
-                    // child's exit (bounded); a non-zero exit is `Wedged`. A zero
+                    // No announcement. The most common cause of a non-zero
+                    // SILENT exit is the data-dir lock being held with no healthy
+                    // daemon (jeliyad's `wait_for_free_lock` exits 1 without a
+                    // line), which is the retryable `Wedged` verdict ("starting,
+                    // retry in a moment"). jeliyad ALSO exits 1 silently on a
+                    // genuine startup failure (lockfile open, token, engine init,
+                    // limits, portfile write) — and the daemon gives the
+                    // supervisor no way to tell the two apart from the exit alone
+                    // (same code, no line). `Wedged` is the safe default for
+                    // both: a held lock clears on the caller's BOUNDED retry,
+                    // while a persistent startup failure simply exhausts that
+                    // retry budget and surfaces — whereas mislabelling a held
+                    // lock as a hard failure would abort a recoverable start. (A
+                    // precise split would need distinct daemon exit codes, a
+                    // jeliyad change outside this crate.) Drop our stdin and read
+                    // the child's exit (bounded); a non-zero exit is `Wedged`. A
+                    // zero
                     // exit or a still-running child (force-killed) keeps the
                     // original handshake error.
                     drop(stdin);
@@ -351,7 +396,7 @@ impl Supervisor {
                     {
                         // Respawn exactly once (no further eviction), against the
                         // now-free data dir.
-                        self.start_or_adopt_inner(false).await
+                        self.start_or_adopt_inner(false, false).await
                     } else {
                         Err(SupervisorError::ShutdownTimedOut { pid: portfile.pid })
                     }

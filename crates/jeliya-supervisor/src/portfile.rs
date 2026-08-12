@@ -95,11 +95,13 @@ pub(crate) fn portfile_path(data_dir: &Path) -> PathBuf {
 
 /// Read and parse the portfile from `data_dir`, whole (a `0600` atomic
 /// temp+rename write means a *readable* file is never half of one). `strict`
-/// refuses a group/other-readable portfile on Unix (OQ-3 strict mode);
-/// otherwise permissiveness is tolerated (the loopback threat model treats the
-/// file as inherently local-user-readable), and the non-strict default is
-/// warn-and-proceed — the supervisor logs nothing itself, leaving the decision
-/// to the caller's policy.
+/// refuses a group/other-readable portfile on Unix (OQ-3 strict mode) as the
+/// token-leak enforcement; the NON-strict default SILENTLY proceeds — it does
+/// NOT check permissions and emits no warning, because this crate is headless
+/// and links no logger, and the loopback threat model treats the portfile as
+/// inherently local-user-readable. A caller that needs the permission guard on
+/// a shared host must opt into `strict_portfile_perms`. (Non-strict is not
+/// "warn-and-proceed": there is nowhere to warn.)
 pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, SupervisorError> {
     let path = portfile_path(data_dir);
     let raw = match std::fs::read_to_string(&path) {

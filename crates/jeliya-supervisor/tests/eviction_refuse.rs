@@ -125,6 +125,77 @@ async fn a_silent_nonzero_exit_surfaces_wedged_not_handshake() {
     );
 }
 
+/// The P1 pre-spawn gate: a data dir holding a stale INCOMPATIBLE portfile
+/// (v1, no live daemon) must fail closed with `GenerationMismatch` BEFORE the
+/// v2 daemon is spawned — otherwise the fresh daemon overwrites `daemon.json`
+/// with v2 fields and validation would see only the replacement and succeed,
+/// silently discarding the clean-slate reset. Default config (no
+/// `replace_incompatible`), so the gate — not the eviction path — is what fires.
+#[tokio::test]
+async fn a_stale_incompatible_portfile_is_refused_before_spawning() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-pregate-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+
+    // A stub that WOULD announce `ready` (a fresh daemon) if spawned — proving
+    // the refusal happens BEFORE the spawn, not via the daemon.
+    let stub = root.join("jeliyad-fresh");
+    write_ready_stub(&stub);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data.clone()),
+        binary: Some(stub),
+        // NOT opting into replacement — the default pure-adopter path.
+        replace_incompatible: false,
+        timeouts: short_timeouts(),
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+
+    // A v1 (incompatible) portfile recording THIS dir, with no live daemon.
+    let portfile_json = format!(
+        r#"{{"schema":1,"pid":1,"port":9,"protocol":1,"data_dir":{data:?},"auth_token":"t"}}"#
+    );
+    std::fs::write(sup.data_dir().join("daemon.json"), &portfile_json).expect("write portfile");
+
+    let result = sup.start_or_adopt().await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    match result {
+        Err(SupervisorError::GenerationMismatch { actual, .. }) => {
+            assert_eq!(
+                actual.protocol,
+                Some(1),
+                "the refusal must carry the incompatible portfile's protocol"
+            );
+        }
+        other => panic!(
+            "a stale incompatible portfile must be refused with GenerationMismatch \
+             before spawning; got: {other:?}"
+        ),
+    }
+}
+
+/// A stub that announces a valid `ready` line and then blocks — a "fresh
+/// daemon". Used to prove the pre-spawn gate fires WITHOUT spawning it (if it
+/// were spawned, the announcement would drive the owned path, not a refusal).
+fn write_ready_stub(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(
+        path,
+        "#!/bin/sh\necho '{\"event\":\"ready\",\"pid\":424242,\"port\":9}'\nsleep 600\n",
+    )
+    .expect("write ready stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
 /// Fault #15-adjacent: a spawned binary that announces `already_running` and
 /// then never exits must NOT wedge `start_or_adopt` forever. The adopted-path
 /// child wait is bounded by `Timeouts::spawn`; on expiry the owned probe child

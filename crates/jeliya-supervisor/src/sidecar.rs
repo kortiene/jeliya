@@ -104,15 +104,28 @@ impl Sidecar {
     /// [`Teardown::Forced`] (no cleanup ran, so a stale `daemon.json` may
     /// remain, which the next start's health check discards).
     pub async fn shutdown(mut self) -> Result<Teardown, SupervisorError> {
+        // Borrowed before the `&mut self.ownership` match so the portfile path is
+        // available inside the arms (disjoint field).
+        let data_dir = self.data_dir.clone();
         match &mut self.ownership {
             Ownership::Adopted => Ok(Teardown::LeftRunning),
             Ownership::Owned { child, stdin } => {
                 // Closing stdin is the graceful `--supervised` signal.
                 drop(stdin.take());
                 match tokio::time::timeout(self.timeouts.teardown, child.wait()).await {
-                    // A clean (zero) exit ran the daemon's own teardown: portfile
-                    // removed, state flushed → `Graceful`.
-                    Ok(Ok(status)) if status.success() => Ok(Teardown::Graceful),
+                    // A zero exit is NOT itself proof of completed cleanup: the
+                    // daemon discards its room-close result and only LOGS a failed
+                    // `daemon.json` removal, so it can exit 0 with cleanup
+                    // incomplete. `Graceful` is promised only when the portfile is
+                    // actually gone (its removal is the daemon's final step); a
+                    // lingering portfile means cleanup did not finish → `Forced`.
+                    Ok(Ok(status)) if status.success() => {
+                        if crate::portfile::portfile_path(&data_dir).exists() {
+                            Ok(Teardown::Forced)
+                        } else {
+                            Ok(Teardown::Graceful)
+                        }
+                    }
                     // The daemon exited abnormally (crashed / was externally
                     // killed) before or during shutdown. Its cleanup may not have
                     // run — a stale `daemon.json` or half-written state may remain
@@ -156,10 +169,12 @@ impl Sidecar {
         // surfaces `ShutdownTimedOut` rather than hanging here forever.
         let deadline = tokio::time::Instant::now() + self.timeouts.teardown;
         // Ask the daemon to shut itself down over the caller's RPC. A failure
-        // here is surfaced, not swallowed — the caller decides whether to retry.
+        // here is surfaced as the dedicated `ShutdownRpcFailed` — NOT `Handshake`
+        // (a startup-announcement error) — so a caller can apply shutdown-
+        // specific retry/reporting policy. The caller decides whether to retry.
         match tokio::time::timeout(self.timeouts.teardown, shutdown_rpc()).await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(SupervisorError::Handshake(e.to_string())),
+            Ok(Err(e)) => return Err(SupervisorError::ShutdownRpcFailed(e.to_string())),
             Err(_elapsed) => return Err(SupervisorError::ShutdownTimedOut { pid }),
         }
         // Confirm it actually went dark; we never signalled it, so the RPC is
@@ -319,6 +334,90 @@ mod tests {
                 "an abnormal (non-zero) owned exit is not Graceful — cleanup may not have run"
             );
         });
+    }
+
+    /// An owned daemon that exits ZERO but leaves its `daemon.json` behind did
+    /// not finish cleanup, so `shutdown` must report `Forced`, not `Graceful`.
+    /// Red-before: before the portfile-removal check, any zero exit → `Graceful`.
+    #[test]
+    fn shutdown_reports_forced_when_a_zero_exit_leaves_the_portfile() {
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!(
+            "jeliya-sup-cleanup-{}-{}",
+            std::process::id(),
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A portfile the "daemon" fails to remove (the stub just exits 0).
+        std::fs::write(dir.join("daemon.json"), r#"{"pid":1,"port":9}"#).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        let teardown = rt.block_on(async {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c").arg("exit 0").stdin(Stdio::piped());
+            let mut child = cmd.spawn().expect("spawn stub child");
+            let stdin = child.stdin.take();
+            let portfile: crate::portfile::Portfile = serde_json::from_str(
+                r#"{"pid":1,"port":9,"protocol":2,"storage_generation":2,
+                   "data_dir":"/d","auth_token":"t"}"#,
+            )
+            .unwrap();
+            let sidecar = Sidecar {
+                portfile,
+                ownership: Ownership::Owned { child, stdin },
+                data_dir: dir.clone(),
+                expected: crate::generation::Generation::new(2, 2),
+                strict_portfile_perms: false,
+                timeouts: crate::supervisor::Timeouts {
+                    teardown: Duration::from_secs(5),
+                    ..crate::supervisor::Timeouts::default()
+                },
+            };
+            sidecar.shutdown().await.expect("shutdown resolves")
+        });
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            teardown,
+            Teardown::Forced,
+            "a zero exit that left the portfile is not Graceful — cleanup did not finish"
+        );
+    }
+
+    /// A `stop_adopted` whose RPC returns an error surfaces the dedicated
+    /// `ShutdownRpcFailed`, NOT `Handshake` (a startup-announcement error).
+    #[test]
+    fn stop_adopted_maps_an_rpc_error_to_shutdown_rpc_failed() {
+        let portfile: crate::portfile::Portfile = serde_json::from_str(
+            r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,
+               "data_dir":"/d","auth_token":"t"}"#,
+        )
+        .unwrap();
+        let sidecar = Sidecar {
+            portfile,
+            ownership: Ownership::Adopted,
+            data_dir: std::path::PathBuf::from("/d"),
+            expected: crate::generation::Generation::new(2, 2),
+            strict_portfile_perms: false,
+            timeouts: crate::supervisor::Timeouts::default(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let result =
+            rt.block_on(sidecar.stop_adopted(|| {
+                Box::pin(async { Err(CallerRpcError("access denied".to_owned())) })
+            }));
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownRpcFailed(_))),
+            "an RPC error must be ShutdownRpcFailed, not Handshake; got: {result:?}"
+        );
     }
 
     /// A never-resolving `shutdown_rpc` must not wedge `stop_adopted`: it is

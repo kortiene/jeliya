@@ -108,6 +108,13 @@ pub enum SupervisorError {
         pid: u32,
     },
 
+    /// The caller-supplied `daemon.stop` RPC itself failed (authorization,
+    /// transport loss, or a server-side error) — distinct from a startup
+    /// handshake failure so a caller can apply shutdown-specific retry/reporting
+    /// policy rather than reading "jeliyad did not announce itself".
+    #[error("the daemon.stop RPC failed: {0}")]
+    ShutdownRpcFailed(String),
+
     /// The portfile records a data dir different from the one this supervisor
     /// resolved. A `daemon.json` copied/restored from another install keeps the
     /// original's `data_dir` (and PID/port/token), so validating it would attach
