@@ -29,6 +29,23 @@ use crate::portfile::{self, Portfile};
 use crate::supervisor::Timeouts;
 use crate::target::advertised_endpoint_is_loopback;
 
+/// A monotonic deadline `budget` from now, SATURATING instead of panicking on an
+/// absurd configuration. `Timeouts` is a public type with no upper bound, so a
+/// caller setting `teardown`/`evict`/etc. to `Duration::MAX` (or any value past
+/// the `Instant` range) must not make `Instant + Duration` overflow and panic
+/// before any work runs. On overflow the deadline clamps to a far-future instant,
+/// which every call site already treats as "effectively unbounded" via
+/// `saturating_duration_since` / `tokio::time::timeout`. Fully checked: no add
+/// here can panic.
+pub(crate) fn deadline_from(budget: Duration) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(budget)
+        // ~1 year is far past any real budget yet always representable from a
+        // fresh monotonic `now`; if even that overflowed, fall back to `now`.
+        .or_else(|| now.checked_add(Duration::from_secs(60 * 60 * 24 * 365)))
+        .unwrap_or(now)
+}
+
 /// A portfile that passed every gate, plus the health response that proved it.
 #[derive(Debug)]
 pub(crate) struct Validated {
@@ -123,19 +140,23 @@ pub(crate) async fn validate_portfile(
 
 /// Whether the portfile's recorded `data_dir` fails to match `resolved` (the
 /// directory this supervisor manages, already canonicalized in
-/// `Supervisor::resolve`). Both sides are canonicalized before comparison so
-/// `/var` vs `/private/var`, symlinks, and path spelling compare like-with-like
-/// — the daemon canonicalizes its own recorded `data_dir` too. A recorded path
-/// that no longer exists (canonicalize fails) is compared raw and, absent an
-/// exact match, treated as a mismatch: a portfile pointing at a directory that
-/// is not the one in hand is never trusted. Returns the error to raise, or
-/// `None` when they match.
+/// `Supervisor::resolve`). The two are compared by their CANONICAL SPELLING —
+/// directly, WITHOUT re-canonicalizing the recorded path. Both sides are already
+/// canonical: the supervisor canonicalizes `resolved`, and the daemon writes its
+/// own `fs::canonicalize`d `data_dir` into the portfile at startup, so a byte
+/// comparison is the correct like-with-like check.
+///
+/// Re-`canonicalize`ing the RECORDED path would FOLLOW it through the filesystem
+/// as it exists NOW, which is an attack surface: the recorded string is untrusted
+/// (a copied/rewritten portfile), so a recorded path later replaced with a
+/// symlink pointing at THIS directory would resolve equal even though the daemon
+/// the portfile names still serves the ORIGINAL directory inode — letting
+/// adoption attach to, and eviction signal, a foreign daemon. A stale or
+/// rewritten recorded path simply fails to match and is refused (fail-closed): a
+/// portfile pointing at a directory that is not the one in hand is never trusted.
+/// Returns the error to raise, or `None` when they match.
 pub(crate) fn data_dir_mismatch(resolved: &Path, recorded: &str) -> Option<SupervisorError> {
-    let recorded_path = Path::new(recorded);
-    let recorded_canonical = recorded_path
-        .canonicalize()
-        .unwrap_or_else(|_| recorded_path.to_path_buf());
-    if recorded_canonical == resolved || recorded_path == resolved {
+    if Path::new(recorded) == resolved {
         None
     } else {
         Some(SupervisorError::DataDirMismatch {
@@ -224,7 +245,7 @@ pub(crate) async fn wait_health_dark(
     budget: Duration,
     timeouts: &Timeouts,
 ) -> bool {
-    let deadline = tokio::time::Instant::now() + budget;
+    let deadline = deadline_from(budget);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -270,7 +291,7 @@ pub(crate) async fn wait_health_dark(
 /// state and holding its lock). Returns `true` if it was removed in time.
 pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> bool {
     let path = portfile::portfile_path(data_dir);
-    let deadline = tokio::time::Instant::now() + budget;
+    let deadline = deadline_from(budget);
     loop {
         // Check the DEADLINE before accepting absence, every iteration: the
         // clamped sleep can wake at `deadline + ε`, and accepting a removal
@@ -313,6 +334,26 @@ pub(crate) fn open_lock_handle(data_dir: &Path) -> Option<fd_lock::RwLock<std::f
         .map(fd_lock::RwLock::new)
 }
 
+/// Whether a snapshotted lock handle is CURRENTLY held by someone else — the
+/// live daemon. Snapshotting the path only proves we opened *an* inode, not that
+/// it is the one the daemon holds: if `daemon.lock` was unlinked and replaced
+/// before the snapshot, [`open_lock_handle`] captures the fresh REPLACEMENT inode
+/// (which nobody holds) while the daemon still holds the original unlinked inode.
+/// Taking that replacement exclusively later would read as "released" and promise
+/// a premature `Graceful`. So callers verify BEFORE the stop RPC that the snapshot
+/// is already locked: an adopted daemon we are about to stop must be holding
+/// `daemon.lock` right now, so a `try_write` that SUCCEEDS proves the handle is
+/// the wrong inode — the caller then discards it and fails closed. The transient
+/// guard from a successful `try_write` is dropped immediately, so this never
+/// leaves the lock held. `None` (no handle) is not held.
+pub(crate) fn lock_handle_is_held(handle: Option<&mut fd_lock::RwLock<std::fs::File>>) -> bool {
+    match handle {
+        // `try_write` err (would-block) == someone else holds it == the daemon.
+        Some(lock) => lock.try_write().is_err(),
+        None => false,
+    }
+}
+
 /// Poll a PRE-OPENED lock handle until it can be taken exclusively — i.e. the
 /// daemon RELEASED it (process exited) — bounded by `budget`. Portfile removal is
 /// NOT the daemon's final act: it removes the portfile, THEN flushes logs and only
@@ -337,7 +378,7 @@ pub(crate) async fn wait_lock_handle_released(
     let Some(lock) = handle else {
         return false;
     };
-    let deadline = tokio::time::Instant::now() + budget;
+    let deadline = deadline_from(budget);
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
@@ -787,6 +828,94 @@ mod tests {
         assert!(
             !rt().block_on(wait_lock_handle_released(None, Duration::from_millis(50))),
             "a missing lock snapshot is unproven, not released"
+        );
+    }
+
+    /// `lock_handle_is_held` distinguishes the daemon-held lock from an unrelated
+    /// (replaced) inode. `stop_adopted` uses it pre-RPC to reject a snapshot that
+    /// is NOT the daemon's lock — a free handle would otherwise later lock
+    /// trivially and read as the daemon's exit.
+    #[test]
+    fn lock_handle_is_held_detects_the_daemon_held_lock() {
+        let dir = tmp_dir("lockheld");
+        let lock_path = dir.join(LOCKFILE_NAME);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        let mut daemon_lock = fd_lock::RwLock::new(file);
+
+        // Nobody holds it yet: an opened handle is NOT held.
+        let mut free = open_lock_handle(&dir).expect("open handle");
+        assert!(
+            !lock_handle_is_held(Some(&mut free)),
+            "a free lock is not held"
+        );
+        drop(free);
+
+        // The daemon takes the lock exclusively → a fresh snapshot IS held.
+        let guard = daemon_lock.try_write().expect("daemon holds the lock");
+        let mut snap = open_lock_handle(&dir).expect("open handle");
+        assert!(
+            lock_handle_is_held(Some(&mut snap)),
+            "a daemon-held lock is held"
+        );
+
+        // A `None` handle is never held.
+        assert!(!lock_handle_is_held(None), "no handle is not held");
+
+        drop(guard);
+        drop(snap);
+        drop(daemon_lock);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `deadline_from` SATURATES on an absurd budget instead of panicking: a public
+    /// `Timeouts` field set to `Duration::MAX` must not overflow `Instant + Duration`
+    /// before any work runs. Red-before: the pre-fix `Instant::now() + budget`
+    /// panicked on `Duration::MAX`.
+    #[test]
+    fn deadline_from_saturates_instead_of_panicking() {
+        rt().block_on(async {
+            let base = tokio::time::Instant::now();
+            // Would panic pre-fix; must clamp far into the future instead.
+            let far = deadline_from(Duration::MAX);
+            assert!(
+                far > base + Duration::from_secs(60 * 60 * 24 * 300),
+                "an absurd budget saturates far into the future, not a panic"
+            );
+            // A normal budget is still honored to within scheduling slack.
+            let soon = deadline_from(Duration::from_secs(5));
+            assert!(
+                soon >= base + Duration::from_secs(4) && soon <= base + Duration::from_secs(7),
+                "a normal budget lands at ~now + budget"
+            );
+        });
+    }
+
+    /// `data_dir_mismatch` must NOT follow the untrusted recorded path through the
+    /// filesystem: a recorded path replaced with a SYMLINK to `resolved` is still a
+    /// MISMATCH. Red-before: the pre-fix `canonicalize()` followed the link and
+    /// returned `None` (a false match), letting adoption attach to a foreign daemon.
+    #[cfg(unix)]
+    #[test]
+    fn data_dir_mismatch_does_not_follow_a_recorded_symlink() {
+        use std::os::unix::fs::symlink;
+        let base = tmp_dir("ddsym");
+        let resolved = base.join("real");
+        let foreign = base.join("foreign");
+        std::fs::create_dir_all(&resolved).unwrap();
+        // A copied portfile records `foreign`; an attacker later replaces it with a
+        // symlink to `resolved`.
+        symlink(&resolved, &foreign).unwrap();
+        let result = data_dir_mismatch(&resolved, foreign.to_str().unwrap());
+        std::fs::remove_dir_all(&base).ok();
+        assert!(
+            matches!(result, Some(SupervisorError::DataDirMismatch { .. })),
+            "a recorded symlink to the resolved dir must NOT be followed; got: {result:?}"
         );
     }
 

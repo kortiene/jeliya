@@ -227,12 +227,21 @@ impl Sidecar {
         // the completion check (below) follows the original inode the daemon holds
         // even if a cleanup tool unlinks/replaces the path during shutdown.
         let mut lock_before = validate::open_lock_handle(&self.data_dir);
+        // Verify the snapshot is actually the daemon-held lock. A live adopted
+        // daemon must be holding `daemon.lock` right now, so it must NOT be
+        // exclusively lockable. If it is (the path was unlinked and replaced before
+        // the snapshot, so we captured a fresh unrelated inode), discard it: the
+        // completion gate then sees `None` and fails closed, rather than reading
+        // the replacement's trivial "release" as the daemon's exit.
+        if !validate::lock_handle_is_held(lock_before.as_mut()) {
+            lock_before = None;
+        }
         // The whole adopted stop is time-boxed by `teardown`, RPC included: a
         // caller-supplied invoker whose transport stalls must not wedge shutdown
         // just because its own future has no timeout. Start the deadline BEFORE
         // the RPC and bound the RPC against it, so a never-resolving invoker
         // surfaces `ShutdownTimedOut` rather than hanging here forever.
-        let deadline = tokio::time::Instant::now() + self.timeouts.teardown;
+        let deadline = validate::deadline_from(self.timeouts.teardown);
         // Ask the daemon to shut itself down over the caller's RPC. A failure
         // here is surfaced as the dedicated `ShutdownRpcFailed` — NOT `Handshake`
         // (a startup-announcement error) — so a caller can apply shutdown-
