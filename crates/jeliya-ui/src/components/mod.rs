@@ -52,7 +52,21 @@ pub fn BootScreen(target: String, notice: Option<String>) -> Element {
     let strings = use_strings();
     let brand = strings.app_name();
     rsx! {
-        main { class: "boot-screen", id: "boot-screen",
+        main {
+            class: "boot-screen",
+            id: "boot-screen",
+            // Focusable and focused on mount: when this cover REPLACES the shell (a
+            // `Ready → Stopping`/`Stopped`/`Failed` transition, possibly with the
+            // Diagnostics dialog open), keyboard/screen-reader focus lands on the
+            // cover's heading region instead of falling to the document body — the
+            // dialog's opener is unmounted with the shell, so its focus-restoration
+            // path cannot run (§5.6).
+            tabindex: "-1",
+            onmounted: move |evt: MountedEvent| {
+                spawn(async move {
+                    let _ = evt.set_focus(true).await;
+                });
+            },
             h1 { "{brand}" }
             p { class: "boot-target mono", "{target}" }
             if let Some(notice) = notice.as_ref() {

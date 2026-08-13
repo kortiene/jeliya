@@ -235,20 +235,26 @@ export function scanRustSource(source) {
     // delimiter inside it (`'}'`, `'{'`, `'"'`) is not counted as macro/RSX
     // structure or mistaken for a string start.
     if (ch === "'") {
+      // A BYTE literal `b'A'` renders a `u8` number, not text — mask it for delimiter
+      // balancing but do NOT record it as copy. `b` must be a standalone prefix, not
+      // the tail of an identifier (`numb`), so the char before it is a non-word char.
+      const isByte = source[i - 1] === 'b' && !(i - 2 >= 0 && /\w/.test(source[i - 2]));
       if (source[i + 1] === '\\') {
         let j = i + 2;
         while (j < source.length && source[j] !== "'" && source[j] !== '\n') j += 1;
         if (source[j] === "'") {
           // RECORD the char before masking: a `char` rendered as UI copy
           // (`let label = 'A'; "{label}"`) must be validated like a one-char string.
-          literals.push({
-            start: i,
-            end: j + 1,
-            contentStart: i + 1,
-            contentEnd: j,
-            value: unescapeRust(source.slice(i + 1, j)),
-            raw: false,
-          });
+          if (!isByte) {
+            literals.push({
+              start: i,
+              end: j + 1,
+              contentStart: i + 1,
+              contentEnd: j,
+              value: unescapeRust(source.slice(i + 1, j)),
+              raw: false,
+            });
+          }
           blank(i, j + 1);
           i = j + 1;
           continue;
@@ -262,14 +268,16 @@ export function scanRustSource(source) {
         const width = scalar !== undefined && scalar > 0xffff ? 2 : 1;
         const close = i + 1 + width;
         if (source[close] === "'") {
-          literals.push({
-            start: i,
-            end: close + 1,
-            contentStart: i + 1,
-            contentEnd: close,
-            value: source.slice(i + 1, close),
-            raw: false,
-          });
+          if (!isByte) {
+            literals.push({
+              start: i,
+              end: close + 1,
+              contentStart: i + 1,
+              contentEnd: close,
+              value: source.slice(i + 1, close),
+              raw: false,
+            });
+          }
           blank(i, close + 1);
           i = close + 1;
           continue;
@@ -353,7 +361,11 @@ function words(text) {
       .normalize('NFD')
       .replace(/[̀-ͯ]/g, '')
       .toLowerCase()
-      .match(/[a-z]+/g) ?? []
+      // Unicode letters, not ASCII only: an identical EN/FR value in another script
+      // (`"Удалить"`, `"删除"`) is translatable copy, so it must yield words and NOT be
+      // auto-exempted as language-neutral. The automatic exemption stays only for
+      // values that truly contain no letters.
+      .match(/\p{L}+/gu) ?? []
   );
 }
 
@@ -1543,6 +1555,24 @@ export function scanComponentLiterals(file, source) {
     while (p >= 0 && /\s/.test(skeleton[p])) p -= 1;
     const pc = p >= 0 ? skeleton[p] : '';
     if (pc === '{' || pc === '}' || pc === '"') copyInterpolations.add(m[1]);
+  }
+
+  // Propagate copy-flow through ALIAS bindings: `let label = base;` (RHS a bare
+  // identifier). If the alias NAME is copy-bearing, so is its SOURCE binding — and
+  // transitively along a chain — so a `let base = "…"` behind the alias is still
+  // caught. Iterate to a fixpoint over `let NAME = IDENT;` (the RHS is a bare ident, so
+  // a string/call/path RHS — including the literal itself — never matches).
+  const aliasRe = /\blet\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::\s*[^=;{}]*)?=\s*([A-Za-z_]\w*)\s*;/g;
+  for (let grew = true; grew; ) {
+    grew = false;
+    aliasRe.lastIndex = 0;
+    for (let m = aliasRe.exec(skeleton); m; m = aliasRe.exec(skeleton)) {
+      if (inTest(m.index)) continue;
+      if (copyInterpolations.has(m[1]) && !copyInterpolations.has(m[2])) {
+        copyInterpolations.add(m[2]);
+        grew = true;
+      }
+    }
   }
 
   // Copy HELPER functions: a literal-returning fn INVOKED in an RSX copy position

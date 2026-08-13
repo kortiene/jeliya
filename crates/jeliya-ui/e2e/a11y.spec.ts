@@ -201,6 +201,34 @@ test("the Diagnostics dialog traps focus, closes on Escape, and returns focus to
     .toBe("diagnostics-open");
 });
 
+test("a terminal cover that replaces an open dialog takes focus, not the body", async ({ page }) => {
+  // Arm the marker-gated connection hook (no `?boot=`, so the shell still reaches Ready).
+  await page.addInitScript(() => {
+    window.localStorage.setItem("jeliya-e2e-boot-fixture", "1");
+  });
+  await gotoReadyShell(page);
+  await openDiagnostics(page);
+  await expect(page.locator("#dialog-backdrop")).toBeAttached();
+  // Drive a TERMINAL transition (Ready → Failed) while Diagnostics is open: the shell
+  // and the dialog's opener unmount together, so the opener's focus-restoration cannot
+  // run. The cover must take focus, not let it fall to the document body.
+  await page.waitForFunction(
+    () =>
+      typeof (window as unknown as { __jeliyaE2eConnState?: unknown }).__jeliyaE2eConnState ===
+      "function",
+  );
+  await page.evaluate(() =>
+    (window as unknown as { __jeliyaE2eConnState: (s: string) => void }).__jeliyaE2eConnState(
+      "failed",
+    ),
+  );
+  await expect(page.locator("#boot-screen")).toBeVisible();
+  await expect(page.locator("#dialog-backdrop")).not.toBeAttached();
+  await expect
+    .poll(async () => page.evaluate(() => document.activeElement?.id ?? "<none>"))
+    .toBe("boot-screen");
+});
+
 test("the room-count live region announces the settled count exactly once", async ({ page }) => {
   await gotoReadyShell(page);
 

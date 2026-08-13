@@ -2022,6 +2022,33 @@ test('literal scan: a checkbox value is structural, a text value is copy (#274 3
   );
 });
 
+test('rule 1: identical non-Latin copy is not language-neutral (#274 36-unicodeword)', () => {
+  const src = `impl Catalog for En { fn del(&self) -> &'static str { "Удалить" } }`;
+  const codes = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('fr-untranslated'),
+    'identical Cyrillic "Удалить" contains letters, so it is untranslated, not language-neutral',
+  );
+});
+
+test('literal scan: a byte literal is not char copy (#274 36-byteliteral)', () => {
+  const source = `fn C() -> Element { let label = b'A'; rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    !findings.some((f) => f.code === 'rust-text'),
+    "a byte literal b'A' renders a u8 number, not copy",
+  );
+});
+
+test('literal scan: copy reached through a binding alias is flagged (#274 36-alias)', () => {
+  const source = `fn C() -> Element { let base = "Delete account"; let label = base; rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy aliased (let label = base) then rendered must be flagged',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,
