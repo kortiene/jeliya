@@ -78,3 +78,12 @@ name = "kernel_fault"
 # deterministic in-memory controller, so CI runs:
 # `cargo test -p jeliya-client --features test-transport`
 required-features = ["test-transport"]
+
+[[test]]
+name = "reconcile_driver"
+# End-to-end tests for the async reconciler driver (#169 §7 step 10):
+# bootstrap, reconnect, resume, overflow recovery, and clean stop — each
+# running the full Reconciler::run() loop against the deterministic mock backend
+# via futures::executor::LocalPool (clock-free, no tokio). CI runs:
+# `cargo test -p jeliya-client --features mock`
+required-features = ["mock"]

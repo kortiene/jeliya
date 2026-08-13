@@ -160,6 +160,71 @@
   tests and adapters. The kernel adds no new runtime dependency; no concrete
   socket is implemented (those are #171/#172/#173). MSRV 1.91.
 
+- `crates/jeliya-client` gains the authoritative room/session reconciler
+  (#169): the transport-independent coordinator that sits *above* the seam and
+  ensures every detectable push gap, reconnect, local fan-out overflow, and
+  Android process-resume produces the **same** authoritative re-baseline, and
+  nothing else does. Like the kernel, it is a **sans-IO core**
+  (`src/reconcile/core.rs`) wrapped by a thin async driver
+  (`src/reconcile/driver.rs`); every fault case — push during bootstrap,
+  reconnect during open, repeated gaps, overflow, cancellation, resume, stale
+  generations — is a deterministic `step(Input) -> Vec<Action>` sequence,
+  identical on wasm and native. It consumes the seam's `EventSubscription` and
+  issues reads through `ClientHandle::call`; the seam and kernel are
+  **unchanged**.
+
+  Key guarantees:
+
+  - **Every gap reason is observable.** `ResyncReason` is emitted at the *start*
+    of every reconciliation, before the baseline read settles: `Bootstrap`,
+    `Reconnect`, `Gap { reason, to }` (wire cause preserved so `backpressure`
+    / `retention` / `subscription_lapse` stay distinguishable),
+    `LocalOverflow { dropped }` (fan-out `Lagged` or per-room buffer overflow),
+    `ResyncRequiredByDaemon { from_pos }`, and `Resume`.
+  - **One serialized, coalesced reconciliation per room.** At most one baseline
+    read is in flight per room at a time; a new trigger while one runs coalesces
+    into a single pending re-run keeping the highest-priority reason. Repeated
+    flap therefore yields one in-flight + one queued reconciliation, never an
+    unbounded stack.
+  - **Overflow cannot permanently deduplicate an undelivered event.** The dedup
+    watermark and recent-`event_id` ring record only events the reconciler
+    *applied and delivered*; an overflowed push leaves the dedup structures
+    untouched for its range and is re-read by the forced fresh baseline.
+  - **Convergence by signed evidence.** Baseline reads (`room.timeline` or
+    `stream.resync`) and buffered live pushes converge by `pos` (ordering),
+    `event_id` (dedup), and signed `at`/`author` (insertion authority). A hole
+    in the applied position range is a protocol violation → fresh resync.
+  - **Peer state replaced, never merged.** `room.members` and `room.peers` are
+    replaced wholesale from authoritative reads on every reconciliation that
+    implicates presence (bootstrap, reconnect, resume, daemon-forced). A
+    stale-generation `peer` teardown cannot resurrect a member an authoritative
+    read removed.
+  - **Generation fencing at the coordinator.** A reconciler-local monotonic
+    epoch advances on every liveness (re)establishment; a baseline completing
+    under a stale epoch is discarded (`DropStale`), never applied.
+  - **DirectClient resume without a fabricated reconnect.** `Reconciler::resume`
+    triggers the same bounded re-baseline with `reason = Resume` and emits no
+    synthetic `StateChanged` — the transport did not drop.
+  - **Bounded by construction.** All reconciler collections carry hard bounds
+    from `ReconcileLimits`: per-room buffer depth (count + bytes), dedup-window
+    size, active-room ceiling (excess refused with `ReconcileError::TooManyRooms`,
+    never silently dropped), and read-page size. In-flight plus queued
+    reconciliations per room are capped at two.
+
+  New public types: `Reconciler`, `ReconcileConfig`, `ReconcileLimits`,
+  `ResyncReason`, `ResyncRequired`, `RoomView`, `RoomUpdate`,
+  `RoomUpdateSubscription`, `ReconcileError` (all re-exported from
+  `jeliya_client`). `RoomUpdate::Resyncing` carries the cause before the
+  outcome; `RoomUpdate::Converged` carries the authoritative view, with later
+  converged views per room coalescing so a stalled consumer's mailbox is bounded
+  by `max_active_rooms`, not by event rate. The reconciler adds no new runtime
+  dependency; `tests/boundaries.rs` gains a source scan asserting no
+  `std::time`, `Instant::now`, `SystemTime`, `getrandom`, `rand`, or `tokio`
+  token appears in `src/reconcile/**`. The adapter-facing test suites
+  (`tests/reconcile.rs` + `tests/reconcile_driver.rs`) and the four transport
+  adapters (#171/#172/#173) with their parity suite (#175) follow as separate
+  issues. MSRV 1.91.
+
 ### Fixed
 
 - A room list backed by a daemon that supplies **no** `last_event_ts` can raise
