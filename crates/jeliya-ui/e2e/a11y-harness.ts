@@ -86,6 +86,20 @@ export async function gotoReadyShell(page: Page): Promise<void> {
   await expect(page.locator("#rooms-loading")).not.toBeAttached();
 }
 
+// Load the Ready shell with a POPULATED room list (`?rooms=N`, honored by
+// `web_composition`), so the target-size sweep measures real `.room-select` rows
+// — the empty shell renders none. Marker-gated exactly like `gotoBootCover`, so
+// the fixture never activates in production.
+export async function gotoReadyShellWithRooms(page: Page, count: number): Promise<void> {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("jeliya-e2e-boot-fixture", "1");
+  });
+  await page.goto(`/?rooms=${count}`);
+  await expect(page.locator("#boot-screen")).not.toBeAttached();
+  await expect(page.locator("#rooms-loading")).not.toBeAttached();
+  await expect(page.locator(".room-select").first()).toBeVisible();
+}
+
 // Load the app into the deterministic BOOT/terminal cover fixture
 // (`?boot=<state>`, honored by WebRoot) and wait until the cover is mounted and
 // the shell is NOT — so the boot branch, unreachable once the mock settles, can

@@ -192,8 +192,14 @@ The three text gates are near-instant, so four separate contexts are cheap; a ma
 ### 6.3 Branch-protection change and proof (out of PR diff)
 Adding a context to required checks is a repository setting, **not** part of any PR's file diff (the `jeliya-ui-web` job comment and the accessibility-checklist "Known gaps" both state this). The maintainer/orchestrator must:
 1. Merge the PR that introduces the jobs (so the context names exist on `main`).
-2. Add `ui-catalog`, `ui-literal-copy`, `ui-french-typography`, `ui-a11y-foundation` (and confirm `jeliya-ui-web`) to `main` branch protection.
-3. **Prove it:** `gh api repos/kortiene/jeliya/branches/main/protection/required_status_checks` (with `env -u GITHUB_TOKEN` per the local-dev gotcha) must list the four contexts; capture that output as the required-check evidence #197 consumes.
+2. Add the four **check-RUN names** to `main` branch protection (and confirm `jeliya-ui-web`). GitHub matches a required status check by its check-run name — each job's `name:` value, **not** the job id — so require these exact contexts (job id in parentheses):
+   - `jeliya-ui catalog parity (EN/FR)` (job `ui-catalog`)
+   - `jeliya-ui literal copy (no hardcoded UI strings)` (job `ui-literal-copy`)
+   - `jeliya-ui French typography` (job `ui-french-typography`)
+   - `jeliya-ui accessibility matrix (axe + keyboard)` (job `ui-a11y-foundation`)
+
+   Requiring the job ids (`ui-catalog`, …) instead would never bind — no run publishes those names (see the note at `.github/workflows/ci.yml`).
+3. **Prove it:** `gh api repos/kortiene/jeliya/branches/main/protection/required_status_checks` (with `env -u GITHUB_TOKEN` per the local-dev gotcha) must list those four check-run names; capture that output as the required-check evidence #197 consumes.
 
 This phase (spec) and the implementing phase **do not** run git/gh; the spec documents the procedure and the proof command so the maintainer can complete and evidence it.
 

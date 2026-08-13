@@ -25,8 +25,8 @@ use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
 use jeliya_platform::PreferenceKey;
 
 use crate::components::{
-    use_announce_context, BootScreen, EmptyCenter, LiveRegion, RoomListItem, SkipLink, SkipLinks,
-    StatusFooter,
+    use_announce_context, BootScreen, EmptyCenter, LiveRegion, NavLandmark, RoomListItem, SkipLink,
+    SkipLinks, StatusFooter,
 };
 use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
@@ -41,13 +41,20 @@ use crate::PlatformServices;
 /// `Connecting` → `Ready`) is deliberately silent — those are not problem states,
 /// so a first `Ready` seeded from them (or from a subscribe-time `Interrupted`
 /// snapshot, which correctly DOES announce the recovery) is classified honestly.
-fn announces_connection_change(prev: Option<State>, to: State) -> bool {
+///
+/// `through_problem` is the event's `coalesced_through_problem` flag: under
+/// backpressure the client coalesces a queued `Ready → Interrupted` + `Interrupted
+/// → Ready` into a net `Ready → Ready` with honest endpoints, so `prev`/`to` alone
+/// no longer reveal the drop; the flag records that the window passed through a
+/// problem, so the recovery is still announced on resume (§5.6 / §K12).
+fn announces_connection_change(prev: Option<State>, to: State, through_problem: bool) -> bool {
     let is_problem = matches!(to, State::Interrupted | State::Failed | State::Stopped);
     let recovered = to == State::Ready
-        && matches!(
-            prev,
-            Some(State::Interrupted | State::Failed | State::Stopped)
-        );
+        && (through_problem
+            || matches!(
+                prev,
+                Some(State::Interrupted | State::Failed | State::Stopped)
+            ));
     is_problem || recovered
 }
 
@@ -277,8 +284,13 @@ pub fn AppRoot(
                 // because those `from`s are not problem states.
                 while let Some(event) = events.next().await {
                     ui.write().apply_event(&event);
-                    if let ClientEvent::StateChanged { from, to } = event {
-                        if announces_connection_change(Some(from), to) {
+                    if let ClientEvent::StateChanged {
+                        from,
+                        to,
+                        coalesced_through_problem,
+                    } = event
+                    {
+                        if announces_connection_change(Some(from), to, coalesced_through_problem) {
                             let resolved = locale.peek();
                             let word =
                                 crate::l10n::wire::status_for(catalog_for(resolved.text), to);
@@ -418,11 +430,15 @@ pub fn AppRoot(
                     if let Some(message) = room_error.as_ref() {
                         div { class: "error-note", id: "notice", "{message}" }
                     }
-                    nav {
+                    // The room list is a NAMED navigation landmark — routed through
+                    // the shared `NavLandmark` primitive (Decision-6), not a raw
+                    // `nav`, so accessibility invariants added to the primitive reach
+                    // the primary room route and cannot be bypassed. `NavLandmark`
+                    // renders the same `nav` with `aria-label`/`tabindex="-1"`.
+                    NavLandmark {
                         class: "rooms-list",
                         id: "rooms-nav",
-                        tabindex: "-1",
-                        "aria-label": "{rooms_label}",
+                        label: "{rooms_label}",
                         // Loading vs empty is shown ONLY when there is no notice: a
                         // terminal failure is neither "loading" nor an empty
                         // account, so the shell must not render "No rooms yet" or
@@ -484,15 +500,31 @@ mod tests {
         // `None` seed this went unannounced.
         assert!(announces_connection_change(
             Some(State::Interrupted),
-            State::Ready
+            State::Ready,
+            false
         ));
         assert!(announces_connection_change(
             Some(State::Failed),
-            State::Ready
+            State::Ready,
+            false
         ));
         assert!(announces_connection_change(
             Some(State::Stopped),
-            State::Ready
+            State::Ready,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_coalesced_problem_window_still_announces_the_recovery() {
+        // Backpressure coalesces `Ready → Interrupted` + `Interrupted → Ready` into a
+        // net `Ready → Ready` with HONEST endpoints and `coalesced_through_problem`
+        // set. `from`/`to` alone read as no change, so the flag is what keeps the
+        // recovery audible on resume (§K12).
+        assert!(announces_connection_change(
+            Some(State::Ready),
+            State::Ready,
+            true
         ));
     }
 
@@ -501,25 +533,29 @@ mod tests {
         // Seeded from the boot states (or `None`), a first `Ready` announces nothing.
         assert!(!announces_connection_change(
             Some(State::Idle),
-            State::Ready
+            State::Ready,
+            false
         ));
         assert!(!announces_connection_change(
             Some(State::Connecting),
-            State::Ready
+            State::Ready,
+            false
         ));
-        assert!(!announces_connection_change(None, State::Ready));
-        // Ready → Ready (a coalesced repeat) is not a transition to announce.
+        assert!(!announces_connection_change(None, State::Ready, false));
+        // Ready → Ready with NO problem in the window (a plain coalesced repeat) is
+        // not a transition to announce.
         assert!(!announces_connection_change(
             Some(State::Ready),
-            State::Ready
+            State::Ready,
+            false
         ));
     }
 
     #[test]
     fn a_drop_to_a_problem_state_is_always_announced() {
         for to in [State::Interrupted, State::Failed, State::Stopped] {
-            assert!(announces_connection_change(Some(State::Ready), to));
-            assert!(announces_connection_change(None, to));
+            assert!(announces_connection_change(Some(State::Ready), to, false));
+            assert!(announces_connection_change(None, to, false));
         }
     }
 }

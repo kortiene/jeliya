@@ -19,7 +19,7 @@
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use jeliya_api::{RoomList, RoomListOut};
+use jeliya_api::{LastEvent, Role, RoomId, RoomList, RoomListOut, RoomRow, Standing};
 use jeliya_client::mock::{MockController, MockScript, Program};
 use jeliya_client::{ClientHandle, State};
 
@@ -51,7 +51,9 @@ pub fn web_composition() -> WebComposition {
     let (handle, controller) = MockScript::new()
         .on(
             "room.list",
-            Program::reply_ok::<RoomList>(&RoomListOut { rooms: Vec::new() }),
+            Program::reply_ok::<RoomList>(&RoomListOut {
+                rooms: fixture_rooms(),
+            }),
         )
         .build();
     WebComposition {
@@ -175,6 +177,64 @@ fn boot_fixture_state() -> Option<State> {
     #[cfg(not(feature = "web"))]
     {
         None
+    }
+}
+
+/// Synthetic room rows for the a11y matrix's POPULATED-shell fixture (`?rooms=N`,
+/// marker-gated, web only). The default shell renders an EMPTY list, so the
+/// target-size sweep never measures `.room-select` rows; this fixture populates
+/// them so their geometry is under test. Empty on every other target and in
+/// production (no marker), which render the honest empty list. Mirrors the
+/// `test_room` shape used by the state-fold unit tests.
+fn fixture_rooms() -> Vec<RoomRow> {
+    (0..rooms_fixture_count())
+        .map(|i| RoomRow {
+            room_id: RoomId::new(format!("fixture-room-{i}")),
+            name: format!("Fixture room {i}"),
+            standing: Standing::Active,
+            live: false,
+            role: Role::Member,
+            member_count: 1,
+            last_event: LastEvent::Absent,
+            capabilities: Vec::new(),
+        })
+        .collect()
+}
+
+/// The room count a `?rooms=N` query parameter requests (a11y matrix populated-shell
+/// fixture; web only, gated on the SAME `localStorage` marker as `?boot=`, so
+/// production never arms it). `0` everywhere else and for any absent/invalid value,
+/// and capped so a hand-typed `?rooms=99999` cannot bloat the fixture.
+fn rooms_fixture_count() -> usize {
+    #[cfg(feature = "web")]
+    {
+        let Some(window) = web_sys::window() else {
+            return 0;
+        };
+        let armed = window
+            .local_storage()
+            .ok()
+            .flatten()
+            .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+            .as_deref()
+            == Some("1");
+        if !armed {
+            return 0;
+        }
+        let Ok(search) = window.location().search() else {
+            return 0;
+        };
+        search
+            .trim_start_matches('?')
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("rooms="))
+            .and_then(|n| n.parse::<usize>().ok())
+            .map(|n| n.min(50))
+            .unwrap_or(0)
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        0
     }
 }
 

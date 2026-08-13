@@ -1319,6 +1319,11 @@ button.sender-name:not(:disabled):hover {
   min-width: 0;
   text-align: left;
   padding: 9px 10px;
+  /* Meet the 44px target-size floor (§7): 9px padding around a single-line label
+     leaves the row ~38px, below the compact/narrow minimum. border-box so the
+     min-height INCLUDES the padding rather than stacking on top. */
+  box-sizing: border-box;
+  min-height: 44px;
   border-radius: 11px;
   border: none;
   background: transparent;

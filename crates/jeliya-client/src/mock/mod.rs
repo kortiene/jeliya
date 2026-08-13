@@ -201,7 +201,11 @@ impl MockInner {
     fn transition(&mut self, to: State) {
         let from = self.state;
         self.state = to;
-        self.bus.broadcast(ClientEvent::StateChanged { from, to });
+        self.bus.broadcast(ClientEvent::StateChanged {
+            from,
+            to,
+            coalesced_through_problem: false,
+        });
     }
 
     /// Fully resolve a deliverable step: broadcast any `before` events, then

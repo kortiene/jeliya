@@ -61,10 +61,20 @@ pub enum State {
 pub enum ClientEvent {
     /// A lifecycle transition ([`State`], §D4).
     StateChanged {
-        /// The state left.
+        /// The state left. Under coalescing this stays the EARLIEST origin (the
+        /// broadcast contract), so consumers that fold transitions see a
+        /// consistent `from`/`to` chain.
         from: State,
         /// The state entered.
         to: State,
+        /// Set only when this transition was produced by COALESCING and its window
+        /// passed through a problem state (`Interrupted`) not reflected in
+        /// `from`/`to`. Under backpressure a queued `Ready → Interrupted` merges
+        /// with a following `Interrupted → Ready` into a net `Ready → Ready`: the
+        /// endpoints stay honest while this flag preserves that a problem occurred,
+        /// so a resumed subscriber can still announce the recovery. `false` for
+        /// every non-coalesced transition.
+        coalesced_through_problem: bool,
     },
     /// A live room push that is neither a gap nor a resync: the wire `event`,
     /// `peer`, and `transfer` pushes, unchanged from `jeliya-api`.
@@ -323,23 +333,25 @@ impl EventBus {
                         // capacity ordinary events no longer append, so the
                         // tail stays a StateChanged once flapping begins and
                         // the bound holds.
-                        if let Some(ClientEvent::StateChanged { from, to }) =
-                            state.buffer.back_mut()
+                        if let Some(ClientEvent::StateChanged {
+                            to,
+                            coalesced_through_problem,
+                            ..
+                        }) = state.buffer.back_mut()
                         {
                             if matches!(*to, State::Connecting | State::Ready | State::Interrupted)
                             {
-                                // PRESERVE problem-state evidence: if the transition being
-                                // erased (the tail's current `to`) was a drop to
-                                // `Interrupted`, carry it into `from` so the merged
-                                // transition starts FROM the problem. Otherwise a queued
+                                // PRESERVE problem-state evidence WITHOUT rewriting the
+                                // origin: `from` stays the earliest state (the broadcast
+                                // contract; folding consumers rely on it). If the
+                                // transition being erased (the tail's current `to`) was a
+                                // drop to `Interrupted`, record it in the flag so a queued
                                 // `Ready → Interrupted` coalesced with `Interrupted → Ready`
-                                // would become a net `Ready → Ready`, hiding the
-                                // interruption — the connection live region would stay
-                                // silent after a stalled UI resumes. With `from` carried,
-                                // the subscriber instead sees `Interrupted → Ready`, a
-                                // recovery it can announce (§5.6 / §K12).
+                                // — a net `Ready → Ready` — still tells a resumed
+                                // subscriber a problem occurred, and the connection live
+                                // region announces the recovery (§5.6 / §K12).
                                 if matches!(*to, State::Interrupted) {
-                                    *from = *to;
+                                    *coalesced_through_problem = true;
                                 }
                                 *to = *new_to;
                                 merged = true;
@@ -497,15 +509,18 @@ mod tests {
             bus.broadcast(ClientEvent::StateChanged {
                 from: State::Ready,
                 to: State::Interrupted,
+                coalesced_through_problem: false,
             });
             bus.broadcast(ClientEvent::StateChanged {
                 from: State::Interrupted,
                 to: State::Ready,
+                coalesced_through_problem: false,
             });
         }
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Ready,
             to: State::Stopped,
+            coalesced_through_problem: false,
         });
         let state = sub.state.lock().expect("subscriber poisoned");
         assert!(
@@ -526,10 +541,10 @@ mod tests {
     }
 
     /// Coalescing must not hide a problem state: a queued `Ready →
-    /// Interrupted` merged with a following `Interrupted → Ready` becomes
-    /// `Interrupted → Ready` (a recovery a subscriber can announce), NEVER a
-    /// net `Ready → Ready` that erases the interruption — otherwise a stalled
-    /// UI resuming leaves the connection live region silent (§5.6 / §K12).
+    /// Interrupted` merged with a following `Interrupted → Ready` keeps HONEST
+    /// endpoints (`from: Ready, to: Ready` — `from` is never rewritten) but sets
+    /// `coalesced_through_problem`, so a resumed subscriber can still announce the
+    /// recovery instead of a silent net `Ready → Ready` (§5.6 / §K12).
     #[test]
     fn coalescing_preserves_a_drop_so_recovery_stays_observable() {
         let bus = EventBus::new();
@@ -545,23 +560,26 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Ready,
             to: State::Interrupted,
+            coalesced_through_problem: false,
         });
         // Recovery at capacity coalesces into that `Ready → Interrupted` tail.
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Interrupted,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         let state = sub.state.lock().expect("subscriber poisoned");
         assert!(
             matches!(
                 state.buffer.back(),
                 Some(ClientEvent::StateChanged {
-                    from: State::Interrupted,
+                    from: State::Ready,
                     to: State::Ready,
+                    coalesced_through_problem: true,
                 })
             ),
-            "the coalesced tail starts FROM the problem, so recovery stays \
-             observable rather than collapsing to a net Ready→Ready: {:?}",
+            "the coalesced tail keeps honest endpoints (Ready→Ready) and flags the \
+             elided problem so recovery stays observable, never rewriting `from`: {:?}",
             state.buffer.back()
         );
     }
@@ -598,19 +616,23 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Ready,
             to: State::Interrupted,
+            coalesced_through_problem: false,
         });
         // Retry exhaustion, then stop: three distinct terminal appends.
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Interrupted,
             to: State::Failed,
+            coalesced_through_problem: false,
         });
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Failed,
             to: State::Stopping,
+            coalesced_through_problem: false,
         });
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Stopping,
             to: State::Stopped,
+            coalesced_through_problem: false,
         });
         let state = sub.state.lock().expect("subscriber poisoned");
         assert_eq!(
@@ -649,6 +671,7 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Ready,
             to: State::Interrupted,
+            coalesced_through_problem: false,
         });
         // Ordinary events queue AFTER the transition, up to capacity.
         for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64) {
@@ -663,6 +686,7 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Interrupted,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         {
             let state = sub.state.lock().expect("subscriber poisoned");
@@ -691,6 +715,7 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Ready,
             to: State::Interrupted,
+            coalesced_through_problem: false,
         });
         let state = sub.state.lock().expect("subscriber poisoned");
         assert_eq!(
@@ -718,6 +743,7 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Ready,
             to: State::Interrupted,
+            coalesced_through_problem: false,
         });
         // A push is lost, then a transition coalesces into the tail: the
         // loss marker must land BEFORE the merged window.
@@ -728,6 +754,7 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Interrupted,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         {
             let state = sub.state.lock().expect("subscriber poisoned");
@@ -756,6 +783,7 @@ mod tests {
         bus.broadcast(ClientEvent::StateChanged {
             from: State::Ready,
             to: State::Interrupted,
+            coalesced_through_problem: false,
         });
         let state = sub.state.lock().expect("subscriber poisoned");
         assert_eq!(

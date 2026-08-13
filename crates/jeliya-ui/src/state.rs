@@ -122,11 +122,13 @@ mod tests {
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Connecting,
+            coalesced_through_problem: false,
         });
         assert_eq!(state.lifecycle, State::Connecting);
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Connecting,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         assert_eq!(state.lifecycle, State::Ready);
     }
@@ -172,6 +174,7 @@ mod tests {
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         let before = state.lifecycle;
         state.apply_event(&ClientEvent::Gap {
@@ -189,6 +192,7 @@ mod tests {
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         let before = state.lifecycle;
         state.apply_event(&ClientEvent::ResyncRequired {
@@ -204,6 +208,7 @@ mod tests {
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         let before = state.lifecycle;
         state.apply_event(&ClientEvent::Lagged {

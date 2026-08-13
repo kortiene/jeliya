@@ -3,6 +3,7 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 import {
   expectCleanNetwork,
   gotoReadyShell,
+  gotoReadyShellWithRooms,
   installNoNetworkGuard,
   openDiagnostics,
   type NetworkGuard,
@@ -450,6 +451,19 @@ test("visible interactive targets meet the compact target-size floors", async ({
   // while this required context stays green.
   await openDiagnostics(page);
   await assertTargetGeometry(page, "diagnostics dialog", page.locator("#dialog-backdrop"));
+});
+
+test("populated room rows meet the compact target-size floors", async ({ page }, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "compact" && testInfo.project.name !== "narrow",
+    "target-size floors are the compact/narrow contract (§7)",
+  );
+  // The empty shell renders NO room rows, so the settled-shell sweep never measures
+  // `.room-select` — a compact room row was ~38px, below the 44px floor, while the
+  // matrix stayed green. Populate the list so the real row geometry is under test.
+  await gotoReadyShellWithRooms(page, 3);
+  await expect(page.locator(".room-select")).toHaveCount(3);
+  await assertTargetGeometry(page, "populated room list");
 });
 
 test("a compact control regressed below the floor is caught, not silently skipped", async ({ page }, testInfo) => {
