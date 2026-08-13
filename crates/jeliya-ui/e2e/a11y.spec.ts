@@ -29,25 +29,35 @@ test.beforeEach(async ({ page, baseURL }) => {
   await page.addInitScript(() => {
     const log: { type: string; text: string }[] = [];
     (window as unknown as { __liveRegionLog: typeof log }).__liveRegionLog = log;
-    let lastNode: Element | null = null;
-    let lastText: string | null = null;
-    new MutationObserver(() => {
-      const region = document.getElementById("live-region");
-      if (region === null) {
-        return;
-      }
-      const text = region.textContent ?? "";
-      if (region !== lastNode) {
-        // A (re)mount of the region node — recorded even if the text is
-        // unchanged, so a stable-node regression is visible.
-        log.push({ type: "mount", text });
-        lastNode = region;
-        lastText = text;
-        return;
-      }
-      if (text !== lastText) {
-        log.push({ type: "text", text });
-        lastText = text;
+    // Record from the mutation RECORDS, not by re-reading `textContent` at callback
+    // time: the observer batches records into one microtask, so a node inserted empty
+    // and then updated in the same batch would read its FINAL text at the mount record.
+    // Deriving each entry from the record itself keeps mount-vs-update distinguishable
+    // regardless of batching — a `mount` for the region node's insertion, and a `text`
+    // for every later text change (a `characterData` edit OR a replacement text node
+    // added under the region). A remount (mount>1) or a re-announce (duplicate text) is
+    // the announce-once failure mode; content present at INSERTION (a mount but no `text`
+    // update) is the "not reliably announced" failure the checklist warns about.
+    const inRegion = (n: Node | null): boolean =>
+      !!n && !!(n as Element).closest && !!(n as Element).closest("#live-region");
+    new MutationObserver((records) => {
+      for (const rec of records) {
+        for (const n of Array.from(rec.addedNodes)) {
+          if (n.nodeType === 1) {
+            const el = n as Element;
+            const region = el.id === "live-region" ? el : el.querySelector?.("#live-region");
+            if (region) log.push({ type: "mount", text: region.textContent ?? "" });
+          } else if (
+            n.nodeType === 3 &&
+            (rec.target as Element)?.id === "live-region"
+          ) {
+            // A replacement text node added under the region = a text update.
+            log.push({ type: "text", text: (n as Text).data ?? "" });
+          }
+        }
+        if (rec.type === "characterData" && inRegion((rec.target as Node).parentNode)) {
+          log.push({ type: "text", text: (rec.target as Text).data ?? "" });
+        }
       }
     // Observe the Document node, not `documentElement`: an init script runs
     // before the document has a root element, so observing the (always
@@ -56,6 +66,7 @@ test.beforeEach(async ({ page, baseURL }) => {
       subtree: true,
       childList: true,
       characterData: true,
+      characterDataOldValue: true,
     });
   });
 });
@@ -145,6 +156,14 @@ test("the Diagnostics dialog traps focus, closes on Escape, and returns focus to
   // destructive control can never be the landing spot (§5.6). openDiagnostics
   // already asserted activeElement is #dialog-panel.
 
+  // The close (×) control is explicitly type="button": this shared Dialog may be
+  // rendered inside a form, where the default type="submit" would make dismissing
+  // the dialog also submit the enclosing form (#274 25-8).
+  await expect(page.locator("#dialog-panel .modal-head .icon-btn")).toHaveAttribute(
+    "type",
+    "button",
+  );
+
   // Containment: tabbing forward repeatedly must never land outside the
   // dialog subtree. The sentinels redirect asynchronously, so poll until
   // focus settles inside after each Tab.
@@ -204,13 +223,15 @@ test("the room-count live region announces the settled count exactly once", asyn
   );
   const mounts = log.filter((entry) => entry.type === "mount");
   expect(mounts.length, "the live region must be mounted once, never remounted").toBe(1);
-  expect(
-    mounts[0].text,
-    "the region must mount EMPTY so its content is announced as an update, not present at insertion",
-  ).toBe("");
+  // The count must arrive as a TEXT UPDATE (a `characterData` edit or a replacement
+  // text node), proving the stable pre-existing region RECEIVED an announcement — not
+  // as content present at the node's insertion (which the mount entry would carry and
+  // which is not reliably announced), and not re-announced (that would be >1). This is
+  // derived from the mutation RECORDS, so observer batching cannot disguise a mount as
+  // an update or vice versa.
   expect(
     log.filter((entry) => entry.type === "text" && entry.text === "0 rooms").length,
-    "the settled room count must arrive as exactly one TEXT update",
+    "the settled room count must arrive as exactly one TEXT update, not content-at-insertion",
   ).toBe(1);
 });
 

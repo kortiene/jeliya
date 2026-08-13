@@ -1608,6 +1608,97 @@ fn C() -> Element { rsx! { div { {outer()} } } }`;
   );
 });
 
+test('literal scan: a qualified helper resolves only the matching receiver, not a same-named sibling (#274 25-3)', () => {
+  // `A::greeting()` is copy; `B::greeting()` is never invoked. Resolving the
+  // helper by TERMINAL name alone marks BOTH bodies as copy, so B's structural
+  // literal (outside RSX, never rendered as copy) is wrongly flagged. Scoping
+  // resolution to the receiver's `impl`/`mod` resolves only A's method.
+  const source = `impl A {
+    fn greeting() -> &'static str { "Please translate me" }
+}
+impl B {
+    fn greeting() -> &'static str { "Structural token value" }
+}
+fn C() -> Element { rsx! { div { {A::greeting()} } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Please translate me/.test(f.message)),
+    'A::greeting is invoked as copy, so its returned literal must be flagged',
+  );
+  assert.ok(
+    !findings.some((f) => /Structural token value/.test(f.message)),
+    'B::greeting is never invoked: resolving A::greeting must not mark the same-named impl B body as copy',
+  );
+});
+
+test('rule 2: a qualified/std empty constructor branch is value-empty (#274 25-2)', () => {
+  // A branch returning `std::string::String::new()` (or spaced `String :: new ()`)
+  // renders blank exactly like the bare `String::new()` — the empty-ctor regex must
+  // tolerate a path prefix and interior whitespace, else the blank branch is missed.
+  const src = `impl Catalog for En {
+    fn tag(&self, c: bool) -> String { if c { "Traduit".to_owned() } else { std::string::String::new() } }
+  }`;
+  const empty = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).filter((f) => f.code === 'value-empty');
+  assert.ok(empty.some((f) => /tag/.test(f.message)), 'std::string::String::new() renders blank → value-empty');
+});
+
+test('scan: an unescaped newline is part of the string, not its end (#274 25-4)', () => {
+  // A Rust ordinary string may span lines. Breaking the scan at `\n` truncates the
+  // literal at the first line, so copy AFTER the newline (`beta gamma`) is treated as
+  // code and never flagged. Scanning to the closing quote captures the whole literal.
+  const source = `fn C() -> Element {
+    rsx! {
+        div { "alpha
+beta gamma" }
+    }
+}`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /beta gamma/.test(f.message)),
+    'copy after an unescaped newline must be part of the flagged literal, not treated as code',
+  );
+});
+
+test('literal scan: a single-letter rendered label is copy (#274 25-5)', () => {
+  // A one-character label (`"X"` on a close button, a lone CJK glyph) is rendered to
+  // users too; a `{2,}`-letter threshold would skip it. Structural position, not
+  // length, is what separates copy from identifiers.
+  const source = `fn C() -> Element { rsx! { button { "X" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && f.message.includes('X')),
+    'a single-letter RSX text child must be flagged as copy',
+  );
+});
+
+test('rule 4: fr typography checks the COMPLETE rendered branch, not each fragment (#274 25-6)', () => {
+  // The narrow no-break space sits in the PREVIOUS fragment; the branch is correct once
+  // joined. A per-fragment check sees the bare `"!"` and wrongly demands a U+202F before
+  // it — the rule must run over the concatenated branch value.
+  const en = `impl Catalog for En {
+    fn bye(&self) -> String { concat!("Goodbye", "!").to_owned() }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn bye(&self) -> String { concat!("Au revoir\\u{202f}", "!").to_owned() }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    !codes.includes('fr-narrow-space'),
+    'the U+202F is in the preceding fragment; the joined branch is correct, so no fr-narrow-space',
+  );
+});
+
+test('literal scan: an i18n-exempt comment cannot silence a reserved-semantic finding (#274 25-7)', () => {
+  // `i18n-exempt` clears literal-COPY findings only. A reserved semantic element
+  // (Decision-6) is an accessibility gate a diagnostic comment must NOT disable.
+  const source = `fn C() -> Element { rsx! { dialog { "hi" } } } // i18n-exempt: legacy`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'raw-semantic-element'),
+    'a raw dialog element must be flagged even with an i18n-exempt marker on the line',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

@@ -323,10 +323,24 @@ impl EventBus {
                         // capacity ordinary events no longer append, so the
                         // tail stays a StateChanged once flapping begins and
                         // the bound holds.
-                        if let Some(ClientEvent::StateChanged { to, .. }) = state.buffer.back_mut()
+                        if let Some(ClientEvent::StateChanged { from, to }) =
+                            state.buffer.back_mut()
                         {
                             if matches!(*to, State::Connecting | State::Ready | State::Interrupted)
                             {
+                                // PRESERVE problem-state evidence: if the transition being
+                                // erased (the tail's current `to`) was a drop to
+                                // `Interrupted`, carry it into `from` so the merged
+                                // transition starts FROM the problem. Otherwise a queued
+                                // `Ready → Interrupted` coalesced with `Interrupted → Ready`
+                                // would become a net `Ready → Ready`, hiding the
+                                // interruption — the connection live region would stay
+                                // silent after a stalled UI resumes. With `from` carried,
+                                // the subscriber instead sees `Interrupted → Ready`, a
+                                // recovery it can announce (§5.6 / §K12).
+                                if matches!(*to, State::Interrupted) {
+                                    *from = *to;
+                                }
                                 *to = *new_to;
                                 merged = true;
                             }
@@ -508,6 +522,47 @@ mod tests {
             last_transition,
             Some(State::Stopped),
             "the terminal transition appends distinctly and is observable"
+        );
+    }
+
+    /// Coalescing must not hide a problem state: a queued `Ready →
+    /// Interrupted` merged with a following `Interrupted → Ready` becomes
+    /// `Interrupted → Ready` (a recovery a subscriber can announce), NEVER a
+    /// net `Ready → Ready` that erases the interruption — otherwise a stalled
+    /// UI resuming leaves the connection live region silent (§5.6 / §K12).
+    #[test]
+    fn coalescing_preserves_a_drop_so_recovery_stays_observable() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        // Fill to capacity with ordinary events so the drop lands at capacity
+        // with a non-transition tail (it bypass-appends, becoming the tail).
+        for pos in 0..(DEFAULT_FANOUT_CAPACITY as u64) {
+            bus.broadcast(ClientEvent::ResyncRequired {
+                room_id: RoomId::new("r"),
+                from_pos: pos,
+            });
+        }
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+        });
+        // Recovery at capacity coalesces into that `Ready → Interrupted` tail.
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Interrupted,
+            to: State::Ready,
+        });
+        let state = sub.state.lock().expect("subscriber poisoned");
+        assert!(
+            matches!(
+                state.buffer.back(),
+                Some(ClientEvent::StateChanged {
+                    from: State::Interrupted,
+                    to: State::Ready,
+                })
+            ),
+            "the coalesced tail starts FROM the problem, so recovery stays \
+             observable rather than collapsing to a net Ready→Ready: {:?}",
+            state.buffer.back()
         );
     }
 

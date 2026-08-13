@@ -196,7 +196,11 @@ export function scanRustSource(source) {
           j += 2;
           continue;
         }
-        if (source[j] === '"' || source[j] === '\n') break;
+        // A Rust ordinary string may contain an UNESCAPED newline, so scan to the
+        // CLOSING quote, not the end of line: breaking at `\n` truncates valid
+        // multiline copy (missing the literal in RSX) and corrupts the catalog skeleton
+        // (a spurious `catalog-unparsed`). An unterminated string simply scans to EOF.
+        if (source[j] === '"') break;
         j += 1;
       }
       const contentEnd = j;
@@ -382,7 +386,7 @@ export function parseCatalog(source, file) {
     {
       const returned = skeleton.slice(lastTopLevelSemi, close);
       const emptyCtorRe =
-        /(?:=>|\{)\s*(?:String::(?:new|default)|Default::default)\s*\(\s*\)/g;
+        /(?:=>|\{)\s*(?:\w+\s*::\s*)*(?:String\s*::\s*(?:new|default)|Default\s*::\s*default)\s*\(\s*\)/g;
       while (emptyCtorRe.exec(returned) !== null) emptyBranchCount += 1;
     }
     const emptyBranchValues = Array.from({ length: emptyBranchCount }, () => '');
@@ -611,6 +615,23 @@ const TYPOGRAPHY = Object.freeze([
   { code: 'fr-ellipsis', pattern: /\.\.\./, message: () => 'three dots — use U+2026 (…)' },
 ]);
 
+/** The COMPLETE rendered value of each ALTERNATIVE branch of a catalog method
+ *  (fragments within a branch concatenated), for checks that must see whole rendered
+ *  copy rather than individual literals: plural categories, `match` arms, `if`/`else`
+ *  blocks, else the single joined return. */
+function renderedBranchValues(entry) {
+  if (entry.valuesByCategory) {
+    return ['One', 'Other'].map((cat) => (entry.valuesByCategory[cat] ?? []).join(''));
+  }
+  if (entry.valuesByBranch) {
+    return Object.values(entry.valuesByBranch).map((arm) => arm.join(''));
+  }
+  if (entry.valuesByBlock) {
+    return entry.valuesByBlock.map((group) => (group ?? []).join(''));
+  }
+  return [entry.values.join('')];
+}
+
 /** Catalog + typography rules over an already-parsed pair. */
 export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
   const findings = [];
@@ -798,10 +819,16 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
     }
   }
 
-  // Rule 4 — French typography over every fr value (localeTag excepted).
+  // Rule 4 — French typography over every fr value (localeTag excepted). Check the
+  // COMPLETE rendered value of each BRANCH (fragments concatenated), not each literal
+  // fragment: `concat!("Bonjour\u{202f}", "!")` renders the required narrow no-break
+  // space immediately before `!`, but the `"!"` fragment alone has nothing before it,
+  // which a per-fragment check would wrongly flag. Group per plural category / match arm
+  // / if-else block (each an ALTERNATIVE rendered string), falling back to the whole
+  // value joined for a plain return.
   for (const entry of fr.entries.values()) {
     if (entry.key === 'locale_tag') continue;
-    for (const value of entry.values) {
+    for (const value of renderedBranchValues(entry)) {
       for (const rule of TYPOGRAPHY) {
         const m = rule.pattern.exec(value);
         if (m) findings.push(finding(fr.file, entry.line, rule.code, `${entry.key}: ${rule.message(m)}`, 'typography'));
@@ -927,9 +954,12 @@ function ownedConstructs(file) {
 /** Letters that survive `{…}` interpolation are real copy. Uses UNICODE letters
  *  (`\p{L}`), not ASCII only: short accented/non-Latin labels — `Été`, `Ça`,
  *  `Удалить`, `删除账户` — are valid rendered copy the scan must not skip (and the
- *  new French surface makes short accented labels common). */
+ *  new French surface makes short accented labels common). ANY single letter counts:
+ *  a one-character label (`"X"` on a close button, `"A"`, a single CJK glyph) is
+ *  rendered to users too; the structural-position checks (attr `:`, call arg, method
+ *  receiver) — not a length threshold — are what separate copy from identifiers. */
 function bareLetters(text) {
-  return /\p{L}{2,}/u.test(text.replace(/\{[^}]*\}/g, ' '));
+  return /\p{L}/u.test(text.replace(/\{[^}]*\}/g, ' '));
 }
 
 /** The identifier or quoted attribute name immediately before the `:` at
@@ -1287,41 +1317,79 @@ export function scanComponentLiterals(file, source) {
   // invoked helper names, resolve each to its `fn` body, and treat bare-letter
   // literals inside as copy. A helper invoked only in a STRUCTURAL position
   // (`id: id_for()`) is not collected, so its body stays exempt.
-  const copyHelpers = new Set();
-  // Expression-CHILD calls: `{ helper() }` — its `{` follows the element body `{`,
-  // a sibling child's `}`, or a sibling string (blanked to `"`). A QUALIFIED path
-  // (`{Self::helper()}`, `{copy::helper()}`) renders its terminal function's literal
-  // just the same, so match an optional `Foo::` path prefix and capture the TERMINAL
-  // name to resolve (a bare-identifier-only match let qualified helpers ship copy).
-  const childCallRe = /[{}"]\s*\{\s*(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(/g;
+  // Each invoked helper is a {name, receiver}: a QUALIFIED call `Recv::helper()` renders
+  // the SAME literal, but must resolve ONLY Recv's method — resolving every `fn helper`
+  // globally by terminal name would mark an unrelated `Other::helper` body as copy and
+  // reject its structural literal. `receiver` is the segment before the terminal (null
+  // for a bare call).
+  const copyHelpers = new Map(); // key "receiver name" -> {name, receiver}
+  // `Self`/`self`/`crate`/`super` are context-relative path qualifiers, not a
+  // distinct named type/module, so they resolve globally (like a bare call) — a
+  // `Self::helper()` on a free or inherent fn still traces. Only a CONCRETE
+  // receiver (`A` vs `B`) scopes resolution to its own impl/mod.
+  const PSEUDO_RECEIVERS = new Set(['Self', 'self', 'crate', 'super']);
+  const parsePath = (path) => {
+    const segs = path.split('::').map((s) => s.trim()).filter(Boolean);
+    const name = segs[segs.length - 1];
+    let receiver = segs.length >= 2 ? segs[segs.length - 2] : null;
+    if (receiver && PSEUDO_RECEIVERS.has(receiver)) receiver = null;
+    return { name, receiver };
+  };
+  const addHelper = (path) => {
+    const { name, receiver } = parsePath(path);
+    if (name) copyHelpers.set(`${receiver ?? ''} ${name}`, { name, receiver });
+  };
+  // Expression-CHILD calls: `{ helper() }` / `{ Recv::helper() }` — the `{` follows the
+  // element body `{`, a sibling child's `}`, or a sibling string (blanked to `"`).
+  const childCallRe = /[{}"]\s*\{\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
   for (let m = childCallRe.exec(skeleton); m; m = childCallRe.exec(skeleton)) {
     const at = m.index + m[0].lastIndexOf('{');
     if (inTest(at) || !inRsx(at)) continue;
-    copyHelpers.add(m[1]);
+    addHelper(m[1]);
   }
-  // Copy-ATTRIBUTE call values: `label: helper()` / `label: Self::helper()` (a
-  // copy-bearing prop) — likewise resolve the terminal function of a qualified path.
-  const attrCallRe = /([A-Za-z_]\w*)\s*:\s*(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(/g;
+  // Copy-ATTRIBUTE call values: `label: helper()` / `label: Recv::helper()`.
+  const attrCallRe = /([A-Za-z_]\w*)\s*:\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
   for (let m = attrCallRe.exec(skeleton); m; m = attrCallRe.exec(skeleton)) {
     if (inTest(m.index) || !inRsx(m.index)) continue;
-    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyHelpers.add(m[2]);
+    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) addHelper(m[2]);
   }
-  // Resolve each helper name to its `fn NAME(…) -> … { BODY }` body span — skip the
-  // balanced parameter list, then take the first `{` (the body) and its match — and do
-  // so TRANSITIVELY: a copy helper that calls another helper (`fn outer() { inner() }`)
-  // renders that callee's literal too, so trace the calls each resolved body makes
-  // (bare or qualified terminal name) and follow them. A `visited` set bounds it and
-  // breaks cycles; names with no matching `fn` (std ctors, macros, keywords) resolve to
-  // nothing and are harmless no-ops.
+  // Whether the `fn` starting at `fnPos` lives inside an `impl`/`mod` block whose header
+  // names `receiver` — so `Recv::name` resolves only Recv's method. A bare call
+  // (`receiver === null`) matches any `fn name`.
+  const scopeMatches = (fnPos, receiver) => {
+    if (!receiver) return true;
+    let depth = 0;
+    for (let i = fnPos - 1; i >= 0; i -= 1) {
+      const c = skeleton[i];
+      if (c === '}') {
+        depth += 1;
+      } else if (c === '{') {
+        if (depth === 0) {
+          let s = i - 1;
+          while (s >= 0 && !'{};'.includes(skeleton[s])) s -= 1;
+          const header = skeleton.slice(s + 1, i);
+          return new RegExp(`\\b(?:impl|mod)\\b[^{]*\\b${receiver}\\b`).test(header);
+        }
+        depth -= 1;
+      }
+    }
+    return false;
+  };
+  // Resolve each helper to its `fn NAME(…) -> … { BODY }` body span (scoped by
+  // receiver), TRANSITIVELY: a copy helper that calls another helper renders that
+  // callee's literal too, so follow the calls each resolved body makes. `visited` (keyed
+  // by receiver+name) bounds it and breaks cycles; unresolved names are harmless no-ops.
   const helperBodies = [];
   const visited = new Set();
-  const pending = [...copyHelpers];
+  const pending = [...copyHelpers.values()];
   while (pending.length > 0) {
-    const name = pending.pop();
-    if (visited.has(name)) continue;
-    visited.add(name);
+    const { name, receiver } = pending.pop();
+    const key = `${receiver ?? ''} ${name}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
     const defRe = new RegExp(`\\bfn\\s+${name}\\s*\\(`, 'g');
     for (let m = defRe.exec(skeleton); m; m = defRe.exec(skeleton)) {
+      if (!scopeMatches(m.index, receiver)) continue;
       let i = m.index + m[0].length - 1; // at the opening '('
       let depth = 0;
       for (; i < skeleton.length; i += 1) {
@@ -1338,12 +1406,13 @@ export function scanComponentLiterals(file, source) {
       const close = matchingBrace(skeleton, i);
       if (close !== -1) {
         helperBodies.push([i, close]);
-        // Follow calls this body makes so a helper that delegates to another helper's
-        // literal is still traced (terminal name of a possibly-qualified path).
         const body = skeleton.slice(i, close);
-        const bodyCallRe = /(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(/g;
+        const bodyCallRe = /((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
         for (let c = bodyCallRe.exec(body); c; c = bodyCallRe.exec(body)) {
-          if (!visited.has(c[1])) pending.push(c[1]);
+          const parsed = parsePath(c[1]);
+          if (parsed.name && !visited.has(`${parsed.receiver ?? ''} ${parsed.name}`)) {
+            pending.push(parsed);
+          }
         }
       }
     }
@@ -1539,7 +1608,9 @@ export function scanComponentLiterals(file, source) {
       const valMatch = /^"([^"]*)"/.exec(source.slice(m.index + m[0].length));
       if (valMatch && owned.has(`${attr}=${valMatch[1]}`)) continue;
       const line = lineOf(source, m.index);
-      if (exempt(line)) continue;
+      // NOTE: NO `exempt(line)` here. `i18n-exempt` clears only literal-COPY findings;
+      // a reserved semantic (Decision-6) must NOT be silenceable by a copy exemption,
+      // or a diagnostic comment would disable accessibility enforcement on the line.
       findings.push(finding(file, line, 'raw-semantic', `raw \`${attr}\` must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
     }
   }
@@ -1553,7 +1624,7 @@ export function scanComponentLiterals(file, source) {
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
       if (inTest(m.index) || !inRsx(m.index)) continue;
       const line = lineOf(source, m.index);
-      if (exempt(line)) continue;
+      // NO `exempt(line)`: a reserved semantic element is not copy — see the note above.
       findings.push(finding(file, line, 'raw-semantic-element', `raw \`${el}\` element must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
     }
   }
@@ -1632,7 +1703,7 @@ export function scanComponentLiterals(file, source) {
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
       if (inTest(m.index) || !inRsx(m.index)) continue;
       const line = lineOf(source, m.index);
-      if (exempt(line)) continue;
+      // NO `exempt(line)`: a raw form control is a semantic gate, not copy (see note above).
       const field = fieldRanges.find(([open, close]) => m.index > open && m.index < close);
       if (!field) {
         // Not inside any `Field` → a raw, unlabelled control.
@@ -1764,7 +1835,7 @@ export function scanComponentLiterals(file, source) {
       // whose `\s*` would backtrack to pass at the space before the value.)
       if (/(?<![-\w])aria[-_]label(?:ledby)?"?\s*:\s*(?:"[^"]+"|[^"\s])/.test(attrs)) continue;
       const line = lineOf(source, m.index);
-      if (exempt(line)) continue;
+      // NO `exempt(line)`: an unnamed nav is a semantic gate, not copy (see note above).
       findings.push(finding(file, line, 'raw-semantic-element', 'raw unnamed `nav` must carry an accessible name (aria-label/aria-labelledby) or come from the NavLandmark primitive (Decision-6)', 'literals'));
     }
   }

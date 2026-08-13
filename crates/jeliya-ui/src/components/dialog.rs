@@ -92,6 +92,10 @@ pub fn Dialog(
                 div { class: "modal-head",
                     h2 { "{title}" }
                     button {
+                        // NOT a submit button: this shared Dialog may be rendered inside
+                        // a form, and the default `type="submit"` would make clicking the
+                        // × both dismiss the dialog AND submit the enclosing form.
+                        r#type: "button",
                         class: "icon-btn",
                         "aria-label": "{close_label}",
                         onmounted: move |evt: MountedEvent| close_btn.set(Some(evt)),
