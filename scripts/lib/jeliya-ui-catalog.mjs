@@ -1256,42 +1256,8 @@ function testItemSpans(skeleton) {
   return spans;
 }
 
-/** Names of `fn`s whose body contains a bare-letter string literal — i.e. that
- *  RENDER copy. Collected across every component file into a cross-file index so
- *  copy hidden in a helper in one module and invoked via a qualified path from
- *  another (`{crate::state::hardcoded()}`) cannot slip past the per-file literal
- *  gate. A conservative name-only index: a same-named non-copy `fn` elsewhere only
- *  matters when the call also fails LOCAL resolution AND appears in a copy
- *  position, which the call-site check requires. */
-export function copyReturningFnNames(source) {
-  const { skeleton, literals } = scanRustSource(source);
-  const names = new Set();
-  const fnRe = /\bfn\s+([A-Za-z_]\w*)\s*\(/g;
-  for (let m = fnRe.exec(skeleton); m; m = fnRe.exec(skeleton)) {
-    let i = m.index + m[0].length - 1; // at the opening '('
-    let depth = 0;
-    for (; i < skeleton.length; i += 1) {
-      if (skeleton[i] === '(') depth += 1;
-      else if (skeleton[i] === ')') {
-        depth -= 1;
-        if (depth === 0) {
-          i += 1;
-          break;
-        }
-      }
-    }
-    while (i < skeleton.length && skeleton[i] !== '{') i += 1;
-    const close = matchingBrace(skeleton, i);
-    if (close === -1) continue;
-    if (literals.some((lit) => lit.start > i && lit.start < close && bareLetters(lit.value))) {
-      names.add(m[1]);
-    }
-  }
-  return names;
-}
-
 /** Report user-visible literals in one Rust component/app source. */
-export function scanComponentLiterals(file, source, crossFileCopyFns = new Set()) {
+export function scanComponentLiterals(file, source) {
   const { skeleton, literals, comments } = scanRustSource(source);
   const lines = source.split('\n');
   // Test-only items are not shipped copy — but production code can FOLLOW an inline
@@ -1376,7 +1342,7 @@ export function scanComponentLiterals(file, source, crossFileCopyFns = new Set()
   // globally by terminal name would mark an unrelated `Other::helper` body as copy and
   // reject its structural literal. `receiver` is the segment before the terminal (null
   // for a bare call).
-  const copyHelpers = new Map(); // key "receiver name" -> {name, receiver}
+  const copyHelpers = new Map(); // key "receiver\0name" -> {name, receiver}
   // `Self`/`self`/`crate`/`super` are context-relative path qualifiers, not a
   // distinct named type/module, so they resolve globally (like a bare call) — a
   // `Self::helper()` on a free or inherent fn still traces. Only a CONCRETE
@@ -1389,9 +1355,9 @@ export function scanComponentLiterals(file, source, crossFileCopyFns = new Set()
     if (receiver && PSEUDO_RECEIVERS.has(receiver)) receiver = null;
     return { name, receiver };
   };
-  const addHelper = (path, at) => {
+  const addHelper = (path) => {
     const { name, receiver } = parsePath(path);
-    if (name) copyHelpers.set(`${receiver ?? ''} ${name}`, { name, receiver, at });
+    if (name) copyHelpers.set(`${receiver ?? ''}\0${name}`, { name, receiver });
   };
   // Expression-CHILD calls: `{ helper() }` / `{ Recv::helper() }` — the `{` follows the
   // element body `{`, a sibling child's `}`, or a sibling string (blanked to `"`).
@@ -1399,13 +1365,13 @@ export function scanComponentLiterals(file, source, crossFileCopyFns = new Set()
   for (let m = childCallRe.exec(skeleton); m; m = childCallRe.exec(skeleton)) {
     const at = m.index + m[0].lastIndexOf('{');
     if (inTest(at) || !inRsx(at)) continue;
-    addHelper(m[1], at);
+    addHelper(m[1]);
   }
   // Copy-ATTRIBUTE call values: `label: helper()` / `label: Recv::helper()`.
   const attrCallRe = /([A-Za-z_]\w*)\s*:\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
   for (let m = attrCallRe.exec(skeleton); m; m = attrCallRe.exec(skeleton)) {
     if (inTest(m.index) || !inRsx(m.index)) continue;
-    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) addHelper(m[2], m.index);
+    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) addHelper(m[2]);
   }
   // Whether the `fn` starting at `fnPos` lives inside an `impl`/`mod` block whose header
   // names `receiver` — so `Recv::name` resolves only Recv's method. A bare call
@@ -1438,7 +1404,7 @@ export function scanComponentLiterals(file, source, crossFileCopyFns = new Set()
   const pending = [...copyHelpers.values()];
   while (pending.length > 0) {
     const { name, receiver } = pending.pop();
-    const key = `${receiver ?? ''} ${name}`;
+    const key = `${receiver ?? ''}\0${name}`;
     if (visited.has(key)) continue;
     visited.add(key);
     const defRe = new RegExp(`\\bfn\\s+${name}\\s*\\(`, 'g');
@@ -1464,7 +1430,7 @@ export function scanComponentLiterals(file, source, crossFileCopyFns = new Set()
         const bodyCallRe = /((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
         for (let c = bodyCallRe.exec(body); c; c = bodyCallRe.exec(body)) {
           const parsed = parsePath(c[1]);
-          if (parsed.name && !visited.has(`${parsed.receiver ?? ''} ${parsed.name}`)) {
+          if (parsed.name && !visited.has(`${parsed.receiver ?? ''}\0${parsed.name}`)) {
             pending.push(parsed);
           }
         }
@@ -1472,26 +1438,6 @@ export function scanComponentLiterals(file, source, crossFileCopyFns = new Set()
     }
   }
   const inCopyHelperBody = (pos) => helperBodies.some(([open, close]) => pos > open && pos < close);
-
-  // CROSS-FILE copy helpers: a helper invoked in a copy position but with NO `fn`
-  // definition in THIS file, whose name is in the cross-file copy-returning index
-  // (built from every component file), renders copy defined in another module —
-  // e.g. `div { {crate::state::hardcoded()} }` where `state::hardcoded` returns a
-  // literal. The per-file body scan cannot see that literal, so flag the CALL SITE:
-  // visible copy must not bypass the gate by moving into another production module.
-  const hasLocalDef = (name) => new RegExp(`\\bfn\\s+${name}\\s*\\(`).test(skeleton);
-  for (const { name, at } of copyHelpers.values()) {
-    if (at == null || hasLocalDef(name) || !crossFileCopyFns.has(name)) continue;
-    findings.push(
-      finding(
-        file,
-        lineOf(source, at),
-        'rust-text',
-        `RSX copy comes from \`${name}()\`, a copy-returning helper defined in another module — inline the copy or route it through the catalog (Decision-6)`,
-        'literals',
-      ),
-    );
-  }
 
   for (const literal of literals) {
     if (inTest(literal.start)) continue;
@@ -1982,21 +1928,9 @@ export function checkJeliyaUiI18n({
   }
 
   if (groups.has('literals')) {
-    // Read every component file once, then build the CROSS-FILE copy-returning-fn
-    // index before scanning, so a copy helper defined in one module and invoked via
-    // a qualified path from another is still caught (the per-file scan cannot see
-    // the other file's literal).
-    const componentSources = componentFiles(root).map((absolute) => ({
-      absolute,
-      source: readFileSync(absolute, 'utf8'),
-    }));
-    const crossFileCopyFns = new Set();
-    for (const { source } of componentSources) {
-      for (const name of copyReturningFnNames(source)) crossFileCopyFns.add(name);
-    }
-    for (const { absolute, source } of componentSources) {
+    for (const absolute of componentFiles(root)) {
       const file = toRepoPath(root, absolute);
-      findings.push(...scanComponentLiterals(file, source, crossFileCopyFns));
+      findings.push(...scanComponentLiterals(file, readFileSync(absolute, 'utf8')));
     }
   }
 

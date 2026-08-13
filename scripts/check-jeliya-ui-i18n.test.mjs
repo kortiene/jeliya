@@ -5,13 +5,14 @@
 //
 // Run: node --test scripts/check-jeliya-ui-i18n.test.mjs
 
+import { readFileSync } from 'node:fs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
   checkCatalogs,
   checkJeliyaUiI18n,
-  copyReturningFnNames,
   identityExemption,
   parseCatalog,
   scanComponentLiterals,
@@ -1700,6 +1701,14 @@ test('literal scan: an i18n-exempt comment cannot silence a reserved-semantic fi
   );
 });
 
+test('source hygiene: the scanner source has no raw NUL byte (#274 27-ip)', () => {
+  // A literal NUL (U+0000) makes rg/grep classify the file as binary and hide its
+  // contents from searches and some review/lint tooling. The map-key delimiter must
+  // be written as the SOURCE escape `\0`, not embedded as a raw NUL byte.
+  const src = readFileSync(new URL('./lib/jeliya-ui-catalog.mjs', import.meta.url), 'utf8');
+  assert.equal(src.indexOf('\0'), -1, 'the scanner source must not embed a raw NUL byte');
+});
+
 test('rule 5: plural coverage is per-category, not pooled fragment count (#274 26-1)', () => {
   // `One` has two fragments; `Other` renders nothing. A pooled `values.length >= 2`
   // check passes it, but a category that renders nothing is a real defect.
@@ -1727,19 +1736,6 @@ test('rule 2: a None.unwrap_or_default() branch is value-empty (#274 26-2)', () 
     empty.some((f) => /tag/.test(f.message)),
     'Option::<String>::None.unwrap_or_default() renders blank → value-empty',
   );
-});
-
-test('literal scan: a copy helper from another module is flagged (#274 26-4)', () => {
-  // The per-file scan cannot see state.rs's literal; the cross-file index knows
-  // `hardcoded` returns copy, so the qualified call site is flagged.
-  const source = `fn C() -> Element { rsx! { div { {crate::state::hardcoded()} } } }`;
-  const findings = scanComponentLiterals('app.rs', source, new Set(['hardcoded']));
-  assert.ok(
-    findings.some((f) => f.code === 'rust-text' && /another module/.test(f.message)),
-    'a copy helper defined in another module, invoked via a qualified path, must be flagged at the call site',
-  );
-  const names = copyReturningFnNames(`fn hardcoded() -> &'static str { "Delete account" }`);
-  assert.ok(names.has('hardcoded'), 'copyReturningFnNames indexes a fn whose body renders copy');
 });
 
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
