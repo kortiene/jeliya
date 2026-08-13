@@ -2121,6 +2121,37 @@ test('driver: the literal scan covers all src modules, excluding the catalog (#2
   );
 });
 
+test('literal scan: copy through a format!-derived binding is flagged (#274 39-fmtalias)', () => {
+  const source = `fn C() -> Element { let base = "Delete account"; let label = format!("{base}"); rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy via a format!("{base}") derived binding must be flagged',
+  );
+});
+
+test('form: identity-preserving Field/control id wrappers are equal (#274 39-idnorm)', () => {
+  const source = `fn F() -> Element { rsx! { Field { id: field_id.clone(), label: "L", input { id: field_id } } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    !findings.some((f) => f.code === 'form-control-id-mismatch'),
+    'field_id.clone() and field_id render the same id',
+  );
+});
+
+test('literal scan: a byte string is not copy (#274 39-bytestr)', () => {
+  const raw = `fn C() -> Element { let data = br"Delete account"; rsx! { div { "{data:?}" } } }`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', raw).some((f) => /Delete account/.test(f.message)),
+    'a raw byte string br"..." renders bytes, not copy',
+  );
+  const ord = `fn C() -> Element { let data = b"Delete account"; rsx! { div { "{data:?}" } } }`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', ord).some((f) => /Delete account/.test(f.message)),
+    'an ordinary byte string b"..." renders bytes, not copy',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

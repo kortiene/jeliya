@@ -190,14 +190,22 @@ export function scanRustSource(source) {
         const close = '"' + '#'.repeat(hashes);
         const end = source.indexOf(close, j + 1);
         const stop = end === -1 ? source.length : end + close.length;
-        literals.push({
-          start: i,
-          end: stop,
-          contentStart: j + 1,
-          contentEnd: end === -1 ? source.length : end,
-          value: source.slice(j + 1, end === -1 ? source.length : end),
-          raw: true,
-        });
+        const contentEnd = end === -1 ? source.length : end;
+        // A raw BYTE string `br"…"`/`br#"…"#` renders a `&[u8]`, not text — mask it for
+        // balancing but do NOT record it as string copy.
+        const isByteStr = source[i - 1] === 'b' && !(i - 2 >= 0 && /\w/.test(source[i - 2]));
+        if (isByteStr) {
+          blank(j + 1, contentEnd);
+        } else {
+          literals.push({
+            start: i,
+            end: stop,
+            contentStart: j + 1,
+            contentEnd,
+            value: source.slice(j + 1, contentEnd),
+            raw: true,
+          });
+        }
         i = stop;
         continue;
       }
@@ -217,15 +225,24 @@ export function scanRustSource(source) {
         j += 1;
       }
       const contentEnd = j;
-      literals.push({
-        start: i,
-        end: Math.min(j + 1, source.length),
-        contentStart: i + 1,
-        contentEnd,
-        value: unescapeRust(source.slice(i + 1, contentEnd)),
-        raw: false,
-      });
-      i = Math.min(j + 1, source.length);
+      const end = Math.min(j + 1, source.length);
+      // A BYTE string `b"…"` renders a `&[u8]` (its debug form), not the source text —
+      // mask its content for delimiter balancing but do NOT record it as string copy.
+      // `b` must be a standalone prefix, not the tail of an identifier.
+      const isByteStr = source[i - 1] === 'b' && !(i - 2 >= 0 && /\w/.test(source[i - 2]));
+      if (isByteStr) {
+        blank(i + 1, contentEnd);
+      } else {
+        literals.push({
+          start: i,
+          end,
+          contentStart: i + 1,
+          contentEnd,
+          value: unescapeRust(source.slice(i + 1, contentEnd)),
+          raw: false,
+        });
+      }
+      i = end;
       continue;
     }
     // CHAR literal (`'x'`, `'\n'`, `'\''`, `'}'`) — distinct from a LIFETIME
@@ -1579,6 +1596,11 @@ export function scanComponentLiterals(file, source) {
     // comparison/compound `=` (`==`, `+=`) is not matched.
     new RegExp(`[;{}]\\s*([A-Za-z_]\\w*)\\s*=\\s*${aliasRhs}`, 'g'),
   ];
+  // Format-DERIVED bindings: `let label = format!("… {base} …")` — if `label` is
+  // copy-bearing, each identifier the format string INTERPOLATES renders as copy too.
+  // Matched on the SOURCE (the format string is blanked in the skeleton).
+  const fmtAliasRe =
+    /\blet\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::\s*[^=;{}]*)?=\s*(?:format|write|writeln)!\s*\(\s*"([^"]*)"/g;
   for (let grew = true; grew; ) {
     grew = false;
     for (const re of aliasRes) {
@@ -1587,6 +1609,16 @@ export function scanComponentLiterals(file, source) {
         if (inTest(m.index)) continue;
         if (copyInterpolations.has(m[1]) && !copyInterpolations.has(m[2])) {
           copyInterpolations.add(m[2]);
+          grew = true;
+        }
+      }
+    }
+    fmtAliasRe.lastIndex = 0;
+    for (let m = fmtAliasRe.exec(source); m; m = fmtAliasRe.exec(source)) {
+      if (inTest(m.index) || !copyInterpolations.has(m[1])) continue;
+      for (const im of m[2].matchAll(/\{(\w+)(?::[^{}]*)?\}/g)) {
+        if (!copyInterpolations.has(im[1])) {
+          copyInterpolations.add(im[1]);
           grew = true;
         }
       }
@@ -2077,7 +2109,18 @@ export function scanComponentLiterals(file, source) {
       const controlEnd = controlClose === -1 ? source.length : controlClose;
       const fieldId = firstIdAttr(field[0], controlOpen);
       const controlId = firstIdAttr(controlOpen, controlEnd);
-      if (fieldId !== null && controlId !== fieldId) {
+      // `Field { id: id.clone() … input { id: id } }` renders the SAME id — the normal
+      // spelling when ownership needs an owned copy — so normalize identity-preserving
+      // wrappers (a leading `&`, a trailing `.clone()`/`.to_owned()`/`.into()`/`.as_str()`)
+      // before comparing, while still rejecting genuinely different expressions.
+      const normalizeIdExpr = (x) =>
+        x === null
+          ? null
+          : x
+              .trim()
+              .replace(/^&\s*/, '')
+              .replace(/\s*\.\s*(?:clone|to_owned|to_string|into|as_str)\s*\(\s*\)$/, '');
+      if (fieldId !== null && normalizeIdExpr(controlId) !== normalizeIdExpr(fieldId)) {
         findings.push(finding(file, line, 'form-control-id-mismatch', `\`${el}\` inside \`Field\` must set \`id\` to match the Field's \`id\` (\`${fieldId}\`) so its \`label[for]\` names it; found \`${controlId === null ? '(no id)' : controlId}\``, 'literals'));
       }
       // When the Field supplies a HINT, the hint span is rendered OUTSIDE the
