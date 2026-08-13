@@ -1541,6 +1541,43 @@ test('rule 3: a split-literal untranslated value (concat!) is flagged (#274 22-6
   );
 });
 
+test('rule 3: an untranslated if/else return branch is flagged (#274 23-1)', () => {
+  const en = `impl Catalog for En {
+    fn label(&self, c: bool) -> &'static str { if c { "Delete" } else { "Cancel" } }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn label(&self, c: bool) -> &'static str { if c { "Supprimer" } else { "Cancel" } }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('fr-untranslated'),
+    'the untranslated else branch ("Cancel") must be flagged, not hidden by the translated if branch',
+  );
+});
+
+test('rule 3: a translated if/else method is NOT flagged (#274 23-1 control)', () => {
+  const en = `impl Catalog for En {
+    fn label(&self, c: bool) -> &'static str { if c { "Delete" } else { "Cancel" } }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn label(&self, c: bool) -> &'static str { if c { "Supprimer" } else { "Annuler" } }
+  }`;
+  assert.ok(
+    !checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).some((f) => f.code === 'fr-untranslated'),
+    'both branches translated → no fr-untranslated',
+  );
+});
+
+test('literal scan: a qualified helper call in an expression child is traced (#274 23-2)', () => {
+  const source = `fn hardcoded() -> &'static str { "Delete account" }
+fn C() -> Element { rsx! { div { {Self::hardcoded()} } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'a qualified helper call (Self::hardcoded) must be traced so its returned literal is flagged',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

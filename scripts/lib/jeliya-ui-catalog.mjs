@@ -425,6 +425,9 @@ export function parseCatalog(source, file) {
     // swaps `{n}`/`{x}` BETWEEN arms (identical pooled multiset) is caught, which the
     // pooled `slots` fallback misses.
     let slotsByBranch = null;
+    // For a NON-match branching return (`if c { "a" } else { "b" }`), each alternative
+    // block is its own branch — see the computation below.
+    let valuesByBlock = null;
     if (!isPlural) {
       const bodyText = skeleton.slice(open, close);
       const markers = [];
@@ -463,6 +466,45 @@ export function parseCatalog(source, file) {
         // order-independent (a slot set is a sorted multiset, like `slots`).
         for (const armKey of Object.keys(slotsByBranch)) slotsByBranch[armKey].sort();
       }
+      // NON-match branching (`if c { "a" } else { "b" }`): each top-level `{ … }` block
+      // is an ALTERNATIVE branch (only one renders), so its literals compare
+      // independently — joining them (concat semantics) would let an untranslated
+      // `else` branch hide behind a translated `if`. Only when there are NO `=>` arms
+      // (a `match` uses valuesByBranch; its body's outer `{}` would otherwise read as one
+      // block). Group `parts` by enclosing depth-1 block in the returned region; a bare
+      // return / `concat!` args (no block) leave this null → the base join path governs.
+      if (markers.length === 0) {
+        const blockRanges = [];
+        let depth = 0;
+        let start = -1;
+        for (let at = lastTopLevelSemi + 1; at < close; at += 1) {
+          const c = skeleton[at];
+          if (c === '{') {
+            if (depth === 0) start = at + 1;
+            depth += 1;
+          } else if (c === '}') {
+            depth -= 1;
+            if (depth === 0 && start !== -1) {
+              blockRanges.push([start, at]);
+              start = -1;
+            }
+          }
+        }
+        if (blockRanges.length > 0) {
+          const groups = [[]]; // [0] = base (literals in no block)
+          for (const p of parts) {
+            let idx = 0;
+            for (let b = 0; b < blockRanges.length; b += 1) {
+              if (p.start >= blockRanges[b][0] && p.end <= blockRanges[b][1]) {
+                idx = b + 1;
+                break;
+              }
+            }
+            (groups[idx] ??= []).push(collapseSlots(p.value));
+          }
+          valuesByBlock = groups;
+        }
+      }
     }
     entries.set(name, {
       key: name,
@@ -478,6 +520,7 @@ export function parseCatalog(source, file) {
       valuesByCategory,
       valuesByBranch,
       slotsByBranch,
+      valuesByBlock,
     });
     methodRe.lastIndex = close;
   }
@@ -668,14 +711,35 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
         );
       });
       if (!untranslated) continue;
+    } else if (frEntry.valuesByBlock && enEntry.valuesByBlock) {
+      // Non-`match` BRANCHING (`if c { "a" } else { "b" }`): compare each alternative
+      // block independently, so an untranslated `else` branch cannot hide behind a
+      // translated `if` branch (which a whole-method join would flatten into one value).
+      // Fragments WITHIN a block still join (concat semantics); blocks are aligned by
+      // index (en/fr share the same branch structure).
+      const n = Math.max(frEntry.valuesByBlock.length, enEntry.valuesByBlock.length);
+      let untranslated = false;
+      for (let i = 0; i < n; i += 1) {
+        const frJoined = (frEntry.valuesByBlock[i] ?? []).join('');
+        const enJoined = (enEntry.valuesByBlock[i] ?? []).join('');
+        if (
+          frJoined.length > 0 &&
+          frJoined === enJoined &&
+          !identityExemption(key, frJoined, allowlist)
+        ) {
+          untranslated = true;
+          break;
+        }
+      }
+      if (!untranslated) continue;
     } else {
-      // Non-`match` (a single returned value): compare the COMPLETE rendered value
-      // (all literal fragments concatenated), not fragment-by-fragment. EN
-      // `concat!("Delete ", "account")` and FR `"Delete account"` render byte-identical
-      // text but split into a different NUMBER of literals, so a positional compare
-      // finds no equal index and misses the untranslated French. A language-neutral
-      // value is still cleared by `identityExemption`; an all-empty value (length 0
-      // after join) is a `value-empty` concern, not untranslated.
+      // Non-`match`, non-branching (a single returned value): compare the COMPLETE
+      // rendered value (all literal fragments concatenated), not fragment-by-fragment.
+      // EN `concat!("Delete ", "account")` and FR `"Delete account"` render
+      // byte-identical text but split into a different NUMBER of literals, so a
+      // positional compare finds no equal index and misses the untranslated French. A
+      // language-neutral value is still cleared by `identityExemption`; an all-empty
+      // value (length 0 after join) is a `value-empty` concern, not untranslated.
       const frJoined = frEntry.values.join('');
       const enJoined = enEntry.values.join('');
       const untranslated =
@@ -1140,15 +1204,19 @@ export function scanComponentLiterals(file, source) {
   // (`id: id_for()`) is not collected, so its body stays exempt.
   const copyHelpers = new Set();
   // Expression-CHILD calls: `{ helper() }` — its `{` follows the element body `{`,
-  // a sibling child's `}`, or a sibling string (blanked to `"`).
-  const childCallRe = /[{}"]\s*\{\s*([A-Za-z_]\w*)\s*\(/g;
+  // a sibling child's `}`, or a sibling string (blanked to `"`). A QUALIFIED path
+  // (`{Self::helper()}`, `{copy::helper()}`) renders its terminal function's literal
+  // just the same, so match an optional `Foo::` path prefix and capture the TERMINAL
+  // name to resolve (a bare-identifier-only match let qualified helpers ship copy).
+  const childCallRe = /[{}"]\s*\{\s*(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(/g;
   for (let m = childCallRe.exec(skeleton); m; m = childCallRe.exec(skeleton)) {
     const at = m.index + m[0].lastIndexOf('{');
     if (inTest(at) || !inRsx(at)) continue;
     copyHelpers.add(m[1]);
   }
-  // Copy-ATTRIBUTE call values: `label: helper()` (a copy-bearing prop).
-  const attrCallRe = /([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*\(/g;
+  // Copy-ATTRIBUTE call values: `label: helper()` / `label: Self::helper()` (a
+  // copy-bearing prop) — likewise resolve the terminal function of a qualified path.
+  const attrCallRe = /([A-Za-z_]\w*)\s*:\s*(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(/g;
   for (let m = attrCallRe.exec(skeleton); m; m = attrCallRe.exec(skeleton)) {
     if (inTest(m.index) || !inRsx(m.index)) continue;
     if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyHelpers.add(m[2]);

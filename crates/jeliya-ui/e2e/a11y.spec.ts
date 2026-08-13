@@ -335,20 +335,36 @@ async function assertTargetGeometry(
         continue;
       }
     }
-    // HIT-TEST, do not merely trust the bounding box: an overlay covering the
-    // control still lets `boundingBox()` report its full size, so a 44×44 box could
-    // deliver taps to an overlay. `elementFromPoint` at the control's centre must
-    // resolve to the control or a descendant, or the target is not actually reachable.
-    const reachable = await target.evaluate((el) => {
+    // HIT-TEST across the FULL area, not just the centre: an overlay covering the
+    // control still lets `boundingBox()` report its full size, and an overlay that
+    // covers almost everything but leaves a small central hole would pass a
+    // centre-only probe while most taps land on the overlay. Probe a PLUS of five
+    // points — the centre plus the four edge-midpoints, inset 15% so they sit on the
+    // flat edges (avoiding rounded corners, whose transparent pixels legitimately
+    // resolve to the background) — and require EVERY point to resolve to the control
+    // or a DESCENDANT (a pseudo-element hit reports its originating element). An
+    // ANCESTOR is rejected: a `pointer-events: none` control returns its container,
+    // which would falsely certify an untappable target.
+    const hits = await target.evaluate((el) => {
       const r = el.getBoundingClientRect();
-      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      // Reachable ONLY if the centre resolves to the control itself or a DESCENDANT
-      // (a pseudo-element hit reports its originating element). An ANCESTOR is NOT
-      // accepted: a control with `pointer-events: none` returns its container, which
-      // would falsely certify an untappable target. A foreign element is an overlay.
-      return hit !== null && (el === hit || (hit instanceof Node && el.contains(hit)));
+      const points: [number, number][] = [
+        [0.5, 0.5],
+        [0.5, 0.15],
+        [0.5, 0.85],
+        [0.15, 0.5],
+        [0.85, 0.5],
+      ];
+      let reachable = 0;
+      for (const [fx, fy] of points) {
+        const h = document.elementFromPoint(r.left + r.width * fx, r.top + r.height * fy);
+        if (h !== null && (el === h || (h instanceof Node && el.contains(h)))) reachable += 1;
+      }
+      return { reachable, total: points.length };
     });
-    expect(reachable, `${where}: a target is covered — a tap at its centre does not reach it`).toBe(true);
+    expect(
+      hits.reachable,
+      `${where}: a target is partly covered — only ${hits.reachable}/${hits.total} probe points across it reach it`,
+    ).toBe(hits.total);
     let isException = false;
     for (const ex of COMPACT_44_EXCEPTIONS) {
       if (await target.evaluate((el, sel) => el.matches(sel), ex.selector)) {
@@ -434,6 +450,33 @@ test("a compact control regressed below the floor is caught, not silently skippe
     document.body.appendChild(b);
   });
   await expect(assertTargetGeometry(page, "injected 1px control")).rejects.toThrow();
+});
+
+test("a target covered except its centre is caught, not certified by a centre-only probe", async ({ page }, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "compact" && testInfo.project.name !== "narrow",
+    "target-size floors are the compact/narrow contract (§7)",
+  );
+  await gotoReadyShell(page);
+  // A full-size 44×44 control whose TOP band is covered by an overlay, leaving the
+  // centre exposed. A centre-only hit-test would certify it; the multi-point probe
+  // sees the covered edge and fails. Red-before: only the centre was probed.
+  await page.evaluate(() => {
+    const b = document.createElement("button");
+    b.textContent = "x";
+    b.setAttribute(
+      "style",
+      "appearance:none;box-sizing:border-box;position:fixed;top:120px;left:120px;width:44px;height:44px;margin:0;padding:0;border:0;z-index:9000",
+    );
+    document.body.appendChild(b);
+    const overlay = document.createElement("div");
+    overlay.setAttribute(
+      "style",
+      "position:fixed;top:120px;left:120px;width:44px;height:16px;background:red;z-index:9999",
+    );
+    document.body.appendChild(overlay);
+  });
+  await expect(assertTargetGeometry(page, "partly-covered target")).rejects.toThrow();
 });
 
 test("reduced motion disables the reconnecting-status animation", async ({ page }) => {
