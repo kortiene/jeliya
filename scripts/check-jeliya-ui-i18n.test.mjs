@@ -1578,6 +1578,67 @@ fn C() -> Element { rsx! { div { {Self::hardcoded()} } } }`;
   );
 });
 
+test('rule: if/else placeholder parity is per-branch (#274 24-1)', () => {
+  const en = `impl Catalog for En {
+    fn label(&self, n: &str, x: &str, c: bool) -> String { if c { format!("Count {n}") } else { format!("Name {x}") } }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn label(&self, n: &str, x: &str, c: bool) -> String { if c { format!("Compte {x}") } else { format!("Nom {n}") } }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(codes.includes('placeholder-parity'), 'fr swapped {n}/{x} between if/else branches (identical pooled set) must be caught');
+});
+
+test('rule 2: a Default::default() branch is value-empty (#274 24-2)', () => {
+  const src = `impl Catalog for En {
+    fn tag(&self, c: bool) -> String { if c { "Traduit".to_owned() } else { Default::default() } }
+  }`;
+  const empty = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).filter((f) => f.code === 'value-empty');
+  assert.ok(empty.some((f) => /tag/.test(f.message)), 'the Default::default() branch renders blank → value-empty');
+});
+
+test('literal scan: a transitively-called helper is traced (#274 24-3)', () => {
+  const source = `fn inner() -> &'static str { "Delete account" }
+fn outer() -> &'static str { inner() }
+fn C() -> Element { rsx! { div { {outer()} } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'outer() delegates to inner(): the inner helper literal must be traced transitively',
+  );
+});
+
+test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
+  // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
+  // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,
+  // and letting the later copy escape. Depth-tracking closes at the OUTER `*/`.
+  const source = `fn C() -> Element { rsx! { /* outer /* inner */ } still outer */ div { "Delete account" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'the nested comment must close at the OUTER terminator so the later copy is still scanned',
+  );
+});
+
+test('literal scan: dangerous_inner_html copy is flagged (#274 24-7)', () => {
+  const source = `fn C() -> Element { rsx! { div { dangerous_inner_html: "<b>Delete account</b>" } } }`;
+  const codes = scanComponentLiterals('x.rs', source).map((f) => f.code);
+  assert.ok(codes.includes('copy-attribute'), 'dangerous_inner_html renders visible text — it is copy, not structural');
+});
+
+test('literal scan: a structural attr computed as if/else is NOT flagged; a copy attr IS (#274 24-8)', () => {
+  const structural = `fn C() -> Element { rsx! { div { class: if selected { "selected-state" } else { "default-state" } } } }`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', structural).some((f) => /selected-state|default-state/.test(f.message)),
+    'a class computed inline as if/else is structural, not UI copy',
+  );
+  const copy = `fn C() -> Element { rsx! { SkipLink { label: if x { "Skip to rooms" } else { "Skip" } } } }`;
+  assert.ok(
+    scanComponentLiterals('x.rs', copy).some((f) => f.code === 'copy-attribute'),
+    'a copy-bearing attr (label) computed as if/else still carries copy that must be flagged',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

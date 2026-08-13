@@ -264,20 +264,21 @@ pub fn AppRoot(
                 // the same render never overwrites it (`StatusIndicator` has no live
                 // semantics — §5.6). Room-count/notice announcements stay render-
                 // driven: they coalesce by design and are not transition-sensitive.
-                // Seed the tracker from the lifecycle snapshot recovered at
-                // subscription time, NOT `None`: a subscription is live-only, so if
-                // the client had already entered `Interrupted` before this future
-                // subscribed, that drop is not replayed here. With `prev = None` the
-                // first subsequent `Ready` would read as a happy-path transition and
-                // the RECOVERY would go unannounced. Seeding from `initial_state`
-                // makes the recovery detectable while still excluding the boot path
-                // (`Idle`/`Connecting` are not problem states, so a first `Ready` from
-                // them still announces nothing).
-                let mut prev = Some(initial_state);
+                // Classify each transition from the EVENT'S OWN `from`/`to`, not a
+                // tracked snapshot: a subscription is live-only, so if a drop→recovery
+                // happened between `subscribe()` and the `initial_state` snapshot, the
+                // subscription BUFFERS `StateChanged { from: Interrupted, to: Ready }`
+                // while `initial_state` is already `Ready`. A snapshot-seeded `prev`
+                // would compare `Ready → Ready` and swallow the recovery; the event's own
+                // `from` records the real origin, so the recovery is still announced. The
+                // client coalesces flapping transitions into one event and PRESERVES the
+                // earliest `from`, so per-event classification respects coalescing too.
+                // The happy boot path (`Idle`/`Connecting` → `Ready`) is still silent
+                // because those `from`s are not problem states.
                 while let Some(event) = events.next().await {
                     ui.write().apply_event(&event);
-                    if let ClientEvent::StateChanged { to, .. } = event {
-                        if announces_connection_change(prev, to) {
+                    if let ClientEvent::StateChanged { from, to } = event {
+                        if announces_connection_change(Some(from), to) {
                             let resolved = locale.peek();
                             let word =
                                 crate::l10n::wire::status_for(catalog_for(resolved.text), to);
@@ -285,7 +286,6 @@ pub fn AppRoot(
                                 .connection
                                 .announce(catalog_for(resolved.text).conn_announcement(word));
                         }
-                        prev = Some(to);
                     }
                 }
             };

@@ -142,8 +142,24 @@ export function scanRustSource(source) {
       continue;
     }
     if (ch === '/' && source[i + 1] === '*') {
-      const end = source.indexOf('*/', i + 2);
-      const stop = end === -1 ? source.length : end + 2;
+      // Rust block comments NEST: `/* a /* b */ c */` closes at the OUTER `*/`, not the
+      // first one. Track depth — an `indexOf('*/')` stops at the inner terminator and
+      // leaks the remainder (including a stray `}`) into the skeleton, which could close
+      // a detected RSX range early and let later hardcoded copy pass the gate.
+      let depth = 1;
+      let j = i + 2;
+      while (j < source.length && depth > 0) {
+        if (source[j] === '/' && source[j + 1] === '*') {
+          depth += 1;
+          j += 2;
+        } else if (source[j] === '*' && source[j + 1] === '/') {
+          depth -= 1;
+          j += 2;
+        } else {
+          j += 1;
+        }
+      }
+      const stop = j; // past the matching outer `*/`, or source end if unterminated
       comments.push({ start: i, end: stop });
       blank(i, stop);
       i = stop;
@@ -354,17 +370,19 @@ export function parseCatalog(source, file) {
       (l) => l.start > lastTopLevelSemi && l.end <= close,
     );
     // A returned branch whose ENTIRE value is an empty-string constructor
-    // (`=> String::new()` / a bare `{ String::default() }`) contributes NO string
-    // literal, so the literal-based `parts` miss it — yet it renders BLANK copy for
-    // that input. Count each such branch and record a synthetic empty value, so
-    // `value-empty` flags it INDEPENDENTLY of sibling branches that carry text.
-    // Deliberately NOT matched: `_ => None` (returns `Option::None`, not an empty
-    // string) and `String::new()` used as a call ARGUMENT (`format!("x", String::new())`
-    // renders "x", so the ctor is preceded by `,`/`(`, not `=>`/`{`).
+    // (`=> String::new()`, `{ String::default() }`, or the inferred `Default::default()`
+    // where the return type is `String`) contributes NO string literal, so the
+    // literal-based `parts` miss it — yet it renders BLANK copy for that input. Count
+    // each such branch and record a synthetic empty value, so `value-empty` flags it
+    // INDEPENDENTLY of sibling branches that carry text. Deliberately NOT matched:
+    // `_ => None` (returns `Option::None`, not an empty string) and a ctor used as a
+    // call ARGUMENT (`format!("x", String::new())` renders "x", so it is preceded by
+    // `,`/`(`, not `=>`/`{`).
     let emptyBranchCount = 0;
     {
       const returned = skeleton.slice(lastTopLevelSemi, close);
-      const emptyCtorRe = /(?:=>|\{)\s*String::(?:new|default)\s*\(\s*\)/g;
+      const emptyCtorRe =
+        /(?:=>|\{)\s*(?:String::(?:new|default)|Default::default)\s*\(\s*\)/g;
       while (emptyCtorRe.exec(returned) !== null) emptyBranchCount += 1;
     }
     const emptyBranchValues = Array.from({ length: emptyBranchCount }, () => '');
@@ -428,6 +446,9 @@ export function parseCatalog(source, file) {
     // For a NON-match branching return (`if c { "a" } else { "b" }`), each alternative
     // block is its own branch — see the computation below.
     let valuesByBlock = null;
+    // Parallel per-block placeholder multiset, so if/else placeholder parity is compared
+    // branch-by-branch (a `{n}`/`{x}` swap between branches has an identical pooled set).
+    let slotsByBlock = null;
     if (!isPlural) {
       const bodyText = skeleton.slice(open, close);
       const markers = [];
@@ -492,6 +513,7 @@ export function parseCatalog(source, file) {
         }
         if (blockRanges.length > 0) {
           const groups = [[]]; // [0] = base (literals in no block)
+          const slotGroups = [[]]; // parallel: the slot multiset per block
           for (const p of parts) {
             let idx = 0;
             for (let b = 0; b < blockRanges.length; b += 1) {
@@ -501,8 +523,11 @@ export function parseCatalog(source, file) {
               }
             }
             (groups[idx] ??= []).push(collapseSlots(p.value));
+            (slotGroups[idx] ??= []).push(...slotSet([p.value]));
           }
+          for (const g of slotGroups) if (g) g.sort();
           valuesByBlock = groups;
+          slotsByBlock = slotGroups;
         }
       }
     }
@@ -521,6 +546,7 @@ export function parseCatalog(source, file) {
       valuesByBranch,
       slotsByBranch,
       valuesByBlock,
+      slotsByBlock,
     });
     methodRe.lastIndex = close;
   }
@@ -657,6 +683,17 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
         )
       ) {
         findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders differ from en in a match arm — a translation moved, dropped, or duplicated a format slot between branches`, 'catalog'));
+      }
+    } else if (frEntry.slotsByBlock && enEntry.slotsByBlock) {
+      // NON-match if/else: compare placeholders PER BLOCK (aligned by index), so a
+      // French `if c { "Compte {x}" } else { "Nom {n}" }` against EN `{n}`/`{x}` — an
+      // identical POOLED multiset — is caught. The pooled fallback below would pass it.
+      const n = Math.max(frEntry.slotsByBlock.length, enEntry.slotsByBlock.length);
+      for (let i = 0; i < n; i += 1) {
+        if (!slotsEqual(frEntry.slotsByBlock[i] ?? [], enEntry.slotsByBlock[i] ?? [])) {
+          findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders differ from en in a conditional branch — a translation moved, dropped, or duplicated a format slot between branches`, 'catalog'));
+          break;
+        }
       }
     } else if (!slotsEqual(frEntry.slots, enEntry.slots)) {
       findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
@@ -798,6 +835,10 @@ const COPY_ATTRS = new Set([
   'aria-roledescription',
   'aria-valuetext',
   'close_label',
+  // Dioxus's `dangerous_inner_html` injects its string as rendered HTML — its
+  // user-visible text (`"<b>Delete account</b>"`) is copy that must be localized,
+  // not a structural attribute.
+  'dangerous_inner_html',
   'hint',
   'label',
   'optional_label',
@@ -908,6 +949,50 @@ function attrNameBefore(source, colonIndex) {
   const end = at + 1;
   while (at >= 0 && /[\w-]/.test(source[at])) at -= 1;
   return source.slice(at + 1, end);
+}
+
+/** The index of the ATTRIBUTE COLON governing the expression that contains `pos`, or
+ *  `-1` if `pos` sits in a child/argument position instead. Handles a value computed
+ *  inline as an `if`/`else`/`match` (`class: if c { "sel" } else { "def" }`): the
+ *  literals inside those branch blocks no longer have `:` immediately before them, yet
+ *  they belong to the attribute — so a caller can tell a STRUCTURAL attribute's branch
+ *  from real markup text. Walks back over balanced groups; an expression block `{` (one
+ *  preceded by `if`/`else`/`match`) is stepped through, while an element-body `{`, a
+ *  sibling `,`, or a string boundary stops the walk (a child/arg → no attr). */
+function enclosingAttrColonIndex(skeleton, pos) {
+  let i = pos - 1;
+  let guard = 0;
+  while (i >= 0 && (guard += 1) < 100000) {
+    const c = skeleton[i];
+    if (c === '}' || c === ')' || c === ']') {
+      const open = c === '}' ? '{' : c === ')' ? '(' : '[';
+      let d = 1;
+      i -= 1;
+      while (i >= 0 && d > 0) {
+        if (skeleton[i] === c) d += 1;
+        else if (skeleton[i] === open) d -= 1;
+        i -= 1;
+      }
+      continue;
+    }
+    if (c === ':') return i; // the attribute colon governing this expression
+    if (c === '{') {
+      // An expression block only if preceded by `if`/`else`/`match` (skip its
+      // condition, bounded by the attr `:` / a block edge / a sibling comma). Otherwise
+      // it is an element body or a child slot — a boundary.
+      let condStart = i - 1;
+      while (condStart >= 0 && !'{},;:'.includes(skeleton[condStart])) condStart -= 1;
+      const chunk = skeleton.slice(condStart + 1, i);
+      if (/\b(?:if|else|match)\b[^{]*$/.test(chunk) || /^\s*else\s*$/.test(chunk)) {
+        i = condStart; // continue back past the whole `if <cond>` / `else` / `match <e>`
+        continue;
+      }
+      return -1; // element body / child slot
+    }
+    if (c === ',' || c === '"') return -1; // sibling attr/child, or a text child
+    i -= 1;
+  }
+  return -1;
 }
 
 /** The byte ranges covered by `rsx! { … }` blocks (nested rsx sits inside the
@@ -1221,10 +1306,20 @@ export function scanComponentLiterals(file, source) {
     if (inTest(m.index) || !inRsx(m.index)) continue;
     if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyHelpers.add(m[2]);
   }
-  // Resolve each helper name to its `fn NAME(…) -> … { BODY }` body span: skip the
-  // balanced parameter list, then take the first `{` (the body) and its match.
+  // Resolve each helper name to its `fn NAME(…) -> … { BODY }` body span — skip the
+  // balanced parameter list, then take the first `{` (the body) and its match — and do
+  // so TRANSITIVELY: a copy helper that calls another helper (`fn outer() { inner() }`)
+  // renders that callee's literal too, so trace the calls each resolved body makes
+  // (bare or qualified terminal name) and follow them. A `visited` set bounds it and
+  // breaks cycles; names with no matching `fn` (std ctors, macros, keywords) resolve to
+  // nothing and are harmless no-ops.
   const helperBodies = [];
-  for (const name of copyHelpers) {
+  const visited = new Set();
+  const pending = [...copyHelpers];
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (visited.has(name)) continue;
+    visited.add(name);
     const defRe = new RegExp(`\\bfn\\s+${name}\\s*\\(`, 'g');
     for (let m = defRe.exec(skeleton); m; m = defRe.exec(skeleton)) {
       let i = m.index + m[0].length - 1; // at the opening '('
@@ -1241,7 +1336,16 @@ export function scanComponentLiterals(file, source) {
       }
       while (i < skeleton.length && skeleton[i] !== '{') i += 1;
       const close = matchingBrace(skeleton, i);
-      if (close !== -1) helperBodies.push([i, close]);
+      if (close !== -1) {
+        helperBodies.push([i, close]);
+        // Follow calls this body makes so a helper that delegates to another helper's
+        // literal is still traced (terminal name of a possibly-qualified path).
+        const body = skeleton.slice(i, close);
+        const bodyCallRe = /(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(/g;
+        for (let c = bodyCallRe.exec(body); c; c = bodyCallRe.exec(body)) {
+          if (!visited.has(c[1])) pending.push(c[1]);
+        }
+      }
     }
   }
   const inCopyHelperBody = (pos) => helperBodies.some(([open, close]) => pos > open && pos < close);
@@ -1342,6 +1446,21 @@ export function scanComponentLiterals(file, source) {
     }
     // A literal that is a function/macro argument is likewise Rust code.
     if (prev === '(' || prev === '=' || prev === '&') continue;
+
+    // A literal inside an attribute value computed inline as `if`/`else`/`match`
+    // (`class: if selected { "selected-state" } else { "default-state" }`) belongs to
+    // that attribute — its branch blocks just lost the immediate `:`. A STRUCTURAL
+    // attribute's branch is not markup text (do not flag it); a COPY attribute's branch
+    // is copy (flag it). Only a TRUE child position (no governing attr colon) falls to
+    // the text finding below.
+    const attrColon = enclosingAttrColonIndex(skeleton, literal.start);
+    if (attrColon !== -1) {
+      const attr = attrNameBefore(source, attrColon);
+      if (attr && COPY_ATTRS.has(normalizeAttrName(attr))) {
+        findings.push(finding(file, line, 'copy-attribute', `${attr} takes a literal, not a catalog message: ${literal.value.slice(0, 60)}`, 'literals'));
+      }
+      continue;
+    }
 
     findings.push(finding(file, line, 'rust-text', `RSX text is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
   }

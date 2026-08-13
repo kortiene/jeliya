@@ -190,22 +190,27 @@ test("the room-count live region announces the settled count exactly once", asyn
   await expect(region).toHaveAttribute("aria-atomic", "true");
   await expect(region).toHaveText("0 rooms");
 
-  // The witness recorded TEXT changes and NODE (re)mounts. A coalescing announcer
-  // on ONE stable node yields: the region mounted exactly once, and "0 rooms"
-  // reached exactly once — a remount (mount count > 1) or a re-announce ("0 rooms"
-  // more than once) is the checklist's exact failure mode.
+  // The witness recorded TEXT changes and NODE (re)mounts. A coalescing announcer on
+  // ONE stable node yields: the region mounted exactly once and EMPTY, and "0 rooms"
+  // reached exactly once as a subsequent TEXT UPDATE. Polite live-region content that
+  // is already present when the node is INSERTED is not reliably announced by assistive
+  // tech, so requiring the mount to be empty and the count to arrive as an update is
+  // what actually proves the stable pre-existing region receives the announcement — a
+  // remount, a re-announce, or content-at-insertion is the checklist's failure mode.
   const log = await page.evaluate(
     () =>
       (window as unknown as { __liveRegionLog: { type: string; text: string }[] })
         .__liveRegionLog,
   );
+  const mounts = log.filter((entry) => entry.type === "mount");
+  expect(mounts.length, "the live region must be mounted once, never remounted").toBe(1);
   expect(
-    log.filter((entry) => entry.type === "mount").length,
-    "the live region must be mounted once, never remounted",
-  ).toBe(1);
+    mounts[0].text,
+    "the region must mount EMPTY so its content is announced as an update, not present at insertion",
+  ).toBe("");
   expect(
-    log.filter((entry) => entry.text === "0 rooms").length,
-    "the settled room count must be announced exactly once",
+    log.filter((entry) => entry.type === "text" && entry.text === "0 rooms").length,
+    "the settled room count must arrive as exactly one TEXT update",
   ).toBe(1);
 });
 
