@@ -304,6 +304,13 @@ pub(crate) async fn wait_health_dark(
             Err(_elapsed) => return false,
         };
         if !still_up {
+            // Accept darkness only WITHIN the budget: `timeout` polls the ready probe
+            // before its timer, so a "gone" observed only past the deadline is
+            // out-of-budget — reporting it would let eviction respawn over an
+            // incumbent whose listener merely dropped after the eviction budget.
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
             return true;
         }
         // Recompute after the probe; if the deadline passed, stop before sleeping.
@@ -333,13 +340,19 @@ pub(crate) async fn wait_health_dark(
 async fn bounded_probe<T, F>(name: &'static str, budget: Duration, probe: F) -> Option<T>
 where
     T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
+    F: FnOnce(std::time::Instant) -> T + Send + 'static,
 {
+    // ANCHOR the deadline HERE (when the caller starts the probe), not inside the
+    // worker: a detached thread scheduled LATE would otherwise compute its deadline
+    // from its own start and accept an out-of-budget result. The outer `timeout`
+    // polls the ready receiver before its timer, so the worker's deadline check
+    // against THIS anchored instant is what actually bounds a returned result.
+    let deadline = std::time::Instant::now() + budget;
     let (tx, rx) = tokio::sync::oneshot::channel();
     if std::thread::Builder::new()
         .name(name.to_owned())
         .spawn(move || {
-            let _ = tx.send(probe());
+            let _ = tx.send(probe(deadline));
         })
         .is_err()
     {
@@ -358,8 +371,7 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
     // with its own std-clock deadline; the outer `timeout` bounds the CALLER even if
     // a single `stat` wedges (the thread leaks but shutdown is not hung).
     matches!(
-        bounded_probe("jeliya-portfile-removed", budget, move || {
-            let deadline = std::time::Instant::now() + budget;
+        bounded_probe("jeliya-portfile-removed", budget, move |deadline| {
             loop {
                 // Check the DEADLINE before accepting absence: a removal observed
                 // only past it is out-of-budget cleanup, not `Graceful`.
@@ -391,13 +403,12 @@ pub(crate) async fn portfile_present(data_dir: &Path, deadline: tokio::time::Ins
     let path = portfile::portfile_path(data_dir);
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
     matches!(
-        bounded_probe("jeliya-portfile-present", budget, move || {
+        bounded_probe("jeliya-portfile-present", budget, move |deadline| {
             // Reject a result observed AFTER the budget: `timeout` polls the ready
             // probe BEFORE its timer, so at a zero/exhausted budget a completed `stat`
-            // could otherwise be accepted out-of-budget. Gate on a std-clock deadline
-            // inside the probe, after the (possibly slow) `stat`.
-            let std_deadline = std::time::Instant::now() + budget;
-            matches!(path.try_exists(), Ok(true)) && std::time::Instant::now() < std_deadline
+            // could otherwise be accepted out-of-budget. Gate on the ANCHORED deadline
+            // after the (possibly slow) `stat`.
+            matches!(path.try_exists(), Ok(true)) && std::time::Instant::now() < deadline
         })
         .await,
         Some(true)
@@ -415,12 +426,11 @@ pub(crate) async fn portfile_absent(data_dir: &Path, deadline: tokio::time::Inst
     let path = portfile::portfile_path(data_dir);
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
     matches!(
-        bounded_probe("jeliya-portfile-absent", budget, move || {
+        bounded_probe("jeliya-portfile-absent", budget, move |deadline| {
             // See `portfile_present`: reject an absence observed after the budget so
             // `shutdown`/`stop_adopted` cannot report `Graceful` for an out-of-budget
             // exit.
-            let std_deadline = std::time::Instant::now() + budget;
-            matches!(path.try_exists(), Ok(false)) && std::time::Instant::now() < std_deadline
+            matches!(path.try_exists(), Ok(false)) && std::time::Instant::now() < deadline
         })
         .await,
         Some(true)
@@ -490,9 +500,13 @@ pub(crate) async fn snapshot_held_lock(
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
     // A stalled open/probe (hung mount) or a thread-creation failure yields `None` —
     // fail closed: the exit proof could not be captured within the budget.
-    bounded_probe("jeliya-lock-snapshot", budget, move || {
+    bounded_probe("jeliya-lock-snapshot", budget, move |deadline| {
         let mut handle = open_lock_handle(&dir);
-        if lock_handle_is_held(handle.as_mut()) {
+        // Reject a snapshot completed AT/AFTER the deadline: `timeout` polls the
+        // ready probe before its timer, so a (possibly slow) open+`try_write` that
+        // finishes out-of-budget must not anchor the completion gate. Gate on the
+        // ANCHORED deadline after the blocking work, matching `portfile_present`.
+        if std::time::Instant::now() < deadline && lock_handle_is_held(handle.as_mut()) {
             handle
         } else {
             None
@@ -535,8 +549,7 @@ pub(crate) async fn wait_lock_handle_released(
         return false;
     };
     matches!(
-        bounded_probe("jeliya-lock-release", budget, move || {
-            let deadline = std::time::Instant::now() + budget;
+        bounded_probe("jeliya-lock-release", budget, move |deadline| {
             loop {
                 // Check the DEADLINE before attempting/accepting the lock, every
                 // iteration: a release observed only AFTER the budget expired is an

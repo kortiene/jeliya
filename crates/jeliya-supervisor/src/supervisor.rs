@@ -278,7 +278,11 @@ impl Supervisor {
                 }
             }
 
-            let (mut child, stdin, mut lines) = self.spawn(&binary).await?;
+            let (mut guard, stdin, mut lines) = self.spawn(&binary).await?;
+            // `guard` keeps the spawned child force-killable through the whole
+            // handshake: if this future is dropped before an owned `Sidecar` takes
+            // ownership, the guard SIGKILLs the child's group (its stdin-EOF
+            // parent-death signal only covers a well-behaved daemon).
             let announced = match read_announcement(&mut lines, self.timeouts.spawn).await {
                 Ok(line) => line,
                 Err(e) => {
@@ -311,8 +315,8 @@ impl Supervisor {
                     // data-dir lock (or writing state) while the caller retries. The
                     // `_` arm leaves the child un-reaped, so `abandon_child` →
                     // `force_kill_tree` already reaches the group via `child.id()`.
-                    let leader_pgid = child.id();
-                    match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
+                    let leader_pgid = guard.as_mut().id();
+                    match tokio::time::timeout(self.timeouts.spawn, guard.as_mut().wait()).await {
                         Ok(Ok(status)) if !status.success() => {
                             if let Some(pgid) = leader_pgid {
                                 // Propagate a verified group-cleanup failure: a
@@ -333,7 +337,7 @@ impl Supervisor {
                             }
                             return Err(e);
                         }
-                        _ => return Err(abandon_child(&mut child, e).await),
+                        _ => return Err(abandon_child(guard.as_mut(), e).await),
                     }
                 }
             };
@@ -345,7 +349,7 @@ impl Supervisor {
                     .await
                 {
                     Ok(pf) => pf,
-                    Err(e) => return Err(abandon_child(&mut child, e).await),
+                    Err(e) => return Err(abandon_child(guard.as_mut(), e).await),
                 };
 
             match announced {
@@ -356,7 +360,7 @@ impl Supervisor {
                     // this spawn: the fresh daemon serves this build's generation,
                     // so validation adopts it (§6.7 case 13) or fails closed on a
                     // real drift, never on the vanished incumbent's stale portfile.
-                    self.finish_owned(child, stdin, portfile, pid, port).await
+                    self.finish_owned(guard, stdin, portfile, pid, port).await
                 }
                 ReadyLine::AlreadyRunning { pid, port } => {
                     // Our spawned child bowed out with exit 0; the incumbent is
@@ -375,8 +379,8 @@ impl Supervisor {
                     // (adopt, or `Wedged`) must sweep the group so nothing lingers
                     // on the data-dir lock; the `abandon_child` arms leave the child
                     // un-reaped, so `force_kill_tree` already reaches it.
-                    let leader_pgid = child.id();
-                    match tokio::time::timeout(self.timeouts.spawn, child.wait()).await {
+                    let leader_pgid = guard.as_mut().id();
+                    match tokio::time::timeout(self.timeouts.spawn, guard.as_mut().wait()).await {
                         Ok(Ok(status)) if status.success() => {
                             // Our probe child bowed out cleanly; we now fall through
                             // to ADOPT the incumbent. Confirm the isolated group is
@@ -402,7 +406,7 @@ impl Supervisor {
                         }
                         Ok(Err(e)) => {
                             return Err(abandon_child(
-                                &mut child,
+                                guard.as_mut(),
                                 SupervisorError::Handshake(format!(
                                     "adopted-path child never exited: {e}"
                                 )),
@@ -410,7 +414,7 @@ impl Supervisor {
                             .await)
                         }
                         Err(_elapsed) => {
-                            return Err(abandon_child(&mut child, SupervisorError::Wedged).await)
+                            return Err(abandon_child(guard.as_mut(), SupervisorError::Wedged).await)
                         }
                     }
                     self.finish_adopted(portfile, pid, port, allow_evict).await
@@ -422,20 +426,25 @@ impl Supervisor {
     /// Validate an owned (`ready`) daemon and wrap it as a [`Sidecar`].
     async fn finish_owned(
         &self,
-        mut child: Child,
+        mut guard: process::SpawnGuard,
         stdin: Option<ChildStdin>,
         portfile: Portfile,
         ready_pid: u32,
         ready_port: u16,
     ) -> Result<Sidecar, SupervisorError> {
+        // Hold the child under `guard` through this whole validation: `into_child`
+        // is called ONLY at the `owned_sidecar` hand-off, so a cancel during the
+        // health/PID gate below still SIGKILLs the child's group instead of leaking
+        // a bare child (whose stdin-EOF signal an overridden daemon could ignore).
+        //
         // The announced PID must be OUR spawned child's PID. A faulty or
         // overridden binary could print a `ready` line quoting the PID of an
         // existing compatible healthy daemon (matching its portfile) while being
         // a different process; binding to `child.id()` refuses that impersonation.
-        let child_pid = child.id();
+        let child_pid = guard.as_mut().id();
         if child_pid != Some(ready_pid) {
             return Err(abandon_child(
-                &mut child,
+                guard.as_mut(),
                 SupervisorError::Handshake(format!(
                     "ready line announced pid {ready_pid}, but the spawned child is pid {child_pid:?} — the binary announced a PID that is not itself"
                 )),
@@ -444,7 +453,7 @@ impl Supervisor {
         }
         if portfile.pid != ready_pid || portfile.port != ready_port {
             return Err(abandon_child(
-                &mut child,
+                guard.as_mut(),
                 SupervisorError::Handshake(format!(
                     "ready line says pid {ready_pid} port {ready_port} but the portfile says pid {} port {}",
                     portfile.pid, portfile.port
@@ -478,15 +487,17 @@ impl Supervisor {
                         "owned child announced pid {ready_pid} port {ready_port} but the validated portfile now serves pid {} port {} — a replacement daemon raced our spawn",
                         validated.portfile.pid, validated.portfile.port
                     ));
-                    return Err(abandon_child(&mut child, mismatch).await);
+                    return Err(abandon_child(guard.as_mut(), mismatch).await);
                 }
-                Ok(self.owned_sidecar(child, stdin, validated.portfile))
+                // Lifecycle ownership transfers to the `Sidecar` here — disarm the
+                // guard now that a real owner exists.
+                Ok(self.owned_sidecar(guard.into_child(), stdin, validated.portfile))
             }
             Err(e) => {
                 // A daemon WE spawned failed validation — the bundled binary
                 // drifted from `expected` (R6). Stop it (we own it) and surface
                 // the error rather than leaving a mispaired daemon running.
-                Err(abandon_child(&mut child, e).await)
+                Err(abandon_child(guard.as_mut(), e).await)
             }
         }
     }
@@ -699,7 +710,7 @@ impl Supervisor {
         // awaits the still-running spawn and kills any child a late exec produces,
         // so a stalled spawn never leaks a daemon.
         let spawn_deadline = validate::deadline_from(self.timeouts.spawn);
-        let mut child = {
+        let mut guard = {
             let mut attempts = 0u32;
             loop {
                 let remaining =
@@ -740,6 +751,23 @@ impl Supervisor {
                     .name("jeliya-daemon-spawn".to_owned())
                     .spawn(move || {
                         let _rt = rt_handle.enter();
+                        // `cmd.spawn()` is `std.spawn()?` then a fallible Tokio
+                        // registration (stdio → non-blocking `PollEvented`, and the
+                        // SIGCHLD reaper). If the CALLER dropped its runtime in the
+                        // microsecond after the OS child was created, that registration
+                        // can fail and Tokio's `Command::spawn` drops the bare
+                        // `std::process::Child` — we get an `Err` with NO handle, so no
+                        // pid to guard. There is no leak of the data-dir lock for the
+                        // daemon we ship: the child was spawned with `stdin(piped())`,
+                        // and that dropped write-end delivers stdin-EOF, which a
+                        // `--supervised` jeliyad treats as its shutdown signal (the same
+                        // parent-death mechanism `kill_on_drop(false)` relies on). Only a
+                        // child that IGNORES stdin-EOF could persist, and reaching it
+                        // needs a pid Tokio never exposes — closing that would require
+                        // re-implementing Tokio's private `build_child` (SIGCHLD reaper +
+                        // `PollEvented` stdio) or `pre_exec`, both barred by
+                        // `unsafe_code = "forbid"`. Documented residual, not a fix we can
+                        // safely reach.
                         let result = cmd.spawn().map(process::SpawnGuard::new);
                         let late = std::time::Instant::now() >= produced_deadline;
                         // Hand the outcome over. The `SpawnGuard` tears the child's
@@ -785,8 +813,12 @@ impl Supervisor {
                                     detail,
                                 )));
                             }
-                            // Consume the guard: this task now owns the child's lifecycle.
-                            Ok(guard) => Ok(guard.into_child()),
+                            // RETAIN the guard: startup validation (announcement,
+                            // portfile, health/PID gate) runs under it, so a cancel
+                            // before an owned `Sidecar` takes ownership still tears
+                            // the child's group down. It is disarmed only at the
+                            // Sidecar hand-off (`finish_owned` → `owned_sidecar`).
+                            Ok(guard) => Ok(guard),
                             Err(e) => Err(e),
                         };
                         (spawned_cmd, result)
@@ -809,7 +841,7 @@ impl Supervisor {
                 };
                 cmd = returned;
                 match result {
-                    Ok(c) => break c,
+                    Ok(guard) => break guard,
                     Err(e) if e.raw_os_error() == Some(26) && attempts < 10 => {
                         attempts += 1;
                         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -818,9 +850,12 @@ impl Supervisor {
                 }
             }
         };
-        let stdin = child.stdin.take();
+        // `guard` holds the freshly-spawned child; borrow it (never disarm) to take
+        // its stdio pipes, so a cancel before the owned `Sidecar` is built still
+        // force-kills the group.
+        let stdin = guard.as_mut().stdin.take();
 
-        if let Some(mut stderr) = child.stderr.take() {
+        if let Some(mut stderr) = guard.as_mut().stderr.take() {
             tokio::spawn(async move {
                 // Drain stderr in fixed RAW-BYTE chunks, not lines: a line reader
                 // grows its buffer without bound on an arbitrarily long line, and
@@ -837,12 +872,13 @@ impl Supervisor {
             });
         }
 
-        let stdout = child
+        let stdout = guard
+            .as_mut()
             .stdout
             .take()
             .ok_or_else(|| SupervisorError::Handshake("no stdout pipe".to_owned()))?;
         Ok((
-            child,
+            guard,
             stdin,
             BufReader::new(stdout.take(MAX_ANNOUNCEMENT_BYTES)).lines(),
         ))
@@ -861,7 +897,7 @@ impl Supervisor {
 const MAX_ANNOUNCEMENT_BYTES: u64 = 64 * 1024;
 
 type SpawnedDaemon = (
-    Child,
+    process::SpawnGuard,
     Option<ChildStdin>,
     Lines<BufReader<Take<ChildStdout>>>,
 );
@@ -878,14 +914,34 @@ enum ReadyLine {
 
 /// Read the first stdout line that starts with `{` (skipping any stray
 /// human-readable output), parse it as a [`ReadyLine`], all within `budget`.
-async fn read_announcement(
-    lines: &mut Lines<BufReader<Take<ChildStdout>>>,
+/// Generic over the reader so the deadline behaviour is unit-testable against an
+/// in-memory stream (the production caller passes the child's stdout `Lines`).
+async fn read_announcement<R>(
+    lines: &mut Lines<R>,
     budget: Duration,
-) -> Result<ReadyLine, SupervisorError> {
+) -> Result<ReadyLine, SupervisorError>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    // Anchor an absolute deadline BEFORE the read loop. `timeout` polls the wrapped
+    // future BEFORE its timer, so when a line and the timer are both ready Tokio
+    // returns the line even though the budget expired — the same ready-future/timer
+    // ordering the process-creation path stamps against. Reject a candidate line
+    // observed only AT/AFTER this deadline so startup never continues past the spawn
+    // budget on a daemon that announced itself late.
+    let deadline = tokio::time::Instant::now() + budget;
     let line = tokio::time::timeout(budget, async {
         loop {
             match lines.next_line().await {
-                Ok(Some(line)) if line.trim_start().starts_with('{') => return Ok(line),
+                Ok(Some(line)) if line.trim_start().starts_with('{') => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(SupervisorError::Handshake(
+                            "the announcement arrived only after the spawn budget expired"
+                                .to_owned(),
+                        ));
+                    }
+                    return Ok(line);
+                }
                 // Skip a non-JSON line (belt-and-suspenders; the daemon emits the
                 // JSON first) and keep reading.
                 Ok(Some(_)) => continue,
@@ -1186,5 +1242,36 @@ mod tests {
             "data_dir() must match the configured dir; got {returned:?}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A `ready` line that is available but observed only AT/AFTER the anchored
+    /// deadline must be REJECTED. With a zero budget the deadline equals the start
+    /// instant, so `timeout` — which polls the ready inner future before its timer —
+    /// hands the line back even though the budget elapsed; the in-loop deadline check
+    /// is what refuses it. Red before the check (returned `Ok(Ready …)`), green after.
+    #[tokio::test]
+    async fn read_announcement_rejects_a_json_line_observed_at_or_after_the_deadline() {
+        let data = b"{\"event\":\"ready\",\"pid\":1,\"port\":2}\n";
+        let mut lines = BufReader::new(&data[..]).lines();
+        let err = read_announcement(&mut lines, Duration::ZERO)
+            .await
+            .expect_err("a line observed at/after the deadline must be rejected");
+        assert!(
+            matches!(&err, SupervisorError::Handshake(m) if m.contains("after the spawn budget")),
+            "expected the late-announcement handshake error, got {err:?}"
+        );
+    }
+
+    /// The deadline gate rejects only LATE lines: a prompt line within a real budget
+    /// (after skipping non-JSON noise) still parses. Guards against the check
+    /// over-rejecting valid announcements.
+    #[tokio::test]
+    async fn read_announcement_accepts_a_prompt_json_line_within_budget() {
+        let data = b"human-readable noise\n{\"event\":\"ready\",\"pid\":1,\"port\":2}\n";
+        let mut lines = BufReader::new(&data[..]).lines();
+        let announced = read_announcement(&mut lines, Duration::from_secs(30))
+            .await
+            .expect("a prompt line within budget is accepted");
+        assert!(matches!(announced, ReadyLine::Ready { pid: 1, port: 2 }));
     }
 }

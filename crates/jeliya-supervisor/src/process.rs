@@ -173,6 +173,19 @@ impl SpawnGuard {
     pub(crate) fn into_child(mut self) -> Child {
         self.0.take().expect("SpawnGuard child taken exactly once")
     }
+
+    /// Borrow the guarded child WITHOUT disarming, so startup validation (reading
+    /// the announcement, the portfile, and the health/PID gate) can hold the child
+    /// under the guard until an owned [`crate::Sidecar`] actually takes ownership.
+    /// If the enclosing future is dropped mid-validation, the still-armed guard
+    /// SIGKILLs the child's whole group — an overridden/hung child that ignores its
+    /// stdin-EOF parent-death signal (and any descendant in its group) cannot
+    /// survive holding the data-dir lock.
+    pub(crate) fn as_mut(&mut self) -> &mut Child {
+        self.0
+            .as_mut()
+            .expect("SpawnGuard child present until taken")
+    }
 }
 
 impl Drop for SpawnGuard {
@@ -241,11 +254,16 @@ async fn wait_group_gone(group: nix::unistd::Pid) -> bool {
     use nix::sys::signal::killpg;
     let deadline = tokio::time::Instant::now() + REAP_GRACE;
     loop {
-        if matches!(killpg(group, None), Err(Errno::ESRCH)) {
-            return true;
-        }
+        // Deadline BEFORE the probe: a naturally-late `sleep` resume can land past
+        // the deadline, and an `ESRCH` observed only then is out-of-budget cleanup —
+        // accepting it would let `force_kill_tree`/`kill_reaped_process_group`
+        // suppress the documented `GroupCleanupTimedOut` and report a subtree
+        // reclaimed after the bound.
         if tokio::time::Instant::now() >= deadline {
             return false;
+        }
+        if matches!(killpg(group, None), Err(Errno::ESRCH)) {
+            return true;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -486,6 +504,47 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             assert!(gone, "an unconsumed SpawnGuard must kill the child on drop");
+        });
+    }
+
+    /// Borrowing the child through [`SpawnGuard::as_mut`] must NOT disarm the guard:
+    /// startup validation (announcement/portfile/health) borrows the child while it
+    /// stays force-killable, so a cancel mid-validation still tears the group down.
+    /// Fails if `as_mut` ever consumed the child (e.g. `take`) — the group would then
+    /// survive the drop.
+    #[test]
+    fn spawn_guard_as_mut_borrows_without_disarming() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "sleep 600"]).kill_on_drop(false);
+            configure_new_process_group(&mut cmd);
+            let child = cmd.spawn().expect("spawn a long-lived child");
+            let pid = child.id().expect("child has a pid") as i32;
+            let mut guard = SpawnGuard::new(child);
+            // Borrow the child the way startup validation does — must not disarm.
+            assert_eq!(guard.as_mut().id(), Some(pid as u32));
+            let _ = guard.as_mut().id();
+            // Drop the STILL-ARMED guard: the group must be killed despite the borrows.
+            drop(guard);
+            use nix::sys::signal::kill;
+            use nix::unistd::Pid;
+            let target = Pid::from_raw(pid);
+            let mut gone = false;
+            for _ in 0..200 {
+                if matches!(kill(target, None), Err(nix::errno::Errno::ESRCH)) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                gone,
+                "a SpawnGuard borrowed via as_mut must stay armed and kill on drop"
+            );
         });
     }
 }
