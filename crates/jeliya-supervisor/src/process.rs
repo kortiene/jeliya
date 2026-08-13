@@ -120,13 +120,21 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
 /// and a `D`-state straggler is unkillable until its syscall returns (the same
 /// bound [`force_kill_tree`] documents). Reaping the dead leader is delegated to
 /// the runtime's child reaper, or to init once this supervisor exits — a zombie
-/// holds no lock (its fd closed at death). No-op off Unix (single-process daemon).
-pub(crate) fn force_kill_group_blocking(child: Child) {
+/// holds no lock (its fd closed at death). Off Unix (no process-group kill) it
+/// falls back to a direct `start_kill` of the child handle, so the late daemon is
+/// still terminated rather than leaked.
+pub(crate) fn force_kill_group_blocking(mut child: Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         use nix::sys::signal::{killpg, Signal};
         let _ = killpg(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
     }
+    // Also signal the child handle DIRECTLY, as `force_kill_tree` does: on non-Unix
+    // there is no process-group kill at all, and on Unix a `killpg` that FAILED (its
+    // result is best-effort above) would otherwise leave the leader running. Without
+    // this the late child would be dropped with `kill_on_drop(false)` and survive.
+    // `start_kill` is synchronous — it sends the signal and does not reap.
+    let _ = child.start_kill();
     // `child` drops here: its fds close (the lock releases at death) and the
     // runtime's reaper (if alive) collects the SIGKILLed leader.
     drop(child);
@@ -365,6 +373,42 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "killing a plain child and confirming its group gone must succeed; got: {result:?}"
+            );
+        });
+    }
+
+    /// The synchronous late-spawn cleanup kills the child: `killpg` reaches its
+    /// group AND the direct `start_kill` fallback covers a failed `killpg` / a
+    /// non-Unix build, so a child dropped with `kill_on_drop(false)` cannot survive.
+    #[cfg(unix)]
+    #[test]
+    fn force_kill_group_blocking_kills_a_child() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "sleep 600"]).kill_on_drop(false);
+            configure_new_process_group(&mut cmd);
+            let child = cmd.spawn().expect("spawn a long-lived child");
+            let pid = child.id().expect("child has a pid") as i32;
+            force_kill_group_blocking(child);
+            // The child is SIGKILLed; poll until it is gone (reaped by the runtime).
+            use nix::sys::signal::kill;
+            use nix::unistd::Pid;
+            let target = Pid::from_raw(pid);
+            let mut gone = false;
+            for _ in 0..200 {
+                if matches!(kill(target, None), Err(nix::errno::Errno::ESRCH)) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                gone,
+                "force_kill_group_blocking must kill the child's process"
             );
         });
     }

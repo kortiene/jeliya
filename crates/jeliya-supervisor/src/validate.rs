@@ -46,13 +46,32 @@ pub(crate) fn deadline_from(budget: Duration) -> tokio::time::Instant {
         .unwrap_or(now)
 }
 
-/// A portfile that passed every gate, plus the health response that proved it.
-#[derive(Debug)]
+/// A portfile that passed every gate, plus the health response that proved it and
+/// a handle to the `daemon.lock` inode the proven daemon holds — captured HERE, as
+/// the final step of validation, so the adopted-stop exit proof is bound to the
+/// SAME identity the health probe just proved (not one re-opened later, which a
+/// cleanup tool could have unlinked/replaced with an unrelated process's lock). The
+/// resolve/dial path ignores it (dropped with the `Validated`); the adopt path
+/// retains it on the `Sidecar`. `None` when the lock was absent/unopenable or the
+/// bounded capture timed out — which `stop_adopted` fails closed on.
 pub(crate) struct Validated {
     pub portfile: Portfile,
     #[allow(dead_code)] // Held for callers that want the served generation; the
     // adopt path reads it, the resolve path does not.
     pub health: HealthReport,
+    pub adopted_lock: Option<fd_lock::RwLock<std::fs::File>>,
+}
+
+impl std::fmt::Debug for Validated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `fd_lock::RwLock` is not `Debug`; report only whether a handle was
+        // captured, never its inode.
+        f.debug_struct("Validated")
+            .field("portfile", &self.portfile)
+            .field("health", &self.health)
+            .field("adopted_lock", &self.adopted_lock.is_some())
+            .finish()
+    }
 }
 
 /// Run the full gate for `data_dir` against `expected`. See the module note for
@@ -132,9 +151,18 @@ pub(crate) async fn validate_portfile(
         });
     }
 
+    // FINAL step, bound to the just-proven identity: snapshot a handle to the
+    // `daemon.lock` inode the daemon currently holds. Capturing it here — while the
+    // health proof is fresh — rather than re-opening the path later closes the
+    // window in which a cleanup tool could unlink/replace the lock with an
+    // unrelated process's inode. BOUNDED and OFF the executor; a miss yields `None`.
+    // The dial path discards this; the adopt path retains it for `stop_adopted`.
+    let adopted_lock = snapshot_held_lock(data_dir, deadline_from(timeouts.teardown)).await;
+
     Ok(Validated {
         portfile,
         health: report,
+        adopted_lock,
     })
 }
 

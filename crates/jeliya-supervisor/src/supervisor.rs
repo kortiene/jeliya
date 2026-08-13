@@ -514,7 +514,7 @@ impl Supervisor {
         )
         .await
         {
-            Ok(validated) => Ok(self.adopted_sidecar(validated.portfile).await),
+            Ok(validated) => Ok(self.adopted_sidecar(validated.portfile, validated.adopted_lock)),
             Err(SupervisorError::GenerationMismatch { expected, actual }) if allow_evict => {
                 // Skew path (spec §6.7): replace ONLY a proven-owned incumbent.
                 // Re-prove ownership independently (the validation short-circuited
@@ -606,7 +606,7 @@ impl Supervisor {
             &self.timeouts,
         )
         .await?;
-        Ok(self.adopted_sidecar(validated.portfile).await)
+        Ok(self.adopted_sidecar(validated.portfile, validated.adopted_lock))
     }
 
     fn owned_sidecar(
@@ -628,15 +628,17 @@ impl Supervisor {
         }
     }
 
-    async fn adopted_sidecar(&self, portfile: Portfile) -> Sidecar {
-        // Capture a handle to the `daemon.lock` inode the daemon holds RIGHT NOW, at
-        // adoption — the moment it was proven alive — and retain it so `stop_adopted`
-        // proves the daemon's exit against THIS inode, not one re-opened at shutdown
-        // (which a cleanup tool could have unlinked/replaced with an unrelated
-        // process's lock). BOUNDED and OFF the executor (an `open` on a stalled mount
-        // blocks); a miss yields `None`, which `stop_adopted` fails closed on.
-        let deadline = validate::deadline_from(self.timeouts.teardown);
-        let adopted_lock = validate::snapshot_held_lock(&self.data_dir, deadline).await;
+    fn adopted_sidecar(
+        &self,
+        portfile: Portfile,
+        adopted_lock: Option<fd_lock::RwLock<std::fs::File>>,
+    ) -> Sidecar {
+        // The `daemon.lock` handle was captured as the FINAL step of
+        // `validate_portfile`, bound to the same identity the health probe proved,
+        // and is retained here so `stop_adopted` proves the daemon's exit against
+        // THAT inode — not one re-opened at shutdown (which a cleanup tool could have
+        // unlinked/replaced with an unrelated process's lock). `None` (capture
+        // missed) fails closed in `stop_adopted`.
         Sidecar {
             portfile,
             ownership: Ownership::Adopted,
@@ -711,21 +713,44 @@ impl Supervisor {
                 // if the caller drops the runtime. A detached async cleanup task would
                 // instead be cancelled on that drop. The oneshot makes the hand-off
                 // race-free: exactly one of {we receive the child, the worker cleans
-                // it up} happens (`timeout` polls the receiver before its timer, so a
-                // send that lands at the deadline is still delivered, not abandoned).
-                let (tx, rx) = tokio::sync::oneshot::channel::<(Command, std::io::Result<Child>)>();
+                // it up} happens.
+                //
+                // The worker also STAMPS whether the spawn completed at/after the
+                // deadline against a std-clock deadline it can read (it cannot use
+                // `tokio::time`). `timeout` polls the ready receiver BEFORE its timer,
+                // so a spawn finishing just past the budget would otherwise be accepted
+                // and startup would continue past the deadline; the stamp lets us
+                // REJECT and clean up such a late child instead.
+                let produced_deadline = std::time::Instant::now() + remaining;
+                let (tx, rx) =
+                    tokio::sync::oneshot::channel::<(Command, std::io::Result<Child>, bool)>();
                 tokio::task::spawn_blocking(move || {
                     let result = cmd.spawn();
+                    let late = std::time::Instant::now() >= produced_deadline;
                     // If the receiver is gone (the caller timed out) AND the spawn
                     // produced a live child, reclaim it and tear down its group so it
                     // cannot survive. A send that succeeds, or a returned spawn ERROR
-                    // (no child), needs nothing.
-                    if let Err((_cmd, Ok(late))) = tx.send((cmd, result)) {
-                        process::force_kill_group_blocking(late);
+                    // (no child), needs nothing here.
+                    if let Err((_cmd, Ok(late_child), _late)) = tx.send((cmd, result, late)) {
+                        process::force_kill_group_blocking(late_child);
                     }
                 });
                 let (returned, result) = match tokio::time::timeout(remaining, rx).await {
-                    Ok(Ok(pair)) => pair,
+                    Ok(Ok((spawned_cmd, spawn_result, late))) => {
+                        if late {
+                            // The spawn completed only at/after the deadline: reject it
+                            // and clean up any child so startup never proceeds past the
+                            // budget with a late-created daemon.
+                            if let Ok(mut child) = spawn_result {
+                                let _ = process::force_kill_tree(&mut child).await;
+                            }
+                            return Err(SupervisorError::Spawn(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "process creation completed after the spawn budget expired",
+                            )));
+                        }
+                        (spawned_cmd, spawn_result)
+                    }
                     Ok(Err(_recv)) => {
                         // The worker dropped the sender without sending — only reachable
                         // if the blocking task panicked before `cmd.spawn()` returned.

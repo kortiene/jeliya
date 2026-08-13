@@ -8,7 +8,7 @@
 - **Depends on:** #157 (architecture record — landed) and the feasibility evidence in the #159 desktop spike (`spikes/dioxus-desktop/`). #159 remains "not measured" as a *packaged-WebView* result in `docs/dioxus-architecture.md` §"Measured unknowns"; this issue turns the spike's headless-proven ownership/teardown contract into one reviewed, reusable crate.
 - **Daemon contract it speaks to:** `crates/jeliyad/src/lifecycle.rs`, `crates/jeliyad/src/main.rs`, `crates/jeliyad/src/serve.rs` (`/api/health`), and `docs/protocol-v2.md` §"Layer 0 — discovery" / §"Layer 1 — the generation gate". The stale `docs/PROTOCOL.md` (v1) supervision section is prior art only; where it and `docs/protocol-v2.md` disagree, **protocol-v2 wins** (see §4).
 - **Owner role for this document:** desktop maintainer, with core-maintainer sign-off on the discovery-object dependency (`jeliya-api`).
-- **Status of this document:** planning/spec only. **No production code is to be written for this issue by the planning phase.**
+- **Status of this document:** IMPLEMENTED. The production crate `crates/jeliya-supervisor` lands this spec (#170), and `docs/dioxus-architecture.md` records #170 as implemented. This document is retained as the design record and rationale; where it and the crate disagree, **the code is authoritative** (per the note below) — this spec has the bug.
 
 > Where this spec and `docs/dioxus-architecture.md`, `docs/protocol-v2.md`, or the live daemon in `crates/jeliyad` disagree, those records and the code are authoritative and this spec has a bug — say which in the PR. Every self-referential claim (fault-case count, invariant list) must be re-derived from the code, never trusted from prose.
 
