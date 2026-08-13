@@ -1824,6 +1824,71 @@ test('form: a shorthand Field id is compared against the control id (#274 29-sho
   );
 });
 
+test('literal scan: an iframe srcdoc HTML literal is copy (#274 30-srcdoc)', () => {
+  const source = `fn C() -> Element { rsx! { iframe { srcdoc: "<p>Delete account</p>" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => /Delete account/.test(f.message)),
+    'iframe srcdoc renders embedded HTML copy and must be flagged',
+  );
+});
+
+test('literal scan: copy bound to a FORMATTED interpolation is flagged (#274 30-fmtspec)', () => {
+  const source = `fn C() -> Element { let label = "Delete account"; rsx! { div { "{label:>20}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'a let-bound literal rendered via {label:>20} must be flagged',
+  );
+});
+
+test('literal scan: copy ASSIGNED after declaration is flagged (#274 30-assign)', () => {
+  const source = `fn C() -> Element { let mut label = String::new(); label = "Delete account"; rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'a literal assigned to an interpolated binding after declaration must be flagged',
+  );
+});
+
+test('rule 2: a whitespace fragment in a concat is not value-empty (#274 30-concatspace)', () => {
+  const src = `impl Catalog for En {
+    fn greeting(&self) -> String { concat!("Hello", " ", "world").to_owned() }
+  }`;
+  const empty = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).filter((f) => f.code === 'value-empty');
+  assert.ok(
+    !empty.some((f) => /greeting/.test(f.message)),
+    'the joined value "Hello world" is nonempty; the " " fragment must not trip value-empty',
+  );
+});
+
+test('rule 1: a differing statement literal in a branch does not hide an untranslated tail (#274 30-stmtlit)', () => {
+  const en = `impl Catalog for En {
+    fn msg(&self, c: bool) -> String { if c { let _note = "EN note"; "Delete account".to_owned() } else { "Other".to_owned() } }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn msg(&self, c: bool) -> String { if c { let _note = "FR note"; "Delete account".to_owned() } else { "Autre".to_owned() } }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('fr-untranslated'),
+    'the if-branch tail "Delete account" is still English and must be flagged, not hidden by the differing note',
+  );
+});
+
+test('rule 5: an if/else plural dispatch recognizes both categories (#274 30-ifplural)', () => {
+  const src = `impl Catalog for En {
+    fn rooms(&self, category: PluralCategory) -> String {
+      if category == PluralCategory::One { "One room".to_owned() } else { "Many rooms".to_owned() }
+    }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    !codes.includes('plural-parity'),
+    'both One and Other branches are recognized in an if/else dispatch, so no plural-parity',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

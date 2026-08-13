@@ -448,13 +448,36 @@ export function parseCatalog(source, file) {
       // NOT explicitly present (Other when One is explicit, else One).
       const raw = [];
       const explicitCats = new Set();
-      const catRe = /PluralCategory::(One|Other)\b|\b_\s*=>/g;
+      // A `PluralCategory::X` reference marks its category; `_ =>` is the wildcard
+      // arm. Two forms: a `match category { … }` uses `=>` arms, while an
+      // `if category == PluralCategory::X { … } else { … }` DISPATCH puts the enum in
+      // the CONDITION before both blocks — so for the if/else form `else` FLIPS the
+      // category to the other block (without it both blocks inherit X and the other
+      // category reads as missing). `else` is honored ONLY in the if/else form, or a
+      // nested `else` inside a match arm would misclassify.
+      const usesMatch = /\bmatch\b/.test(bodyText);
+      const catRe = usesMatch
+        ? /PluralCategory::(One|Other)\b|\b_\s*=>/g
+        : /PluralCategory::(One|Other)\b|\belse\b/g;
       for (let m = catRe.exec(bodyText); m; m = catRe.exec(bodyText)) {
-        raw.push({ at: open + m.index, cat: m[1] ?? null });
+        const cat = m[1] ?? (m[0].startsWith('else') ? 'FLIP' : null);
+        raw.push({ at: open + m.index, cat });
         if (m[1]) explicitCats.add(m[1]);
       }
       const wildcardCat = explicitCats.has('One') ? 'Other' : 'One';
-      const markers = raw.map((r) => ({ at: r.at, cat: r.cat ?? wildcardCat }));
+      const flip = (c) => (c === 'One' ? 'Other' : c === 'Other' ? 'One' : wildcardCat);
+      const markers = [];
+      let lastExplicit = null;
+      for (const r of raw) {
+        let cat;
+        if (r.cat === 'FLIP') cat = flip(lastExplicit);
+        else if (r.cat === null) cat = wildcardCat;
+        else {
+          cat = r.cat;
+          lastExplicit = r.cat;
+        }
+        markers.push({ at: r.at, cat });
+      }
       const valuesByCat = { One: [], Other: [] };
       for (const p of parts) {
         let cat = null;
@@ -554,16 +577,35 @@ export function parseCatalog(source, file) {
           }
         }
         if (blockRanges.length > 0) {
+          // Only a block's TAIL expression renders. A statement literal
+          // (`if c { let _note = "…"; "tail" }`) sits before the block's last
+          // top-level `;`, so it must NOT be concatenated with the returned value —
+          // differing EN/FR statement literals would otherwise hide an untranslated
+          // tail. Compute each block's tail start (after its last depth-0 `;`).
+          const tailStart = blockRanges.map(([bStart, bEnd]) => {
+            let last = bStart;
+            let d = 0;
+            for (let at = bStart; at < bEnd; at += 1) {
+              const c = skeleton[at];
+              if (c === '{' || c === '(' || c === '[') d += 1;
+              else if (c === '}' || c === ')' || c === ']') d -= 1;
+              else if (c === ';' && d === 0) last = at + 1;
+            }
+            return last;
+          });
           const groups = [[]]; // [0] = base (literals in no block)
           const slotGroups = [[]]; // parallel: the slot multiset per block
           for (const p of parts) {
             let idx = 0;
+            let isStatement = false;
             for (let b = 0; b < blockRanges.length; b += 1) {
               if (p.start >= blockRanges[b][0] && p.end <= blockRanges[b][1]) {
                 idx = b + 1;
+                if (p.start < tailStart[b]) isStatement = true;
                 break;
               }
             }
+            if (isStatement) continue; // a statement literal, not the rendered tail
             (groups[idx] ??= []).push(collapseSlots(p.value));
             (slotGroups[idx] ??= []).push(...slotSet([p.value]));
           }
@@ -581,6 +623,10 @@ export function parseCatalog(source, file) {
       // branch (`=> String::new()`), so `value-empty` sees blank branches the literal
       // scan cannot.
       values: parts.map((p) => collapseSlots(p.value)).concat(emptyBranchValues),
+      // How many literal-free empty-string-constructor branches this method has. Those
+      // blank branches are NOT in `valuesByBranch`/`Block` (which hold only literal
+      // fragments), so the complete-branch emptiness check reads this count directly.
+      emptyBranchCount,
       slots: slotSet(parts.map((p) => p.value)),
       slotsPerArm: parts.map((p) => slotSet([p.value])),
       slotsByCategory,
@@ -707,7 +753,15 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
   const isEmptyValue = (v) => !v.includes(SLOT) && v.trim() === '';
   for (const locale of [en, fr]) {
     for (const entry of locale.entries.values()) {
-      const empty = entry.values.length === 0 || entry.values.some(isEmptyValue);
+      // Emptiness is a property of each COMPLETE rendered branch, not of individual
+      // concatenated fragments: `concat!("Hello", " ", "world")` renders a non-empty
+      // message, and its standalone `" "` fragment must not be read as an empty value.
+      // A genuinely blank branch (a `String::new()` arm, an empty `if`/`else` block)
+      // still renders `""` and is caught.
+      const empty =
+        entry.values.length === 0 ||
+        entry.emptyBranchCount > 0 ||
+        renderedBranchValues(entry).some(isEmptyValue);
       if (empty) {
         findings.push(finding(locale.file, entry.line, 'value-empty', `${entry.key}: value is empty or whitespace-only`, 'catalog'));
       }
@@ -930,6 +984,10 @@ const COPY_ATTRS = new Set([
   'label',
   'optional_label',
   'placeholder',
+  // An `iframe` `srcdoc` is an embedded HTML document the browser renders as
+  // visible content, so its text (`"<p>Delete account</p>"`) is copy, not a
+  // structural attribute — same class as `dangerous_inner_html`.
+  'srcdoc',
   'summary',
   'target',
   'title',
@@ -1244,7 +1302,14 @@ function letBindingName(skeleton, eqIndex) {
   const decl = /\b(?:let(?:\s+mut)?|const|static)\s+([A-Za-z_]\w*)\s*:\s*[^=;{}]*$/.exec(
     skeleton.slice(0, eqIndex),
   );
-  return decl ? decl[1] : null;
+  if (decl) return decl[1];
+  // A plain ASSIGNMENT after declaration — `let mut label = String::new(); label =
+  // "Delete account";` — still renders that binding as copy. It has a bare name
+  // directly before a single `=` (no `let`/type). Comparisons (`==`/`!=`/`<=`/`>=`)
+  // leave a non-word char before the `=`, so `name` is empty and they are excluded;
+  // `eqIndex + 1 !== '='` also rejects a `==` whose first `=` was landed on.
+  if (name && skeleton[eqIndex + 1] !== '=') return name;
+  return null;
 }
 
 /** The index of the `}` matching the `{` at `openIndex` in `skeleton`, or -1. */
@@ -1341,7 +1406,11 @@ export function scanComponentLiterals(file, source) {
       isCopy = prevChar !== '(' && prevChar !== '=' && prevChar !== '&' && skeleton[after] !== '.';
     }
     if (!isCopy) continue;
-    for (const m of literal.value.matchAll(/\{(\w+)\}/g)) copyInterpolations.add(m[1]);
+    // Capture the interpolated identifier even with a Rust FORMAT SPEC
+    // (`{label:>20}`, `{n:.2}`): the spec after `:` does not change that `label` is
+    // rendered, so a backing `let label = "…"` must still be caught. `[^{}]*`
+    // consumes the spec without crossing a brace.
+    for (const m of literal.value.matchAll(/\{(\w+)(?::[^{}]*)?\}/g)) copyInterpolations.add(m[1]);
   }
 
   // Dioxus SHORTHAND props: `SkipLink { label }` desugars to `label: label`, so a
