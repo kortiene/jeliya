@@ -109,7 +109,12 @@ impl Formats {
             return non_finite_marker(value).to_owned();
         }
         let conventions = self.conventions();
-        let negative = value.is_sign_negative() && value != 0.0;
+        // Preserve the sign of NEGATIVE ZERO (`-0.0`): `Intl.NumberFormat` (the
+        // retiring TS formatter this must match) renders it `-0.0`/`-0%`, so suppressing
+        // it here would break cross-client parity and flip the displayed direction of a
+        // zero-valued delta. `is_sign_negative()` is true for `-0.0` though it compares
+        // equal to `0.0`, so it is the sufficient test.
+        let negative = value.is_sign_negative();
         let (int_digits, frac) = round_decimal_string(value.abs(), frac_digits);
         let grouped = group_digits(&int_digits, conventions.group);
         let sign = if negative { "-" } else { "" };
@@ -391,6 +396,18 @@ mod tests {
         assert_eq!(en.decimal(-2.25, 1), "-2.3");
         // Non-tie values are unaffected; padding a bare fraction still works.
         assert_eq!(en.decimal(2.24, 1), "2.2");
+        assert_eq!(en.decimal(0.0, 1), "0.0");
+    }
+
+    #[test]
+    fn decimal_preserves_negative_zero_like_intl() {
+        // `Intl.NumberFormat` renders `-0` as `-0.0`/`-0%`; suppressing the sign here
+        // would break cross-client parity and flip the displayed direction of a
+        // zero-valued delta. Positive zero stays unsigned.
+        let en = Formats::new(Locale::En, Locale::En);
+        assert_eq!(en.decimal(-0.0, 1), "-0.0");
+        assert_eq!(en.decimal(-0.0, 0), "-0");
+        assert_eq!(en.percent(-0.0, 0), "-0%");
         assert_eq!(en.decimal(0.0, 1), "0.0");
     }
 

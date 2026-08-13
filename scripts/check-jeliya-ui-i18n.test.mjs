@@ -1945,6 +1945,15 @@ test('literal scan: a char literal bound as copy is flagged (#274 32-charlit)', 
   );
 });
 
+test('literal scan: copy appended via push_str to an interpolated binding is flagged (#274 33-pushstr)', () => {
+  const source = `fn C() -> Element { let mut label = String::new(); label.push_str("Delete account"); rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy appended via push_str to an interpolated binding must be flagged',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

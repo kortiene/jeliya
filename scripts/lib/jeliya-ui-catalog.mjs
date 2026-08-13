@@ -1735,13 +1735,27 @@ export function scanComponentLiterals(file, source) {
     // both create the `String` later interpolated as copy. For the wrapped case,
     // walk back over the callee to the `=`.
     let eqIndex = -1;
+    let mutatedBinding = null;
     if (prevChar === '=') {
       eqIndex = at;
     } else if (prevChar === '(') {
       let i = at - 1;
+      const calleeEnd = i + 1;
       while (i >= 0 && /[\w:!]/.test(skeleton[i])) i -= 1; // callee ident / path / `!`
+      const callee = skeleton.slice(i + 1, calleeEnd);
       while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
-      if (skeleton[i] === '=') eqIndex = i;
+      if (skeleton[i] === '=') {
+        eqIndex = i;
+      } else if (skeleton[i] === '.' && /^(?:push_str|push|insert_str|replace_range)$/.test(callee)) {
+        // A MUTATING method appends copy to a binding (`label.push_str("…")`); the
+        // literal is a call ARG, so there is no `=`. Associate it with the RECEIVER
+        // binding, so mutated copy is traced like assigned copy.
+        let r = i - 1;
+        while (r >= 0 && /\s/.test(skeleton[r])) r -= 1;
+        const recvEnd = r + 1;
+        while (r >= 0 && /\w/.test(skeleton[r])) r -= 1;
+        mutatedBinding = skeleton.slice(r + 1, recvEnd);
+      }
     }
     // The literal may sit ANYWHERE in a `let NAME = <RHS>` — inside an `if/else`,
     // a `match` arm, or a block — where the char before it is `{`/`>`/etc., not
@@ -1759,8 +1773,8 @@ export function scanComponentLiterals(file, source) {
       for (let mm = letRe.exec(stmt); mm; mm = letRe.exec(stmt)) lastLet = mm;
       if (lastLet) eqIndex = stmtStart + lastLet.index + lastLet[0].length - 1;
     }
-    if (eqIndex < 0) continue;
-    const boundName = letBindingName(skeleton, eqIndex);
+    if (eqIndex < 0 && !mutatedBinding) continue;
+    const boundName = mutatedBinding ?? letBindingName(skeleton, eqIndex);
     if (!boundName || !copyInterpolations.has(boundName)) continue;
     const line = lineOf(source, literal.start);
     if (exempt(line)) continue;
