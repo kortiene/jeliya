@@ -106,10 +106,20 @@ pub(crate) async fn probe_health(
     // make this allocate without bound before the read timeout fires. If the
     // peer sends exactly the cap we still parse it — an over-cap body simply
     // fails to parse as the small health JSON and is rejected as "not healthy".
+    // ANCHOR the read deadline before the read: `timeout` polls the wrapped read
+    // BEFORE its timer, so when the read and the timer are both ready (executor
+    // starvation, or `read_timeout == 0`) Tokio returns the response even though the
+    // budget expired. Direct validation callers (`validate_portfile`, `prove_owned`)
+    // wrap NO outer deadline around the probe, so without this an arbitrarily late,
+    // possibly stale PID/generation proof could be accepted. `deadline_from` saturates,
+    // so a huge `read_timeout` stays effectively unbounded rather than overflow-panicking.
+    let read_deadline = crate::validate::deadline_from(read_timeout);
     let mut response = Vec::new();
     let mut limited = (&mut stream).take(MAX_HEALTH_RESPONSE_BYTES);
     match tokio::time::timeout(read_timeout, limited.read_to_end(&mut response)).await {
-        Ok(Ok(_)) => {}
+        // Accept only a read that COMPLETED within the budget; reject a response
+        // observed at/after the deadline (out-of-budget, potentially stale).
+        Ok(Ok(_)) if tokio::time::Instant::now() < read_deadline => {}
         _ => return None,
     }
     parse_health_response(&response)

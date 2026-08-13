@@ -115,9 +115,19 @@ impl Sidecar {
     /// Owned daemons are stopped through `shutdown()` instead. Polls
     /// `/api/health` until the daemon goes dark; bounded; never signals a PID
     /// the health probe cannot prove is this data dir's daemon.
+    ///
+    /// The invoker RECEIVES the `DialTarget` of the REVALIDATED incarnation (the
+    /// re-read portfile that just matched the adopted pid+port+token): its request
+    /// MUST dial THIS target, not re-resolve through `TargetResolver`. pid and port
+    /// are recyclable, so if the adopted daemon exits between the identity check and
+    /// the request and a replacement takes the port, a fresh resolve would return the
+    /// replacement's NEW token; the passed target carries the ORIGINAL per-start
+    /// bearer, so a request built from it cannot authenticate to (nor stop) the
+    /// replacement. An invoker that ignores the argument and reconnects reopens that
+    /// race — the argument is the binding, not an option.
     pub async fn stop_adopted(
         self,
-        shutdown_rpc: impl FnOnce() -> BoxFuture<'static, Result<(), CallerRpcError>>,
+        shutdown_rpc: impl FnOnce(DialTarget) -> BoxFuture<'static, Result<(), CallerRpcError>>,
     ) -> Result<Teardown, SupervisorError>;
 }
 

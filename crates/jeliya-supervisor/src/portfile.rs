@@ -200,13 +200,21 @@ pub(crate) async fn read_portfile_bounded(
 
 /// Read and parse the portfile from `data_dir`, whole (a `0600` atomic
 /// temp+rename write means a *readable* file is never half of one). `strict`
-/// refuses a group/other-readable portfile on Unix (OQ-3 strict mode) as the
-/// token-leak enforcement; the NON-strict default SILENTLY proceeds — it does
-/// NOT check permissions and emits no warning, because this crate is headless
-/// and links no logger, and the loopback threat model treats the portfile as
-/// inherently local-user-readable. A caller that needs the permission guard on
-/// a shared host must opt into `strict_portfile_perms`. (Non-strict is not
-/// "warn-and-proceed": there is nowhere to warn.)
+/// REFUSES a group/other-readable portfile on Unix (OQ-3 strict mode) as the
+/// token-leak enforcement; the NON-strict default is WARN-and-proceed — it still
+/// checks the mode and, on a group/other-readable `daemon.json`, emits a stderr
+/// SECURITY WARNING (the one channel a logger-free crate has) before returning the
+/// token, so an operator on a multi-user host is not left silently exposed. The
+/// loopback threat model otherwise treats the portfile as local-user-readable, so
+/// the default proceeds; a caller that needs a hard refusal opts into
+/// `strict_portfile_perms`.
+/// Test-only counter of non-strict WARN-and-proceed events (a group/other-readable
+/// portfile accepted with a stderr warning). Lets a test prove the warning path fired
+/// without capturing process-global stderr; `cfg(test)` so production carries nothing.
+#[cfg(test)]
+pub(crate) static INSECURE_PORTFILE_WARNINGS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
 pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, SupervisorError> {
     use std::io::Read as _;
 
@@ -286,10 +294,26 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
     }
 
     #[cfg(unix)]
-    if strict {
-        if let Err(why) = enforce_owner_only(&meta) {
+    if let Err(why) = enforce_owner_only(&meta) {
+        if strict {
             return Err(SupervisorError::PortfileUnreadable { path, why });
         }
+        // DEFAULT (non-strict) is WARN-and-proceed, per the public configuration
+        // contract: a group/other-readable `daemon.json` leaks the bearer token to
+        // other local users, so an operator on a multi-user host must be TOLD even
+        // though the loopback threat model otherwise treats the portfile as
+        // local-user-readable. The crate links no logger, so the one honest channel
+        // for a credential-exposure warning is stderr; it fires ONLY on the insecure
+        // mode (the daemon writes `0600`, so a well-behaved deployment never sees it).
+        eprintln!(
+            "jeliya-supervisor: SECURITY WARNING: {}: {why} — set strict_portfile_perms to refuse instead of proceeding.",
+            path.display()
+        );
+        // Test-only observability: production has no counter (the increment is
+        // `cfg(test)`-gated), so a test can assert the warn-and-proceed path FIRED on an
+        // insecure portfile — the result (`Ok`) is unchanged, so only this proves it.
+        #[cfg(test)]
+        INSECURE_PORTFILE_WARNINGS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
     #[cfg(not(unix))]
     let _ = (strict, &meta);
@@ -497,6 +521,34 @@ mod tests {
         assert!(
             result.is_ok(),
             "strict mode must accept a 0600 portfile; got: {result:?}"
+        );
+    }
+
+    /// DEFAULT (non-strict) mode is WARN-and-proceed on a group/other-readable
+    /// portfile: it still returns the token (loopback threat model) but must EMIT the
+    /// security warning, not silently accept it. Red-before-green: the old non-strict
+    /// path skipped the permission check entirely, so no warning fired.
+    #[cfg(unix)]
+    #[test]
+    fn non_strict_mode_warns_and_proceeds_on_a_group_readable_portfile() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = std::env::temp_dir().join(format!("sup-pf-warn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.json");
+        std::fs::write(&path, v2_portfile_json(7420)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let before = INSECURE_PORTFILE_WARNINGS.load(SeqCst);
+        let result = read_portfile(&dir, false);
+        let fired = INSECURE_PORTFILE_WARNINGS.load(SeqCst) - before;
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            result.is_ok(),
+            "non-strict mode must PROCEED on a 0644 portfile (warn-and-proceed); got: {result:?}"
+        );
+        assert_eq!(
+            fired, 1,
+            "non-strict mode must WARN exactly once on a group-readable portfile, not silently accept it"
         );
     }
 

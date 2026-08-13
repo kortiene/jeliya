@@ -988,7 +988,22 @@ mod tests {
             // Isolate the group exactly as the real spawn does, so the pgid==leader
             // pid and the sweep reaches the descendant.
             crate::process::configure_new_process_group(&mut cmd);
-            let mut child = cmd.spawn().expect("spawn leader");
+            // Retry a transient ETXTBSY (errno 26): a just-written+chmod'd script can be
+            // "Text file busy" until the writer fd is fully closed — the same race the
+            // production spawn path retries. Without it this direct spawn flakes.
+            let mut child = {
+                let mut attempt = 0;
+                loop {
+                    match cmd.spawn() {
+                        Ok(c) => break c,
+                        Err(e) if e.raw_os_error() == Some(26) && attempt < 50 => {
+                            attempt += 1;
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Err(e) => panic!("spawn leader: {e}"),
+                    }
+                }
+            };
             let stdin = child.stdin.take();
             // Wait for the descendant to record its pid before shutting down.
             let mut pid = None;
