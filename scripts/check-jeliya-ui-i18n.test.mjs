@@ -1358,6 +1358,131 @@ test('rule 3: one untranslated branch of a nonplural method is flagged', () => {
   );
 });
 
+test('rule 3: a non-returned statement literal does not mask untranslated copy', () => {
+  const en = `impl Catalog for En {
+    fn empty(&self) -> &'static str { "No rooms yet" }
+  }`;
+  // The French `debug_assert!` MESSAGE is not the returned value.
+  const fr = `impl Catalog for Fr {
+    fn empty(&self) -> &'static str { debug_assert!(true, "Aucun salon"); "No rooms yet" }
+  }`;
+  assert.ok(
+    checkCatalogs({ en: parseCatalog(en, 'en.rs'), fr: parseCatalog(fr, 'fr.rs'), allowlist: {} }).some(
+      (f) => f.code === 'fr-untranslated',
+    ),
+    'the returned English value must be flagged despite a non-returned French literal',
+  );
+});
+
+test('rule 3: a reordered nonplural match with an untranslated arm is flagged', () => {
+  const en = `impl Catalog for En {
+    fn month(&self, m: u8) -> &'static str { match m { 1 => "January", _ => "August" } }
+  }`;
+  // FR reorders arms AND leaves the `_` arm in English.
+  const fr = `impl Catalog for Fr {
+    fn month(&self, m: u8) -> &'static str { match m { _ => "August", 1 => "janvier" } }
+  }`;
+  assert.ok(
+    checkCatalogs({ en: parseCatalog(en, 'en.rs'), fr: parseCatalog(fr, 'fr.rs'), allowlist: {} }).some(
+      (f) => f.code === 'fr-untranslated',
+    ),
+    'a reordered untranslated match arm must be caught by pattern key',
+  );
+});
+
+test('literal scan: a dynamic aria-describedby must build {id}-hint as a unit', () => {
+  const bad = `
+fn view() -> Element {
+    rsx! { Field { id: ids.email.clone(), label: "Email", hint: "x",
+        input { id: ids.email.clone(), aria_describedby: format!("wrong-hint {}", ids.email) } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', bad).some((f) => f.code === 'form-control-hint-unassociated'),
+    'containing `-hint` and idCore INDEPENDENTLY must not pass',
+  );
+});
+
+test('literal scan: a literal input value is copy', () => {
+  const source = `
+fn view() -> Element {
+    rsx! { input { r#type: "submit", value: "Delete account" } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some(
+      (f) => f.code === 'copy-attribute' && /Delete account/.test(f.message),
+    ),
+    'a control value literal is its visible label — copy',
+  );
+});
+
+test('literal scan: an empty aria_label does not name a nav', () => {
+  const source = `
+fn view() -> Element {
+    rsx! { nav { aria_label: "", a { href: "#", "Home" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('shell.rs', source).some(
+      (f) => f.code === 'raw-semantic-element' && /nav/.test(f.message),
+    ),
+    'aria_label="" is not an accessible name',
+  );
+});
+
+test('literal scan: a char literal delimiter does not break RSX ranges', () => {
+  const source = `
+fn view() -> Element {
+    rsx! { if delimiter == '}' { div { "Delete account" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some((f) => /Delete account/.test(f.message)),
+    "copy after a char literal ('}') must still be scanned",
+  );
+});
+
+test('parseCatalog: a method with a tuple-typed parameter is parsed', () => {
+  const src = `impl Catalog for En {
+    fn range(&self, bounds: (u32, u32)) -> String { format!("{} to {}", bounds.0, bounds.1) }
+    fn hello(&self) -> &'static str { "Hello" }
+  }`;
+  const { entries } = parseCatalog(src, 'en.rs');
+  assert.ok(entries.has('range'), 'a tuple-param method must be parsed, not omitted');
+  assert.ok(entries.has('hello'), 'and methods after it');
+});
+
+test('rule 2: a placeholder-only value is not empty', () => {
+  const en = `impl Catalog for En {
+    fn count(&self, n: &str) -> String { format!("{n}") }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn count(&self, n: &str) -> String { format!("{n}") }
+  }`;
+  assert.ok(
+    !checkCatalogs({ en: parseCatalog(en, 'en.rs'), fr: parseCatalog(fr, 'fr.rs'), allowlist: {} }).some(
+      (f) => f.code === 'value-empty',
+    ),
+    'format!("{n}") renders a count and is not value-empty',
+  );
+});
+
+test('rule 3: a one-letter word keeps identical copy from being auto-exempted', () => {
+  const en = `impl Catalog for En {
+    fn note(&self) -> &'static str { "A daemon" }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn note(&self) -> &'static str { "A daemon" }
+  }`;
+  assert.ok(
+    checkCatalogs({ en: parseCatalog(en, 'en.rs'), fr: parseCatalog(fr, 'fr.rs'), allowlist: {} }).some(
+      (f) => f.code === 'fr-untranslated',
+    ),
+    '"A daemon" is translatable copy, not an auto-exempt never-translate phrase',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

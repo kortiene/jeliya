@@ -251,14 +251,11 @@ async function assertTargetGeometry(
     const reachable = await target.evaluate((el) => {
       const r = el.getBoundingClientRect();
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      // Reachable if the centre resolves to the control, a DESCENDANT (a
-      // pseudo-element hit reports its originating element), or an ANCESTOR (the
-      // control's centre sits on padding/background that hit-tests to a container it
-      // is inside) — matching the retiring check. A FOREIGN element means an overlay.
-      return (
-        hit !== null &&
-        (el === hit || (hit instanceof Node && el.contains(hit)) || (hit instanceof Node && hit.contains(el)))
-      );
+      // Reachable ONLY if the centre resolves to the control itself or a DESCENDANT
+      // (a pseudo-element hit reports its originating element). An ANCESTOR is NOT
+      // accepted: a control with `pointer-events: none` returns its container, which
+      // would falsely certify an untappable target. A foreign element is an overlay.
+      return hit !== null && (el === hit || (hit instanceof Node && el.contains(hit)));
     });
     expect(reachable, `${where}: a target is covered — a tap at its centre does not reach it`).toBe(true);
     let isException = false;

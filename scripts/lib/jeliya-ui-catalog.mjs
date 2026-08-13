@@ -38,6 +38,10 @@ export const LOCALE_FILES = Object.freeze({
 const LITERAL_SCAN_ROOTS = Object.freeze([
   'crates/jeliya-ui/src/app.rs',
   'crates/jeliya-ui/src/components',
+  // compose.rs is production UI code too — it carries the web and native `rsx!`
+  // roots that mount `AppRoot`, so hardcoded copy there (an adapter-specific error
+  // banner, say) ships to users and must face the same gate.
+  'crates/jeliya-ui/src/compose.rs',
 ]);
 
 /** Tier 2 / Tier 3 never-translate lexicon (docs/glossary-fr.md): words that are
@@ -191,6 +195,26 @@ export function scanRustSource(source) {
       i = Math.min(j + 1, source.length);
       continue;
     }
+    // CHAR literal (`'x'`, `'\n'`, `'\''`, `'}'`) — distinct from a LIFETIME
+    // (`'a`, `'static`, which is NOT closed by a `'`). Blank its content so a
+    // delimiter inside it (`'}'`, `'{'`, `'"'`) is not counted as macro/RSX
+    // structure or mistaken for a string start.
+    if (ch === "'") {
+      if (source[i + 1] === '\\') {
+        let j = i + 2;
+        while (j < source.length && source[j] !== "'" && source[j] !== '\n') j += 1;
+        if (source[j] === "'") {
+          blank(i, j + 1);
+          i = j + 1;
+          continue;
+        }
+      } else if (i + 2 < source.length && source[i + 2] === "'") {
+        blank(i, i + 3);
+        i += 3;
+        continue;
+      }
+      // Otherwise a lifetime — leave it untouched.
+    }
     i += 1;
   }
 
@@ -235,12 +259,16 @@ function slotSet(values) {
 }
 
 function words(text) {
+  // Include ONE-letter words: dropping them lets `"A daemon"` tokenize to just
+  // `daemon` and, if that is a never-translate token, be auto-exempted from the
+  // untranslated check even though `A` is translatable copy. A value with no
+  // letters at all still yields `[]` (a language-neutral value stays exempt).
   return (
     text
       .normalize('NFD')
       .replace(/[̀-ͯ]/g, '')
       .toLowerCase()
-      .match(/[a-z]{2,}/g) ?? []
+      .match(/[a-z]+/g) ?? []
   );
 }
 
@@ -257,12 +285,37 @@ export function parseCatalog(source, file) {
   const { skeleton, literals } = scanRustSource(source);
   const entries = new Map();
   const errors = [];
-  const methodRe = /\bfn\s+([a-z_][A-Za-z0-9_]*)\s*\(\s*&self\b([^)]*)\)\s*->\s*[^{;]*\{/g;
+  // Match up to the parameter `(` only, then BALANCE-match the param list — a
+  // parameter type may contain parens (a tuple `(u32, u32)`), which a `[^)]*`
+  // capture would truncate, silently omitting the method from the parsed maps.
+  const methodRe = /\bfn\s+([a-z_][A-Za-z0-9_]*)\s*\(/g;
   let match;
   while ((match = methodRe.exec(skeleton)) !== null) {
     const name = match[1];
-    const params = match[2];
-    const open = match.index + match[0].length - 1;
+    const parenOpen = match.index + match[0].length - 1;
+    let pdepth = 0;
+    let parenClose = -1;
+    for (let at = parenOpen; at < skeleton.length; at += 1) {
+      if (skeleton[at] === '(') pdepth += 1;
+      else if (skeleton[at] === ')') {
+        pdepth -= 1;
+        if (pdepth === 0) {
+          parenClose = at;
+          break;
+        }
+      }
+    }
+    if (parenClose === -1) break;
+    const params = skeleton.slice(parenOpen + 1, parenClose);
+    // A catalog method is `fn <name>(&self …) -> … {`; skip anything else.
+    const sig = /^\s*&self\b/.test(params)
+      ? /^\s*->\s*[^{;]*\{/.exec(skeleton.slice(parenClose + 1))
+      : null;
+    if (!sig) {
+      methodRe.lastIndex = parenClose + 1;
+      continue;
+    }
+    const open = parenClose + 1 + sig[0].length - 1;
     // Match the body braces on the skeleton (string contents are blanked, so a
     // `}` inside copy cannot end the body early).
     let depth = 0;
@@ -281,22 +334,24 @@ export function parseCatalog(source, file) {
       errors.push(finding(file, lineOf(source, open), 'catalog-unparsed', `method ${name} body is unterminated`, 'catalog'));
       continue;
     }
-    // A literal ASSIGNED to a local `let` binding is NOT the value the method
-    // returns — a helper like `let _note = "Aucun salon"; "No rooms yet"` would
-    // otherwise pollute the arm values and let the untranslated comparison miss the
-    // English text actually rendered. Exclude a literal whose statement (back to the
-    // enclosing `;`/`{`) begins with `let` and whose immediately-preceding non-space
-    // char is the binding `=`.
-    const isLetBound = (l) => {
-      let i = l.start - 1;
-      while (i >= open && /\s/.test(skeleton[i])) i -= 1;
-      if (skeleton[i] !== '=') return false;
-      let j = i - 1;
-      while (j >= open && skeleton[j] !== ';' && skeleton[j] !== '{') j -= 1;
-      return /\blet\b/.test(skeleton.slice(j + 1, l.start));
-    };
+    // Only the RETURNED expression's literals are rendered copy. A catalog method's
+    // returned value is its tail expression — everything AFTER the last TOP-LEVEL
+    // `;` in the body (a `let _note = "Aucun salon";` binding or a
+    // `debug_assert!(cond, "Aucun salon");` statement is a non-rendered statement,
+    // not the return). Exclude any literal at or before that last top-level `;` so a
+    // statement literal cannot pollute the arm values and mask the English text
+    // actually rendered. (A method with no top-level `;` — a bare literal or a
+    // `match` — keeps every arm literal.)
+    let lastTopLevelSemi = open;
+    let bodyDepth = 0;
+    for (let at = open + 1; at < close; at += 1) {
+      const c = skeleton[at];
+      if (c === '{' || c === '(' || c === '[') bodyDepth += 1;
+      else if (c === '}' || c === ')' || c === ']') bodyDepth -= 1;
+      else if (c === ';' && bodyDepth === 0) lastTopLevelSemi = at;
+    }
     const parts = literals.filter(
-      (l) => l.start >= open && l.end <= close && !isLetBound(l),
+      (l) => l.start > lastTopLevelSemi && l.end <= close,
     );
     const isPlural = /\bPluralCategory\b/.test(params);
     if (entries.has(name)) {
@@ -345,6 +400,43 @@ export function parseCatalog(source, file) {
         Other: valuesByCat.Other.map(collapseSlots),
       };
     }
+    // For a NONPLURAL method with `match` arms, key each literal by its arm PATTERN
+    // (`1 =>`, `_ =>`, …) too, so a locale that REORDERS arms is compared
+    // key-against-key — a positional compare would misalign a reordered untranslated
+    // branch (e.g. an English `_ => "August"`) and miss it.
+    let valuesByBranch = null;
+    if (!isPlural) {
+      const bodyText = skeleton.slice(open, close);
+      const markers = [];
+      const arrowRe = /=>/g;
+      for (let a = arrowRe.exec(bodyText); a; a = arrowRe.exec(bodyText)) {
+        // Walk back from `=>` to the arm separator (`,`/`;`/block `{` at depth 0) for
+        // the pattern.
+        let s = a.index - 1;
+        let d = 0;
+        while (s >= 0) {
+          const c = bodyText[s];
+          if (c === '}' || c === ')' || c === ']') d += 1;
+          else if (c === '{' || c === '(' || c === '[') {
+            if (d === 0) break;
+            d -= 1;
+          } else if ((c === ',' || c === ';') && d === 0) break;
+          s -= 1;
+        }
+        markers.push({ at: open + a.index + 2, key: bodyText.slice(s + 1, a.index).trim() });
+      }
+      if (markers.length > 0) {
+        valuesByBranch = {};
+        for (const p of parts) {
+          let armKey = null;
+          for (const mk of markers) {
+            if (mk.at <= p.start) armKey = mk.key;
+            else break;
+          }
+          if (armKey !== null) (valuesByBranch[armKey] ??= []).push(collapseSlots(p.value));
+        }
+      }
+    }
     entries.set(name, {
       key: name,
       line: lineOf(source, match.index),
@@ -354,6 +446,7 @@ export function parseCatalog(source, file) {
       slotsPerArm: parts.map((p) => slotSet([p.value])),
       slotsByCategory,
       valuesByCategory,
+      valuesByBranch,
     });
     methodRe.lastIndex = close;
   }
@@ -438,7 +531,11 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
   // whose ONE arm is empty (`One => ""` with a nonempty `Other`) renders a blank
   // message for that count, so ANY empty rendered branch fails — not only an
   // all-empty method.
-  const isEmptyValue = (v) => v.replace(new RegExp(SLOT, 'g'), '').trim() === '';
+  // A value with a PLACEHOLDER renders content (`format!("{n}")` shows a count like
+  // `42`), so it is NOT empty — only a value with no slot AND no non-whitespace
+  // text is. Deleting the slot sentinel before the emptiness check (the old
+  // behaviour) wrongly flagged a placeholder-only message as `value-empty`.
+  const isEmptyValue = (v) => !v.includes(SLOT) && v.trim() === '';
   for (const locale of [en, fr]) {
     for (const entry of locale.entries.values()) {
       const empty = entry.values.length === 0 || entry.values.some(isEmptyValue);
@@ -500,12 +597,28 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
           !identityExemption(key, frEntry.valuesByCategory[cat].join(' '), allowlist),
       );
       if (!untranslated) continue;
+    } else if (frEntry.valuesByBranch && enEntry.valuesByBranch) {
+      // Non-plural `match`: compare each ARM by its pattern KEY (`1`, `_`, …), not
+      // source order — a locale that reorders arms must still be compared
+      // key-against-key so a reordered untranslated branch is caught. An arm whose
+      // French value equals English AND carries translatable text is untranslated.
+      const branchKeys = new Set([
+        ...Object.keys(frEntry.valuesByBranch),
+        ...Object.keys(enEntry.valuesByBranch),
+      ]);
+      const untranslated = [...branchKeys].some((armKey) => {
+        const frArm = frEntry.valuesByBranch[armKey] ?? [];
+        const enArm = enEntry.valuesByBranch[armKey] ?? [];
+        return (
+          frArm.length > 0 &&
+          frArm.join(SLOT) === enArm.join(SLOT) &&
+          !identityExemption(key, frArm.join(' '), allowlist)
+        );
+      });
+      if (!untranslated) continue;
     } else {
-      // Non-plural: compare each RETURN BRANCH independently (a method like
-      // `month_name` returns a different literal per match arm). A branch whose
-      // French value is byte-identical to English AND carries translatable text is
-      // untranslated — even if the OTHER branches were translated, so the aggregate
-      // arrays differ. A language-neutral branch is cleared by `identityExemption`.
+      // Non-`match` (a single returned value): a byte-identical, translatable value
+      // is untranslated; a language-neutral one is cleared by `identityExemption`.
       const untranslated = frEntry.values.some(
         (frVal, i) =>
           frVal === enEntry.values[i] && !identityExemption(key, frVal, allowlist),
@@ -571,6 +684,9 @@ const COPY_ATTRS = new Set([
   'summary',
   'target',
   'title',
+  // A control's `value` is its VISIBLE label for `type="submit"`/`"button"`, and
+  // hardcoded default text for other inputs — a literal there is copy, not markup.
+  'value',
 ]);
 
 /** Dioxus renders the identifier form `aria_label` as the HTML `aria-label`, so
@@ -1266,8 +1382,13 @@ export function scanComponentLiterals(file, source) {
           // `aria_describedby: ids.email.clone()` (the id itself, no `-hint`) and a
           // prefix like `ids.email_backup` both fail.
           const escaped = idCore.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          // The `-hint` suffix must apply to a PLACEHOLDER/interpolation close
+          // (`}-hint`), so `format!("{}-hint", ids.email)` and
+          // `format!("{ids.email}-hint")` pass, but `format!("wrong-hint {}", ids.email)`
+          // — which contains `-hint` and `ids.email` INDEPENDENTLY — does not. And
+          // idCore must appear as a whole reference (the interpolated value / arg).
           const namesHint =
-            describedby.includes('-hint') && new RegExp(`${escaped}(?![\\w.])`).test(describedby);
+            describedby.includes('}-hint') && new RegExp(`${escaped}(?![\\w.])`).test(describedby);
           if (idCore && !namesHint) {
             findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\`'s \`aria-describedby\` (\`${describedby}\`) must construct the Field id's own \`{id}-hint\` (from \`${idCore}\` + \`-hint\`); it does not, so the hint is unassociated`, 'literals'));
           }
@@ -1327,7 +1448,13 @@ export function scanComponentLiterals(file, source) {
       // must not satisfy it. Anchor the leading edge (no `-`/word char before `aria`,
       // so `data-aria-label` is rejected) and require a trailing `:` (allowing the
       // `aria_label` alias and an optional closing quote of `"aria-label"`).
-      if (/(?<![-\w])aria[-_]label(?:ledby)?"?\s*:/.test(attrs)) continue;
+      // Require a NON-EMPTY accessible name: `aria_label: ""` sets the attribute
+      // but names nothing (and its empty literal has no letters, so the copy scan is
+      // silent too). The value must be a NON-EMPTY quoted string (`"[^"]+"`) OR a
+      // non-string expression (`[^"\s]`); an empty `""` matches neither and is
+      // treated as unnamed. (Matching the value explicitly, not a `(?!"")` lookahead
+      // whose `\s*` would backtrack to pass at the space before the value.)
+      if (/(?<![-\w])aria[-_]label(?:ledby)?"?\s*:\s*(?:"[^"]+"|[^"\s])/.test(attrs)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       findings.push(finding(file, line, 'raw-semantic-element', 'raw unnamed `nav` must carry an accessible name (aria-label/aria-labelledby) or come from the NavLandmark primitive (Decision-6)', 'literals'));
