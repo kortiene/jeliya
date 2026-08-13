@@ -1972,6 +1972,56 @@ test('literal scan: copy bound to an explicit copy PROP identifier is flagged (#
   );
 });
 
+test('rule 1: escaped braces {{ }} keep their letters for the untranslated check (#274 35-escbracetext)', () => {
+  const src = `impl Catalog for En { fn m(&self) -> String { format!("{{Delete}}") } }`;
+  const codes = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('fr-untranslated'),
+    'identical "{{Delete}}" renders {Delete} with letters, so it is untranslated, not language-neutral',
+  );
+});
+
+test('rule: placeholder parity ignores the format spec (#274 35-slotspec)', () => {
+  const en = `impl Catalog for En { fn m(&self, n: &str) -> String { format!("Count {n}") } }`;
+  const fr = `impl Catalog for Fr { fn m(&self, n: &str) -> String { format!("Compte {n:>5}") } }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    !codes.includes('placeholder-parity'),
+    'EN {n} and FR {n:>5} bind the same param n, so no placeholder-parity',
+  );
+});
+
+test('literal scan: copy via compound += to an interpolated binding is flagged (#274 35-compound)', () => {
+  const source = `fn C() -> Element { let mut label = String::new(); label += "Delete account"; rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy appended via += to an interpolated binding must be flagged',
+  );
+});
+
+test('literal scan: a non-BMP char literal bound as copy is flagged (#274 35-nonbmpchar)', () => {
+  const source = `fn C() -> Element { let label = '𠀀'; rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text'),
+    'a non-BMP char (surrogate pair) rendered as copy must be recorded and flagged',
+  );
+});
+
+test('literal scan: a checkbox value is structural, a text value is copy (#274 35-checkboxvalue)', () => {
+  const cb = `fn F() -> Element { rsx! { input { type: "checkbox", value: "daily_digest" } } }`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', cb).some((f) => f.code === 'copy-attribute'),
+    'a checkbox value is submitted data, not copy',
+  );
+  const txt = `fn F() -> Element { rsx! { input { type: "text", value: "Default name" } } }`;
+  assert.ok(
+    scanComponentLiterals('x.rs', txt).some((f) => f.code === 'copy-attribute'),
+    'a text input default value is visible copy',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

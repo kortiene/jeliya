@@ -253,18 +253,27 @@ export function scanRustSource(source) {
           i = j + 1;
           continue;
         }
-      } else if (i + 2 < source.length && source[i + 2] === "'") {
-        literals.push({
-          start: i,
-          end: i + 3,
-          contentStart: i + 1,
-          contentEnd: i + 2,
-          value: source[i + 1],
-          raw: false,
-        });
-        blank(i, i + 3);
-        i += 3;
-        continue;
+      } else if (i + 2 < source.length) {
+        // A char literal `'X'` — X is ONE Unicode scalar, which is a surrogate PAIR (2
+        // code units) for a non-BMP scalar like `'🦀'`/`'𠀀'`. Find the closing quote by
+        // scalar width, not a fixed `i + 2`, or a non-BMP char is missed and its copy
+        // slips past the gate.
+        const scalar = source.codePointAt(i + 1);
+        const width = scalar !== undefined && scalar > 0xffff ? 2 : 1;
+        const close = i + 1 + width;
+        if (source[close] === "'") {
+          literals.push({
+            start: i,
+            end: close + 1,
+            contentStart: i + 1,
+            contentEnd: close,
+            value: source.slice(i + 1, close),
+            raw: false,
+          });
+          blank(i, close + 1);
+          i = close + 1;
+          continue;
+        }
       }
       // Otherwise a lifetime — leave it untouched.
     }
@@ -295,10 +304,19 @@ function finding(file, line, code, message, group) {
   return { file, line, code, message, group };
 }
 
-/** Collapse `{…}` format slots to the sentinel (leaving `{{`/`}}` literal braces
- *  alone is unnecessary — no catalog value uses them). */
+/** Collapse `{…}` format slots to the sentinel, PRESERVING Rust's escaped braces
+ *  (`{{`/`}}` render the literal characters `{`/`}`, not a slot). `format!("{{Delete}}")`
+ *  renders `{Delete}` — its letters must survive so the untranslated and typography
+ *  checks see them, instead of collapsing to a slot and dropping every letter. Shield
+ *  the escaped braces (with transient private-use sentinels), collapse real slots, then
+ *  restore the shields as their RENDERED single braces. */
 function collapseSlots(text) {
-  return text.replace(/\{[^{}]*\}/g, SLOT);
+  return text
+    .replace(/\{\{/g, "\u0001")
+    .replace(/\}\}/g, "\u0002")
+    .replace(/\{[^{}]*\}/g, SLOT)
+    .replace(/\u0001/g, "{")
+    .replace(/\u0002/g, "}");
 }
 
 /** The sorted multiset of format placeholders across a value set (`{n}` -> "n").
@@ -315,7 +333,12 @@ function slotSet(values) {
     // `format!("Count {n}")`, so the parity gate passes though the French argument is
     // unused and the text is wrong.
     const unescaped = value.replace(/\{\{|\}\}/g, '');
-    for (const match of unescaped.matchAll(/\{([^{}]*)\}/g)) slots.push(match[1]);
+    // Compare the ARGUMENT identity, not the format spec: `{n}` and `{n:>5}` bind the
+    // same parameter `n`, so strip the `:...` spec (as the positional check also does)
+    // before storing — else valid EN `{n}` vs FR `{n:>5}` would fail parity.
+    for (const match of unescaped.matchAll(/\{([^{}]*)\}/g)) {
+      slots.push(match[1].split(':')[0].trim());
+    }
   }
   return slots.sort();
 }
@@ -1328,6 +1351,21 @@ function literalCallIsExpressionChild(skeleton, openParenIndex) {
  *  would otherwise hide the name from the walk-back. The name is an identifier, so
  *  it is not blanked in the skeleton. */
 function letBindingName(skeleton, eqIndex) {
+  // COMPOUND assignment `NAME += "…"` (`String += &str` appends copy): the char before
+  // `=` is `+`, so the plain-word walk-back below yields an empty name. Read the
+  // identifier before the operator and return it as the updated binding.
+  {
+    let k = eqIndex - 1;
+    while (k >= 0 && /\s/.test(skeleton[k])) k -= 1;
+    if (skeleton[k] === '+') {
+      k -= 1;
+      while (k >= 0 && /\s/.test(skeleton[k])) k -= 1;
+      const cend = k + 1;
+      while (k >= 0 && /\w/.test(skeleton[k])) k -= 1;
+      const cname = skeleton.slice(k + 1, cend);
+      if (cname) return cname;
+    }
+  }
   let i = eqIndex - 1;
   while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
   const nameEnd = i + 1;
@@ -1615,6 +1653,30 @@ export function scanComponentLiterals(file, source) {
   }
   const inCopyHelperBody = (pos) => helperBodies.some(([open, close]) => pos > open && pos < close);
 
+  // A control's `value` is copy only when USER-VISIBLE (a submit/button label, a text
+  // input's default). For `type="checkbox"/"radio"/"hidden"` it is SUBMITTED DATA that
+  // must stay stable across locales — not copy. Returns true for those structural cases
+  // by reading the enclosing element's `type` attribute from the source.
+  const structuralValue = (attr, colonPos) => {
+    if (normalizeAttrName(attr) !== 'value') return false;
+    let e = colonPos;
+    let depth = 0;
+    while (e >= 0) {
+      const c = skeleton[e];
+      if (c === '}') depth += 1;
+      else if (c === '{') {
+        if (depth === 0) break;
+        depth -= 1;
+      }
+      e -= 1;
+    }
+    if (e < 0) return false;
+    const bclose = matchingBrace(skeleton, e);
+    const body = source.slice(e, bclose === -1 ? source.length : bclose);
+    const tm = /\btype\s*:\s*"([^"]*)"/.exec(body);
+    return tm !== null && /^(?:checkbox|radio|hidden)$/i.test(tm[1]);
+  };
+
   for (const literal of literals) {
     if (inTest(literal.start)) continue;
     // Only literals inside RSX markup are copy candidates; Rust logic literals
@@ -1653,7 +1715,7 @@ export function scanComponentLiterals(file, source) {
     // must NOT exempt it — that was the catalog bypass.
     if (prev === ':') {
       const attr = attrNameBefore(source, before);
-      if (attr && COPY_ATTRS.has(normalizeAttrName(attr))) {
+      if (attr && COPY_ATTRS.has(normalizeAttrName(attr)) && !structuralValue(attr, before)) {
         findings.push(finding(file, line, 'copy-attribute', `${attr} takes a literal, not a catalog message: ${literal.value.slice(0, 60)}`, 'literals'));
       }
       continue; // structural attribute or a non-copy prop
