@@ -35,6 +35,22 @@ use crate::l10n::{
 use crate::state::UiState;
 use crate::PlatformServices;
 
+/// Whether a `prev → to` lifecycle transition is announced through the CONNECTION
+/// live region: a DROP to a problem state (`Interrupted`/`Failed`/`Stopped`), or a
+/// RECOVERY back to `Ready` after such a drop. The happy boot path (`Idle`/
+/// `Connecting` → `Ready`) is deliberately silent — those are not problem states,
+/// so a first `Ready` seeded from them (or from a subscribe-time `Interrupted`
+/// snapshot, which correctly DOES announce the recovery) is classified honestly.
+fn announces_connection_change(prev: Option<State>, to: State) -> bool {
+    let is_problem = matches!(to, State::Interrupted | State::Failed | State::Stopped);
+    let recovered = to == State::Ready
+        && matches!(
+            prev,
+            Some(State::Interrupted | State::Failed | State::Stopped)
+        );
+    is_problem || recovered
+}
+
 /// The application root component (the spec's `app_root`).
 ///
 /// `handle` and `services` are injected separately. The component subscribes to
@@ -120,7 +136,8 @@ pub fn AppRoot(
             // here. Reading state() after subscribing is safe: any transition
             // that fires after subscribe() AND concurrently with this read is
             // buffered by the subscription, so there is no gap.
-            ui.write().lifecycle = handle.state();
+            let initial_state = handle.state();
+            ui.write().lifecycle = initial_state;
             handle.start();
 
             let read = {
@@ -247,18 +264,20 @@ pub fn AppRoot(
                 // the same render never overwrites it (`StatusIndicator` has no live
                 // semantics — §5.6). Room-count/notice announcements stay render-
                 // driven: they coalesce by design and are not transition-sensitive.
-                let mut prev = None::<State>;
+                // Seed the tracker from the lifecycle snapshot recovered at
+                // subscription time, NOT `None`: a subscription is live-only, so if
+                // the client had already entered `Interrupted` before this future
+                // subscribed, that drop is not replayed here. With `prev = None` the
+                // first subsequent `Ready` would read as a happy-path transition and
+                // the RECOVERY would go unannounced. Seeding from `initial_state`
+                // makes the recovery detectable while still excluding the boot path
+                // (`Idle`/`Connecting` are not problem states, so a first `Ready` from
+                // them still announces nothing).
+                let mut prev = Some(initial_state);
                 while let Some(event) = events.next().await {
                     ui.write().apply_event(&event);
                     if let ClientEvent::StateChanged { to, .. } = event {
-                        let is_problem =
-                            matches!(to, State::Interrupted | State::Failed | State::Stopped);
-                        let recovered = to == State::Ready
-                            && matches!(
-                                prev,
-                                Some(State::Interrupted | State::Failed | State::Stopped)
-                            );
-                        if is_problem || recovered {
+                        if announces_connection_change(prev, to) {
                             let resolved = locale.peek();
                             let word =
                                 crate::l10n::wire::status_for(catalog_for(resolved.text), to);
@@ -451,4 +470,56 @@ pub fn AppRoot(
 /// value reaches the recorded string (§5.8).
 fn diagnostic_notice(error: &CallError) -> String {
     format!("room.list: {}", ErrorDisplay::diagnostic_detail(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::announces_connection_change;
+    use jeliya_client::State;
+
+    #[test]
+    fn a_recovery_after_a_missed_interrupt_is_announced() {
+        // Subscribe-after-interrupt: the tracker is seeded from the recovered
+        // snapshot (`Interrupted`), so the first `Ready` is a RECOVERY. With the old
+        // `None` seed this went unannounced.
+        assert!(announces_connection_change(
+            Some(State::Interrupted),
+            State::Ready
+        ));
+        assert!(announces_connection_change(
+            Some(State::Failed),
+            State::Ready
+        ));
+        assert!(announces_connection_change(
+            Some(State::Stopped),
+            State::Ready
+        ));
+    }
+
+    #[test]
+    fn the_happy_boot_path_stays_silent() {
+        // Seeded from the boot states (or `None`), a first `Ready` announces nothing.
+        assert!(!announces_connection_change(
+            Some(State::Idle),
+            State::Ready
+        ));
+        assert!(!announces_connection_change(
+            Some(State::Connecting),
+            State::Ready
+        ));
+        assert!(!announces_connection_change(None, State::Ready));
+        // Ready → Ready (a coalesced repeat) is not a transition to announce.
+        assert!(!announces_connection_change(
+            Some(State::Ready),
+            State::Ready
+        ));
+    }
+
+    #[test]
+    fn a_drop_to_a_problem_state_is_always_announced() {
+        for to in [State::Interrupted, State::Failed, State::Stopped] {
+            assert!(announces_connection_change(Some(State::Ready), to));
+            assert!(announces_connection_change(None, to));
+        }
+    }
 }
