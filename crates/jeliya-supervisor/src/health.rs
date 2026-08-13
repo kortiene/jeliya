@@ -91,8 +91,15 @@ pub(crate) async fn probe_health(
     // `Connection: close` lets us read to EOF.
     let request =
         format!("GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(request.as_bytes()).await.is_err() {
-        return None;
+    // BOUND the write too, not just connect+read: a recycled/hostile loopback
+    // listener that completes the handshake but advertises a zero receive window can
+    // leave `write_all` pending forever. Direct callers (`validate_portfile`,
+    // `prove_owned`) do not wrap the whole probe, so an unbounded write would let one
+    // such listener wedge startup / every reconnect. The small request should send
+    // within the connect budget; if not, treat it as "not a healthy daemon here".
+    match tokio::time::timeout(connect_timeout, stream.write_all(request.as_bytes())).await {
+        Ok(Ok(())) => {}
+        _ => return None,
     }
     // Read through a fixed byte ceiling: `take` caps the bytes buffered
     // regardless of how much the peer sends, so a fast/hostile listener cannot

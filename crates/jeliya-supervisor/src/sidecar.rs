@@ -271,8 +271,17 @@ impl Sidecar {
         // `--port 0` bind, so a mismatch — or an unreadable/absent portfile — means
         // the daemon changed under us. Refuse rather than stop a foreign process.
         // (The completion proof below binds to this same pid via `wait_process_exited`.)
-        match portfile::read_portfile_bounded(&self.data_dir, self.strict_portfile_perms).await {
-            Ok(current) if current.pid == pid && current.port == port => {}
+        // Bounded by the REMAINING teardown budget — not `read_portfile_bounded`'s own
+        // fresh 5s — so a stalled mount (or an already-exhausted deadline) cannot make
+        // this re-read blow past the whole-operation `teardown` bound.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(
+            remaining,
+            portfile::read_portfile_bounded(&self.data_dir, self.strict_portfile_perms),
+        )
+        .await
+        {
+            Ok(Ok(current)) if current.pid == pid && current.port == port => {}
             _ => return Err(SupervisorError::ShutdownTimedOut { pid }),
         }
         // Ask the daemon to shut itself down over the caller's RPC, bounded by the

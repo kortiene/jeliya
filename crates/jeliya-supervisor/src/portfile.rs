@@ -149,14 +149,31 @@ pub(crate) async fn read_portfile_bounded(
     strict: bool,
 ) -> Result<Portfile, SupervisorError> {
     let owned_dir = data_dir.to_path_buf();
-    let join = tokio::task::spawn_blocking(move || read_portfile(&owned_dir, strict));
-    match tokio::time::timeout(PORTFILE_READ_GRACE, join).await {
-        Ok(Ok(result)) => result,
-        // The blocking task itself panicked (or was cancelled) — surface it as an
-        // unreadable portfile, never a hang.
-        Ok(Err(join_err)) => Err(SupervisorError::PortfileUnreadable {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // Run the (potentially stalled-mount) FS read on a DETACHED OS thread, not
+    // `spawn_blocking`: Tokio JOINS its blocking pool on `Runtime::drop`, so a read
+    // wedged on a hung NFS/FUSE mount would turn the caller-visible timeout into an
+    // application-shutdown hang — a plain thread is not joined (the OS reaps it at
+    // process exit). `Builder::spawn` maps a thread-creation failure (resource
+    // exhaustion) to an error instead of panicking, so a fallible read stays fallible.
+    let worker = std::thread::Builder::new()
+        .name("jeliya-portfile-read".to_owned())
+        .spawn(move || {
+            let _ = tx.send(read_portfile(&owned_dir, strict));
+        });
+    if let Err(e) = worker {
+        return Err(SupervisorError::PortfileUnreadable {
             path: portfile_path(data_dir),
-            why: format!("portfile read task failed: {join_err}"),
+            why: format!("could not start the portfile-read worker: {e}"),
+        });
+    }
+    match tokio::time::timeout(PORTFILE_READ_GRACE, rx).await {
+        Ok(Ok(result)) => result,
+        // The worker dropped the sender without sending — only reachable if it
+        // panicked mid-read; surface it as an unreadable portfile, never a hang.
+        Ok(Err(_recv)) => Err(SupervisorError::PortfileUnreadable {
+            path: portfile_path(data_dir),
+            why: "portfile-read worker ended without a result (panicked?)".to_owned(),
         }),
         Err(_elapsed) => Err(SupervisorError::PortfileUnreadable {
             path: portfile_path(data_dir),

@@ -733,18 +733,30 @@ impl Supervisor {
                 let (tx, rx) =
                     tokio::sync::oneshot::channel::<(Command, std::io::Result<Child>, bool)>();
                 let rt_handle = tokio::runtime::Handle::current();
-                std::thread::spawn(move || {
-                    let _rt = rt_handle.enter();
-                    let result = cmd.spawn();
-                    let late = std::time::Instant::now() >= produced_deadline;
-                    // If the receiver is gone (the caller timed out) AND the spawn
-                    // produced a live child, reclaim it and tear down its group so it
-                    // cannot survive. A send that succeeds, or a returned spawn ERROR
-                    // (no child), needs nothing here.
-                    if let Err((_cmd, Ok(late_child), _late)) = tx.send((cmd, result, late)) {
-                        process::force_kill_group_blocking(late_child);
-                    }
-                });
+                let worker = std::thread::Builder::new()
+                    .name("jeliya-daemon-spawn".to_owned())
+                    .spawn(move || {
+                        let _rt = rt_handle.enter();
+                        let result = cmd.spawn();
+                        let late = std::time::Instant::now() >= produced_deadline;
+                        // If the receiver is gone (the caller timed out) AND the spawn
+                        // produced a live child, reclaim it and tear down its group so
+                        // it cannot survive. A send that succeeds, or a returned spawn
+                        // ERROR (no child), needs nothing here.
+                        if let Err((_cmd, Ok(late_child), _late)) = tx.send((cmd, result, late)) {
+                            process::force_kill_group_blocking(late_child);
+                        }
+                    });
+                // `Builder::spawn` returns an error (unlike `thread::spawn`, which
+                // PANICS) when the OS refuses another thread under resource pressure,
+                // so daemon startup surfaces `Spawn` instead of unwinding/aborting the
+                // supervising application.
+                if let Err(e) = worker {
+                    return Err(SupervisorError::Spawn(std::io::Error::new(
+                        e.kind(),
+                        format!("could not start the process-creation worker thread: {e}"),
+                    )));
+                }
                 let (returned, result) = match tokio::time::timeout(remaining, rx).await {
                     Ok(Ok((spawned_cmd, spawn_result, late))) => {
                         if late {
