@@ -60,6 +60,14 @@ pub struct Sidecar {
     pub(crate) expected: Generation,
     pub(crate) strict_portfile_perms: bool,
     pub(crate) timeouts: Timeouts,
+    /// For an ADOPTED daemon: a handle to the `daemon.lock` inode captured AT
+    /// ADOPTION, when the daemon was proven alive and holding it. `stop_adopted`
+    /// polls THIS handle (the original inode) for the daemon's exit, so a cleanup
+    /// tool that unlinks/replaces `daemon.lock` between adoption and shutdown cannot
+    /// substitute an unrelated process's lock — a re-open at shutdown could. `None`
+    /// for an owned daemon (stopped by its stdin, not a lock probe) or when the
+    /// capture missed (a stall / an already-free lock), which fails closed.
+    pub(crate) adopted_lock: Option<fd_lock::RwLock<std::fs::File>>,
 }
 
 impl fmt::Debug for Sidecar {
@@ -231,6 +239,15 @@ impl Sidecar {
         }
         let pid = self.portfile.pid;
         let port = self.portfile.port;
+        // The exit proof is the `daemon.lock` handle captured AT ADOPTION — the
+        // original inode the daemon holds — NOT one re-opened here at shutdown. A
+        // shutdown-time re-open could open a REPLACEMENT inode (a cleanup tool
+        // unlinked/replaced `daemon.lock` after adoption) that a different process
+        // holds; that process releasing its unrelated lock would then read as the
+        // daemon's exit. Our retained fd still refers to the inode the daemon holds,
+        // so it cannot be fooled. `None` (capture missed at adoption) fails closed
+        // below.
+        let adopted_lock = self.adopted_lock;
         // The whole adopted stop is time-boxed by `teardown` — RPC, portfile and
         // lock probes, and all polling stages included. Start the deadline FIRST so
         // every blocking stage counts against it; the metadata probes below touch a
@@ -244,17 +261,9 @@ impl Sidecar {
         // proves nothing — see the completion check. BOUNDED and OFF the executor
         // (`try_exists` is a `stat` that blocks on a stalled mount).
         let portfile_present_before = validate::portfile_present(&self.data_dir, deadline).await;
-        // Snapshot a HELD handle to the current `daemon.lock` inode BEFORE the RPC,
-        // so the completion check (below) follows the original inode the daemon
-        // holds even if a cleanup tool unlinks/replaces the path during shutdown.
-        // BOUNDED and OFF the executor (an `open` on a stalled NFS/FUSE mount blocks
-        // indefinitely): a snapshot that is absent, the wrong inode (unlink/replace),
-        // or times out all yield `None`, and the completion gate then fails closed
-        // rather than reading a non-daemon lock's release as the daemon's exit.
-        let lock_before = validate::snapshot_held_lock(&self.data_dir, deadline).await;
         // Ask the daemon to shut itself down over the caller's RPC, bounded by the
-        // budget REMAINING after the snapshot so its time counts against `teardown`,
-        // not on top of it. A caller-supplied invoker whose transport stalls must
+        // budget REMAINING after the presence probe so its time counts against
+        // `teardown`, not on top of it. A caller-supplied invoker whose transport stalls must
         // not wedge shutdown just because its own future has no timeout. A failure
         // here is the dedicated `ShutdownRpcFailed` — NOT `Handshake` (a startup
         // error) — so a caller can apply shutdown-specific retry/reporting policy.
@@ -300,13 +309,13 @@ impl Sidecar {
         // holding `daemon.lock` until exit. A caller that reuses the dir the
         // instant the portfile vanishes could wedge its restart on the still-held
         // lock, so confirm the lock is RELEASED (the process fully exited) — via
-        // the handle snapshotted BEFORE the RPC (the original inode) — before
-        // promising `Graceful`. If that snapshot is absent (the lock was already
-        // gone, or could not be opened, before the RPC), the exit proof was never
-        // captured: `wait_lock_handle_released` fails closed and we report
-        // `ShutdownTimedOut` rather than a premature `Graceful`.
+        // the handle captured AT ADOPTION (the original inode the daemon holds, not
+        // a path re-opened here) — before promising `Graceful`. If that handle is
+        // absent (the lock was already gone, or could not be opened, at adoption),
+        // the exit proof was never captured: `wait_lock_handle_released` fails closed
+        // and we report `ShutdownTimedOut` rather than a premature `Graceful`.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if validate::wait_lock_handle_released(lock_before, remaining).await {
+        if validate::wait_lock_handle_released(adopted_lock, remaining).await {
             Ok(Teardown::Graceful)
         } else {
             Err(SupervisorError::ShutdownTimedOut { pid })
@@ -389,6 +398,7 @@ mod tests {
         let sidecar = Sidecar {
             portfile,
             ownership: Ownership::Adopted,
+            adopted_lock: None,
             data_dir: std::path::PathBuf::from("/d"),
             expected: crate::generation::Generation::new(2, 2),
             strict_portfile_perms: false,
@@ -432,6 +442,7 @@ mod tests {
             let sidecar = Sidecar {
                 portfile,
                 ownership: Ownership::Owned { child, stdin },
+                adopted_lock: None,
                 data_dir: std::path::PathBuf::from("/d"),
                 expected: crate::generation::Generation::new(2, 2),
                 strict_portfile_perms: false,
@@ -485,6 +496,7 @@ mod tests {
             let sidecar = Sidecar {
                 portfile,
                 ownership: Ownership::Owned { child, stdin },
+                adopted_lock: None,
                 data_dir: dir.clone(),
                 expected: crate::generation::Generation::new(2, 2),
                 strict_portfile_perms: false,
@@ -537,6 +549,7 @@ mod tests {
             let sidecar = Sidecar {
                 portfile,
                 ownership: Ownership::Owned { child, stdin },
+                adopted_lock: None,
                 data_dir: dir.clone(),
                 expected: crate::generation::Generation::new(2, 2),
                 strict_portfile_perms: false,
@@ -567,6 +580,7 @@ mod tests {
         let sidecar = Sidecar {
             portfile,
             ownership: Ownership::Adopted,
+            adopted_lock: None,
             data_dir: std::path::PathBuf::from("/d"),
             expected: crate::generation::Generation::new(2, 2),
             strict_portfile_perms: false,
@@ -617,6 +631,7 @@ mod tests {
         let sidecar = Sidecar {
             portfile,
             ownership: Ownership::Adopted,
+            adopted_lock: None,
             data_dir: dir.clone(),
             expected: crate::generation::Generation::new(2, 2),
             strict_portfile_perms: false,
@@ -709,6 +724,7 @@ mod tests {
             let sidecar = Sidecar {
                 portfile,
                 ownership: Ownership::Owned { child, stdin },
+                adopted_lock: None,
                 data_dir: dir.clone(),
                 expected: crate::generation::Generation::new(2, 2),
                 strict_portfile_perms: false,
@@ -766,6 +782,7 @@ mod tests {
         let sidecar = Sidecar {
             portfile,
             ownership: Ownership::Adopted,
+            adopted_lock: None,
             data_dir: std::path::PathBuf::from("/d"),
             expected: crate::generation::Generation::new(2, 2),
             strict_portfile_perms: false,
@@ -808,6 +825,7 @@ mod tests {
         let sidecar = Sidecar {
             portfile,
             ownership: Ownership::Adopted,
+            adopted_lock: None,
             data_dir: data_dir.clone(),
             expected,
             strict_portfile_perms: false,

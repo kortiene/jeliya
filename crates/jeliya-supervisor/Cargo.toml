@@ -19,7 +19,7 @@ serde_json = "1"
 # the daemon's life. `rt` enables the spawn API only — the CALLER still owns and
 # runs the runtime; the library never constructs one (no `rt-multi-thread`, no
 # `macros`, no `#[tokio::main]`).
-tokio = { version = "1", features = ["process", "net", "time", "io-util", "rt"] }
+tokio = { version = "1", features = ["process", "net", "time", "io-util", "rt", "sync"] }
 url = "2"
 dirs = "6"
 thiserror = "2"

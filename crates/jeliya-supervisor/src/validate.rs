@@ -1177,4 +1177,119 @@ mod tests {
             "prove_owned must be false when nothing answers; a recycled PID must not be signalled"
         );
     }
+
+    /// Finding-B regression: the adopted-daemon exit proof must follow the ADOPTED
+    /// inode, not the path. A handle captured at adoption (while the daemon holds
+    /// `daemon.lock`) must keep tracking THAT inode even after a cleanup tool
+    /// unlinks the path and drops a FREE replacement lock there — a shutdown-time
+    /// re-open would instead take the free replacement and falsely read the daemon
+    /// as exited. Release is observed only when the ORIGINAL inode is freed.
+    #[test]
+    fn a_captured_lock_handle_tracks_its_inode_across_a_path_replacement() {
+        let rt = rt();
+
+        // Anti-attack: the daemon holds the ORIGINAL inode; a cleanup tool unlinks
+        // the path and a DIFFERENT process holds a REPLACEMENT lock there. A re-open
+        // of the PATH (the pre-fix shutdown snapshot) captures that replacement, and
+        // the unrelated process releasing it falsely reads as the daemon's exit. The
+        // handle captured AT ADOPTION follows the original inode — still held by the
+        // daemon — so it is NOT fooled.
+        let dir = tmp_dir("lock-inode-track");
+        let lockpath = dir.join(LOCKFILE_NAME);
+        let held_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lockpath)
+            .unwrap();
+        let mut held = fd_lock::RwLock::new(held_file);
+        let guard = held
+            .try_write()
+            .expect("the daemon holds daemon.lock exclusively");
+        // Adoption captures a handle (a separate fd) to the currently-held inode.
+        let captured = rt.block_on(snapshot_held_lock(
+            &dir,
+            deadline_from(Duration::from_secs(2)),
+        ));
+        assert!(
+            captured.is_some(),
+            "the held original inode must be captured at adoption"
+        );
+        // A cleanup tool unlinks daemon.lock; a DIFFERENT process holds a replacement.
+        std::fs::remove_file(&lockpath).unwrap();
+        let repl_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lockpath)
+            .unwrap();
+        let mut repl = fd_lock::RwLock::new(repl_file);
+        let repl_guard = repl
+            .try_write()
+            .expect("an unrelated process holds the replacement");
+        // The pre-fix behaviour: a shutdown-time re-open captures the HELD
+        // REPLACEMENT inode, not the daemon's.
+        let reopened = rt.block_on(snapshot_held_lock(
+            &dir,
+            deadline_from(Duration::from_secs(2)),
+        ));
+        assert!(
+            reopened.is_some(),
+            "a shutdown re-open captures the held REPLACEMENT inode (the bug)"
+        );
+        // The unrelated process releases its lock → the re-opened handle reads as
+        // 'released' (the false `Graceful` the fix prevents) …
+        drop(repl_guard);
+        drop(repl);
+        assert!(
+            rt.block_on(wait_lock_handle_released(
+                reopened,
+                Duration::from_millis(300)
+            )),
+            "the replacement's release fools a re-opened handle"
+        );
+        // … while the ADOPTION-captured handle follows the original, still held by
+        // the daemon, and correctly does NOT read as released.
+        assert!(
+            !rt.block_on(wait_lock_handle_released(
+                captured,
+                Duration::from_millis(150)
+            )),
+            "the retained original-inode handle is not fooled by the replacement's release"
+        );
+        drop(guard);
+        drop(held);
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Positive: a captured handle DOES report released once the daemon frees its
+        // original lock.
+        let dir2 = tmp_dir("lock-inode-release");
+        let lockpath2 = dir2.join(LOCKFILE_NAME);
+        let held_file2 = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lockpath2)
+            .unwrap();
+        let mut held2 = fd_lock::RwLock::new(held_file2);
+        let guard2 = held2.try_write().expect("held");
+        let captured2 = rt.block_on(snapshot_held_lock(
+            &dir2,
+            deadline_from(Duration::from_secs(2)),
+        ));
+        assert!(captured2.is_some(), "the held inode must be captured");
+        drop(guard2);
+        drop(held2); // the daemon exits, releasing its lock
+        assert!(
+            rt.block_on(wait_lock_handle_released(
+                captured2,
+                Duration::from_millis(500)
+            )),
+            "a captured handle must report released once the daemon drops its lock"
+        );
+        std::fs::remove_dir_all(&dir2).ok();
+    }
 }

@@ -107,6 +107,31 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
+/// SYNCHRONOUSLY SIGKILL a freshly-spawned leader's **process group**, for the
+/// LATE-SPAWN cleanup path: when the spawn deadline fired and the caller has
+/// already returned `TimedOut`, the blocking spawn worker itself tears the child
+/// down HERE, on its own blocking thread. A runtime shutdown WAITS for a blocking
+/// task, so this cleanup survives a caller that drops its runtime — a detached
+/// async task would instead be cancelled, and the late [`Child`] (with
+/// `kill_on_drop(false)`) would leak its group. The child leads its own group
+/// (`pgid == pid`), so one `killpg(SIGKILL)` reaches any descendant a late exec
+/// already spawned before it can survive holding the `data_dir` lock. Synchronous
+/// (needs no runtime) and best-effort: the timed-out caller has already returned,
+/// and a `D`-state straggler is unkillable until its syscall returns (the same
+/// bound [`force_kill_tree`] documents). Reaping the dead leader is delegated to
+/// the runtime's child reaper, or to init once this supervisor exits — a zombie
+/// holds no lock (its fd closed at death). No-op off Unix (single-process daemon).
+pub(crate) fn force_kill_group_blocking(child: Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        use nix::sys::signal::{killpg, Signal};
+        let _ = killpg(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
+    }
+    // `child` drops here: its fds close (the lock releases at death) and the
+    // runtime's reaper (if alive) collects the SIGKILLed leader.
+    drop(child);
+}
+
 /// SIGKILL a spawned leader's **process group** by its pgid (`pgid == the
 /// leader's pid`, set at spawn) and VERIFY, bounded, that the group is gone —
 /// for the early-exit paths where the leader has ALREADY been reaped, so
