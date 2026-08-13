@@ -1257,7 +1257,7 @@ fn view() -> Element {
 }
 `;
   assert.ok(
-    scanComponentLiterals('x.rs', two).some((f) => f.code === 'form-control-duplicate'),
+    scanComponentLiterals('x.rs', two).some((f) => f.code === 'form-control-count'),
     'a Field wrapping two controls must be flagged',
   );
   const one = `
@@ -1266,7 +1266,7 @@ fn view() -> Element {
 }
 `;
   assert.ok(
-    !scanComponentLiterals('x.rs', one).some((f) => f.code === 'form-control-duplicate'),
+    !scanComponentLiterals('x.rs', one).some((f) => f.code === 'form-control-count'),
     'a Field with one control is clean',
   );
 });
@@ -1924,6 +1924,24 @@ test('rule: positional format arguments are rejected in favor of named (#274 31-
   assert.ok(
     codes.includes('positional-format'),
     'positional {0}/{1} slots must be flagged; use named params',
+  );
+});
+
+test('literal scan: a Field with no control is flagged (#274 32-nocontrol)', () => {
+  const source = `fn F() -> Element { rsx! { Field { id: "email", label: "Email", div {} } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'form-control-count'),
+    'a Field with zero controls names nothing and must be flagged',
+  );
+});
+
+test('literal scan: a char literal bound as copy is flagged (#274 32-charlit)', () => {
+  const source = `fn C() -> Element { let label = 'A'; rsx! { button { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /A/.test(f.message)),
+    'a char literal rendered as copy must be flagged like a one-char string',
   );
 });
 

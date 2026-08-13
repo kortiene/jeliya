@@ -239,11 +239,29 @@ export function scanRustSource(source) {
         let j = i + 2;
         while (j < source.length && source[j] !== "'" && source[j] !== '\n') j += 1;
         if (source[j] === "'") {
+          // RECORD the char before masking: a `char` rendered as UI copy
+          // (`let label = 'A'; "{label}"`) must be validated like a one-char string.
+          literals.push({
+            start: i,
+            end: j + 1,
+            contentStart: i + 1,
+            contentEnd: j,
+            value: unescapeRust(source.slice(i + 1, j)),
+            raw: false,
+          });
           blank(i, j + 1);
           i = j + 1;
           continue;
         }
       } else if (i + 2 < source.length && source[i + 2] === "'") {
+        literals.push({
+          start: i,
+          end: i + 3,
+          contentStart: i + 1,
+          contentEnd: i + 2,
+          value: source[i + 1],
+          raw: false,
+        });
         blank(i, i + 3);
         i += 3;
         continue;
@@ -1871,9 +1889,12 @@ export function scanComponentLiterals(file, source) {
   const describedbyValue = (from, to) =>
     firstAttrValue(from, to, '(?:"aria-describedby"|aria[-_]describedby)\\s*:\\s*');
   // How many controls sit inside each `Field` range (keyed by its open index): a
-  // Field renders ONE `label[for]`, so two controls sharing the Field's id produce
-  // duplicate ids and an ambiguous label — flagged after the loop.
+  // Field renders ONE `label[for]`, so ZERO controls leave that label naming nothing
+  // and TWO produce duplicate ids and an ambiguous label — both flagged after the
+  // loop. Seed EVERY detected Field at 0 so a control-less Field is not skipped for
+  // want of an entry.
   const controlsPerField = new Map();
+  for (const [open] of fieldRanges) controlsPerField.set(open, 0);
   for (const el of RESERVED_FORM_CONTROLS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
@@ -1955,8 +1976,8 @@ export function scanComponentLiterals(file, source) {
   // both set that id, so the DOM has DUPLICATE ids and the label resolves
   // ambiguously (the second control ends up unnamed). Enforce one control per Field.
   for (const [open, count] of controlsPerField) {
-    if (count > 1) {
-      findings.push(finding(file, lineOf(source, open), 'form-control-duplicate', `a \`Field\` must wrap exactly ONE control; found ${count} — duplicate ids make its \`label[for]\` ambiguous and leave the extra control(s) unnamed (§5.6)`, 'literals'));
+    if (count !== 1) {
+      findings.push(finding(file, lineOf(source, open), 'form-control-count', `a \`Field\` must wrap exactly ONE control; found ${count} — ${count === 0 ? 'its `label[for]` names no control' : 'duplicate ids make its `label[for]` ambiguous and leave the extra control(s) unnamed'} (§5.6)`, 'literals'));
     }
   }
 
