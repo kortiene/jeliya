@@ -198,6 +198,18 @@ pub(crate) async fn read_portfile_bounded(
     }
 }
 
+// Test-only counter of non-strict WARN-and-proceed events (a group/other-readable
+// portfile accepted with a stderr warning). THREAD-LOCAL, not a global atomic: tests
+// run in parallel and several call non-strict reads on default-`0644` temp files, so a
+// shared counter's delta could exceed one for a test that warned exactly once. A
+// direct `read_portfile` runs on the caller's thread, so a test's own warning lands in
+// its own thread's cell and cross-test increments cannot leak in. `cfg(test)` so
+// production carries nothing.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static INSECURE_PORTFILE_WARNINGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// Read and parse the portfile from `data_dir`, whole (a `0600` atomic
 /// temp+rename write means a *readable* file is never half of one). `strict`
 /// REFUSES a group/other-readable portfile on Unix (OQ-3 strict mode) as the
@@ -208,13 +220,6 @@ pub(crate) async fn read_portfile_bounded(
 /// loopback threat model otherwise treats the portfile as local-user-readable, so
 /// the default proceeds; a caller that needs a hard refusal opts into
 /// `strict_portfile_perms`.
-/// Test-only counter of non-strict WARN-and-proceed events (a group/other-readable
-/// portfile accepted with a stderr warning). Lets a test prove the warning path fired
-/// without capturing process-global stderr; `cfg(test)` so production carries nothing.
-#[cfg(test)]
-pub(crate) static INSECURE_PORTFILE_WARNINGS: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
-
 pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, SupervisorError> {
     use std::io::Read as _;
 
@@ -313,7 +318,7 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
         // `cfg(test)`-gated), so a test can assert the warn-and-proceed path FIRED on an
         // insecure portfile — the result (`Ok`) is unchanged, so only this proves it.
         #[cfg(test)]
-        INSECURE_PORTFILE_WARNINGS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        INSECURE_PORTFILE_WARNINGS.with(|c| c.set(c.get() + 1));
     }
     #[cfg(not(unix))]
     let _ = (strict, &meta);
@@ -532,15 +537,16 @@ mod tests {
     #[test]
     fn non_strict_mode_warns_and_proceeds_on_a_group_readable_portfile() {
         use std::os::unix::fs::PermissionsExt;
-        use std::sync::atomic::Ordering::SeqCst;
         let dir = std::env::temp_dir().join(format!("sup-pf-warn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("daemon.json");
         std::fs::write(&path, v2_portfile_json(7420)).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let before = INSECURE_PORTFILE_WARNINGS.load(SeqCst);
+        // Thread-local counter + a DIRECT read on this thread → isolated from any
+        // other test's non-strict reads running in parallel.
+        let before = INSECURE_PORTFILE_WARNINGS.with(|c| c.get());
         let result = read_portfile(&dir, false);
-        let fired = INSECURE_PORTFILE_WARNINGS.load(SeqCst) - before;
+        let fired = INSECURE_PORTFILE_WARNINGS.with(|c| c.get()) - before;
         std::fs::remove_dir_all(&dir).ok();
         assert!(
             result.is_ok(),

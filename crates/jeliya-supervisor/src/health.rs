@@ -83,8 +83,14 @@ pub(crate) async fn probe_health(
     read_timeout: Duration,
 ) -> Option<HealthReport> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    // Anchor the connect deadline before the connect: `timeout` polls the connect
+    // future BEFORE its timer, so a connection ready at the same instant the timer
+    // fires (executor starvation, or `connect_timeout == 0`) would otherwise be
+    // accepted out-of-budget, letting a direct caller (`validate_portfile`) continue
+    // through the write and read after the connect budget expired.
+    let connect_deadline = crate::validate::deadline_from(connect_timeout);
     let mut stream = match tokio::time::timeout(connect_timeout, TcpStream::connect(addr)).await {
-        Ok(Ok(stream)) => stream,
+        Ok(Ok(stream)) if tokio::time::Instant::now() < connect_deadline => stream,
         _ => return None,
     };
     // `Host: 127.0.0.1:<port>` satisfies the daemon's loopback Host gate;
@@ -97,8 +103,11 @@ pub(crate) async fn probe_health(
     // `prove_owned`) do not wrap the whole probe, so an unbounded write would let one
     // such listener wedge startup / every reconnect. The small request should send
     // within the connect budget; if not, treat it as "not a healthy daemon here".
+    let write_deadline = crate::validate::deadline_from(connect_timeout);
     match tokio::time::timeout(connect_timeout, stream.write_all(request.as_bytes())).await {
-        Ok(Ok(())) => {}
+        // Same deadline-first check as the connect/read: reject a write that completes
+        // only at/after the budget so the probe cannot proceed to the read out-of-budget.
+        Ok(Ok(())) if tokio::time::Instant::now() < write_deadline => {}
         _ => return None,
     }
     // Read through a fixed byte ceiling: `take` caps the bytes buffered

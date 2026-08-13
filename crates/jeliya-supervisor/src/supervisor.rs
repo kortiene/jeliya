@@ -353,26 +353,23 @@ impl Supervisor {
             // parent-death signal only covers a well-behaved daemon).
             let announced = match read_announcement(&mut lines, self.timeouts.spawn).await {
                 Ok(line) => line,
-                Err(e) => {
-                    // No announcement. The most common cause of a non-zero
-                    // SILENT exit is the data-dir lock being held with no healthy
-                    // daemon (jeliyad's `wait_for_free_lock` exits 1 without a
-                    // line), which is the retryable `Wedged` verdict ("starting,
-                    // retry in a moment"). jeliyad ALSO exits 1 silently on a
-                    // genuine startup failure (lockfile open, token, engine init,
-                    // limits, portfile write) — and the daemon gives the
-                    // supervisor no way to tell the two apart from the exit alone
-                    // (same code, no line). `Wedged` is the safe default for
-                    // both: a held lock clears on the caller's BOUNDED retry,
-                    // while a persistent startup failure simply exhausts that
-                    // retry budget and surfaces — whereas mislabelling a held
-                    // lock as a hard failure would abort a recoverable start. (A
-                    // precise split would need distinct daemon exit codes, a
-                    // jeliyad change outside this crate.) Drop our stdin and read
-                    // the child's exit (bounded); a non-zero exit is `Wedged`. A
-                    // zero
-                    // exit or a still-running child (force-killed) keeps the
-                    // original handshake error.
+                Err(AnnouncementError {
+                    error,
+                    stdout_closed,
+                }) => {
+                    // No announcement. `Wedged` (retryable "starting, retry in a
+                    // moment") is justified ONLY when stdout CLOSED with no line
+                    // (`stdout_closed`) AND the child exited nonzero — jeliyad's
+                    // `wait_for_free_lock` exits 1 silently on a held lock, and it ALSO
+                    // exits 1 silently on a genuine startup failure (lockfile/token/
+                    // engine/limits/portfile), which the exit alone cannot distinguish;
+                    // `Wedged` is the safe default for that SILENT pair (a held lock
+                    // clears on retry, a persistent failure exhausts the retry budget and
+                    // surfaces). A NON-EOF failure (malformed JSON, a read error) is a
+                    // SPECIFIC handshake fault — masking it as `Wedged` would drive a
+                    // caller into futile retry loops over a persistent packaging/protocol
+                    // bug — so it is preserved even on a nonzero exit. Drop our stdin
+                    // first so a well-behaved daemon can exit on EOF.
                     drop(stdin);
                     // Capture the pgid (== leader pid) BEFORE the reaping wait:
                     // once `wait()` reaps the leader, `child.id()` is None and the
@@ -404,7 +401,13 @@ impl Supervisor {
                                 // spawn error, which invite a retry that would wedge.
                                 process::kill_reaped_process_group(pgid).await?;
                             }
-                            return Err(SupervisorError::Wedged);
+                            // `Wedged` ONLY for the SILENT (stdout-closed) exit; a
+                            // malformed/other announcement fault is preserved so a
+                            // persistent bug is not retried forever.
+                            if stdout_closed {
+                                return Err(SupervisorError::Wedged);
+                            }
+                            return Err(error);
                         }
                         Ok(Some(_)) => {
                             if let Some(pgid) = leader_pgid {
@@ -414,11 +417,11 @@ impl Supervisor {
                                 // spawn error, which invite a retry that would wedge.
                                 process::kill_reaped_process_group(pgid).await?;
                             }
-                            return Err(e);
+                            return Err(error);
                         }
                         // Still running after the deadline (`Ok(None)`) or an errored
                         // wait: force-kill the group now, bounded, rather than waiting.
-                        _ => return Err(abandon_child(guard.as_mut(), e).await),
+                        _ => return Err(abandon_child(guard.as_mut(), error).await),
                     }
                 }
             };
@@ -1002,6 +1005,33 @@ enum ReadyLine {
     AlreadyRunning { pid: u32, port: u16 },
 }
 
+/// Why [`read_announcement`] failed. `stdout_closed` marks the EOF case — stdout
+/// closed with NO JSON line, i.e. the daemon exited SILENTLY (a held lock, or a
+/// startup failure jeliyad reports only by exiting nonzero without a line). ONLY that
+/// case justifies mapping a nonzero exit to the retryable `Wedged`; every other
+/// failure (timeout, read error, malformed JSON) is a SPECIFIC handshake fault to
+/// preserve, so a persistent packaging/protocol bug is not masked as "retry me".
+#[derive(Debug)]
+struct AnnouncementError {
+    error: SupervisorError,
+    stdout_closed: bool,
+}
+
+impl AnnouncementError {
+    fn stdout_closed() -> Self {
+        Self {
+            error: SupervisorError::Handshake("stdout closed before the announcement".to_owned()),
+            stdout_closed: true,
+        }
+    }
+    fn other(error: SupervisorError) -> Self {
+        Self {
+            error,
+            stdout_closed: false,
+        }
+    }
+}
+
 /// Read the first stdout line that starts with `{` (skipping any stray
 /// human-readable output), parse it as a [`ReadyLine`], all within `budget`.
 /// Generic over the reader so the deadline behaviour is unit-testable against an
@@ -1009,7 +1039,7 @@ enum ReadyLine {
 async fn read_announcement<R>(
     lines: &mut Lines<R>,
     budget: Duration,
-) -> Result<ReadyLine, SupervisorError>
+) -> Result<ReadyLine, AnnouncementError>
 where
     R: tokio::io::AsyncBufRead + Unpin,
 {
@@ -1022,36 +1052,39 @@ where
     // caller-supplied `Timeouts::spawn` of `Duration::MAX` cannot overflow-panic the
     // `Instant + Duration` (it becomes effectively unbounded, matching the spawn phase).
     let deadline = validate::deadline_from(budget);
-    let line = tokio::time::timeout(budget, async {
+    let line = match tokio::time::timeout(budget, async {
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) if line.trim_start().starts_with('{') => {
                     if tokio::time::Instant::now() >= deadline {
-                        return Err(SupervisorError::Handshake(
+                        return Err(AnnouncementError::other(SupervisorError::Handshake(
                             "the announcement arrived only after the spawn budget expired"
                                 .to_owned(),
-                        ));
+                        )));
                     }
                     return Ok(line);
                 }
                 // Skip a non-JSON line (belt-and-suspenders; the daemon emits the
                 // JSON first) and keep reading.
                 Ok(Some(_)) => continue,
-                Ok(None) => {
-                    return Err(SupervisorError::Handshake(
-                        "stdout closed before the announcement".to_owned(),
-                    ))
-                }
+                // EOF: stdout closed with no JSON line — the ONLY failure that maps a
+                // nonzero exit to retryable `Wedged`.
+                Ok(None) => return Err(AnnouncementError::stdout_closed()),
                 Err(e) => {
-                    return Err(SupervisorError::Handshake(format!(
-                        "could not read stdout: {e}"
+                    return Err(AnnouncementError::other(SupervisorError::Handshake(
+                        format!("could not read stdout: {e}"),
                     )))
                 }
             }
         }
     })
     .await
-    .map_err(|_| SupervisorError::Handshake(format!("no announcement within {budget:?}")))??;
+    {
+        Ok(inner) => inner,
+        Err(_elapsed) => Err(AnnouncementError::other(SupervisorError::Handshake(
+            format!("no announcement within {budget:?}"),
+        ))),
+    }?;
 
     serde_json::from_str::<ReadyLine>(&line).map_err(|e| {
         // Do NOT echo the raw line OR the serde error's Display: both reproduce
@@ -1061,14 +1094,15 @@ where
         // `invalid type: string "…"`). Callers log or display a Handshake error,
         // so either would bypass the crate's token-redaction boundary (spec §7.2).
         // Report only the CONTENT-FREE classification and position plus the
-        // withheld byte count.
-        SupervisorError::Handshake(format!(
+        // withheld byte count. A malformed announcement is NOT `stdout_closed`, so a
+        // nonzero exit alongside it is preserved as this specific fault, not `Wedged`.
+        AnnouncementError::other(SupervisorError::Handshake(format!(
             "the daemon's announcement was not valid JSON ({:?} at line {} column {}); {} bytes of raw output withheld (unvalidated child content)",
             e.classify(),
             e.line(),
             e.column(),
             line.len()
-        ))
+        )))
     })
 }
 
@@ -1349,7 +1383,8 @@ mod tests {
             .await
             .expect_err("a line observed at/after the deadline must be rejected");
         assert!(
-            matches!(&err, SupervisorError::Handshake(m) if m.contains("after the spawn budget")),
+            matches!(&err.error, SupervisorError::Handshake(m) if m.contains("after the spawn budget"))
+                && !err.stdout_closed,
             "expected the late-announcement handshake error, got {err:?}"
         );
     }
@@ -1379,6 +1414,34 @@ mod tests {
             .await
             .expect("a prompt line within budget is accepted");
         assert!(matches!(announced, ReadyLine::Ready { pid: 1, port: 2 }));
+    }
+
+    /// `stdout_closed` is set ONLY for the EOF failure (stdout closed with no JSON
+    /// line), not for a malformed-JSON announcement — the flag the no-announcement path
+    /// uses to decide whether a nonzero exit is retryable `Wedged` or a preserved
+    /// handshake fault.
+    #[tokio::test]
+    async fn read_announcement_flags_stdout_closed_only_on_eof() {
+        // A malformed JSON line is a SPECIFIC fault, not the EOF case.
+        let malformed = b"{ not json }\n";
+        let mut lines = BufReader::new(&malformed[..]).lines();
+        let err = read_announcement(&mut lines, Duration::from_secs(30))
+            .await
+            .expect_err("malformed JSON must fail");
+        assert!(
+            !err.stdout_closed,
+            "a malformed announcement is not the stdout-closed EOF case"
+        );
+        // An empty stream (immediate EOF) IS the stdout-closed case.
+        let empty: &[u8] = b"";
+        let mut lines = BufReader::new(empty).lines();
+        let err = read_announcement(&mut lines, Duration::from_secs(30))
+            .await
+            .expect_err("EOF with no line must fail");
+        assert!(
+            err.stdout_closed,
+            "stdout closed with no announcement IS the EOF case"
+        );
     }
 
     /// `bounded_fs` returns a prompt operation's result unchanged.
