@@ -2049,6 +2049,34 @@ test('literal scan: copy reached through a binding alias is flagged (#274 36-ali
   );
 });
 
+test('literal scan: copy through a plain-assignment alias is flagged (#274 37-assignalias)', () => {
+  const source = `fn C() -> Element { let base = "Delete account"; let mut label = String::new(); label = base; rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy through a plain reassignment alias (label = base) must be flagged',
+  );
+});
+
+test('form: a control referencing the hint in an IDREF list is associated (#274 37-hintlist)', () => {
+  const source = `fn F() -> Element { rsx! { Field { id: "email", hint: "Help", input { id: "email", aria_describedby: "email-hint email-error" } } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    !findings.some((f) => f.code === 'form-control-hint-unassociated'),
+    'aria-describedby with the hint id among other ids is associated',
+  );
+});
+
+test('rule: named width params ($) in format specs must match (#274 37-widthref)', () => {
+  const en = `impl Catalog for En { fn m(&self, a: &str, b: &str, w1: usize, w2: usize) -> String { format!("{a:w1$} {b:w2$}") } }`;
+  const fr = `impl Catalog for Fr { fn m(&self, a: &str, b: &str, w1: usize, w2: usize) -> String { format!("{a:w2$} {b:w1$}") } }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('placeholder-parity'),
+    'FR swaps the width bindings (w1/w2), which must be caught',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

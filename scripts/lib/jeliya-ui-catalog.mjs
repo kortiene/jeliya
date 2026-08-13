@@ -341,11 +341,18 @@ function slotSet(values) {
     // `format!("Count {n}")`, so the parity gate passes though the French argument is
     // unused and the text is wrong.
     const unescaped = value.replace(/\{\{|\}\}/g, '');
-    // Compare the ARGUMENT identity, not the format spec: `{n}` and `{n:>5}` bind the
-    // same parameter `n`, so strip the `:...` spec (as the positional check also does)
-    // before storing — else valid EN `{n}` vs FR `{n:>5}` would fail parity.
+    // Compare the ARGUMENT identity, not the static format spec: `{n}` and `{n:>5}`
+    // bind the same parameter `n`. But a `$`-referenced param in the spec (`{a:w1$}`
+    // takes its width from `w1`) is a REAL placeholder whose binding must match, so
+    // fold each `<ref>$` into the slot token — EN `{a:w1$}` and FR `{a:w2$}` then
+    // differ. Static alignment/precision (`>5`, `.2`) carries no `$` and is ignored.
     for (const match of unescaped.matchAll(/\{([^{}]*)\}/g)) {
-      slots.push(match[1].split(':')[0].trim());
+      const content = match[1];
+      const colon = content.indexOf(':');
+      const argName = (colon === -1 ? content : content.slice(0, colon)).trim();
+      const spec = colon === -1 ? '' : content.slice(colon + 1);
+      const refs = [...spec.matchAll(/(\w+)\$/g)].map((r) => r[1]).sort();
+      slots.push(refs.length ? `${argName}:${refs.join(',')}` : argName);
     }
   }
   return slots.sort();
@@ -1562,15 +1569,23 @@ export function scanComponentLiterals(file, source) {
   // transitively along a chain — so a `let base = "…"` behind the alias is still
   // caught. Iterate to a fixpoint over `let NAME = IDENT;` (the RHS is a bare ident, so
   // a string/call/path RHS — including the literal itself — never matches).
-  const aliasRe = /\blet\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::\s*[^=;{}]*)?=\s*([A-Za-z_]\w*)\s*;/g;
+  const aliasRes = [
+    /\blet\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::\s*[^=;{}]*)?=\s*([A-Za-z_]\w*)\s*;/g,
+    // Plain REASSIGNMENT `label = base;` (RHS a bare identifier), statement-anchored
+    // after `;`/`{`/`}` so a comparison/compound `=` (`==`, `+=`) is not matched and a
+    // string/call/path RHS never matches.
+    /[;{}]\s*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;/g,
+  ];
   for (let grew = true; grew; ) {
     grew = false;
-    aliasRe.lastIndex = 0;
-    for (let m = aliasRe.exec(skeleton); m; m = aliasRe.exec(skeleton)) {
-      if (inTest(m.index)) continue;
-      if (copyInterpolations.has(m[1]) && !copyInterpolations.has(m[2])) {
-        copyInterpolations.add(m[2]);
-        grew = true;
+    for (const re of aliasRes) {
+      re.lastIndex = 0;
+      for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+        if (inTest(m.index)) continue;
+        if (copyInterpolations.has(m[1]) && !copyInterpolations.has(m[2])) {
+          copyInterpolations.add(m[2]);
+          grew = true;
+        }
       }
     }
   }
@@ -2074,7 +2089,13 @@ export function scanComponentLiterals(file, source) {
         const describedbyLiteral = describedby === null ? null : /^"([^"]*)"$/.exec(describedby);
         if (literalId) {
           const expected = `${literalId[1]}-hint`;
-          if (!describedbyLiteral || describedbyLiteral[1] !== expected) {
+          // `aria-describedby` is a space-separated ID REFERENCE LIST, so a control may
+          // legitimately reference the hint AND another description
+          // (`"email-hint email-error"`). Require MEMBERSHIP of the expected hint id,
+          // not that it is the sole value.
+          const describedbyIds =
+            describedbyLiteral === null ? [] : describedbyLiteral[1].trim().split(/\s+/);
+          if (!describedbyLiteral || !describedbyIds.includes(expected)) {
             findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with a hint must set \`aria-describedby: "${expected}"\` so the hint is exposed as a description; found \`${describedby === null ? '(none)' : describedby}\``, 'literals'));
           }
         } else if (describedby === null || describedbyLiteral) {
