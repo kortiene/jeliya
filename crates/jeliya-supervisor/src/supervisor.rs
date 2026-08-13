@@ -103,6 +103,14 @@ pub struct Supervisor {
     timeouts: Timeouts,
 }
 
+/// The bound for `resolve`'s blocking FS setup (data-dir create/canonicalize and
+/// binary-path resolution). A DEDICATED constant, NOT `Timeouts::teardown`: teardown
+/// is the graceful-shutdown-escalation budget, and a caller that sets it to zero (or
+/// a tiny value) to demand immediate escalation would otherwise make `resolve`'s
+/// bounded worker time out before it could even stat a local directory. Generous
+/// enough for a working (even networked) mount, short enough to bound a stalled one.
+const RESOLVE_FS_BOUND: Duration = Duration::from_secs(5);
+
 /// Run a blocking FS operation on a DETACHED OS thread, bounded by `budget`. Returns
 /// `None` on timeout OR a thread-creation failure. `resolve` runs synchronously,
 /// possibly BEFORE any Tokio runtime exists, so this uses a plain `std::thread` +
@@ -151,7 +159,7 @@ impl Supervisor {
         // a fallback path would either mismatch the absolute one jeliyad records
         // (spurious `DataDirMismatch`) or, if relative, let a later CWD change redirect
         // portfile access and spawning elsewhere.
-        let budget = config.timeouts.teardown;
+        let budget = RESOLVE_FS_BOUND;
         let work_dir = data_dir.clone();
         let prepared = bounded_fs(budget, move || {
             std::fs::create_dir_all(&work_dir)?;
@@ -187,7 +195,15 @@ impl Supervisor {
             });
         }
 
-        let (binary, binary_tried) = match config.binary {
+        // Binary resolution is ALSO blocking FS work — `is_file()` (a stat),
+        // `canonical_binary` (canonicalize), and `resolve_jeliyad`'s candidate probes
+        // all touch the filesystem — so an explicit binary, `JELIYAD_BIN`, or the
+        // bundled executable dir on a stalled mount would hang `resolve` just like the
+        // data dir did. Run it on the same BOUNDED worker; a timeout yields "no binary"
+        // (recorded in `tried`), which `start_or_adopt` surfaces as `NoBinary` while a
+        // pure adopter (`attach_to_running`, no binary needed) still proceeds.
+        let explicit = config.binary;
+        let (binary, binary_tried) = bounded_fs(RESOLVE_FS_BOUND, move || match explicit {
             // Bind to the ABSOLUTE canonical path, not the caller's (possibly
             // relative) spelling: a relative path stored here re-resolves against
             // the CWD at `start_or_adopt` time, which the process may have changed
@@ -212,7 +228,16 @@ impl Supervisor {
                 Ok(path) => (Some(path), Vec::new()),
                 Err(tried) => (None, tried),
             },
-        };
+        })
+        .unwrap_or_else(|| {
+            (
+                None,
+                vec![
+                    "binary resolution exceeded its bound (an executable path on a stalled mount?)"
+                        .to_owned(),
+                ],
+            )
+        });
 
         Ok(Self {
             binary,
@@ -359,8 +384,19 @@ impl Supervisor {
                     // `_` arm leaves the child un-reaped, so `abandon_child` →
                     // `force_kill_tree` already reaches the group via `child.id()`.
                     let leader_pgid = guard.as_mut().id();
-                    match tokio::time::timeout(self.timeouts.spawn, guard.as_mut().wait()).await {
-                        Ok(Ok(status)) if !status.success() => {
+                    // The announcement deadline ALREADY expired inside `read_announcement`,
+                    // so do NOT grant a SECOND full `Timeouts::spawn` here — a hung or
+                    // overridden daemon that emitted no line AND ignores stdin-EOF would
+                    // otherwise push `start_or_adopt` to ~2x the configured bound. A
+                    // NONBLOCKING `try_wait` catches a child that already exited silently:
+                    // a silent exit closes stdout, which is exactly why `read_announcement`
+                    // returned (its EOF), so the leader is already reaped-able. A non-zero
+                    // exit is the retryable held-lock / startup-failure `Wedged`; a zero
+                    // exit keeps the original handshake error. A child STILL ALIVE after
+                    // the deadline is hung/overridden and goes straight to bounded forced
+                    // cleanup (`abandon_child`), never another spawn interval.
+                    match guard.as_mut().try_wait() {
+                        Ok(Some(status)) if !status.success() => {
                             if let Some(pgid) = leader_pgid {
                                 // Propagate a verified group-cleanup failure: a
                                 // descendant surviving SIGKILL (still holding the
@@ -370,7 +406,7 @@ impl Supervisor {
                             }
                             return Err(SupervisorError::Wedged);
                         }
-                        Ok(Ok(_)) => {
+                        Ok(Some(_)) => {
                             if let Some(pgid) = leader_pgid {
                                 // Propagate a verified group-cleanup failure: a
                                 // descendant surviving SIGKILL (still holding the
@@ -380,6 +416,8 @@ impl Supervisor {
                             }
                             return Err(e);
                         }
+                        // Still running after the deadline (`Ok(None)`) or an errored
+                        // wait: force-kill the group now, bounded, rather than waiting.
                         _ => return Err(abandon_child(guard.as_mut(), e).await),
                     }
                 }
@@ -1364,5 +1402,28 @@ mod tests {
             start.elapsed() < Duration::from_secs(5),
             "must return at the bound, not wait for the 30s op"
         );
+    }
+
+    /// `resolve`'s data-dir setup uses a DEDICATED bound, not `Timeouts::teardown`.
+    /// A caller demanding immediate shutdown escalation (teardown = 0) must still be
+    /// able to construct a Supervisor. Red-before-green: reusing teardown = 0 as the
+    /// worker's `recv_timeout` made resolve fail `PortfileUnreadable` even for an
+    /// existing local dir, before the worker could stat it.
+    #[test]
+    fn resolve_setup_does_not_reuse_a_zero_teardown_budget() {
+        let tmp = std::env::temp_dir().join(format!("jeliya-sup-td0-{}", std::process::id()));
+        let config = SupervisorConfig {
+            data_dir: Some(tmp.clone()),
+            binary: Some(PathBuf::from("/definitely/not/a/real/jeliyad")),
+            timeouts: Timeouts {
+                teardown: Duration::from_secs(0),
+                ..Timeouts::default()
+            },
+            ..SupervisorConfig::new(Generation::new(2, 2))
+        };
+        let sup = Supervisor::resolve(config)
+            .expect("resolve must succeed with teardown=0 (data-dir setup has its own bound)");
+        assert!(sup.data_dir().starts_with(&tmp) || tmp.starts_with(sup.data_dir()));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -24,7 +24,7 @@ use crate::generation::Generation;
 use crate::portfile::{self, Portfile};
 use crate::process;
 use crate::supervisor::Timeouts;
-use crate::target::TargetResolver;
+use crate::target::{DialTarget, TargetResolver};
 use crate::validate;
 
 /// How this process came to have a daemon — and therefore what it owes that
@@ -236,12 +236,21 @@ impl Sidecar {
     /// Polls `/api/health` until the daemon goes dark, bounded; on timeout,
     /// [`SupervisorError::ShutdownTimedOut`].
     ///
+    /// The invoker is handed the [`DialTarget`] of the REVALIDATED incarnation (the
+    /// re-read portfile that just matched the adopted pid+port+token), so its request
+    /// is bound to that daemon's port AND per-start bearer. A caller MUST dial the
+    /// passed target rather than re-resolving through [`TargetResolver`]: if the
+    /// adopted daemon exits between the identity check and the RPC and a replacement
+    /// takes the recycled port, a fresh resolve would hand back the replacement's new
+    /// token — the passed target carries the ORIGINAL token, so a request built from it
+    /// cannot authenticate to (nor stop) the replacement.
+    ///
     /// On an **owned** sidecar this delegates to [`Sidecar::shutdown`] (the
     /// signal path), because an owned daemon is stopped by closing its stdin,
     /// not by an RPC.
     pub async fn stop_adopted(
         self,
-        shutdown_rpc: impl FnOnce() -> BoxFuture<'static, Result<(), CallerRpcError>>,
+        shutdown_rpc: impl FnOnce(DialTarget) -> BoxFuture<'static, Result<(), CallerRpcError>>,
     ) -> Result<Teardown, SupervisorError> {
         if self.is_owned() {
             return self.shutdown().await;
@@ -311,6 +320,15 @@ impl Sidecar {
         {
             return Err(SupervisorError::ShutdownTimedOut { pid });
         }
+        // BIND the RPC to THIS revalidated incarnation: build its dial target (loopback
+        // port + the per-start bearer from the just-matched `current` portfile) and hand
+        // it to the invoker. If the daemon exits between this check and the request and a
+        // replacement takes the recycled port, a caller that dials the passed target
+        // still carries the ORIGINAL token — so its request cannot authenticate to the
+        // replacement, closing the resolve-a-later-daemon window.
+        let target = DialTarget::from_validated(&current, self.expected).map_err(|e| {
+            SupervisorError::ShutdownRpcFailed(format!("could not build the stop dial target: {e}"))
+        })?;
         // Ask the daemon to shut itself down over the caller's RPC, bounded by the
         // budget REMAINING after the presence probe so its time counts against
         // `teardown`, not on top of it. A caller-supplied invoker whose transport stalls must
@@ -318,7 +336,7 @@ impl Sidecar {
         // here is the dedicated `ShutdownRpcFailed` — NOT `Handshake` (a startup
         // error) — so a caller can apply shutdown-specific retry/reporting policy.
         let rpc_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(rpc_budget, shutdown_rpc()).await {
+        match tokio::time::timeout(rpc_budget, shutdown_rpc(target)).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 // REDACT the daemon bearer from the caller-controlled error text
@@ -665,10 +683,9 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let result =
-            rt.block_on(sidecar.stop_adopted(|| {
-                Box::pin(async { Err(CallerRpcError("access denied".to_owned())) })
-            }));
+        let result = rt.block_on(sidecar.stop_adopted(|_target| {
+            Box::pin(async { Err(CallerRpcError("access denied".to_owned())) })
+        }));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
             matches!(result, Err(SupervisorError::ShutdownRpcFailed(_))),
@@ -705,7 +722,8 @@ mod tests {
             .unwrap();
         let echoed = format!("401 Unauthorized (sent Authorization: Bearer {token})");
         let result = rt.block_on(
-            sidecar.stop_adopted(move || Box::pin(async move { Err(CallerRpcError(echoed)) })),
+            sidecar
+                .stop_adopted(move |_target| Box::pin(async move { Err(CallerRpcError(echoed)) })),
         );
         std::fs::remove_dir_all(&dir).ok();
         match result {
@@ -754,7 +772,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let result = rt.block_on(sidecar.stop_adopted(move || {
+        let result = rt.block_on(sidecar.stop_adopted(move |_target| {
             called_rpc.store(true, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async { Ok(()) })
         }));
@@ -801,7 +819,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let result = rt.block_on(sidecar.stop_adopted(move || {
+        let result = rt.block_on(sidecar.stop_adopted(move |_target| {
             called_rpc.store(true, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async { Ok(()) })
         }));
@@ -813,6 +831,57 @@ mod tests {
         assert!(
             !called.load(std::sync::atomic::Ordering::SeqCst),
             "the stop RPC must NOT be issued against a replacement with a fresh token"
+        );
+    }
+
+    /// The stop invoker is handed a `DialTarget` BOUND to the revalidated incarnation:
+    /// its URL dials the validated port and its bearer is the validated per-start
+    /// token, so a caller that dials the passed target cannot reconnect to a later
+    /// replacement (a fresh resolve would hand back the replacement's new token).
+    #[test]
+    fn stop_adopted_binds_the_rpc_to_the_revalidated_target() {
+        let dir = std::env::temp_dir().join(format!("sup-adopt-bind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"the-adopted-token"}"#;
+        std::fs::write(dir.join("daemon.json"), json).unwrap();
+        let adopted: crate::portfile::Portfile = serde_json::from_str(json).unwrap();
+        let sidecar = Sidecar {
+            portfile: adopted,
+            ownership: Ownership::Adopted,
+            adopted_lock: None,
+            data_dir: dir.clone(),
+            expected: crate::generation::Generation::new(2, 2),
+            strict_portfile_perms: false,
+            // Short teardown so the post-RPC completion check does not linger.
+            timeouts: crate::supervisor::Timeouts {
+                teardown: Duration::from_millis(200),
+                ..crate::supervisor::Timeouts::default()
+            },
+        };
+        let captured: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let cap = captured.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = rt.block_on(sidecar.stop_adopted(move |target| {
+            *cap.lock().unwrap() = Some((target.ws_url().to_string(), target.bearer().to_string()));
+            Box::pin(async { Ok(()) })
+        }));
+        std::fs::remove_dir_all(&dir).ok();
+        let (url, bearer) = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the invoker must receive a bound DialTarget");
+        assert!(
+            url.contains("127.0.0.1:9/ws"),
+            "the target must dial the validated port; got {url}"
+        );
+        assert_eq!(
+            bearer, "the-adopted-token",
+            "the target must carry the validated per-start bearer, not a re-resolved one"
         );
     }
 
@@ -863,7 +932,7 @@ mod tests {
             .enable_time()
             .build()
             .unwrap();
-        let result = rt.block_on(sidecar.stop_adopted(|| Box::pin(async { Ok(()) })));
+        let result = rt.block_on(sidecar.stop_adopted(|_target| Box::pin(async { Ok(()) })));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
             matches!(result, Err(SupervisorError::ShutdownTimedOut { .. })),
@@ -1014,7 +1083,7 @@ mod tests {
             .build()
             .unwrap();
         let started = std::time::Instant::now();
-        let result = rt.block_on(sidecar.stop_adopted(|| {
+        let result = rt.block_on(sidecar.stop_adopted(|_target| {
             // An invoker whose transport never answers.
             Box::pin(std::future::pending::<Result<(), CallerRpcError>>())
         }));
