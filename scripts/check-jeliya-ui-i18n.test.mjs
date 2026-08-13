@@ -1483,6 +1483,64 @@ test('rule 3: a one-letter word keeps identical copy from being auto-exempted', 
   );
 });
 
+test('rule 2: a literal-free String::new() branch is value-empty; _ => None is not (#274 22-1)', () => {
+  const src = `impl Catalog for En {
+    fn month(&self, m: u8) -> Option<&'static str> { match m { 1 => Some("January"), _ => None } }
+    fn tag(&self, n: u8) -> String { match n { 1 => format!("One {}", "item"), _ => String::new() } }
+  }`;
+  const empty = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).filter((f) => f.code === 'value-empty');
+  assert.ok(empty.some((f) => /tag/.test(f.message)), 'the String::new() branch renders blank → value-empty');
+  assert.ok(!empty.some((f) => /month/.test(f.message)), '_ => None returns Option::None, not empty copy');
+});
+
+test('rule: nonplural match placeholder parity is per-arm — a slot swapped between branches is flagged (#274 22-2)', () => {
+  const en = `impl Catalog for En {
+    fn label(&self, n: &str, x: &str, b: bool) -> String { match b { true => format!("Count {n}"), false => format!("Name {x}") } }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn label(&self, n: &str, x: &str, b: bool) -> String { match b { true => format!("Compte {x}"), false => format!("Nom {n}") } }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(codes.includes('placeholder-parity'), 'fr swapped {n}/{x} between arms — identical pooled multiset, per-arm catches it');
+});
+
+test('literal scan: copy nested in a constructor inside an expression child is flagged (#274 22-3)', () => {
+  const source = `fn C() -> Element { rsx! { div { {Some(String::from("Delete account")).unwrap()} } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'a literal nested in Some(String::from(...)).unwrap() inside a text expression child is rendered copy',
+  );
+});
+
+test('literal scan: production copy AFTER an inline #[cfg(test)] module is still scanned (#274 22-4)', () => {
+  const source = `
+    fn Before() -> Element { rsx! { div { {strings.hello()} } } }
+    #[cfg(test)]
+    mod tests { fn t() { let _ = "in test only"; } }
+    fn After() -> Element { rsx! { div { "Delete account" } } }
+  `;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy in a production component AFTER a test module must be flagged',
+  );
+  assert.ok(
+    !findings.some((f) => /in test only/.test(f.message)),
+    'copy INSIDE the masked test module stays exempt',
+  );
+});
+
+test('rule 3: a split-literal untranslated value (concat!) is flagged (#274 22-6)', () => {
+  const en = `impl Catalog for En { fn title(&self) -> String { concat!("Delete ", "account").to_string() } }`;
+  const fr = `impl Catalog for Fr { fn title(&self) -> String { "Delete account".to_string() } }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('fr-untranslated'),
+    'EN concat!("Delete ", "account") and FR "Delete account" render byte-identical text',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

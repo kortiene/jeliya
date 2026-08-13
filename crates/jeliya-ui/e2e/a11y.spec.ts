@@ -181,10 +181,10 @@ test("the Diagnostics dialog traps focus, closes on Escape, and returns focus to
     .toBe("diagnostics-open");
 });
 
-test("the connection live region announces the settled room count exactly once", async ({ page }) => {
+test("the room-count live region announces the settled count exactly once", async ({ page }) => {
   await gotoReadyShell(page);
 
-  // The region is one STABLE polite node.
+  // The CONTENT region is one STABLE polite node carrying the room count.
   const region = page.locator("#live-region");
   await expect(region).toHaveAttribute("aria-live", "polite");
   await expect(region).toHaveAttribute("aria-atomic", "true");
@@ -207,6 +207,88 @@ test("the connection live region announces the settled room count exactly once",
     log.filter((entry) => entry.text === "0 rooms").length,
     "the settled room count must be announced exactly once",
   ).toBe(1);
+});
+
+test("the connection live region announces a drop and its recovery exactly once each", async ({
+  page,
+}) => {
+  // Arm the e2e marker (before any app script) so the marker-gated connection hook
+  // installs — the same `localStorage` marker the `?boot=` fixture uses; with no
+  // `?boot=` query the boot fixture stays inactive, so the shell still reaches Ready.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("jeliya-e2e-boot-fixture", "1");
+  });
+  // Witness the DEDICATED connection region's text changes and remounts, installed
+  // before boot on the always-present Document (the region mounts during boot).
+  await page.addInitScript(() => {
+    const log: { type: string; text: string }[] = [];
+    (window as unknown as { __connLog: typeof log }).__connLog = log;
+    let lastNode: Element | null = null;
+    let lastText: string | null = null;
+    new MutationObserver(() => {
+      const region = document.getElementById("connection-live-region");
+      if (region === null) {
+        return;
+      }
+      const text = region.textContent ?? "";
+      if (region !== lastNode) {
+        log.push({ type: "mount", text });
+        lastNode = region;
+        lastText = text;
+        return;
+      }
+      if (text !== lastText) {
+        log.push({ type: "text", text });
+        lastText = text;
+      }
+    }).observe(document, { subtree: true, childList: true, characterData: true });
+  });
+  await gotoReadyShell(page);
+
+  const region = page.locator("#connection-live-region");
+  await expect(region).toHaveAttribute("aria-live", "polite");
+  // A settled shell (Ready, no prior drop) has announced NOTHING here: the happy boot
+  // path (Connecting → Ready) is deliberately silent — only a drop or a recovery speaks.
+  await expect(region).toHaveText("");
+
+  // The announcer reacts to each StateChanged EVENT (not a render snapshot), so drive a
+  // REAL drop then recovery through the marker-gated e2e hook and WAIT for each to render
+  // — stepping them so the pair is two observed transitions, not a batched net-Ready.
+  await page.waitForFunction(
+    () =>
+      typeof (window as unknown as { __jeliyaE2eConnState?: unknown }).__jeliyaE2eConnState ===
+      "function",
+  );
+  await page.evaluate(() =>
+    (
+      window as unknown as { __jeliyaE2eConnState: (s: string) => void }
+    ).__jeliyaE2eConnState("interrupted"),
+  );
+  await expect(region).not.toHaveText(""); // the drop announcement rendered
+  const dropText = (await region.textContent()) ?? "";
+  await page.evaluate(() =>
+    (window as unknown as { __jeliyaE2eConnState: (s: string) => void }).__jeliyaE2eConnState(
+      "ready",
+    ),
+  );
+  // The recovery REPLACES the drop text (a distinct, non-empty announcement).
+  await expect.poll(async () => (await region.textContent()) ?? "").not.toBe(dropText);
+
+  // The region stayed one node and received EXACTLY two non-empty announcements — the
+  // drop and its recovery, each once. Removing #connection-live-region or breaking the
+  // Interrupted↔Ready wiring makes this fail (0 announcements); a re-announce makes it >2.
+  const log = await page.evaluate(
+    () => (window as unknown as { __connLog: { type: string; text: string }[] }).__connLog,
+  );
+  expect(
+    log.filter((e) => e.type === "mount").length,
+    `the connection region must be a stable node: ${JSON.stringify(log)}`,
+  ).toBe(1);
+  const announcements = log.filter((e) => e.type === "text" && e.text.trim() !== "");
+  expect(
+    announcements.length,
+    `the drop and recovery must each be announced exactly once: ${JSON.stringify(log)}`,
+  ).toBe(2);
 });
 
 // Hit-test the real geometry of every visible interactive control (WCAG 2.5.8):
@@ -238,11 +320,20 @@ async function assertTargetGeometry(
   const measured: { box: { x: number; y: number; width: number; height: number }; isException: boolean }[] = [];
   for (const target of await targets.all()) {
     const box = await target.boundingBox();
+    if (box === null) {
+      continue; // not rendered at all
+    }
     // The 1px-clip visually-hidden pattern (skip links until focused) is not a
-    // pointer target — it expands to full size exactly when focused — so it is
-    // excluded from hit-testing.
-    if (box === null || box.width <= 2 || box.height <= 2) {
-      continue;
+    // pointer target — it expands to full size exactly when focused. Exempt ONLY that
+    // known `.skip-link` pattern at this size: any OTHER visible interactive control
+    // collapsed to 1–2px is a real regression (a CSS break), so let it fall through to
+    // the hit-test and the 24px floor below, which fail it — rather than silently
+    // skipping it and leaving the accessibility matrix green for an unusable control.
+    if (box.width <= 2 || box.height <= 2) {
+      const isHiddenSkipLink = await target.evaluate((el) => el.matches(".skip-link"));
+      if (isHiddenSkipLink) {
+        continue;
+      }
     }
     // HIT-TEST, do not merely trust the bounding box: an overlay covering the
     // control still lets `boundingBox()` report its full size, so a 44×44 box could
@@ -317,6 +408,32 @@ test("visible interactive targets meet the compact target-size floors", async ({
   // while this required context stays green.
   await openDiagnostics(page);
   await assertTargetGeometry(page, "diagnostics dialog", page.locator("#dialog-backdrop"));
+});
+
+test("a compact control regressed below the floor is caught, not silently skipped", async ({ page }, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "compact" && testInfo.project.name !== "narrow",
+    "target-size floors are the compact/narrow contract (§7)",
+  );
+  await gotoReadyShell(page);
+  // Inject a REAL interactive control collapsed to 1px that is NOT the hidden
+  // skip-link pattern — a CSS regression. The ≤2px skip now exempts ONLY `.skip-link`,
+  // so this must FAIL the geometry check (24px floor / hit-test), not be silently
+  // excused, keeping the accessibility matrix honest. Red-before: the old blanket
+  // ≤2px skip excused it and assertTargetGeometry passed.
+  await page.evaluate(() => {
+    const b = document.createElement("button");
+    b.textContent = "x";
+    b.setAttribute(
+      "style",
+      // border-box + zeroed padding/border/appearance so the box is a TRUE 1px — the
+      // ≤2px branch the exemption guards (UA button padding would otherwise inflate it
+      // past the branch and it would fail the floor for an unrelated reason).
+      "appearance:none;box-sizing:border-box;margin:0;padding:0;border:0;position:fixed;bottom:0;right:0;width:1px;height:1px;min-width:0;min-height:0;overflow:hidden;z-index:9999",
+    );
+    document.body.appendChild(b);
+  });
+  await expect(assertTargetGeometry(page, "injected 1px control")).rejects.toThrow();
 });
 
 test("reduced motion disables the reconnecting-status animation", async ({ page }) => {

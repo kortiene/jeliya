@@ -85,6 +85,11 @@ pub fn WebRoot() -> Element {
     use_future(move || {
         let composition = composition.clone();
         async move {
+            // e2e-only, marker-gated: expose a JS hook to drive connection transitions
+            // so the a11y matrix can exercise the connection live region against a REAL
+            // transition (inert in production; see `install_e2e_connection_hook`).
+            #[cfg(feature = "web")]
+            install_e2e_connection_hook(composition.controller.clone());
             // Drive the reference backend deterministically: reach `Ready` so
             // the shell leaves the boot state, then settle the mount reads
             // EVENT-DRIVEN. A fixed deliver-and-yield pass count guesses the
@@ -171,6 +176,51 @@ fn boot_fixture_state() -> Option<State> {
     {
         None
     }
+}
+
+/// Install a marker-gated e2e hook — `window.__jeliyaE2eConnState(state)` — that drives
+/// the mock's connection LIFECYCLE, so the a11y matrix can verify the connection
+/// live-region's announce-once wiring against a REAL `Interrupted`/`Ready` transition
+/// (the announcer reacts to each `StateChanged` EVENT, so no DOM poke can substitute for
+/// a driven transition). Gated on the SAME `localStorage` marker as the `?boot=` fixture,
+/// so production — loopback or not — never arms it; the code is inert without the marker.
+/// `MockController::set_state` panics on `Stopping`/`Stopped`, so only `interrupted`,
+/// `ready`, and `failed` are accepted; anything else is ignored.
+#[cfg(feature = "web")]
+fn install_e2e_connection_hook(controller: Rc<MockController>) {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let armed = window
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+        .as_deref()
+        == Some("1");
+    if !armed {
+        return;
+    }
+    let closure = Closure::<dyn Fn(String)>::new(move |state: String| {
+        let state = match state.as_str() {
+            "interrupted" => State::Interrupted,
+            "ready" => State::Ready,
+            "failed" => State::Failed,
+            _ => return,
+        };
+        controller.set_state(state);
+    });
+    let _ = js_sys::Reflect::set(
+        &window,
+        &JsValue::from_str("__jeliyaE2eConnState"),
+        closure.as_ref().unchecked_ref(),
+    );
+    // Leak the closure so the hook stays callable for the page's lifetime. This runs
+    // ONLY under the e2e marker, so it is never a production leak path.
+    closure.forget();
 }
 
 /// The platform UI language tag to seed locale resolution with — the ONE place

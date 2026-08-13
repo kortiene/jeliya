@@ -353,6 +353,21 @@ export function parseCatalog(source, file) {
     const parts = literals.filter(
       (l) => l.start > lastTopLevelSemi && l.end <= close,
     );
+    // A returned branch whose ENTIRE value is an empty-string constructor
+    // (`=> String::new()` / a bare `{ String::default() }`) contributes NO string
+    // literal, so the literal-based `parts` miss it — yet it renders BLANK copy for
+    // that input. Count each such branch and record a synthetic empty value, so
+    // `value-empty` flags it INDEPENDENTLY of sibling branches that carry text.
+    // Deliberately NOT matched: `_ => None` (returns `Option::None`, not an empty
+    // string) and `String::new()` used as a call ARGUMENT (`format!("x", String::new())`
+    // renders "x", so the ctor is preceded by `,`/`(`, not `=>`/`{`).
+    let emptyBranchCount = 0;
+    {
+      const returned = skeleton.slice(lastTopLevelSemi, close);
+      const emptyCtorRe = /(?:=>|\{)\s*String::(?:new|default)\s*\(\s*\)/g;
+      while (emptyCtorRe.exec(returned) !== null) emptyBranchCount += 1;
+    }
+    const emptyBranchValues = Array.from({ length: emptyBranchCount }, () => '');
     const isPlural = /\bPluralCategory\b/.test(params);
     if (entries.has(name)) {
       errors.push(finding(file, lineOf(source, open), 'catalog-duplicate-key', `duplicate method: ${name}`, 'catalog'));
@@ -405,6 +420,11 @@ export function parseCatalog(source, file) {
     // key-against-key — a positional compare would misalign a reordered untranslated
     // branch (e.g. an English `_ => "August"`) and miss it.
     let valuesByBranch = null;
+    // Placeholder set PER match arm (keyed by arm pattern), so a NONPLURAL `match`
+    // method's parity is compared branch-against-branch — a French translation that
+    // swaps `{n}`/`{x}` BETWEEN arms (identical pooled multiset) is caught, which the
+    // pooled `slots` fallback misses.
+    let slotsByBranch = null;
     if (!isPlural) {
       const bodyText = skeleton.slice(open, close);
       const markers = [];
@@ -427,26 +447,37 @@ export function parseCatalog(source, file) {
       }
       if (markers.length > 0) {
         valuesByBranch = {};
+        slotsByBranch = {};
         for (const p of parts) {
           let armKey = null;
           for (const mk of markers) {
             if (mk.at <= p.start) armKey = mk.key;
             else break;
           }
-          if (armKey !== null) (valuesByBranch[armKey] ??= []).push(collapseSlots(p.value));
+          if (armKey !== null) {
+            (valuesByBranch[armKey] ??= []).push(collapseSlots(p.value));
+            (slotsByBranch[armKey] ??= []).push(...slotSet([p.value]));
+          }
         }
+        // Sort each arm's pooled slot multiset so the per-arm comparison is
+        // order-independent (a slot set is a sorted multiset, like `slots`).
+        for (const armKey of Object.keys(slotsByBranch)) slotsByBranch[armKey].sort();
       }
     }
     entries.set(name, {
       key: name,
       line: lineOf(source, match.index),
       isPlural,
-      values: parts.map((p) => collapseSlots(p.value)),
+      // Append a synthetic empty value for each literal-free empty-string-constructor
+      // branch (`=> String::new()`), so `value-empty` sees blank branches the literal
+      // scan cannot.
+      values: parts.map((p) => collapseSlots(p.value)).concat(emptyBranchValues),
       slots: slotSet(parts.map((p) => p.value)),
       slotsPerArm: parts.map((p) => slotSet([p.value])),
       slotsByCategory,
       valuesByCategory,
       valuesByBranch,
+      slotsByBranch,
     });
     methodRe.lastIndex = close;
   }
@@ -568,6 +599,22 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
           findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr ${cat} placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
         }
       }
+    } else if (frEntry.slotsByBranch && enEntry.slotsByBranch) {
+      // NONPLURAL `match`: compare placeholders PER ARM (keyed by pattern), so a
+      // French translation that SWAPS `{n}`/`{x}` BETWEEN branches — an identical
+      // POOLED multiset — is caught. The pooled `slots` fallback below would pass it.
+      const armKeys = new Set([
+        ...Object.keys(frEntry.slotsByBranch),
+        ...Object.keys(enEntry.slotsByBranch),
+      ]);
+      if (
+        [...armKeys].some(
+          (armKey) =>
+            !slotsEqual(frEntry.slotsByBranch[armKey] ?? [], enEntry.slotsByBranch[armKey] ?? []),
+        )
+      ) {
+        findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders differ from en in a match arm — a translation moved, dropped, or duplicated a format slot between branches`, 'catalog'));
+      }
     } else if (!slotsEqual(frEntry.slots, enEntry.slots)) {
       findings.push(finding(fr.file, frEntry.line, 'placeholder-parity', `${key}: fr placeholders differ from en — a translation dropped, renamed, or duplicated a format slot`, 'catalog'));
     }
@@ -591,9 +638,12 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
       // neutral arm like `{n}`, which `identityExemption` clears) is untranslated —
       // even if OTHER arms were translated. A PARTIAL translation (one arm French,
       // another still English) must be caught, not only a wholly-English plural.
+      // Concatenate the arm's literal fragments into the COMPLETE rendered value
+      // (`join('')`) before comparing, so a locale that splits equivalent copy into a
+      // different number of literals is still compared text-against-text.
       const untranslated = ['One', 'Other'].some(
         (cat) =>
-          frEntry.valuesByCategory[cat].join(SLOT) === enEntry.valuesByCategory[cat].join(SLOT) &&
+          frEntry.valuesByCategory[cat].join('') === enEntry.valuesByCategory[cat].join('') &&
           !identityExemption(key, frEntry.valuesByCategory[cat].join(' '), allowlist),
       );
       if (!untranslated) continue;
@@ -611,18 +661,25 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
         const enArm = enEntry.valuesByBranch[armKey] ?? [];
         return (
           frArm.length > 0 &&
-          frArm.join(SLOT) === enArm.join(SLOT) &&
+          // Complete rendered value (fragments concatenated), so a split-literal
+          // untranslated arm still compares equal.
+          frArm.join('') === enArm.join('') &&
           !identityExemption(key, frArm.join(' '), allowlist)
         );
       });
       if (!untranslated) continue;
     } else {
-      // Non-`match` (a single returned value): a byte-identical, translatable value
-      // is untranslated; a language-neutral one is cleared by `identityExemption`.
-      const untranslated = frEntry.values.some(
-        (frVal, i) =>
-          frVal === enEntry.values[i] && !identityExemption(key, frVal, allowlist),
-      );
+      // Non-`match` (a single returned value): compare the COMPLETE rendered value
+      // (all literal fragments concatenated), not fragment-by-fragment. EN
+      // `concat!("Delete ", "account")` and FR `"Delete account"` render byte-identical
+      // text but split into a different NUMBER of literals, so a positional compare
+      // finds no equal index and misses the untranslated French. A language-neutral
+      // value is still cleared by `identityExemption`; an all-empty value (length 0
+      // after join) is a `value-empty` concern, not untranslated.
+      const frJoined = frEntry.values.join('');
+      const enJoined = enEntry.values.join('');
+      const untranslated =
+        frJoined.length > 0 && frJoined === enJoined && !identityExemption(key, frJoined, allowlist);
       if (!untranslated) continue;
     }
     findings.push(finding(fr.file, frEntry.line, 'fr-untranslated', `${key}: French value is byte-identical to English — translate it, or add it to IDENTICAL_ALLOWLIST with the reason it is right`, 'catalog'));
@@ -885,6 +942,32 @@ function callIsExpressionChild(skeleton, openParenIndex) {
   return false;
 }
 
+/** Like [`callIsExpressionChild`], but walks OUTWARD through enclosing constructor/
+ *  wrapper calls: a literal nested any number of calls deep inside an
+ *  expression-child slot — `div { {Some(String::from("Delete account")).unwrap()} }`
+ *  — is still rendered copy. Starting at the literal's immediately-enclosing call
+ *  `(`, it asks whether THAT call closes the slot; if not, and the call is itself an
+ *  argument to an OUTER call (its callee is preceded by `(`), it repeats on the outer
+ *  call. Stops (not copy) when the enclosing callee is preceded by anything else — a
+ *  `:` (attr value like `class: foo(bar("x"))`), a `,`/`{` that is not a call, etc. */
+function literalCallIsExpressionChild(skeleton, openParenIndex) {
+  let paren = openParenIndex;
+  for (let guard = 0; guard < 64 && paren >= 0; guard += 1) {
+    if (callIsExpressionChild(skeleton, paren)) return true;
+    // Walk back over this call's callee (ident / path / macro `!`).
+    let i = paren - 1;
+    while (i >= 0 && /[\w:!]/.test(skeleton[i])) i -= 1;
+    while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
+    // Nested inside an OUTER call — retry against the outer call's `(`.
+    if (skeleton[i] === '(') {
+      paren = i;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
 /** The name bound at the `=` at `eqIndex`, if it is a `let [mut] <name> = …`,
  *  `let [mut] <name>: <TYPE> = …`, `const <NAME>: <TYPE> = …`, or
  *  `static <NAME>: <TYPE> = …` declaration; else null. All are common ways to hold
@@ -938,14 +1021,52 @@ function matchingBrace(skeleton, openIndex) {
   return -1;
 }
 
+/** Balanced spans of every test-only item — a `#[cfg(test)]`-attributed `mod`/`fn`/
+ *  `impl` (balance-matched braces) or a non-braced `use`/`const`/`static` (to its
+ *  `;`). Masking the item itself, rather than cutting the file at the first
+ *  `#[cfg(test)]`, lets production code that FOLLOWS an inline test module still be
+ *  scanned (a later `rsx! { … }` must face the gate). */
+function testItemSpans(skeleton) {
+  const spans = [];
+  const re = /#\[cfg\(test\)\]/g;
+  for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+    const after = m.index + m[0].length;
+    const brace = skeleton.indexOf('{', after);
+    const semi = skeleton.indexOf(';', after);
+    let end = skeleton.length;
+    if (brace !== -1 && (semi === -1 || brace < semi)) {
+      // Braced item: balance-match its body so a nested `{}` cannot end it early.
+      let depth = 0;
+      for (let at = brace; at < skeleton.length; at += 1) {
+        if (skeleton[at] === '{') depth += 1;
+        else if (skeleton[at] === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            end = at + 1;
+            break;
+          }
+        }
+      }
+    } else if (semi !== -1) {
+      // Non-braced item (`#[cfg(test)] use …;`): ends at its statement `;`.
+      end = semi + 1;
+    }
+    spans.push([m.index, end]);
+    re.lastIndex = end;
+  }
+  return spans;
+}
+
 /** Report user-visible literals in one Rust component/app source. */
 export function scanComponentLiterals(file, source) {
   const { skeleton, literals, comments } = scanRustSource(source);
   const lines = source.split('\n');
-  // Test modules are not shipped copy; skip everything from the first
-  // `#[cfg(test)]` onward.
-  const testAt = skeleton.indexOf('#[cfg(test)]');
-  const limit = testAt === -1 ? source.length : testAt;
+  // Test-only items are not shipped copy — but production code can FOLLOW an inline
+  // `#[cfg(test)]` module, so mask each BALANCED test item rather than cutting the
+  // file at the first test attribute (which would exempt every later production
+  // `rsx!`). `inTest(pos)` is true only INSIDE such a masked item.
+  const testSpans = testItemSpans(skeleton);
+  const inTest = (pos) => testSpans.some(([s, e]) => pos >= s && pos < e);
   const ranges = rsxRanges(skeleton);
   const inRsx = (pos) => ranges.some(([start, end]) => pos >= start && pos < end);
   // A position inside a `//`/`/* */` comment, per the Rust scanner. The reserved
@@ -965,7 +1086,7 @@ export function scanComponentLiterals(file, source) {
   // structural id/class stays exempt.
   const copyInterpolations = new Set();
   for (const literal of literals) {
-    if (literal.start >= limit || !inRsx(literal.start)) continue;
+    if (inTest(literal.start) || !inRsx(literal.start)) continue;
     let at = literal.start - 1;
     while (at >= 0 && /\s/.test(skeleton[at])) at -= 1;
     const prevChar = at >= 0 ? skeleton[at] : '';
@@ -990,7 +1111,7 @@ export function scanComponentLiterals(file, source) {
   // `let label = "Skip to rooms"` is caught like the explicit `label: label` form.
   const shorthandRe = /[{,]\s*([A-Za-z_]\w*)\s*(?=[,}])/g;
   for (let m = shorthandRe.exec(skeleton); m; m = shorthandRe.exec(skeleton)) {
-    if (m.index >= limit || !inRsx(m.index)) continue;
+    if (inTest(m.index) || !inRsx(m.index)) continue;
     if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyInterpolations.add(m[1]);
   }
 
@@ -1004,7 +1125,7 @@ export function scanComponentLiterals(file, source) {
   // shorthand is handled above).
   const braceIdentRe = /\{\s*([A-Za-z_]\w*)\s*\}/g;
   for (let m = braceIdentRe.exec(skeleton); m; m = braceIdentRe.exec(skeleton)) {
-    if (m.index >= limit || !inRsx(m.index)) continue;
+    if (inTest(m.index) || !inRsx(m.index)) continue;
     let p = m.index - 1;
     while (p >= 0 && /\s/.test(skeleton[p])) p -= 1;
     const pc = p >= 0 ? skeleton[p] : '';
@@ -1023,13 +1144,13 @@ export function scanComponentLiterals(file, source) {
   const childCallRe = /[{}"]\s*\{\s*([A-Za-z_]\w*)\s*\(/g;
   for (let m = childCallRe.exec(skeleton); m; m = childCallRe.exec(skeleton)) {
     const at = m.index + m[0].lastIndexOf('{');
-    if (at >= limit || !inRsx(at)) continue;
+    if (inTest(at) || !inRsx(at)) continue;
     copyHelpers.add(m[1]);
   }
   // Copy-ATTRIBUTE call values: `label: helper()` (a copy-bearing prop).
   const attrCallRe = /([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*\(/g;
   for (let m = attrCallRe.exec(skeleton); m; m = attrCallRe.exec(skeleton)) {
-    if (m.index >= limit || !inRsx(m.index)) continue;
+    if (inTest(m.index) || !inRsx(m.index)) continue;
     if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyHelpers.add(m[2]);
   }
   // Resolve each helper name to its `fn NAME(…) -> … { BODY }` body span: skip the
@@ -1058,7 +1179,7 @@ export function scanComponentLiterals(file, source) {
   const inCopyHelperBody = (pos) => helperBodies.some(([open, close]) => pos > open && pos < close);
 
   for (const literal of literals) {
-    if (literal.start >= limit) continue;
+    if (inTest(literal.start)) continue;
     // Only literals inside RSX markup are copy candidates; Rust logic literals
     // (class-name match arms, `let` bindings, `format!` args) are not — EXCEPT a
     // literal inside a copy-helper body, which is rendered as copy via its call.
@@ -1141,13 +1262,13 @@ export function scanComponentLiterals(file, source) {
     // a copy-prop value (handled above) — is Rust logic embedded in RSX, not
     // markup text.
     if (skeleton[after] === '.') continue;
-    // A literal that is the argument of a call which IS the RSX expression child —
-    // `div { {format!("Delete account")} }` — is visible copy (a `format!` string
-    // is a normal way to render dynamic text), not Rust logic. Detect that the
-    // enclosing call is the whole `{ … }` slot before treating the argument as
-    // code; a `class: format!("app-{}", p)` attr value or a nested `foo(bar("…"))`
-    // arg is not, and stays exempt.
-    if (prev === '(' && callIsExpressionChild(skeleton, before)) {
+    // A literal that is the argument of a call which IS (or is nested inside) the RSX
+    // expression child — `div { {format!("Delete account")} }`, or a constructor deeper
+    // in `div { {Some(String::from("Delete account")).unwrap()} }` — is visible copy (a
+    // rendered text node), not Rust logic. Trace OUTWARD through the enclosing calls to
+    // the whole `{ … }` slot before treating the argument as code; a `class:
+    // format!("app-{}", p)` attr value or a nested arg under a non-child call stays exempt.
+    if (prev === '(' && literalCallIsExpressionChild(skeleton, before)) {
       findings.push(finding(file, line, 'rust-text', `RSX text expression is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
       continue;
     }
@@ -1163,7 +1284,7 @@ export function scanComponentLiterals(file, source) {
   // its name is interpolated in a copy position. A catalog-derived binding
   // (`let x = strings.foo()`) has no string-literal RHS, so it is never matched.
   for (const literal of literals) {
-    if (literal.start >= limit || inRsx(literal.start)) continue; // in-RSX handled above
+    if (inTest(literal.start) || inRsx(literal.start)) continue; // in-RSX handled above
     if (!bareLetters(literal.value)) continue;
     let at = literal.start - 1;
     while (at >= 0 && /\s/.test(skeleton[at])) at -= 1;
@@ -1225,7 +1346,7 @@ export function scanComponentLiterals(file, source) {
     const pat = attr.replace(/-/g, '[-_]');
     const re = new RegExp(`(?:\\b${pat}\\b|"${pat}")\\s*:\\s*`, 'g');
     for (let m = re.exec(source); m; m = re.exec(source)) {
-      if (m.index >= limit || !inRsx(m.index) || inComment(m.index)) continue;
+      if (inTest(m.index) || !inRsx(m.index) || inComment(m.index)) continue;
       // VALUE-scoped ownership: a primitive owns only the exact `role` it renders
       // (`role=status`), so an ad-hoc `role: "dialog"` in that file is still flagged.
       const valMatch = /^"([^"]*)"/.exec(source.slice(m.index + m[0].length));
@@ -1243,7 +1364,7 @@ export function scanComponentLiterals(file, source) {
   for (const el of RESERVED_SEMANTIC_ELEMENTS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
-      if (m.index >= limit || !inRsx(m.index)) continue;
+      if (inTest(m.index) || !inRsx(m.index)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       findings.push(finding(file, line, 'raw-semantic-element', `raw \`${el}\` element must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
@@ -1322,7 +1443,7 @@ export function scanComponentLiterals(file, source) {
   for (const el of RESERVED_FORM_CONTROLS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
-      if (m.index >= limit || !inRsx(m.index)) continue;
+      if (inTest(m.index) || !inRsx(m.index)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       const field = fieldRanges.find(([open, close]) => m.index > open && m.index < close);
@@ -1412,7 +1533,7 @@ export function scanComponentLiterals(file, source) {
   if (!owned.has('nav')) {
     const navRe = /\bnav\s*\{/g;
     for (let m = navRe.exec(skeleton); m; m = navRe.exec(skeleton)) {
-      if (m.index >= limit || !inRsx(m.index)) continue;
+      if (inTest(m.index) || !inRsx(m.index)) continue;
       const openBrace = m.index + m[0].length - 1;
       const close = matchingBrace(skeleton, openBrace);
       // Inspect ONLY the nav's OWN attribute list, not its subtree: a descendant's
