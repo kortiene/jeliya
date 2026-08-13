@@ -297,7 +297,18 @@ impl Sidecar {
         // BEFORE its timer, so a read completing just PAST the budget would otherwise
         // be accepted and let the RPC run beyond the whole-operation `teardown`.
         // Reject an out-of-budget read, and an identity that changed under us.
-        if tokio::time::Instant::now() >= deadline || current.pid != pid || current.port != port {
+        //
+        // pid and port are BOTH recyclable — a replacement daemon can be assigned the
+        // same PID and the same ephemeral `--port 0`, so matching them alone does not
+        // prove this is the daemon we adopted. `daemon.json` carries a per-start
+        // 256-bit `auth_token`, which a replacement necessarily regenerates; require
+        // the re-read token to equal the token we captured at adoption, so a recycled
+        // pid+port cannot let the caller's RPC stop a foreign replacement.
+        if tokio::time::Instant::now() >= deadline
+            || current.pid != pid
+            || current.port != port
+            || current.token() != self.portfile.token()
+        {
             return Err(SupervisorError::ShutdownTimedOut { pid });
         }
         // Ask the daemon to shut itself down over the caller's RPC, bounded by the
@@ -755,6 +766,53 @@ mod tests {
         assert!(
             !called.load(std::sync::atomic::Ordering::SeqCst),
             "the stop RPC must NOT be issued against a replacement daemon"
+        );
+    }
+
+    /// `stop_adopted` must also refuse — and never issue the RPC — when a replacement
+    /// daemon was assigned the SAME recycled pid AND the same ephemeral port but a
+    /// fresh per-start `auth_token`. pid+port alone are recyclable; the token is not.
+    /// Red-before (pre-token check): matching pid+port accepted the replacement and
+    /// the RPC fired.
+    #[test]
+    fn stop_adopted_refuses_a_recycled_pid_port_with_a_new_token() {
+        let dir = std::env::temp_dir().join(format!("sup-adopt-tokchange-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // CURRENT portfile: identical pid+port (recycled), but a DIFFERENT token.
+        let current = r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"replacement-token"}"#;
+        std::fs::write(dir.join("daemon.json"), current).unwrap();
+        // We adopted the same pid+port, but with the ORIGINAL per-start token.
+        let adopted: crate::portfile::Portfile = serde_json::from_str(
+            r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"adopted-token"}"#,
+        )
+        .unwrap();
+        let sidecar = Sidecar {
+            portfile: adopted,
+            ownership: Ownership::Adopted,
+            adopted_lock: None,
+            data_dir: dir.clone(),
+            expected: crate::generation::Generation::new(2, 2),
+            strict_portfile_perms: false,
+            timeouts: crate::supervisor::Timeouts::default(),
+        };
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_rpc = called.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(sidecar.stop_adopted(move || {
+            called_rpc.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { pid: 4242 })),
+            "a recycled pid+port with a fresh token must refuse the stop; got: {result:?}"
+        );
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "the stop RPC must NOT be issued against a replacement with a fresh token"
         );
     }
 

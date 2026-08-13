@@ -103,6 +103,33 @@ pub struct Supervisor {
     timeouts: Timeouts,
 }
 
+/// Run a blocking FS operation on a DETACHED OS thread, bounded by `budget`. Returns
+/// `None` on timeout OR a thread-creation failure. `resolve` runs synchronously,
+/// possibly BEFORE any Tokio runtime exists, so this uses a plain `std::thread` +
+/// `mpsc::recv_timeout` (no async): `create_dir_all`/`canonicalize` on a stalled
+/// NFS/FUSE mount would otherwise block the calling application indefinitely, before
+/// any of the supervisor's timeouts or detached workers are established. The worker
+/// thread may leak on a wedged mount (like the portfile/probe workers), but the
+/// caller returns a bounded error instead of hanging. NOT `spawn_blocking` — there
+/// may be no runtime, and a runtime would join its pool on drop.
+fn bounded_fs<T, F>(budget: Duration, work: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::sync_channel::<T>(1);
+    if std::thread::Builder::new()
+        .name("jeliya-resolve-fs".to_owned())
+        .spawn(move || {
+            let _ = tx.send(work());
+        })
+        .is_err()
+    {
+        return None;
+    }
+    rx.recv_timeout(budget).ok()
+}
+
 impl Supervisor {
     /// Resolve the data dir (created and canonicalized, fail-closed) and attempt
     /// binary resolution best-effort. Binary resolution does **not** fail here:
@@ -111,23 +138,39 @@ impl Supervisor {
     /// time with the full `tried` list.
     pub fn resolve(config: SupervisorConfig) -> Result<Self, SupervisorError> {
         let data_dir = config.data_dir.unwrap_or_else(default_data_dir);
-        std::fs::create_dir_all(&data_dir).map_err(|e| SupervisorError::PortfileUnreadable {
-            path: data_dir.clone(),
-            why: format!("could not create the data dir: {e}"),
-        })?;
-        // Canonical form so lock/portfile identity compares like-with-like
-        // regardless of `/var` vs `/private/var`, symlinks, or path spelling —
-        // the daemon canonicalizes too. FAIL CLOSED on a canonicalize error rather
-        // than storing the unverified (possibly relative) path: `resolve` promises
-        // a canonical dir, and a fallback path would either mismatch the absolute
-        // one jeliyad records (spurious `DataDirMismatch`) or, if relative, let a
-        // later CWD change redirect portfile access and spawning elsewhere.
-        let data_dir = match data_dir.canonicalize() {
-            Ok(canonical) => canonical,
-            Err(e) => {
+        // Create AND canonicalize the data dir on a BOUNDED detached worker: both are
+        // blocking FS calls that hang indefinitely on a stalled NFS/FUSE mount, and
+        // `resolve` runs before any of the supervisor's timeouts or detached workers
+        // exist — so an unbounded call here would wedge the calling application at
+        // startup even though every later portfile/lock op is time-boxed for the same
+        // condition. Bounded by `teardown` (the crate's general bounded-op budget).
+        // Canonical form so lock/portfile identity compares like-with-like regardless
+        // of `/var` vs `/private/var`, symlinks, or path spelling — the daemon
+        // canonicalizes too. FAIL CLOSED on any error rather than storing the
+        // unverified (possibly relative) path: `resolve` promises a canonical dir, and
+        // a fallback path would either mismatch the absolute one jeliyad records
+        // (spurious `DataDirMismatch`) or, if relative, let a later CWD change redirect
+        // portfile access and spawning elsewhere.
+        let budget = config.timeouts.teardown;
+        let work_dir = data_dir.clone();
+        let prepared = bounded_fs(budget, move || {
+            std::fs::create_dir_all(&work_dir)?;
+            work_dir.canonicalize()
+        });
+        let data_dir = match prepared {
+            Some(Ok(canonical)) => canonical,
+            Some(Err(e)) => {
                 return Err(SupervisorError::PortfileUnreadable {
                     path: data_dir,
-                    why: format!("could not canonicalize the data dir: {e}"),
+                    why: format!("could not create/canonicalize the data dir: {e}"),
+                });
+            }
+            None => {
+                return Err(SupervisorError::PortfileUnreadable {
+                    path: data_dir,
+                    why: format!(
+                        "creating the data dir exceeded the {budget:?} bound (data dir on a stalled mount?)"
+                    ),
                 });
             }
         };
@@ -1298,5 +1341,28 @@ mod tests {
             .await
             .expect("a prompt line within budget is accepted");
         assert!(matches!(announced, ReadyLine::Ready { pid: 1, port: 2 }));
+    }
+
+    /// `bounded_fs` returns a prompt operation's result unchanged.
+    #[test]
+    fn bounded_fs_returns_a_prompt_result() {
+        assert_eq!(bounded_fs(Duration::from_secs(5), || 42u32), Some(42));
+    }
+
+    /// `bounded_fs` returns `None` PROMPTLY when the operation outruns the budget —
+    /// the property that stops `resolve`'s data-dir setup from hanging on a stalled
+    /// mount. Red-before-green: before the bounded worker, `resolve` blocked on the
+    /// synchronous `create_dir_all`/`canonicalize` with no bound at all.
+    #[test]
+    fn bounded_fs_times_out_a_stalled_operation() {
+        let start = std::time::Instant::now();
+        let r: Option<()> = bounded_fs(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        assert_eq!(r, None, "a slow op must time out to None");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "must return at the bound, not wait for the 30s op"
+        );
     }
 }
