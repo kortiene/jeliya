@@ -528,8 +528,8 @@ fn from_pos_for(reason: &ResyncReason) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use jeliya_api::{
-        ApiError, GapReason, GapTo, MemberRow, Reachability, RoomId, RoomMembersOut, RoomPeersOut,
-        RoomTimelineOut, StreamResyncOut, Truncated,
+        ApiError, DeviceId, GapReason, GapTo, Link, MemberRow, PeerRow, Reachability, RoomId,
+        RoomMembersOut, RoomPeersOut, RoomTimelineOut, StreamResyncOut, SubjectId, Truncated,
     };
 
     use crate::error::CallError;
@@ -586,6 +586,44 @@ mod tests {
             reachability: Reachability::Offline,
             peers: vec![],
         }))
+    }
+
+    /// A `room.peers` reply with an explicit reachability and roster.
+    fn peers_ok_with(
+        room_id: RoomId,
+        reachability: Reachability,
+        peers: Vec<PeerRow>,
+    ) -> ReadReply {
+        ReadReply::Peers(Ok(RoomPeersOut {
+            room_id,
+            reachability,
+            peers,
+        }))
+    }
+
+    /// A live `direct` link (built by deserializing, so tests carry no `time` dep).
+    fn direct_link() -> Link {
+        serde_json::from_str(r#"{"state":"direct","since":"1970-01-01T00:00:00Z"}"#)
+            .expect("link json deserializes")
+    }
+
+    fn peer_row(subject: &str, device: &str) -> PeerRow {
+        PeerRow {
+            subject_id: SubjectId::new(subject),
+            device_id: DeviceId::new(device),
+            link: direct_link(),
+        }
+    }
+
+    /// A live `peer` push for one device.
+    fn peer_push(room_id: &RoomId, subject: &str, device: &str, generation: u64) -> ClientEvent {
+        ClientEvent::Push(RoomPush::Peer {
+            room_id: room_id.clone(),
+            subject_id: SubjectId::new(subject),
+            device_id: DeviceId::new(device),
+            link: direct_link(),
+            generation,
+        })
     }
 
     fn timeout_err() -> CallError {
@@ -1957,6 +1995,132 @@ mod tests {
             issued_resync_from(&a),
             Some(1),
             "the superseding launch must still honour the daemon's discard position"
+        );
+    }
+
+    /// §R8: an authoritative read is the truth. Once it removes a device, a
+    /// delayed frame from an *older* connection must not bring the peer back —
+    /// which is exactly what dropping the per-device fences on snapshot
+    /// replacement allowed.
+    #[test]
+    fn a_stale_peer_push_cannot_resurrect_a_device_an_authoritative_read_removed() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "a")]);
+
+        // A live push introduces device d1 at generation 5.
+        let a = core.step(Input::Event(peer_push(&room, "s1", "d1", 5)));
+        assert_eq!(
+            emitted_view(&a).map(|v| v.peers.len()),
+            Some(1),
+            "the live push introduces the device"
+        );
+
+        // A reconnect re-reads presence authoritatively, and d1 is gone.
+        let a = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: true,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&a, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let a = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok_with(room.clone(), Reachability::Alone, vec![]),
+        });
+        assert_eq!(
+            emitted_view(&a).map(|v| v.peers.len()),
+            Some(0),
+            "the authoritative read removed the device"
+        );
+
+        // A delayed frame from the OLDER connection (generation 4) arrives.
+        let a = core.step(Input::Event(peer_push(&room, "s1", "d1", 4)));
+        assert!(
+            !has_emit_view(&a),
+            "a stale-generation frame must be discarded, not resurrect the peer"
+        );
+    }
+
+    /// The whole-room aggregate is derived from the per-device links, so it has
+    /// to move with them: a freshly linked peer must not still read `Alone`.
+    #[test]
+    fn reachability_follows_the_links_a_peer_push_changes() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+
+        // Converge with a live-but-peerless room.
+        let a = core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let bootstrap = if a.iter().any(|x| matches!(x, Action::IssueRead { .. })) {
+            a
+        } else {
+            core.step(Input::Lifecycle {
+                to: State::Ready,
+                coalesced_through_problem: false,
+            })
+        };
+        let (read_id, epoch) = read_id_epoch_for(&bootstrap, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![evt(1, "a")]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let a = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok_with(room.clone(), Reachability::Alone, vec![]),
+        });
+        assert_eq!(
+            emitted_view(&a).map(|v| v.reachability),
+            Some(Reachability::Alone)
+        );
+
+        // A peer links up: the aggregate must become Connected.
+        let a = core.step(Input::Event(peer_push(&room, "s1", "d1", 1)));
+        assert_eq!(
+            emitted_view(&a).map(|v| v.reachability),
+            Some(Reachability::Connected),
+            "a linked peer must move the aggregate off Alone"
+        );
+    }
+
+    /// `Connecting`/`Offline` are transport-level answers the daemon owns; a
+    /// peer push must not fabricate liveness the client does not have.
+    #[test]
+    fn a_peer_push_does_not_fabricate_liveness_while_offline() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        // `peers_ok` reports Offline.
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "a")]);
+
+        let a = core.step(Input::Event(peer_push(&room, "s1", "d1", 1)));
+        assert_eq!(
+            emitted_view(&a).map(|v| v.reachability),
+            Some(Reachability::Offline),
+            "an offline room must stay offline"
         );
     }
 }

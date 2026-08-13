@@ -210,8 +210,15 @@ pub(crate) struct RoomState {
     /// The last authoritative reachability.
     reachability: Reachability,
     /// The last-seen connection generation per `(subject, device)` for live
-    /// `peer` pushes, so a stale-generation teardown is discarded (§R8).
+    /// `peer` pushes, so a stale-generation teardown is discarded (§R8). Only
+    /// devices the latest authoritative snapshot lists are retained, so this is
+    /// bounded by the peer count, never by wire history.
     peer_generations: HashMap<(SubjectId, DeviceId), u64>,
+    /// The highest connection generation ever observed for this room. A frame
+    /// for a device the authoritative snapshot does **not** list is accepted
+    /// only above this floor, so a delayed frame from an older connection can
+    /// never resurrect a peer an authoritative read removed (§R8).
+    peer_generation_floor: u64,
     /// The subscription anchor from the most recent activation.
     bootstrap_anchor: u64,
     /// The epoch the room last reconciled under, used to stamp in-place views.
@@ -234,6 +241,7 @@ impl RoomState {
             peers: Vec::new(),
             reachability: Reachability::Offline,
             peer_generations: HashMap::new(),
+            peer_generation_floor: 0,
             bootstrap_anchor: anchor,
             last_epoch: 0,
             converged_once: false,
@@ -523,9 +531,9 @@ impl RoomState {
         }
         if let Some((reachability, peers)) = peers {
             self.reachability = reachability;
+            self.raise_generation_floor();
             self.peers = peers;
-            // Live-push generations no longer apply to a fresh snapshot.
-            self.peer_generations.clear();
+            self.retain_present_generations();
         }
 
         // 3. Drain the buffer, converging by evidence (§R6.2).
@@ -605,7 +613,10 @@ impl RoomState {
         for id in retained_ids {
             self.recent_ids.insert(id);
         }
-        // Presence generations belong to the discarded connection window.
+        // Presence generations belong to the discarded connection window, but
+        // the floor must survive them: clearing outright would let a delayed
+        // frame from that window re-introduce a peer.
+        self.raise_generation_floor();
         self.peer_generations.clear();
     }
 
@@ -681,10 +692,13 @@ impl RoomState {
             return None;
         }
         let key = (subject_id.clone(), device_id.clone());
-        if let Some(last) = self.peer_generations.get(&key) {
-            if generation <= *last {
-                return None;
-            }
+        match self.peer_generations.get(&key).copied() {
+            // A device the snapshot lists: fenced by its own last-seen generation.
+            Some(last) if generation <= last => return None,
+            // A device the latest authoritative read does not list: only a frame
+            // from a newer connection than any seen may (re)introduce it (§R8).
+            None if generation <= self.peer_generation_floor => return None,
+            _ => {}
         }
         self.peer_generations.insert(key, generation);
         if let Some(row) = self
@@ -700,8 +714,53 @@ impl RoomState {
                 link,
             });
         }
+        // The whole-room aggregate is derived from the links, so it must move
+        // with them; leaving it at the last snapshot's value reports `Alone`
+        // for a freshly connected peer and `Connected` after the last one drops.
+        self.recompute_reachability();
         let epoch = self.last_epoch;
         Some(self.view(epoch))
+    }
+
+    /// Raise the fence floor to the highest generation observed so far.
+    fn raise_generation_floor(&mut self) {
+        if let Some(max) = self.peer_generations.values().copied().max() {
+            self.peer_generation_floor = self.peer_generation_floor.max(max);
+        }
+    }
+
+    /// Drop per-device fences for devices the latest authoritative snapshot no
+    /// longer lists; the floor keeps fencing those devices.
+    fn retain_present_generations(&mut self) {
+        let present: HashSet<(SubjectId, DeviceId)> = self
+            .peers
+            .iter()
+            .map(|row| (row.subject_id.clone(), row.device_id.clone()))
+            .collect();
+        self.peer_generations.retain(|key, _| present.contains(key));
+    }
+
+    /// Recompute whole-room reachability from the per-device links.
+    ///
+    /// Only the `Connected`/`Alone` distinction is derivable from links.
+    /// `Connecting`/`Offline` are transport-level answers the daemon owns, so a
+    /// peer push must never fabricate liveness the client does not have.
+    fn recompute_reachability(&mut self) {
+        if !matches!(
+            self.reachability,
+            Reachability::Connected | Reachability::Alone
+        ) {
+            return;
+        }
+        let linked = self
+            .peers
+            .iter()
+            .any(|row| matches!(row.link, Link::Direct { .. } | Link::Relay { .. }));
+        self.reachability = if linked {
+            Reachability::Connected
+        } else {
+            Reachability::Alone
+        };
     }
 
     /// Build the current view stamped with `generation`.
