@@ -299,12 +299,23 @@ impl Core {
             }
             // Transfers are not a room-timeline concern (§11 non-goal).
             ClientEvent::Push(RoomPush::Transfer { .. }) => {}
+            // The gap names the position it starts *after*. Anything this room
+            // already applied above `from_pos` is inside the discontinuity and
+            // must be discarded and re-read; dropping `from_pos` here would
+            // resync from the room's own (too-high) watermark and silently keep
+            // a suffix the daemon just repudiated. `truncate_to` is a no-op when
+            // the watermark is already at or below `from_pos`.
             ClientEvent::Gap {
                 room_id,
+                from_pos,
                 to,
                 reason,
-                ..
-            } => self.trigger(&room_id, ResyncReason::Gap { reason, to }, None, actions),
+            } => self.trigger(
+                &room_id,
+                ResyncReason::Gap { reason, to },
+                Some(from_pos),
+                actions,
+            ),
             ClientEvent::ResyncRequired { room_id, from_pos } => self.trigger(
                 &room_id,
                 ResyncReason::ResyncRequiredByDaemon { from_pos },
@@ -402,9 +413,18 @@ impl Core {
             ReplyOutcome::Restart { reason, from_pos } => {
                 self.launch(&room_id, reason, Some(from_pos), actions)
             }
-            // A failed read parks the room in `NeedsReconcile`; the next liveness
-            // trigger relaunches it (bounded: no auto-spin).
-            ReplyOutcome::Failed(_) => {}
+            // A failed read parks the room in `NeedsReconcile`. A failed settle
+            // is still a settle (§R9): when a re-trigger accrued while the read
+            // was outstanding, relaunch it exactly once — otherwise a coalesced
+            // `resync_required` position is lost with no watermark encoding it,
+            // and the room keeps applying pushes over repudiated history. With
+            // no accrued trigger the room simply parks (bounded: no auto-spin).
+            ReplyOutcome::Failed { rerun, .. } => {
+                if let Some(reason) = rerun {
+                    let from_pos = from_pos_for(&reason);
+                    self.launch(&room_id, reason, from_pos, actions);
+                }
+            }
         }
     }
 
@@ -466,6 +486,15 @@ impl Core {
                 read_id: old,
             });
         }
+        // Fold in a cause parked by an earlier failure so its evidence survives
+        // (§R9). A parked `resync_required` names a discard position that no
+        // watermark encodes, so dropping it would silently strand repudiated
+        // positions in the timeline.
+        let reason = match room.take_pending_cause() {
+            Some(parked) => parked.coalesce(reason),
+            None => reason,
+        };
+        let from_pos_override = from_pos_override.or_else(|| from_pos_for(&reason));
         let request = room.begin_reconcile(epoch, read_id, reason.clone(), from_pos_override);
         actions.push(Action::EmitResyncRequired {
             room_id: room_id.clone(),
@@ -506,7 +535,7 @@ mod tests {
     use crate::error::CallError;
     use crate::event::{ClientEvent, RoomPush, State};
     use crate::reconcile::reason::ResyncReason;
-    use crate::reconcile::room::ReadReply;
+    use crate::reconcile::room::{ReadReply, ReadRequest};
     use crate::reconcile::view::RoomView;
     use crate::reconcile::ReconcileLimits;
 
@@ -587,6 +616,17 @@ mod tests {
     fn emitted_view(actions: &[Action]) -> Option<&RoomView> {
         actions.iter().find_map(|a| match a {
             Action::EmitView(v) => Some(v),
+            _ => None,
+        })
+    }
+
+    /// The `from_pos` of the first issued `stream.resync`, if any.
+    fn issued_resync_from(actions: &[Action]) -> Option<u64> {
+        actions.iter().find_map(|a| match a {
+            Action::IssueRead {
+                request: ReadRequest::Resync(resync),
+                ..
+            } => Some(resync.from_pos),
             _ => None,
         })
     }
@@ -1791,6 +1831,132 @@ mod tests {
             issue_read_count(&a),
             1,
             "liveness trigger after failure must relaunch"
+        );
+    }
+
+    /// A coalesced `resync_required` carries the daemon's discard position, and
+    /// **no watermark encodes it**. If a failed settle drops the pending re-run,
+    /// `truncate_to` never runs: the repudiated positions stay in the timeline
+    /// forever while the room keeps applying pushes and broadcasting `Converged`,
+    /// so the consumer observes a permanently wrong timeline and no error.
+    #[test]
+    fn a_coalesced_resync_required_survives_a_failed_read() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "a"), evt(2, "b"), evt(3, "c")],
+        );
+
+        // A gap launches an incremental resync from the watermark.
+        let a = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 3,
+            to: GapTo::Open,
+            reason: GapReason::Backpressure,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&a, &room);
+
+        // While it is outstanding the daemon repudiates back to pos 1.
+        let a = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+        assert_eq!(
+            issue_read_count(&a),
+            0,
+            "must coalesce into the in-flight read, not launch a second"
+        );
+
+        // The outstanding read fails on a still-live connection (a timeout
+        // settles with no lifecycle transition), so nothing else will relaunch.
+        let a = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Resync(Err(timeout_err())),
+        });
+
+        assert_eq!(
+            issue_read_count(&a),
+            1,
+            "the coalesced resync_required must relaunch on the failed settle"
+        );
+        assert!(
+            matches!(
+                resync_reason(&a),
+                Some(ResyncReason::ResyncRequiredByDaemon { from_pos: 1 })
+            ),
+            "the daemon's discard position must survive the failed settle, got {:?}",
+            resync_reason(&a)
+        );
+    }
+
+    /// A `gap` names the position it starts *after*. Positions this room already
+    /// applied above that are inside the discontinuity; resyncing from the room's
+    /// own (higher) watermark would silently retain a repudiated suffix.
+    #[test]
+    fn a_gap_re_reads_from_the_repudiated_position_not_the_watermark() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "a"), evt(2, "b"), evt(3, "c")],
+        );
+
+        let a = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::Backpressure,
+        }));
+
+        assert_eq!(
+            issued_resync_from(&a),
+            Some(1),
+            "must re-read from the gap's from_pos, not the watermark (3)"
+        );
+    }
+
+    /// A superseding launch replaces the whole reconciliation. Any trigger that
+    /// coalesced into it but has not run yet must be folded into the new cause —
+    /// a coalesced `resync_required` is the only carrier of its discard position.
+    #[test]
+    fn a_superseding_launch_keeps_the_coalesced_cause() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "a"), evt(2, "b"), evt(3, "c")],
+        );
+
+        // A gap starts a reconciliation from the watermark.
+        let _ = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 3,
+            to: GapTo::Open,
+            reason: GapReason::Backpressure,
+        }));
+        // The daemon repudiates back to pos 1; it coalesces into the in-flight run.
+        let a = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+        assert_eq!(issue_read_count(&a), 0, "coalesced, not launched");
+
+        // A reconnect supersedes the in-flight reconciliation.
+        let a = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: true,
+        });
+
+        assert_eq!(
+            issued_resync_from(&a),
+            Some(1),
+            "the superseding launch must still honour the daemon's discard position"
         );
     }
 }

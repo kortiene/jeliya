@@ -82,8 +82,20 @@ pub(crate) enum ReplyOutcome {
         from_pos: u64,
     },
     /// The read failed (disconnect/timeout/other); the room parks in
-    /// [`Phase::NeedsReconcile`] awaiting the next liveness trigger.
-    Failed(CallError),
+    /// [`Phase::NeedsReconcile`] carrying the coalesced cause.
+    ///
+    /// A failed settle **is** a settle (§R9), so any re-trigger that accrued
+    /// while the read was outstanding is returned here rather than dropped with
+    /// the reconciliation. This matters beyond liveness: a coalesced
+    /// [`ResyncReason::ResyncRequiredByDaemon`] carries the daemon's discard
+    /// position, and **no watermark encodes it** — losing it leaves repudiated
+    /// positions in the timeline forever while the room still looks converged.
+    Failed {
+        /// The classified read failure.
+        err: CallError,
+        /// The coalesced re-trigger to relaunch once, if one accrued.
+        rerun: Option<ResyncReason>,
+    },
 }
 
 /// The outcome of offering a live event push to a converged room.
@@ -354,13 +366,19 @@ impl RoomState {
     /// epoch and `read_id`, so this reply is the current reconciliation's.
     pub(crate) fn on_read_reply(&mut self, reply: ReadReply) -> ReplyOutcome {
         if !self.is_reconciling() {
-            return ReplyOutcome::Failed(CallError::Local(LocalError::Backend));
+            return ReplyOutcome::Failed {
+                err: CallError::Local(LocalError::Backend),
+                rerun: None,
+            };
         }
         // Mutate the outstanding reconciliation in a scoped borrow, deciding
         // what to do next; the borrow ends before any `&mut self` method call.
         let next = {
             let Phase::Reconciling(recon) = &mut self.phase else {
-                return ReplyOutcome::Failed(CallError::Local(LocalError::Backend));
+                return ReplyOutcome::Failed {
+                    err: CallError::Local(LocalError::Backend),
+                    rerun: None,
+                };
             };
             match reply {
                 ReadReply::Timeline(Ok(out)) => {
@@ -429,14 +447,48 @@ impl RoomState {
         }
     }
 
-    /// Park the room awaiting the next liveness trigger and report the failure.
+    /// Park the room carrying the coalesced cause and report the failure.
+    ///
+    /// The outstanding reconciliation's own cause and any re-trigger coalesced
+    /// into it while the read was in flight are folded into the parked reason,
+    /// so neither is lost with the dropped `Reconciling` box. The stronger cause
+    /// wins (§R9), which keeps a daemon-named discard position addressable.
     fn fail(&mut self, err: CallError) -> ReplyOutcome {
-        let reason = match &self.phase {
-            Phase::Reconciling(recon) => recon.reason.clone(),
-            _ => ResyncReason::Reconnect,
+        let (reason, rerun) = match &mut self.phase {
+            Phase::Reconciling(recon) => (recon.reason.clone(), recon.rerun.take()),
+            _ => (ResyncReason::Reconnect, None),
         };
-        self.phase = Phase::NeedsReconcile { reason };
-        ReplyOutcome::Failed(err)
+        let parked = match rerun.clone() {
+            Some(rerun) => reason.coalesce(rerun),
+            None => reason,
+        };
+        self.phase = Phase::NeedsReconcile {
+            reason: parked.clone(),
+        };
+        // Relaunch only when a re-trigger actually accrued: an unprovoked retry
+        // on every failure would auto-spin against a failing daemon.
+        ReplyOutcome::Failed {
+            err,
+            rerun: rerun.map(|_| parked),
+        }
+    }
+
+    /// Take the cause that is pending but not yet acted on, if any.
+    ///
+    /// Two cases carry evidence a fresh launch would otherwise destroy (§R9):
+    /// - **parked** — a previous read failed, so its cause was never satisfied;
+    /// - **superseded** — a reconciliation is in flight and has a coalesced
+    ///   `rerun` that has not run yet; replacing the phase drops it.
+    ///
+    /// The in-flight reconciliation's own `reason` is deliberately *not*
+    /// returned: it is already being acted on, and re-folding it would re-apply
+    /// a discard position the outstanding read had already honoured.
+    pub(crate) fn take_pending_cause(&mut self) -> Option<ResyncReason> {
+        match &mut self.phase {
+            Phase::NeedsReconcile { reason } => Some(reason.clone()),
+            Phase::Reconciling(recon) => recon.rerun.take(),
+            Phase::Converged => None,
+        }
     }
 
     /// Commit the accumulated baseline and buffered pushes into the durable
@@ -451,7 +503,12 @@ impl RoomState {
                 recon.peers.take(),
                 recon.epoch,
             ),
-            _ => return ReplyOutcome::Failed(CallError::Local(LocalError::Backend)),
+            _ => {
+                return ReplyOutcome::Failed {
+                    err: CallError::Local(LocalError::Backend),
+                    rerun: None,
+                }
+            }
         };
 
         // 1. Apply the authoritative baseline first (§R6.1). A hole inside the
