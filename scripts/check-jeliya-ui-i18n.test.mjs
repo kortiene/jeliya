@@ -1157,6 +1157,61 @@ fn view() -> Element {
   );
 });
 
+test('rule 3 plural: a PARTIALLY translated French plural is flagged per category', () => {
+  const en = `impl Catalog for En {
+    fn rooms(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("{n} room"),
+        PluralCategory::Other => format!("{n} rooms"),
+      }
+    }
+  }`;
+  // FR translated the One arm but left Other in English — English still ships for
+  // every count > 1.
+  const frPartial = `impl Catalog for Fr {
+    fn rooms(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("{n} salle"),
+        PluralCategory::Other => format!("{n} rooms"),
+      }
+    }
+  }`;
+  assert.ok(
+    checkCatalogs({
+      en: parseCatalog(en, 'en.rs'),
+      fr: parseCatalog(frPartial, 'fr.rs'),
+      allowlist: {},
+    }).some((f) => f.code === 'fr-untranslated'),
+    'a plural with one category still in English must be flagged',
+  );
+  // A language-NEUTRAL identical arm (`{n}`, no translatable word) does not, on its
+  // own, flag a plural whose translatable arm IS translated.
+  const enNeutral = `impl Catalog for En {
+    fn count(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("{n}"),
+        PluralCategory::Other => format!("{n} rooms"),
+      }
+    }
+  }`;
+  const frNeutral = `impl Catalog for Fr {
+    fn count(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("{n}"),
+        PluralCategory::Other => format!("{n} salles"),
+      }
+    }
+  }`;
+  assert.ok(
+    !checkCatalogs({
+      en: parseCatalog(enNeutral, 'en.rs'),
+      fr: parseCatalog(frNeutral, 'fr.rs'),
+      allowlist: {},
+    }).some((f) => f.code === 'fr-untranslated'),
+    'a language-neutral identical arm must not flag an otherwise-translated plural',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

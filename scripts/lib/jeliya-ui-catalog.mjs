@@ -467,22 +467,27 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
     // Byte-identical detection: for a PLURAL compare fr↔en by CATEGORY, not source
     // order — a harmless arm reordering must not hide that every French category is
     // still English. Otherwise compare the values directly.
-    let identical;
     if (
       frEntry.isPlural &&
       enEntry.isPlural &&
       frEntry.valuesByCategory &&
       enEntry.valuesByCategory
     ) {
-      identical = ['One', 'Other'].every(
+      // Check each PLURAL category independently: a category whose French value is
+      // byte-identical to English AND carries translatable text (not a language-
+      // neutral arm like `{n}`, which `identityExemption` clears) is untranslated —
+      // even if OTHER arms were translated. A PARTIAL translation (one arm French,
+      // another still English) must be caught, not only a wholly-English plural.
+      const untranslated = ['One', 'Other'].some(
         (cat) =>
-          frEntry.valuesByCategory[cat].join(SLOT) === enEntry.valuesByCategory[cat].join(SLOT),
+          frEntry.valuesByCategory[cat].join(SLOT) === enEntry.valuesByCategory[cat].join(SLOT) &&
+          !identityExemption(key, frEntry.valuesByCategory[cat].join(' '), allowlist),
       );
+      if (!untranslated) continue;
     } else {
-      identical = frEntry.values.join(SLOT) === enEntry.values.join(SLOT);
+      if (frEntry.values.join(SLOT) !== enEntry.values.join(SLOT)) continue;
+      if (identityExemption(key, frEntry.values.join(' '), allowlist)) continue;
     }
-    if (!identical) continue;
-    if (identityExemption(key, frEntry.values.join(' '), allowlist)) continue;
     findings.push(finding(fr.file, frEntry.line, 'fr-untranslated', `${key}: French value is byte-identical to English — translate it, or add it to IDENTICAL_ALLOWLIST with the reason it is right`, 'catalog'));
   }
   // Rule 3, stale side — an exemption that no longer exempts anything.
