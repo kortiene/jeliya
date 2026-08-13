@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "@playwright/test";
 
 import {
   expectCleanNetwork,
@@ -109,6 +109,22 @@ test("the skip link is the first tab stop and MOVES focus to the rooms landmark"
   expect(first.class).toContain("skip-link");
   expect(first.href).toBe("#rooms-nav");
 
+  // The FOCUSED skip link must become VISIBLE with usable geometry — the
+  // `:focus-visible` expansion of the hidden-until-focused (1×1 clip) control. Focus
+  // ORDER alone (above) still passes if that expansion rule regresses, but a keyboard
+  // user could not SEE the focused control, so measure its rendered box now that it
+  // holds focus: it must be far larger than the 1px clip and a usable target.
+  const focusedBox = await page.locator(".skip-link:focus").boundingBox();
+  expect(focusedBox, "the focused skip link must have a rendered box").not.toBeNull();
+  expect(
+    focusedBox!.width,
+    `focused skip link width ${focusedBox!.width} must expand past the 1px clip to a usable target`,
+  ).toBeGreaterThanOrEqual(24);
+  expect(
+    focusedBox!.height,
+    `focused skip link height ${focusedBox!.height} must expand past the 1px clip`,
+  ).toBeGreaterThanOrEqual(16);
+
   // Activating it moves FOCUS (not just scroll) into the rooms navigation
   // landmark: the nav carries tabindex="-1" exactly so it can receive it.
   await page.keyboard.press("Enter");
@@ -202,35 +218,80 @@ test("the connection live region announces the settled room count exactly once",
 // form controls (`input`/`textarea`/`select`, e.g. inside the Field primitive)
 // are interactive targets too, so they are measured alongside buttons and links —
 // a compact Field input that regresses below the 24px floor must be caught.
-async function assertTargetGeometry(page: Page, where: string): Promise<void> {
-  const targets = page.locator(
+// A control MAY use the documented compact exception (24–43px + a >=24px spacing
+// gap) ONLY if it is listed here with a reason. Empty today: every foundation
+// control meets the 44px compact floor, so a newly undersized isolated control is
+// caught rather than auto-excused by incidental surrounding space.
+const COMPACT_44_EXCEPTIONS: { selector: string; reason: string }[] = [];
+
+async function assertTargetGeometry(
+  page: Page,
+  where: string,
+  root: Page | Locator = page,
+): Promise<void> {
+  // Scope to `root` so a modal measurement covers only the dialog's own controls,
+  // not the shell controls BEHIND the backdrop — those are legitimately covered by
+  // the modal and would otherwise fail the hit-test.
+  const targets = root.locator(
     "button:visible, a:visible, input:visible, textarea:visible, select:visible, [role='button']:visible",
   );
-  const boxes = [];
+  const measured: { box: { x: number; y: number; width: number; height: number }; isException: boolean }[] = [];
   for (const target of await targets.all()) {
     const box = await target.boundingBox();
     // The 1px-clip visually-hidden pattern (skip links until focused) is not a
     // pointer target — it expands to full size exactly when focused — so it is
     // excluded from hit-testing.
-    if (box !== null && box.width > 2 && box.height > 2) {
-      boxes.push(box);
+    if (box === null || box.width <= 2 || box.height <= 2) {
+      continue;
     }
+    // HIT-TEST, do not merely trust the bounding box: an overlay covering the
+    // control still lets `boundingBox()` report its full size, so a 44×44 box could
+    // deliver taps to an overlay. `elementFromPoint` at the control's centre must
+    // resolve to the control or a descendant, or the target is not actually reachable.
+    const reachable = await target.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      // Reachable if the centre resolves to the control, a DESCENDANT (a
+      // pseudo-element hit reports its originating element), or an ANCESTOR (the
+      // control's centre sits on padding/background that hit-tests to a container it
+      // is inside) — matching the retiring check. A FOREIGN element means an overlay.
+      return (
+        hit !== null &&
+        (el === hit || (hit instanceof Node && el.contains(hit)) || (hit instanceof Node && hit.contains(el)))
+      );
+    });
+    expect(reachable, `${where}: a target is covered — a tap at its centre does not reach it`).toBe(true);
+    let isException = false;
+    for (const ex of COMPACT_44_EXCEPTIONS) {
+      if (await target.evaluate((el, sel) => el.matches(sel), ex.selector)) {
+        isException = true;
+        break;
+      }
+    }
+    measured.push({ box, isException });
   }
-  expect(boxes.length, `${where}: at least one interactive control`).toBeGreaterThan(0);
-  for (const box of boxes) {
+  expect(measured.length, `${where}: at least one interactive control`).toBeGreaterThan(0);
+  for (const { box } of measured) {
     expect(box.width, `${where}: target width ${box.width} under the 24px floor`).toBeGreaterThanOrEqual(24);
     expect(box.height, `${where}: target height ${box.height} under the 24px floor`).toBeGreaterThanOrEqual(24);
   }
-  for (let i = 0; i < boxes.length; i += 1) {
-    const a = boxes[i];
+  for (let i = 0; i < measured.length; i += 1) {
+    const { box: a, isException } = measured[i];
     if (a.width >= 44 && a.height >= 44) {
       continue;
     }
-    for (let j = 0; j < boxes.length; j += 1) {
+    // A sub-44px target is allowed ONLY as a DOCUMENTED exception — the compact
+    // floor is 44px by default, so an undersized isolated control cannot regress in
+    // under incidental spacing.
+    expect(
+      isException,
+      `${where}: a ${a.width}×${a.height} target is below the 44px compact floor and is not a documented exception (add it to COMPACT_44_EXCEPTIONS with a reason, or enlarge it)`,
+    ).toBe(true);
+    for (let j = 0; j < measured.length; j += 1) {
       if (i === j) {
         continue;
       }
-      const b = boxes[j];
+      const b = measured[j].box;
       // The GAP between the rectangle BOUNDARIES on whichever axis separates them,
       // NOT center distance: two 24px controls touching edge-to-edge have centers
       // 24px apart yet ZERO breathing room. Overlap on an axis contributes a
@@ -240,7 +301,7 @@ async function assertTargetGeometry(page: Page, where: string): Promise<void> {
       const gap = Math.max(vertical, horizontal);
       expect(
         gap,
-        `${where}: sub-44px target needs a 24px gap from its neighbor's boundary (got ${gap.toFixed(1)}px)`,
+        `${where}: sub-44px exception needs a 24px gap from its neighbor's boundary (got ${gap.toFixed(1)}px)`,
       ).toBeGreaterThanOrEqual(24);
     }
   }
@@ -258,22 +319,49 @@ test("visible interactive targets meet the compact target-size floors", async ({
   // not geometry — so a dialog control could regress below 24px or crowd a neighbor
   // while this required context stays green.
   await openDiagnostics(page);
-  await assertTargetGeometry(page, "diagnostics dialog");
+  await assertTargetGeometry(page, "diagnostics dialog", page.locator("#dialog-backdrop"));
 });
 
-test("reduced motion is forced for the whole a11y matrix", async ({ page }) => {
+test("reduced motion disables the reconnecting-status animation", async ({ page }) => {
   await gotoReadyShell(page);
 
-  // Every a11y project runs with reducedMotion: 'reduce' (§7). The foundation
-  // shell carries no motion-bearing element yet — the three animated elements
-  // in styles.css are React chat surfaces — so the honest assertion is that
-  // the context every foundation element renders under IS reduced motion;
-  // the branch-difference proof starts existing when a foundation element
-  // carries motion.
-  const reduced = await page.evaluate(
-    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  expect(reduced).toBe(true);
+  // Every a11y project runs with reducedMotion: 'reduce' (§7).
+  expect(
+    await page.evaluate(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches),
+  ).toBe(true);
+
+  // The foundation renders a PULSING dot for the reconnecting (Interrupted) status
+  // (`.conn-badge.conn-reconnecting .dot { animation: pulse … }`, with a
+  // reduced-motion `animation: none` override). The settled shell shows Ready, and
+  // there is no e2e hook to drive Interrupted, so mount the EXACT canonical markup
+  // to exercise the real CSS rule — then compare the COMPUTED animation under both
+  // media states. Asserting only the emulated media query (above) would still pass
+  // if the reduced-motion override regressed.
+  await page.evaluate(() => {
+    const badge = document.createElement("div");
+    badge.className = "conn-badge conn-reconnecting";
+    badge.id = "e2e-motion-probe";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    badge.appendChild(dot);
+    document.body.appendChild(badge);
+  });
+  const dot = page.locator("#e2e-motion-probe .dot");
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(
+    await dot.evaluate((el) => getComputedStyle(el).animationName),
+    "the reconnecting dot must NOT animate under reduced motion",
+  ).toBe("none");
+
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  expect(
+    await dot.evaluate((el) => getComputedStyle(el).animationName),
+    "the reconnecting dot DOES pulse when motion is allowed (so the override above is real)",
+  ).toBe("pulse");
+
+  // Restore the matrix-wide reduced-motion default for any later assertions.
+  await page.emulateMedia({ reducedMotion: "reduce" });
 });
 
 test("the document title names the destination", async ({ page }) => {

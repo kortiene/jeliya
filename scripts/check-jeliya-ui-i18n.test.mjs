@@ -1212,6 +1212,152 @@ test('rule 3 plural: a PARTIALLY translated French plural is flagged per categor
   );
 });
 
+test('literal scan: a dynamic aria-describedby must CONSTRUCT {id}-hint', () => {
+  // References the id ITSELF (no -hint).
+  const bare = `
+fn view() -> Element {
+    rsx! { Field { id: ids.email.clone(), label: "Email", hint: "x",
+        input { id: ids.email.clone(), aria_describedby: ids.email.clone() } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', bare).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a describedby that is the id itself (no -hint) must be flagged',
+  );
+  // A PREFIX of the id must not satisfy it.
+  const prefix = `
+fn view() -> Element {
+    rsx! { Field { id: ids.email.clone(), label: "Email", hint: "x",
+        input { id: ids.email.clone(), aria_describedby: format!("{}-hint", ids.email_backup) } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', prefix).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a prefix (ids.email_backup) must not satisfy the hint check',
+  );
+  // The correct construction passes.
+  const ok = `
+fn view() -> Element {
+    rsx! { Field { id: ids.email.clone(), label: "Email", hint: "x",
+        input { id: ids.email.clone(), aria_describedby: format!("{}-hint", ids.email) } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', ok).some((f) => f.code === 'form-control-hint-unassociated'),
+    'format!("{}-hint", ids.email) must be accepted',
+  );
+});
+
+test('literal scan: two controls in one Field are flagged as duplicate', () => {
+  const two = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", input { id: "email" } select { id: "email" } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', two).some((f) => f.code === 'form-control-duplicate'),
+    'a Field wrapping two controls must be flagged',
+  );
+  const one = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email", input { id: "email" } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', one).some((f) => f.code === 'form-control-duplicate'),
+    'a Field with one control is clean',
+  );
+});
+
+test('literal scan: a commented-out hint does not demand aria-describedby', () => {
+  const source = `
+fn view() -> Element {
+    rsx! { Field { id: "email", label: "Email",
+        // hint: Some(catalog_help),
+        input { id: "email" } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', source).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a commented-out hint must not require aria-describedby',
+  );
+});
+
+test('rule 3: a let-bound helper literal does not mask untranslated returned copy', () => {
+  const en = `impl Catalog for En {
+    fn empty(&self) -> &'static str { "No rooms yet" }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn empty(&self) -> &'static str { let _note = "Aucun salon"; "No rooms yet" }
+  }`;
+  assert.ok(
+    checkCatalogs({
+      en: parseCatalog(en, 'en.rs'),
+      fr: parseCatalog(fr, 'fr.rs'),
+      allowlist: {},
+    }).some((f) => f.code === 'fr-untranslated'),
+    'the RETURNED English value must be flagged despite a French let-bound literal',
+  );
+});
+
+test('literal scan: copy in a call-plus-method-chain expression child is flagged', () => {
+  const source = `
+fn view() -> Element {
+    rsx! { div { {Some("Delete account").unwrap()} } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', source).some(
+      (f) => f.code === 'rust-text' && /Delete account/.test(f.message),
+    ),
+    'a literal in {Some("…").unwrap()} must be flagged',
+  );
+});
+
+test('literal scan: a role value a primitive does not own is flagged in its file', () => {
+  // live_region.rs owns role="status" but NOT role="dialog".
+  const rogue = `
+fn view() -> Element {
+    rsx! { div { role: "dialog", "x" } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('components/live_region.rs', rogue).some((f) => f.code === 'raw-semantic'),
+    'role="dialog" in live_region.rs (owns role=status) must be flagged',
+  );
+  const owned = `
+fn view() -> Element {
+    rsx! { div { role: "status", "x" } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('components/live_region.rs', owned).some((f) => f.code === 'raw-semantic'),
+    'role="status" is owned by live_region.rs',
+  );
+});
+
+test('rule 3: one untranslated branch of a nonplural method is flagged', () => {
+  const en = `impl Catalog for En {
+    fn month(&self, m: u8) -> &'static str {
+      match m { 1 => "January", 8 => "August", _ => "?" }
+    }
+  }`;
+  // FR translated January but left August in English.
+  const fr = `impl Catalog for Fr {
+    fn month(&self, m: u8) -> &'static str {
+      match m { 1 => "Janvier", 8 => "August", _ => "?" }
+    }
+  }`;
+  assert.ok(
+    checkCatalogs({
+      en: parseCatalog(en, 'en.rs'),
+      fr: parseCatalog(fr, 'fr.rs'),
+      allowlist: {},
+    }).some((f) => f.code === 'fr-untranslated'),
+    'a single English branch (August) must be flagged even when others are translated',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

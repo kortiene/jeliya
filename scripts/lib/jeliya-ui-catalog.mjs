@@ -281,7 +281,23 @@ export function parseCatalog(source, file) {
       errors.push(finding(file, lineOf(source, open), 'catalog-unparsed', `method ${name} body is unterminated`, 'catalog'));
       continue;
     }
-    const parts = literals.filter((l) => l.start >= open && l.end <= close);
+    // A literal ASSIGNED to a local `let` binding is NOT the value the method
+    // returns — a helper like `let _note = "Aucun salon"; "No rooms yet"` would
+    // otherwise pollute the arm values and let the untranslated comparison miss the
+    // English text actually rendered. Exclude a literal whose statement (back to the
+    // enclosing `;`/`{`) begins with `let` and whose immediately-preceding non-space
+    // char is the binding `=`.
+    const isLetBound = (l) => {
+      let i = l.start - 1;
+      while (i >= open && /\s/.test(skeleton[i])) i -= 1;
+      if (skeleton[i] !== '=') return false;
+      let j = i - 1;
+      while (j >= open && skeleton[j] !== ';' && skeleton[j] !== '{') j -= 1;
+      return /\blet\b/.test(skeleton.slice(j + 1, l.start));
+    };
+    const parts = literals.filter(
+      (l) => l.start >= open && l.end <= close && !isLetBound(l),
+    );
     const isPlural = /\bPluralCategory\b/.test(params);
     if (entries.has(name)) {
       errors.push(finding(file, lineOf(source, open), 'catalog-duplicate-key', `duplicate method: ${name}`, 'catalog'));
@@ -485,8 +501,16 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
       );
       if (!untranslated) continue;
     } else {
-      if (frEntry.values.join(SLOT) !== enEntry.values.join(SLOT)) continue;
-      if (identityExemption(key, frEntry.values.join(' '), allowlist)) continue;
+      // Non-plural: compare each RETURN BRANCH independently (a method like
+      // `month_name` returns a different literal per match arm). A branch whose
+      // French value is byte-identical to English AND carries translatable text is
+      // untranslated — even if the OTHER branches were translated, so the aggregate
+      // arrays differ. A language-neutral branch is cleared by `identityExemption`.
+      const untranslated = frEntry.values.some(
+        (frVal, i) =>
+          frVal === enEntry.values[i] && !identityExemption(key, frVal, allowlist),
+      );
+      if (!untranslated) continue;
     }
     findings.push(finding(fr.file, frEntry.line, 'fr-untranslated', `${key}: French value is byte-identical to English — translate it, or add it to IDENTICAL_ALLOWLIST with the reason it is right`, 'catalog'));
   }
@@ -600,8 +624,12 @@ export function slotsEqual(a, b) {
  *  a file owns; the `dialog` ELEMENT is owned by NO file (the Dialog primitive
  *  renders `div role="dialog"`, not a `<dialog>`), so it is always flagged. */
 const PRIMITIVE_OWNERSHIP = new Map([
-  ['components/dialog.rs', new Set(['role', 'aria-modal'])],
-  ['components/live_region.rs', new Set(['role', 'aria-live'])],
+  // `role` is VALUE-scoped (`role=<value>`): a primitive owns only the exact role
+  // it renders, so an ad-hoc `role: "dialog"` in `live_region.rs` (which owns
+  // `role: "status"`) is still flagged. `aria-modal`/`aria-live`/`nav` are owned by
+  // NAME (presence): the primitive owns the whole attribute/element it renders.
+  ['components/dialog.rs', new Set(['role=dialog', 'aria-modal'])],
+  ['components/live_region.rs', new Set(['role=status', 'aria-live'])],
   ['components/nav.rs', new Set(['nav'])],
 ]);
 
@@ -733,7 +761,12 @@ function callIsExpressionChild(skeleton, openParenIndex) {
     }
   }
   while (j < skeleton.length && /\s/.test(skeleton[j])) j += 1;
-  return skeleton[j] === '}';
+  if (skeleton[j] === '}') return true;
+  // A trailing method chain may CONVERT the call and still close the slot —
+  // `{Some("Delete account").unwrap()}` / `{maybe("…").unwrap_or_default()}` is one
+  // expression child, so its inner literal is copy, not a call argument to exempt.
+  if (skeleton[j] === '.') return methodChainClosesSlot(skeleton, j);
+  return false;
 }
 
 /** The name bound at the `=` at `eqIndex`, if it is a `let [mut] <name> = …`,
@@ -1066,15 +1099,21 @@ export function scanComponentLiterals(file, source) {
   // owns that specific attribute. Names matched from the raw source (a quoted
   // `"aria-live"` has its content blanked in the skeleton).
   for (const attr of RESERVED_SEMANTIC_ATTRS) {
+    // PRESENCE ownership (`aria-live`/`aria-modal`): the whole attribute is exempt
+    // in a file that owns it. `role` is not name-owned — it is checked per value.
     if (owned.has(attr)) continue;
     // Match BOTH spellings of an ARIA attribute: the HTML hyphen form
     // (`aria-live`, quoted in RSX) AND Dioxus's identifier alias (`aria_live:`),
     // which renders identically — otherwise the underscore form bypasses the
-    // reserved-attribute gate.
+    // reserved-attribute gate. `\s*:\s*` reaches the value for the per-value check.
     const pat = attr.replace(/-/g, '[-_]');
-    const re = new RegExp(`(?:\\b${pat}\\b|"${pat}")\\s*:`, 'g');
+    const re = new RegExp(`(?:\\b${pat}\\b|"${pat}")\\s*:\\s*`, 'g');
     for (let m = re.exec(source); m; m = re.exec(source)) {
       if (m.index >= limit || !inRsx(m.index) || inComment(m.index)) continue;
+      // VALUE-scoped ownership: a primitive owns only the exact `role` it renders
+      // (`role=status`), so an ad-hoc `role: "dialog"` in that file is still flagged.
+      const valMatch = /^"([^"]*)"/.exec(source.slice(m.index + m[0].length));
+      if (valMatch && owned.has(`${attr}=${valMatch[1]}`)) continue;
       const line = lineOf(source, m.index);
       if (exempt(line)) continue;
       findings.push(finding(file, line, 'raw-semantic', `raw \`${attr}\` must come from a shared primitive (Decision-6), not ad-hoc markup`, 'literals'));
@@ -1117,17 +1156,22 @@ export function scanComponentLiterals(file, source) {
   // depth and quotes (with backslash escapes) so a top-level `,`/`}` terminates but
   // a comma NESTED in a call does not. Compared as raw text (a literal keeps its
   // quotes, so a literal id and an expression id never spuriously match).
-  const firstAttrValue = (from, to, headSrc) => {
+  // `source[from..to)` with every comment range blanked, so a commented `//
+  // id: "email"` / `// hint: Some(…)` is not read as live markup (the id / hint
+  // association must compare real attributes only — the exclusion the
+  // reserved-attribute and nav paths already apply).
+  const commentMaskedSlice = (from, to) => {
     let slice = source.slice(from, to);
-    // Blank comment ranges inside the span so a commented `// id: "email"` is not
-    // read as a real attribute (the id / hint association must compare live markup
-    // only — same exclusion the reserved-attribute and nav paths apply).
     for (const { start, end } of comments) {
       if (end <= from || start >= to) continue;
       const a = Math.max(start, from) - from;
       const b = Math.min(end, to) - from;
       slice = slice.slice(0, a) + ' '.repeat(b - a) + slice.slice(b);
     }
+    return slice;
+  };
+  const firstAttrValue = (from, to, headSrc) => {
+    const slice = commentMaskedSlice(from, to);
     const head = new RegExp(headSrc).exec(slice);
     if (!head) return null;
     const startVal = head.index + head[0].length;
@@ -1155,6 +1199,10 @@ export function scanComponentLiterals(file, source) {
   // underscore alias Dioxus renders identically), read as a balanced expression.
   const describedbyValue = (from, to) =>
     firstAttrValue(from, to, '(?:"aria-describedby"|aria[-_]describedby)\\s*:\\s*');
+  // How many controls sit inside each `Field` range (keyed by its open index): a
+  // Field renders ONE `label[for]`, so two controls sharing the Field's id produce
+  // duplicate ids and an ambiguous label — flagged after the loop.
+  const controlsPerField = new Map();
   for (const el of RESERVED_FORM_CONTROLS) {
     const re = new RegExp(`\\b${el}\\s*\\{`, 'g');
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
@@ -1167,6 +1215,7 @@ export function scanComponentLiterals(file, source) {
         findings.push(finding(file, line, 'raw-form-control', `raw \`${el}\` must be wrapped by the \`Field\` primitive (§5.6) for label association, not rendered ad-hoc (Decision-6)`, 'literals'));
         continue;
       }
+      controlsPerField.set(field[0], (controlsPerField.get(field[0]) ?? 0) + 1);
       // Inside a `Field`, but nesting alone is not enough: the Field renders
       // `label[for="{id}"]`, so the CONTROL must set the SAME `id` or the label
       // names nothing. Compare the Field's own `id` (its props precede the child
@@ -1185,7 +1234,9 @@ export function scanComponentLiterals(file, source) {
       // A LITERAL Field id is checked exactly; an EXPRESSION id renders a dynamic
       // `{id}-hint`, so its association must be dynamic AND reference the Field id's
       // own base identifier — a literal or an expression naming a DIFFERENT id fails.
-      const fieldProps = source.slice(field[0], controlOpen);
+      // Comment-masked so a commented `// hint: Some(catalog_help)` does not read
+      // as a real hint and falsely demand `aria-describedby` on a valid control.
+      const fieldProps = commentMaskedSlice(field[0], controlOpen);
       const hasHint = /\bhint\s*:\s*(?!None\b)/.test(fieldProps);
       if (fieldId !== null && hasHint) {
         const describedby = describedbyValue(controlOpen, controlEnd);
@@ -1210,11 +1261,26 @@ export function scanComponentLiterals(file, source) {
           // any trailing conversion calls (`.clone()`/`.into()`/`.to_string()`…)
           // stripped, so `ids.email` must appear in the describedby verbatim.
           const idCore = fieldId.replace(/(\s*\.\s*\w+\s*\(\s*\))+\s*$/, '').trim();
-          if (idCore && !describedby.includes(idCore)) {
-            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\`'s \`aria-describedby\` (\`${describedby}\`) must reference the Field id's own \`{id}-hint\` (derived from \`${idCore}\`); it references a different id, so the hint is unassociated`, 'literals'));
+          // The dynamic value must CONSTRUCT `{idCore}-hint`, not merely contain
+          // idCore: require the `-hint` suffix AND idCore as a WHOLE reference — so
+          // `aria_describedby: ids.email.clone()` (the id itself, no `-hint`) and a
+          // prefix like `ids.email_backup` both fail.
+          const escaped = idCore.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const namesHint =
+            describedby.includes('-hint') && new RegExp(`${escaped}(?![\\w.])`).test(describedby);
+          if (idCore && !namesHint) {
+            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\`'s \`aria-describedby\` (\`${describedby}\`) must construct the Field id's own \`{id}-hint\` (from \`${idCore}\` + \`-hint\`); it does not, so the hint is unassociated`, 'literals'));
           }
         }
       }
+    }
+  }
+  // A `Field` renders exactly one `label[for="{id}"]`; two controls in one Field
+  // both set that id, so the DOM has DUPLICATE ids and the label resolves
+  // ambiguously (the second control ends up unnamed). Enforce one control per Field.
+  for (const [open, count] of controlsPerField) {
+    if (count > 1) {
+      findings.push(finding(file, lineOf(source, open), 'form-control-duplicate', `a \`Field\` must wrap exactly ONE control; found ${count} — duplicate ids make its \`label[for]\` ambiguous and leave the extra control(s) unnamed (§5.6)`, 'literals'));
     }
   }
 
