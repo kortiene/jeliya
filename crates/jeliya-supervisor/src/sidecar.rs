@@ -690,8 +690,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         match result {
             Err(SupervisorError::ShutdownRpcFailed(msg)) => {
-                assert!(!msg.contains(token), "the bearer token must be redacted; got: {msg}");
-                assert!(msg.contains("<redacted>"), "the token should be replaced with <redacted>; got: {msg}");
+                assert!(
+                    !msg.contains(token),
+                    "the bearer token must be redacted; got: {msg}"
+                );
+                assert!(
+                    msg.contains("<redacted>"),
+                    "the token should be replaced with <redacted>; got: {msg}"
+                );
             }
             other => panic!("expected ShutdownRpcFailed, got: {other:?}"),
         }
