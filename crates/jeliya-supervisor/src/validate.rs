@@ -322,32 +322,63 @@ pub(crate) async fn wait_health_dark(
 /// before it may safely reuse or remove the data dir (the P2 the review names:
 /// a bare health-dark check reports `Graceful` while the daemon is still writing
 /// state and holding its lock). Returns `true` if it was removed in time.
+/// Run a (potentially stalled-mount) FS `probe` on a DETACHED OS thread, bounded by
+/// `budget`; `None` on timeout OR a thread-creation failure. NOT `spawn_blocking`:
+/// Tokio JOINS its blocking pool on `Runtime::drop`, so a probe wedged on a hung
+/// NFS/FUSE mount would turn a timed-out resolve/adopt/shutdown into an
+/// application-shutdown hang. A plain thread is not joined — the OS reaps it at
+/// process exit. `Builder::spawn` maps a thread-creation failure to `None` rather
+/// than panicking. The probe runs with NO runtime context, so it uses `std::time`
+/// (not `tokio::time`) for any internal deadline.
+async fn bounded_probe<T, F>(name: &'static str, budget: Duration, probe: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || {
+            let _ = tx.send(probe());
+        })
+        .is_err()
+    {
+        return None;
+    }
+    match tokio::time::timeout(budget, rx).await {
+        Ok(Ok(value)) => Some(value),
+        _ => None,
+    }
+}
+
 pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> bool {
     let path = portfile::portfile_path(data_dir);
-    // Poll OFF the async executor: `try_exists` is a pathname `stat`, which blocks
-    // indefinitely on a stalled NFS/FUSE mount, so an inline poll could hang an
-    // executor worker past `budget`. The blocking task polls with its own deadline;
-    // the outer `timeout` bounds the CALLER even if a single `stat` wedges.
-    let poll = tokio::task::spawn_blocking(move || {
-        let deadline = std::time::Instant::now() + budget;
-        loop {
-            // Check the DEADLINE before accepting absence: accepting a removal
-            // observed only past it would report `Graceful` for cleanup that
-            // finished outside the budget.
-            if std::time::Instant::now() >= deadline {
-                return false;
+    // Poll OFF the async executor (a detached thread): `try_exists` is a pathname
+    // `stat`, which blocks indefinitely on a stalled NFS/FUSE mount. The probe polls
+    // with its own std-clock deadline; the outer `timeout` bounds the CALLER even if
+    // a single `stat` wedges (the thread leaks but shutdown is not hung).
+    matches!(
+        bounded_probe("jeliya-portfile-removed", budget, move || {
+            let deadline = std::time::Instant::now() + budget;
+            loop {
+                // Check the DEADLINE before accepting absence: a removal observed
+                // only past it is out-of-budget cleanup, not `Graceful`.
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                // `try_exists`, not `Path::exists`: the latter maps a stat ERROR (an
+                // unreadable dir mid-shutdown) to `false` — the same as genuine
+                // absence — which would report cleanup complete when it may not be.
+                // Only a confirmed `Ok(false)` counts as removed; a stat error waits.
+                if matches!(path.try_exists(), Ok(false)) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
             }
-            // `try_exists`, not `Path::exists`: the latter maps a stat ERROR (an
-            // unreadable dir mid-shutdown) to `false` — the same as genuine absence
-            // — which would report cleanup complete when it may not be. Only a
-            // confirmed `Ok(false)` counts as removed; a stat error keeps waiting.
-            if matches!(path.try_exists(), Ok(false)) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    });
-    matches!(tokio::time::timeout(budget, poll).await, Ok(Ok(true)))
+        })
+        .await,
+        Some(true)
+    )
 }
 
 /// A bounded, off-executor "is the portfile present?" probe. `try_exists` is a
@@ -359,14 +390,18 @@ pub(crate) async fn wait_portfile_removed(data_dir: &Path, budget: Duration) -> 
 pub(crate) async fn portfile_present(data_dir: &Path, deadline: tokio::time::Instant) -> bool {
     let path = portfile::portfile_path(data_dir);
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-    let probe = tokio::task::spawn_blocking(move || {
-        // Reject a result observed AFTER the deadline: tokio's `timeout` polls the
-        // joined probe BEFORE its timer, so at a zero/exhausted budget a completed
-        // `stat` could otherwise be accepted out-of-budget. Gate on the deadline
-        // inside the task, after the (possibly slow) `stat`.
-        matches!(path.try_exists(), Ok(true)) && tokio::time::Instant::now() < deadline
-    });
-    matches!(tokio::time::timeout(budget, probe).await, Ok(Ok(true)))
+    matches!(
+        bounded_probe("jeliya-portfile-present", budget, move || {
+            // Reject a result observed AFTER the budget: `timeout` polls the ready
+            // probe BEFORE its timer, so at a zero/exhausted budget a completed `stat`
+            // could otherwise be accepted out-of-budget. Gate on a std-clock deadline
+            // inside the probe, after the (possibly slow) `stat`.
+            let std_deadline = std::time::Instant::now() + budget;
+            matches!(path.try_exists(), Ok(true)) && std::time::Instant::now() < std_deadline
+        })
+        .await,
+        Some(true)
+    )
 }
 
 /// A bounded, off-executor "is the portfile CONFIRMED absent?" probe — the
@@ -379,13 +414,17 @@ pub(crate) async fn portfile_present(data_dir: &Path, deadline: tokio::time::Ins
 pub(crate) async fn portfile_absent(data_dir: &Path, deadline: tokio::time::Instant) -> bool {
     let path = portfile::portfile_path(data_dir);
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-    let probe = tokio::task::spawn_blocking(move || {
-        // See `portfile_present`: reject an absence observed after the deadline so
-        // `shutdown`/`stop_adopted` cannot report `Graceful` for an out-of-budget
-        // exit.
-        matches!(path.try_exists(), Ok(false)) && tokio::time::Instant::now() < deadline
-    });
-    matches!(tokio::time::timeout(budget, probe).await, Ok(Ok(true)))
+    matches!(
+        bounded_probe("jeliya-portfile-absent", budget, move || {
+            // See `portfile_present`: reject an absence observed after the budget so
+            // `shutdown`/`stop_adopted` cannot report `Graceful` for an out-of-budget
+            // exit.
+            let std_deadline = std::time::Instant::now() + budget;
+            matches!(path.try_exists(), Ok(false)) && std::time::Instant::now() < std_deadline
+        })
+        .await,
+        Some(true)
+    )
 }
 
 /// The daemon's advisory lock file name, matching `jeliyad`'s `LOCKFILE_NAME`.
@@ -449,20 +488,18 @@ pub(crate) async fn snapshot_held_lock(
 ) -> Option<fd_lock::RwLock<std::fs::File>> {
     let dir = data_dir.to_path_buf();
     let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-    let join = tokio::task::spawn_blocking(move || {
+    // A stalled open/probe (hung mount) or a thread-creation failure yields `None` —
+    // fail closed: the exit proof could not be captured within the budget.
+    bounded_probe("jeliya-lock-snapshot", budget, move || {
         let mut handle = open_lock_handle(&dir);
         if lock_handle_is_held(handle.as_mut()) {
             handle
         } else {
             None
         }
-    });
-    match tokio::time::timeout(budget, join).await {
-        Ok(Ok(handle)) => handle,
-        // A stalled open/probe (hung mount) or a panicked blocking task — fail
-        // closed: the exit proof could not be captured within the budget.
-        _ => None,
-    }
+    })
+    .await
+    .flatten()
 }
 
 /// Poll a PRE-OPENED lock handle until it can be taken exclusively — i.e. the
@@ -497,33 +534,31 @@ pub(crate) async fn wait_lock_handle_released(
     let Some(mut lock) = handle else {
         return false;
     };
-    let poll = tokio::task::spawn_blocking(move || {
-        let deadline = std::time::Instant::now() + budget;
-        loop {
-            // Check the DEADLINE before attempting/accepting the lock, every
-            // iteration: a release observed only AFTER the budget expired is an
-            // out-of-budget exit and must NOT be reported as released (→ `Graceful`).
-            // Accepting `try_write` first would let a late release win — and the
-            // outer `timeout` cannot close that race, because tokio's `Timeout`
-            // polls the joined future BEFORE its timer, so a completed blocking task
-            // (especially at a zero remaining budget) wins even when both are ready.
-            if std::time::Instant::now() >= deadline {
-                return false;
+    matches!(
+        bounded_probe("jeliya-lock-release", budget, move || {
+            let deadline = std::time::Instant::now() + budget;
+            loop {
+                // Check the DEADLINE before attempting/accepting the lock, every
+                // iteration: a release observed only AFTER the budget expired is an
+                // out-of-budget exit and must NOT be reported released (→ `Graceful`).
+                // Accepting `try_write` first would let a late release win — and the
+                // outer `timeout` cannot close that race, because tokio's `Timeout`
+                // polls the ready future BEFORE its timer, so a completed probe
+                // (especially at a zero remaining budget) wins even when both are ready.
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                // A successful exclusive lock means the daemon released it; the guard
+                // drops immediately, so the brief hold does not block the next start.
+                if lock.try_write().is_ok() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            // A successful exclusive lock means the daemon released it; the guard
-            // drops immediately, so the brief hold does not block the next start.
-            if lock.try_write().is_ok() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    });
-    match tokio::time::timeout(budget, poll).await {
-        Ok(Ok(released)) => released,
-        // A probe wedged on a stalled lock manager, or the task panicked — fail
-        // closed (unproven release → the caller reports `ShutdownTimedOut`).
-        _ => false,
-    }
+        })
+        .await,
+        Some(true)
+    )
 }
 
 /// Poll until the process `pid` has EXITED — `kill(pid, 0)` (signal 0, an existence
@@ -548,14 +583,18 @@ pub(crate) async fn wait_process_exited(pid: u32, budget: Duration) -> bool {
         let target = Pid::from_raw(valid.get());
         let deadline = tokio::time::Instant::now() + budget;
         loop {
+            // Check the DEADLINE first, every iteration: an exit observed only after
+            // the budget expired is out-of-budget and must NOT report `Graceful`
+            // (the lock-release poll orders it the same way). At a zero remaining
+            // budget this returns `false` before probing at all.
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
             // A zombie still occupies the PID (`kill` → `Ok`), so this reports exit
             // only once the process is fully gone — strictly AFTER it released the
             // lock, so it never promises `Graceful` prematurely.
             if matches!(kill(target, None), Err(Errno::ESRCH)) {
                 return true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return false;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

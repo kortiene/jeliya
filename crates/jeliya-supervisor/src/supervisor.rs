@@ -730,22 +730,26 @@ impl Supervisor {
                 // and startup would continue past the deadline; the stamp lets us
                 // REJECT and clean up such a late child instead.
                 let produced_deadline = std::time::Instant::now() + remaining;
-                let (tx, rx) =
-                    tokio::sync::oneshot::channel::<(Command, std::io::Result<Child>, bool)>();
+                let (tx, rx) = tokio::sync::oneshot::channel::<(
+                    Command,
+                    std::io::Result<process::SpawnGuard>,
+                    bool,
+                )>();
                 let rt_handle = tokio::runtime::Handle::current();
                 let worker = std::thread::Builder::new()
                     .name("jeliya-daemon-spawn".to_owned())
                     .spawn(move || {
                         let _rt = rt_handle.enter();
-                        let result = cmd.spawn();
+                        let result = cmd.spawn().map(process::SpawnGuard::new);
                         let late = std::time::Instant::now() >= produced_deadline;
-                        // If the receiver is gone (the caller timed out) AND the spawn
-                        // produced a live child, reclaim it and tear down its group so
-                        // it cannot survive. A send that succeeds, or a returned spawn
-                        // ERROR (no child), needs nothing here.
-                        if let Err((_cmd, Ok(late_child), _late)) = tx.send((cmd, result, late)) {
-                            process::force_kill_group_blocking(late_child);
-                        }
+                        // Hand the outcome over. The `SpawnGuard` tears the child's
+                        // group down on ANY drop it is not consumed by: a oneshot
+                        // `send` acknowledges only that the value was QUEUED, not that
+                        // the caller consumed it, so if the receiver is gone (the caller
+                        // timed out, OR aborted after a successful queue) the returned
+                        // tuple drops here and the guard cleans up — the send RESULT is
+                        // not what makes a late child cannot-leak, the guard is.
+                        let _ = tx.send((cmd, result, late));
                     });
                 // `Builder::spawn` returns an error (unlike `thread::spawn`, which
                 // PANICS) when the OS refuses another thread under resource pressure,
@@ -759,29 +763,33 @@ impl Supervisor {
                 }
                 let (returned, result) = match tokio::time::timeout(remaining, rx).await {
                     Ok(Ok((spawned_cmd, spawn_result, late))) => {
-                        if late {
-                            // The spawn completed only at/after the deadline: reject it
-                            // and clean up any child so startup never proceeds past the
-                            // budget with a late-created daemon. If cleanup itself FAILS
-                            // (the subtree survived SIGKILL past the grace window, still
-                            // holding the data-dir lock), fold that into the error so the
-                            // caller does not retry over a surviving daemon.
-                            let mut detail =
-                                "process creation completed after the spawn budget expired"
-                                    .to_owned();
-                            if let Ok(mut child) = spawn_result {
+                        let result = match spawn_result {
+                            Ok(guard) if late => {
+                                // The spawn completed only at/after the deadline: reject
+                                // it and tear the child down so startup never proceeds
+                                // past the budget with a late-created daemon. Fold a
+                                // cleanup FAILURE (the subtree survived SIGKILL past the
+                                // grace window, still holding the data-dir lock) into the
+                                // error so the caller does not retry over a surviving one.
+                                let mut child = guard.into_child();
+                                let mut detail =
+                                    "process creation completed after the spawn budget expired"
+                                        .to_owned();
                                 if let Err(cleanup) = process::force_kill_tree(&mut child).await {
                                     detail = format!(
                                         "{detail}; cleanup of the late child failed: {cleanup}"
                                     );
                                 }
+                                return Err(SupervisorError::Spawn(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    detail,
+                                )));
                             }
-                            return Err(SupervisorError::Spawn(std::io::Error::new(
-                                std::io::ErrorKind::TimedOut,
-                                detail,
-                            )));
-                        }
-                        (spawned_cmd, spawn_result)
+                            // Consume the guard: this task now owns the child's lifecycle.
+                            Ok(guard) => Ok(guard.into_child()),
+                            Err(e) => Err(e),
+                        };
+                        (spawned_cmd, result)
                     }
                     Ok(Err(_recv)) => {
                         // The worker dropped the sender without sending — only reachable

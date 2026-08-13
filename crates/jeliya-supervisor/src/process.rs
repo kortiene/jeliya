@@ -152,6 +152,37 @@ pub(crate) fn force_kill_group_blocking(child: Child) {
     }
 }
 
+/// A freshly-spawned [`Child`] whose process GROUP is torn down if this guard is
+/// dropped WITHOUT being consumed — the cancellation-safe ownership the late-spawn
+/// hand-off needs. A oneshot `send` only acknowledges that the value was QUEUED, not
+/// that the caller consumed it: if the receiver is dropped after a successful send
+/// (the caller aborted `start_or_adopt`), the queued child would otherwise be
+/// dropped with `kill_on_drop(false)` and leak its group and data-dir lock. On the
+/// happy path the consumer calls [`SpawnGuard::into_child`] to TAKE the child,
+/// disarming the guard; any other drop path (receiver gone, timeout) runs
+/// [`force_kill_group_blocking`] synchronously via `Drop`.
+pub(crate) struct SpawnGuard(Option<Child>);
+
+impl SpawnGuard {
+    pub(crate) fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    /// Disarm the guard and take ownership of the child — the caller is now
+    /// responsible for its lifecycle (the normal spawn path).
+    pub(crate) fn into_child(mut self) -> Child {
+        self.0.take().expect("SpawnGuard child taken exactly once")
+    }
+}
+
+impl Drop for SpawnGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.take() {
+            force_kill_group_blocking(child);
+        }
+    }
+}
+
 /// SIGKILL a spawned leader's **process group** by its pgid (`pgid == the
 /// leader's pid`, set at spawn) and VERIFY, bounded, that the group is gone —
 /// for the early-exit paths where the leader has ALREADY been reaped, so
@@ -422,6 +453,39 @@ mod tests {
                 gone,
                 "force_kill_group_blocking must kill the child's process"
             );
+        });
+    }
+
+    /// A `SpawnGuard` dropped WITHOUT `into_child` tears down the child's group —
+    /// the cancellation-safe cleanup for a late child the caller never consumed
+    /// (the oneshot queued it, then the receiver was dropped).
+    #[cfg(unix)]
+    #[test]
+    fn spawn_guard_kills_the_child_when_dropped_unconsumed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "sleep 600"]).kill_on_drop(false);
+            configure_new_process_group(&mut cmd);
+            let child = cmd.spawn().expect("spawn a long-lived child");
+            let pid = child.id().expect("child has a pid") as i32;
+            // Wrap and drop WITHOUT consuming — the guard's Drop must kill the group.
+            drop(SpawnGuard::new(child));
+            use nix::sys::signal::kill;
+            use nix::unistd::Pid;
+            let target = Pid::from_raw(pid);
+            let mut gone = false;
+            for _ in 0..200 {
+                if matches!(kill(target, None), Err(nix::errno::Errno::ESRCH)) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(gone, "an unconsumed SpawnGuard must kill the child on drop");
         });
     }
 }

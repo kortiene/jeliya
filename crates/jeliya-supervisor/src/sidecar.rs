@@ -275,14 +275,21 @@ impl Sidecar {
         // fresh 5s — so a stalled mount (or an already-exhausted deadline) cannot make
         // this re-read blow past the whole-operation `teardown` bound.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(
+        let current = match tokio::time::timeout(
             remaining,
             portfile::read_portfile_bounded(&self.data_dir, self.strict_portfile_perms),
         )
         .await
         {
-            Ok(Ok(current)) if current.pid == pid && current.port == port => {}
+            Ok(Ok(current)) => current,
             _ => return Err(SupervisorError::ShutdownTimedOut { pid }),
+        };
+        // STAMP the result against the deadline: `timeout` polls the ready read
+        // BEFORE its timer, so a read completing just PAST the budget would otherwise
+        // be accepted and let the RPC run beyond the whole-operation `teardown`.
+        // Reject an out-of-budget read, and an identity that changed under us.
+        if tokio::time::Instant::now() >= deadline || current.pid != pid || current.port != port {
+            return Err(SupervisorError::ShutdownTimedOut { pid });
         }
         // Ask the daemon to shut itself down over the caller's RPC, bounded by the
         // budget REMAINING after the presence probe so its time counts against
@@ -293,7 +300,19 @@ impl Sidecar {
         let rpc_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
         match tokio::time::timeout(rpc_budget, shutdown_rpc()).await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(SupervisorError::ShutdownRpcFailed(e.to_string())),
+            Ok(Err(e)) => {
+                // REDACT the daemon bearer from the caller-controlled error text
+                // before it enters `ShutdownRpcFailed` (whose Debug/Display are
+                // commonly logged): a transport that echoes its request or
+                // `Authorization` header could otherwise leak the token the crate
+                // contracts to keep native and never log (§5.8).
+                let token = self.portfile.token();
+                let mut message = e.to_string();
+                if !token.is_empty() {
+                    message = message.replace(token, "<redacted>");
+                }
+                return Err(SupervisorError::ShutdownRpcFailed(message));
+            }
             Err(_elapsed) => return Err(SupervisorError::ShutdownTimedOut { pid }),
         }
         // Confirm it actually went dark; we never signalled it, so the RPC is
@@ -635,6 +654,47 @@ mod tests {
             matches!(result, Err(SupervisorError::ShutdownRpcFailed(_))),
             "an RPC error must be ShutdownRpcFailed, not Handshake; got: {result:?}"
         );
+    }
+
+    /// A `daemon.stop` RPC error whose text echoes the caller's `Authorization`
+    /// header must have the bearer token REDACTED before it enters
+    /// `ShutdownRpcFailed` (whose Debug/Display are logged) — the crate's
+    /// token-redaction contract (§5.8).
+    #[test]
+    fn stop_adopted_redacts_the_bearer_token_from_an_rpc_error() {
+        let dir = std::env::temp_dir().join(format!("sup-adopt-redact-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = "SECRETdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef00";
+        let json = format!(
+            r#"{{"pid":4242,"port":9,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"{token}"}}"#
+        );
+        std::fs::write(dir.join("daemon.json"), &json).unwrap();
+        let portfile: crate::portfile::Portfile = serde_json::from_str(&json).unwrap();
+        let sidecar = Sidecar {
+            portfile,
+            ownership: Ownership::Adopted,
+            adopted_lock: None,
+            data_dir: dir.clone(),
+            expected: crate::generation::Generation::new(2, 2),
+            strict_portfile_perms: false,
+            timeouts: crate::supervisor::Timeouts::default(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let echoed = format!("401 Unauthorized (sent Authorization: Bearer {token})");
+        let result = rt.block_on(
+            sidecar.stop_adopted(move || Box::pin(async move { Err(CallerRpcError(echoed)) })),
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        match result {
+            Err(SupervisorError::ShutdownRpcFailed(msg)) => {
+                assert!(!msg.contains(token), "the bearer token must be redacted; got: {msg}");
+                assert!(msg.contains("<redacted>"), "the token should be replaced with <redacted>; got: {msg}");
+            }
+            other => panic!("expected ShutdownRpcFailed, got: {other:?}"),
+        }
     }
 
     /// `stop_adopted` must REFUSE, and NEVER issue the stop RPC, when the current
