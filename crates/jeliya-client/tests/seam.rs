@@ -118,7 +118,8 @@ fn ac2_start_transitions_idle_to_connecting() {
             event,
             ClientEvent::StateChanged {
                 from: State::Idle,
-                to: State::Connecting
+                to: State::Connecting,
+                ..
             }
         ),
         "unexpected: {event:?}"
@@ -180,7 +181,8 @@ fn ac2_set_state_broadcasts_transition() {
             event,
             ClientEvent::StateChanged {
                 from: State::Idle,
-                to: State::Ready
+                to: State::Ready,
+                ..
             }
         ),
         "{event:?}"

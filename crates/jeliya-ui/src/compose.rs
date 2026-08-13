@@ -19,7 +19,7 @@
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use jeliya_api::{RoomList, RoomListOut};
+use jeliya_api::{LastEvent, Role, RoomId, RoomList, RoomListOut, RoomRow, Standing};
 use jeliya_client::mock::{MockController, MockScript, Program};
 use jeliya_client::{ClientHandle, State};
 
@@ -51,7 +51,9 @@ pub fn web_composition() -> WebComposition {
     let (handle, controller) = MockScript::new()
         .on(
             "room.list",
-            Program::reply_ok::<RoomList>(&RoomListOut { rooms: Vec::new() }),
+            Program::reply_ok::<RoomList>(&RoomListOut {
+                rooms: fixture_rooms(),
+            }),
         )
         .build();
     WebComposition {
@@ -74,9 +76,22 @@ pub fn WebRoot() -> Element {
     let handle = composition.handle.clone();
     let services = composition.services.clone();
 
+    // The injected `<html lang>` setter AppRoot calls REACTIVELY on the resolved
+    // locale (mount and any live switch). Confined here (web-sys); never in the
+    // shared AppRoot (Decision-3). Other targets pass `None`.
+    #[cfg(feature = "web")]
+    let on_locale_lang = Some(use_callback(|tag: String| set_document_lang(&tag)));
+    #[cfg(not(feature = "web"))]
+    let on_locale_lang: Option<Callback<String>> = None;
+
     use_future(move || {
         let composition = composition.clone();
         async move {
+            // e2e-only, marker-gated: expose a JS hook to drive connection transitions
+            // so the a11y matrix can exercise the connection live region against a REAL
+            // transition (inert in production; see `install_e2e_connection_hook`).
+            #[cfg(feature = "web")]
+            install_e2e_connection_hook(composition.controller.clone());
             // Drive the reference backend deterministically: reach `Ready` so
             // the shell leaves the boot state, then settle the mount reads
             // EVENT-DRIVEN. A fixed deliver-and-yield pass count guesses the
@@ -90,13 +105,239 @@ pub fn WebRoot() -> Element {
             // stays parked (quiescent, no busy loop) and the e2e settle
             // assertion reports the missing read.
             composition.handle.start();
-            composition.controller.set_state(State::Ready);
-            drive_scripted_replies(&composition.controller, SCRIPTED_MOUNT_READS).await;
+            // Deterministic BOOT/terminal fixture for the offline a11y matrix:
+            // `?boot=<state>` drives the mock to that lifecycle (leaving the
+            // BootScreen cover mounted) instead of the Ready shell, so the boot
+            // branch — otherwise never reached once the mock settles — can be
+            // axe-swept. Absent or unrecognized → the normal Ready shell + read.
+            // Harmless in production (a curious user only sees the honest cover).
+            match boot_fixture_state() {
+                Some(state) => composition.controller.set_state(state),
+                None => {
+                    composition.controller.set_state(State::Ready);
+                    drive_scripted_replies(&composition.controller, SCRIPTED_MOUNT_READS).await;
+                }
+            }
         }
     });
 
     rsx! {
-        AppRoot { handle, services }
+        AppRoot { handle, services, platform_locale: platform_locale(), on_locale_lang }
+    }
+}
+
+/// The lifecycle a `?boot=<state>` query parameter requests, for the a11y matrix's
+/// deterministic boot/terminal fixture (web target only; `None` everywhere else
+/// and for any absent/unrecognized value → the normal Ready shell).
+///
+/// Only `connecting` and `failed` are accepted: `MockController::set_state`
+/// deliberately PANICS on `Stopping`/`Stopped` (those carry the settled-work
+/// guarantee only `ClientHandle::stop()` provides), so driving them here would
+/// crash the app rather than render a cover. The BootScreen structure the a11y
+/// matrix sweeps is identical across cover states (only the label differs), so
+/// `failed` (terminal) + `connecting` (initial) cover the branch.
+/// The `localStorage` marker an e2e harness sets (via `addInitScript`, before any
+/// app script runs) to arm the `?boot=<state>` fixture. Shared verbatim with
+/// `e2e/a11y-harness.ts`; changing it here means changing it there.
+#[cfg(feature = "web")]
+const BOOT_FIXTURE_MARKER: &str = "jeliya-e2e-boot-fixture";
+
+fn boot_fixture_state() -> Option<State> {
+    #[cfg(feature = "web")]
+    {
+        let window = web_sys::window()?;
+        // DEV/TEST ONLY, gated on an EXPLICIT TEST MARKER — never the hostname. The
+        // packaged daemon serves this SAME production UI from `127.0.0.1`
+        // (`crates/jeliyad/src/serve.rs`), so a loopback-host gate would leave the
+        // fixture live in the real app, where a shared or retained `?boot=…` link
+        // could disable it. A `localStorage` marker only an e2e harness sets cannot
+        // be forged by a plain URL, so production — loopback or not — never arms it.
+        let armed = window
+            .local_storage()
+            .ok()
+            .flatten()
+            .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+            .as_deref()
+            == Some("1");
+        if !armed {
+            return None;
+        }
+        let search = window.location().search().ok()?;
+        // A tiny hand-parse (no url crate): find `boot=` in the query string.
+        let value = search
+            .trim_start_matches('?')
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("boot="))?;
+        match value {
+            "connecting" => Some(State::Connecting),
+            "failed" => Some(State::Failed),
+            _ => None,
+        }
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        None
+    }
+}
+
+/// Synthetic room rows for the a11y matrix's POPULATED-shell fixture (`?rooms=N`,
+/// marker-gated, web only). The default shell renders an EMPTY list, so the
+/// target-size sweep never measures `.room-select` rows; this fixture populates
+/// them so their geometry is under test. Empty on every other target and in
+/// production (no marker), which render the honest empty list. Mirrors the
+/// `test_room` shape used by the state-fold unit tests.
+fn fixture_rooms() -> Vec<RoomRow> {
+    (0..rooms_fixture_count())
+        .map(|i| RoomRow {
+            room_id: RoomId::new(format!("fixture-room-{i}")),
+            name: format!("Fixture room {i}"),
+            standing: Standing::Active,
+            live: false,
+            role: Role::Member,
+            member_count: 1,
+            last_event: LastEvent::Absent,
+            capabilities: Vec::new(),
+        })
+        .collect()
+}
+
+/// The room count a `?rooms=N` query parameter requests (a11y matrix populated-shell
+/// fixture; web only, gated on the SAME `localStorage` marker as `?boot=`, so
+/// production never arms it). `0` everywhere else and for any absent/invalid value,
+/// and capped so a hand-typed `?rooms=99999` cannot bloat the fixture.
+fn rooms_fixture_count() -> usize {
+    #[cfg(feature = "web")]
+    {
+        let Some(window) = web_sys::window() else {
+            return 0;
+        };
+        let armed = window
+            .local_storage()
+            .ok()
+            .flatten()
+            .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+            .as_deref()
+            == Some("1");
+        if !armed {
+            return 0;
+        }
+        let Ok(search) = window.location().search() else {
+            return 0;
+        };
+        search
+            .trim_start_matches('?')
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("rooms="))
+            .and_then(|n| n.parse::<usize>().ok())
+            .map(|n| n.min(50))
+            .unwrap_or(0)
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        0
+    }
+}
+
+/// Install a marker-gated e2e hook — `window.__jeliyaE2eConnState(state)` — that drives
+/// the mock's connection LIFECYCLE, so the a11y matrix can verify the connection
+/// live-region's announce-once wiring against a REAL `Interrupted`/`Ready` transition
+/// (the announcer reacts to each `StateChanged` EVENT, so no DOM poke can substitute for
+/// a driven transition). Gated on the SAME `localStorage` marker as the `?boot=` fixture,
+/// so production — loopback or not — never arms it; the code is inert without the marker.
+/// `MockController::set_state` panics on `Stopping`/`Stopped`, so only `interrupted`,
+/// `ready`, and `failed` are accepted; anything else is ignored.
+#[cfg(feature = "web")]
+fn install_e2e_connection_hook(controller: Rc<MockController>) {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let armed = window
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+        .as_deref()
+        == Some("1");
+    if !armed {
+        return;
+    }
+    let closure = Closure::<dyn Fn(String)>::new(move |state: String| {
+        let state = match state.as_str() {
+            "interrupted" => State::Interrupted,
+            "ready" => State::Ready,
+            "failed" => State::Failed,
+            _ => return,
+        };
+        controller.set_state(state);
+    });
+    let _ = js_sys::Reflect::set(
+        &window,
+        &JsValue::from_str("__jeliyaE2eConnState"),
+        closure.as_ref().unchecked_ref(),
+    );
+    // Leak the closure so the hook stays callable for the page's lifetime. This runs
+    // ONLY under the e2e marker, so it is never a production leak path.
+    closure.forget();
+}
+
+/// The platform UI language tag to seed locale resolution with — the ONE place
+/// a target reads it (Decision-5): the browser's language preference on the web
+/// target, `None` elsewhere (the M4 desktop/Android bins inject their own OS
+/// locale here later). Confining the `web-sys` read to composition keeps
+/// [`crate::AppRoot`] and every shared component free of `web-sys`/`cfg`.
+///
+/// Reads the ORDERED `navigator.languages` list, not just `navigator.language`:
+/// a browser configured as `['de-DE', 'fr-FR']` must reach French (its next
+/// SUPPORTED preference), not fall to English on the unsupported primary tag. We
+/// return the first tag whose primary subtag this app supports; `navigator.language`
+/// is the fallback, then `None`. The narrowing to a supported catalog still
+/// happens in `LocaleState::resolve` — this only chooses WHICH platform tag to
+/// feed it.
+fn platform_locale() -> Option<String> {
+    #[cfg(feature = "web")]
+    {
+        let navigator = web_sys::window()?.navigator();
+        // `navigator.languages` is the user's ordered preference list; pick the
+        // first entry this app can actually render (so a supported non-primary
+        // preference is honored before the English fallback), else fall back to
+        // the primary `navigator.language` tag.
+        let languages = navigator.languages();
+        let ordered = (0..languages.length()).filter_map(|i| languages.get(i).as_string());
+        first_supported_language_tag(ordered).or_else(|| navigator.language())
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        None
+    }
+}
+
+/// The first tag in `tags` whose primary subtag this app supports, else `None`.
+/// The ordered-preference selection behind [`platform_locale`], factored out pure
+/// so it is testable without a browser: `['de-DE', 'fr-FR']` yields `fr-FR` (the
+/// user's next SUPPORTED preference), not the unsupported German primary that
+/// would otherwise fall through to English. The narrowing to a catalog still
+/// happens in `LocaleState::resolve`; this only chooses which tag to feed it.
+#[cfg(any(feature = "web", test))]
+fn first_supported_language_tag(tags: impl Iterator<Item = String>) -> Option<String> {
+    tags.into_iter()
+        .find(|tag| crate::l10n::Locale::from_tag(tag).is_some())
+}
+
+/// Set `<html lang>` to `tag`, web target only. Injected into `AppRoot` as the
+/// `on_locale_lang` callback so the document language tracks the resolved TEXT
+/// locale REACTIVELY (mount and any live switch), while the `web-sys` access stays
+/// confined here — never in the shared `AppRoot` (Decision-3; #177 §5.1). `AppRoot`
+/// owns the locale resolution and hands the resolved tag to this setter.
+#[cfg(feature = "web")]
+fn set_document_lang(tag: &str) {
+    if let Some(element) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+    {
+        let _ = element.set_attribute("lang", tag);
     }
 }
 
@@ -177,6 +418,24 @@ pub fn NativeRoot() -> Element {
     });
 
     rsx! {
-        AppRoot { handle, services }
+        AppRoot { handle, services, platform_locale: platform_locale() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_supported_language_tag;
+
+    #[test]
+    fn first_supported_language_tag_honors_the_ordered_preference() {
+        let of = |v: &[&str]| first_supported_language_tag(v.iter().map(|s| s.to_string()));
+        // Unsupported primary, supported secondary → the secondary (not English).
+        assert_eq!(of(&["de-DE", "fr-FR"]), Some("fr-FR".to_string()));
+        // The first SUPPORTED tag wins.
+        assert_eq!(of(&["en-US", "fr-FR"]), Some("en-US".to_string()));
+        assert_eq!(of(&["fr", "en"]), Some("fr".to_string()));
+        // No supported entry → None (caller falls back to navigator.language).
+        assert_eq!(of(&["de-DE", "es-ES"]), None);
+        assert_eq!(of(&[]), None);
     }
 }

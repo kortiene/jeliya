@@ -30,6 +30,18 @@ pub struct UiState {
     /// The most recent local-facing notice (a wire error or a local failure),
     /// or `None`.
     pub notice: Option<String>,
+    /// Whether the current [`notice`](Self::notice) is a TERMINAL failure — one
+    /// this component will not retry (a wire refusal, `Timeout`, `QueueFull`, a
+    /// decode failure). A retryable disconnect is `false`. The shell picks
+    /// recovery-promising vs terminal copy from this, so a user is never told
+    /// "we'll retry when the connection returns" for an error that never retries.
+    pub notice_terminal: bool,
+    /// The RAW, secret-scrubbed detail of the most recent failure — the
+    /// Diagnostics "last error detail". Unlike [`notice`](Self::notice) (the
+    /// primary banner, cleared when a retry recovers the shell) this is RETAINED
+    /// across recovery, so opening Diagnostics after a transient disconnect still
+    /// shows the failure that occurred instead of "no errors recorded".
+    pub last_diagnostic: Option<String>,
 }
 
 impl UiState {
@@ -41,6 +53,8 @@ impl UiState {
             rooms: Vec::new(),
             rooms_loaded: false,
             notice: None,
+            notice_terminal: false,
+            last_diagnostic: None,
         }
     }
 
@@ -62,9 +76,31 @@ impl UiState {
         self.rooms_loaded = true;
     }
 
-    /// Record a local-facing notice (a failed read or a wire error).
+    /// Record a RETRYABLE local-facing notice — a transient disconnect the read
+    /// task will retry on the next recovery to `Ready`. The shell may promise
+    /// recovery for this.
     pub fn set_notice(&mut self, notice: impl Into<String>) {
-        self.notice = Some(notice.into());
+        let notice = notice.into();
+        self.last_diagnostic = Some(notice.clone());
+        self.notice = Some(notice);
+        self.notice_terminal = false;
+    }
+
+    /// Record a TERMINAL notice — a failure this component will not retry. The
+    /// shell must not promise recovery for it.
+    pub fn set_terminal_notice(&mut self, notice: impl Into<String>) {
+        let notice = notice.into();
+        self.last_diagnostic = Some(notice.clone());
+        self.notice = Some(notice);
+        self.notice_terminal = true;
+    }
+
+    /// Clear the primary notice (a successful read recovered the shell) — but
+    /// RETAIN [`last_diagnostic`](Self::last_diagnostic), so Diagnostics still
+    /// shows the failure that a now-recovered retry cleared from the banner.
+    pub fn clear_notice(&mut self) {
+        self.notice = None;
+        self.notice_terminal = false;
     }
 }
 
@@ -99,11 +135,13 @@ mod tests {
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Connecting,
+            coalesced_through_problem: false,
         });
         assert_eq!(state.lifecycle, State::Connecting);
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Connecting,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         assert_eq!(state.lifecycle, State::Ready);
     }
@@ -144,11 +182,32 @@ mod tests {
     }
 
     #[test]
+    fn a_recovered_retry_keeps_the_last_diagnostic() {
+        // The Diagnostics "last error detail" must survive a recovery that clears the
+        // primary banner, or opening it after a transient disconnect reports "no
+        // errors recorded" even though a failure occurred.
+        let mut state = UiState::new();
+        state.set_notice("room.list: connection refused");
+        assert_eq!(
+            state.last_diagnostic.as_deref(),
+            Some("room.list: connection refused")
+        );
+        state.clear_notice();
+        assert_eq!(state.notice, None, "the primary banner clears on recovery");
+        assert_eq!(
+            state.last_diagnostic.as_deref(),
+            Some("room.list: connection refused"),
+            "the last diagnostic is RETAINED for Diagnostics after recovery"
+        );
+    }
+
+    #[test]
     fn gap_event_leaves_lifecycle_unchanged() {
         let mut state = UiState::new();
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         let before = state.lifecycle;
         state.apply_event(&ClientEvent::Gap {
@@ -166,6 +225,7 @@ mod tests {
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         let before = state.lifecycle;
         state.apply_event(&ClientEvent::ResyncRequired {
@@ -181,6 +241,7 @@ mod tests {
         state.apply_event(&ClientEvent::StateChanged {
             from: State::Idle,
             to: State::Ready,
+            coalesced_through_problem: false,
         });
         let before = state.lifecycle;
         state.apply_event(&ClientEvent::Lagged {

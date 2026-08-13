@@ -60,6 +60,13 @@ mod app;
 pub mod components;
 #[cfg(feature = "ui")]
 pub mod compose;
+// The canonical EN/FR localization layer (#177): the one authoritative catalog
+// for the surviving stack, the formatting seam, wire/error display, and the
+// Rust-facing identity-palette token source. Compiler-enforced key/placeholder
+// parity between `l10n::En` and `l10n::Fr`; the node gates add the checks types
+// cannot see (empty value, `fr==en`, plurals, French typography, literal scan).
+#[cfg(feature = "ui")]
+pub mod l10n;
 #[cfg(feature = "ui")]
 mod state;
 

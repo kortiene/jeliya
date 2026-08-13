@@ -9,15 +9,54 @@
 //! contains **no** platform business-logic `cfg` fork: which concrete
 //! `ClientHandle` and which `PlatformServices` implementation back these props
 //! is decided only in [`crate::compose`].
+//!
+//! #177 makes localization and accessibility structural: the root **provides**
+//! the resolved-locale and live-region contexts (resolving the two persisted
+//! locale preferences through the injected [`Preferences`](jeliya_platform::Preferences)
+//! capability), renders a properly landmarked page (skip links, a named `nav`,
+//! a `main` with one `h1`, a stable live region), and routes the raw failure
+//! detail into the Diagnostics dialog while primary copy stays friendly catalog
+//! text.
 
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::RoomList;
 use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
+use jeliya_platform::PreferenceKey;
 
-use crate::components::{BootScreen, EmptyCenter, RoomListItem, StatusFooter};
+use crate::components::{
+    use_announce_context, BootScreen, EmptyCenter, LiveRegion, NavLandmark, RoomListItem, SkipLink,
+    SkipLinks, StatusFooter,
+};
+use crate::l10n::{
+    catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
+    LocaleState,
+};
 use crate::state::UiState;
 use crate::PlatformServices;
+
+/// Whether a `prev → to` lifecycle transition is announced through the CONNECTION
+/// live region: a DROP to a problem state (`Interrupted`/`Failed`/`Stopped`), or a
+/// RECOVERY back to `Ready` after such a drop. The happy boot path (`Idle`/
+/// `Connecting` → `Ready`) is deliberately silent — those are not problem states,
+/// so a first `Ready` seeded from them (or from a subscribe-time `Interrupted`
+/// snapshot, which correctly DOES announce the recovery) is classified honestly.
+///
+/// `through_problem` is the event's `coalesced_through_problem` flag: under
+/// backpressure the client coalesces a queued `Ready → Interrupted` + `Interrupted
+/// → Ready` into a net `Ready → Ready` with honest endpoints, so `prev`/`to` alone
+/// no longer reveal the drop; the flag records that the window passed through a
+/// problem, so the recovery is still announced on resume (§5.6 / §K12).
+fn announces_connection_change(prev: Option<State>, to: State, through_problem: bool) -> bool {
+    let is_problem = matches!(to, State::Interrupted | State::Failed | State::Stopped);
+    let recovered = to == State::Ready
+        && (through_problem
+            || matches!(
+                prev,
+                Some(State::Interrupted | State::Failed | State::Stopped)
+            ));
+    is_problem || recovered
+}
 
 /// The application root component (the spec's `app_root`).
 ///
@@ -26,14 +65,68 @@ use crate::PlatformServices;
 /// paired with [`jeliya_api::RoomListOut`]), and renders a one-pane-aware shell
 /// whose class names are the ones `ui/src/styles.css` already styles.
 #[component]
-pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
+pub fn AppRoot(
+    handle: ClientHandle,
+    services: PlatformServices,
+    /// The platform's UI language tag (browser `navigator.language` / OS
+    /// locale), injected at composition (`compose.rs`) — never read from
+    /// `web-sys`/`cfg` in this shared component. `None` when the platform
+    /// exposes none. It is the second input to locale resolution after the
+    /// persisted preferences, so a fresh French-browser user reaches the French
+    /// catalog with no stored preference (Decision-5).
+    #[props(default)]
+    platform_locale: Option<String>,
+    /// Injected side effect that applies the resolved TEXT-locale BCP-47 tag to
+    /// the document (`<html lang>`), called reactively whenever the resolved
+    /// locale changes. The web target passes a `web-sys` setter here; other
+    /// targets pass `None`. Kept as an injected callback so this shared component
+    /// stays free of `web-sys`/`cfg` (Decision-3).
+    #[props(default)]
+    on_locale_lang: Option<Callback<String>>,
+) -> Element {
     let mut ui = use_signal(UiState::new);
 
-    // Touch the injected services seam once on mount — a small, honest
-    // demonstration that platform authority is reached only through
-    // `PlatformServices`, never directly. Reading the storage durability is a
-    // side-effect-free platform fact through the canonical contract (#174).
-    use_hook(move || services.preferences().durability());
+    // Resolve the locale from the two persisted preferences AND the injected
+    // platform language, in that precedence (Decision-5, `LocaleState::resolve`):
+    // an explicit stored preference wins, else the platform language, else the
+    // fallback. Reading the persisted prefs goes through the injected
+    // `Preferences` capability (#174) — the platform-authority boundary a shared
+    // component may read, never `localStorage`/`cfg` directly (Decision-3). The
+    // platform language arrives as a prop from composition (never `web-sys` here),
+    // so a fresh French-browser user with no stored preference reaches the French
+    // catalog. The concrete storage keys are the platform contract's
+    // `TextLocale` / `FormattingLocale` (#178 owns their browser namespace).
+    let preferences = services.preferences();
+    let text_pref = preferences.get(&PreferenceKey::TextLocale);
+    let formatting_pref = preferences.get(&PreferenceKey::FormattingLocale);
+    let initial_locale = LocaleState::resolve(
+        text_pref.as_deref(),
+        formatting_pref.as_deref(),
+        platform_locale.as_deref(),
+        platform_locale.as_deref(),
+    );
+
+    // Provide the resolved-locale and live-region contexts to the whole subtree.
+    // `use_locale_context` returns the switch signal (a settings surface, a later
+    // slice, assigns it to change locale live); the foundation proves the wiring
+    // and the per-render resolution that makes a switch apply with no restart.
+    let locale = use_locale_context(initial_locale);
+    let announcers = use_announce_context();
+
+    // `<html lang>` tracks the resolved TEXT locale REACTIVELY: the injected
+    // `on_locale_lang` callback (a `web-sys` setter on the web target; `None`
+    // elsewhere) is called on mount AND whenever the locale signal changes, so a
+    // live locale switch updates the document language too — assistive tech reads
+    // the page in its actual language rather than index.html's static `en` (§5.1).
+    // The side effect is INJECTED so this shared component stays free of
+    // `web-sys`/`cfg` (Decision-3); the switch UI is a later slice, the wiring is
+    // proven now.
+    use_effect(move || {
+        let tag = locale.read().text.tag().to_string();
+        if let Some(apply) = on_locale_lang {
+            apply.call(tag);
+        }
+    });
 
     use_future(move || {
         let handle = handle.clone();
@@ -50,7 +143,8 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
             // here. Reading state() after subscribing is safe: any transition
             // that fires after subscribe() AND concurrently with this read is
             // buffered by the subscription, so there is no gap.
-            ui.write().lifecycle = handle.state();
+            let initial_state = handle.state();
+            ui.write().lifecycle = initial_state;
             handle.start();
 
             let read = {
@@ -89,7 +183,7 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                                 // attempt recorded, or the recovered shell
                                 // shows a stale connection-loss error next
                                 // to successfully loaded data forever.
-                                state.notice = None;
+                                state.clear_notice();
                                 return;
                             }
                             // An accepted call can still die mid-flight when
@@ -99,9 +193,11 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                             // the next recovery to Ready; every other error
                             // is a genuine reply or refusal and is recorded
                             // once — retrying those could loop forever on a
-                            // persistent failure.
+                            // persistent failure. The recorded notice is the
+                            // RAW, secret-scrubbed detail (the Diagnostics
+                            // dialog's content); primary copy stays friendly.
                             Err(error @ CallError::Disconnected { .. }) => {
-                                ui.write().set_notice(format!("room.list: {error:?}"));
+                                ui.write().set_notice(diagnostic_notice(&error));
                                 // A Disconnected settlement can outrun the
                                 // lifecycle event — the seam permits settling
                                 // pending calls before publishing
@@ -144,14 +240,16 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
                             }
                             Err(error) => {
                                 let mut state = ui.write();
-                                state.set_notice(format!("room.list: {error:?}"));
-                                // The read has ANSWERED — with a terminal
-                                // error this task will not retry — so the
-                                // loading state must end: leaving
-                                // rooms_loaded false would show
-                                // "Loading rooms…" forever next to the error
-                                // notice with nothing in flight.
-                                state.rooms_loaded = true;
+                                // TERMINAL: this task will not retry, so the
+                                // notice is recorded as terminal and the shell
+                                // shows copy that does not promise a recovery
+                                // that will never come. `rooms_loaded` stays
+                                // FALSE — a failed read is not a successful empty
+                                // result, so the shell must not announce "0
+                                // rooms" or render "No rooms yet"; the shell
+                                // gates loading/empty on `notice.is_none()`, so a
+                                // terminal notice shows neither (just the error).
+                                state.set_terminal_notice(diagnostic_notice(&error));
                                 return;
                             }
                         }
@@ -160,8 +258,47 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
             };
 
             let consume = async {
+                // Announce a connection PROBLEM (drop to Interrupted/Failed/Stopped)
+                // or a RECOVERY (return to Ready after such a drop) from EACH
+                // `StateChanged` EVENT, not from a render snapshot. The event loop
+                // can apply several lifecycle writes before Dioxus renders, so a
+                // render-effect could observe only the FINAL state (`previous == Ready`
+                // for a batched Interrupted→Ready) and announce NEITHER transition;
+                // deriving per event cannot miss one. The happy boot path
+                // (Idle/Connecting → Ready) is deliberately not announced. `Announcer`
+                // coalesces, so a repeated state still announces once. Announced
+                // through the dedicated CONNECTION region so a room-count update in
+                // the same render never overwrites it (`StatusIndicator` has no live
+                // semantics — §5.6). Room-count/notice announcements stay render-
+                // driven: they coalesce by design and are not transition-sensitive.
+                // Classify each transition from the EVENT'S OWN `from`/`to`, not a
+                // tracked snapshot: a subscription is live-only, so if a drop→recovery
+                // happened between `subscribe()` and the `initial_state` snapshot, the
+                // subscription BUFFERS `StateChanged { from: Interrupted, to: Ready }`
+                // while `initial_state` is already `Ready`. A snapshot-seeded `prev`
+                // would compare `Ready → Ready` and swallow the recovery; the event's own
+                // `from` records the real origin, so the recovery is still announced. The
+                // client coalesces flapping transitions into one event and PRESERVES the
+                // earliest `from`, so per-event classification respects coalescing too.
+                // The happy boot path (`Idle`/`Connecting` → `Ready`) is still silent
+                // because those `from`s are not problem states.
                 while let Some(event) = events.next().await {
                     ui.write().apply_event(&event);
+                    if let ClientEvent::StateChanged {
+                        from,
+                        to,
+                        coalesced_through_problem,
+                    } = event
+                    {
+                        if announces_connection_change(Some(from), to, coalesced_through_problem) {
+                            let resolved = locale.peek();
+                            let word =
+                                crate::l10n::wire::status_for(catalog_for(resolved.text), to);
+                            announcers
+                                .connection
+                                .announce(catalog_for(resolved.text).conn_announcement(word));
+                        }
+                    }
                 }
             };
 
@@ -169,97 +306,260 @@ pub fn AppRoot(handle: ClientHandle, services: PlatformServices) -> Element {
         }
     });
 
-    let snapshot = ui();
-    let lifecycle = format!("{:?}", snapshot.lifecycle);
+    // Announce the loaded room count through the stable CONTENT region, once per
+    // change: the effect re-runs only when the room list or the locale changes,
+    // and `Announcer::announce` coalesces, so a list that re-renders many times
+    // still announces once (the checklist's failure mode, designed out
+    // structurally — §5.6).
+    use_effect(move || {
+        let snapshot = ui.read();
+        let resolved = locale.read();
+        if snapshot.rooms_loaded {
+            let count = snapshot.rooms.len() as u64;
+            let formatted = Formats::new(resolved.text, resolved.formatting).count(count);
+            let category = plural_category(resolved.text, count);
+            let message = catalog_for(resolved.text).rooms_count(&formatted, category);
+            announcers.content.announce(message);
+        }
+    });
 
-    // Outside the shell, the boot screen is the component ROOT (as the React
-    // shell renders it), never a child of the `.app` grid: auto-placed inside
-    // the two-column grid, its `height: var(--vh-full)` would blow up the
-    // first `auto` row and collapse the sidebar/center instead of covering
-    // them. All hooks are declared above, so the early return is order-safe.
-    //
-    // The "connecting" cover is reserved for initial activation. `Interrupted`
-    // was Ready and is recovering, so the shell stays mounted (`StatusFooter`
-    // reports the state) rather than hiding the rooms behind a boot screen;
-    // the stop and failure states render their own honest label — a terminal
-    // state that claims to be connecting would be a lie the client never
-    // recovers from — plus any recorded notice, which the Ready-only shell
-    // would otherwise swallow.
+    // (The connection PROBLEM/RECOVERY announcement is driven per `StateChanged`
+    // EVENT in the consume loop above, not by a render effect — a render snapshot
+    // can miss a batched Interrupted→Ready pair.)
+
+    // Announce a TERMINAL room-list failure through the stable CONTENT region. A
+    // terminal read error sets the notice while the lifecycle stays `Ready` and
+    // `rooms_loaded` stays false, so NEITHER the room-count effect (gated on
+    // `rooms_loaded`) NOR the lifecycle effect (gated on a lifecycle change)
+    // fires — without this a screen-reader user would keep hearing only the
+    // loading state while the friendly error sits silently in the DOM (§5.6). The
+    // retryable-disconnect notice is deliberately NOT announced here: its
+    // Interrupted transition is already voiced by the lifecycle effect (in the
+    // connection region), so announcing it again would be redundant. `Announcer`
+    // coalesces, so a re-rendering shell still announces once.
+    use_effect(move || {
+        let snapshot = ui.read();
+        let resolved = locale.read();
+        if snapshot.notice.is_some() && snapshot.notice_terminal {
+            let message = ErrorDisplay::room_list_failure(catalog_for(resolved.text), true).message;
+            announcers.content.announce(message);
+        }
+    });
+
+    let strings = use_strings();
+    let snapshot = ui();
+
+    // Primary copy for a failed room-list read is friendly catalog text; the raw
+    // `room.list:` detail lives ONLY in the Diagnostics disclosure. Terminal
+    // failures get copy that does not promise a retry that will never happen (§5.8
+    // / the "no false recovery promise" rule). Rendered only in the mounted shell,
+    // where the StatusFooter → Diagnostics disclosure the copy refers to actually
+    // exists (the boot/terminal cover shows no room-list notice).
+    let room_error = snapshot
+        .notice
+        .as_ref()
+        .map(|_| ErrorDisplay::room_list_failure(strings, snapshot.notice_terminal).message);
+
+    // The boot/terminal cover: initial activation ("connecting…") and the
+    // stop/failure states, each with its own honest label. `Interrupted` was
+    // Ready and is recovering, so the shell stays mounted (`StatusFooter` reports
+    // it) rather than hiding the rooms behind a cover; the stop/failure states
+    // render their own label — a "connecting" cover over a terminal state would be
+    // a lie. Labels are catalog copy, so the cover speaks the resolved locale.
     let boot_target = match snapshot.lifecycle {
         State::Ready | State::Interrupted => None,
-        State::Idle | State::Connecting => Some("connecting to the local daemon…"),
-        State::Stopping => Some("stopping — draining accepted work…"),
-        State::Stopped => Some("stopped"),
-        State::Failed => Some("the client failed and will not retry"),
+        State::Idle | State::Connecting => Some(strings.boot_connecting()),
+        State::Stopping => Some(strings.boot_stopping()),
+        State::Stopped => Some(strings.boot_stopped()),
+        State::Failed => Some(strings.boot_failed()),
     };
-    if let Some(target) = boot_target {
-        return rsx! {
+    let rooms_label = strings.rooms_heading().to_string();
+    let skip_rooms = strings.skip_to_rooms().to_string();
+    let app_name = strings.app_name();
+    let rooms_empty = strings.rooms_empty();
+    let rooms_loading = strings.rooms_loading();
+
+    // ONE render tree with ONE stable live region. The boot/terminal cover and the
+    // mounted shell are the two arms of a single lifecycle conditional; the
+    // `LiveRegion` sits OUTSIDE it, so it is the SAME template node — the SAME DOM
+    // element — across a boot↔shell transition (`Ready`→`Failed`/`Stopped` and
+    // back). Assistive tech then tracks one stable region rather than observing a
+    // node removed and a different one mounted mid-announcement (§5.6). The boot
+    // cover stays a ROOT child (never inside the `.app` grid, whose
+    // `height: var(--vh-full)` a nested full-viewport cover would blow up); all
+    // hooks are declared above, so this single return is order-safe.
+    rsx! {
+        if let Some(target) = boot_target {
+            // No room-list notice on the cover: the room.list error is a
+            // Ready-time read failure, orthogonal to why the client is
+            // stopping/failed, and the friendly copy refers to a Diagnostics
+            // disclosure this cover does not mount (a retryable notice would also
+            // promise a retry beneath a terminal `Failed`). The boot/terminal
+            // label is the honest primary message; the shell (with its
+            // StatusFooter → Diagnostics) is where a room.list failure and its raw
+            // detail belong.
             BootScreen {
                 target: target.to_string(),
-                notice: snapshot.notice.clone(),
+                notice: None,
             }
-        };
+        } else {
+            // Skip links are the FIRST focusable region and move focus (not just
+            // scroll) to their `tabindex="-1"` landmark targets. Only "skip to
+            // rooms" is offered: the rooms list is the one meaningful content
+            // region and is visible on every viewport; a "skip to content" link
+            // would point at the compact-hidden empty center.
+            SkipLinks {
+                SkipLink { anchor: "rooms-nav".to_string(), label: skip_rooms }
+            }
+            // A root pane state is always set (`pane-rooms`): the shared stylesheet
+            // hides `.sidebar`/`.center` on compact viewports unless a pane is
+            // selected, so a plain `app` root renders blank on a phone WebView.
+            div { class: "app pane-rooms", id: "app-root",
+                // The page's single `<h1>`, at the always-rendered root. Visually
+                // hidden because the visible headings already show on screen; it
+                // names the page for assistive tech.
+                h1 { class: "visually-hidden", "{app_name}" }
+                // The rooms pane is the PRIMARY content, so it is the `<main>`
+                // landmark — and `pane-rooms` keeps it visible on EVERY viewport,
+                // so every viewport has a main landmark (the fix for the compact
+                // main gap). The room list within is a NAMED `<nav>`.
+                main { class: "sidebar", id: "main-content", tabindex: "-1",
+                    // The notice lives here, not the `.center` pane (hidden on
+                    // compact). Terminal failures get copy that does not promise a
+                    // retry (§5.8); the raw detail is in Diagnostics.
+                    if let Some(message) = room_error.as_ref() {
+                        div { class: "error-note", id: "notice", "{message}" }
+                    }
+                    // The room list is a NAMED navigation landmark — routed through
+                    // the shared `NavLandmark` primitive (Decision-6), not a raw
+                    // `nav`, so accessibility invariants added to the primitive reach
+                    // the primary room route and cannot be bypassed. `NavLandmark`
+                    // renders the same `nav` with `aria-label`/`tabindex="-1"`.
+                    NavLandmark {
+                        class: "rooms-list",
+                        id: "rooms-nav",
+                        label: "{rooms_label}",
+                        // Loading vs empty is shown ONLY when there is no notice: a
+                        // terminal failure is neither "loading" nor an empty
+                        // account, so the shell must not render "No rooms yet" or
+                        // announce 0 rooms for a failed load.
+                        if snapshot.rooms.is_empty() && snapshot.notice.is_none() {
+                            // "No rooms yet" is an ANSWER, not a default: before the
+                            // first reply an empty vector means "not answered yet".
+                            if snapshot.rooms_loaded {
+                                div { class: "rooms-empty muted", id: "rooms-empty", "{rooms_empty}" }
+                            } else {
+                                div { class: "rooms-empty muted", id: "rooms-loading", "{rooms_loading}" }
+                            }
+                        }
+                        for room in snapshot.rooms.iter() {
+                            RoomListItem {
+                                key: "{room.room_id}",
+                                room: room.clone(),
+                                selected: false,
+                            }
+                        }
+                    }
+                    // The footer reports the connection state accessibly and hosts
+                    // the Diagnostics disclosure carrying the raw failure detail.
+                    // Diagnostics shows the LAST error detail (`last_diagnostic`),
+                    // which survives a recovery that cleared the primary `notice`
+                    // banner — so opening it after a transient disconnect still shows
+                    // the failure that occurred, not "no errors recorded".
+                    StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
+                }
+                // The desktop-only detail pane — a plain `<section>` (NOT a second
+                // landmark), `display:none` on compact. Carries the centre's h2.
+                section { class: "center", id: "center", EmptyCenter {} }
+            }
+        }
+        // TWO stable polite live regions — content and connection — both OUTSIDE
+        // the lifecycle conditional so each is the SAME DOM node across boot↔shell
+        // transitions, AND so a content announcement and a connection announcement
+        // that fire in the same render do not overwrite each other. Visually hidden.
+        LiveRegion { id: "live-region".to_string(), message: announcers.content.message() }
+        LiveRegion {
+            id: "connection-live-region".to_string(),
+            message: announcers.connection.message(),
+        }
+    }
+}
+
+/// The raw, secret-scrubbed detail recorded for the Diagnostics dialog. Keeps
+/// the `room.list:` context an operator needs while guaranteeing no token-shaped
+/// value reaches the recorded string (§5.8).
+fn diagnostic_notice(error: &CallError) -> String {
+    format!("room.list: {}", ErrorDisplay::diagnostic_detail(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::announces_connection_change;
+    use jeliya_client::State;
+
+    #[test]
+    fn a_recovery_after_a_missed_interrupt_is_announced() {
+        // Subscribe-after-interrupt: the tracker is seeded from the recovered
+        // snapshot (`Interrupted`), so the first `Ready` is a RECOVERY. With the old
+        // `None` seed this went unannounced.
+        assert!(announces_connection_change(
+            Some(State::Interrupted),
+            State::Ready,
+            false
+        ));
+        assert!(announces_connection_change(
+            Some(State::Failed),
+            State::Ready,
+            false
+        ));
+        assert!(announces_connection_change(
+            Some(State::Stopped),
+            State::Ready,
+            false
+        ));
     }
 
-    rsx! {
-        // A root pane state is always set (`pane-rooms`), because the shared
-        // stylesheet hides `.sidebar`/`.center` on compact viewports unless a
-        // pane is selected — a plain `app` root renders blank on a phone
-        // system WebView, which is a target platform. The React client sets
-        // `app pane-${pane}`; so does this.
-        div { class: "app pane-rooms", id: "app-root",
-            nav { class: "sidebar", id: "sidebar",
-                // The notice lives in the SIDEBAR, not `.center`: on compact
-                // viewports `pane-rooms` hides `.center` entirely, and this
-                // slice's shell is fixed at `pane-rooms` — a notice rendered
-                // there would leave a phone showing a misleading "No rooms
-                // yet" while the one diagnostic that explains it is
-                // unreachable. The sidebar is the region visible in every
-                // pane layout this shell can produce.
-                if let Some(notice) = snapshot.notice.as_ref() {
-                    div { class: "error-note", id: "notice", "{notice}" }
-                }
-                // `.rooms-list` is the scroll container the stylesheet
-                // styles (flex: 1, overflow-y: auto, min-height: 0). Rows as
-                // direct children of `.sidebar` would compress or clip once
-                // the list outgrows the viewport — desktop `.sidebar` does
-                // not scroll. Mirrors the React shell's nested container.
-                div { class: "rooms-list", id: "rooms-list",
-                    // On compact viewports `pane-rooms` shows ONLY the
-                    // sidebar (`.center` is hidden), so an empty room list
-                    // must render an empty state here or a phone lands on a
-                    // blank main area. Mirrors the React shell's
-                    // `rooms-empty muted` element.
-                    if snapshot.rooms.is_empty() {
-                        // "No rooms yet" is an ANSWER, not a default: before
-                        // the first room.list reply lands, an empty vector
-                        // means "not answered yet", and claiming an empty
-                        // account during a slow read would be false.
-                        if snapshot.rooms_loaded {
-                            div { class: "rooms-empty muted", id: "rooms-empty", "No rooms yet" }
-                        } else {
-                            div { class: "rooms-empty muted", id: "rooms-loading", "Loading rooms…" }
-                        }
-                    }
-                    for room in snapshot.rooms.iter() {
-                        RoomListItem {
-                            key: "{room.room_id}",
-                            room: room.clone(),
-                            selected: false,
-                        }
-                    }
-                }
-                // The footer sits at the BOTTOM of the sidebar's flex
-                // column (after the flex-1 rooms list), not as a loose
-                // `.app` child: the grid auto-places an unpositioned child
-                // into row 1 — the full-width strip the stylesheet reserves
-                // for `.conn-region` — which would render the footer above
-                // the sidebar and open an empty band over the center. The
-                // sidebar is also the one pane visible in every layout this
-                // shell produces, which is the point of the state label.
-                StatusFooter { lifecycle }
-            }
-            section { class: "center", id: "center", EmptyCenter {} }
+    #[test]
+    fn a_coalesced_problem_window_still_announces_the_recovery() {
+        // Backpressure coalesces `Ready → Interrupted` + `Interrupted → Ready` into a
+        // net `Ready → Ready` with HONEST endpoints and `coalesced_through_problem`
+        // set. `from`/`to` alone read as no change, so the flag is what keeps the
+        // recovery audible on resume (§K12).
+        assert!(announces_connection_change(
+            Some(State::Ready),
+            State::Ready,
+            true
+        ));
+    }
+
+    #[test]
+    fn the_happy_boot_path_stays_silent() {
+        // Seeded from the boot states (or `None`), a first `Ready` announces nothing.
+        assert!(!announces_connection_change(
+            Some(State::Idle),
+            State::Ready,
+            false
+        ));
+        assert!(!announces_connection_change(
+            Some(State::Connecting),
+            State::Ready,
+            false
+        ));
+        assert!(!announces_connection_change(None, State::Ready, false));
+        // Ready → Ready with NO problem in the window (a plain coalesced repeat) is
+        // not a transition to announce.
+        assert!(!announces_connection_change(
+            Some(State::Ready),
+            State::Ready,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_drop_to_a_problem_state_is_always_announced() {
+        for to in [State::Interrupted, State::Failed, State::Stopped] {
+            assert!(announces_connection_change(Some(State::Ready), to, false));
+            assert!(announces_connection_change(None, to, false));
         }
     }
 }

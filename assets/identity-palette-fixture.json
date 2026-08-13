@@ -1,0 +1,51 @@
+{
+  "$comment": [
+    "The cross-client identity-palette fixture (#177, spec §4-D3 / §5.5).",
+    "",
+    "The deterministic identity-palette hash is the ONE token concept CSS cannot",
+    "express: colorForId/fileTint map an opaque id or filename to a colour, and",
+    "the colour must be byte-identical across clients or the same person gets a",
+    "different avatar colour per device (docs/design-tokens.md). This file pins",
+    "id -> colour so two tests hold the clients together:",
+    "  - crates/jeliya-ui/src/l10n/palette.rs  (Rust, the surviving stack)",
+    "  - ui/src/l10n/palette.test.ts            (TS mirror, while React exists)",
+    "",
+    "Values are authoritative and were produced by the reference algorithm in",
+    "ui/src/lib/format.ts. A change here is a deliberate palette change and must",
+    "update both ports in the same commit. The `avatars` keys are opaque ids",
+    "(including the empty string, a BMP non-ASCII id, and a SURROGATE-PAIR id",
+    "-- the crab is 2 UTF-16 units but 1 Unicode scalar, so it catches a",
+    "Rust chars()/scalar iteration that would diverge from JS charCodeAt);",
+    "the `fileTints` keys are filenames (mixed case and multi-dot, to pin the",
+    "extension rule)."
+  ],
+  "avatars": {
+    "": "#2fd6a4",
+    "a": "#6aa8f7",
+    "peer:alice": "#a78bfa",
+    "peer:bob": "#fb923c",
+    "room-001": "#22d3ee",
+    "u:ZZ9": "#f472b6",
+    "identity:éa": "#f472b6",
+    "identity:🦀a": "#22d3ee",
+    "0123456789abcdef": "#f472b6",
+    "member:1": "#22d3ee",
+    "member:2": "#2fd6a4"
+  },
+  "fileTints": {
+    "report.pdf": "#f26d6d",
+    "notes.md": "#6aa8f7",
+    "readme.txt": "#6aa8f7",
+    "paper.doc": "#6aa8f7",
+    "data.json": "#2fd6a4",
+    "index.ts": "#2fd6a4",
+    "app.js": "#2fd6a4",
+    "photo.png": "#a78bfa",
+    "pic.JPEG": "#a78bfa",
+    "logo.svg": "#a78bfa",
+    "archive.zip": "#8aa39d",
+    "noext": "#8aa39d",
+    "weird.": "#8aa39d",
+    "a.b.c.webp": "#a78bfa"
+  }
+}

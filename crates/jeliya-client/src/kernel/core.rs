@@ -242,7 +242,13 @@ impl Core {
             return;
         }
         self.state = to;
-        actions.push(Action::Emit(ClientEvent::StateChanged { from, to }));
+        actions.push(Action::Emit(ClientEvent::StateChanged {
+            from,
+            to,
+            // A freshly emitted transition is honest end-to-end; only the fan-out
+            // bus sets this when it coalesces a problem-bearing window (§K12).
+            coalesced_through_problem: false,
+        }));
     }
 
     /// Mint a fresh dial attempt: a new token becomes the one outstanding

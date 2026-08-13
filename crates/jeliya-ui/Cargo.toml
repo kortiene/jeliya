@@ -27,6 +27,10 @@ default = []
 ui = [
     "dep:dioxus",
     "dioxus/minimal",
+    # `mounted` is LOAD-BEARING for the dialog focus contract (#177): without
+    # it, `onmounted`/`set_focus` compile against the silent no-op fallback
+    # backing and never fire. It adds no dependency to the lockfile.
+    "dioxus/mounted",
     "dep:futures",
     "jeliya-client/mock",
     # The canonical platform-authority contract (#174) and its deterministic
@@ -42,7 +46,7 @@ ui = [
 # dedicated web job. It adds `dioxus/web` on top of `ui`; it must never pull
 # `dioxus-desktop`/`wry`/`tao`/`tokio`/`openssl-sys` (asserted by
 # `scripts/check-jeliya-ui-wasm-graph.sh`).
-web = ["ui", "dioxus/web"]
+web = ["ui", "dioxus/web", "dep:web-sys", "dep:wasm-bindgen", "dep:js-sys"]
 
 # The system-WebView shell target (M4: #186-#189). This slice defines the
 # layering seam — `compose.rs` carries the mock-composed `NativeComposition` /
@@ -78,6 +82,19 @@ jeliya-platform = { path = "../jeliya-platform", optional = true }
 # features select `minimal`/`web` explicitly. Pinned to the 0.7.9 line the
 # architecture record selects and the root `Cargo.lock` already resolves.
 dioxus = { version = "=0.7.9", default-features = false, optional = true }
+# Web-only, gated by the `web` feature: read the browser UI language
+# (`navigator.language`) at composition to seed locale resolution (#177). Already
+# in the lock via `dioxus-web`; declaring it directly only enables the
+# Window/Navigator bindings and never enters the default/`ui`/MSRV graph.
+web-sys = { version = "0.3.103", optional = true, features = ["Window", "Navigator", "Document", "Element", "Location", "Storage"] }
+# Web-only, gated by `web`: install a marker-gated e2e hook (`window.__jeliyaE2eConnState`)
+# that drives the mock's connection lifecycle so the a11y matrix can verify the connection
+# live-region announce-once wiring against a REAL transition. Same compiled-in-but-armed-
+# only-by-the-e2e-`localStorage`-marker pattern as the `?boot=` fixture; inert in production.
+# Both already resolve in the lock via `dioxus-web`/`web-sys`, so declaring them directly
+# adds nothing new to the wasm graph and never enters the default/`ui`/MSRV graph.
+wasm-bindgen = { version = "0.2.126", optional = true }
+js-sys = { version = "0.3.103", optional = true }
 # Executor-agnostic, wasm32-safe async primitives for the app root's event
 # consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.

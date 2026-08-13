@@ -746,3 +746,148 @@ jobs:
             crates/jeliya-ui/e2e/playwright-report
             crates/jeliya-ui/e2e/test-results
           retention-days: 14
+
+  # ---- #177 Dioxus catalog / literal / French-typography gates ----
+  # Three independently-named contexts over ONE parser
+  # (scripts/lib/jeliya-ui-catalog.mjs) so each AC-7 concern is its own required
+  # branch-protection check. rustc already enforces key/placeholder parity between
+  # jeliya_ui::l10n::En and ::Fr in the jeliya-ui-web job; these gates are the
+  # defence in depth for what types cannot see. They read the Rust catalogs and
+  # components as TEXT (no Rust build), so they cost seconds.
+  #
+  # IMPORTANT (branch protection): GitHub matches a required status check by its
+  # check-RUN NAME, which is each job's `name:` value — NOT the job id. Add these
+  # exact contexts to `main` protection after this merges (spec §6.3):
+  #   - "jeliya-ui catalog parity (EN/FR)"                  (job ui-catalog)
+  #   - "jeliya-ui literal copy (no hardcoded UI strings)"  (job ui-literal-copy)
+  #   - "jeliya-ui French typography"                       (job ui-french-typography)
+  #   - "jeliya-ui accessibility matrix (axe + keyboard)"   (job ui-a11y-foundation)
+  # Requiring the job ids instead would never bind (no run publishes that name).
+  ui-catalog:
+    # Runs and is visible on every PR; not yet a branch-protection REQUIRED
+    # context (add it after this merges — spec section 6.3). Kept out of the
+    # documented required-job matrix the same way `jeliya-ui-web` is, so the
+    # docs-truth check counts only the required jobs.
+    name: jeliya-ui catalog parity (EN/FR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+      # The gate's own unit tests run FIRST — a gate whose rules are untested can
+      # pass by being broken (check-ui-i18n.test.mjs makes the same argument).
+      - name: Catalog gate self-tests + parity/empty/fr==en/plural
+        run: |
+          set -euo pipefail
+          node --test scripts/check-jeliya-ui-i18n.test.mjs
+          node scripts/check-jeliya-ui-i18n.mjs --only=catalog
+
+  ui-literal-copy:
+    # Not yet branch-protection REQUIRED (spec section 6.3); kept out of the
+    # documented required-job matrix like `jeliya-ui-web`.
+    name: jeliya-ui literal copy (no hardcoded UI strings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+      - name: No user-visible literal outside the catalog
+        run: node scripts/check-jeliya-ui-i18n.mjs --only=literals
+
+  ui-french-typography:
+    # Not yet branch-protection REQUIRED (spec section 6.3); kept out of the
+    # documented required-job matrix like `jeliya-ui-web`.
+    name: jeliya-ui French typography
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+      - name: U+202F / U+00A0 / U+2019 / U+2026 / guillemets over every fr value
+        run: node scripts/check-jeliya-ui-i18n.mjs --only=typography
+
+  ui-a11y-foundation:
+    # The independently-named accessibility context AC-7 requires: the offline
+    # axe + keyboard/focus matrix over the foundation routes at four viewports.
+    # It also runs inside `jeliya-ui-web`'s full playwright pass, but that job is
+    # not a11y-specific; this one exists so maintainers can require the check-run
+    # name "jeliya-ui accessibility matrix (axe + keyboard)" in branch protection
+    # (spec section 6.3) — the `name:` below is the context, NOT the `ui-a11y-foundation`
+    # job id. Kept out of the documented required-job matrix like `jeliya-ui-web` until then.
+    name: jeliya-ui accessibility matrix (axe + keyboard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust 1.96.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.96.0
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.2
+        with:
+          key: jeliya-ui-a11y
+
+      - name: Install pinned wasm-bindgen-cli
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+
+      # Build the reproducible artifact the offline matrix serves.
+      - name: Build the web artifact
+        run: bash scripts/build-web.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.3'
+          cache: npm
+          cache-dependency-path: crates/jeliya-ui/e2e/package-lock.json
+
+      - name: Install Playwright and Chromium
+        working-directory: crates/jeliya-ui/e2e
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium
+
+      # Only the a11y projects (the four viewports), so this context is the
+      # accessibility matrix and nothing else. The render smoke stays in the
+      # `render` project inside jeliya-ui-web.
+      - name: Accessibility matrix (axe critical/serious + keyboard/focus, 4 viewports)
+        working-directory: crates/jeliya-ui/e2e
+        run: npx playwright test --project=wide --project=medium --project=compact --project=narrow
+
+      - name: Preserve accessibility failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jeliya-ui-a11y-evidence
+          path: |
+            crates/jeliya-ui/e2e/playwright-report
+            crates/jeliya-ui/e2e/test-results
+          retention-days: 14

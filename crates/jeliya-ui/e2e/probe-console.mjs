@@ -1,0 +1,15 @@
+import { chromium } from "@playwright/test";
+import { spawn } from "node:child_process";
+const PORT = 7471;
+const server = spawn("node", ["serve.mjs"], { env: { ...process.env, RENDER_PORT: String(PORT) }, stdio: "ignore" });
+await new Promise((r) => setTimeout(r, 800));
+const browser = await chromium.launch();
+const page = await browser.newPage();
+page.on("console", (m) => console.log("CONSOLE", m.type(), m.text().slice(0, 300)));
+page.on("pageerror", (e) => console.log("PAGEERROR", String(e).slice(0, 500)));
+await page.goto(`http://127.0.0.1:${PORT}/`);
+await new Promise((r) => setTimeout(r, 3000));
+console.log("app-root html:", await page.evaluate(() => document.getElementById("app-root")?.outerHTML.slice(0,80) ?? "NONE"));
+console.log("body html len:", await page.evaluate(() => document.body.innerHTML.length));
+console.log("html lang:", await page.evaluate(() => document.documentElement.lang));
+await browser.close(); server.kill(); process.exit(0);

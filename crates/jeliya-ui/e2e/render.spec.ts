@@ -66,8 +66,8 @@ test("the Dioxus shell renders offline with the shared design system", async ({ 
   // The wasm module mounts the root; wait for the shell it renders.
   const root = page.locator("#app-root");
   await expect(root).toBeVisible();
-  await expect(page.locator("#sidebar")).toBeAttached();
-  await expect(page.locator("#center")).toBeAttached();
+  await expect(page.locator("#rooms-nav")).toBeAttached();
+  await expect(page.locator("#main-content")).toBeAttached();
   await expect(page.locator("#center-empty")).toBeVisible();
 
   // Computed, not declared: the reused stylesheet must actually paint the
@@ -85,15 +85,17 @@ test("the Dioxus shell renders offline with the shared design system", async ({ 
 // `handle.start()`, sets `State::Ready`, and delivers all scripted mount reads
 // in bounded cooperative passes (no wall clock). This test crosses the Rust
 // mock → WASM → DOM boundary: if the compose.rs driver or the AppRoot
-// lifecycle fold broke, the status footer would stay stuck before "Ready" and
+// lifecycle fold broke, the status footer would stay stuck before the Ready
+// state's "Connected" label and
 // the boot screen would never unmount.
 test("the mock drives the shell to the Ready lifecycle state", async ({ page }) => {
   await page.goto("/");
 
-  // After the mock settles, StatusFooter renders "client · Ready".
+  // After the mock settles, StatusFooter renders the catalog's Ready-state
+  // copy: "client · Connected" (#177 moved the footer to catalog copy).
   // `toContainText` waits (default 5 s) so this handles the async WASM settle.
   const footer = page.locator("#status-footer");
-  await expect(footer).toContainText("Ready");
+  await expect(footer).toContainText("Connected");
 
   // The boot screen (rendered as the component ROOT while `!ready` in app.rs)
   // must be gone once the client is Ready: unmounted, not merely hidden.
@@ -110,7 +112,7 @@ test("a nested SPA route loads the app via root-relative assets", async ({ page 
 
   const root = page.locator("#app-root");
   await expect(root).toBeVisible();
-  await expect(page.locator("#status-footer")).toContainText("Ready");
+  await expect(page.locator("#status-footer")).toContainText("Connected");
 });
 
 // Compact viewports are a DIFFERENT rendering contract: at
@@ -127,9 +129,10 @@ test.describe("compact viewport", () => {
   test("the compact shell shows the rooms pane and hides the center", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("#status-footer")).toContainText("Ready");
-    await expect(page.locator("#sidebar")).toBeVisible();
-    const roomsList = page.locator("#rooms-list");
+    await expect(page.locator("#status-footer")).toContainText("Connected");
+    await expect(page.locator("#rooms-nav")).toBeVisible();
+    // The room list is the nav#rooms-nav itself (class .rooms-list).
+    const roomsList = page.locator("nav.rooms-list");
     await expect(roomsList).toBeVisible();
     // The scripted mount read must SETTLE, not merely render something:
     // `#rooms-loading` shares the `rooms-empty` class, so a class-based
