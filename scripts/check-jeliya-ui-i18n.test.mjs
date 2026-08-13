@@ -1801,6 +1801,29 @@ test('rule 1: a multi-word all-token value is not auto-exempted (#274 28-exempt)
   );
 });
 
+test('rule 2: a String::with_capacity() branch is value-empty (#274 29-capacity)', () => {
+  const src = `impl Catalog for En {
+    fn tag(&self, c: bool) -> String { if c { "Bonjour".to_owned() } else { String::with_capacity(16) } }
+  }`;
+  const empty = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).filter((f) => f.code === 'value-empty');
+  assert.ok(
+    empty.some((f) => /tag/.test(f.message)),
+    'String::with_capacity(16) renders the empty string → value-empty',
+  );
+});
+
+test('form: a shorthand Field id is compared against the control id (#274 29-shorthand)', () => {
+  // `Field { id, … input { id: "other" } }` — shorthand `id` (= `id: id`). The
+  // label[for] uses `id` but the control uses `"other"`, so the control is unnamed;
+  // the mismatch must be caught, not skipped for want of an explicit `id:` on Field.
+  const source = `fn F() -> Element { rsx! { Field { id, label: "Email", input { id: "other" } } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'form-control-id-mismatch'),
+    'a shorthand Field id mismatched by the control must be flagged',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

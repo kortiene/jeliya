@@ -36,6 +36,12 @@ pub struct UiState {
     /// recovery-promising vs terminal copy from this, so a user is never told
     /// "we'll retry when the connection returns" for an error that never retries.
     pub notice_terminal: bool,
+    /// The RAW, secret-scrubbed detail of the most recent failure — the
+    /// Diagnostics "last error detail". Unlike [`notice`](Self::notice) (the
+    /// primary banner, cleared when a retry recovers the shell) this is RETAINED
+    /// across recovery, so opening Diagnostics after a transient disconnect still
+    /// shows the failure that occurred instead of "no errors recorded".
+    pub last_diagnostic: Option<String>,
 }
 
 impl UiState {
@@ -48,6 +54,7 @@ impl UiState {
             rooms_loaded: false,
             notice: None,
             notice_terminal: false,
+            last_diagnostic: None,
         }
     }
 
@@ -73,18 +80,24 @@ impl UiState {
     /// task will retry on the next recovery to `Ready`. The shell may promise
     /// recovery for this.
     pub fn set_notice(&mut self, notice: impl Into<String>) {
-        self.notice = Some(notice.into());
+        let notice = notice.into();
+        self.last_diagnostic = Some(notice.clone());
+        self.notice = Some(notice);
         self.notice_terminal = false;
     }
 
     /// Record a TERMINAL notice — a failure this component will not retry. The
     /// shell must not promise recovery for it.
     pub fn set_terminal_notice(&mut self, notice: impl Into<String>) {
-        self.notice = Some(notice.into());
+        let notice = notice.into();
+        self.last_diagnostic = Some(notice.clone());
+        self.notice = Some(notice);
         self.notice_terminal = true;
     }
 
-    /// Clear any notice (a successful read recovered the shell).
+    /// Clear the primary notice (a successful read recovered the shell) — but
+    /// RETAIN [`last_diagnostic`](Self::last_diagnostic), so Diagnostics still
+    /// shows the failure that a now-recovered retry cleared from the banner.
     pub fn clear_notice(&mut self) {
         self.notice = None;
         self.notice_terminal = false;
@@ -166,6 +179,26 @@ mod tests {
         // A second call overwrites the first.
         state.set_notice("reconnecting");
         assert_eq!(state.notice.as_deref(), Some("reconnecting"));
+    }
+
+    #[test]
+    fn a_recovered_retry_keeps_the_last_diagnostic() {
+        // The Diagnostics "last error detail" must survive a recovery that clears the
+        // primary banner, or opening it after a transient disconnect reports "no
+        // errors recorded" even though a failure occurred.
+        let mut state = UiState::new();
+        state.set_notice("room.list: connection refused");
+        assert_eq!(
+            state.last_diagnostic.as_deref(),
+            Some("room.list: connection refused")
+        );
+        state.clear_notice();
+        assert_eq!(state.notice, None, "the primary banner clears on recovery");
+        assert_eq!(
+            state.last_diagnostic.as_deref(),
+            Some("room.list: connection refused"),
+            "the last diagnostic is RETAINED for Diagnostics after recovery"
+        );
     }
 
     #[test]

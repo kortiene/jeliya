@@ -420,6 +420,12 @@ export function parseCatalog(source, file) {
       const emptyDefaultRe =
         /(?:=>|\{)\s*(?:\w+\s*::\s*)*(?:<[^>]*>\s*::\s*)?None\s*\.\s*unwrap_or_default\s*\(\s*\)/g;
       while (emptyDefaultRe.exec(returned) !== null) emptyBranchCount += 1;
+      // `String::with_capacity(N)` allocates capacity but renders the EMPTY string —
+      // guaranteed blank regardless of the argument — so count it as a blank branch
+      // too (its non-empty parens keep it out of the `\(\s*\)` ctor regex above).
+      const emptyCapacityRe =
+        /(?:=>|\{)\s*(?:\w+\s*::\s*)*String\s*::\s*with_capacity\s*\([^)]*\)/g;
+      while (emptyCapacityRe.exec(returned) !== null) emptyBranchCount += 1;
     }
     const emptyBranchValues = Array.from({ length: emptyBranchCount }, () => '');
     const isPlural = /\bPluralCategory\b/.test(params);
@@ -1742,8 +1748,17 @@ export function scanComponentLiterals(file, source) {
     return slice.slice(startVal, i).trim() || null;
   };
   // The FIRST `id:` value (quoted literal or a balanced expression like
-  // `field_id.clone()` / `make_id("email", suffix)`).
-  const firstIdAttr = (from, to) => firstAttrValue(from, to, '\\bid\\s*:\\s*');
+  // `field_id.clone()` / `make_id("email", suffix)`), OR the field-init SHORTHAND
+  // `id`. `Field { id, … }` is `id: id`, so the Field's id is the variable `id`;
+  // without recognizing the shorthand, `firstAttrValue` returns null and the
+  // label[for] / control-id mismatch check is skipped, leaving the control unnamed
+  // while the gate passes. A bare `id` prop (followed by `,`/`}`, not `:`) resolves
+  // to the identifier `id`.
+  const firstIdAttr = (from, to) => {
+    const explicit = firstAttrValue(from, to, '\\bid\\s*:\\s*');
+    if (explicit !== null) return explicit;
+    return /\bid\s*(?:,|\})/.test(commentMaskedSlice(from, to)) ? 'id' : null;
+  };
   // The `aria-describedby` value (quoted hyphen name OR the `aria_describedby`
   // underscore alias Dioxus renders identically), read as a balanced expression.
   const describedbyValue = (from, to) =>

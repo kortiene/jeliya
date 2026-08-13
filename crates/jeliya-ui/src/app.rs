@@ -462,7 +462,11 @@ pub fn AppRoot(
                     }
                     // The footer reports the connection state accessibly and hosts
                     // the Diagnostics disclosure carrying the raw failure detail.
-                    StatusFooter { state: snapshot.lifecycle, detail: snapshot.notice.clone() }
+                    // Diagnostics shows the LAST error detail (`last_diagnostic`),
+                    // which survives a recovery that cleared the primary `notice`
+                    // banner — so opening it after a transient disconnect still shows
+                    // the failure that occurred, not "no errors recorded".
+                    StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                 }
                 // The desktop-only detail pane — a plain `<section>` (NOT a second
                 // landmark), `display:none` on compact. Carries the centre's h2.
