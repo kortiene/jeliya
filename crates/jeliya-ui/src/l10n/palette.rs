@@ -66,6 +66,25 @@ pub fn file_tint(name: &str) -> &'static str {
     }
 }
 
+/// The avatar-surface BACKGROUND for an id: its identity colour ([`color_for_id`])
+/// at the avatar alpha `0x26`, as an `#rrggbbaa` string. This is the canonical
+/// derivation of `${colorForId(id)}26` inlined by the React Sidebar
+/// (`ui/src/components/Sidebar.tsx` — `background: `${colorForId(identityId)}26``),
+/// so a Dioxus avatar surface reads ONE token source instead of recreating the
+/// alpha at every call site (the cross-client seam this module exists to hold).
+pub fn avatar_bg(id: &str) -> String {
+    format!("{}26", color_for_id(id))
+}
+
+/// The room-tile BACKGROUND for an id: its identity colour ([`color_for_id`]) at
+/// the tile alpha `0x1f`, as an `#rrggbbaa` string. The canonical derivation of
+/// `${colorForId(id)}1f` inlined by the React Sidebar's `room-hex`
+/// (`ui/src/components/Sidebar.tsx` — `background: `${tint}1f``), so a Dioxus room
+/// tile derives it from the same token source rather than at the call site.
+pub fn tile_bg(id: &str) -> String {
+    format!("{}1f", color_for_id(id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +184,31 @@ mod tests {
                 expected,
                 "avatar colour drift for id {id:?} — the browser client and this \
                  port would render different colours"
+            );
+        }
+    }
+
+    /// The avatar/tile BACKGROUNDS are the identity colour at fixed alphas
+    /// (`0x26` avatar, `0x1f` tile), so pin them to the SAME shared fixture: each
+    /// id's background must be its pinned avatar colour with the React alpha
+    /// suffix. A drift in either the base colour or the alpha (recreated at a call
+    /// site instead of derived here) fails, so downstream Dioxus surfaces have one
+    /// canonical, cross-client-checked derivation.
+    #[test]
+    fn avatar_and_tile_backgrounds_match_the_shared_fixture() {
+        let source = fixture();
+        let avatars = read_string_map(&source, "avatars");
+        assert!(!avatars.is_empty(), "fixture must pin at least one avatar");
+        for (id, colour) in avatars {
+            assert_eq!(
+                avatar_bg(&id),
+                format!("{colour}26"),
+                "avatar_bg drift for id {id:?}"
+            );
+            assert_eq!(
+                tile_bg(&id),
+                format!("{colour}1f"),
+                "tile_bg drift for id {id:?}"
             );
         }
     }

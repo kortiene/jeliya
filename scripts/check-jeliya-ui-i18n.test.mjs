@@ -1056,6 +1056,107 @@ fn view() -> Element {
   );
 });
 
+test('literal scan: a dynamic aria-describedby naming a related-but-different PATH is flagged', () => {
+  // `id: ids.email.clone()` and `aria_describedby: format!("{}-hint", ids.other)`
+  // share the `ids` receiver but name DIFFERENT hints — the full access path must
+  // match, not just the first identifier.
+  const wrong = `
+fn view() -> Element {
+    rsx! { Field { id: ids.email.clone(), label: "Email", hint: "x",
+        input { id: ids.email.clone(), aria_describedby: format!("{}-hint", ids.other) } } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', wrong).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a describedby referencing a related-but-different path must be flagged',
+  );
+  const right = `
+fn view() -> Element {
+    rsx! { Field { id: ids.email.clone(), label: "Email", hint: "x",
+        input { id: ids.email.clone(), aria_describedby: format!("{}-hint", ids.email) } } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', right).some((f) => f.code === 'form-control-hint-unassociated'),
+    'a describedby referencing the full id path must be accepted',
+  );
+});
+
+test('rule 3 plural: a reordered but untranslated French plural is still flagged', () => {
+  const en = `impl Catalog for En {
+    fn rooms(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::One => format!("{n} room"),
+        PluralCategory::Other => format!("{n} rooms"),
+      }
+    }
+  }`;
+  // FR reorders the arms but leaves BOTH categories in English.
+  const frReordered = `impl Catalog for Fr {
+    fn rooms(&self, n: &str, c: PluralCategory) -> String {
+      match c {
+        PluralCategory::Other => format!("{n} rooms"),
+        PluralCategory::One => format!("{n} room"),
+      }
+    }
+  }`;
+  assert.ok(
+    checkCatalogs({
+      en: parseCatalog(en, 'en.rs'),
+      fr: parseCatalog(frReordered, 'fr.rs'),
+      allowlist: {},
+    }).some((f) => f.code === 'fr-untranslated'),
+    'a reordered but fully-English plural must be flagged as untranslated',
+  );
+  // The same shape, genuinely translated, is NOT flagged.
+  const frTranslated = frReordered
+    .replace('{n} rooms', '{n} salles')
+    .replace('{n} room', '{n} salle');
+  assert.ok(
+    !checkCatalogs({
+      en: parseCatalog(en, 'en.rs'),
+      fr: parseCatalog(frTranslated, 'fr.rs'),
+      allowlist: {},
+    }).some((f) => f.code === 'fr-untranslated'),
+    'a translated (reordered) plural must not be flagged',
+  );
+});
+
+test('literal scan: copy returned by a local helper invoked in RSX is flagged', () => {
+  // A literal factored into a helper and rendered via its call is still copy.
+  const child = `
+fn destructive_label() -> &'static str { "Delete account" }
+fn view() -> Element {
+    rsx! { div { {destructive_label()} } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', child).some((f) => /Delete account/.test(f.message)),
+    'a literal returned by a helper invoked as an RSX child must be flagged',
+  );
+  const attr = `
+fn skip_label() -> String { "Skip to rooms".to_string() }
+fn view() -> Element {
+    rsx! { SkipLink { anchor: "x", label: skip_label() } }
+}
+`;
+  assert.ok(
+    scanComponentLiterals('x.rs', attr).some((f) => /Skip to rooms/.test(f.message)),
+    'a literal returned by a helper used as a copy attr must be flagged',
+  );
+  // A helper invoked ONLY in a structural position is not scanned.
+  const structural = `
+fn id_for() -> String { format!("email-hint") }
+fn view() -> Element {
+    rsx! { div { id: id_for() } }
+}
+`;
+  assert.ok(
+    !scanComponentLiterals('x.rs', structural).some((f) => /email-hint/.test(f.message)),
+    'a helper used only for a structural attribute must not be scanned',
+  );
+});
+
 test('the real jeliya-ui tree is clean across all groups', () => {
   const findings = checkJeliyaUiI18n({});
   assert.deepEqual(

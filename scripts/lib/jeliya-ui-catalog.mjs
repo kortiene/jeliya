@@ -291,6 +291,7 @@ export function parseCatalog(source, file) {
     // different order is still compared category-against-category (parity would
     // otherwise misalign fr `Other` against en `One`).
     let slotsByCategory = null;
+    let valuesByCategory = null;
     if (isPlural) {
       const bodyText = skeleton.slice(open, close);
       // Recognize BOTH an explicit `PluralCategory::One`/`Other` arm AND a wildcard
@@ -321,6 +322,12 @@ export function parseCatalog(source, file) {
         One: slotSet(valuesByCat.One),
         Other: slotSet(valuesByCat.Other),
       };
+      // Retain the VALUES per category too (collapsed like `values`), so the
+      // untranslated check can compare fr↔en by category rather than source order.
+      valuesByCategory = {
+        One: valuesByCat.One.map(collapseSlots),
+        Other: valuesByCat.Other.map(collapseSlots),
+      };
     }
     entries.set(name, {
       key: name,
@@ -330,6 +337,7 @@ export function parseCatalog(source, file) {
       slots: slotSet(parts.map((p) => p.value)),
       slotsPerArm: parts.map((p) => slotSet([p.value])),
       slotsByCategory,
+      valuesByCategory,
     });
     methodRe.lastIndex = close;
   }
@@ -456,7 +464,24 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
   for (const [key, frEntry] of fr.entries) {
     const enEntry = en.entries.get(key);
     if (!enEntry) continue;
-    if (frEntry.values.join(SLOT) !== enEntry.values.join(SLOT)) continue;
+    // Byte-identical detection: for a PLURAL compare fr↔en by CATEGORY, not source
+    // order — a harmless arm reordering must not hide that every French category is
+    // still English. Otherwise compare the values directly.
+    let identical;
+    if (
+      frEntry.isPlural &&
+      enEntry.isPlural &&
+      frEntry.valuesByCategory &&
+      enEntry.valuesByCategory
+    ) {
+      identical = ['One', 'Other'].every(
+        (cat) =>
+          frEntry.valuesByCategory[cat].join(SLOT) === enEntry.valuesByCategory[cat].join(SLOT),
+      );
+    } else {
+      identical = frEntry.values.join(SLOT) === enEntry.values.join(SLOT);
+    }
+    if (!identical) continue;
     if (identityExemption(key, frEntry.values.join(' '), allowlist)) continue;
     findings.push(finding(fr.file, frEntry.line, 'fr-untranslated', `${key}: French value is byte-identical to English — translate it, or add it to IDENTICAL_ALLOWLIST with the reason it is right`, 'catalog'));
   }
@@ -832,11 +857,67 @@ export function scanComponentLiterals(file, source) {
     if (pc === '{' || pc === '}' || pc === '"') copyInterpolations.add(m[1]);
   }
 
+  // Copy HELPER functions: a literal-returning fn INVOKED in an RSX copy position
+  // (`div { {helper()} }`, `label: helper()`) renders its body's literal as copy,
+  // even though that literal lives outside RSX and is never assigned. Collect the
+  // invoked helper names, resolve each to its `fn` body, and treat bare-letter
+  // literals inside as copy. A helper invoked only in a STRUCTURAL position
+  // (`id: id_for()`) is not collected, so its body stays exempt.
+  const copyHelpers = new Set();
+  // Expression-CHILD calls: `{ helper() }` — its `{` follows the element body `{`,
+  // a sibling child's `}`, or a sibling string (blanked to `"`).
+  const childCallRe = /[{}"]\s*\{\s*([A-Za-z_]\w*)\s*\(/g;
+  for (let m = childCallRe.exec(skeleton); m; m = childCallRe.exec(skeleton)) {
+    const at = m.index + m[0].lastIndexOf('{');
+    if (at >= limit || !inRsx(at)) continue;
+    copyHelpers.add(m[1]);
+  }
+  // Copy-ATTRIBUTE call values: `label: helper()` (a copy-bearing prop).
+  const attrCallRe = /([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*\(/g;
+  for (let m = attrCallRe.exec(skeleton); m; m = attrCallRe.exec(skeleton)) {
+    if (m.index >= limit || !inRsx(m.index)) continue;
+    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyHelpers.add(m[2]);
+  }
+  // Resolve each helper name to its `fn NAME(…) -> … { BODY }` body span: skip the
+  // balanced parameter list, then take the first `{` (the body) and its match.
+  const helperBodies = [];
+  for (const name of copyHelpers) {
+    const defRe = new RegExp(`\\bfn\\s+${name}\\s*\\(`, 'g');
+    for (let m = defRe.exec(skeleton); m; m = defRe.exec(skeleton)) {
+      let i = m.index + m[0].length - 1; // at the opening '('
+      let depth = 0;
+      for (; i < skeleton.length; i += 1) {
+        if (skeleton[i] === '(') depth += 1;
+        else if (skeleton[i] === ')') {
+          depth -= 1;
+          if (depth === 0) {
+            i += 1;
+            break;
+          }
+        }
+      }
+      while (i < skeleton.length && skeleton[i] !== '{') i += 1;
+      const close = matchingBrace(skeleton, i);
+      if (close !== -1) helperBodies.push([i, close]);
+    }
+  }
+  const inCopyHelperBody = (pos) => helperBodies.some(([open, close]) => pos > open && pos < close);
+
   for (const literal of literals) {
     if (literal.start >= limit) continue;
     // Only literals inside RSX markup are copy candidates; Rust logic literals
-    // (class-name match arms, `let` bindings, `format!` args) are not.
-    if (!inRsx(literal.start)) continue;
+    // (class-name match arms, `let` bindings, `format!` args) are not — EXCEPT a
+    // literal inside a copy-helper body, which is rendered as copy via its call.
+    if (!inRsx(literal.start)) {
+      if (
+        inCopyHelperBody(literal.start) &&
+        bareLetters(literal.value) &&
+        !exempt(lineOf(source, literal.start))
+      ) {
+        findings.push(finding(file, lineOf(source, literal.start), 'rust-text', `copy returned by a helper is not in the catalog: ${literal.value.trim().slice(0, 60)}`, 'literals'));
+      }
+      continue;
+    }
     if (!bareLetters(literal.value)) continue;
     const line = lineOf(source, literal.start);
     if (exempt(line)) continue;
@@ -1118,13 +1199,14 @@ export function scanComponentLiterals(file, source) {
           findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\` inside a \`Field\` with an expression \`id\` and a hint must set \`aria-describedby\` to a DYNAMIC value referencing the Field's \`{id}-hint\`; ${found} cannot name the runtime hint id`, 'literals'));
         } else {
           // A dynamic `aria-describedby` under an expression id must reference the
-          // SAME base identifier as the Field id, or it names a DIFFERENT control's
-          // hint (`id: field_id.clone()` with `aria_describedby: format!("{other_id}-hint")`
-          // leaves the real `{field_id}-hint` unreferenced). Compare the leading
-          // identifier of each expression.
-          const idBase = (fieldId.match(/[A-Za-z_]\w*/) || [])[0];
-          if (idBase && !new RegExp(`\\b${idBase}\\b`).test(describedby)) {
-            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\`'s \`aria-describedby\` (\`${describedby}\`) must reference the Field id's own \`{id}-hint\` (derived from \`${idBase}\`); it names a different id, so the hint is unassociated`, 'literals'));
+          // Field id's COMPLETE derivation, not merely its first identifier:
+          // `id: ids.email.clone()` with `aria_describedby: format!("{}-hint", ids.other)`
+          // share `ids` but name DIFFERENT hints. Compare the full access path with
+          // any trailing conversion calls (`.clone()`/`.into()`/`.to_string()`…)
+          // stripped, so `ids.email` must appear in the describedby verbatim.
+          const idCore = fieldId.replace(/(\s*\.\s*\w+\s*\(\s*\))+\s*$/, '').trim();
+          if (idCore && !describedby.includes(idCore)) {
+            findings.push(finding(file, line, 'form-control-hint-unassociated', `\`${el}\`'s \`aria-describedby\` (\`${describedby}\`) must reference the Field id's own \`{id}-hint\` (derived from \`${idCore}\`); it references a different id, so the hint is unassociated`, 'literals'));
           }
         }
       }
