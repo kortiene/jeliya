@@ -1954,6 +1954,24 @@ test('literal scan: copy appended via push_str to an interpolated binding is fla
   );
 });
 
+test('literal scan: copy in a LATER mutation arg (insert_str) is flagged (#274 34-insertarg)', () => {
+  const source = `fn C() -> Element { let mut label = String::new(); label.insert_str(0, "Delete account"); rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy in insert_str(0, "…") (a later arg) must be flagged',
+  );
+});
+
+test('literal scan: copy bound to an explicit copy PROP identifier is flagged (#274 34-explicitprop)', () => {
+  const source = `fn C() -> Element { let text = "Delete account".to_string(); rsx! { Banner { label: text } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'a let bound to an explicit copy prop value (label: text) must be flagged',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

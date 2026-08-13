@@ -1479,6 +1479,17 @@ export function scanComponentLiterals(file, source) {
     if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyInterpolations.add(m[1]);
   }
 
+  // EXPLICIT copy props with an IDENTIFIER value: `Banner { label: text }` — `label`
+  // is a copy prop, `text` the bare binding that flows into copy. The shorthand pass
+  // above collects the prop NAME; here collect the VALUE identifier so a backing
+  // `let text = "…"` is caught too. A value that is a call (`label: helper()`), a
+  // string, or a path is not a bare identifier before `,`/`}`, so it is not matched.
+  const explicitPropRe = /([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*(?=[,}])/g;
+  for (let m = explicitPropRe.exec(skeleton); m; m = explicitPropRe.exec(skeleton)) {
+    if (inTest(m.index) || !inRsx(m.index)) continue;
+    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) copyInterpolations.add(m[2]);
+  }
+
   // Dioxus braced EXPRESSION CHILDREN: `div { {message} }` renders the binding as a
   // text node, so a `let message = "…"` behind it is copy REGARDLESS of the
   // variable's name (it need not be a copy-bearing prop like `label`). Collect the
@@ -1739,22 +1750,43 @@ export function scanComponentLiterals(file, source) {
     if (prevChar === '=') {
       eqIndex = at;
     } else if (prevChar === '(') {
+      // A constructor-wrapped RHS: `= String::from("…")` / `= format!("…")`.
       let i = at - 1;
-      const calleeEnd = i + 1;
       while (i >= 0 && /[\w:!]/.test(skeleton[i])) i -= 1; // callee ident / path / `!`
-      const callee = skeleton.slice(i + 1, calleeEnd);
       while (i >= 0 && /\s/.test(skeleton[i])) i -= 1;
-      if (skeleton[i] === '=') {
-        eqIndex = i;
-      } else if (skeleton[i] === '.' && /^(?:push_str|push|insert_str|replace_range)$/.test(callee)) {
-        // A MUTATING method appends copy to a binding (`label.push_str("…")`); the
-        // literal is a call ARG, so there is no `=`. Associate it with the RECEIVER
-        // binding, so mutated copy is traced like assigned copy.
-        let r = i - 1;
-        while (r >= 0 && /\s/.test(skeleton[r])) r -= 1;
-        const recvEnd = r + 1;
-        while (r >= 0 && /\w/.test(skeleton[r])) r -= 1;
-        mutatedBinding = skeleton.slice(r + 1, recvEnd);
+      if (skeleton[i] === '=') eqIndex = i;
+    }
+    // A MUTATING method appends copy to a binding (`label.push_str("…")`,
+    // `label.insert_str(0, "…")`, `label.replace_range(.., "…")`). The literal is a
+    // call ARG in ANY position, so walk back to the ENCLOSING `(` (over prior args at
+    // depth 0) and check the callee: a `<receiver>.<mutator>` associates the literal
+    // with the RECEIVER binding, traced like assigned copy.
+    if (eqIndex < 0) {
+      let i = literal.start - 1;
+      let depth = 0;
+      while (i >= 0) {
+        const c = skeleton[i];
+        if (c === ')' || c === ']' || c === '}') depth += 1;
+        else if (c === '(' || c === '[' || c === '{') {
+          if (depth === 0) break;
+          depth -= 1;
+        }
+        i -= 1;
+      }
+      if (i >= 0 && skeleton[i] === '(') {
+        let c = i - 1;
+        while (c >= 0 && /\s/.test(skeleton[c])) c -= 1;
+        const calleeEnd = c + 1;
+        while (c >= 0 && /\w/.test(skeleton[c])) c -= 1;
+        const callee = skeleton.slice(c + 1, calleeEnd);
+        while (c >= 0 && /\s/.test(skeleton[c])) c -= 1;
+        if (skeleton[c] === '.' && /^(?:push_str|push|insert_str|replace_range)$/.test(callee)) {
+          let r = c - 1;
+          while (r >= 0 && /\s/.test(skeleton[r])) r -= 1;
+          const recvEnd = r + 1;
+          while (r >= 0 && /\w/.test(skeleton[r])) r -= 1;
+          mutatedBinding = skeleton.slice(r + 1, recvEnd);
+        }
       }
     }
     // The literal may sit ANYWHERE in a `let NAME = <RHS>` — inside an `if/else`,
