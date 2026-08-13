@@ -291,8 +291,13 @@ pub(crate) async fn wait_health_dark(
         )
         .await
         {
-            // Answered "not this daemon" WITHIN budget → dark.
-            Ok(Some(report)) => report.proves_pid(pid),
+            // DISAPPEARANCE polling: the incumbent is still PRESENT while the same
+            // PID answers — even `ok: false`, as an incompatible daemon draining
+            // after SIGTERM reports (it may still hold the dir lock). Only a probe
+            // that no longer reaches THIS pid (a different pid, or no answer) means
+            // it is gone. Using `proves_pid` (which also requires `ok`) would call a
+            // still-live, unhealthy incumbent "dark" and respawn over it.
+            Ok(Some(report)) => report.is_same_process(pid),
             Ok(None) => false,
             // The probe outran the remaining budget: we cannot conclude dark (the
             // daemon may be up but slow) and we are at/past the deadline, so stop.
@@ -518,6 +523,47 @@ pub(crate) async fn wait_lock_handle_released(
         // A probe wedged on a stalled lock manager, or the task panicked — fail
         // closed (unproven release → the caller reports `ShutdownTimedOut`).
         _ => false,
+    }
+}
+
+/// Poll until the process `pid` has EXITED — `kill(pid, 0)` (signal 0, an existence
+/// check) returns `ESRCH` — bounded by `budget`. This binds the adopted-stop
+/// completion proof to the IDENTITY the health probe validated (the portfile's
+/// PID), independent of the `daemon.lock` PATH: a cleanup tool that unlinks/replaces
+/// the lock, or an UNRELATED process's lock release, cannot masquerade as this
+/// daemon's exit. Fail-closed: a recycled PID (reassigned after this daemon exited)
+/// reads as still alive → `false` → the caller reports `ShutdownTimedOut`, never a
+/// premature `Graceful`. `kill(_, 0)` is a fast syscall with no FS access, so it
+/// polls inline. `false` off Unix or for an invalid PID (the [`crate::process::SignalPid`]
+/// guard rejects `0`/out-of-range values that could signal a whole group).
+pub(crate) async fn wait_process_exited(pid: u32, budget: Duration) -> bool {
+    #[cfg(unix)]
+    {
+        use nix::errno::Errno;
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+        let Some(valid) = crate::process::SignalPid::new(pid) else {
+            return false;
+        };
+        let target = Pid::from_raw(valid.get());
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            // A zombie still occupies the PID (`kill` → `Ok`), so this reports exit
+            // only once the process is fully gone — strictly AFTER it released the
+            // lock, so it never promises `Graceful` prematurely.
+            if matches!(kill(target, None), Err(Errno::ESRCH)) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, budget);
+        false
     }
 }
 
@@ -1319,5 +1365,29 @@ mod tests {
             "a captured handle must report released once the daemon drops its lock"
         );
         std::fs::remove_dir_all(&dir2).ok();
+    }
+
+    /// The identity-bound completion proof: a LIVE PID does not read as exited; a
+    /// killed-and-reaped one does. This is what binds the adopted-stop `Graceful`
+    /// verdict to the health-proven PID, immune to any `daemon.lock` path swap.
+    #[cfg(unix)]
+    #[test]
+    fn wait_process_exited_tracks_a_process_disappearing() {
+        let rt = rt();
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 600"])
+            .spawn()
+            .expect("spawn a long-lived child");
+        let pid = child.id();
+        assert!(
+            !rt.block_on(wait_process_exited(pid, Duration::from_millis(150))),
+            "a live process must not read as exited"
+        );
+        child.kill().expect("kill the child");
+        child.wait().expect("reap the child");
+        assert!(
+            rt.block_on(wait_process_exited(pid, Duration::from_secs(2))),
+            "a killed-and-reaped process must read as exited (ESRCH)"
+        );
     }
 }

@@ -123,21 +123,33 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
 /// holds no lock (its fd closed at death). Off Unix (no process-group kill) it
 /// falls back to a direct `start_kill` of the child handle, so the late daemon is
 /// still terminated rather than leaked.
-pub(crate) fn force_kill_group_blocking(mut child: Child) {
+pub(crate) fn force_kill_group_blocking(child: Child) {
     #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        use nix::sys::signal::{killpg, Signal};
-        let _ = killpg(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
+    {
+        // Signal via `nix` directly — NOT `tokio`'s `start_kill`/`kill`, which need
+        // a live runtime: this runs on a detached OS thread whose caller may already
+        // have DROPPED the runtime (the whole reason the spawn runs off the blocking
+        // pool). `killpg` reaches the leader AND any descendant a late exec spawned;
+        // a direct `kill` of the leader backs it up if `killpg` failed (its result is
+        // best-effort). Both are plain syscalls, valid with or without a runtime.
+        if let Some(pid) = child.id() {
+            use nix::sys::signal::{kill, killpg, Signal};
+            use nix::unistd::Pid;
+            let target = Pid::from_raw(pid as i32);
+            let _ = killpg(target, Signal::SIGKILL);
+            let _ = kill(target, Signal::SIGKILL);
+        }
+        // `child` drops here: its fds close (the lock releases at death) and the
+        // runtime's reaper (if still alive) collects the SIGKILLed leader.
+        drop(child);
     }
-    // Also signal the child handle DIRECTLY, as `force_kill_tree` does: on non-Unix
-    // there is no process-group kill at all, and on Unix a `killpg` that FAILED (its
-    // result is best-effort above) would otherwise leave the leader running. Without
-    // this the late child would be dropped with `kill_on_drop(false)` and survive.
-    // `start_kill` is synchronous — it sends the signal and does not reap.
-    let _ = child.start_kill();
-    // `child` drops here: its fds close (the lock releases at death) and the
-    // runtime's reaper (if alive) collects the SIGKILLed leader.
-    drop(child);
+    #[cfg(not(unix))]
+    {
+        // Windows Job-Object teardown is deferred (OQ-5); best-effort direct kill.
+        let mut child = child;
+        let _ = child.start_kill();
+        drop(child);
+    }
 }
 
 /// SIGKILL a spawned leader's **process group** by its pgid (`pgid == the

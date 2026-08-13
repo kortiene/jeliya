@@ -21,7 +21,7 @@ use tokio::process::{Child, ChildStdin};
 
 use crate::error::{BoxFuture, CallerRpcError, SupervisorError};
 use crate::generation::Generation;
-use crate::portfile::Portfile;
+use crate::portfile::{self, Portfile};
 use crate::process;
 use crate::supervisor::Timeouts;
 use crate::target::TargetResolver;
@@ -261,6 +261,20 @@ impl Sidecar {
         // proves nothing — see the completion check. BOUNDED and OFF the executor
         // (`try_exists` is a `stat` that blocks on a stalled mount).
         let portfile_present_before = validate::portfile_present(&self.data_dir, deadline).await;
+        // REVALIDATE the adopted identity before issuing the stop: if the daemon we
+        // adopted already exited and a REPLACEMENT started in the same data dir, a
+        // reconnecting RPC could otherwise stop the replacement we never adopted —
+        // and its portfile transition, freed lock, and dark old PID would all read as
+        // OUR daemon's clean exit. Re-read the CURRENT portfile (bounded, off the
+        // executor) and require it to still name the SAME pid+port as the identity we
+        // hold; a replacement rewrote `daemon.json` with a NEW pid and a fresh
+        // `--port 0` bind, so a mismatch — or an unreadable/absent portfile — means
+        // the daemon changed under us. Refuse rather than stop a foreign process.
+        // (The completion proof below binds to this same pid via `wait_process_exited`.)
+        match portfile::read_portfile_bounded(&self.data_dir, self.strict_portfile_perms).await {
+            Ok(current) if current.pid == pid && current.port == port => {}
+            _ => return Err(SupervisorError::ShutdownTimedOut { pid }),
+        }
         // Ask the daemon to shut itself down over the caller's RPC, bounded by the
         // budget REMAINING after the presence probe so its time counts against
         // `teardown`, not on top of it. A caller-supplied invoker whose transport stalls must
@@ -306,16 +320,27 @@ impl Sidecar {
         }
         // Portfile removal is NOT the daemon's final act: it removes the portfile,
         // THEN flushes logs and only then `process::exit`s (jeliyad `main.rs`),
-        // holding `daemon.lock` until exit. A caller that reuses the dir the
-        // instant the portfile vanishes could wedge its restart on the still-held
-        // lock, so confirm the lock is RELEASED (the process fully exited) — via
-        // the handle captured AT ADOPTION (the original inode the daemon holds, not
-        // a path re-opened here) — before promising `Graceful`. If that handle is
-        // absent (the lock was already gone, or could not be opened, at adoption),
-        // the exit proof was never captured: `wait_lock_handle_released` fails closed
-        // and we report `ShutdownTimedOut` rather than a premature `Graceful`.
+        // holding `daemon.lock` until exit. `Graceful` invites the caller to reuse
+        // the dir, so confirm the daemon FULLY EXITED before promising it, with TWO
+        // proofs:
+        //   1. the `daemon.lock` (captured at adoption) is RELEASED — the dir is
+        //      reuse-safe, the direct proof a restart will not wedge on the lock; and
+        //   2. on Unix, the ADOPTED PID has EXITED (`kill(pid, 0)` → `ESRCH`) — an
+        //      IDENTITY-bound proof that THIS daemon, not an unrelated process that
+        //      happened to hold a replacement lock inode, is the one that is gone. A
+        //      lock-path swap can spoof (1) but never (2).
+        // A missing lock handle or a still-live PID fails closed to `ShutdownTimedOut`
+        // rather than a premature `Graceful`. Off Unix (deferred), the lock is the
+        // only available signal.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if validate::wait_lock_handle_released(adopted_lock, remaining).await {
+        let lock_released = validate::wait_lock_handle_released(adopted_lock, remaining).await;
+        let identity_exited = if cfg!(unix) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            validate::wait_process_exited(pid, remaining).await
+        } else {
+            true
+        };
+        if lock_released && identity_exited {
             Ok(Teardown::Graceful)
         } else {
             Err(SupervisorError::ShutdownTimedOut { pid })
@@ -572,31 +597,80 @@ mod tests {
     /// `ShutdownRpcFailed`, NOT `Handshake` (a startup-announcement error).
     #[test]
     fn stop_adopted_maps_an_rpc_error_to_shutdown_rpc_failed() {
-        let portfile: crate::portfile::Portfile = serde_json::from_str(
-            r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,
-               "data_dir":"/d","auth_token":"t"}"#,
-        )
-        .unwrap();
+        let dir = std::env::temp_dir().join(format!("sup-adopt-rpcerr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A CURRENT portfile matching the adopted identity, so the pre-RPC
+        // revalidation passes and the RPC is reached.
+        let json = r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"t"}"#;
+        std::fs::write(dir.join("daemon.json"), json).unwrap();
+        let portfile: crate::portfile::Portfile = serde_json::from_str(json).unwrap();
         let sidecar = Sidecar {
             portfile,
             ownership: Ownership::Adopted,
             adopted_lock: None,
-            data_dir: std::path::PathBuf::from("/d"),
+            data_dir: dir.clone(),
             expected: crate::generation::Generation::new(2, 2),
             strict_portfile_perms: false,
             timeouts: crate::supervisor::Timeouts::default(),
         };
         let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
+            .enable_all()
             .build()
             .unwrap();
         let result =
             rt.block_on(sidecar.stop_adopted(|| {
                 Box::pin(async { Err(CallerRpcError("access denied".to_owned())) })
             }));
+        std::fs::remove_dir_all(&dir).ok();
         assert!(
             matches!(result, Err(SupervisorError::ShutdownRpcFailed(_))),
             "an RPC error must be ShutdownRpcFailed, not Handshake; got: {result:?}"
+        );
+    }
+
+    /// `stop_adopted` must REFUSE, and NEVER issue the stop RPC, when the current
+    /// portfile names a DIFFERENT identity than the one adopted — a replacement
+    /// daemon started in the same dir. Otherwise a reconnecting RPC would stop a
+    /// process this `Sidecar` never adopted.
+    #[test]
+    fn stop_adopted_refuses_a_replaced_identity_without_issuing_the_rpc() {
+        let dir = std::env::temp_dir().join(format!("sup-adopt-idchange-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The CURRENT portfile names a REPLACEMENT (different pid+port).
+        let current = r#"{"pid":5555,"port":10,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"t"}"#;
+        std::fs::write(dir.join("daemon.json"), current).unwrap();
+        // We adopted pid 4242 / port 9.
+        let adopted: crate::portfile::Portfile = serde_json::from_str(
+            r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"t"}"#,
+        )
+        .unwrap();
+        let sidecar = Sidecar {
+            portfile: adopted,
+            ownership: Ownership::Adopted,
+            adopted_lock: None,
+            data_dir: dir.clone(),
+            expected: crate::generation::Generation::new(2, 2),
+            strict_portfile_perms: false,
+            timeouts: crate::supervisor::Timeouts::default(),
+        };
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_rpc = called.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(sidecar.stop_adopted(move || {
+            called_rpc.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { pid: 4242 })),
+            "a changed identity must refuse the stop; got: {result:?}"
+        );
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "the stop RPC must NOT be issued against a replacement daemon"
         );
     }
 
@@ -774,16 +848,17 @@ mod tests {
     fn stop_adopted_bounds_a_never_resolving_rpc() {
         use std::time::Duration;
 
-        let portfile: crate::portfile::Portfile = serde_json::from_str(
-            r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,
-               "data_dir":"/d","auth_token":"t"}"#,
-        )
-        .unwrap();
+        let dir = std::env::temp_dir().join(format!("sup-adopt-hangrpc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A matching CURRENT portfile so the pre-RPC revalidation passes.
+        let json = r#"{"pid":4242,"port":9,"protocol":2,"storage_generation":2,"data_dir":"/d","auth_token":"t"}"#;
+        std::fs::write(dir.join("daemon.json"), json).unwrap();
+        let portfile: crate::portfile::Portfile = serde_json::from_str(json).unwrap();
         let sidecar = Sidecar {
             portfile,
             ownership: Ownership::Adopted,
             adopted_lock: None,
-            data_dir: std::path::PathBuf::from("/d"),
+            data_dir: dir.clone(),
             expected: crate::generation::Generation::new(2, 2),
             strict_portfile_perms: false,
             timeouts: crate::supervisor::Timeouts {
@@ -793,7 +868,7 @@ mod tests {
         };
 
         let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
+            .enable_all()
             .build()
             .unwrap();
         let started = std::time::Instant::now();
@@ -802,6 +877,7 @@ mod tests {
             Box::pin(std::future::pending::<Result<(), CallerRpcError>>())
         }));
         let elapsed = started.elapsed();
+        std::fs::remove_dir_all(&dir).ok();
 
         assert!(
             matches!(result, Err(SupervisorError::ShutdownTimedOut { pid: 4242 })),

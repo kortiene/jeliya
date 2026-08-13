@@ -707,13 +707,21 @@ impl Supervisor {
                 // The spawn runs on a blocking thread and HANDS its outcome back over
                 // a oneshot. The blocking worker OWNS cleanup on the timeout path: if
                 // we time out and drop the receiver, its `send` fails and it SIGKILLs
-                // the late child's whole group itself, synchronously, on its own
-                // blocking thread — which a runtime shutdown waits for — so a late
-                // exec (dropped with `kill_on_drop(false)`) cannot leak its group even
-                // if the caller drops the runtime. A detached async cleanup task would
-                // instead be cancelled on that drop. The oneshot makes the hand-off
-                // race-free: exactly one of {we receive the child, the worker cleans
-                // it up} happens.
+                // the late child's whole group itself (via `nix`, valid even with no
+                // runtime), so a late exec (dropped with `kill_on_drop(false)`) cannot
+                // leak its group even if the caller drops the runtime. The oneshot
+                // makes the hand-off race-free: exactly one of {we receive the child,
+                // the worker cleans it up} happens.
+                //
+                // The worker runs on a DETACHED OS THREAD, not `spawn_blocking`:
+                // `Command::spawn` blocks until fork+exec reports back, so an
+                // executable on a stalled NFS/FUSE mount can wedge it INDEFINITELY, and
+                // Tokio JOINS its blocking pool on `Runtime::drop` — so a `spawn_blocking`
+                // worker would turn the caller-visible timeout into an application-
+                // shutdown hang. A plain `std::thread` is not joined by the runtime, so
+                // a wedged spawn cannot hang shutdown (the OS reaps the thread at process
+                // exit). It ENTERS a runtime `Handle` so `tokio::process` spawn (which
+                // needs the process reactor) still works.
                 //
                 // The worker also STAMPS whether the spawn completed at/after the
                 // deadline against a std-clock deadline it can read (it cannot use
@@ -724,7 +732,9 @@ impl Supervisor {
                 let produced_deadline = std::time::Instant::now() + remaining;
                 let (tx, rx) =
                     tokio::sync::oneshot::channel::<(Command, std::io::Result<Child>, bool)>();
-                tokio::task::spawn_blocking(move || {
+                let rt_handle = tokio::runtime::Handle::current();
+                std::thread::spawn(move || {
+                    let _rt = rt_handle.enter();
                     let result = cmd.spawn();
                     let late = std::time::Instant::now() >= produced_deadline;
                     // If the receiver is gone (the caller timed out) AND the spawn
@@ -740,13 +750,23 @@ impl Supervisor {
                         if late {
                             // The spawn completed only at/after the deadline: reject it
                             // and clean up any child so startup never proceeds past the
-                            // budget with a late-created daemon.
+                            // budget with a late-created daemon. If cleanup itself FAILS
+                            // (the subtree survived SIGKILL past the grace window, still
+                            // holding the data-dir lock), fold that into the error so the
+                            // caller does not retry over a surviving daemon.
+                            let mut detail =
+                                "process creation completed after the spawn budget expired"
+                                    .to_owned();
                             if let Ok(mut child) = spawn_result {
-                                let _ = process::force_kill_tree(&mut child).await;
+                                if let Err(cleanup) = process::force_kill_tree(&mut child).await {
+                                    detail = format!(
+                                        "{detail}; cleanup of the late child failed: {cleanup}"
+                                    );
+                                }
                             }
                             return Err(SupervisorError::Spawn(std::io::Error::new(
                                 std::io::ErrorKind::TimedOut,
-                                "process creation completed after the spawn budget expired",
+                                detail,
                             )));
                         }
                         (spawned_cmd, spawn_result)

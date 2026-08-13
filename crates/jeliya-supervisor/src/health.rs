@@ -61,6 +61,16 @@ impl HealthReport {
     pub(crate) fn proves_pid(&self, expect_pid: u32) -> bool {
         self.ok && self.pid == u64::from(expect_pid)
     }
+
+    /// Whether this response was served by the process `expect_pid`, REGARDLESS of
+    /// its `ok` health flag. For DISAPPEARANCE polling (eviction), a same-PID reply
+    /// — even `ok: false`, as an incompatible incumbent draining after SIGTERM
+    /// reports — proves the process is STILL PRESENT and may still hold the data-dir
+    /// lock. [`proves_pid`] additionally requires `ok` (it answers "is this the
+    /// usable daemon?"); presence answers "is this process still here at all?".
+    pub(crate) fn is_same_process(&self, expect_pid: u32) -> bool {
+        self.pid == u64::from(expect_pid)
+    }
 }
 
 /// `GET /api/health` on `127.0.0.1:port`, bounded by `connect_timeout` and
@@ -174,6 +184,29 @@ mod tests {
         let raw = b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":false,\"pid\":1}";
         let report = parse_health_response(raw).expect("parses");
         assert!(!report.proves_pid(1), "ok:false is not a live daemon");
+    }
+
+    #[test]
+    fn is_same_process_ignores_the_ok_flag() {
+        // An incompatible incumbent draining after SIGTERM reports `ok:false` with
+        // its ORIGINAL pid — disappearance polling must read it as STILL PRESENT.
+        let draining = b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":false,\"pid\":42}";
+        let report = parse_health_response(draining).expect("parses");
+        assert!(
+            report.is_same_process(42),
+            "a same-PID reply proves presence even when ok:false"
+        );
+        assert!(
+            !report.proves_pid(42),
+            "proves_pid still additionally requires ok"
+        );
+        // A DIFFERENT pid answering the port is not this process.
+        let other = b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"pid\":99}";
+        let other = parse_health_response(other).expect("parses");
+        assert!(
+            !other.is_same_process(42),
+            "a different PID is not this process"
+        );
     }
 
     #[test]
