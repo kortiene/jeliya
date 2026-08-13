@@ -111,13 +111,22 @@ impl Sidecar {
     /// timeout, escalate to a SIGKILL of the child's whole process group →
     /// [`Teardown::Forced`] (no cleanup ran, so a stale `daemon.json` may
     /// remain, which the next start's health check discards).
-    pub async fn shutdown(mut self) -> Result<Teardown, SupervisorError> {
+    pub async fn shutdown(self) -> Result<Teardown, SupervisorError> {
         // Borrowed before the `&mut self.ownership` match so the portfile path is
         // available inside the arms (disjoint field).
         let data_dir = self.data_dir.clone();
-        match &mut self.ownership {
+        match self.ownership {
             Ownership::Adopted => Ok(Teardown::LeftRunning),
-            Ownership::Owned { child, stdin } => {
+            Ownership::Owned { child, mut stdin } => {
+                // Keep a cancellation-safe group-kill guard armed for the WHOLE owned
+                // teardown. If `shutdown()` is cancelled/aborted after stdin is closed
+                // but while `child.wait()` is pending (e.g. the application runtime is
+                // torn down), dropping the guard SIGKILLs the child's process group —
+                // so a hung or overridden daemon that ignores its stdin-EOF signal, and
+                // any descendant in its group, cannot survive holding the data-dir lock.
+                // It is disarmed implicitly once the child is reaped (id `None` → the
+                // Drop kill is then a no-op); `as_mut` borrows without disarming.
+                let mut guard = process::SpawnGuard::new(child);
                 // Time-box the WHOLE owned teardown — portfile probes included —
                 // within one `teardown`. Start the deadline FIRST so the metadata
                 // probes below count against it and cannot run unbounded on a
@@ -142,12 +151,12 @@ impl Sidecar {
                 // holding locks / writing state (and, if the leader removed
                 // `daemon.json`, be reported `Graceful`). The `Err(_elapsed)` arm
                 // force-kills the un-reaped child, so it already reaches the group.
-                let leader_pgid = child.id();
+                let leader_pgid = guard.as_mut().id();
                 // Bound the reaping wait by the budget REMAINING after the presence
                 // probe, so the probe's time counts against `teardown` rather than
                 // on top of it.
                 let wait_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-                match tokio::time::timeout(wait_budget, child.wait()).await {
+                match tokio::time::timeout(wait_budget, guard.as_mut().wait()).await {
                     // A zero exit is NOT itself proof of completed cleanup: the
                     // daemon discards its room-close result and only LOGS a failed
                     // `daemon.json` removal, so it can exit 0 with cleanup
@@ -200,7 +209,7 @@ impl Sidecar {
                         // timeout arm — a faulty daemon must not linger holding the
                         // data-dir lock after `shutdown` errors. Surface the wait
                         // error, folding in any cleanup failure.
-                        match process::force_kill_tree(child).await {
+                        match process::force_kill_tree(guard.as_mut()).await {
                             Ok(()) => Err(SupervisorError::Spawn(e)),
                             Err(kill_err) => Err(SupervisorError::Spawn(std::io::Error::new(
                                 e.kind(),
@@ -211,7 +220,7 @@ impl Sidecar {
                         }
                     }
                     Err(_elapsed) => {
-                        process::force_kill_tree(child)
+                        process::force_kill_tree(guard.as_mut())
                             .await
                             .map_err(SupervisorError::Spawn)?;
                         Ok(Teardown::Forced)
@@ -987,5 +996,79 @@ mod tests {
         assert_eq!(resolver.expected, expected);
         // TargetResolver is Clone: a transport can clone it without holding the Sidecar.
         let _ = resolver.clone();
+    }
+
+    /// Cancelling `shutdown()` mid-wait (the application runtime is torn down after
+    /// stdin is closed) must still SIGKILL an owned daemon that ignores stdin-EOF.
+    /// The child is `sleep`, which never exits on stdin close; an OUTER timeout drops
+    /// the `shutdown()` future while its long internal teardown wait is still pending.
+    /// Red-before: with the child held by `&mut self.ownership` (no guard), the
+    /// dropped future dropped the child with `kill_on_drop(false)` and the group
+    /// SURVIVED; green-after: the armed `SpawnGuard` force-kills it on drop.
+    #[cfg(unix)] // spawns a real `sh`/`sleep` child (Unix-only)
+    #[test]
+    fn cancelling_owned_shutdown_still_kills_a_daemon_that_ignores_stdin_eof() {
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // `sleep` ignores stdin entirely, so closing stdin never stops it — the
+            // exact "overridden daemon that ignores its parent-death signal" case.
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c")
+                .arg("sleep 600")
+                .stdin(Stdio::piped())
+                .kill_on_drop(false);
+            crate::process::configure_new_process_group(&mut cmd);
+            let mut child = cmd.spawn().expect("spawn stub child");
+            let stdin = child.stdin.take();
+            let pid = child.id().expect("child has a pid") as i32;
+
+            let portfile: crate::portfile::Portfile = serde_json::from_str(
+                r#"{"pid":1,"port":9,"protocol":2,"storage_generation":2,
+                   "data_dir":"/d","auth_token":"t"}"#,
+            )
+            .unwrap();
+            let sidecar = Sidecar {
+                portfile,
+                ownership: Ownership::Owned { child, stdin },
+                adopted_lock: None,
+                data_dir: std::path::PathBuf::from("/d"),
+                expected: crate::generation::Generation::new(2, 2),
+                strict_portfile_perms: false,
+                // A LONG teardown so the internal `child.wait()` is still pending when
+                // the outer timeout cancels the future (isolating cancellation from the
+                // internal-timeout escalation arm).
+                timeouts: crate::supervisor::Timeouts {
+                    teardown: Duration::from_secs(600),
+                    ..crate::supervisor::Timeouts::default()
+                },
+            };
+
+            // Cancel the shutdown mid-wait by dropping its future (outer timeout).
+            let _ = tokio::time::timeout(Duration::from_millis(150), sidecar.shutdown()).await;
+
+            // The guard's Drop must have SIGKILLed the child's group.
+            use nix::sys::signal::kill;
+            use nix::unistd::Pid;
+            let target = Pid::from_raw(pid);
+            let mut gone = false;
+            for _ in 0..200 {
+                if matches!(kill(target, None), Err(nix::errno::Errno::ESRCH)) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                gone,
+                "a cancelled owned shutdown must still SIGKILL a daemon that ignores stdin-EOF"
+            );
+        });
     }
 }

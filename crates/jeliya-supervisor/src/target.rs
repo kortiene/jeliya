@@ -45,11 +45,15 @@ impl TargetResolver {
     /// generation. Re-reads the portfile from disk every call and re-runs the
     /// loopback / health-PID / generation checks (spec §6.6).
     pub async fn resolve(&self) -> Result<DialTarget, SupervisorError> {
+        // Dial-only: the resolved target is used to connect, never to stop a daemon,
+        // so do NOT capture the `daemon.lock` handle — a stalled lock manager must not
+        // delay a reconnect (nor leak a probe thread) for a handle this discards.
         let validated = validate::validate_portfile(
             &self.data_dir,
             self.expected,
             self.strict_portfile_perms,
             &self.timeouts,
+            false,
         )
         .await?;
         DialTarget::from_validated(&validated.portfile, self.expected)

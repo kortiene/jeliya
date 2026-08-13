@@ -149,7 +149,14 @@ pub(crate) async fn read_portfile_bounded(
     strict: bool,
 ) -> Result<Portfile, SupervisorError> {
     let owned_dir = data_dir.to_path_buf();
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    // ANCHOR an absolute std-clock deadline BEFORE spawning the worker: the outer
+    // `timeout` polls the ready receiver BEFORE its timer, so a read that finishes
+    // only after the grace — but before this task is next polled — could otherwise be
+    // accepted out-of-budget, making reconnect/startup not actually deadline-strict.
+    // The worker STAMPS whether it completed at/after this deadline (it has no runtime
+    // context, so it uses `std::time`), and a late result is rejected below.
+    let deadline = std::time::Instant::now() + PORTFILE_READ_GRACE;
+    let (tx, rx) = tokio::sync::oneshot::channel::<(Result<Portfile, SupervisorError>, bool)>();
     // Run the (potentially stalled-mount) FS read on a DETACHED OS thread, not
     // `spawn_blocking`: Tokio JOINS its blocking pool on `Runtime::drop`, so a read
     // wedged on a hung NFS/FUSE mount would turn the caller-visible timeout into an
@@ -159,7 +166,9 @@ pub(crate) async fn read_portfile_bounded(
     let worker = std::thread::Builder::new()
         .name("jeliya-portfile-read".to_owned())
         .spawn(move || {
-            let _ = tx.send(read_portfile(&owned_dir, strict));
+            let result = read_portfile(&owned_dir, strict);
+            let late = std::time::Instant::now() >= deadline;
+            let _ = tx.send((result, late));
         });
     if let Err(e) = worker {
         return Err(SupervisorError::PortfileUnreadable {
@@ -167,21 +176,25 @@ pub(crate) async fn read_portfile_bounded(
             why: format!("could not start the portfile-read worker: {e}"),
         });
     }
+    let overran = || SupervisorError::PortfileUnreadable {
+        path: portfile_path(data_dir),
+        why: format!(
+            "portfile read exceeded the {}s bound (data dir on a stalled mount?)",
+            PORTFILE_READ_GRACE.as_secs()
+        ),
+    };
     match tokio::time::timeout(PORTFILE_READ_GRACE, rx).await {
-        Ok(Ok(result)) => result,
+        // Reject a result the worker completed only AT/AFTER the deadline: accepting
+        // it would return a read observed beyond the advertised bound.
+        Ok(Ok((_, true))) => Err(overran()),
+        Ok(Ok((result, false))) => result,
         // The worker dropped the sender without sending — only reachable if it
         // panicked mid-read; surface it as an unreadable portfile, never a hang.
         Ok(Err(_recv)) => Err(SupervisorError::PortfileUnreadable {
             path: portfile_path(data_dir),
             why: "portfile-read worker ended without a result (panicked?)".to_owned(),
         }),
-        Err(_elapsed) => Err(SupervisorError::PortfileUnreadable {
-            path: portfile_path(data_dir),
-            why: format!(
-                "portfile read exceeded the {}s bound (data dir on a stalled mount?)",
-                PORTFILE_READ_GRACE.as_secs()
-            ),
-        }),
+        Err(_elapsed) => Err(overran()),
     }
 }
 

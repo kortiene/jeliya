@@ -462,11 +462,15 @@ impl Supervisor {
             .await);
         }
         // Full agreement gate (loopback, declared+served generation, health/PID).
+        // Owned: we stop by closing stdin, never by an adopted lock probe, so do NOT
+        // capture the `daemon.lock` handle (a stalled lock manager must not delay an
+        // owned start for a handle `owned_sidecar` discards).
         match validate::validate_portfile(
             &self.data_dir,
             self.expected,
             self.strict_portfile_perms,
             &self.timeouts,
+            false,
         )
         .await
         {
@@ -517,11 +521,14 @@ impl Supervisor {
                 portfile.pid, portfile.port
             )));
         }
+        // Adopted: `stop_adopted` proves the daemon's exit against the `daemon.lock`
+        // inode, so capture (retain) the handle here.
         match validate::validate_portfile(
             &self.data_dir,
             self.expected,
             self.strict_portfile_perms,
             &self.timeouts,
+            true,
         )
         .await
         {
@@ -610,11 +617,13 @@ impl Supervisor {
     /// binary needed). For a second native client riding along a daemon someone
     /// else supervises. Runs the loopback / health-PID / generation gate first.
     pub async fn attach_to_running(&self) -> Result<Sidecar, SupervisorError> {
+        // Adopt path: retain the `daemon.lock` handle for `stop_adopted`.
         let validated = validate::validate_portfile(
             &self.data_dir,
             self.expected,
             self.strict_portfile_perms,
             &self.timeouts,
+            true,
         )
         .await?;
         Ok(self.adopted_sidecar(validated.portfile, validated.adopted_lock))
@@ -928,8 +937,10 @@ where
     // returns the line even though the budget expired — the same ready-future/timer
     // ordering the process-creation path stamps against. Reject a candidate line
     // observed only AT/AFTER this deadline so startup never continues past the spawn
-    // budget on a daemon that announced itself late.
-    let deadline = tokio::time::Instant::now() + budget;
+    // budget on a daemon that announced itself late. `deadline_from` SATURATES, so a
+    // caller-supplied `Timeouts::spawn` of `Duration::MAX` cannot overflow-panic the
+    // `Instant + Duration` (it becomes effectively unbounded, matching the spawn phase).
+    let deadline = validate::deadline_from(budget);
     let line = tokio::time::timeout(budget, async {
         loop {
             match lines.next_line().await {
@@ -1260,6 +1271,20 @@ mod tests {
             matches!(&err, SupervisorError::Handshake(m) if m.contains("after the spawn budget")),
             "expected the late-announcement handshake error, got {err:?}"
         );
+    }
+
+    /// A caller-supplied `Timeouts::spawn` of `Duration::MAX` must NOT overflow-panic
+    /// the deadline anchor (`deadline_from` saturates). Red-before: the anchor was
+    /// `Instant::now() + budget`, which panics on `Duration::MAX`; green-after it is
+    /// treated as effectively unbounded and the ready line parses.
+    #[tokio::test]
+    async fn read_announcement_does_not_panic_on_an_unbounded_budget() {
+        let data = b"{\"event\":\"ready\",\"pid\":1,\"port\":2}\n";
+        let mut lines = BufReader::new(&data[..]).lines();
+        let announced = read_announcement(&mut lines, Duration::MAX)
+            .await
+            .expect("an unbounded budget is effectively unbounded, not a panic");
+        assert!(matches!(announced, ReadyLine::Ready { pid: 1, port: 2 }));
     }
 
     /// The deadline gate rejects only LATE lines: a prompt line within a real budget

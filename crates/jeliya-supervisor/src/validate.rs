@@ -81,6 +81,13 @@ pub(crate) async fn validate_portfile(
     expected: Generation,
     strict_portfile_perms: bool,
     timeouts: &Timeouts,
+    // Snapshot the held `daemon.lock` handle (the final step). ONLY the adopt paths
+    // (`finish_adopted`, `attach_to_running`) retain it for `stop_adopted`; the
+    // dial-only (`TargetResolver::resolve`) and owned-startup (`finish_owned`) paths
+    // discard it, so they must NOT pay for — nor block on — the snapshot: a stalled
+    // FS lock manager would otherwise make every reconnect/owned start wait a full
+    // `teardown` interval and leak a detached probe thread for a handle nobody keeps.
+    capture_lock: bool,
 ) -> Result<Validated, SupervisorError> {
     let portfile = portfile::read_portfile_bounded(data_dir, strict_portfile_perms).await?;
 
@@ -156,8 +163,14 @@ pub(crate) async fn validate_portfile(
     // health proof is fresh — rather than re-opening the path later closes the
     // window in which a cleanup tool could unlink/replace the lock with an
     // unrelated process's inode. BOUNDED and OFF the executor; a miss yields `None`.
-    // The dial path discards this; the adopt path retains it for `stop_adopted`.
-    let adopted_lock = snapshot_held_lock(data_dir, deadline_from(timeouts.teardown)).await;
+    // ONLY the adopt paths that RETAIN the handle capture it — a dial-only or owned
+    // validation that discards it must not open/probe the lock at all, so a stalled
+    // lock manager cannot make it wait a teardown interval for a handle nobody keeps.
+    let adopted_lock = if capture_lock {
+        snapshot_held_lock(data_dir, deadline_from(timeouts.teardown)).await
+    } else {
+        None
+    };
 
     Ok(Validated {
         portfile,
@@ -730,6 +743,7 @@ mod tests {
             Generation::new(2, 2),
             false,
             &short(),
+            false,
         ));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
@@ -758,6 +772,7 @@ mod tests {
             Generation::new(2, 2),
             false,
             &short(),
+            false,
         ));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
@@ -791,6 +806,7 @@ mod tests {
             Generation::new(2, 2),
             false,
             &short(),
+            false,
         ));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
@@ -828,6 +844,7 @@ mod tests {
             Generation::new(2, 2),
             false,
             &short(),
+            false,
         ));
         drop(listener);
         std::fs::remove_dir_all(&resolved).ok();
@@ -848,6 +865,7 @@ mod tests {
             Generation::new(2, 2),
             false,
             &short(),
+            false,
         ));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
@@ -866,6 +884,7 @@ mod tests {
             Generation::new(2, 2),
             false,
             &short(),
+            false,
         ));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
@@ -894,6 +913,7 @@ mod tests {
             Generation::new(2, 2),
             false,
             &short(),
+            false,
         ));
         std::fs::remove_dir_all(&dir).ok();
         assert!(
