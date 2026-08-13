@@ -1889,6 +1889,44 @@ test('rule 5: an if/else plural dispatch recognizes both categories (#274 30-ifp
   );
 });
 
+test('rule 1: an explicit return literal in a branch is a rendered value (#274 31-return)', () => {
+  const en = `impl Catalog for En {
+    fn msg(&self, c: bool) -> String { if c { return "Delete account".to_owned(); } "English".to_owned() }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn msg(&self, c: bool) -> String { if c { return "Delete account".to_owned(); } "Francais".to_owned() }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('fr-untranslated'),
+    'the identical return "Delete account" is a rendered value and must be flagged, not excluded as a statement',
+  );
+});
+
+test('rule 3: an allowlisted value split differently across locales is not stale (#274 31-allowsplit)', () => {
+  const en = `impl Catalog for En { fn diag(&self) -> String { "Diagnostics".to_owned() } }`;
+  const fr = `impl Catalog for Fr { fn diag(&self) -> String { concat!("Diag", "nostics").to_owned() } }`;
+  const codes = checkCatalogs({
+    ...catalogs(en, fr),
+    allowlist: { diag: 'brand term, identical by design' },
+  }).map((f) => f.code);
+  assert.ok(
+    !codes.includes('allowlist-stale'),
+    'EN "Diagnostics" and FR concat render the same text, so the exemption is not stale',
+  );
+});
+
+test('rule: positional format arguments are rejected in favor of named (#274 31-positional)', () => {
+  const src = `impl Catalog for En {
+    fn room(&self, r: &str, u: &str) -> String { format!("Room {0} for {1}", r, u) }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(src, src), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('positional-format'),
+    'positional {0}/{1} slots must be flagged; use named params',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,

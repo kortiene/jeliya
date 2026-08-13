@@ -601,7 +601,24 @@ export function parseCatalog(source, file) {
             for (let b = 0; b < blockRanges.length; b += 1) {
               if (p.start >= blockRanges[b][0] && p.end <= blockRanges[b][1]) {
                 idx = b + 1;
-                if (p.start < tailStart[b]) isStatement = true;
+                if (p.start < tailStart[b]) {
+                  // Before the block's tail — a statement literal, UNLESS it is an
+                  // explicit `return <literal>;`, which IS a rendered branch value.
+                  // Find this literal's statement start (nearest depth-0 `;` in the
+                  // block) and keep it only when that statement begins with `return`.
+                  let sstart = blockRanges[b][0];
+                  let d = 0;
+                  for (let at = p.start - 1; at >= blockRanges[b][0]; at -= 1) {
+                    const c = skeleton[at];
+                    if (c === '}' || c === ')' || c === ']') d += 1;
+                    else if (c === '{' || c === '(' || c === '[') d -= 1;
+                    else if (c === ';' && d === 0) {
+                      sstart = at + 1;
+                      break;
+                    }
+                  }
+                  if (!/\breturn\b/.test(skeleton.slice(sstart, p.start))) isStatement = true;
+                }
                 break;
               }
             }
@@ -768,6 +785,22 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
     }
   }
 
+  // Reject POSITIONAL format arguments (`{0}`, `{1}`, `{}`): comparing slot SETS
+  // cannot tell that two locales bind the same positional slots to DIFFERENT
+  // arguments — EN `format!("Room {0} for {1}", room, user)` and FR
+  // `format!("Salon {0} pour {1}", user, room)` share the set `["0","1"]` yet swap
+  // the values. Named/captured params (`{room}`) are checked by identity, so require
+  // them. A slot is positional when its arg reference (before any `:` spec) is empty
+  // or all digits.
+  const isPositionalSlot = (slot) => /^\d*$/.test(slot.split(':')[0].trim());
+  for (const locale of [en, fr]) {
+    for (const entry of locale.entries.values()) {
+      if (entry.slots.some(isPositionalSlot)) {
+        findings.push(finding(locale.file, entry.line, 'positional-format', `${entry.key}: use a NAMED format parameter (\`{name}\`), not a positional one (\`{0}\`/\`{}\`) — positional slots let two locales bind the same slot to different arguments`, 'catalog'));
+      }
+    }
+  }
+
   // Rule 5 — plural methods present in both, with both arms.
   for (const [key, frEntry] of fr.entries) {
     const enEntry = en.entries.get(key);
@@ -928,7 +961,12 @@ export function checkCatalogs({ en, fr, allowlist = IDENTICAL_ALLOWLIST }) {
       findings.push(finding(fr.file, 1, 'allowlist-stale', `IDENTICAL_ALLOWLIST names ${key}, which is not in both catalogs`, 'catalog'));
       continue;
     }
-    if (frEntry.values.join(SLOT) !== enEntry.values.join(SLOT)) {
+    // Compare COMPLETE rendered branches, not fragment boundaries: an intentionally
+    // identical allowlisted value split differently between locales (EN `"Diagnostics"`
+    // vs FR `concat!("Diag", "nostics")`) renders the same text, so it must not read as
+    // stale. `\u0001` separates branches so a fragment refactor cannot forge a match.
+    const rendered = (e) => renderedBranchValues(e).join('\u0001');
+    if (rendered(frEntry) !== rendered(enEntry)) {
       findings.push(finding(fr.file, frEntry.line, 'allowlist-stale', `IDENTICAL_ALLOWLIST exempts ${key}, but the values now differ — drop the exemption`, 'catalog'));
     }
   }
