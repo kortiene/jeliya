@@ -16,7 +16,8 @@ audience: ["contributors", "maintainers", "release-engineers"]
 **Status: DECIDED 2026-07-27. M1's typed-API slices have landed (the #165,
 #166, and #233 remainders stay open); the M2 entry seam (#167), the M2
 transport-independent kernel (#168), the M2 platform-authority boundary
-(#174), and the M3 web foundation (#176) are implemented.** Jeliya
+(#174), the M3 web foundation (#176), and the M4 daemon supervisor (#170)
+are implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
 stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
 protocol and storage generation, and retires React, Flutter, the Dart
@@ -162,7 +163,7 @@ issue assigns owners, so these roles are this record's own allocation.
 | protocol-v2 codec | new — a dedicated crate or tightly isolated module with exhaustive request routing | core maintainer | anything that would let JSON or method-string dispatch escape it |
 | `crates/jeliya-core` | retained, retyped — protocol-facing materializer and supervisor signatures stop returning `serde_json::Value` | core maintainer | envelope or push framing, which moves out of core |
 | `jeliyad` | retained — v2-only, keeps its process, token, lock, and ownership safety invariants | core maintainer | any path that admits an unsupported client past the handshake |
-| daemon supervisor | new — one reviewed Rust supervisor for Dioxus desktop and other native control planes, owned or adopted | desktop maintainer | UI state; it owns spawn and stop, transports do not |
+| `crates/jeliya-supervisor` | landed — one reviewed Rust supervisor for Dioxus desktop and other native control planes, owned or adopted (`Supervisor`/`Sidecar`/`TargetResolver`/`DialTarget`); binary/data-dir resolution fail-closed; fresh portfile re-validation on every reconnect; bounded process-tree-safe escalation | desktop maintainer | UI state; it owns spawn and stop, transports do not; never reachable from a `wasm32` build |
 | client kernel and seam | new — one cloneable UI-facing handle over a transport-independent kernel | core maintainer | a specific transport; backend erasure stays internal |
 | `jeliya-ui` | new — the shared UI crate, with Dioxus and `dx` pinned | web maintainer | platform authority; it reaches it only through injected services |
 | `PlatformServices` | new — one injectable boundary for files, persistence, lifecycle, URLs, clipboard and share, navigation, and window actions | cross-platform maintainers | nothing; every service has a deterministic test implementation |
@@ -464,6 +465,7 @@ The slices that carry this record:
 | #167 | The lifecycle-aware client seam (`crates/jeliya-client`) and its deterministic mock. | Landed |
 | #176 | The shared `jeliya-ui` crate: pinned Dioxus 0.7, reproducible wasm artifact, daemon embed guard, and Iroh-free dependency graph. Documented in [Dioxus web build and reproducibility](dioxus-web-build.md). | Landed |
 | #174 | Injectable `PlatformServices` — the contract crate (`crates/jeliya-platform`), its deterministic browser/desktop/Android fakes, and the `crates/jeliya-platform-implementation` door crate that gates the construction factories; `jeliya-ui` re-exports the contract. Target implementations follow in M3–M5. | Landed |
+| #170 | The reusable owned/adopted `jeliyad` supervisor (`crates/jeliya-supervisor`): headless and native-only; resolves binary and data dir fail-closed; spawns-or-adopts with `Owned`/`Adopted` split; validates ready/portfile/`/api/health` agreement (PID-on-port + `protocol` + `storage_generation`); hands transports a freshly re-validated `DialTarget` (loopback WS URL with generation-gate query + redacted bearer token) on every reconnect; stops only owned daemons with bounded process-tree-safe escalation; never signals an unproven PID; never reachable from a `wasm32` build. Prerequisite of `WsNative` (#172) and M4 desktop packaging. | Landed |
 | #183 | The one content-addressed embedded artifact. | Planned |
 | #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |
 
