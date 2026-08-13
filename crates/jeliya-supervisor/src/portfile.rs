@@ -310,29 +310,35 @@ pub(crate) fn read_portfile(data_dir: &Path, strict: bool) -> Result<Portfile, S
         // local-user-readable. The crate links no logger, so the one honest channel
         // for a credential-exposure warning is stderr; it fires ONLY on the insecure
         // mode (the daemon writes `0600`, so a well-behaved deployment never sees it).
-        // Emit the warning BEST-EFFORT and OFF the caller's critical path: a closed,
-        // unwritable, or BACKPRESSURED stderr must not change portfile validation.
-        // `eprintln!` PANICS on a write error — and this runs on `read_portfile_bounded`'s
-        // detached worker, so a panic there drops the oneshot and turns warn-and-proceed
-        // into a spurious `PortfileUnreadable`; a full stderr pipe would instead BLOCK the
-        // worker until the read timeout and leak it. A separate detached thread with an
-        // IGNORED `writeln!` result absorbs both: its panic/block stays on that thread and
-        // never touches the read result. A thread-creation failure just drops the warning.
+        // Test-only observability: production has no counter (the increment is
+        // `cfg(test)`-gated), so a test can assert the warn-and-proceed path was REACHED
+        // on an insecure portfile — the result (`Ok`) is unchanged, so only this proves
+        // it. Counted per read, BEFORE the warn-once guard below.
+        #[cfg(test)]
+        INSECURE_PORTFILE_WARNINGS.with(|c| c.set(c.get() + 1));
+        // Emit the warning ONCE per process, BEST-EFFORT and OFF the caller's critical
+        // path. Insecure portfile perms are a persistent DEPLOYMENT posture, so one
+        // alert suffices; a `Once` guard means a reconnect loop over a backpressured
+        // stderr cannot accumulate a thread per read until OS/thread limits are hit
+        // (the hazard of spawning unconditionally). The single writer is detached with
+        // an IGNORED `writeln!`: `eprintln!` PANICS on a write error, and this runs on
+        // `read_portfile_bounded`'s worker, so a panic would drop its oneshot and turn
+        // warn-and-proceed into a spurious `PortfileUnreadable`; a full pipe would BLOCK
+        // it. On the detached thread, a panic/block stays there and never touches the
+        // read result; a thread-creation failure just drops the warning.
+        static WARNED_ONCE: std::sync::Once = std::sync::Once::new();
         let warning = format!(
             "jeliya-supervisor: SECURITY WARNING: {}: {why} — set strict_portfile_perms to refuse instead of proceeding.",
             path.display()
         );
-        let _ = std::thread::Builder::new()
-            .name("jeliya-portfile-warn".to_owned())
-            .spawn(move || {
-                use std::io::Write as _;
-                let _ = writeln!(std::io::stderr(), "{warning}");
-            });
-        // Test-only observability: production has no counter (the increment is
-        // `cfg(test)`-gated), so a test can assert the warn-and-proceed path FIRED on an
-        // insecure portfile — the result (`Ok`) is unchanged, so only this proves it.
-        #[cfg(test)]
-        INSECURE_PORTFILE_WARNINGS.with(|c| c.set(c.get() + 1));
+        WARNED_ONCE.call_once(move || {
+            let _ = std::thread::Builder::new()
+                .name("jeliya-portfile-warn".to_owned())
+                .spawn(move || {
+                    use std::io::Write as _;
+                    let _ = writeln!(std::io::stderr(), "{warning}");
+                });
+        });
     }
     #[cfg(not(unix))]
     let _ = (strict, &meta);
