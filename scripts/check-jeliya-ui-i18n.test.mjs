@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 import {
   checkCatalogs,
   checkJeliyaUiI18n,
+  componentFiles,
+  DEFAULT_REPO_ROOT,
   identityExemption,
   parseCatalog,
   scanComponentLiterals,
@@ -2074,6 +2076,48 @@ test('rule: named width params ($) in format specs must match (#274 37-widthref)
   assert.ok(
     codes.includes('placeholder-parity'),
     'FR swaps the width bindings (w1/w2), which must be caught',
+  );
+});
+
+test('literal scan: copy through a conversion alias (.to_string) is flagged (#274 38-convalias)', () => {
+  const source = `fn C() -> Element { let base = "Delete account"; let label = base.to_string(); rsx! { div { "{label}" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'copy through base.to_string() alias must be flagged',
+  );
+});
+
+test('form: a Field inside a #[cfg(test)] module is not control-count checked (#274 38-testfield)', () => {
+  const source = `#[cfg(test)]
+mod tests {
+  fn v() -> Element { rsx! { Field { id: "email", input { id: "email" } } } }
+}`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    !findings.some((f) => f.code === 'form-control-count'),
+    'a test-only Field is excluded from control-count validation',
+  );
+});
+
+test('literal scan: a nav with aria_label None is unnamed and flagged (#274 38-navnone)', () => {
+  const source = `fn C() -> Element { rsx! { nav { aria_label: None::<String>, span { "menu" } } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'raw-semantic-element' && /nav/.test(f.message)),
+    'a statically-None aria_label renders no attribute, so the nav is unnamed',
+  );
+});
+
+test('driver: the literal scan covers all src modules, excluding the catalog (#274 38-scanroots)', () => {
+  const files = componentFiles(DEFAULT_REPO_ROOT).map((f) => f.split(/[\\/]/).join('/'));
+  assert.ok(
+    files.some((f) => /\/state\.rs$/.test(f)),
+    'a non-root module (state.rs) is scanned',
+  );
+  assert.ok(
+    !files.some((f) => /\/l10n\/(en|fr)\.rs$/.test(f)),
+    'the l10n catalog files are excluded',
   );
 });
 

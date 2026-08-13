@@ -35,14 +35,12 @@ export const LOCALE_FILES = Object.freeze({
 
 /** Where the literal scan looks: the app root plus every shared component. The
  *  l10n layer itself is excluded — it IS the catalog. */
-const LITERAL_SCAN_ROOTS = Object.freeze([
-  'crates/jeliya-ui/src/app.rs',
-  'crates/jeliya-ui/src/components',
-  // compose.rs is production UI code too — it carries the web and native `rsx!`
-  // roots that mount `AppRoot`, so hardcoded copy there (an adapter-specific error
-  // banner, say) ships to users and must face the same gate.
-  'crates/jeliya-ui/src/compose.rs',
-]);
+// The WHOLE crate `src` surface — a component may live in any module (`app.rs`,
+// `components/`, `compose.rs`, a future `settings.rs`), so scanning a fixed subset lets
+// hardcoded copy in a new module bypass the gate. The catalog locale files are checked
+// by the catalog rules instead and are EXCLUDED below (their method literals are copy
+// but not RSX; scanning them here would be redundant).
+const LITERAL_SCAN_ROOTS = Object.freeze(['crates/jeliya-ui/src']);
 
 /** Tier 2 / Tier 3 never-translate lexicon (docs/glossary-fr.md): words that are
  *  the SAME in French, so a value built only from them is identical on purpose.
@@ -1569,12 +1567,17 @@ export function scanComponentLiterals(file, source) {
   // transitively along a chain — so a `let base = "…"` behind the alias is still
   // caught. Iterate to a fixpoint over `let NAME = IDENT;` (the RHS is a bare ident, so
   // a string/call/path RHS — including the literal itself — never matches).
+  // The alias SOURCE: a bare identifier, optionally through an identity-preserving
+  // conversion (`base`, `base.to_string()`, `base.to_owned()`, `base.clone()`,
+  // `base.into()`, `base.as_str()`) — all still render the same copy. Captured as the
+  // second group; the statement ends at `;`.
+  const aliasRhs =
+    '([A-Za-z_]\\w*)\\s*(?:\\.\\s*(?:to_string|to_owned|clone|into|as_str)\\s*\\(\\s*\\))?\\s*;';
   const aliasRes = [
-    /\blet\s+(?:mut\s+)?([A-Za-z_]\w*)\s*(?::\s*[^=;{}]*)?=\s*([A-Za-z_]\w*)\s*;/g,
-    // Plain REASSIGNMENT `label = base;` (RHS a bare identifier), statement-anchored
-    // after `;`/`{`/`}` so a comparison/compound `=` (`==`, `+=`) is not matched and a
-    // string/call/path RHS never matches.
-    /[;{}]\s*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;/g,
+    new RegExp(`\\blet\\s+(?:mut\\s+)?([A-Za-z_]\\w*)\\s*(?::\\s*[^=;{}]*)?=\\s*${aliasRhs}`, 'g'),
+    // Plain REASSIGNMENT `label = base;`, statement-anchored after `;`/`{`/`}` so a
+    // comparison/compound `=` (`==`, `+=`) is not matched.
+    new RegExp(`[;{}]\\s*([A-Za-z_]\\w*)\\s*=\\s*${aliasRhs}`, 'g'),
   ];
   for (let grew = true; grew; ) {
     grew = false;
@@ -1977,6 +1980,10 @@ export function scanComponentLiterals(file, source) {
   {
     const re = /\bField\s*\{/g;
     for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+      // Skip test-only Fields: the control loop skips their `input` via `inTest`, so a
+      // seeded count would stay 0 and falsely report `form-control-count` on valid
+      // component-test markup.
+      if (inTest(m.index)) continue;
       const open = m.index + m[0].length - 1;
       const close = matchingBrace(skeleton, open);
       if (close !== -1) fieldRanges.push([open, close]);
@@ -2189,7 +2196,12 @@ export function scanComponentLiterals(file, source) {
       // non-string expression (`[^"\s]`); an empty `""` matches neither and is
       // treated as unnamed. (Matching the value explicitly, not a `(?!"")` lookahead
       // whose `\s*` would backtrack to pass at the space before the value.)
-      if (/(?<![-\w])aria[-_]label(?:ledby)?"?\s*:\s*(?:"[^"]+"|[^"\s])/.test(attrs)) continue;
+      const namesTheNav = /(?<![-\w])aria[-_]label(?:ledby)?"?\s*:\s*(?:"[^"]+"|[^"\s])/.test(attrs);
+      // A statically-ABSENT optional value (`aria_label: None` / `None::<String>`)
+      // renders NO attribute — Dioxus drops a `None`-valued attribute — so it does NOT
+      // name the nav, even though it is a (non-string) expression.
+      const absentName = /(?<![-\w])aria[-_]label(?:ledby)?"?\s*:\s*None\b/.test(attrs);
+      if (namesTheNav && !absentName) continue;
       const line = lineOf(source, m.index);
       // NO `exempt(line)`: an unnamed nav is a semantic gate, not copy (see note above).
       findings.push(finding(file, line, 'raw-semantic-element', 'raw unnamed `nav` must carry an accessible name (aria-label/aria-labelledby) or come from the NavLandmark primitive (Decision-6)', 'literals'));
@@ -2198,20 +2210,25 @@ export function scanComponentLiterals(file, source) {
   return findings;
 }
 
-function componentFiles(repoRoot) {
+export function componentFiles(repoRoot) {
   const files = [];
+  // The locale catalog files are checked by the catalog rules, not the literal scan.
+  const excluded = new Set(Object.values(LOCALE_FILES).map((p) => resolve(repoRoot, p)));
   const walk = (absolute) => {
     for (const entry of readdirSync(absolute, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       const path = resolve(absolute, entry.name);
       if (entry.isDirectory()) walk(path);
-      else if (/\.rs$/.test(entry.name)) files.push(path);
+      else if (/\.rs$/.test(entry.name) && !excluded.has(path)) files.push(path);
     }
   };
   for (const root of LITERAL_SCAN_ROOTS) {
     const absolute = resolve(repoRoot, root);
     if (!existsSync(absolute)) continue;
-    if (/\.rs$/.test(root)) files.push(absolute);
-    else walk(absolute);
+    if (/\.rs$/.test(root)) {
+      if (!excluded.has(absolute)) files.push(absolute);
+    } else {
+      walk(absolute);
+    }
   }
   return files;
 }
