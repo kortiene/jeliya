@@ -75,8 +75,13 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
     // result is kept: if it failed, the reap is the more likely to hang, so its
     // error is the one worth surfacing on timeout.
     let kill_result = child.start_kill();
+    // Anchor the reap deadline: `timeout` polls the ready `wait()` before its timer, so
+    // under executor starvation a child that became reapable only AFTER `REAP_GRACE`
+    // could be accepted here — suppressing the timeout `force_kill_tree` contracts for a
+    // late/uninterruptible child. Reject a reap observed at/after the deadline.
+    let reap_deadline = tokio::time::Instant::now() + REAP_GRACE;
     match tokio::time::timeout(REAP_GRACE, child.wait()).await {
-        Ok(reaped) => {
+        Ok(reaped) if tokio::time::Instant::now() < reap_deadline => {
             reaped?;
             // The LEADER reaped, but a descendant wedged in an uninterruptible
             // syscall may still live in the isolated group, holding the data-dir
@@ -95,7 +100,9 @@ pub(crate) async fn force_kill_tree(child: &mut Child) -> std::io::Result<()> {
             }
             Ok(())
         }
-        Err(_elapsed) => Err(std::io::Error::new(
+        // `Err(_elapsed)` (timer fired) OR a reap observed only at/after the deadline
+        // (the guard above rejected it): both are an out-of-budget cleanup.
+        _ => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             match kill_result {
                 Ok(()) => "child was SIGKILLed but did not reap within the grace window \

@@ -464,15 +464,28 @@ impl Supervisor {
                     // on the data-dir lock; the `abandon_child` arms leave the child
                     // un-reaped, so `force_kill_tree` already reaches it.
                     let leader_pgid = guard.as_mut().id();
+                    // Anchor an absolute deadline: `timeout` polls the ready `wait()`
+                    // before its timer, so a probe-child exit observed only AT/AFTER the
+                    // budget (executor starvation, or `Timeouts::spawn == 0`) must not
+                    // slip into the ADOPT path — treat it as expired, like the announcement
+                    // and spawn-result paths.
+                    let wait_deadline = validate::deadline_from(self.timeouts.spawn);
                     match tokio::time::timeout(self.timeouts.spawn, guard.as_mut().wait()).await {
                         Ok(Ok(status)) if status.success() => {
                             // Our probe child bowed out cleanly; we now fall through
-                            // to ADOPT the incumbent. Confirm the isolated group is
-                            // gone FIRST — a leaked descendant could still hold the
-                            // data-dir lock and wreck the adopt — propagating a
-                            // bounded cleanup failure instead of adopting over it.
+                            // to ADOPT the incumbent — but ONLY if the exit was within
+                            // budget. Confirm the isolated group is gone FIRST — a leaked
+                            // descendant could still hold the data-dir lock and wreck the
+                            // adopt — propagating a bounded cleanup failure instead of
+                            // adopting over it.
                             if let Some(pgid) = leader_pgid {
                                 process::kill_reaped_process_group(pgid).await?;
+                            }
+                            // A clean exit observed only past the deadline is out-of-budget:
+                            // do NOT adopt (the wait was not actually deadline-strict), fail
+                            // `Wedged` so the caller's bounded retry governs.
+                            if tokio::time::Instant::now() >= wait_deadline {
+                                return Err(SupervisorError::Wedged);
                             }
                         }
                         Ok(Ok(_status)) => {
