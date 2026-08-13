@@ -108,11 +108,20 @@ const SLOT = '\u0000';
  *  that matters most: the narrow no-break space the French percent rule needs,
  *  written as an escape in fr.rs so it is visible in review. */
 function unescapeRust(raw) {
-  return raw.replace(/\\(u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|[\s\S])/g, (_, escape) => {
-    if (escape.startsWith('u{')) return String.fromCodePoint(parseInt(escape.slice(2, -1), 16));
-    if (/^x[0-9a-fA-F]{2}$/.test(escape)) return String.fromCodePoint(parseInt(escape.slice(1), 16));
-    return { n: '\n', t: '\t', r: '\r', '0': '\0', '\\': '\\', '"': '"', "'": "'" }[escape] ?? escape;
-  });
+  return raw.replace(
+    /\\(?:\n[ \t]*|(u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|[\s\S]))/g,
+    (_, escape) => {
+      // Rust LINE CONTINUATION: a backslash before a newline elides the newline AND
+      // the next line's leading whitespace, so `"Bonjour\u{202f}\<NL>  !"` renders
+      // `Bonjour !` (U+202F immediately before `!`). Decoding it as a literal newline
+      // + indentation instead makes the typography gate see whitespace before `!` and
+      // wrongly flag it. `escape` is undefined for this branch.
+      if (escape === undefined) return '';
+      if (escape.startsWith('u{')) return String.fromCodePoint(parseInt(escape.slice(2, -1), 16));
+      if (/^x[0-9a-fA-F]{2}$/.test(escape)) return String.fromCodePoint(parseInt(escape.slice(1), 16));
+      return { n: '\n', t: '\t', r: '\r', '0': '\0', '\\': '\\', '"': '"', "'": "'" }[escape] ?? escape;
+    },
+  );
 }
 
 /** Blank comments (newlines preserved so line numbers survive) and collect every
@@ -123,7 +132,13 @@ function unescapeRust(raw) {
  *  Handles `"…"` and raw strings `r#"…"#`. Rust `'` (lifetimes and char
  *  literals) is not string-significant in any scanned file and is ignored. */
 export function scanRustSource(source) {
-  const masked = Array.from(source);
+  // Split by UTF-16 code UNIT (`split('')`), not code POINT (`Array.from`): every
+  // scanner offset — `source.length`, `indexOf`, regex `.index` — is a code-unit
+  // position, so a code-point array drifts once any non-BMP char (an emoji, some
+  // CJK) precedes scanned markup, and a later RSX literal would map to the wrong
+  // skeleton range and be missed. Code-unit indexing keeps literals and RSX ranges
+  // in one coordinate system.
+  const masked = source.split('');
   const literals = [];
   const comments = [];
   const blank = (from, to) => {
@@ -238,7 +253,10 @@ export function scanRustSource(source) {
     i += 1;
   }
 
-  const skeleton = Array.from(masked.join(''));
+  // Copy the code-UNIT `masked` array (NOT `Array.from(join)`, which would re-split
+  // into code POINTS and drift from the code-unit `contentStart`/`contentEnd` offsets
+  // once any non-BMP char precedes a literal).
+  const skeleton = masked.slice();
   for (const literal of literals) {
     for (let at = literal.contentStart; at < literal.contentEnd; at += 1) {
       if (skeleton[at] !== '\n') skeleton[at] = ' ';
@@ -273,7 +291,13 @@ function collapseSlots(text) {
 function slotSet(values) {
   const slots = [];
   for (const value of values) {
-    for (const match of value.matchAll(/\{([^{}]*)\}/g)) slots.push(match[1]);
+    // Drop Rust's ESCAPED braces first: `{{`/`}}` render the literal characters
+    // `{`/`}`, not an interpolation slot. Without this, FR `format!("Compte {{n}}")`
+    // (which displays the literal text `{n}`) yields the same slot set `["n"]` as EN
+    // `format!("Count {n}")`, so the parity gate passes though the French argument is
+    // unused and the text is wrong.
+    const unescaped = value.replace(/\{\{|\}\}/g, '');
+    for (const match of unescaped.matchAll(/\{([^{}]*)\}/g)) slots.push(match[1]);
   }
   return slots.sort();
 }
@@ -575,7 +599,17 @@ export function identityExemption(key, text, allowlist = IDENTICAL_ALLOWLIST) {
   if (Object.hasOwn(allowlist, key)) return { source: 'allowlist', reason: allowlist[key] };
   const found = words(text);
   if (found.length === 0) return { source: 'automatic', reason: 'no translatable word' };
-  if (found.every((word) => NEVER_TRANSLATE.has(word))) {
+  // Auto-exempt ONLY when the ENTIRE value is a single exact protocol token — not when
+  // its words merely all appear in the lexicon. `"Hash mismatch"` is prose (both `hash`
+  // and `mismatch` are tokens, so word-by-word `every` wrongly exempted it) whereas the
+  // glossary exempts the exact wire code, and surrounding UI prose must be translated.
+  // Multi-word protocol phrases need an explicit, reasoned allowlist entry.
+  const core = text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+  if (NEVER_TRANSLATE.has(core)) {
     return { source: 'automatic', reason: 'never-translate lexicon' };
   }
   return null;

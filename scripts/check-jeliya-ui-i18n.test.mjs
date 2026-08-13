@@ -1738,6 +1738,69 @@ test('rule 2: a None.unwrap_or_default() branch is value-empty (#274 26-2)', () 
   );
 });
 
+test('scan: non-BMP text before markup does not drift literal offsets (#274 28-utf16)', () => {
+  // Five emoji (each a surrogate PAIR) in an earlier literal. A code-POINT mask makes
+  // the later `"Delete account"` map to the wrong skeleton range and be missed; a
+  // code-UNIT mask keeps offsets aligned.
+  const source = `fn A() -> Element { rsx! { div { "😀😀😀😀😀" } } }
+fn C() -> Element { rsx! { span { "Delete account" } } }`;
+  const findings = scanComponentLiterals('x.rs', source);
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message)),
+    'a literal after non-BMP (surrogate-pair) text must still be flagged',
+  );
+});
+
+test('rule 4: a Rust line continuation elides the newline+indent before typography (#274 28-linecont)', () => {
+  const en = `impl Catalog for En {
+    fn bye(&self) -> String { "Goodbye!".to_owned() }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn bye(&self) -> String { "Au revoir\\u{202f}\\
+    !".to_owned() }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    !codes.includes('fr-narrow-space'),
+    'the line continuation renders U+202F immediately before !, so no fr-narrow-space',
+  );
+});
+
+test('rule: escaped braces {{ }} are not placeholder slots (#274 28-escbrace)', () => {
+  const en = `impl Catalog for En {
+    fn count(&self, n: &str) -> String { format!("Count {n}") }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn count(&self, n: &str) -> String { format!("Compte {{n}}") }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('placeholder-parity'),
+    'FR {{n}} renders literal text, not a slot, so its slot set differs from EN {n}',
+  );
+});
+
+test('rule 1: a multi-word all-token value is not auto-exempted (#274 28-exempt)', () => {
+  // `hash` and `mismatch` are both protocol tokens, but "Hash mismatch" is prose:
+  // only the exact wire code is exempt; the UI label must be translated.
+  const en = `impl Catalog for En {
+    fn err(&self) -> &'static str { "Hash mismatch" }
+  }`;
+  const fr = `impl Catalog for Fr {
+    fn err(&self) -> &'static str { "Hash mismatch" }
+  }`;
+  const codes = checkCatalogs({ ...catalogs(en, fr), allowlist: {} }).map((f) => f.code);
+  assert.ok(
+    codes.includes('fr-untranslated'),
+    'identical multi-word prose is flagged untranslated despite its words being tokens',
+  );
+  assert.equal(
+    identityExemption('x', 'hash')?.source,
+    'automatic',
+    'an exact single protocol token stays auto-exempt',
+  );
+});
+
 test('literal scan: a nested block comment does not leak its brace (#274 24-5)', () => {
   // The inner comment contains a `}`: with a first-`*/` scan the comment ends at the
   // INNER terminator, leaking that `}` into the skeleton, closing the rsx! range early,
