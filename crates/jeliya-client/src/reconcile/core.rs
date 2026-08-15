@@ -2106,6 +2106,65 @@ mod tests {
         assert_eq!(limit, Some(2));
     }
 
+    /// `jeliya_api::Page.limit` is `1..=max` and refused (never clamped) at
+    /// zero: a zero page configuration must degrade to minimal one-event
+    /// pages, not issue refused reads that silently park every bootstrap.
+    #[test]
+    fn zero_page_limits_degrade_to_minimal_pages_instead_of_parking() {
+        let limits = ReconcileLimits {
+            read_page_size: 0,
+            max_read_page_events: 0,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let requested_limit = started.iter().find_map(|action| match action {
+            Action::IssueRead {
+                request: ReadRequest::Timeline(timeline),
+                ..
+            } => Some(timeline.page.limit),
+            _ => None,
+        });
+        assert_eq!(
+            requested_limit,
+            Some(1),
+            "a zero page configuration must request the minimal valid page"
+        );
+
+        // The minimal one-event page still converges a genesis-only room.
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(
+            has_emit_view(&settled),
+            "a zero page configuration must not park every bootstrap"
+        );
+    }
+
     #[test]
     fn timeline_reply_count_cannot_exceed_the_configured_page_bound() {
         let mut core = Core::new(ReconcileLimits {

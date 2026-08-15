@@ -76,11 +76,14 @@ pub struct ReconcileLimits {
     /// zero is normalized to one so an accepted room cannot deadlock forever.
     pub max_concurrent_reads: u32,
     /// Preferred page size for `room.timeline`; requests use the smaller of
-    /// this value and `max_read_page_events`.
+    /// this value and `max_read_page_events`, normalized to at least one
+    /// (`Page.limit` is `1..=max` and refused at zero, so a zero configuration
+    /// degrades to minimal pages instead of parking every bootstrap).
     pub read_page_size: u64,
     /// Maximum decoded events accepted in one `room.timeline` or
-    /// `stream.resync` reply. This is distinct from `read_page_size` because
-    /// `stream.resync` has no caller-supplied page limit.
+    /// `stream.resync` reply, normalized to at least one in use. This is
+    /// distinct from `read_page_size` because `stream.resync` has no
+    /// caller-supplied page limit.
     pub max_read_page_events: u32,
     /// Maximum serialized success-output bytes accepted from the backend for
     /// an authoritative read, checked before typed vector decoding. Concrete
@@ -131,6 +134,26 @@ impl Default for ReconcileLimits {
             peer_capacity: 256,
             update_mailbox_bytes: 2 * 1024 * 1024,
         }
+    }
+}
+
+impl ReconcileLimits {
+    /// The `room.timeline` page limit actually requested: the smaller of the
+    /// preferred and accepted page bounds, normalized to at least one.
+    /// `jeliya_api::Page.limit` is `1..=max` and refused — never clamped — at
+    /// zero, so a zero configuration must degrade to minimal one-event pages
+    /// instead of issuing refused reads that silently park every bootstrap
+    /// (mirroring the `max_concurrent_reads` zero normalization).
+    pub(crate) fn effective_timeline_page_limit(&self) -> u64 {
+        self.read_page_size
+            .min(u64::from(self.max_read_page_events))
+            .max(1)
+    }
+
+    /// The decoded-event count accepted per reply page, never below the one
+    /// event a minimal valid page can carry.
+    pub(crate) fn effective_page_event_cap(&self) -> u64 {
+        u64::from(self.max_read_page_events).max(1)
     }
 }
 

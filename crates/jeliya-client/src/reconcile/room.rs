@@ -768,10 +768,7 @@ impl RoomState {
                 page: Page {
                     cursor: cursor.clone(),
                     direction: Direction::Forward,
-                    limit: self
-                        .limits
-                        .read_page_size
-                        .min(u64::from(self.limits.max_read_page_events)),
+                    limit: self.limits.effective_timeline_page_limit(),
                 },
             }),
             ReadStep::Resync { from_pos } => ReadRequest::Resync(StreamResync {
@@ -822,9 +819,7 @@ impl RoomState {
                     if out.room_id != self.room_id
                         || !reply_events_valid(
                             &out.events,
-                            self.limits
-                                .read_page_size
-                                .min(u64::from(self.limits.max_read_page_events)),
+                            self.limits.effective_timeline_page_limit(),
                             self.limits,
                         ) =>
                 {
@@ -917,7 +912,7 @@ impl RoomState {
                     if out.room_id != self.room_id
                         || !reply_events_valid(
                             &out.events,
-                            u64::from(self.limits.max_read_page_events),
+                            self.limits.effective_page_event_cap(),
                             self.limits,
                         ) =>
                 {
