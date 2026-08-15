@@ -25,8 +25,8 @@ use jeliya_api::{
 };
 use jeliya_client::mock::{MockController, MockScript, Program};
 use jeliya_client::{
-    ClientEvent, ReconcileConfig, ReconcileLimits, Reconciler, ResyncReason, ResyncRequired,
-    RoomPush, RoomUpdate, State,
+    ClientEvent, ReconcileConfig, ReconcileError, ReconcileLimits, Reconciler, ResyncReason,
+    ResyncRequired, RoomPush, RoomUpdate, State,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,7 +43,19 @@ fn make_event(pos: u64, id: &str) -> jeliya_api::Event {
     serde_json::from_str(&json).expect("test event JSON deserializes")
 }
 
-fn timeline_reply(room_id: &RoomId, events: Vec<jeliya_api::Event>) -> Program {
+fn genesis_event() -> jeliya_api::Event {
+    serde_json::from_str(
+        r#"{"pos":0,"event_id":"genesis","at":"1970-01-01T00:00:00Z","author":{"state":"unresolved"},"kind":"room_created","content":{"name":"room"}}"#,
+    )
+    .expect("genesis event JSON deserializes")
+}
+
+fn timeline_reply(room_id: &RoomId, mut events: Vec<jeliya_api::Event>) -> Program {
+    // Every authoritative room timeline starts with the mandatory genesis
+    // `RoomCreated` event at position zero.
+    if events.first().is_none_or(|event| event.pos != 0) {
+        events.insert(0, genesis_event());
+    }
     Program::reply_ok::<RoomTimeline>(&RoomTimelineOut {
         room_id: room_id.clone(),
         events,
@@ -100,6 +112,129 @@ fn drive_resync_with_presence(pool: &mut LocalPool, ctrl: &MockController) {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded control admission
+// ---------------------------------------------------------------------------
+
+#[test]
+fn oversized_room_identifier_is_refused_before_control_admission() {
+    let (handle, _ctrl) = MockScript::new().build();
+    let reconciler = Reconciler::new(
+        handle,
+        ReconcileConfig {
+            limits: ReconcileLimits {
+                max_identifier_bytes: 3,
+                ..ReconcileLimits::default()
+            },
+        },
+    );
+    assert!(matches!(
+        reconciler.activate_room(RoomId::new("room"), 0),
+        Err(ReconcileError::IdentifierTooLong { limit: 3 })
+    ));
+}
+
+#[test]
+fn oversized_raw_read_reply_is_rejected_before_typed_page_retention() {
+    let room_id = RoomId::new("r");
+    let (handle, ctrl) = MockScript::new()
+        .on("room.timeline", timeline_reply(&room_id, vec![]))
+        .build();
+    ctrl.set_state(State::Ready);
+    let reconciler = Reconciler::new(
+        handle,
+        ReconcileConfig {
+            limits: ReconcileLimits {
+                max_read_reply_bytes: 1,
+                ..ReconcileLimits::default()
+            },
+        },
+    );
+    let mut sub = reconciler.subscribe();
+    let mut pool = LocalPool::new();
+    pool.spawner()
+        .spawn_local({
+            let reconciler = reconciler.clone();
+            async move { reconciler.run().await }
+        })
+        .unwrap();
+    reconciler.activate_room(room_id, 0).unwrap();
+    pool.run_until_stalled();
+    assert!(matches!(
+        sub.next().now_or_never().flatten(),
+        Some(RoomUpdate::Resyncing { .. })
+    ));
+    ctrl.deliver_next();
+    pool.run_until_stalled();
+    assert!(
+        sub.next().now_or_never().is_none(),
+        "oversized raw output must park without publishing a typed view"
+    );
+    reconciler.stop().unwrap();
+    pool.run_until_stalled();
+}
+
+#[test]
+fn control_queue_is_bounded_and_reports_full() {
+    let (handle, _ctrl) = MockScript::new().build();
+    let mut config = ReconcileConfig::default();
+    config.limits.max_active_rooms = 1;
+    let reconciler = Reconciler::new(handle, config);
+    let room_id = RoomId::new("room-control-queue");
+
+    // Capacity is derived from the room bound as 2 * rooms + 1. No run loop is
+    // driven here, so these commands remain pending and exercise admission.
+    for _ in 0..3 {
+        reconciler.activate_room(room_id.clone(), 0).unwrap();
+    }
+    assert!(matches!(
+        reconciler.activate_room(room_id, 1),
+        Err(ReconcileError::ControlQueueFull { limit: 3 })
+    ));
+
+    // Stop has a dedicated bounded signal and remains deliverable even though
+    // ordinary control ingress is saturated.
+    reconciler.stop().unwrap();
+}
+
+#[test]
+fn driver_caps_backend_reads_across_rooms() {
+    let room_a = RoomId::new("a");
+    let room_b = RoomId::new("b");
+    let (handle, ctrl) = MockScript::new()
+        .on("room.timeline", timeline_reply(&room_a, vec![]))
+        .on("room.timeline", timeline_reply(&room_b, vec![]))
+        .build();
+    ctrl.set_state(State::Ready);
+    let reconciler = Reconciler::new(
+        handle,
+        ReconcileConfig {
+            limits: ReconcileLimits {
+                max_concurrent_reads: 1,
+                ..ReconcileLimits::default()
+            },
+        },
+    );
+    let mut pool = LocalPool::new();
+    pool.spawner()
+        .spawn_local({
+            let r = reconciler.clone();
+            async move { r.run().await }
+        })
+        .unwrap();
+    reconciler.activate_room(room_a, 0).unwrap();
+    reconciler.activate_room(room_b, 0).unwrap();
+    pool.run_until_stalled();
+
+    assert!(ctrl.deliver_next(), "one read is admitted");
+    assert!(
+        !ctrl.deliver_next(),
+        "the second room must remain in the bounded driver queue"
+    );
+    reconciler.stop().unwrap();
+    pool.run_until_stalled();
+}
+
+// ---------------------------------------------------------------------------
 // AC-1 Bootstrap: Resyncing(Bootstrap) is observed before Converged
 // ---------------------------------------------------------------------------
 
@@ -132,7 +267,7 @@ fn bootstrap_emits_resyncing_then_converged() {
     pool.run_until_stalled();
 
     // Read the Bootstrap notice while the timeline read is still in flight.
-    let u1 = (&mut sub).next().now_or_never().flatten().unwrap();
+    let u1 = sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(
             u1,
@@ -149,14 +284,14 @@ fn bootstrap_emits_resyncing_then_converged() {
 
     drive_bootstrap(&mut pool, &ctrl);
 
-    let u2 = (&mut sub).next().now_or_never().flatten().unwrap();
+    let u2 = sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(u2, RoomUpdate::Converged(ref v) if v.room_id == room_id),
         "second update must be Converged: {u2:?}"
     );
 
     assert!(
-        (&mut sub).next().now_or_never().is_none(),
+        sub.next().now_or_never().is_none(),
         "no extra updates after converge"
     );
 }
@@ -197,8 +332,9 @@ fn reconnect_emits_resyncing_reconnect_then_converged() {
         })
         .unwrap();
 
-    // Complete bootstrap (its notices are not the subject of this test).
-    reconciler.activate_room(room_id.clone(), 0).unwrap();
+    // Complete bootstrap through the inclusive seed-event anchor (its notices
+    // are not the subject of this test).
+    reconciler.activate_room(room_id.clone(), 1).unwrap();
     pool.run_until_stalled();
     drive_bootstrap(&mut pool, &ctrl);
 
@@ -211,11 +347,7 @@ fn reconnect_emits_resyncing_reconnect_then_converged() {
     ctrl.set_state(State::Ready);
     pool.run_until_stalled(); // core processes Ready → Resyncing(Reconnect) + stream.resync issued
 
-    let u1 = (&mut reconnect_sub)
-        .next()
-        .now_or_never()
-        .flatten()
-        .unwrap();
+    let u1 = reconnect_sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(
             u1,
@@ -232,11 +364,7 @@ fn reconnect_emits_resyncing_reconnect_then_converged() {
 
     drive_resync_with_presence(&mut pool, &ctrl);
 
-    let u2 = (&mut reconnect_sub)
-        .next()
-        .now_or_never()
-        .flatten()
-        .unwrap();
+    let u2 = reconnect_sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(u2, RoomUpdate::Converged(ref v) if v.room_id == room_id),
         "second reconnect update must be Converged: {u2:?}"
@@ -276,8 +404,8 @@ fn resume_emits_resyncing_resume_without_fabricated_state_changed() {
         })
         .unwrap();
 
-    // Bootstrap (discarded).
-    reconciler.activate_room(room_id.clone(), 0).unwrap();
+    // Bootstrap through the inclusive seed-event anchor (updates discarded).
+    reconciler.activate_room(room_id.clone(), 1).unwrap();
     pool.run_until_stalled();
     drive_bootstrap(&mut pool, &ctrl);
 
@@ -295,7 +423,7 @@ fn resume_emits_resyncing_resume_without_fabricated_state_changed() {
         "resume must not fabricate any StateChanged on the seam (AC-6)"
     );
 
-    let u1 = (&mut resume_sub).next().now_or_never().flatten().unwrap();
+    let u1 = resume_sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(
             u1,
@@ -312,7 +440,7 @@ fn resume_emits_resyncing_resume_without_fabricated_state_changed() {
 
     drive_resync_with_presence(&mut pool, &ctrl);
 
-    let u2 = (&mut resume_sub).next().now_or_never().flatten().unwrap();
+    let u2 = resume_sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(u2, RoomUpdate::Converged(ref v) if v.room_id == room_id),
         "second resume update must be Converged: {u2:?}"
@@ -343,8 +471,11 @@ fn overflow_rerun_recovers_dropped_event() {
         .on("room.timeline", timeline_reply(&room_id, vec![]))
         .on("room.members", members_reply(&room_id))
         .on("room.peers", peers_reply(&room_id))
-        // LocalOverflow recovery: stream.resync delivers e2.
+        // LocalOverflow recovery: stream.resync delivers e2, then the
+        // presence-refreshing overflow plan reads members and peers.
         .on("stream.resync", resync_reply(&room_id, vec![e2.clone()], 2))
+        .on("room.members", members_reply(&room_id))
+        .on("room.peers", peers_reply(&room_id))
         .build();
 
     ctrl.set_state(State::Ready);
@@ -365,7 +496,7 @@ fn overflow_rerun_recovers_dropped_event() {
     pool.run_until_stalled();
 
     // Read the Bootstrap notice before delivering any replies.
-    let u1 = (&mut sub).next().now_or_never().flatten().unwrap();
+    let u1 = sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(
             u1,
@@ -395,21 +526,14 @@ fn overflow_rerun_recovers_dropped_event() {
     pool.run_until_stalled(); // core overflows e2 → LocalOverflow queued, e2 dropped
 
     // Complete bootstrap: timeline returns empty; core merges buffer [e1].
-    // After peers: Converged(e1) + Resyncing{LocalOverflow} broadcast,
-    // and stream.resync is issued as the queued rerun.
+    // Known loss is a publication barrier: only Resyncing{LocalOverflow} is
+    // emitted, and stream.resync is issued as the queued rerun.
     drive_bootstrap(&mut pool, &ctrl);
 
-    // Read both items queued by apply_actions while stream.resync is in flight.
-    let u2 = (&mut sub).next().now_or_never().flatten().unwrap();
-    assert!(
-        matches!(u2, RoomUpdate::Converged(ref v) if v.timeline.len() == 1),
-        "AC-3: first Converged must carry e1 only (e2 was dropped): {u2:?}"
-    );
-
-    let u3 = (&mut sub).next().now_or_never().flatten().unwrap();
+    let u2 = sub.next().now_or_never().flatten().unwrap();
     assert!(
         matches!(
-            u3,
+            u2,
             RoomUpdate::Resyncing {
                 resync: ResyncRequired {
                     reason: ResyncReason::LocalOverflow { .. },
@@ -418,18 +542,104 @@ fn overflow_rerun_recovers_dropped_event() {
                 ..
             }
         ),
-        "AC-3: LocalOverflow notice must follow the first Converged: {u3:?}"
+        "AC-3: incomplete bootstrap view must be suppressed: {u2:?}"
     );
 
-    // Deliver the resync that recovers e2.
+    // Deliver the resync that recovers e2, followed by the overflow-triggered
+    // authoritative presence refresh.
+    ctrl.deliver_next();
+    pool.run_until_stalled(); // issues room.members
+    ctrl.deliver_next();
+    pool.run_until_stalled(); // issues room.peers
     ctrl.deliver_next();
     pool.run_until_stalled(); // Converged(e1+e2) broadcast
 
-    let u4 = (&mut sub).next().now_or_never().flatten().unwrap();
+    let u3 = sub.next().now_or_never().flatten().unwrap();
     assert!(
-        matches!(u4, RoomUpdate::Converged(ref v) if v.timeline.len() == 2),
-        "AC-3: recovery Converged must contain both events: {u4:?}"
+        matches!(u3, RoomUpdate::Converged(ref v) if v.timeline.len() == 3),
+        "AC-3: recovery Converged must contain genesis and both events: {u3:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Subscribe-to-activation handoff: a push delivered after `stream.subscribe`
+// resolved its anchor but before `activate_room` was admitted is dropped (the
+// room is untracked); the bootstrap read must recover the committed event.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn push_before_activation_is_recovered_by_the_bootstrap_read() {
+    let room_id = RoomId::new("room-preactivation-race");
+    let raced = make_event(2, "ev-raced");
+
+    // The daemon committed position 2 after the subscribe anchor (1), so the
+    // authoritative timeline already contains it when the bootstrap reads.
+    let (handle, ctrl) = MockScript::new()
+        .on(
+            "room.timeline",
+            timeline_reply(&room_id, vec![make_event(1, "ev-1"), raced.clone()]),
+        )
+        .on("room.members", members_reply(&room_id))
+        .on("room.peers", peers_reply(&room_id))
+        .build();
+    ctrl.set_state(State::Ready);
+
+    let reconciler = Reconciler::new(handle, ReconcileConfig::default());
+    let mut sub = reconciler.subscribe();
+
+    let mut pool = LocalPool::new();
+    pool.spawner()
+        .spawn_local({
+            let r = reconciler.clone();
+            async move { r.run().await }
+        })
+        .unwrap();
+    pool.run_until_stalled();
+
+    // The racing push arrives while the room is still untracked: dropped.
+    ctrl.emit(ClientEvent::Push(RoomPush::Event {
+        room_id: room_id.clone(),
+        event: raced,
+    }));
+    pool.run_until_stalled();
+
+    // Activation then arrives carrying the stale anchor 1.
+    reconciler.activate_room(room_id.clone(), 1).unwrap();
+    pool.run_until_stalled();
+    let notice = sub.next().now_or_never().flatten().unwrap();
+    assert!(
+        matches!(
+            notice,
+            RoomUpdate::Resyncing {
+                resync: ResyncRequired {
+                    reason: ResyncReason::Bootstrap,
+                    ..
+                },
+                ..
+            }
+        ),
+        "activation starts an observable bootstrap: {notice:?}"
+    );
+
+    drive_bootstrap(&mut pool, &ctrl);
+    let converged = sub.next().now_or_never().flatten().unwrap();
+    match converged {
+        RoomUpdate::Converged(view) => {
+            assert_eq!(
+                view.timeline.last().map(|event| event.pos),
+                Some(2),
+                "the pre-activation push must be recovered by the baseline read"
+            );
+            assert_eq!(
+                view.timeline.last().map(|event| event.event_id.as_str()),
+                Some("ev-raced")
+            );
+        }
+        other => panic!("expected Converged, got {other:?}"),
+    }
+
+    reconciler.stop().unwrap();
+    pool.run_until_stalled();
 }
 
 // ---------------------------------------------------------------------------
@@ -464,15 +674,49 @@ fn stop_closes_subscription_and_ends_run() {
 
     // Stop before the hanging read is delivered.
     reconciler.stop().unwrap();
+    assert!(matches!(reconciler.resume(), Err(ReconcileError::Stopped)));
+    assert!(matches!(
+        reconciler.activate_room(RoomId::new("room-after-stop"), 0),
+        Err(ReconcileError::Stopped)
+    ));
     pool.run_until_stalled(); // run() processes Stop → cancels reads, closes view bus, returns
+    assert!(matches!(reconciler.stop(), Err(ReconcileError::Stopped)));
 
     // The Bootstrap Resyncing notice was queued before stop; it's still readable.
-    let _ = (&mut sub).next().now_or_never().flatten();
+    let _ = sub.next().now_or_never().flatten();
 
     // Once drained, the stream must be closed (yields None, not Pending).
-    let terminal = (&mut sub).next().now_or_never();
+    let terminal = sub.next().now_or_never();
     assert!(
         matches!(terminal, Some(None)),
         "view subscription must close after stop(): {terminal:?}"
     );
+}
+
+#[test]
+fn cancelling_run_is_total_and_closes_subscribers() {
+    let (handle, ctrl) = MockScript::new().build();
+    ctrl.set_state(State::Ready);
+    let reconciler = Reconciler::new(handle, ReconcileConfig::default());
+    let mut sub = reconciler.subscribe();
+    let (abort, registration) = futures::future::AbortHandle::new_pair();
+
+    let mut pool = LocalPool::new();
+    pool.spawner()
+        .spawn_local({
+            let r = reconciler.clone();
+            async move {
+                let _ = futures::future::Abortable::new(r.run(), registration).await;
+            }
+        })
+        .unwrap();
+    pool.run_until_stalled();
+    abort.abort();
+    pool.run_until_stalled();
+
+    assert!(matches!(
+        reconciler.activate_room(RoomId::new("after-cancel"), 0),
+        Err(ReconcileError::Stopped)
+    ));
+    assert!(matches!(sub.next().now_or_never(), Some(None)));
 }

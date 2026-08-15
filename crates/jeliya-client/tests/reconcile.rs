@@ -47,6 +47,20 @@ fn reconcile_limits_default_read_page_size_is_nonzero() {
 }
 
 #[test]
+fn reconcile_limits_default_external_input_byte_bounds_are_nonzero() {
+    let limits = ReconcileLimits::default();
+    assert!(limits.max_identifier_bytes > 0);
+    assert!(limits.max_baseline_events > 0);
+    assert!(limits.baseline_dedup_bytes > 0);
+    assert!(limits.max_concurrent_reads > 0);
+    assert!(limits.max_read_page_events > 0);
+    assert!(limits.max_read_reply_bytes > 0);
+    assert!(limits.max_read_reply_tokens > 0);
+    assert!(limits.timeline_bytes > 0);
+    assert!(limits.update_mailbox_bytes > 0);
+}
+
+#[test]
 fn reconcile_limits_are_overridable_per_field() {
     let limits = ReconcileLimits {
         buffer_depth: 1,
@@ -146,8 +160,17 @@ fn reconcile_error_too_many_rooms_names_the_limit() {
     let err = ReconcileError::TooManyRooms { limit: 16 };
     match err {
         ReconcileError::TooManyRooms { limit } => assert_eq!(limit, 16),
-        ReconcileError::Stopped => panic!("wrong variant"),
+        _ => panic!("wrong variant"),
     }
+}
+
+#[test]
+fn reconcile_error_identifier_limit_is_accessible() {
+    let err = ReconcileError::IdentifierTooLong { limit: 128 };
+    assert!(matches!(
+        err,
+        ReconcileError::IdentifierTooLong { limit: 128 }
+    ));
 }
 
 #[test]

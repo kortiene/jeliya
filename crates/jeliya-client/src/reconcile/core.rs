@@ -16,7 +16,9 @@ use jeliya_api::RoomId;
 
 use crate::event::{ClientEvent, RoomPush, State};
 use crate::reconcile::reason::ResyncReason;
-use crate::reconcile::room::{LiveOutcome, ReadReply, ReadRequest, ReplyOutcome, RoomState};
+use crate::reconcile::room::{
+    LiveOutcome, PeerOutcome, ReadReply, ReadRequest, ReplyOutcome, RoomState,
+};
 use crate::reconcile::view::RoomView;
 use crate::reconcile::ReconcileLimits;
 
@@ -38,6 +40,17 @@ pub(crate) enum Input {
     },
     /// A lifecycle transition lifted off the subscription.
     Lifecycle {
+        /// The state entered.
+        to: State,
+        /// Whether a coalesced window passed through a problem state (§R12).
+        coalesced_through_problem: bool,
+    },
+    /// A lifecycle transition carrying the observed source state. The driver
+    /// uses this form to fence a transition that was queued around its initial
+    /// state snapshot; a stale duplicate cannot cancel a bootstrap.
+    LifecycleObserved {
+        /// The state left.
+        from: State,
         /// The state entered.
         to: State,
         /// Whether a coalesced window passed through a problem state (§R12).
@@ -111,6 +124,9 @@ pub(crate) enum Action {
         /// The observable cause.
         reason: ResyncReason,
     },
+    /// Broadcast quantitative local loss already covered by the following
+    /// authoritative view; this is a boundary, not another read request.
+    EmitLagged { room_id: RoomId, dropped: u64 },
     /// Broadcast a converged (or in-place extended) view.
     EmitView(RoomView),
     /// A settled read was stale (its epoch/read_id is no longer current) and was
@@ -182,7 +198,12 @@ impl Core {
             Input::Lifecycle {
                 to,
                 coalesced_through_problem,
-            } => self.on_lifecycle(to, coalesced_through_problem, &mut actions),
+            } => self.on_lifecycle(None, to, coalesced_through_problem, &mut actions),
+            Input::LifecycleObserved {
+                from,
+                to,
+                coalesced_through_problem,
+            } => self.on_lifecycle(Some(from), to, coalesced_through_problem, &mut actions),
             Input::Event(event) => self.on_event(event, &mut actions),
             Input::DecodeFailed { room_id } => self.trigger(
                 &room_id,
@@ -216,8 +237,26 @@ impl Core {
     /// typed error) if it would exceed `max_active_rooms`. Bootstraps
     /// immediately when already live; otherwise waits for the first `Ready`.
     fn activate(&mut self, room_id: RoomId, from_pos: u64, actions: &mut Vec<Action>) {
-        if let Some(room) = self.rooms.get_mut(&room_id) {
-            room.set_anchor(from_pos);
+        if room_id.as_str().len() as u64 > u64::from(self.limits.max_identifier_bytes) {
+            return;
+        }
+        if self.rooms.contains_key(&room_id) {
+            let changed = {
+                let room = self.rooms.get_mut(&room_id).expect("room exists");
+                let changed = room.set_anchor(from_pos);
+                if changed {
+                    // Replacement mode is independent of cause priority. Mark
+                    // it before a queued Gap/Reconnect can outrank Bootstrap.
+                    room.mark_bootstrap_pending();
+                }
+                changed
+            };
+            if changed && self.state == State::Ready {
+                // A changed subscription anchor supersedes even a stalled read;
+                // cancel/relaunch now. `begin_reconcile` preserves its buffered
+                // pushes before installing the replacement state.
+                self.launch(&room_id, ResyncReason::Bootstrap, None, actions);
+            }
             return;
         }
         if self.rooms.len() >= self.limits.max_active_rooms as usize {
@@ -248,13 +287,30 @@ impl Core {
 
     /// A lifecycle transition. Entry into `Ready` (or a coalesced flap through a
     /// problem state) bumps the epoch and re-baselines every active room (§R12).
-    fn on_lifecycle(&mut self, to: State, coalesced: bool, actions: &mut Vec<Action>) {
+    fn on_lifecycle(
+        &mut self,
+        observed_from: Option<State>,
+        to: State,
+        coalesced: bool,
+        actions: &mut Vec<Action>,
+    ) {
+        // A transition observed on the subscription may have been queued just
+        // before the initial state snapshot. If its source no longer matches
+        // the core's state, it is stale; do not let it cancel a newer bootstrap.
+        // Coalesced Ready→Ready transitions are the honest exception: their
+        // endpoints intentionally hide an Interrupted window.
+        if let Some(from) = observed_from {
+            if !coalesced && from != self.state {
+                return;
+            }
+            if !coalesced && from == to {
+                self.state = to;
+                return;
+            }
+        }
+        let was_ready = self.state == State::Ready;
         self.state = to;
-        let reconnect = to == State::Ready;
-        // A coalesced-through-problem transition whose endpoint is still `Ready`
-        // is a merged flap and is handled by the `reconnect` branch; the flag is
-        // retained for symmetry with the seam's honest signal.
-        let _ = coalesced;
+        let reconnect = to == State::Ready && (observed_from.is_none() || !was_ready || coalesced);
         if !reconnect {
             return;
         }
@@ -267,6 +323,9 @@ impl Core {
             ResyncReason::Reconnect
         };
         for room_id in self.room_ids() {
+            if let Some(room) = self.rooms.get_mut(&room_id) {
+                room.reset_peer_transport_epoch();
+            }
             self.launch(&room_id, reason.clone(), None, actions);
         }
     }
@@ -275,10 +334,10 @@ impl Core {
     fn on_event(&mut self, event: ClientEvent, actions: &mut Vec<Action>) {
         match event {
             ClientEvent::StateChanged {
+                from,
                 to,
                 coalesced_through_problem,
-                ..
-            } => self.on_lifecycle(to, coalesced_through_problem, actions),
+            } => self.on_lifecycle(Some(from), to, coalesced_through_problem, actions),
             ClientEvent::Push(RoomPush::Event { room_id, event }) => {
                 self.on_live_event(room_id, event, actions)
             }
@@ -290,10 +349,21 @@ impl Core {
                 generation,
             }) => {
                 if let Some(room) = self.rooms.get_mut(&room_id) {
-                    if let Some(view) =
-                        room.apply_peer_push(subject_id, device_id, link, generation)
-                    {
-                        actions.push(Action::EmitView(view));
+                    if room.is_reconciling() {
+                        room.buffer_peer_push(subject_id, device_id, link, generation);
+                    } else if room.is_converged() {
+                        match room.apply_peer_push(subject_id, device_id, link, generation) {
+                            PeerOutcome::Applied(view) => actions.push(Action::EmitView(view)),
+                            PeerOutcome::Ignored => {}
+                            PeerOutcome::Overflow => self.trigger(
+                                &room_id,
+                                ResyncReason::LocalOverflow { dropped: 1 },
+                                None,
+                                actions,
+                            ),
+                        }
+                    } else {
+                        room.note_parked_peer_loss(subject_id, device_id, generation);
                     }
                 }
             }
@@ -357,6 +427,10 @@ impl Core {
             room.buffer_live_event(event);
             return;
         }
+        if !room.is_converged() {
+            room.buffer_parked_event(event);
+            return;
+        }
         if room.has_baseline() {
             match room.apply_live_event(event) {
                 LiveOutcome::Applied(view) => actions.push(Action::EmitView(view)),
@@ -396,14 +470,29 @@ impl Core {
             actions.push(Action::DropStale { room_id, read_id });
             return;
         }
+        if self.state != State::Ready {
+            room.park_outstanding();
+            return;
+        }
         match room.on_read_reply(reply) {
+            ReplyOutcome::Retry { reason } => self.launch(&room_id, reason, None, actions),
             ReplyOutcome::NextRead(request) => actions.push(Action::IssueRead {
                 room_id,
                 read_id,
                 epoch,
                 request,
             }),
-            ReplyOutcome::Converged { view, rerun } => {
+            ReplyOutcome::Converged {
+                view,
+                rerun,
+                dropped,
+            } => {
+                if dropped > 0 {
+                    actions.push(Action::EmitLagged {
+                        room_id: room_id.clone(),
+                        dropped,
+                    });
+                }
                 actions.push(Action::EmitView(view));
                 if let Some(reason) = rerun {
                     let from_pos = from_pos_for(&reason);
@@ -439,7 +528,9 @@ impl Core {
 
     /// Total stop: cancel every outstanding read and forget every room (§R13).
     fn on_stop(&mut self, actions: &mut Vec<Action>) {
-        for (room_id, room) in self.rooms.drain() {
+        let mut rooms: Vec<_> = self.rooms.drain().collect();
+        rooms.sort_by(|left, right| left.0.cmp(&right.0));
+        for (room_id, room) in rooms {
             if let Some(read_id) = room.outstanding_read_id() {
                 actions.push(Action::CancelRead { room_id, read_id });
             }
@@ -459,8 +550,12 @@ impl Core {
         let Some(room) = self.rooms.get_mut(room_id) else {
             return;
         };
+        // A daemon-named cursor or bounded gap end proves committed history
+        // the clamped read start cannot encode; record it before it can be
+        // coalesced away by a stronger cause.
+        room.note_trigger_evidence(&reason, from_pos_override);
         if room.is_reconciling() {
-            room.coalesce_rerun(reason);
+            room.coalesce_rerun(reason, from_pos_override);
         } else {
             self.launch(room_id, reason, from_pos_override, actions);
         }
@@ -490,11 +585,19 @@ impl Core {
         // (§R9). A parked `resync_required` names a discard position that no
         // watermark encodes, so dropping it would silently strand repudiated
         // positions in the timeline.
-        let reason = match room.take_pending_cause() {
-            Some(parked) => parked.coalesce(reason),
-            None => reason,
+        room.note_trigger_evidence(&reason, from_pos_override);
+        let reason = {
+            let parked = room.take_pending_cause();
+            room.coalesce_banking_loss(parked, reason)
         };
-        let from_pos_override = from_pos_override.or_else(|| from_pos_for(&reason));
+        room.note_trigger_evidence(&reason, None);
+        let pending_gap = room.take_pending_gap_from();
+        let mut effective_from = from_pos_for(&reason);
+        for candidate in [from_pos_override, pending_gap].into_iter().flatten() {
+            effective_from =
+                Some(effective_from.map_or(candidate, |current| current.min(candidate)));
+        }
+        let from_pos_override = effective_from;
         let request = room.begin_reconcile(epoch, read_id, reason.clone(), from_pos_override);
         actions.push(Action::EmitResyncRequired {
             room_id: room_id.clone(),
@@ -512,7 +615,9 @@ impl Core {
     /// The tracked room ids, for the relaunch-all loops (bounded by
     /// `max_active_rooms`).
     fn room_ids(&self) -> Vec<RoomId> {
-        self.rooms.keys().cloned().collect()
+        let mut room_ids: Vec<_> = self.rooms.keys().cloned().collect();
+        room_ids.sort();
+        room_ids
     }
 }
 
@@ -528,12 +633,14 @@ fn from_pos_for(reason: &ResyncReason) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use jeliya_api::{
-        ApiError, DeviceId, GapReason, GapTo, Link, MemberRow, PeerRow, Reachability, RoomId,
-        RoomMembersOut, RoomPeersOut, RoomTimelineOut, StreamResyncOut, SubjectId, Truncated,
+        ApiError, Cursor, DeviceId, GapReason, GapTo, Link, MemberRow, PeerRow, Reachability,
+        RoomId, RoomMembersOut, RoomPeersOut, RoomTimelineOut, Standing, StreamResyncOut,
+        SubjectId, Truncated,
     };
 
     use crate::error::CallError;
     use crate::event::{ClientEvent, RoomPush, State};
+    use crate::reconcile::buffer::estimated_event_bytes;
     use crate::reconcile::reason::ResyncReason;
     use crate::reconcile::room::{ReadReply, ReadRequest};
     use crate::reconcile::view::RoomView;
@@ -556,7 +663,23 @@ mod tests {
         serde_json::from_str(&json).expect("event json deserializes")
     }
 
-    fn timeline_ok(room_id: RoomId, events: Vec<jeliya_api::Event>) -> ReadReply {
+    fn room_created_evt(pos: u64, id: &str) -> jeliya_api::Event {
+        let json = format!(
+            r#"{{"pos":{pos},"event_id":"{id}","at":"1970-01-01T00:00:00Z","author":{{"state":"unresolved"}},"kind":"room_created","content":{{"name":"room"}}}}"#
+        );
+        serde_json::from_str(&json).expect("room-created event json deserializes")
+    }
+
+    fn genesis_evt() -> jeliya_api::Event {
+        room_created_evt(0, "genesis")
+    }
+
+    fn timeline_ok(room_id: RoomId, mut events: Vec<jeliya_api::Event>) -> ReadReply {
+        // Ordinary test fixtures model a valid room history; make the mandatory
+        // room-created origin explicit without weakening production validation.
+        if events.first().is_none_or(|event| event.pos != 0) {
+            events.insert(0, genesis_evt());
+        }
         ReadReply::Timeline(Ok(RoomTimelineOut {
             room_id,
             events,
@@ -696,6 +819,13 @@ mod tests {
         actions.iter().any(|a| matches!(a, Action::EmitView(_)))
     }
 
+    fn emitted_lagged(actions: &[Action]) -> Option<u64> {
+        actions.iter().find_map(|action| match action {
+            Action::EmitLagged { dropped, .. } => Some(*dropped),
+            _ => None,
+        })
+    }
+
     /// Extract `(read_id, epoch)` from the first `IssueRead`.
     fn read_id_epoch(actions: &[Action]) -> (u64, u64) {
         actions
@@ -736,9 +866,10 @@ mod tests {
         room_id: &RoomId,
         events: Vec<jeliya_api::Event>,
     ) -> Vec<Action> {
+        let from_pos = events.last().map_or(0, |event| event.pos);
         let activate_actions = core.step(Input::ActivateRoom {
             room_id: room_id.clone(),
-            from_pos: 0,
+            from_pos,
         });
 
         // If ActivateRoom already issued a read (core already in Ready state),
@@ -799,6 +930,40 @@ mod tests {
         assert!(
             matches!(resync_reason(&actions), Some(ResyncReason::Bootstrap)),
             "first Ready must emit Bootstrap reason"
+        );
+    }
+
+    #[test]
+    fn duplicate_ready_does_not_cancel_bootstrap_or_bump_epoch() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let first = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&first, &room);
+
+        let duplicate = core.step(Input::LifecycleObserved {
+            from: State::Ready,
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        assert_eq!(core.epoch(), epoch, "duplicate Ready must not bump epoch");
+        assert_eq!(
+            issue_read_count(&duplicate),
+            0,
+            "duplicate Ready must not launch a replacement read"
+        );
+        assert!(
+            !duplicate.iter().any(|action| matches!(
+                action,
+                Action::CancelRead { read_id: id, .. } if *id == read_id
+            )),
+            "duplicate Ready must not cancel the bootstrap"
         );
     }
 
@@ -1043,8 +1208,9 @@ mod tests {
             epoch,
             reply: peers_ok(room.clone()),
         });
-        // The converged view is emitted AND the coalesced rerun relaunches
-        assert!(has_emit_view(&a), "converged view emitted");
+        // The coalesced cause is a publication barrier; only the authoritative
+        // rerun may publish.
+        assert!(!has_emit_view(&a), "superseded view must be suppressed");
         assert_eq!(
             issue_read_count(&a),
             1,
@@ -1145,8 +1311,8 @@ mod tests {
             epoch,
             reply: peers_ok(room.clone()),
         });
-        // Convergence emits view (with e1 applied, e2 dropped) AND relaunches LocalOverflow
-        assert!(has_emit_view(&a), "initial convergence emits view");
+        // Known overflow is a publication barrier while LocalOverflow reruns.
+        assert!(!has_emit_view(&a), "incomplete convergence is suppressed");
         assert_eq!(issue_read_count(&a), 1, "rerun read issued after overflow");
         assert!(
             matches!(resync_reason(&a), Some(ResyncReason::LocalOverflow { .. })),
@@ -1156,27 +1322,39 @@ mod tests {
         // When it settles with e2 included, the final view must contain both events.
         let (rerun_read_id, rerun_epoch) = read_id_epoch(&a);
         // Settle rerun resync with e2
-        let a = core.step(Input::ReadReply {
+        let _ = core.step(Input::ReadReply {
             room_id: room.clone(),
             read_id: rerun_read_id,
             epoch: rerun_epoch,
             reply: resync_ok(room.clone(), vec![evt(2, "e2")], 2),
         });
-        // Presence re-read (reconnect/resume causes presence re-read; LocalOverflow does not)
-        // LocalOverflow is events-only (implicates_presence = false), so no Members/Peers read.
-        // The rerun converges directly.
-        assert!(has_emit_view(&a), "rerun convergence emits view");
-        if let Some(view) = emitted_view(&a) {
-            assert_eq!(
-                view.timeline.len(),
-                2,
-                "both events must be present after rerun"
-            );
-            assert!(
-                view.timeline.iter().any(|e| e.event_id.as_str() == "e2"),
-                "dropped event e2 must be recovered by the rerun"
-            );
-        }
+        // Local overflow also refreshes presence, because the lost frame may
+        // have been a peer push.
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_read_id,
+            epoch: rerun_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let a = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_read_id,
+            epoch: rerun_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&a).expect("rerun convergence emits view");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "genesis and both events must be present after rerun"
+        );
+        assert!(
+            view.timeline.iter().any(|e| e.event_id.as_str() == "e2"),
+            "dropped event e2 must be recovered by the rerun"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1189,7 +1367,7 @@ mod tests {
         let room = rid("r");
         core.step(Input::ActivateRoom {
             room_id: room.clone(),
-            from_pos: 0,
+            from_pos: 1,
         });
         let a = core.step(Input::Lifecycle {
             to: State::Ready,
@@ -1222,17 +1400,17 @@ mod tests {
             epoch,
             reply: peers_ok(room.clone()),
         });
-        // After convergence the view must include both pos=1 (baseline) and pos=2 (buffer)
-        assert!(has_emit_view(&a), "view emitted after convergence");
-        if let Some(view) = emitted_view(&a) {
-            assert_eq!(
-                view.timeline.len(),
-                2,
-                "timeline must contain baseline + buffered event"
-            );
-            assert_eq!(view.timeline[0].pos, 1);
-            assert_eq!(view.timeline[1].pos, 2);
-        }
+        // After convergence the view includes genesis, pos=1 from the
+        // baseline, and pos=2 from the live buffer.
+        let view = emitted_view(&a).expect("view emitted after convergence");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "timeline must contain genesis, baseline, and buffered event"
+        );
     }
 
     #[test]
@@ -1274,13 +1452,15 @@ mod tests {
             epoch,
             reply: peers_ok(room.clone()),
         });
-        if let Some(view) = emitted_view(&a) {
-            assert_eq!(
-                view.timeline.len(),
-                1,
-                "duplicate buffered event must be deduped — timeline must have exactly 1 event"
-            );
-        }
+        let view = emitted_view(&a).expect("duplicate test must reach convergence");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1],
+            "duplicate buffered event must be deduped without dropping genesis"
+        );
     }
 
     #[test]
@@ -1322,11 +1502,8 @@ mod tests {
             epoch,
             reply: peers_ok(room.clone()),
         });
-        // Convergence emits a view AND relaunches because of the gap in the buffer
-        assert!(
-            has_emit_view(&a),
-            "initial view emitted even with a gap rerun"
-        );
+        // The buffered gap is a publication barrier until the rerun settles.
+        assert!(!has_emit_view(&a), "incomplete view must be suppressed");
         assert_eq!(
             issue_read_count(&a),
             1,
@@ -1334,9 +1511,1267 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dedup_window_covers_the_rendered_timeline_when_configured_smaller() {
+        let mut core = Core::new(ReconcileLimits {
+            dedup_window: 1,
+            timeline_depth: 3,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        let _ = complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "old"), evt(2, "middle"), evt(3, "new")],
+        );
+        let duplicate = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room,
+            event: evt(4, "old"),
+        })));
+        assert!(matches!(
+            resync_reason(&duplicate),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&duplicate));
+    }
+
+    #[test]
+    fn daemon_discard_rebuilds_ids_for_the_whole_rendered_window() {
+        let mut core = Core::new(ReconcileLimits {
+            dedup_window: 1,
+            timeline_depth: 3,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "old"), evt(2, "middle"), evt(3, "new")],
+        );
+        let started = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 3,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room, vec![evt(4, "old")], 4),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn live_id_reuse_beyond_render_and_recent_windows_fails_closed() {
+        let mut core = Core::new(ReconcileLimits {
+            dedup_window: 1,
+            timeline_depth: 2,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1"), evt(2, "e2")]);
+        assert!(has_emit_view(&core.step(Input::Event(ClientEvent::Push(
+            RoomPush::Event {
+                room_id: room.clone(),
+                event: evt(3, "e3"),
+            },
+        )))));
+        assert!(has_emit_view(&core.step(Input::Event(ClientEvent::Push(
+            RoomPush::Event {
+                room_id: room.clone(),
+                event: evt(4, "e4"),
+            },
+        )))));
+        let reused = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room,
+            event: evt(5, "genesis"),
+        })));
+        assert!(matches!(
+            resync_reason(&reused),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&reused));
+    }
+
+    #[test]
+    fn daemon_truncation_allows_same_ids_in_the_replaced_suffix() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "e1"), evt(2, "e2"), evt(3, "e3")],
+        );
+        let started = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "e2"), evt(3, "e3")], 3),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room),
+        });
+        let view = emitted_view(&settled).expect("repudiated suffix ids may be re-read");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn duplicate_recent_id_above_watermark_forces_a_gap() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        // Same identity at a new position cannot be silently discarded: doing
+        // so leaves the position after the watermark unexplained.
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "e1"),
+        })));
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        assert_eq!(
+            issue_read_count(&settled),
+            1,
+            "a recent-id hit above the watermark must trigger a recovery"
+        );
+        assert!(
+            matches!(resync_reason(&settled), Some(ResyncReason::Gap { .. })),
+            "the unexplained position must be surfaced as a gap"
+        );
+    }
+
+    #[test]
+    fn daemon_cursor_above_first_baseline_does_not_adopt_unread_history() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let initial = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&initial, &room);
+        core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 5,
+        }));
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let relaunched = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let (rerun_id, rerun_epoch) = read_id_epoch_for(&relaunched, &room);
+
+        // A daemon position above the newly established genesis watermark is
+        // not evidence that this client holds the intervening prefix. The
+        // malformed incremental reply is rejected immediately and the old read
+        // identity is superseded by one bounded structural recovery.
+        let recovery = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: resync_ok(room.clone(), vec![evt(6, "e6")], 6),
+        });
+        assert_eq!(
+            issue_read_count(&recovery),
+            1,
+            "a later event cannot advance past never-read history"
+        );
+        assert!(
+            matches!(resync_reason(&recovery), Some(ResyncReason::Gap { .. })),
+            "the missing prefix must be surfaced as a gap"
+        );
+    }
+
+    #[test]
+    fn unsorted_baseline_page_cannot_hide_a_position_gap() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        let actions = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&actions, &room);
+        let invalid = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![evt(2, "e2"), evt(1, "e1")]),
+        });
+        assert_eq!(issue_read_count(&invalid), 1);
+        assert!(matches!(
+            resync_reason(&invalid),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&invalid));
+    }
+
+    /// The subscription anchor is a completeness floor, not a stop cursor: a
+    /// baseline that reaches `Complete` below a non-zero anchor is missing a
+    /// committed event and must never publish the partial prefix.
+    #[test]
+    fn bootstrap_complete_below_the_anchor_is_a_structural_gap() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        let actions = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&actions, &room);
+
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![genesis_evt(), evt(1, "e1")],
+                truncated: Truncated::Complete,
+            })),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn later_room_created_event_is_rejected_as_a_structural_gap() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room,
+                events: vec![
+                    genesis_evt(),
+                    room_created_evt(1, "second-origin"),
+                    evt(2, "e2"),
+                ],
+                truncated: Truncated::Complete,
+            })),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn live_room_created_event_cannot_create_a_second_origin() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let rejected = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room,
+            event: room_created_evt(2, "second-origin"),
+        })));
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn buffered_room_created_event_cannot_create_a_second_origin() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: room_created_evt(2, "second-origin"),
+        })));
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![evt(1, "e1")]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(
+            !has_emit_view(&rejected),
+            "a rejected buffered origin is a publication barrier"
+        );
+    }
+
+    #[test]
+    fn incremental_resync_cannot_introduce_a_second_room_origin() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room, vec![room_created_evt(2, "second-origin")], 2),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn malformed_suffix_after_anchor_is_still_rejected() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room,
+                // Position two is absent. Even though the subscription anchor
+                // was reached at one, a malformed returned suffix must not be
+                // accepted as an authoritative response.
+                events: vec![genesis_evt(), evt(1, "e1"), evt(3, "e3")],
+                truncated: Truncated::Complete,
+            })),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn changed_anchor_does_not_launch_replacement_while_interrupted() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Lifecycle {
+            to: State::Interrupted,
+            coalesced_through_problem: false,
+        });
+        let deferred = core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        assert_eq!(issue_read_count(&deferred), 0);
+
+        let old_settles_offline = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![evt(1, "e1")]),
+        });
+        assert_eq!(
+            issue_read_count(&old_settles_offline),
+            0,
+            "settling old I/O must not feed a dead transport"
+        );
+        assert!(!has_emit_view(&old_settles_offline));
+
+        let replacement = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        assert_eq!(issue_read_count(&replacement), 1);
+        assert!(replacement.iter().any(|action| matches!(
+            action,
+            Action::IssueRead {
+                request: ReadRequest::Timeline(_),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn anchor_change_during_reconcile_suppresses_old_view_and_forces_replacement() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (old_read_id, old_epoch) = read_id_epoch_for(&started, &room);
+
+        // A queued gap is the stronger observable cause, but the subsequent
+        // anchor change independently requires a full replacement. Reactivation
+        // must cancel a stalled old read immediately rather than waiting for it.
+        core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 0,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let replacement = core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        assert!(has_cancel_read(&replacement));
+        assert!(!has_emit_view(&replacement));
+        assert!(matches!(
+            resync_reason(&replacement),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(
+            replacement.iter().any(|action| matches!(
+                action,
+                Action::IssueRead {
+                    request: ReadRequest::Timeline(_),
+                    ..
+                }
+            )),
+            "replacement mode must survive cause coalescing"
+        );
+
+        let stale = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: old_read_id,
+            epoch: old_epoch,
+            reply: timeline_ok(room.clone(), vec![evt(1, "e1")]),
+        });
+        assert!(has_drop_stale(&stale));
+        assert!(!has_emit_view(&stale));
+
+        let (replacement_id, replacement_epoch) = read_id_epoch_for(&replacement, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: replacement_id,
+            epoch: replacement_epoch,
+            reply: timeline_ok(room.clone(), vec![evt(1, "e1"), evt(2, "e2")]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: replacement_id,
+            epoch: replacement_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: replacement_id,
+            epoch: replacement_epoch,
+            reply: peers_ok(room),
+        });
+        let view = emitted_view(&settled).expect("replacement baseline must converge");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn requested_page_size_never_exceeds_the_accepted_page_bound() {
+        let mut core = Core::new(ReconcileLimits {
+            read_page_size: 100,
+            max_read_page_events: 2,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room,
+            from_pos: 0,
+        });
+        let actions = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let limit = actions.iter().find_map(|action| match action {
+            Action::IssueRead {
+                request: ReadRequest::Timeline(request),
+                ..
+            } => Some(request.page.limit),
+            _ => None,
+        });
+        assert_eq!(limit, Some(2));
+    }
+
+    #[test]
+    fn timeline_reply_count_cannot_exceed_the_configured_page_bound() {
+        let mut core = Core::new(ReconcileLimits {
+            read_page_size: 10,
+            max_read_page_events: 1,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room, vec![evt(1, "e1")]),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn rendered_timeline_obeys_its_byte_bound_independently_of_watermark() {
+        let events = [genesis_evt(), evt(1, "e1"), evt(2, "e2")];
+        let byte_cap = events
+            .iter()
+            .map(estimated_event_bytes)
+            .max()
+            .expect("fixtures");
+        let mut core = Core::new(ReconcileLimits {
+            timeline_bytes: byte_cap,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        let settled = complete_bootstrap(&mut core, &room, vec![evt(1, "e1"), evt(2, "e2")]);
+        let view = emitted_view(&settled).expect("byte-bounded baseline converges");
+        assert_eq!(
+            view.timeline.last().map(|event| event.pos),
+            Some(2),
+            "the newest event remains rendered"
+        );
+        assert!(
+            view.timeline
+                .iter()
+                .map(estimated_event_bytes)
+                .fold(0_u64, u64::saturating_add)
+                <= byte_cap
+        );
+
+        let extended = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room,
+            event: evt(3, "e3"),
+        })));
+        let extended = emitted_view(&extended).expect("watermark advances past evicted history");
+        assert_eq!(extended.timeline.last().map(|event| event.pos), Some(3));
+    }
+
+    #[test]
+    fn oversized_room_identifier_is_not_retained_by_the_core() {
+        let mut core = Core::new(ReconcileLimits {
+            max_identifier_bytes: 3,
+            ..ReconcileLimits::default()
+        });
+        let actions = core.step(Input::ActivateRoom {
+            room_id: rid("room"),
+            from_pos: 0,
+        });
+        assert!(actions.is_empty());
+        assert_eq!(core.tracked_rooms(), 0);
+    }
+
+    #[test]
+    fn bootstrap_rejects_invalid_more_cursor_even_after_anchor() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room,
+                events: vec![genesis_evt(), evt(1, "e1")],
+                truncated: Truncated::More {
+                    cursor: Cursor::At { pos: 999 },
+                },
+            })),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn live_contiguous_event_extends_a_converged_view() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        let actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "e2"),
+        })));
+        let view = emitted_view(&actions).expect("contiguous live event must emit a view");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(view.timeline[2].event_id.as_str(), "e2");
+    }
+
     // -----------------------------------------------------------------------
     // AC-5 — Peer state is replaced from authoritative reads, never merged
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn daemon_discard_below_render_window_keeps_resync_contiguous() {
+        let limits = ReconcileLimits {
+            timeline_depth: 2,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        let _ = complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "e1"), evt(2, "e2"), evt(3, "e3"), evt(4, "e4")],
+        );
+        let started = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "e2"), evt(3, "e3")], 3),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&settled).expect("discard recovery must converge");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(issue_read_count(&settled), 0);
+    }
+
+    #[test]
+    fn paged_baseline_collection_stays_within_the_transient_bound() {
+        let limits = ReconcileLimits {
+            timeline_depth: 1,
+            read_page_size: 1,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 3,
+        });
+        let actions = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&actions, &room);
+        for (event, next_pos) in [(genesis_evt(), 1), (evt(1, "e1"), 2), (evt(2, "e2"), 3)] {
+            let next = core.step(Input::ReadReply {
+                room_id: room.clone(),
+                read_id,
+                epoch,
+                reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                    room_id: room.clone(),
+                    events: vec![event],
+                    truncated: Truncated::More {
+                        cursor: Cursor::At { pos: next_pos },
+                    },
+                })),
+            });
+            assert_eq!(issue_read_count(&next), 1);
+        }
+        // This is a continuation page, so it must not use `timeline_ok`, whose
+        // fixture convenience would prepend a second genesis event.
+        let members = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![evt(3, "e3")],
+                truncated: Truncated::Complete,
+            })),
+        });
+        assert!(members.iter().any(|action| matches!(
+            action,
+            Action::IssueRead {
+                request: ReadRequest::Members(_),
+                ..
+            }
+        )));
+        let peers = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        assert!(peers.iter().any(|action| matches!(
+            action,
+            Action::IssueRead {
+                request: ReadRequest::Peers(_),
+                ..
+            }
+        )));
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&settled).expect("paged baseline must converge");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
+
+    #[test]
+    fn conflicting_live_event_at_a_retained_position_forces_a_gap() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "original")]);
+        let conflict = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room,
+            event: evt(1, "different"),
+        })));
+        assert!(matches!(
+            resync_reason(&conflict),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&conflict));
+    }
+
+    #[test]
+    fn live_recent_id_at_a_new_position_forces_a_gap() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "e1"),
+        })));
+        assert_eq!(issue_read_count(&actions), 1);
+        assert!(matches!(
+            resync_reason(&actions),
+            Some(ResyncReason::Gap { .. })
+        ));
+    }
+
+    #[test]
+    fn rendered_timeline_is_a_bounded_window_over_the_watermark() {
+        let limits = ReconcileLimits {
+            timeline_depth: 1,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        let a = complete_bootstrap(&mut core, &room, vec![evt(1, "e1"), evt(2, "e2")]);
+        let view = emitted_view(&a).expect("bootstrap must emit a view");
+        assert_eq!(view.timeline.len(), 1);
+        assert_eq!(view.timeline[0].pos, 2);
+
+        let a = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(3, "e3"),
+        })));
+        let view = emitted_view(&a).expect("live extension must emit a view");
+        assert_eq!(view.timeline.len(), 1);
+        assert_eq!(view.timeline[0].pos, 3);
+    }
+
+    #[test]
+    fn bootstrap_retains_genesis_event_at_position_zero() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        // Anchor one is inclusive, so the replacement must retain both the
+        // mandatory genesis event and the first post-genesis event.
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let actions = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&actions, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![genesis_evt(), evt(1, "e1")]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&settled).expect("genesis baseline must converge");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let extended = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "e2"),
+        })));
+        assert_eq!(emitted_view(&extended).unwrap().timeline[2].pos, 2);
+    }
+
+    #[test]
+    fn first_live_event_extends_an_empty_converged_room() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![]);
+
+        let actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(1, "e1"),
+        })));
+        let view = emitted_view(&actions).expect("first live event must emit a view");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(issue_read_count(&actions), 0);
+    }
+
+    #[test]
+    fn peer_push_while_parked_becomes_observable_presence_loss() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (failed_id, failed_epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: failed_id,
+            epoch: failed_epoch,
+            reply: ReadReply::Timeline(Err(CallError::Timeout)),
+        });
+        let parked_push = core.step(Input::Event(peer_push(&room, "s", "d", 1)));
+        assert!(parked_push.is_empty());
+
+        let relaunched = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&relaunched, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let recovery = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room),
+        });
+        assert!(!has_emit_view(&recovery));
+        assert!(matches!(
+            resync_reason(&recovery),
+            Some(ResyncReason::LocalOverflow { dropped: 1 })
+        ));
+    }
+
+    #[test]
+    fn peer_buffer_overflow_forces_a_presence_refresh() {
+        let limits = ReconcileLimits {
+            buffer_depth: 1,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(peer_push(&room, "s1", "d1", 1)));
+        core.step(Input::Event(peer_push(&room, "s2", "d2", 1)));
+
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let got_reason = resync_reason(&settled);
+        assert!(
+            matches!(got_reason, Some(ResyncReason::LocalOverflow { .. })),
+            "peer loss must be visible as LocalOverflow, got {got_reason:?}"
+        );
+        let (rerun_id, rerun_epoch) = read_id_epoch(&settled);
+        assert!(settled.iter().any(|action| matches!(
+            action,
+            Action::IssueRead {
+                request: ReadRequest::Resync(_),
+                ..
+            }
+        )));
+        let members = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        assert!(
+            members.iter().any(|action| matches!(
+                action,
+                Action::IssueRead {
+                    request: ReadRequest::Members(_),
+                    ..
+                }
+            )),
+            "peer loss rerun must refresh members"
+        );
+        let peers = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: members_ok(room.clone()),
+        });
+        assert!(
+            peers.iter().any(|action| matches!(
+                action,
+                Action::IssueRead {
+                    request: ReadRequest::Peers(_),
+                    ..
+                }
+            )),
+            "peer loss rerun must refresh peers"
+        );
+        let final_actions = core.step(Input::ReadReply {
+            room_id: room,
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: peers_ok(rid("r")),
+        });
+        assert!(has_emit_view(&final_actions));
+    }
+
+    #[test]
+    fn peer_push_during_events_only_reconcile_is_applied_after_baseline() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let push_actions = core.step(Input::Event(peer_push(&room, "s1", "d1", 1)));
+        assert!(!has_emit_view(&push_actions));
+
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let view = emitted_view(&settled).expect("buffered peer push must survive the read");
+        assert_eq!(view.peers.len(), 1);
+        assert_eq!(view.peers[0].subject_id.as_str(), "s1");
+    }
+
+    #[test]
+    fn peer_push_capacity_cannot_grow_from_wire_keys() {
+        let limits = ReconcileLimits {
+            peer_capacity: 1,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let first = core.step(Input::Event(peer_push(&room, "s1", "d1", 1)));
+        assert_eq!(emitted_view(&first).map(|view| view.peers.len()), Some(1));
+        let second = core.step(Input::Event(peer_push(&room, "s2", "d2", 1)));
+        assert_eq!(issue_read_count(&second), 1);
+        assert!(
+            matches!(
+                resync_reason(&second),
+                Some(ResyncReason::LocalOverflow { .. })
+            ),
+            "a wire-supplied peer key beyond the bound must force refresh"
+        );
+    }
+
+    #[test]
+    fn live_membership_event_updates_the_rendered_roster() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        let alice: MemberRow = serde_json::from_str(
+            r#"{"subject_id":"alice","role":"member","standing":"active","joined_at":"1970-01-01T00:00:00Z"}"#,
+        )
+        .expect("member row");
+        // Seed the authoritative member row through a presence-triggering
+        // reconnect so the live fold has signed role/join evidence to retain.
+        let reconnect = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch(&reconnect);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Members(Ok(RoomMembersOut {
+                room_id: room.clone(),
+                members: vec![alice.clone()],
+            })),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+
+        let leave: jeliya_api::Event = serde_json::from_str(
+            r#"{"pos":2,"event_id":"leave","at":"1970-01-01T00:00:01Z","author":{"state":"unresolved"},"kind":"member_left","content":{"subject_id":"alice"}}"#,
+        )
+        .expect("member-left event");
+        let actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: leave,
+        })));
+        let view = emitted_view(&actions).expect("membership push must emit a view");
+        assert_eq!(view.members[0].standing, jeliya_api::Standing::Left);
+
+        let join: jeliya_api::Event = serde_json::from_str(
+            r#"{"pos":3,"event_id":"join","at":"1970-01-01T00:00:02Z","author":{"state":"unresolved"},"kind":"member_joined","content":{"subject_id":"alice","role":"member"}}"#,
+        )
+        .expect("member-joined event");
+        let actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: join,
+        })));
+        let view = emitted_view(&actions).expect("join must emit a view");
+        assert_eq!(view.members[0].standing, jeliya_api::Standing::Active);
+        assert_ne!(view.members[0].joined_at, alice.joined_at);
+
+        let remove: jeliya_api::Event = serde_json::from_str(
+            r#"{"pos":4,"event_id":"remove","at":"1970-01-01T00:00:03Z","author":{"state":"unresolved"},"kind":"member_removed","content":{"subject_id":"alice","by":"authority"}}"#,
+        )
+        .expect("member-removed event");
+        let actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: remove,
+        })));
+        let view = emitted_view(&actions).expect("remove must emit a view");
+        assert_eq!(view.members[0].standing, jeliya_api::Standing::Removed);
+
+        let unknown_leave: jeliya_api::Event = serde_json::from_str(
+            r#"{"pos":5,"event_id":"unknown-leave","at":"1970-01-01T00:00:04Z","author":{"state":"unresolved"},"kind":"member_left","content":{"subject_id":"missing"}}"#,
+        )
+        .expect("unknown member-left event");
+        let actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: unknown_leave,
+        })));
+        let (refresh_id, refresh_epoch) = read_id_epoch(&actions);
+        let members = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: refresh_id,
+            epoch: refresh_epoch,
+            reply: resync_ok(room.clone(), vec![], 5),
+        });
+        assert!(
+            members.iter().any(|action| matches!(
+                action,
+                Action::IssueRead {
+                    request: ReadRequest::Members(_),
+                    ..
+                }
+            )),
+            "unknown membership target must refresh the authoritative roster"
+        );
+    }
 
     #[test]
     fn ac5_peer_snapshot_replaced_not_merged_on_reconnect() {
@@ -1380,10 +2815,9 @@ mod tests {
             reply: peers_ok(room.clone()),
         });
         // First view has Alice
-        if let Some(view) = emitted_view(&a) {
-            assert_eq!(view.members.len(), 1);
-            assert_eq!(view.members[0].subject_id.as_str(), "alice");
-        }
+        let view = emitted_view(&a).expect("bootstrap must emit the member view");
+        assert_eq!(view.members.len(), 1);
+        assert_eq!(view.members[0].subject_id.as_str(), "alice");
 
         // Reconnect — this time the authoritative members reply omits Alice (she left)
         let a = core.step(Input::Lifecycle {
@@ -1413,12 +2847,11 @@ mod tests {
             epoch: epoch2,
             reply: peers_ok(room.clone()),
         });
-        if let Some(view) = emitted_view(&a) {
-            assert!(
-                view.members.is_empty(),
-                "removed member must not survive a wholesale replacement"
-            );
-        }
+        let view = emitted_view(&a).expect("reconnect must emit the replacement view");
+        assert!(
+            view.members.is_empty(),
+            "removed member must not survive a wholesale replacement"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1603,10 +3036,11 @@ mod tests {
             room_id: room.clone(),
             from_pos: 0,
         });
-        core.step(Input::Lifecycle {
+        let bootstrap = core.step(Input::Lifecycle {
             to: State::Ready,
             coalesced_through_problem: false,
         });
+        let (read_id, epoch) = read_id_epoch(&bootstrap);
 
         // Push arrives while bootstrap is outstanding — must NOT emit a view
         let push_actions = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
@@ -1622,6 +3056,36 @@ mod tests {
             0,
             "push during bootstrap must not issue a new read"
         );
+
+        let a = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        assert_eq!(issue_read_count(&a), 1, "members read follows the timeline");
+        let a = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        assert_eq!(issue_read_count(&a), 1, "peers read follows the members");
+        let a = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&a).expect("buffered push must appear at convergence");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(view.timeline[1].event_id.as_str(), "e1");
     }
 
     // -----------------------------------------------------------------------
@@ -1766,6 +3230,32 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn scoped_decode_failure_reconciles_only_the_named_room() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let r1 = rid("r1");
+        let r2 = rid("r2");
+        complete_bootstrap(&mut core, &r1, vec![evt(1, "e1")]);
+        complete_bootstrap(&mut core, &r2, vec![evt(1, "e1")]);
+
+        let actions = core.step(Input::DecodeFailed {
+            room_id: r1.clone(),
+        });
+        let rooms: Vec<_> = actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::EmitResyncRequired {
+                    room_id,
+                    reason: ResyncReason::Gap { .. },
+                    ..
+                } => Some(room_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rooms, vec![r1]);
+        assert!(!rooms.contains(&r2));
+    }
+
+    #[test]
     fn activate_beyond_max_rooms_is_refused() {
         let limits = ReconcileLimits {
             max_active_rooms: 1,
@@ -1791,6 +3281,289 @@ mod tests {
     // -----------------------------------------------------------------------
     // Verification: resync_required daemon reply restarts the reconciliation
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn misrouted_timeline_reply_is_rejected_before_convergence() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let actions = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&actions, &room);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(rid("other"), vec![]),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn duplicate_event_ids_across_baseline_pages_force_recovery() {
+        let limits = ReconcileLimits {
+            timeline_depth: 2,
+            dedup_window: 1,
+            read_page_size: 1,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        let actions = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&actions, &room);
+        let first = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![genesis_evt()],
+                truncated: Truncated::More {
+                    cursor: Cursor::At { pos: 1 },
+                },
+            })),
+        });
+        assert_eq!(issue_read_count(&first), 1);
+        let second = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![evt(1, "same")],
+                truncated: Truncated::More {
+                    cursor: Cursor::At { pos: 2 },
+                },
+            })),
+        });
+        assert_eq!(issue_read_count(&second), 1);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room,
+                events: vec![evt(2, "same")],
+                truncated: Truncated::Complete,
+            })),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn distant_duplicate_id_across_baseline_pages_fails_closed() {
+        let mut core = Core::new(ReconcileLimits {
+            timeline_depth: 2,
+            dedup_window: 1,
+            read_page_size: 2,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 4,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let first = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![genesis_evt(), evt(1, "duplicate")],
+                truncated: Truncated::More {
+                    cursor: Cursor::At { pos: 2 },
+                },
+            })),
+        });
+        assert_eq!(issue_read_count(&first), 1);
+        let second = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![evt(2, "b"), evt(3, "c")],
+                truncated: Truncated::More {
+                    cursor: Cursor::At { pos: 4 },
+                },
+            })),
+        });
+        assert_eq!(issue_read_count(&second), 1);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room,
+                events: vec![evt(4, "duplicate")],
+                truncated: Truncated::Complete,
+            })),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn durable_id_ceiling_retry_preserves_buffered_peer_and_accrued_cause() {
+        let mut core = Core::new(ReconcileLimits {
+            max_baseline_events: 2,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::Backpressure,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(peer_push(&room, "s", "d", 1)));
+        core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+
+        let retry = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "e2")], 2),
+        });
+        assert!(!has_emit_view(&retry));
+        assert!(
+            matches!(
+                resync_reason(&retry),
+                Some(ResyncReason::ResyncRequiredByDaemon { from_pos: 1 })
+            ),
+            "unexpected retry cause: {:?}",
+            resync_reason(&retry)
+        );
+        let (retry_id, retry_epoch) = read_id_epoch_for(&retry, &room);
+
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let peer_recovery = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: peers_ok(room),
+        });
+        assert!(!has_emit_view(&peer_recovery));
+        assert!(matches!(
+            resync_reason(&peer_recovery),
+            Some(ResyncReason::LocalOverflow { dropped }) if *dropped >= 1
+        ));
+    }
+
+    #[test]
+    fn total_baseline_scan_ceiling_fails_closed_without_probabilistic_ids() {
+        let mut core = Core::new(ReconcileLimits {
+            read_page_size: 2,
+            max_baseline_events: 2,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let first = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![genesis_evt(), evt(1, "e1")],
+                truncated: Truncated::More {
+                    cursor: Cursor::At { pos: 2 },
+                },
+            })),
+        });
+        assert_eq!(issue_read_count(&first), 1);
+        let rejected = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room,
+                events: vec![evt(2, "e2")],
+                truncated: Truncated::Complete,
+            })),
+        });
+        assert!(matches!(
+            resync_reason(&rejected),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&rejected));
+    }
+
+    #[test]
+    fn inconsistent_resync_next_pos_is_not_converged_as_authority() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch(&started);
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "e2")], 999),
+        });
+        assert_eq!(issue_read_count(&settled), 1);
+        assert!(matches!(
+            resync_reason(&settled),
+            Some(ResyncReason::Gap { .. })
+        ));
+        assert!(!has_emit_view(&settled));
+    }
 
     #[test]
     fn daemon_resync_required_reply_restarts_from_named_pos() {
@@ -1830,6 +3603,422 @@ mod tests {
     // -----------------------------------------------------------------------
     // Verification: failed read parks room in NeedsReconcile (no auto-spin)
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn repeated_structural_failure_parks_even_with_a_coalesced_trigger() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (first_id, first_epoch) = read_id_epoch_for(&started, &room);
+        let malformed = || {
+            ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![genesis_evt(), evt(2, "e2")],
+                truncated: Truncated::Complete,
+            }))
+        };
+        let retry = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: first_id,
+            epoch: first_epoch,
+            reply: malformed(),
+        });
+        assert_eq!(
+            issue_read_count(&retry),
+            1,
+            "one structural retry is allowed"
+        );
+        let (second_id, second_epoch) = read_id_epoch_for(&retry, &room);
+
+        core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 0,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let parked = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: second_id,
+            epoch: second_epoch,
+            reply: malformed(),
+        });
+        assert_eq!(
+            issue_read_count(&parked),
+            0,
+            "a coalesced trigger must not bypass the structural retry budget"
+        );
+        assert!(!has_emit_view(&parked));
+
+        let later_liveness = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        assert_eq!(issue_read_count(&later_liveness), 1);
+    }
+
+    #[test]
+    fn buffered_event_survives_a_parked_read_failure() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(1, "e1"),
+        })));
+        let failed = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Err(timeout_err())),
+        });
+        assert_eq!(issue_read_count(&failed), 0);
+
+        let relaunched = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (retry_id, retry_epoch) = read_id_epoch_for(&relaunched, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: peers_ok(room),
+        });
+        let view = emitted_view(&settled).expect("parked buffered evidence must converge");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn failed_buffer_overflow_is_counted_exactly_once() {
+        let mut core = Core::new(ReconcileLimits {
+            buffer_depth: 1,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (failed_id, failed_epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(1, "held"),
+        })));
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "lost"),
+        })));
+        let failed = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: failed_id,
+            epoch: failed_epoch,
+            reply: ReadReply::Timeline(Err(CallError::Timeout)),
+        });
+        assert_eq!(issue_read_count(&failed), 0);
+
+        let relaunched = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&relaunched, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let recovery = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room),
+        });
+        assert!(matches!(
+            resync_reason(&recovery),
+            Some(ResyncReason::LocalOverflow { dropped: 1 })
+        ));
+    }
+
+    #[test]
+    fn coalesced_daemon_cause_cannot_erase_quantitative_local_loss() {
+        let mut core = Core::new(ReconcileLimits {
+            buffer_depth: 1,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(1, "held"),
+        })));
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "lost"),
+        })));
+        core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 0,
+        }));
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let daemon = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(matches!(
+            resync_reason(&daemon),
+            Some(ResyncReason::ResyncRequiredByDaemon { from_pos: 0 })
+        ));
+        assert!(!has_emit_view(&daemon));
+        let (daemon_id, daemon_epoch) = read_id_epoch_for(&daemon, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: daemon_id,
+            epoch: daemon_epoch,
+            reply: resync_ok(room.clone(), vec![evt(1, "held"), evt(2, "lost")], 2),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: daemon_id,
+            epoch: daemon_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let local_loss = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: daemon_id,
+            epoch: daemon_epoch,
+            reply: peers_ok(room),
+        });
+        assert!(has_emit_view(&local_loss));
+        assert!(local_loss
+            .iter()
+            .any(|action| matches!(action, Action::EmitLagged { dropped: 1, .. })));
+        assert_eq!(issue_read_count(&local_loss), 0);
+    }
+
+    #[test]
+    fn superseding_cause_cannot_erase_inflight_buffer_loss() {
+        let mut core = Core::new(ReconcileLimits {
+            buffer_depth: 1,
+            ..ReconcileLimits::default()
+        });
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(1, "held"),
+        })));
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "lost"),
+        })));
+
+        let superseded = core.step(Input::Resume);
+        assert!(has_cancel_read(&superseded));
+        assert!(matches!(
+            resync_reason(&superseded),
+            Some(ResyncReason::Resume)
+        ));
+        let (read_id, epoch) = read_id_epoch_for(&superseded, &room);
+        // The old read is fenced even if it later settles.
+        let (old_id, old_epoch) = read_id_epoch_for(&started, &room);
+        assert!(has_drop_stale(&core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: old_id,
+            epoch: old_epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        })));
+
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let recovery = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room),
+        });
+        assert!(!has_emit_view(&recovery));
+        assert!(matches!(
+            resync_reason(&recovery),
+            Some(ResyncReason::LocalOverflow { dropped: 1 })
+        ));
+        assert_eq!(issue_read_count(&recovery), 1);
+    }
+
+    #[test]
+    fn parked_buffer_overflow_is_recovered_before_publication() {
+        let limits = ReconcileLimits {
+            buffer_depth: 1,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(1, "e1"),
+        })));
+        core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Err(timeout_err())),
+        });
+        // The failed read's e1 occupies the parked buffer; e2 must be counted
+        // as loss rather than silently replacing or disappearing.
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "e2"),
+        })));
+
+        let relaunched = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (retry_id, retry_epoch) = read_id_epoch_for(&relaunched, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let recovery = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(
+            !has_emit_view(&recovery),
+            "a view with known parked loss must not be published"
+        );
+        assert!(matches!(
+            resync_reason(&recovery),
+            Some(ResyncReason::LocalOverflow { dropped: 1 })
+        ));
+
+        let (overflow_id, overflow_epoch) = read_id_epoch_for(&recovery, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: overflow_id,
+            epoch: overflow_epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "e2")], 2),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: overflow_id,
+            epoch: overflow_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: overflow_id,
+            epoch: overflow_epoch,
+            reply: peers_ok(room),
+        });
+        let view = emitted_view(&settled).expect("overflow recovery must converge");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
 
     #[test]
     fn failed_read_parks_room_awaiting_liveness_trigger() {
@@ -1877,6 +4066,40 @@ mod tests {
     /// `truncate_to` never runs: the repudiated positions stay in the timeline
     /// forever while the room keeps applying pushes and broadcasting `Converged`,
     /// so the consumer observes a permanently wrong timeline and no error.
+    #[test]
+    fn coalesced_lower_cursor_suppresses_the_repudiated_view() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "a"), evt(2, "b"), evt(3, "c")],
+        );
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 3,
+            to: GapTo::Open,
+            reason: GapReason::Backpressure,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+        let rerun = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room, vec![], 3),
+        });
+        assert!(!has_emit_view(&rerun));
+        assert_eq!(issued_resync_from(&rerun), Some(1));
+        assert!(matches!(
+            resync_reason(&rerun),
+            Some(ResyncReason::ResyncRequiredByDaemon { from_pos: 1 })
+        ));
+    }
+
     #[test]
     fn a_coalesced_resync_required_survives_a_failed_read() {
         let mut core = Core::new(ReconcileLimits::default());
@@ -2003,6 +4226,67 @@ mod tests {
     /// which is exactly what dropping the per-device fences on snapshot
     /// replacement allowed.
     #[test]
+    fn first_peer_snapshot_fences_a_delayed_generation_one_push() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        // Generation one was observed before the first snapshot and is omitted
+        // by that authority. A later copy of the same frame is stale.
+        core.step(Input::Event(peer_push(&room, "s1", "d1", 1)));
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![evt(1, "a")]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let recovery = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let (recovery_id, recovery_epoch) = read_id_epoch_for(&recovery, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recovery_id,
+            epoch: recovery_epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recovery_id,
+            epoch: recovery_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recovery_id,
+            epoch: recovery_epoch,
+            reply: peers_ok(room.clone()),
+        });
+
+        let delayed = core.step(Input::Event(peer_push(&room, "s1", "d1", 1)));
+        assert!(
+            !has_emit_view(&delayed),
+            "a generation-one frame older than the first authoritative snapshot must not resurrect a device"
+        );
+    }
+
+    #[test]
     fn a_stale_peer_push_cannot_resurrect_a_device_an_authoritative_read_removed() {
         let mut core = Core::new(ReconcileLimits::default());
         let room = rid("r");
@@ -2016,11 +4300,8 @@ mod tests {
             "the live push introduces the device"
         );
 
-        // A reconnect re-reads presence authoritatively, and d1 is gone.
-        let a = core.step(Input::Lifecycle {
-            to: State::Ready,
-            coalesced_through_problem: true,
-        });
+        // A same-transport Resume re-reads presence authoritatively, and d1 is gone.
+        let a = core.step(Input::Resume);
         let (read_id, epoch) = read_id_epoch_for(&a, &room);
         let _ = core.step(Input::ReadReply {
             room_id: room.clone(),
@@ -2052,6 +4333,161 @@ mod tests {
             !has_emit_view(&a),
             "a stale-generation frame must be discarded, not resurrect the peer"
         );
+    }
+
+    #[test]
+    fn removed_high_generation_device_does_not_fence_a_different_device() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "a")]);
+        assert!(has_emit_view(
+            &core.step(Input::Event(peer_push(&room, "s-a", "d-a", 100,)))
+        ));
+        let started = core.step(Input::Resume);
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let new_device = core.step(Input::Event(peer_push(&room, "s-b", "d-b", 1)));
+        let view = emitted_view(&new_device).expect("generation fences are per device");
+        assert!(view
+            .peers
+            .iter()
+            .any(|peer| peer.device_id.as_str() == "d-b"));
+    }
+
+    #[test]
+    fn reconnect_epoch_rebuilds_peer_payload_generation_fences() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "a")]);
+        let _ = core.step(Input::Event(peer_push(&room, "s-a", "d-a", 100)));
+        let _ = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::Backpressure,
+        }));
+        let _ = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+        core.step(Input::Lifecycle {
+            to: State::Interrupted,
+            coalesced_through_problem: false,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        assert!(matches!(
+            resync_reason(&started),
+            Some(ResyncReason::ResyncRequiredByDaemon { from_pos: 1 })
+        ));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok_with(
+                room.clone(),
+                Reachability::Connected,
+                vec![peer_row("s-a", "d-a")],
+            ),
+        });
+        let fresh = core.step(Input::Event(peer_push(&room, "s-a", "d-a", 1)));
+        assert!(
+            has_emit_view(&fresh),
+            "a new transport epoch may restart a peer payload generation"
+        );
+    }
+
+    #[test]
+    fn equal_generation_for_an_omitted_peer_forces_authoritative_refresh() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "a")]);
+        let _ = core.step(Input::Event(peer_push(&room, "s-a", "d-a", 5)));
+        let started = core.step(Input::Resume);
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let ambiguous = core.step(Input::Event(peer_push(&room, "s-a", "d-a", 5)));
+        assert!(!has_emit_view(&ambiguous));
+        assert_eq!(issue_read_count(&ambiguous), 1);
+        assert!(matches!(
+            resync_reason(&ambiguous),
+            Some(ResyncReason::LocalOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn same_connection_generation_allows_later_peer_link_change() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let _ = complete_bootstrap(&mut core, &room, vec![evt(1, "a")]);
+        let first = core.step(Input::Event(peer_push(&room, "s1", "d1", 2)));
+        assert!(has_emit_view(&first));
+        let second = core.step(Input::Event(ClientEvent::Push(RoomPush::Peer {
+            room_id: room,
+            subject_id: SubjectId::new("s1"),
+            device_id: DeviceId::new("d1"),
+            link: Link::NotConnected {
+                reason: jeliya_api::LinkReason::Closed,
+            },
+            generation: 2,
+        })));
+        let view = emitted_view(&second).expect("later same-generation link change applies");
+        assert!(matches!(
+            view.peers.as_slice(),
+            [PeerRow {
+                link: Link::NotConnected { .. },
+                ..
+            }]
+        ));
     }
 
     /// The whole-room aggregate is derived from the per-device links, so it has
@@ -2121,6 +4557,1123 @@ mod tests {
             emitted_view(&a).map(|v| v.reachability),
             Some(Reachability::Offline),
             "an offline room must stay offline"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Subscribe-to-activation handoff: an event committed after the anchor but
+    // before the room's activation was admitted may already have been pushed
+    // (and dropped, the room being untracked). The bootstrap read is the only
+    // recovery, so it must not discard the validated post-anchor suffix.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bootstrap_retains_events_committed_beyond_the_activation_anchor() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        // The anchor (1) is the head at `stream.subscribe` time; position 2
+        // was committed — and its push lost — before activation was admitted.
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 1,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![evt(1, "e1"), evt(2, "raced")]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&settled).expect("the bootstrap converges");
+        assert_eq!(
+            view.timeline.last().map(|event| event.pos),
+            Some(2),
+            "an event committed past the anchor before activation must not vanish"
+        );
+        assert_eq!(
+            view.timeline.last().map(|event| event.event_id.as_str()),
+            Some("raced")
+        );
+
+        // The subscription later replays the same event as a live push (it was
+        // queued from the anchor): an exact identity/position replay is
+        // ignored, never a spurious gap.
+        let replay = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "raced"),
+        })));
+        assert_eq!(issue_read_count(&replay), 0, "a replay must not resync");
+        assert!(!has_emit_view(&replay), "a replay changes nothing");
+    }
+
+    #[test]
+    fn bootstrap_pages_to_complete_past_the_anchor() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 2,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        // The anchor (2) is reached mid-page, but the daemon reports more
+        // committed history: the baseline keeps paging to Complete instead of
+        // silently discarding it.
+        let continued = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![genesis_evt(), evt(1, "e1"), evt(2, "e2")],
+                truncated: Truncated::More {
+                    cursor: Cursor::At { pos: 3 },
+                },
+            })),
+        });
+        assert!(
+            continued.iter().any(|action| matches!(
+                action,
+                Action::IssueRead {
+                    request: ReadRequest::Timeline(_),
+                    ..
+                }
+            )),
+            "a continuation past the anchor is followed, not abandoned"
+        );
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Timeline(Ok(RoomTimelineOut {
+                room_id: room.clone(),
+                events: vec![evt(3, "e3")],
+                truncated: Truncated::Complete,
+            })),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&settled).expect("the paged bootstrap converges");
+        assert_eq!(view.timeline.last().map(|event| event.pos), Some(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // Required frontier: a trigger naming a position above the watermark is
+    // evidence the committed history extends at least that far. Authority must
+    // reach it before any view is published; a persistently short daemon parks.
+    // -----------------------------------------------------------------------
+
+    /// A daemon cursor above the watermark is clamped for the read, but the
+    /// named position must not be forgotten: an empty authoritative suffix
+    /// below it cannot publish as converged.
+    #[test]
+    fn daemon_cursor_above_watermark_cannot_converge_below_the_known_frontier() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // The daemon names position 5; the client holds only up to 1.
+        let started = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 5,
+        }));
+        assert_eq!(
+            issued_resync_from(&started),
+            Some(1),
+            "the read is clamped to the held prefix"
+        );
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(
+            !has_emit_view(&settled),
+            "an empty suffix below the daemon-named frontier must not publish"
+        );
+        assert_eq!(
+            issue_read_count(&settled),
+            1,
+            "one bounded follow-up read chases the frontier"
+        );
+
+        // The follow-up also comes back empty: park, never publish below the
+        // frontier.
+        let (retry_id, retry_epoch) = read_id_epoch_for(&settled, &room);
+        let parked = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        assert!(!has_emit_view(&parked), "fail closed, never publish short");
+        assert_eq!(issue_read_count(&parked), 0, "the frontier retry is spent");
+
+        // A later liveness trigger relaunches; once authority actually serves
+        // through the frontier the room converges and publishes.
+        let relaunched = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (live_id, live_epoch) = read_id_epoch_for(&relaunched, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: resync_ok(
+                room.clone(),
+                vec![evt(2, "e2"), evt(3, "e3"), evt(4, "e4"), evt(5, "e5")],
+                5,
+            ),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let converged = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&converged).expect("reaching the frontier converges");
+        assert_eq!(view.timeline.last().map(|event| event.pos), Some(5));
+    }
+
+    /// With no watermark yet, a coalesced gap's cursor cannot steer the read,
+    /// but its named frontier (including a bounded upper end) still forbids an
+    /// old-anchor baseline from converging below it.
+    #[test]
+    fn bounded_gap_frontier_survives_a_genesis_bootstrap() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        core.step(Input::ActivateRoom {
+            room_id: room.clone(),
+            from_pos: 0,
+        });
+        let started = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+
+        // While the bootstrap is in flight, a gap proves history through 3.
+        core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 2,
+            to: GapTo::Bounded { pos: 3 },
+            reason: GapReason::Retention,
+        }));
+
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: timeline_ok(room.clone(), vec![]),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        // The coalesced gap is a publication barrier; the rerun relaunches.
+        let rerun = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(!has_emit_view(&rerun));
+        let (rerun_id, rerun_epoch) = read_id_epoch_for(&rerun, &room);
+
+        // The rerun's authoritative suffix is empty: still below the bounded
+        // frontier 3, so nothing may publish.
+        let short = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: resync_ok(room.clone(), vec![], 0),
+        });
+        assert!(
+            !has_emit_view(&short),
+            "a genesis-only baseline below a bounded gap frontier must not publish"
+        );
+        assert_eq!(issue_read_count(&short), 1, "one bounded frontier chase");
+
+        let (retry_id, retry_epoch) = read_id_epoch_for(&short, &room);
+        let parked = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: resync_ok(room.clone(), vec![], 0),
+        });
+        assert!(!has_emit_view(&parked));
+        assert_eq!(issue_read_count(&parked), 0, "park after the spent retry");
+
+        // Liveness recovers once authority serves through the frontier.
+        let relaunched = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (live_id, live_epoch) = read_id_epoch_for(&relaunched, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: resync_ok(
+                room.clone(),
+                vec![evt(1, "e1"), evt(2, "e2"), evt(3, "e3")],
+                3,
+            ),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let converged = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&converged).expect("reaching the frontier converges");
+        assert_eq!(view.timeline.last().map(|event| event.pos), Some(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bounded `resync_required` redirect chains: repeated non-progressing
+    // cursors must not issue reads forever.
+    // -----------------------------------------------------------------------
+
+    /// A `resync_required` whose effective cursor equals the read it answers
+    /// makes no progress. One retry is allowed; a second identical redirect
+    /// parks the room instead of hot-looping against the daemon.
+    #[test]
+    fn non_progressing_resync_required_parks_after_one_retry() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // Reconnect → incremental resync from the watermark (1) in flight.
+        let reconnect = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&reconnect, &room);
+
+        // The daemon redirects to the exact cursor we just read from.
+        let first = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Resync(Err(resync_required_err(room.clone(), 1))),
+        });
+        assert_eq!(issue_read_count(&first), 1, "one non-progress retry runs");
+        let (retry_id, retry_epoch) = read_id_epoch_for(&first, &room);
+
+        // The identical redirect again: no progress is provable — park.
+        let parked = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: retry_id,
+            epoch: retry_epoch,
+            reply: ReadReply::Resync(Err(resync_required_err(room.clone(), 1))),
+        });
+        assert_eq!(
+            issue_read_count(&parked),
+            0,
+            "a non-progressing redirect chain must park, not loop"
+        );
+        assert!(!has_emit_view(&parked));
+
+        // A later liveness trigger still relaunches the parked room.
+        let relaunched = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        assert_eq!(issue_read_count(&relaunched), 1);
+    }
+
+    /// Even strictly-decreasing daemon redirects are a bounded chain: a daemon
+    /// that keeps naming lower cursors cannot make the client issue reads
+    /// without limit before a converge.
+    #[test]
+    fn descending_resync_required_chain_is_bounded() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        let history: Vec<_> = (1..=12).map(|pos| evt(pos, &format!("e{pos}"))).collect();
+        complete_bootstrap(&mut core, &room, history);
+
+        let reconnect = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (mut read_id, mut epoch) = read_id_epoch_for(&reconnect, &room);
+
+        // Eight strictly-progressing redirects are served (11 down to 4).
+        for from_pos in (4..=11).rev() {
+            let redirected = core.step(Input::ReadReply {
+                room_id: room.clone(),
+                read_id,
+                epoch,
+                reply: ReadReply::Resync(Err(resync_required_err(room.clone(), from_pos))),
+            });
+            assert_eq!(
+                issue_read_count(&redirected),
+                1,
+                "a progressing redirect to {from_pos} relaunches"
+            );
+            (read_id, epoch) = read_id_epoch_for(&redirected, &room);
+        }
+
+        // The ninth redirect exceeds the chain bound: park.
+        let parked = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Resync(Err(resync_required_err(room.clone(), 3))),
+        });
+        assert_eq!(
+            issue_read_count(&parked),
+            0,
+            "an unbounded descending redirect chain must park"
+        );
+        assert!(!has_emit_view(&parked));
+    }
+
+    // -----------------------------------------------------------------------
+    // Rollback below the retained render window: the recovered view must not
+    // pretend the room is empty when history merely fell out of the window.
+    // -----------------------------------------------------------------------
+
+    /// A daemon discard below the oldest retained event, answered by an empty
+    /// authoritative suffix, must rebuild the render window with a full
+    /// timeline replacement instead of publishing an empty "authoritative"
+    /// view for a room that has history.
+    #[test]
+    fn empty_suffix_after_rollback_below_window_rebuilds_the_timeline() {
+        let limits = ReconcileLimits {
+            timeline_depth: 2,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        // Window retains [3, 4]; positions 0..=2 were evicted by the depth cap.
+        complete_bootstrap(
+            &mut core,
+            &room,
+            vec![evt(1, "e1"), evt(2, "e2"), evt(3, "e3"), evt(4, "e4")],
+        );
+
+        let started = core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(
+            emitted_view(&settled).is_none(),
+            "an empty rendered window over surviving history must not publish"
+        );
+        let replacement_issued = settled.iter().any(|action| {
+            matches!(
+                action,
+                Action::IssueRead {
+                    request: ReadRequest::Timeline(_),
+                    ..
+                }
+            )
+        });
+        assert!(
+            replacement_issued,
+            "the window is rebuilt by a full timeline replacement"
+        );
+
+        // The replacement serves the daemon's post-discard history through the
+        // subscription anchor; the rebuilt window renders its newest tail.
+        let (rebuild_id, rebuild_epoch) = read_id_epoch_for(&settled, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rebuild_id,
+            epoch: rebuild_epoch,
+            reply: timeline_ok(
+                room.clone(),
+                vec![evt(1, "e1"), evt(2, "r2"), evt(3, "r3"), evt(4, "r4")],
+            ),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rebuild_id,
+            epoch: rebuild_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let rebuilt = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rebuild_id,
+            epoch: rebuild_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&rebuilt).expect("the replacement converges");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.pos)
+                .collect::<Vec<_>>(),
+            vec![3, 4],
+            "the rebuilt window renders the newest authoritative tail"
+        );
+        assert_eq!(view.timeline[0].event_id.as_str(), "r3");
+    }
+
+    // -----------------------------------------------------------------------
+    // Saturated tombstone retention is deterministic: which removed peers stay
+    // fenced when the bounded tombstone map fills must not depend on hash-map
+    // iteration order. (Before the ordered fencing this test failed on most
+    // runs, depending on the per-process hasher seed.)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn saturated_peer_tombstone_retention_is_deterministic() {
+        let limits = ReconcileLimits {
+            peer_capacity: 4,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // Each cycle: a resume-triggered snapshot replacement, then pushes
+        // that stamp connection generations. Resume never resets the
+        // per-device fences (same transport epoch throughout).
+        let replace_snapshot = |core: &mut Core, rows: Vec<PeerRow>| {
+            let relaunched = core.step(Input::Resume);
+            let (read_id, epoch) = read_id_epoch_for(&relaunched, &room);
+            let _ = core.step(Input::ReadReply {
+                room_id: room.clone(),
+                read_id,
+                epoch,
+                reply: resync_ok(room.clone(), vec![], 1),
+            });
+            let _ = core.step(Input::ReadReply {
+                room_id: room.clone(),
+                read_id,
+                epoch,
+                reply: members_ok(room.clone()),
+            });
+            let _ = core.step(Input::ReadReply {
+                room_id: room.clone(),
+                read_id,
+                epoch,
+                reply: peers_ok_with(room.clone(), Reachability::Connected, rows),
+            });
+        };
+
+        // Cycle 1: s1/s2 appear and stamp generation 5.
+        replace_snapshot(&mut core, vec![peer_row("s1", "d"), peer_row("s2", "d")]);
+        core.step(Input::Event(peer_push(&room, "s1", "d", 5)));
+        core.step(Input::Event(peer_push(&room, "s2", "d", 5)));
+        // Cycle 2: t1..t3 replace them; s1/s2 take two of the four fence slots.
+        replace_snapshot(
+            &mut core,
+            vec![
+                peer_row("t1", "d"),
+                peer_row("t2", "d"),
+                peer_row("t3", "d"),
+            ],
+        );
+        core.step(Input::Event(peer_push(&room, "t1", "d", 5)));
+        core.step(Input::Event(peer_push(&room, "t2", "d", 5)));
+        core.step(Input::Event(peer_push(&room, "t3", "d", 5)));
+        // Cycle 3: everything removed. Two slots remain for three keys: the
+        // two lowest (t1, t2) are fenced; t3 overflows into fail-closed mode.
+        replace_snapshot(&mut core, vec![]);
+
+        for fenced in ["t1", "t2"] {
+            let stale = core.step(Input::Event(peer_push(&room, fenced, "d", 1)));
+            assert!(
+                stale.is_empty(),
+                "a stale generation for deterministically fenced {fenced} is \
+                 silently discarded, got {} actions",
+                stale.len()
+            );
+        }
+        let unfenced = core.step(Input::Event(peer_push(&room, "t3", "d", 1)));
+        assert!(
+            matches!(
+                resync_reason(&unfenced),
+                Some(ResyncReason::LocalOverflow { .. })
+            ),
+            "the overflowed key fails closed into an authoritative refresh"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Quantitative loss is orthogonal to cause priority: a stronger coalesced
+    // cause selects the recovery, but must not erase how many pushes were
+    // lost — the count surfaces as an attributed Lagged boundary before the
+    // covering converged view.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn external_lagged_count_survives_a_stronger_coalesced_cause() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // A gap opens a reconciliation.
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+
+        // Quantitative local loss coalesces while the read is in flight …
+        core.step(Input::Event(ClientEvent::Lagged {
+            room_id: Some(room.clone()),
+            dropped: 7,
+        }));
+        // … and a stronger daemon cause then wins the pending rerun.
+        core.step(Input::Event(ClientEvent::ResyncRequired {
+            room_id: room.clone(),
+            from_pos: 1,
+        }));
+
+        // The in-flight read settles; the coalesced rerun relaunches with the
+        // daemon cause (a publication barrier, so nothing publishes yet).
+        let rerun = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        assert!(!has_emit_view(&rerun));
+        assert!(
+            matches!(
+                resync_reason(&rerun),
+                Some(ResyncReason::ResyncRequiredByDaemon { from_pos: 1 })
+            ),
+            "the stronger cause selects the recovery"
+        );
+
+        // The daemon-caused recovery settles and publishes: the erased-cause
+        // loss count must surface as an attributed boundary before the view.
+        let (recover_id, recover_epoch) = read_id_epoch_for(&rerun, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recover_id,
+            epoch: recover_epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recover_id,
+            epoch: recover_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let converged = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recover_id,
+            epoch: recover_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(
+            has_emit_view(&converged),
+            "the covering authority publishes"
+        );
+        assert_eq!(
+            emitted_lagged(&converged),
+            Some(7),
+            "the quantitative loss must not vanish with the outranked cause"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lost peer-buffer keys stay fenced: a peer push dropped by the bounded
+    // buffer must leave a generation tombstone, or a stale same-generation
+    // frame can reinsert a phantom peer after an omitting snapshot.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn peer_push_dropped_by_buffer_limits_fences_stale_resurrection() {
+        let limits = ReconcileLimits {
+            buffer_depth: 1,
+            ..ReconcileLimits::default()
+        };
+        let mut core = Core::new(limits);
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // Reconnect → incremental read in flight; one buffered event push
+        // fills the combined transient budget.
+        let reconnect = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&reconnect, &room);
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "e2"),
+        })));
+        // The peer push overflows the buffer: its key/generation is dropped.
+        core.step(Input::Event(peer_push(&room, "s1", "d1", 5)));
+
+        // The read settles; the authoritative snapshot omits (s1, d1) — the
+        // peer disconnected while the client could not observe it.
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "e2")], 2),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let rerun = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        // The recorded loss forces one presence-refreshing rerun.
+        let (rerun_id, rerun_epoch) = read_id_epoch_for(&rerun, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: resync_ok(room.clone(), vec![], 2),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&settled).expect("the loss-covering rerun converges");
+        assert!(view.peers.is_empty(), "authority removed the peer");
+
+        // A stale frame from the same dropped connection generation replays.
+        // The forgotten key must not be treated as a fresh peer: fail closed
+        // into an authoritative presence refresh, never a phantom row.
+        let stale = core.step(Input::Event(peer_push(&room, "s1", "d1", 5)));
+        assert!(
+            emitted_view(&stale).is_none_or(|view| view.peers.is_empty()),
+            "a stale same-generation frame must not resurrect the dropped peer"
+        );
+
+        // A genuinely newer connection generation is still admitted.
+        let fresh = core.step(Input::Event(peer_push(&room, "s1", "d1", 6)));
+        if let Some(view) = emitted_view(&fresh) {
+            assert_eq!(view.peers.len(), 1, "a newer generation reconnects");
+        }
+    }
+
+    #[test]
+    fn peer_push_dropped_while_parked_fences_stale_resurrection() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // A failed read parks the room.
+        let reconnect = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&reconnect, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Resync(Err(timeout_err())),
+        });
+
+        // A peer push while parked is counted as loss; its key must be fenced.
+        core.step(Input::Event(peer_push(&room, "s1", "d1", 5)));
+
+        // A resume relaunches the parked room within the SAME transport epoch
+        // (unlike a reconnect, it does not reset the per-device fences — a
+        // stale frame from the dropped connection can still arrive). The
+        // authoritative snapshot omits the peer, and the pre-existing loss
+        // forces one covering rerun before publication.
+        let relaunched = core.step(Input::Resume);
+        let (live_id, live_epoch) = read_id_epoch_for(&relaunched, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let rerun = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: live_id,
+            epoch: live_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let (rerun_id, rerun_epoch) = read_id_epoch_for(&rerun, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let settled = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: rerun_id,
+            epoch: rerun_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        assert!(
+            emitted_view(&settled).is_some_and(|view| view.peers.is_empty()),
+            "the covering rerun publishes the authoritative empty presence"
+        );
+
+        // The stale same-generation frame must not reinsert the phantom.
+        let stale = core.step(Input::Event(peer_push(&room, "s1", "d1", 5)));
+        assert!(
+            emitted_view(&stale).is_none_or(|view| view.peers.is_empty()),
+            "a stale same-generation frame must not resurrect a parked-dropped peer"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Contradictory pushes at one position: the first arbitrary claimant must
+    // not survive into the published view. Recovery re-reads from before the
+    // disputed position so authority itself settles it.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn contradictory_buffered_pushes_cannot_partially_commit() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // A gap opens a reconciliation; two contradictory claimants for
+        // position 2 arrive while the baseline read is in flight.
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::SubscriptionLapse,
+        }));
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "first-claimant"),
+        })));
+        core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "second-claimant"),
+        })));
+
+        // The read settles with nothing after 1; the buffered contradiction
+        // surfaces during convergence and must not publish either claimant.
+        let rerun = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        assert!(!has_emit_view(&rerun), "no claimant may publish unverified");
+        assert_eq!(
+            issued_resync_from(&rerun),
+            Some(1),
+            "recovery must re-read from before the disputed position, not after it"
+        );
+
+        // Authority answers with the real event at position 2.
+        let (recover_id, recover_epoch) = read_id_epoch_for(&rerun, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recover_id,
+            epoch: recover_epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "authoritative")], 2),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recover_id,
+            epoch: recover_epoch,
+            reply: members_ok(room.clone()),
+        });
+        let converged = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: recover_id,
+            epoch: recover_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&converged).expect("authoritative recovery converges");
+        assert_eq!(
+            view.timeline.last().map(|event| event.event_id.as_str()),
+            Some("authoritative"),
+            "only the authoritative claimant survives in the published view"
+        );
+        assert!(
+            view.timeline
+                .iter()
+                .all(|event| event.event_id.as_str() != "first-claimant"),
+            "the arbitrary first claimant must not survive: {:?}",
+            view.timeline
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn live_conflict_below_watermark_re_reads_the_disputed_position() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1"), evt(2, "e2")]);
+
+        // A live push contradicts the committed event at position 2.
+        let started = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: evt(2, "imposter"),
+        })));
+        assert!(!has_emit_view(&started));
+        assert_eq!(
+            issued_resync_from(&started),
+            Some(1),
+            "the disputed position itself must be re-verified by authority"
+        );
+
+        let (read_id, epoch) = read_id_epoch_for(&started, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "e2")], 2),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: members_ok(room.clone()),
+        });
+        let converged = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&converged).expect("authority settles the dispute");
+        assert_eq!(
+            view.timeline
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["genesis", "e1", "e2"],
+            "the committed event survives; the imposter does not"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Membership must not survive a repudiated suffix: a lowering truncation
+    // forces an authoritative roster replacement.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lowering_truncation_replaces_derived_membership_authoritatively() {
+        let mut core = Core::new(ReconcileLimits::default());
+        let room = rid("r");
+        complete_bootstrap(&mut core, &room, vec![evt(1, "e1")]);
+
+        // Seed the authoritative roster with an active member.
+        let alice: MemberRow = serde_json::from_str(
+            r#"{"subject_id":"alice","role":"member","standing":"active","joined_at":"1970-01-01T00:00:00Z"}"#,
+        )
+        .expect("member row");
+        let reconnect = core.step(Input::Lifecycle {
+            to: State::Ready,
+            coalesced_through_problem: false,
+        });
+        let (read_id, epoch) = read_id_epoch_for(&reconnect, &room);
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: resync_ok(room.clone(), vec![], 1),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: ReadReply::Members(Ok(RoomMembersOut {
+                room_id: room.clone(),
+                members: vec![alice],
+            })),
+        });
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id,
+            epoch,
+            reply: peers_ok(room.clone()),
+        });
+
+        // A live signed leave at position 2 folds into the roster.
+        let leave: jeliya_api::Event = serde_json::from_str(
+            r#"{"pos":2,"event_id":"leave","at":"1970-01-01T00:00:01Z","author":{"state":"unresolved"},"kind":"member_left","content":{"subject_id":"alice"}}"#,
+        )
+        .expect("member-left event");
+        let folded = core.step(Input::Event(ClientEvent::Push(RoomPush::Event {
+            room_id: room.clone(),
+            event: leave,
+        })));
+        assert_eq!(
+            emitted_view(&folded).map(|view| view.members[0].standing),
+            Some(Standing::Left)
+        );
+
+        // The daemon repudiates position 2 and replaces it with a plain
+        // message. The derived Left standing is now unsupported evidence.
+        let started = core.step(Input::Event(ClientEvent::Gap {
+            room_id: room.clone(),
+            from_pos: 1,
+            to: GapTo::Open,
+            reason: GapReason::Backpressure,
+        }));
+        assert_eq!(issued_resync_from(&started), Some(1));
+        let (gap_id, gap_epoch) = read_id_epoch_for(&started, &room);
+        let after_suffix = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: gap_id,
+            epoch: gap_epoch,
+            reply: resync_ok(room.clone(), vec![evt(2, "m2")], 2),
+        });
+        let members_requested = after_suffix.iter().any(|action| {
+            matches!(
+                action,
+                Action::IssueRead {
+                    request: ReadRequest::Members(_),
+                    ..
+                }
+            )
+        });
+        assert!(
+            members_requested,
+            "a lowering truncation must force an authoritative roster replacement"
+        );
+        assert!(
+            !has_emit_view(&after_suffix),
+            "no view publishes while the derived roster is unsupported"
+        );
+
+        // Authority still names alice active; the replaced suffix carried no
+        // membership change, so the discarded leave must not survive.
+        let alice_active: MemberRow = serde_json::from_str(
+            r#"{"subject_id":"alice","role":"member","standing":"active","joined_at":"1970-01-01T00:00:00Z"}"#,
+        )
+        .expect("member row");
+        let _ = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: gap_id,
+            epoch: gap_epoch,
+            reply: ReadReply::Members(Ok(RoomMembersOut {
+                room_id: room.clone(),
+                members: vec![alice_active],
+            })),
+        });
+        let converged = core.step(Input::ReadReply {
+            room_id: room.clone(),
+            read_id: gap_id,
+            epoch: gap_epoch,
+            reply: peers_ok(room.clone()),
+        });
+        let view = emitted_view(&converged).expect("the roster replacement converges");
+        assert_eq!(
+            view.members[0].standing,
+            Standing::Active,
+            "the repudiated leave must not survive in the derived roster"
+        );
+        assert_eq!(view.timeline.last().map(|event| event.pos), Some(2));
+        assert_eq!(
+            view.timeline.last().map(|event| event.event_id.as_str()),
+            Some("m2")
         );
     }
 }

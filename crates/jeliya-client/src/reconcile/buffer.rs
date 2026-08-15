@@ -15,7 +15,7 @@
 
 use std::collections::VecDeque;
 
-use jeliya_api::{Event, EventKindContent};
+use jeliya_api::{Audience, Author, Event, EventKindContent};
 
 /// The outcome of offering one live push to the buffer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -78,6 +78,17 @@ impl ReconcileBuffer {
         self.events.len()
     }
 
+    /// Estimated bytes currently retained.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Record one push that could not be retained because a sibling transient
+    /// collection consumed the room's combined count/byte budget.
+    pub(crate) fn note_drop(&mut self) {
+        self.dropped = self.dropped.saturating_add(1);
+    }
+
     /// How many pushes were lost to overflow since construction/`drain`.
     pub(crate) fn dropped(&self) -> u64 {
         self.dropped
@@ -99,19 +110,69 @@ impl ReconcileBuffer {
 /// and reads no clock and makes no RNG or serde call, so the sans-IO core stays
 /// pure (the `boundaries.rs` reconcile scan asserts this).
 pub(crate) fn estimated_event_bytes(event: &Event) -> u64 {
-    // A fixed overhead covers `pos`, `at`, the author discriminant, and the
-    // enum tags — the parts that do not vary with content length.
+    // A fixed overhead covers `pos`, `at`, enum tags, and scalar fields; the
+    // variable event id, resolved author subject, and content strings are added
+    // separately below.
     const FIXED_OVERHEAD: u64 = 64;
-    let id = event.event_id.as_str().len() as u64;
+    const STRING_OVERHEAD: u64 = 24;
+    let string_bytes = |value: &str| STRING_OVERHEAD.saturating_add(value.len() as u64);
+    let id = string_bytes(event.event_id.as_str());
+    let author = match &event.author {
+        Author::Resolved { subject_id, .. } => string_bytes(subject_id.as_str()),
+        Author::Unresolved => 0,
+    };
     let content = content_string_bytes(&event.kind);
-    FIXED_OVERHEAD.saturating_add(id).saturating_add(content)
+    FIXED_OVERHEAD
+        .saturating_add(id)
+        .saturating_add(author)
+        .saturating_add(content)
+}
+
+/// Whether every opaque identifier nested in an event fits the reconciler's
+/// configured identifier ceiling. User text (message bodies, room/file names,
+/// hosts and digests) is governed by the event/reply byte limits instead.
+pub(crate) fn event_identifiers_within(event: &Event, max: u32) -> bool {
+    let within = |value: &str| value.len() as u64 <= u64::from(max);
+    if !within(event.event_id.as_str()) {
+        return false;
+    }
+    if let Author::Resolved { subject_id, .. } = &event.author {
+        if !within(subject_id.as_str()) {
+            return false;
+        }
+    }
+    match &event.kind {
+        EventKindContent::RoomCreated { .. }
+        | EventKindContent::Message { .. }
+        | EventKindContent::AgentStatus { .. } => true,
+        EventKindContent::MemberJoined { subject_id, .. }
+        | EventKindContent::MemberLeft { subject_id } => within(subject_id.as_str()),
+        EventKindContent::MemberRemoved { subject_id, by } => {
+            within(subject_id.as_str()) && within(by.as_str())
+        }
+        EventKindContent::InviteRevoked { invite_id } => within(invite_id.as_str()),
+        EventKindContent::FileShared { file_id, .. } => within(file_id.as_str()),
+        EventKindContent::PipePublished {
+            pipe_id, audience, ..
+        } => {
+            within(pipe_id.as_str())
+                && match audience {
+                    Audience::Room => true,
+                    Audience::Subjects { subject_ids } => subject_ids
+                        .iter()
+                        .all(|subject_id| within(subject_id.as_str())),
+                }
+        }
+        EventKindContent::PipeRevoked { pipe_id } => within(pipe_id.as_str()),
+    }
 }
 
 /// Sum the lengths of the variable-size string fields an event's content
 /// carries. Ids are opaque strings; bodies and names are user text — both
 /// dominate an event's retained size.
 fn content_string_bytes(kind: &EventKindContent) -> u64 {
-    let len = |s: &str| s.len() as u64;
+    const STRING_OVERHEAD: u64 = 24;
+    let len = |s: &str| STRING_OVERHEAD.saturating_add(s.len() as u64);
     match kind {
         EventKindContent::RoomCreated { name } => len(name),
         EventKindContent::Message { body } => len(body),
@@ -131,8 +192,21 @@ fn content_string_bytes(kind: &EventKindContent) -> u64 {
             .saturating_add(len(name))
             .saturating_add(len(digest)),
         EventKindContent::PipePublished {
-            pipe_id, target, ..
-        } => len(pipe_id.as_str()).saturating_add(len(&target.host)),
+            pipe_id,
+            target,
+            audience,
+        } => {
+            let audience_bytes = match audience {
+                Audience::Room => 0,
+                Audience::Subjects { subject_ids } => subject_ids
+                    .iter()
+                    .map(|subject_id| len(subject_id.as_str()))
+                    .fold(0_u64, u64::saturating_add),
+            };
+            len(pipe_id.as_str())
+                .saturating_add(len(&target.host))
+                .saturating_add(audience_bytes)
+        }
         EventKindContent::PipeRevoked { pipe_id } => len(pipe_id.as_str()),
     }
 }
@@ -199,6 +273,43 @@ mod tests {
         assert_eq!(drained.len(), 2);
         assert_eq!(buffer.len(), 0);
         assert_eq!(buffer.dropped(), 0);
+    }
+
+    #[test]
+    fn pipe_audience_subject_ids_count_toward_byte_budget() {
+        fn pipe_event(pos: u64, id: &str, subject_ids: &str) -> Event {
+            let json = format!(
+                r#"{{"pos":{pos},"event_id":"{id}","at":"1970-01-01T00:00:00Z","author":{{"state":"unresolved"}},"kind":"pipe_published","content":{{"pipe_id":"pipe","target":{{"host":"127.0.0.1","port":1}},"audience":{{"state":"subjects","subject_ids":[{subject_ids}]}}}}}}"#
+            );
+            serde_json::from_str(&json).expect("pipe event json deserializes")
+        }
+
+        let short = pipe_event(1, "a", r#""s""#);
+        let long = pipe_event(2, "b", r#""a-very-long-subject-id""#);
+        let cap = estimated_event_bytes(&short).saturating_mul(2);
+        let mut buffer = ReconcileBuffer::new(2, cap);
+        assert_eq!(buffer.push(short), PushOutcome::Buffered);
+        assert_eq!(
+            buffer.push(long),
+            PushOutcome::Overflow,
+            "audience subject ids must be included in the byte estimate"
+        );
+    }
+
+    #[test]
+    fn resolved_author_subject_id_counts_toward_byte_budget() {
+        fn authored_event(pos: u64, id: &str, subject_id: &str) -> Event {
+            let json = format!(
+                r#"{{"pos":{pos},"event_id":"{id}","at":"1970-01-01T00:00:00Z","author":{{"state":"resolved","subject_id":"{subject_id}","role":"member","standing":"active"}},"kind":"message","content":{{"body":"x"}}}}"#
+            );
+            serde_json::from_str(&json).expect("resolved-author event deserializes")
+        }
+        let short = authored_event(1, "a", "s");
+        let long = authored_event(2, "b", "a-very-long-author-subject-id");
+        assert!(
+            estimated_event_bytes(&long) > estimated_event_bytes(&short),
+            "resolved author subject ids must be included in the estimate"
+        );
     }
 
     #[test]

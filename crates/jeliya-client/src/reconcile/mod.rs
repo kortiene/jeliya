@@ -16,9 +16,10 @@
 //! [`RoomView`], [`RoomUpdate`], and [`ReconcileError`]. The seam's public
 //! surface ([`ClientHandle`](crate::ClientHandle),
 //! [`ClientEvent`](crate::ClientEvent), `EventSubscription`,
-//! [`State`](crate::State), [`CallError`](crate::CallError)) is **unchanged** —
-//! the same "sufficient without a breaking change" discipline #168 proved for
-//! `ClientBackend`.
+//! [`State`](crate::State), [`CallError`](crate::CallError)) remains
+//! transport-independent and consumes the seam without changing its public
+//! event vocabulary or call semantics. Adapter-private decode failures may be
+//! routed to the internal `Input::DecodeFailed` path without changing the seam.
 //!
 //! This is the **only** gap/resync path for v2 clients; there is no legacy
 //! `room.activate`-again bootstrap fallback (architecture Decision 4).
@@ -54,28 +55,81 @@ pub struct ReconcileLimits {
     /// Max buffered live-push bytes per room during a baseline read. A
     /// count-only bound is insufficient; the buffer is byte-bounded (§R5).
     pub buffer_bytes: u64,
-    /// Size of the per-room recent-`event_id` dedup FIFO (a constant window; the
-    /// watermark bounds the rest, §R7).
+    /// Minimum size of the per-room recent-`event_id` dedup FIFO. The actual
+    /// window is at least `timeline_depth`, so every rendered id stays exact.
     pub dedup_window: u32,
+    /// Maximum UTF-8 bytes accepted for any opaque room, event, subject, device,
+    /// invite, file, pipe, or operation identifier retained by the reconciler.
+    /// This turns every identifier-keyed count bound into a byte bound.
+    pub max_identifier_bytes: u32,
+    /// Maximum unique event identities in the supported history of one room
+    /// and in one authoritative scan. Reaching it fails closed.
+    pub max_baseline_events: u32,
+    /// Maximum estimated bytes retained for each exact per-room history index
+    /// and authoritative scan.
+    pub baseline_dedup_bytes: u64,
     /// Max rooms the reconciler tracks at once; activation beyond it is refused
     /// with [`ReconcileError::TooManyRooms`], never silently dropped (§R15).
     pub max_active_rooms: u32,
-    /// Page size for paged baseline reads (`room.timeline` / `stream.resync`),
-    /// within the daemon's `timeline_page_max`.
+    /// Maximum backend reads concurrently admitted by the driver across all
+    /// rooms. Additional core requests wait in a bounded, deterministic queue;
+    /// zero is normalized to one so an accepted room cannot deadlock forever.
+    pub max_concurrent_reads: u32,
+    /// Preferred page size for `room.timeline`; requests use the smaller of
+    /// this value and `max_read_page_events`.
     pub read_page_size: u64,
+    /// Maximum decoded events accepted in one `room.timeline` or
+    /// `stream.resync` reply. This is distinct from `read_page_size` because
+    /// `stream.resync` has no caller-supplied page limit.
+    pub max_read_page_events: u32,
+    /// Maximum serialized success-output bytes accepted from the backend for
+    /// an authoritative read, checked before typed vector decoding. Concrete
+    /// transports must separately cap frames before materializing `RawJson`.
+    pub max_read_reply_bytes: u64,
+    /// Maximum structural/scalar/string JSON tokens accepted before typed
+    /// decoding, bounding allocation amplification from tiny nested elements.
+    pub max_read_reply_tokens: u32,
+    /// Max events retained in each room's rendered timeline window. The
+    /// watermark remains independent, so trimming cannot hide a position gap.
+    pub timeline_depth: u32,
+    /// Max estimated bytes retained by a room's durable timeline or transient
+    /// authoritative baseline tail. Both count and byte limits apply.
+    pub timeline_bytes: u64,
+    /// Max membership rows retained when live signed membership events arrive
+    /// between authoritative roster reads.
+    pub member_capacity: u32,
+    /// Max per-device peer rows retained between authoritative presence reads.
+    pub peer_capacity: u32,
+    /// Max estimated ordinary payload bytes queued by each `RoomUpdate`
+    /// subscription. One oversized latest authority may occupy a shared-`Arc`
+    /// recovery allowance; repeated oversized updates replace it with an
+    /// in-order loss marker rather than stacking.
+    pub update_mailbox_bytes: u64,
 }
 
 impl Default for ReconcileLimits {
-    /// Conservative defaults: a 1024-push / 4 MiB reconcile buffer, a 256-id
-    /// dedup window, 256 tracked rooms, and 256-event read pages. Every value is
-    /// a finite bound; none is "unbounded".
+    /// Conservative operational defaults: at most 16 tracked rooms, four
+    /// concurrent reads, sub-multi-MiB per-room buffers, and 256-event timeline
+    /// requests. Every value is finite; none is "unbounded".
     fn default() -> Self {
         Self {
             buffer_depth: 1024,
-            buffer_bytes: 4 * 1024 * 1024,
+            buffer_bytes: 256 * 1024,
             dedup_window: 256,
-            max_active_rooms: 256,
+            max_identifier_bytes: 1024,
+            max_baseline_events: 16_384,
+            baseline_dedup_bytes: 1024 * 1024,
+            max_active_rooms: 16,
+            max_concurrent_reads: 4,
             read_page_size: 256,
+            max_read_page_events: 1024,
+            max_read_reply_bytes: 2 * 1024 * 1024,
+            max_read_reply_tokens: 65_536,
+            timeline_depth: 2048,
+            timeline_bytes: 1024 * 1024,
+            member_capacity: 256,
+            peer_capacity: 256,
+            update_mailbox_bytes: 2 * 1024 * 1024,
         }
     }
 }

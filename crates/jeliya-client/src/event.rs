@@ -17,7 +17,8 @@ use std::task::{Context, Poll, Waker};
 
 use futures::Stream;
 use jeliya_api::{
-    ByteTotal, DeviceId, Event, GapReason, GapTo, Link, OpId, Push, RoomId, SubjectId,
+    Audience, Author, ByteTotal, DeviceId, Event, EventKindContent, GapReason, GapTo, Link, OpId,
+    Push, RoomId, SubjectId,
 };
 
 /// The honest, observable client lifecycle (#167 §D4).
@@ -210,20 +211,92 @@ impl From<Push> for ClientEvent {
 /// sequences never lag by accident; overflow is a scripted or genuine
 /// slow-consumer condition, never test noise.
 const DEFAULT_FANOUT_CAPACITY: usize = 1024;
+/// Maximum estimated payload bytes retained by one event subscription. Control
+/// transitions and the one loss-marker allowance are fixed-size and uncharged.
+const DEFAULT_FANOUT_BYTES: u64 = 16 * 1024 * 1024;
+/// Room ids larger than the reconciler's normal identifier ceiling are never
+/// retained merely to attribute a mailbox-loss marker.
+const MAX_LAG_ATTRIBUTION_BYTES: usize = 4 * 1024;
+
+/// Attribution accumulated for pushes dropped from one subscriber mailbox.
+enum DropAttribution {
+    Unset,
+    One(RoomId),
+    Mixed,
+}
+
+/// One queued event and its exact contribution to the ordinary byte budget.
+/// Control transitions and synthesized loss markers are zero-charged, and the
+/// stored charge — not a recomputed estimate — is what consumption subtracts,
+/// so the account can never drift from what is actually retained.
+struct QueuedEvent {
+    event: ClientEvent,
+    charged_bytes: u64,
+}
 
 /// One subscriber's private mailbox on the fan-out.
 struct SubscriberState {
     /// Delivered-but-unread events, in broadcast order.
-    buffer: VecDeque<ClientEvent>,
+    buffer: VecDeque<QueuedEvent>,
     /// Live pushes dropped because `buffer` was full, not yet surfaced as a
     /// [`ClientEvent::Lagged`].
     dropped: u64,
+    /// Whether those drops all belonged to one room.
+    dropped_room: DropAttribution,
     /// The buffer depth before overflow.
     capacity: usize,
+    /// Estimated bytes retained by payload-bearing ordinary events.
+    bytes: u64,
+    /// Maximum retained ordinary-event bytes.
+    bytes_capacity: u64,
     /// The waker to notify when an event (or close) arrives.
     waker: Option<Waker>,
     /// Set once the bus closes; the stream ends after the buffer drains.
     closed: bool,
+}
+
+impl SubscriberState {
+    fn note_drop(&mut self, event: &ClientEvent) {
+        self.dropped = self.dropped.saturating_add(1);
+        let room = client_event_room_id(event)
+            .filter(|room_id| room_id.as_str().len() <= MAX_LAG_ATTRIBUTION_BYTES)
+            .cloned();
+        self.dropped_room = match (
+            std::mem::replace(&mut self.dropped_room, DropAttribution::Unset),
+            room,
+        ) {
+            (DropAttribution::Unset, Some(room)) => DropAttribution::One(room),
+            (DropAttribution::One(current), Some(room)) if current == room => {
+                DropAttribution::One(current)
+            }
+            _ => DropAttribution::Mixed,
+        };
+    }
+
+    fn take_drop_room(&mut self) -> Option<RoomId> {
+        match std::mem::replace(&mut self.dropped_room, DropAttribution::Unset) {
+            DropAttribution::One(room_id) => Some(room_id),
+            DropAttribution::Unset | DropAttribution::Mixed => None,
+        }
+    }
+}
+
+fn client_event_room_id(event: &ClientEvent) -> Option<&RoomId> {
+    match event {
+        ClientEvent::Push(RoomPush::Event { room_id, .. })
+        | ClientEvent::Push(RoomPush::Peer { room_id, .. })
+        | ClientEvent::Gap { room_id, .. }
+        | ClientEvent::ResyncRequired { room_id, .. } => Some(room_id),
+        ClientEvent::Lagged { room_id, .. } => room_id.as_ref(),
+        ClientEvent::StateChanged { .. } | ClientEvent::Push(RoomPush::Transfer { .. }) => None,
+    }
+}
+
+fn merge_attributed_room(current: Option<RoomId>, next: Option<RoomId>) -> Option<RoomId> {
+    match (current, next) {
+        (Some(current), Some(next)) if current == next => Some(current),
+        _ => None,
+    }
 }
 
 /// The multi-consumer event fan-out (#167 §D3).
@@ -270,7 +343,10 @@ impl EventBus {
         let state = Arc::new(Mutex::new(SubscriberState {
             buffer: VecDeque::new(),
             dropped: 0,
+            dropped_room: DropAttribution::Unset,
             capacity: DEFAULT_FANOUT_CAPACITY,
+            bytes: 0,
+            bytes_capacity: DEFAULT_FANOUT_BYTES,
             waker: None,
             closed,
         }));
@@ -333,9 +409,13 @@ impl EventBus {
                         // capacity ordinary events no longer append, so the
                         // tail stays a StateChanged once flapping begins and
                         // the bound holds.
-                        if let Some(ClientEvent::StateChanged {
-                            to,
-                            coalesced_through_problem,
+                        if let Some(QueuedEvent {
+                            event:
+                                ClientEvent::StateChanged {
+                                    to,
+                                    coalesced_through_problem,
+                                    ..
+                                },
                             ..
                         }) = state.buffer.back_mut()
                         {
@@ -366,15 +446,19 @@ impl EventBus {
                         // accumulated into — so the bound holds.
                         if merged && state.dropped > 0 {
                             let dropped = std::mem::take(&mut state.dropped);
+                            let dropped_room = state.take_drop_room();
                             let tail = state.buffer.len() - 1;
                             let absorbed = tail > 0
-                                && match &mut state.buffer[tail - 1] {
+                                && match &mut state.buffer[tail - 1].event {
                                     ClientEvent::Lagged {
                                         room_id,
                                         dropped: pending,
                                     } => {
                                         *pending = pending.saturating_add(dropped);
-                                        *room_id = None;
+                                        *room_id = merge_attributed_room(
+                                            room_id.take(),
+                                            dropped_room.clone(),
+                                        );
                                         true
                                     }
                                     _ => false,
@@ -382,9 +466,12 @@ impl EventBus {
                             if !absorbed {
                                 state.buffer.insert(
                                     tail,
-                                    ClientEvent::Lagged {
-                                        room_id: None,
-                                        dropped,
+                                    QueuedEvent {
+                                        event: ClientEvent::Lagged {
+                                            room_id: dropped_room,
+                                            dropped,
+                                        },
+                                        charged_bytes: 0,
                                     },
                                 );
                             }
@@ -401,19 +488,32 @@ impl EventBus {
             if state.dropped > 0 && ((is_control && !merged) || state.buffer.len() < state.capacity)
             {
                 let dropped = std::mem::take(&mut state.dropped);
-                state.buffer.push_back(ClientEvent::Lagged {
-                    room_id: None,
-                    dropped,
+                let room_id = state.take_drop_room();
+                state.buffer.push_back(QueuedEvent {
+                    event: ClientEvent::Lagged { room_id, dropped },
+                    charged_bytes: 0,
                 });
             }
             if is_control {
                 if !merged {
-                    state.buffer.push_back(event.clone());
+                    state.buffer.push_back(QueuedEvent {
+                        event: event.clone(),
+                        charged_bytes: 0,
+                    });
                 }
-            } else if state.buffer.len() >= state.capacity {
-                state.dropped = state.dropped.saturating_add(1);
             } else {
-                state.buffer.push_back(event.clone());
+                let event_bytes = estimated_client_event_bytes(&event);
+                if state.buffer.len() >= state.capacity
+                    || state.bytes.saturating_add(event_bytes) > state.bytes_capacity
+                {
+                    state.note_drop(&event);
+                } else {
+                    state.bytes = state.bytes.saturating_add(event_bytes);
+                    state.buffer.push_back(QueuedEvent {
+                        event: event.clone(),
+                        charged_bytes: event_bytes,
+                    });
+                }
             }
             if let Some(waker) = state.waker.take() {
                 wakers.push(waker);
@@ -456,6 +556,87 @@ impl EventBus {
     }
 }
 
+/// Deterministic memory proxy for one payload-bearing seam event. It is used
+/// only for mailbox admission; no serde, clock, RNG, or payload formatting is
+/// involved. Lifecycle and local-loss controls are fixed-size allowances.
+fn estimated_client_event_bytes(event: &ClientEvent) -> u64 {
+    const FIXED: u64 = 64;
+    match event {
+        ClientEvent::StateChanged { .. } => 0,
+        ClientEvent::Lagged { room_id, .. } => room_id.as_ref().map_or(0, |room_id| {
+            FIXED.saturating_add(room_id.as_str().len() as u64)
+        }),
+        ClientEvent::Gap { room_id, .. } | ClientEvent::ResyncRequired { room_id, .. } => {
+            FIXED.saturating_add(room_id.as_str().len() as u64)
+        }
+        ClientEvent::Push(RoomPush::Event { room_id, event }) => FIXED
+            .saturating_add(room_id.as_str().len() as u64)
+            .saturating_add(estimated_seam_event_bytes(event)),
+        ClientEvent::Push(RoomPush::Peer {
+            room_id,
+            subject_id,
+            device_id,
+            ..
+        }) => FIXED
+            .saturating_add(room_id.as_str().len() as u64)
+            .saturating_add(subject_id.as_str().len() as u64)
+            .saturating_add(device_id.as_str().len() as u64),
+        ClientEvent::Push(RoomPush::Transfer { transfer_op_id, .. }) => {
+            FIXED.saturating_add(transfer_op_id.as_str().len() as u64)
+        }
+    }
+}
+
+fn estimated_seam_event_bytes(event: &Event) -> u64 {
+    const FIXED: u64 = 64;
+    const STRING_OVERHEAD: u64 = 24;
+    let string = |value: &str| STRING_OVERHEAD.saturating_add(value.len() as u64);
+    let author = match &event.author {
+        Author::Resolved { subject_id, .. } => string(subject_id.as_str()),
+        Author::Unresolved => 0,
+    };
+    let content = match &event.kind {
+        EventKindContent::RoomCreated { name } => string(name),
+        EventKindContent::Message { body } => string(body),
+        EventKindContent::AgentStatus { .. } => 0,
+        EventKindContent::MemberJoined { subject_id, .. }
+        | EventKindContent::MemberLeft { subject_id } => string(subject_id.as_str()),
+        EventKindContent::MemberRemoved { subject_id, by } => {
+            string(subject_id.as_str()).saturating_add(string(by.as_str()))
+        }
+        EventKindContent::InviteRevoked { invite_id } => string(invite_id.as_str()),
+        EventKindContent::FileShared {
+            file_id,
+            name,
+            digest,
+            ..
+        } => string(file_id.as_str())
+            .saturating_add(string(name))
+            .saturating_add(string(digest)),
+        EventKindContent::PipePublished {
+            pipe_id,
+            target,
+            audience,
+        } => {
+            let audience = match audience {
+                Audience::Room => 0,
+                Audience::Subjects { subject_ids } => subject_ids
+                    .iter()
+                    .map(|id| string(id.as_str()))
+                    .fold(0_u64, u64::saturating_add),
+            };
+            string(pipe_id.as_str())
+                .saturating_add(string(&target.host))
+                .saturating_add(audience)
+        }
+        EventKindContent::PipeRevoked { pipe_id } => string(pipe_id.as_str()),
+    };
+    FIXED
+        .saturating_add(string(event.event_id.as_str()))
+        .saturating_add(author)
+        .saturating_add(content)
+}
+
 /// An independent, live view of the client's [`ClientEvent`] stream.
 ///
 /// Implements [`futures::Stream`]. Each [`subscribe`](crate::ClientHandle::subscribe)
@@ -475,15 +656,17 @@ impl Stream for EventSubscription {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut state = self.state.lock().expect("subscriber poisoned");
-        if let Some(event) = state.buffer.pop_front() {
-            return Poll::Ready(Some(event));
+        if let Some(queued) = state.buffer.pop_front() {
+            // Subtract exactly what admission charged (zero for controls and
+            // synthesized loss markers): recomputing an estimate here would
+            // uncharge payload the marker never paid for.
+            state.bytes = state.bytes.saturating_sub(queued.charged_bytes);
+            return Poll::Ready(Some(queued.event));
         }
         if state.dropped > 0 {
             let dropped = std::mem::take(&mut state.dropped);
-            return Poll::Ready(Some(ClientEvent::Lagged {
-                room_id: None,
-                dropped,
-            }));
+            let room_id = state.take_drop_room();
+            return Poll::Ready(Some(ClientEvent::Lagged { room_id, dropped }));
         }
         if state.closed {
             return Poll::Ready(None);
@@ -496,6 +679,44 @@ impl Stream for EventSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+
+    #[test]
+    fn payload_byte_overflow_is_reported_without_retention() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        sub.state.lock().expect("subscriber").bytes_capacity = 1;
+        let event: Event = serde_json::from_str(
+            r#"{"pos":1,"event_id":"e","at":"1970-01-01T00:00:00Z","author":{"state":"unresolved"},"kind":"message","content":{"body":"body"}}"#,
+        )
+        .expect("event");
+        bus.broadcast(ClientEvent::Push(RoomPush::Event {
+            room_id: RoomId::new("r"),
+            event,
+        }));
+        let state = sub.state.lock().expect("subscriber");
+        assert!(state.buffer.is_empty());
+        assert_eq!(state.bytes, 0);
+        assert_eq!(state.dropped, 1);
+        assert!(matches!(
+            &state.dropped_room,
+            DropAttribution::One(room_id) if room_id.as_str() == "r"
+        ));
+    }
+
+    #[test]
+    fn oversized_dropped_room_id_is_not_retained_for_attribution() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        sub.state.lock().expect("subscriber").bytes_capacity = 1;
+        bus.broadcast(ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r".repeat(MAX_LAG_ATTRIBUTION_BYTES + 1)),
+            from_pos: 0,
+        });
+        let state = sub.state.lock().expect("subscriber");
+        assert_eq!(state.dropped, 1);
+        assert!(matches!(&state.dropped_room, DropAttribution::Mixed));
+    }
 
     /// AC-7/§K12: a stalled subscriber under a flapping connection cannot
     /// grow its mailbox without bound — at capacity, lifecycle transitions
@@ -529,10 +750,14 @@ mod tests {
              control/loss allowance), got {}",
             state.buffer.len()
         );
-        let last_transition = state.buffer.iter().rev().find_map(|event| match event {
-            ClientEvent::StateChanged { to, .. } => Some(*to),
-            _ => None,
-        });
+        let last_transition = state
+            .buffer
+            .iter()
+            .rev()
+            .find_map(|queued| match &queued.event {
+                ClientEvent::StateChanged { to, .. } => Some(*to),
+                _ => None,
+            });
         assert_eq!(
             last_transition,
             Some(State::Stopped),
@@ -571,7 +796,7 @@ mod tests {
         let state = sub.state.lock().expect("subscriber poisoned");
         assert!(
             matches!(
-                state.buffer.back(),
+                state.buffer.back().map(|queued| &queued.event),
                 Some(ClientEvent::StateChanged {
                     from: State::Ready,
                     to: State::Ready,
@@ -580,7 +805,7 @@ mod tests {
             ),
             "the coalesced tail keeps honest endpoints (Ready→Ready) and flags the \
              elided problem so recovery stays observable, never rewriting `from`: {:?}",
-            state.buffer.back()
+            state.buffer.back().map(|queued| &queued.event)
         );
     }
 
@@ -640,7 +865,12 @@ mod tests {
             DEFAULT_FANOUT_CAPACITY + 5,
             "the failure-then-stop sequence reaches exactly the ceiling"
         );
-        let tail: Vec<_> = state.buffer.iter().skip(DEFAULT_FANOUT_CAPACITY).collect();
+        let tail: Vec<_> = state
+            .buffer
+            .iter()
+            .skip(DEFAULT_FANOUT_CAPACITY)
+            .map(|queued| &queued.event)
+            .collect();
         assert!(
             matches!(tail[0], ClientEvent::Lagged { dropped: 1, .. }),
             "the dropped push surfaces before the transition: {tail:?}"
@@ -690,7 +920,7 @@ mod tests {
         });
         {
             let state = sub.state.lock().expect("subscriber poisoned");
-            let first_transition = state.buffer.iter().find_map(|event| match event {
+            let first_transition = state.buffer.iter().find_map(|queued| match &queued.event {
                 ClientEvent::StateChanged { to, .. } => Some(*to),
                 _ => None,
             });
@@ -701,7 +931,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    state.buffer.back(),
+                    state.buffer.back().map(|queued| &queued.event),
                     Some(ClientEvent::StateChanged {
                         to: State::Ready,
                         ..
@@ -761,13 +991,13 @@ mod tests {
             let len = state.buffer.len();
             assert!(
                 matches!(
-                    state.buffer[len - 2],
+                    state.buffer[len - 2].event,
                     ClientEvent::Lagged { dropped: 1, .. }
                 ),
                 "the loss marker sits directly before the coalesced tail"
             );
             assert!(matches!(
-                state.buffer[len - 1],
+                state.buffer[len - 1].event,
                 ClientEvent::StateChanged {
                     to: State::Ready,
                     ..
@@ -794,11 +1024,74 @@ mod tests {
         let len = state.buffer.len();
         assert!(
             matches!(
-                state.buffer[len - 2],
+                state.buffer[len - 2].event,
                 ClientEvent::Lagged { dropped: 2, .. }
             ),
             "the accumulated loss count is honest"
         );
+    }
+
+    /// A synthesized attributed `Lagged` marker is a control: it is inserted
+    /// without a byte charge, so consuming it must subtract nothing. Charging
+    /// its estimate on `poll_next` undercounts the ordinary payload retained
+    /// behind it, quietly widening the mailbox byte bound.
+    #[test]
+    fn consuming_a_lag_marker_does_not_uncharge_retained_payload() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe();
+        let payload = |pos: u64| ClientEvent::ResyncRequired {
+            room_id: RoomId::new("r"),
+            from_pos: pos,
+        };
+        let payload_bytes = estimated_client_event_bytes(&payload(0));
+        sub.state.lock().expect("subscriber").bytes_capacity = payload_bytes * 2;
+
+        // Fill the byte budget, lose one attributed push, then flush the
+        // marker with a control transition: [P1, P2, Lagged(r), StateChanged].
+        bus.broadcast(payload(1));
+        bus.broadcast(payload(2));
+        bus.broadcast(payload(3));
+        bus.broadcast(ClientEvent::StateChanged {
+            from: State::Ready,
+            to: State::Interrupted,
+            coalesced_through_problem: false,
+        });
+
+        // Drain P1, admit P4 behind the marker, drain P2: exactly one payload
+        // (P4) remains buffered after the marker.
+        let mut sub = sub;
+        assert!(matches!(
+            futures::executor::block_on(sub.next()),
+            Some(ClientEvent::ResyncRequired { from_pos: 1, .. })
+        ));
+        bus.broadcast(payload(4));
+        assert!(matches!(
+            futures::executor::block_on(sub.next()),
+            Some(ClientEvent::ResyncRequired { from_pos: 2, .. })
+        ));
+        assert!(matches!(
+            futures::executor::block_on(sub.next()),
+            Some(ClientEvent::Lagged {
+                dropped: 1,
+                room_id: Some(_),
+            })
+        ));
+        assert_eq!(
+            sub.state.lock().expect("subscriber").bytes,
+            payload_bytes,
+            "consuming the uncharged marker must not uncharge the retained payload"
+        );
+
+        // Draining the rest brings the account exactly to zero.
+        assert!(matches!(
+            futures::executor::block_on(sub.next()),
+            Some(ClientEvent::StateChanged { .. })
+        ));
+        assert!(matches!(
+            futures::executor::block_on(sub.next()),
+            Some(ClientEvent::ResyncRequired { from_pos: 4, .. })
+        ));
+        assert_eq!(sub.state.lock().expect("subscriber").bytes, 0);
     }
 
     /// AC-7: subscribe/drop churn on a quiet bus cannot grow the subscriber

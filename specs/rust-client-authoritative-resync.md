@@ -111,8 +111,8 @@ A room is always in exactly one phase:
 
 `mode` is:
 
-- **`Bootstrap { anchor }`** — first activation. The baseline is `room.timeline` (paged) up to the subscription `anchor` (`stream.subscribe.from_pos`), plus `room.members` and `room.peers` for the peer snapshot. This is the only place a room's timeline is built from nothing.
-- **`Incremental { from_pos }`** — recovery. The baseline is `stream.resync { from_pos = watermark }` (paged by `next_pos`), plus `room.peers`/`room.members` when the trigger implicated presence (reconnect, resume) or when the resync returns `resync_required`.
+- **`Bootstrap`** — first activation. The room separately records the concrete inclusive subscription anchor (`stream.subscribe.from_pos`, including zero). The baseline pages `room.timeline` to `Complete`, treating the anchor as an inclusive **completeness floor, not a stop cursor**: a history that reaches `Complete` below the anchor is structurally invalid, while validated events beyond the anchor are retained and committed — an event committed after the anchor but before the activation was admitted may already have been pushed (and dropped, the room being untracked), and the baseline read is its only recovery. Termination is bounded by the total-scan ceiling and the strict cursor checks, never by daemon trust. The baseline also reads `room.members` and `room.peers`. A later anchor change forces a full replacement immediately when Ready; observable cause coalescing does not erase replacement mode.
+- **`Incremental { from_pos }`** — recovery. The baseline is `stream.resync { from_pos = watermark }` (paged by `next_pos`), plus `room.peers`/`room.members` when the trigger implicated presence (reconnect, resume, overflow, daemon cursor) or when a truncation lowered the watermark. A `resync_required` redirect is honoured only while the chain makes strict progress within a bounded length: a redirect whose clamped effective cursor equals the failed read's own start gets exactly one retry, and even a strictly-descending redirect chain parks after a fixed bound rather than issuing reads forever.
 
 Both modes share the same convergence, buffering, fencing, and coalescing; only the baseline source differs. This is why there is exactly one code path and one set of tests for "gap", "reconnect", "overflow", and "resume".
 
@@ -171,21 +171,29 @@ When a baseline read settles, the core converges it with the buffered pushes int
 1. **Apply the baseline first.** The baseline read's `events` (from `stream.resync` or `room.timeline`) are authoritative; they extend the timeline by ascending `pos` and advance the `watermark` to the read's `next_pos` (resync) or the last applied `pos` (timeline). Positions are dense and gap-free, so a hole in the applied range is itself a protocol violation → force a fresh resync.
 2. **Drain the buffer, converging by evidence.** Each buffered push is:
    - **discarded** if its `pos <= watermark` (already in the baseline) — the primary, O(1) dedup;
-   - **discarded** if its `event_id` is in the bounded recent-id window (§R7) — the exact-identity dedup that catches a duplicate `event` push or a push replayed across the convergence boundary;
+   - **discarded/rejected** if its `event_id` already appears in the bounded durable identity map (§R7) — an exact replay at the same applied position is harmless, while reuse at a new position is corruption;
    - **applied** if its `pos == watermark + 1`, advancing the watermark;
    - **re-triggers a resync** if its `pos > watermark + 1` (a gap opened *during* reconciliation) — coalesced into the pending re-run rather than applied out of order.
 3. **The signed `at` is the insertion evidence.** The reconciler inserts only events that carry a signed `at`, a signed `event_id`, and a resolved-or-explicitly-unresolved `author` — it never fabricates a position or a timestamp, and when a buffered push and a baseline event collide it trusts the baseline (the daemon's authoritative answer). "Insert events using signed evidence" is this rule: `event_id` is the identity, `pos` is the order, `at`/`author` are the non-repudiable evidence the record carries.
 
-The result is a **gap-free, deduplicated, position-ordered** timeline — the AC verbatim, made structural by the dense-rank invariant plus the recent-id window.
+The result is a **gap-free, deduplicated, position-ordered** timeline — made structural by the dense-rank invariant plus exact bounded history identity evidence.
 
 ### R7 — Event-ID deduplication, bounded (AC-3, Security: bound every buffer)
 
 Dedup is two-tier and both tiers are bounded:
 
 - **The `watermark`** is the primary dedup: any event with `pos <= watermark` is already held, dropped in O(1) with no per-event storage.
-- **A bounded recent-`event_id` ring** (`ReconcileLimits::dedup_window`, a small FIFO of the most-recently-applied ids) catches exact-identity duplicates in the narrow window where `pos` is ambiguous across a convergence boundary (a push whose `pos` equals a just-applied baseline event, or a duplicated `event` push). It is a fixed-size ring keyed by `event_id`; the oldest id falls off when full. It is **not** a map keyed by an unbounded external input — its size is a constant, and its only job is to make convergence exact within the active window (beyond the window the watermark already suffices).
+- **Bounded exact identity evidence** is durable for the supported history of each room: a position-aware `event_id → pos` map catches reuse even after render-tail eviction, while a recent ring remains a small hot window. Daemon truncation retains entries at or below `from_pos` and drops the repudiated suffix, so the same suffix ids may be authoritatively re-read. A separate exact scan map validates every multi-page response (including pages older than the rendered tail) and commits every validated position of the scan — the activation anchor is a completeness floor, not a commit ceiling. Both maps are capped by `max_baseline_events` and `baseline_dedup_bytes`, and ids by `max_identifier_bytes`; reaching the explicit supported-history ceiling fails closed through the bounded structural-retry/park path, with no probabilistic collision.
 
-**Overflow can never permanently dedup an undelivered event (AC-3):** the watermark and the recent-id ring only ever record events the reconciler **actually applied and delivered**. A dropped/overflowed push is neither applied nor recorded as seen, so the forced re-baseline (§R5) re-reads it and it converges normally. The dedup structures record delivery, never suppression.
+**Overflow can never permanently dedup an undelivered event (AC-3):** the watermark and recent-id ring record only events the reconciler actually validated and applied. A dropped/overflowed push is neither applied nor recorded as seen, so the forced re-baseline (§R5) re-reads it and it converges normally. If any rerun is pending, the just-applied prefix is useful durable progress but is a publication barrier: no partial or repudiated intermediate view is emitted.
+
+**Publication gates beyond the rerun barrier.** Convergence withholds a view in three further cases, each fail-closed:
+
+1. **Required frontier.** A trigger that names a committed position above the watermark — a gap's `from_pos`, a bounded gap end, or a daemon `resync_required` cursor — is evidence the clamped read start cannot encode. No view publishes until authority serves through that frontier: one bounded follow-up read chases it, and a persistently short daemon parks the room rather than publishing a converged view below a position the daemon itself proved.
+2. **Window rebuild.** A discard below the oldest retained render event whose recovery suffix leaves the rendered window empty forces a full timeline replacement instead of publishing an empty "authoritative" view for a room that still has history. A replacement's window is policy-conformant by construction, so the rebuild cannot loop.
+3. **Disputed positions.** Contradictory evidence at or below the watermark (an unknown identity, a position conflict, or two claimants for one position) discards back to before the disputed position so authority itself re-proves it; the first arbitrary claimant never survives into a published view, and recovery never starts merely after the dispute.
+
+Separately, any **lowering truncation forces an authoritative `room.members` replacement** before the next published view: the discarded suffix may have carried membership events already folded into the derived roster, and rolling back the timeline cannot reverse that fold.
 
 ### R8 — Peer state is replaced from authoritative reads, never merged (AC: peer state replaced)
 
@@ -193,7 +201,7 @@ Presence and membership are **replaced wholesale** from authoritative reads:
 
 - `room.members` yields the signed roster (`subject_id`, `role`, `standing`, `joined_at`); it **replaces** the room's membership set. A `member.remove`/`room.leave` event the client missed is reflected by the removed member's absence from the fresh roster — the reconciler never keeps a member the authoritative roster omits.
 - `room.peers` yields the per-device `Link` snapshot; it **replaces** the presence/link set.
-- Live `peer` pushes between reads update the *replaced* set, and are themselves fenced twice: the kernel drops stale-*connection*-generation `peer` frames (§K7), and the presence fold compares the `peer.generation` payload field against the last-seen generation per `(room, device)` — a comparison the reconciler *can* afford because its per-member state is already bounded by room membership (the kernel deliberately cannot, §K12). A stale-generation teardown is therefore discarded and **cannot resurrect a peer an authoritative read removed** (Security).
+- Live `peer` pushes between reads update the *replaced* set, and are fenced twice: the kernel drops old-transport frames (§K7), while the presence fold keeps bounded per-`(subject,device)` generations plus bounded tombstones for snapshot removals. There is no invalid room-global generation floor. `generation` fences a peer connection, not updates: later changes at the same generation win for a present key; equality against a removed-key tombstone is ambiguous and forces an authoritative refresh. A peer push dropped by the bounded transient buffer, or while the room is parked, leaves the same generation fence — a stale same-generation replay after an omitting snapshot must never masquerade as an unknown fresh peer. Tombstone overflow makes all unknown keys refresh fail-closed, and when the bounded tombstone map saturates, which removed keys stay fenced is a deterministic (sorted) function of the inputs, never hash-map iteration order. On a new kernel transport epoch the maps reset before cause coalescing (K7 already fenced the old transport); Resume retains them. The driver re-polls events after a read becomes ready so a push broadcast before its reply crosses the core first — up to a bounded fairness budget: continuously nonempty event traffic cannot starve a settled read forever, and the core is interleaving-robust when the budget forces bounded reordering. A stale-generation teardown therefore cannot resurrect a peer omitted by authority.
 
 Replacement (not merge) is what makes a missed removal converge: a merge would keep phantom members forever.
 
@@ -201,8 +209,8 @@ Replacement (not merge) is what makes a missed removal converge: a merge would k
 
 Reconciliation is **single-flight per room**:
 
-- While a room is `Reconciling`, any new trigger (another `gap`, a reconnect, an overflow, a `resync_required`) does **not** launch a second reconciliation. It sets `rerun: Some(reason)`, coalescing repeated triggers into **one** pending re-run and keeping the *most authoritative* reason (a `ResyncRequiredByDaemon` or `Reconnect` outranks a `Gap`, which outranks a `LocalOverflow`, because the stronger cause implies the weaker's recovery).
-- When the outstanding baseline settles and `rerun` is set, the core relaunches exactly once under the current epoch, then clears `rerun`. Repeated flapping therefore yields a bounded number of reads (one in flight + one queued), never an unbounded stack.
+- While a room is `Reconciling`, any new trigger (another `gap`, a reconnect, an overflow, a `resync_required`) does **not** launch a second reconciliation. It sets `rerun: Some(reason)`, coalescing repeated triggers into **one** pending re-run and keeping the *most authoritative* reason (a `ResyncRequiredByDaemon` or `Reconnect` outranks a `Gap`, which outranks a `LocalOverflow`, because the stronger cause implies the weaker's recovery). Cause priority selects the recovery but never erases quantitative loss: whenever a `LocalOverflow` count is outranked in a coalesce — in the pending re-run, at a failed settle, at a structural retry, or at a superseding launch — the count is banked and surfaced as a room-attributed `Lagged` boundary immediately before the covering converged view.
+- When the outstanding baseline settles and `rerun` is set, the core suppresses that intermediate view, relaunches exactly once under the current epoch, then clears `rerun`. If a stronger coalesced cause covers quantitative local loss, its one authoritative read remains sufficient: the deferred count is emitted as a room-attributed `RoomUpdate::Lagged` boundary immediately before the successful `Converged`, not as a redundant second read. Repeated flapping therefore yields one in flight + one queued, never an unbounded stack or stale publication.
 - Across rooms, reconciliations are independent (positions are per-room; the protocol defines no cross-room order), so N active rooms may each have one in-flight + one queued reconciliation — bounded by `max_active_rooms` (§R15).
 
 A test drives repeated back-to-back gaps during an outstanding resync and asserts exactly one reconciliation is in flight at a time and exactly one coalesced re-run follows.
@@ -211,7 +219,7 @@ A test drives repeated back-to-back gaps during an outstanding resync and assert
 
 This is the composition of §R5 and §R7, stated as its own invariant because it is its own acceptance criterion:
 
-> The dedup watermark and recent-id ring advance **only** on an event the reconciler applied and delivered. A buffer overflow (or a fan-out `Lagged`) records **loss**, forces a fresh authoritative baseline, and leaves the dedup state untouched for the dropped range — so every dropped event is re-read and re-delivered. There is no code path in which a dropped event is marked seen.
+> The watermark and exact identity state advance **only** for validated, applied events. A buffer overflow (or fan-out `Lagged`) records **loss**, forces authoritative recovery, and leaves the dropped range unseen. No incomplete intermediate view is published; if a stronger cause performs the same recovery, the deferred count is an attributed `Lagged` boundary before its final view rather than another read.
 
 A fault test fills the reconcile buffer to overflow during a bootstrap, then asserts every event authored in the room is present in the converged `RoomView` exactly once — none was silently consumed.
 
@@ -235,7 +243,7 @@ The reconciler consumes lifecycle from its one `EventSubscription`:
 ### R13 — Cancellation and stop are bounded and honest (Verification: cancellation)
 
 - **`Input::DeactivateRoom` / `Input::Cancel(room)`** drops the room's outstanding read (the driver drops the `call` future, which the kernel handles as a local cancel — no fabricated remote cancel, §K9), clears its buffer, and forgets its state. Bounded: one room's collections are released.
-- **`Input::Stop`** cancels every outstanding read, clears every buffer and per-room state, and closes the `RoomView` fan-out. After stop, every reconciler collection is empty (a test asserts this and that a second stop is idempotent). Stop composes under the seam's `ClientHandle::stop`: the reconciler stops first (releasing its reads), then the handle stops.
+- **`Input::Stop`** cancels every outstanding/driver-queued read, clears every buffer and per-room state, and closes the `RoomView` fan-out. `Reconciler::stop()` only admits the dedicated stop signal; an adapter that must stop its handle afterward awaits `run()` completion first. An RAII run guard makes cancellation/panic total as well: local futures drop before status becomes `Stopped` and subscribers close. Last-owner bus drop closes subscriptions even if `run()` was never polled. After stop, every collection is empty and later controls are refused.
 
 Dropping a `RoomView` consumer, like dropping a `ClientEvent` subscriber, never cancels a reconciliation other consumers still observe.
 
@@ -243,7 +251,7 @@ Dropping a `RoomView` consumer, like dropping a `ClientEvent` subscriber, never 
 
 `jeliya_api::EventKind` is closed at ten; an `event` push whose `kind` a client cannot decode fails deserialization at the api boundary (the record's "not rendered and not counted" rule). The reconciler must not let that become a silent hole:
 
-- A push that the driver could not decode to a typed `Event` (unknown kind, malformed content) is delivered to the core as a **decode-failed marker for a room**, which the core treats as a **forced gap** for that room → `Incremental` resync (`reason = Gap`). The daemon's authoritative baseline either returns the event in a form the client *can* place, or the position simply advances past it — either way the client never renders an event it cannot decode and never leaves an undetected hole.
+- Once an adapter has decoded an envelope and usable `room_id` but cannot decode its typed `Event` content, it routes the room through the crate-private reconciler decode-failure command (`Input::DecodeFailed`) rather than a new public seam arm; the core treats it as a forced gap (`reason = Gap`). A generic malformed frame with no recoverable room remains the kernel's uncorrelated K4 drop. The authoritative read either returns placeable authority or fails closed without publication; the client never renders an event it cannot decode or silently publishes past a detected hole.
 - Convergence never inserts an event the reconciler cannot decode; it re-reads instead. "Safely surface unsupported events" is this: an unknown event is a *detected* gap, not a dropped push.
 
 ### R15 — Bounded by construction; no unbounded growth (Security: bound every buffer)
@@ -252,19 +260,24 @@ Every reconciler collection has a static or configured bound:
 
 | Structure | Bound |
 |---|---|
-| per-room reconcile buffer (count) | `ReconcileLimits::buffer_depth` |
-| per-room reconcile buffer (bytes) | `ReconcileLimits::buffer_bytes` |
-| per-room recent-`event_id` dedup ring | `ReconcileLimits::dedup_window` (a constant-size FIFO) |
-| per-room membership/peer set | bounded by room membership (replaced, never grown) |
-| tracked rooms | `ReconcileLimits::max_active_rooms` — activation beyond it is refused with a typed error, never silently dropped |
+| combined per-room event/peer reconcile buffer | `buffer_depth` items and `buffer_bytes` estimated bytes; loss is counted once and forces recovery |
+| opaque identifiers retained anywhere | `max_identifier_bytes` UTF-8 bytes each |
+| recent exact `event_id` ring | `max(dedup_window, timeline_depth)` ids; ids are length-capped |
+| durable + all-page identity evidence | position-aware exact maps, each capped by `max_baseline_events` and `baseline_dedup_bytes`; exceeding the supported-history ceiling fails closed |
+| decoded authoritative reply | `max_read_page_events` events (timeline requests use `min(read_page_size, max_read_page_events)`); backend output ≤ `max_read_reply_bytes`, ≤ `max_read_reply_tokens`, and ≤64 JSON nesting before typed decode, bounding tiny-element allocation amplification; transports separately cap frames before `RawJson` |
+| durable/transient timeline tail | `timeline_depth` events and `timeline_bytes` estimated bytes; scalar watermark/scan cursor survives eviction |
+| membership / peer snapshot | `member_capacity` / `peer_capacity` rows, with length-capped ids and duplicate-key rejection |
+| tracked rooms | `max_active_rooms`, each with a length-capped id; excess activation is a typed refusal |
 | in-flight + queued reconciliations per room | ≤ 2 (one in flight, one coalesced re-run — §R9) |
-| `RoomView` fan-out per subscription | reuses `event.rs`'s bounded fan-out (`DEFAULT_FANOUT_CAPACITY` + the control allowance) |
+| backend reads across all rooms | `max_concurrent_reads` active; remaining room/read keys wait in a deterministic queue bounded by `max_active_rooms` |
+| ordinary control ingress | `min(2·max_active_rooms + 1, 1024)` commands; admission/status/active-set mutation is one serialized transaction; stop has a separate one-slot signal |
+| `RoomUpdate` mailbox | 256 ordinary slots plus loss-marker allowance and `update_mailbox_bytes` ordinary estimated bytes; one shared-`Arc` oversized latest-authority allowance prevents an otherwise permanent Lagged-only state, and repeated giants replace rather than stack |
 
-There is **no** map keyed by an unbounded external input (no per-`event_id` map, no per-generation accumulation — the dedup ring is a fixed-size FIFO, not an unbounded set). A fault test drives saturation + repeated flap + overflow + churn over thousands of `step`s and asserts no collection exceeds its bound and that stop empties everything.
+There is **no** collection keyed by an unlimited external string: every opaque id has a byte ceiling, every cardinality is finite, and every payload-bearing retained collection also has a byte ceiling. Defaults deliberately couple the multiplicative limits (16 active rooms, four concurrent 2-MiB replies, 1-MiB timeline/history/scan ceilings, 256-row rosters) so their worst-case retained payload plus fixed map/row overhead stays in the low-hundreds-of-MiB range rather than multi-GiB. Hosts may raise these trusted configuration limits only as an explicit product memory decision. A fault test drives saturation + repeated flap + overflow + churn and asserts bounds and total stop.
 
 ### R16 — Secrets never enter diagnostics (Security)
 
-`diag.rs` centralizes the reconciler's log/`Debug`/error strings, reusing the kernel's posture: `room_id`, `pos`, `event_id`, and counts are safe to name (they are already in the wire model); bearer tokens, browser tickets, `client_id`, `op_id`, and payload bytes (message bodies, file digests) are **never** rendered. A test scans the reconciler's diagnostic outputs and `Debug` impls to assert no token/`op_id`/payload-body field is printed.
+`diag.rs` centralizes the reconciler's log/`Debug`/error strings, reusing the kernel's posture: bearer tokens, browser tickets, `client_id`, `op_id`, opaque event ids, and payload bytes (message bodies, file digests) are **never** rendered. Public `RoomView`/`RoomUpdate` use hand-written redacted `Debug` implementations that expose only bounded aggregate timeline length/range and collection counts rather than delegating to payload-bearing wire types. A test asserts neither payload text nor opaque event ids are printed.
 
 ## 6. Configuration and public surface
 
@@ -273,16 +286,23 @@ New **public** items (documented, `#![deny(missing_docs)]`), re-exported from `j
 ```rust
 /// The reconciler's hard bounds. Every field is explicit; none defaults to "unbounded".
 pub struct ReconcileLimits {
-    /// Max buffered live pushes per room during a baseline read. Overflow forces a fresh baseline.
     pub buffer_depth: u32,
-    /// Max buffered live-push bytes per room during a baseline read. Overflow forces a fresh baseline.
     pub buffer_bytes: u64,
-    /// Size of the per-room recent-event_id dedup FIFO (a constant window; the watermark bounds the rest).
     pub dedup_window: u32,
-    /// Max rooms the reconciler tracks at once; activation beyond it is refused, never dropped.
+    pub max_identifier_bytes: u32,
+    pub max_baseline_events: u32,
+    pub baseline_dedup_bytes: u64,
     pub max_active_rooms: u32,
-    /// Page size for paged baseline reads (room.timeline / stream.resync), within the daemon's timeline_page_max.
+    pub max_concurrent_reads: u32,
     pub read_page_size: u64,
+    pub max_read_page_events: u32,
+    pub max_read_reply_bytes: u64,
+    pub max_read_reply_tokens: u32,
+    pub timeline_depth: u32,
+    pub timeline_bytes: u64,
+    pub member_capacity: u32,
+    pub peer_capacity: u32,
+    pub update_mailbox_bytes: u64,
 }
 
 /// Reconciler construction inputs that are not limits.
@@ -307,7 +327,7 @@ pub struct Reconciler { /* ... */ }
 ```
 
 - **Not exported:** the sans-IO `Core`, `Input`/`Action`, `buffer.rs`, `room.rs` internals — the machinery stays internal exactly as the kernel's does.
-- The seam's public surface (`ClientHandle`, `ClientEvent`, `EventSubscription`, `State`, `CallError`) is **unchanged**.
+- The seam's public surface (`ClientHandle`, `ClientEvent`, `EventSubscription`, `State`, `CallError`) remains unchanged; malformed-frame recovery uses a private adapter/reconciler path and does not alter reply semantics.
 
 ## 7. Implementation steps
 
@@ -361,7 +381,7 @@ pub struct Reconciler { /* ... */ }
 
 - **Scope creep into the adapters (#171/#172/#173).** Building a real transport/resume signal here would violate the transport-independence. *Mitigation:* the reconciler consumes only `ClientHandle` + `EventSubscription` + explicit `Resume`; the adapters translate their lifecycle into those inputs.
 - **A stale baseline overwriting newer state.** *Mitigation:* the epoch fence (§R4) plus the kernel's per-connection generation fence; a stale completion is dropped, never applied.
-- **Silent loss on overflow.** *Mitigation:* dedup structures record *delivery*, never suppression (§R10); overflow forces a re-baseline and re-reads the dropped range.
+- **Silent loss on overflow.** *Mitigation:* dedup structures record validated application, never a dropped push (§R10); any pending recovery is a publication barrier and re-reads the dropped range.
 - **Unbounded growth under flap/overflow churn.** *Mitigation:* every collection is bounded (§R15); single-flight caps in-flight+queued reconciliations at two per room; a stress fault test asserts the bounds and that stop empties everything.
 - **Merging peer state and keeping phantoms.** *Mitigation:* wholesale replacement from authoritative reads (§R8); a merge is never performed.
 - **An unknown event kind leaving an undetected hole.** *Mitigation:* a decode-failed push is a *detected* gap → resync (§R14), never a silent drop.
@@ -375,7 +395,7 @@ pub struct Reconciler { /* ... */ }
 - **Exactly-once sends** — the reconciler reconciles *received* state; send-side idempotency is the kernel's `op_id` dedup (#168), not this.
 - **Fabricated reconnect states for DirectClient** — resume is an explicit, honest input (§R11).
 - **UI-specific room rendering** — the reconciler emits a `RoomView`; how a component renders it is #178+.
-- **The public seam surface** — unchanged; #169 adds a reconciler above it and a small `Reconcile*` surface only.
+- **The public seam surface** — unchanged; #169 adds reconciler types above it. Malformed pushes use a private adapter/reconciler recovery path rather than changing `ClientEvent`.
 - **Full byte-stream framing / file transfer reconciliation** (#233/#242/#243 and the kernel's stream hooks #269) — the reconciler handles room *events*, not file byte streams.
 
 ## 12. Open questions

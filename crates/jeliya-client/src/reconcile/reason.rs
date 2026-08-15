@@ -70,21 +70,34 @@ impl ResyncReason {
         }
     }
 
-    /// Keep whichever of `self` and `other` outranks the other, preferring the
-    /// incoming `other` on a tie so the freshest evidence wins.
+    /// Keep the strongest cause while preserving all quantitative loss and
+    /// discard evidence. Equal daemon cursors coalesce to the lower cursor;
+    /// equal local-loss causes add their dropped counts.
     pub(crate) fn coalesce(self, other: ResyncReason) -> ResyncReason {
-        if other.priority() >= self.priority() {
-            other
-        } else {
-            self
+        match (self, other) {
+            (
+                ResyncReason::ResyncRequiredByDaemon { from_pos: left },
+                ResyncReason::ResyncRequiredByDaemon { from_pos: right },
+            ) => ResyncReason::ResyncRequiredByDaemon {
+                from_pos: left.min(right),
+            },
+            (
+                ResyncReason::LocalOverflow { dropped: left },
+                ResyncReason::LocalOverflow { dropped: right },
+            ) => ResyncReason::LocalOverflow {
+                dropped: left.saturating_add(right),
+            },
+            (left, right) if right.priority() >= left.priority() => right,
+            (left, _) => left,
         }
     }
 
     /// Whether this cause implicates presence, so the reconciliation must also
     /// re-read `room.members` / `room.peers` (§R2, Open Q3). Reconnect, resume,
     /// and a daemon-forced resync can all coincide with membership/presence
-    /// having changed while the client could not observe it; a pure position
-    /// `gap` or local overflow is events-only.
+    /// having changed while the client could not observe it. Local overflow also
+    /// implicates presence: a bounded fan-out or peer buffer can lose a peer
+    /// frame, so an events-only retry would preserve stale liveness forever.
     pub(crate) fn implicates_presence(&self) -> bool {
         matches!(
             self,
@@ -92,6 +105,7 @@ impl ResyncReason {
                 | ResyncReason::Reconnect
                 | ResyncReason::Resume
                 | ResyncReason::ResyncRequiredByDaemon { .. }
+                | ResyncReason::LocalOverflow { .. }
         )
     }
 }
@@ -151,6 +165,6 @@ mod tests {
             to: GapTo::Open
         }
         .implicates_presence());
-        assert!(!ResyncReason::LocalOverflow { dropped: 9 }.implicates_presence());
+        assert!(ResyncReason::LocalOverflow { dropped: 9 }.implicates_presence());
     }
 }
