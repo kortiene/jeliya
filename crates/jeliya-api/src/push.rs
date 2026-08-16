@@ -714,6 +714,13 @@ pub struct Hello {
     pub protocol: u64,
     /// The storage generation.
     pub storage_generation: u64,
+    /// The daemon incarnation identity: a per-process nonce, fresh at each
+    /// daemon start and identical for every connection of one process. A
+    /// client compares it across reconnects to fence replay of keyed
+    /// mutations — the dedup ledger is in-memory, so a changed incarnation
+    /// means a restarted daemon with an empty ledger (orthogonal to
+    /// `storage_generation`, which is persistent).
+    pub incarnation: Incarnation,
     /// The served limits.
     pub limits: Limits,
     /// The local subject, or its stated absence.

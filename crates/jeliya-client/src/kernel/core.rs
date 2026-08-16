@@ -11,6 +11,8 @@
 
 use std::collections::VecDeque;
 
+use jeliya_api::Incarnation;
+
 use crate::backend::{ErasedCall, RawJson};
 use crate::error::{CallError, Execution};
 use crate::event::{ClientEvent, State};
@@ -47,6 +49,12 @@ pub(crate) enum Input {
     Connected {
         /// The completing dial attempt's token.
         token: u64,
+        /// The daemon incarnation this connection reported in `hello`. The
+        /// driver lifts it verbatim; the core compares it against the last
+        /// one to fence replay across a daemon restart (§K5). Non-optional
+        /// (D5): every live connection has one — `DirectClient` supplies a
+        /// per-instance constant, a socket adapter forwards `hello.incarnation`.
+        incarnation: Incarnation,
     },
     /// A **live** (`Ready`) connection was lost; recoverable via backoff
     /// (§K6, §K10). Tagged with the generation the lost transport was
@@ -149,6 +157,12 @@ pub(crate) struct Core {
     /// Whether the driver certifies a stable session principal across
     /// reconnects — the precondition for any auto-replay (§K5).
     stable_principal: bool,
+    /// The daemon incarnation the last accepted connection reported (`None`
+    /// before the first connect). The runtime half of dedup-scope continuity
+    /// (§K5, D4): on reconnect a changed incarnation is a restarted daemon
+    /// whose in-memory dedup ledger is empty, so any replay-held call is
+    /// dropped rather than re-sent against it.
+    last_incarnation: Option<Incarnation>,
     /// The outstanding dial attempt's token, if a dial is in progress. Every
     /// dial outcome is fenced against it; `None` while backing off, Ready,
     /// or terminal, so stragglers and duplicates drop.
@@ -180,6 +194,7 @@ impl Core {
             next_call_id: 0,
             next_timer_id: 0,
             stable_principal,
+            last_incarnation: None,
             pending_dial: None,
             next_dial_token: 0,
         }
@@ -223,7 +238,9 @@ impl Core {
             Input::Dispatch { call_id, call } => self.on_dispatch(call_id, call, now, &mut actions),
             Input::Start => self.on_start(&mut actions),
             Input::Stop => self.on_stop(now, &mut actions),
-            Input::Connected { token } => self.on_connected(token, now, &mut actions),
+            Input::Connected { token, incarnation } => {
+                self.on_connected(token, incarnation, now, &mut actions)
+            }
             Input::Interrupted { generation } => self.on_interrupted(generation, now, &mut actions),
             Input::DialFailed { token } => self.on_dial_failed(token, now, &mut actions),
             Input::GateRefused { token } => self.on_gate_refused(token, now, &mut actions),
@@ -267,7 +284,13 @@ impl Core {
         }
     }
 
-    fn on_connected(&mut self, token: u64, now: Tick, actions: &mut Vec<Action>) {
+    fn on_connected(
+        &mut self,
+        token: u64,
+        incarnation: Incarnation,
+        now: Tick,
+        actions: &mut Vec<Action>,
+    ) {
         // Only the outstanding dial may complete a connection: the token
         // fence drops duplicates, stragglers from retired attempts, and
         // completions after stop/failure cleared the pending dial — while
@@ -287,13 +310,61 @@ impl Core {
         // A fresh connection starts a fresh correlation-id space (§K3).
         self.ids.reset();
         self.ledger.clear_wire_index();
-        // Replayable calls held across the reconnect flush first, in order.
-        let held: Vec<CallId> = self.replay_hold.drain(..).collect();
-        for call_id in held.into_iter().rev() {
-            self.queue.push_front(call_id);
+        // Dedup-scope continuity fence (§K5, D4): the incarnation is the
+        // dynamic half `stable_principal` cannot assert statically. A held
+        // call was SENT on the prior incarnation and may have executed there;
+        // the dedup ledger is in-memory, so a CHANGED incarnation is a
+        // restarted daemon with an empty ledger. Detect the change BEFORE the
+        // held work is requeued: on change, drop it (settling
+        // `Disconnected { Unknown }`, D6) rather than re-send it against the
+        // fresh ledger where it would re-execute; unchanged (or first connect),
+        // requeue exactly as before.
+        let incarnation_changed =
+            matches!(&self.last_incarnation, Some(prev) if *prev != incarnation);
+        self.last_incarnation = Some(incarnation);
+        if incarnation_changed {
+            self.drop_replay_hold_on_incarnation_change(actions);
+        } else {
+            // Replayable calls held across the reconnect flush first, in order.
+            let held: Vec<CallId> = self.replay_hold.drain(..).collect();
+            for call_id in held.into_iter().rev() {
+                self.queue.push_front(call_id);
+            }
         }
         self.transition(State::Ready, actions);
         self.flush(now, actions);
+    }
+
+    /// Drop every replay-held call because the daemon incarnation changed
+    /// across the reconnect (§K5, D6). Each held call was sent on the prior
+    /// incarnation and may have executed there, but the new incarnation's
+    /// in-memory dedup ledger is empty, so a replay would re-execute it —
+    /// `Disconnected { Unknown }` is the honest classification (the weakest
+    /// honest claim, never a `DefinitelyNot` that would invite an unguarded
+    /// caller retry). Cleanup mirrors the queued-cancel accounting: a held
+    /// call is in `Phase::Queued` with its full charge restored at interrupt
+    /// (`charge_count_unchecked` re-added the count slot while `holds_charge`
+    /// kept the bytes), so `release` frees BOTH. Drain-and-sort by `CallId`
+    /// so the action stream is deterministic (§K13). Never-sent queued calls
+    /// are untouched — they were never on any incarnation's wire, so they
+    /// flush normally on the new connection.
+    fn drop_replay_hold_on_incarnation_change(&mut self, actions: &mut Vec<Action>) {
+        let mut held: Vec<CallId> = self.replay_hold.drain(..).collect();
+        held.sort_unstable();
+        for call_id in held {
+            if let Some(entry) = self.ledger.take(call_id) {
+                if entry.holds_charge {
+                    self.admission.release(entry.payload_bytes);
+                }
+                actions.push(Action::CancelTimer(entry.deadline_timer));
+                actions.push(Action::Settle(
+                    call_id,
+                    Err(CallError::Disconnected {
+                        execution: Execution::Unknown,
+                    }),
+                ));
+            }
+        }
     }
 
     fn on_interrupted(&mut self, generation: u64, now: Tick, actions: &mut Vec<Action>) {
@@ -941,6 +1012,20 @@ mod tests {
         KernelLimits::default()
     }
 
+    /// A fixed daemon incarnation for tests that reconnect to the *same*
+    /// daemon: passing it on every `Connected` keeps the incarnation fence
+    /// (D4) quiescent, so pre-#270 reconnect/replay behaviour is unchanged.
+    /// Tests exercising a restart pass a distinct value to fire the fence.
+    fn inc(tag: &str) -> Incarnation {
+        Incarnation::new(tag)
+    }
+
+    /// The default incarnation for the connect helper below and every
+    /// reconnect-to-the-same-daemon test.
+    fn test_incarnation() -> Incarnation {
+        inc("inc-default")
+    }
+
     fn erased(op: &'static str, mutating: bool, op_id: Option<&str>) -> ErasedCall {
         ErasedCall {
             op,
@@ -1073,6 +1158,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         ); // → Ready, generation 1
@@ -1133,6 +1219,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1198,6 +1285,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         ); // generation 1
@@ -1234,6 +1322,7 @@ mod tests {
         let reconnect = core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick(1),
         );
@@ -1271,6 +1360,156 @@ mod tests {
         ));
     }
 
+    /// #270 D6: a keyed mutation held across a reconnect is **dropped**
+    /// (settling `Disconnected { Unknown }`), not re-sent, when the daemon
+    /// incarnation changed — a restarted daemon's in-memory dedup ledger is
+    /// empty, so a replay would re-execute. The held entry leaves the ledger
+    /// and its full admission charge is released.
+    #[test]
+    fn a_changed_daemon_incarnation_drops_the_held_call_unknown() {
+        let mut core = Core::new(
+            KernelLimits {
+                max_reconnect_attempts: 4,
+                ..limits()
+            },
+            1,
+            true,
+        );
+        core.step(Input::Start, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+                incarnation: inc("inc-a"),
+            },
+            Tick::ZERO,
+        );
+        let call = core.alloc_call_id();
+        core.step(
+            Input::Dispatch {
+                call_id: call,
+                call: erased("message.send", true, Some("op-1")),
+            },
+            Tick::ZERO,
+        );
+        let lost = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
+        assert_eq!(core.replay_hold_len(), 1, "the keyed mutation is held");
+        let backoff = first_armed_timer(&lost).expect("backoff armed");
+        core.step(Input::TimerFired(backoff), Tick(1));
+
+        // Reconnect to a DIFFERENT incarnation: the daemon restarted.
+        let reconnect = core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+                incarnation: inc("inc-b"),
+            },
+            Tick(1),
+        );
+        assert!(
+            matches!(
+                find_settle(&reconnect, call),
+                Some(Err(CallError::Disconnected {
+                    execution: Execution::Unknown
+                }))
+            ),
+            "a restarted daemon settles the held call Unknown, never replays it"
+        );
+        assert!(
+            first_send_id(&reconnect).is_none(),
+            "the dropped call is not re-sent against the empty ledger"
+        );
+        assert_eq!(core.replay_hold_len(), 0);
+        assert_eq!(core.ledger_len(), 0, "the held entry is removed");
+        assert_eq!(core.state(), State::Ready);
+    }
+
+    /// #270 D6 (the mixed case): on an incarnation change the previously-sent
+    /// held call is dropped `Unknown`, while a never-sent queued call — which
+    /// provably executed nowhere — flushes normally on the new connection.
+    #[test]
+    fn a_changed_incarnation_drops_the_held_but_flushes_never_sent_queued() {
+        let mut core = Core::new(
+            KernelLimits {
+                in_flight: 1, // throttle so the second call stays queued behind the sent one
+                max_reconnect_attempts: 4,
+                ..limits()
+            },
+            1,
+            true,
+        );
+        core.step(Input::Start, Tick::ZERO);
+        core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+                incarnation: inc("inc-a"),
+            },
+            Tick::ZERO,
+        );
+        let held = core.alloc_call_id();
+        let queued = core.alloc_call_id();
+        let flush = core.step(
+            Input::Dispatch {
+                call_id: held,
+                call: erased("message.send", true, Some("op-1")),
+            },
+            Tick::ZERO,
+        );
+        assert!(
+            first_send_id(&flush).is_some(),
+            "the first keyed mutation sends"
+        );
+        core.step(
+            Input::Dispatch {
+                call_id: queued,
+                call: erased("message.send", true, Some("op-2")),
+            },
+            Tick::ZERO,
+        );
+        let lost = core.step(
+            Input::Interrupted {
+                generation: core.generation(),
+            },
+            Tick::ZERO,
+        );
+        assert_eq!(core.replay_hold_len(), 1, "only the sent call is held");
+        assert_eq!(core.queued_len(), 1, "the never-sent call stays queued");
+        let backoff = first_armed_timer(&lost).expect("backoff armed");
+        core.step(Input::TimerFired(backoff), Tick(1));
+
+        let reconnect = core.step(
+            Input::Connected {
+                token: core.pending_dial().expect("dial pending"),
+                incarnation: inc("inc-b"),
+            },
+            Tick(1),
+        );
+        assert!(
+            matches!(
+                find_settle(&reconnect, held),
+                Some(Err(CallError::Disconnected {
+                    execution: Execution::Unknown
+                }))
+            ),
+            "the previously-sent held call is dropped Unknown"
+        );
+        assert_eq!(
+            settle_count(&reconnect, queued),
+            0,
+            "the never-sent queued call is not settled — it flushes"
+        );
+        assert!(
+            first_send_id(&reconnect).is_some(),
+            "the never-sent queued call sends on the new incarnation"
+        );
+        assert_eq!(core.replay_hold_len(), 0);
+        assert_eq!(core.ledger_len(), 1, "only the flushed queued call remains");
+        assert_eq!(core.state(), State::Ready);
+    }
+
     /// A non-replayable mutation (no `op_id`) is never re-sent; it settles on
     /// disconnect (§K5, the "all others never auto-replay" rule).
     #[test]
@@ -1280,6 +1519,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1326,6 +1566,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1417,6 +1658,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1545,6 +1787,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1691,6 +1934,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         ); // generation 1
@@ -1733,6 +1977,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1803,6 +2048,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1859,6 +2105,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1893,6 +2140,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1908,7 +2156,13 @@ mod tests {
         let generation = core.generation();
         // The original dial's token was consumed by the first completion;
         // replaying it (or any stale token) is dropped whole.
-        let duplicate = core.step(Input::Connected { token: 1 }, Tick::ZERO);
+        let duplicate = core.step(
+            Input::Connected {
+                token: 1,
+                incarnation: test_incarnation(),
+            },
+            Tick::ZERO,
+        );
         assert!(
             duplicate.is_empty(),
             "a duplicate Connected is dropped whole"
@@ -1949,6 +2203,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -1998,6 +2253,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2036,6 +2292,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2074,6 +2331,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2189,6 +2447,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2261,6 +2520,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2293,6 +2553,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2306,7 +2567,13 @@ mod tests {
         let backoff = first_armed_timer(&lost).expect("backoff armed");
         // The retired dial's straggler arrives before the timer fires: no
         // dial is pending, and its old token (1, from Start) is consumed.
-        let straggler = core.step(Input::Connected { token: 1 }, Tick::ZERO);
+        let straggler = core.step(
+            Input::Connected {
+                token: 1,
+                incarnation: test_incarnation(),
+            },
+            Tick::ZERO,
+        );
         assert!(
             straggler.is_empty(),
             "a straggler completion is dropped whole"
@@ -2318,6 +2585,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick(1),
         );
@@ -2335,6 +2603,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2351,6 +2620,7 @@ mod tests {
         let reconnect = core.step(
             Input::Connected {
                 token: core.pending_dial().expect("retry dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick(3),
         );
@@ -2385,6 +2655,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2424,6 +2695,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2453,6 +2725,7 @@ mod tests {
         core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick::ZERO,
         );
@@ -2490,6 +2763,7 @@ mod tests {
         let reconnect = core.step(
             Input::Connected {
                 token: core.pending_dial().expect("dial pending"),
+                incarnation: test_incarnation(),
             },
             Tick(1),
         );

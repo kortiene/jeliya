@@ -2083,7 +2083,7 @@
       "name": "hello_carries_no_pid_no_port_and_no_data_dir",
       "kind": "handshake",
       "operation": null,
-      "intent": "Proves hello is not v1's daemon.status transcribed: its key set is exactly {t, protocol, storage_generation, limits, subject, resume}. Catches the single most likely authoring failure — copying the v1 status response into the v2 greeting and re-leaking a filesystem path across the WebView boundary.",
+      "intent": "Proves hello is not v1's daemon.status transcribed: its key set is exactly {t, protocol, storage_generation, limits, subject, resume, incarnation}. Catches the single most likely authoring failure — copying the v1 status response into the v2 greeting and re-leaking a filesystem path across the WebView boundary.",
       "requires": [
         "daemon",
         "observe:frames"
@@ -2109,7 +2109,8 @@
               "storage_generation": "<uint>",
               "limits": "<object>",
               "subject": "<object>",
-              "resume": "<object>"
+              "resume": "<object>",
+              "incarnation": "<string>"
             }
           }
         },
@@ -2152,7 +2153,8 @@
                 "storage_generation",
                 "limits",
                 "subject",
-                "resume"
+                "resume",
+                "incarnation"
               ]
             }
           ]
@@ -4325,6 +4327,200 @@
         }
       ],
       "blocked_on_upstream": "U1"
+    },
+    {
+      "name": "hello_carries_a_daemon_incarnation_identity",
+      "kind": "handshake",
+      "operation": null,
+      "intent": "Proves the hello frame carries an `incarnation` field whose value is a non-empty string. Catches a daemon that omits the field entirely or emits an empty token.",
+      "requires": [
+        "daemon",
+        "observe:frames"
+      ],
+      "steps": [
+        {
+          "upgrade": {
+            "query": {
+              "v": "2",
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello",
+              "incarnation": "<string>"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "out.incarnation",
+              "op": "ne",
+              "value": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "the_daemon_incarnation_is_stable_across_connections",
+      "kind": "handshake",
+      "operation": null,
+      "intent": "Proves the incarnation nonce is process-scoped and stable: two sequential connections to the same running daemon receive the same value in their hello frames. Catches a daemon that mints a fresh nonce per-connection instead of per-process.",
+      "requires": [
+        "daemon",
+        "observe:frames",
+        "subject"
+      ],
+      "steps": [
+        {
+          "upgrade": {
+            "query": {
+              "v": "2",
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "save": {
+            "inc1": "out.incarnation"
+          },
+          "await": {
+            "frame": {
+              "t": "hello",
+              "incarnation": "<string>"
+            }
+          }
+        },
+        {
+          "control": {
+            "do": "disconnect",
+            "on": "subject:self"
+          }
+        },
+        {
+          "upgrade": {
+            "query": {
+              "v": "2",
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "save": {
+            "inc2": "out.incarnation"
+          },
+          "await": {
+            "frame": {
+              "t": "hello",
+              "incarnation": "<string>"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "$inc1",
+              "op": "eq",
+              "value": "$inc2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "the_daemon_incarnation_changes_across_a_restart",
+      "kind": "handshake",
+      "operation": null,
+      "intent": "Proves the incarnation nonce changes when the daemon process is replaced: a connection before and after a daemon restart receives a DIFFERENT incarnation value. This is the property the client kernel's replay fence relies on to drop keyed mutations that were held across a daemon restart.",
+      "requires": [
+        "daemon",
+        "observe:frames"
+      ],
+      "steps": [
+        {
+          "upgrade": {
+            "query": {
+              "v": "2",
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "save": {
+            "inc_before": "out.incarnation"
+          },
+          "await": {
+            "frame": {
+              "t": "hello",
+              "incarnation": "<string>"
+            }
+          }
+        },
+        {
+          "note": "[harness: stop the running daemon and start a fresh instance — requires harness restart capability blocked on U4]",
+          "control": {
+            "do": "stop_daemon"
+          }
+        },
+        {
+          "control": {
+            "do": "start_daemon"
+          }
+        },
+        {
+          "upgrade": {
+            "query": {
+              "v": "2",
+              "sg": "<daemon_sg>"
+            },
+            "headers": {
+              "Host": "127.0.0.1:<port>",
+              "Authorization": "Bearer <token>"
+            }
+          }
+        },
+        {
+          "save": {
+            "inc_after": "out.incarnation"
+          },
+          "await": {
+            "frame": {
+              "t": "hello",
+              "incarnation": "<string>"
+            }
+          }
+        },
+        {
+          "assert": [
+            {
+              "path": "$inc_before",
+              "op": "ne",
+              "value": "$inc_after"
+            }
+          ]
+        }
+      ],
+      "blocked_on_upstream": "U4"
     }
   ],
   "authoring_notes": [

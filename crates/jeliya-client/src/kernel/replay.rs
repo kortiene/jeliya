@@ -11,7 +11,15 @@
 //! | `mutating == true` | reads are simply re-issued, never "replayed" |
 //! | `op_id == Some(_)` | the dedup ledger is keyed on it |
 //! | the op is in the protocol's 13-op deduplicated set | outside it the daemon ignores the key: a replay returns the SECOND invocation's view — `created: false` for an ensure that created, `shutdown_in_progress` for an executed `daemon.stop` (whose typed classification would falsely claim `DefinitelyNot`) — a wrong answer, not a duplicate |
-//! | the driver certifies dedup-scope continuity (stable principal AND same daemon incarnation) | an ephemeral principal — or a daemon restart, whose in-memory ledger empties while the storage-generation gate still passes — makes a replay re-execute |
+//! | the driver certifies a **stable session principal** (`stable_principal`) | an ephemeral principal makes `(principal, op_id)` change across the reconnect, so a replay under the new principal re-executes |
+//!
+//! This is admission-time *eligibility*. The **other** half of dedup-scope
+//! continuity — "same daemon incarnation" — is not an admission assumption but
+//! a **runtime fence** (#270): the dedup ledger is in-memory, so a daemon
+//! restart empties it while the storage-generation gate still passes. The core
+//! compares the `hello` incarnation across reconnects and drops any
+//! replay-held call when it changes (see `on_connected`), so an eligible call
+//! is dropped, not re-sent, against a restarted daemon's empty ledger.
 //!
 //! Everything failing any gate is [`ReplayPolicy::Never`] and settles a
 //! disconnect honestly as `Disconnected { Unknown }`. (The earlier
@@ -71,6 +79,12 @@ impl ReplayPolicy {
     /// mutation whose reply was lost. Without the certification, everything
     /// is `Never` and a disconnect settles honestly as
     /// `Disconnected { Unknown }` instead of auto-replaying.
+    ///
+    /// `stable_principal` is only the **static** eligibility half (#270). Even
+    /// a call this returns [`ReplayableUnderOpId`](Self::ReplayableUnderOpId)
+    /// for is still dropped rather than re-sent if the daemon incarnation
+    /// changed across the reconnect — that dynamic "same incarnation" fence
+    /// lives in the core's `on_connected`, not here.
     pub(crate) fn derive(
         op: &str,
         mutating: bool,

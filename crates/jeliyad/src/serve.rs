@@ -1028,6 +1028,7 @@ pub async fn serve_ws<S>(
     let hello = jeliya_api::Hello {
         protocol: jeliya_core::engine::PROTOCOL_VERSION,
         storage_generation: jeliya_core::engine::STORAGE_GENERATION,
+        incarnation: state.engine.incarnation(),
         limits: state.engine.limits(),
         subject,
         resume: jeliya_api::Resume::Fresh,

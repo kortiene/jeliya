@@ -32,8 +32,8 @@ mod shared;
 mod types;
 
 pub use ids::{
-    DeviceId, EventId, FileId, InviteId, OpId, PipeId, RequestId, RequestIdOutOfRange, RoomId,
-    SubjectId, MAX_REQUEST_ID,
+    DeviceId, EventId, FileId, Incarnation, InviteId, OpId, PipeId, RequestId, RequestIdOutOfRange,
+    RoomId, SubjectId, MAX_REQUEST_ID,
 };
 pub use ops::*;
 pub use push::*;
