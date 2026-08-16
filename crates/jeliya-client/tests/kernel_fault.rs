@@ -7,7 +7,7 @@
 //! ```
 
 use futures::executor::block_on;
-use jeliya_api::{FileId, FileRead, FileShare, OpId, RoomCreate, RoomId, RoomList};
+use jeliya_api::{FileId, FileRead, FileReadOut, FileShare, OpId, RoomCreate, RoomId, RoomList};
 use jeliya_client::{
     CallError, Dedup, Execution, KernelConfig, KernelLimits, State, StreamLimits, TickDelta,
 };
@@ -1815,4 +1815,46 @@ fn stop_mid_active_stream_settles_and_empties_all() {
         0,
         "no orphaned timers after stop"
     );
+}
+
+/// §S7: a late daemon ABORT during Finalizing is silently dropped — only the
+/// terminal reply settles the stream. Regression for the review finding that
+/// `on_abort` lacked the Finalizing guard `on_cancel` already had: without it
+/// the ABORT settles the caller `Cancelled` and the in-flight success reply
+/// double-settles against the tombstone.
+#[test]
+fn late_daemon_abort_in_finalizing_is_ignored() {
+    let (handle, controller) = default_ready();
+    block_on(async {
+        let fut = handle.call_stream::<FileRead>(
+            FileRead {
+                room_id: RoomId::new("r1"),
+                file_id: FileId::new("f1"),
+            },
+            Dedup::None,
+        );
+        let wire = controller.take_outbound()[0].id;
+        controller.open(wire, 200);
+        controller.take_outbound_records(); // drain the opening CREDIT
+        controller.deliver_data(wire, 0, 200);
+        controller.end(wire, 200);
+        // → FINALIZING: END accepted, awaiting the terminal reply.
+
+        // The late daemon ABORT must not settle the stream.
+        controller.abort(wire, 200);
+        assert_eq!(
+            controller.streams(),
+            1,
+            "stream still present in Finalizing"
+        );
+
+        controller.deliver_reply(
+            wire,
+            "{\"room_id\":\"r1\",\"file_id\":\"f1\",\"bytes\":200,\"declared_content_type\":\"application/octet-stream\"}",
+        );
+        let out: FileReadOut = fut.await.expect("terminal reply settles, not Cancelled");
+        assert_eq!(out.bytes, 200);
+    });
+    assert_eq!(controller.streams(), 0, "the stream is fully retired");
+    assert_eq!(controller.outstanding(), 0, "the call is fully settled");
 }

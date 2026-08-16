@@ -604,6 +604,13 @@ impl StreamTable {
         if matches!(entry.phase, StreamPhase::Retired) {
             return StreamOutcome::Progress;
         }
+        if matches!(entry.phase, StreamPhase::Finalizing) {
+            // FINALIZING is uncancellable (§S7) — including from the daemon's
+            // side: only the terminal reply settles it. A late ABORT here is a
+            // protocol anomaly, dropped like a record to a Retired tombstone;
+            // settling it would double-settle against the in-flight reply.
+            return StreamOutcome::Progress;
+        }
         let (wire_id, stream_id, high_water) = (entry.wire_id, entry.stream_id, entry.high_water());
         actions.push(Action::SendRecord(StreamRecordIntent::Ack {
             id: wire_id,
