@@ -80,6 +80,75 @@ impl std::fmt::Debug for ClientHandle {
     }
 }
 
+/// Bound serde allocation amplification without materializing an intermediate
+/// JSON tree. Every structural/scalar/string token is counted and nesting is
+/// capped; the real serde decoder remains responsible for grammar/type checks.
+fn json_shape_within(input: &str, max_tokens: u32) -> bool {
+    const MAX_DEPTH: u32 = 64;
+    let bytes = input.as_bytes();
+    let mut index = 0_usize;
+    let mut tokens = 0_u32;
+    let mut depth = 0_u32;
+    while index < bytes.len() {
+        match bytes[index] {
+            b' ' | b'\n' | b'\r' | b'\t' | b',' | b':' => index += 1,
+            b'{' | b'[' => {
+                tokens = tokens.saturating_add(1);
+                depth = depth.saturating_add(1);
+                if tokens > max_tokens || depth > MAX_DEPTH {
+                    return false;
+                }
+                index += 1;
+            }
+            b'}' | b']' => {
+                let Some(next) = depth.checked_sub(1) else {
+                    return false;
+                };
+                depth = next;
+                index += 1;
+            }
+            b'"' => {
+                tokens = tokens.saturating_add(1);
+                if tokens > max_tokens {
+                    return false;
+                }
+                index += 1;
+                let mut closed = false;
+                while index < bytes.len() {
+                    match bytes[index] {
+                        b'\\' => index = index.saturating_add(2),
+                        b'"' => {
+                            index += 1;
+                            closed = true;
+                            break;
+                        }
+                        _ => index += 1,
+                    }
+                }
+                if !closed {
+                    return false;
+                }
+            }
+            _ => {
+                tokens = tokens.saturating_add(1);
+                if tokens > max_tokens {
+                    return false;
+                }
+                index += 1;
+                while index < bytes.len()
+                    && !matches!(
+                        bytes[index],
+                        b' ' | b'\n' | b'\r' | b'\t' | b',' | b':' | b'}' | b']'
+                    )
+                {
+                    index += 1;
+                }
+            }
+        }
+    }
+    depth == 0
+}
+
 impl ClientHandle {
     /// Wrap an erased backend. Adapters (and the mock) build the backend and
     /// hand it here; the erasure is entirely internal.
@@ -155,6 +224,32 @@ impl ClientHandle {
         let dispatch = self.begin_dispatch::<O>(input, dedup);
         Box::pin(async move {
             let raw = dispatch?.await?;
+            serde_json::from_str::<O::Output>(raw.as_str())
+                .map_err(|_| CallError::Local(LocalError::DecodeReply))
+        })
+    }
+
+    /// Dispatch and decode one internal read with serialized-byte and JSON-token
+    /// ceilings applied after the backend returns `RawJson` but before typed
+    /// deserialization. Concrete transports separately bound frame accumulation.
+    pub(crate) fn dispatch_typed_bounded<O: Operation>(
+        &self,
+        input: O,
+        dedup: Dedup,
+        max_reply_bytes: u64,
+        max_reply_tokens: u32,
+    ) -> BoxFuture<'static, Result<O::Output, CallError>>
+    where
+        O::Output: 'static,
+    {
+        let dispatch = self.begin_dispatch::<O>(input, dedup);
+        Box::pin(async move {
+            let raw = dispatch?.await?;
+            if raw.as_str().len() as u64 > max_reply_bytes
+                || !json_shape_within(raw.as_str(), max_reply_tokens)
+            {
+                return Err(CallError::Local(LocalError::DecodeReply));
+            }
             serde_json::from_str::<O::Output>(raw.as_str())
                 .map_err(|_| CallError::Local(LocalError::DecodeReply))
         })
@@ -258,5 +353,18 @@ impl ClientHandle {
         dedup: Dedup,
     ) -> impl Future<Output = Result<StreamResyncOut, CallError>> + '_ {
         self.call::<StreamResync>(input, dedup)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_shape_within;
+
+    #[test]
+    fn json_shape_budget_rejects_collection_amplification() {
+        assert!(json_shape_within(r#"{"items":["a","b"]}"#, 8));
+        assert!(!json_shape_within(r#"{"items":["a","b"]}"#, 4));
+        let deeply_nested = format!("{}0{}", "[".repeat(65), "]".repeat(65));
+        assert!(!json_shape_within(&deeply_nested, 100));
     }
 }

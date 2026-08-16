@@ -107,6 +107,45 @@ fn kernel_source_has_no_wall_clock_rng_or_runtime() {
     );
 }
 
+/// The reconciler core (#169) is **sans-IO**: ordering and dedup are driven by
+/// the `pos`/`event_id`/`at` carried on inputs, never by a read of the wall
+/// clock, and it makes no RNG syscall and pulls in no runtime — so its behaviour
+/// is deterministic and identical on wasm and native. This scan asserts the
+/// discipline structurally over every `src/reconcile/**` source line — no
+/// `std::time`, `Instant::now`, `SystemTime`, `getrandom`, `rand::`, or `tokio`
+/// token (comment lines that merely describe the rule are skipped, exactly like
+/// the kernel scan). The signed `at` is *data on an event*, not a clock read.
+#[test]
+fn reconciler_source_has_no_wall_clock_rng_or_runtime() {
+    let reconcile_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/reconcile");
+    const BANNED: [&str; 6] = [
+        "std::time",
+        "Instant::now",
+        "SystemTime",
+        "getrandom",
+        "rand::",
+        "tokio",
+    ];
+    let mut offenders = Vec::new();
+    for path in rust_sources(std::path::Path::new(reconcile_dir)) {
+        let text = std::fs::read_to_string(&path).expect("readable reconcile source");
+        for (index, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for banned in BANNED {
+                if line.contains(banned) {
+                    offenders.push(format!("{}:{} ({banned})", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "reconciler source must carry no wall clock, RNG, or runtime token: {offenders:?}"
+    );
+}
+
 /// Collect every `.rs` file under `dir`, recursively.
 fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut sources = Vec::new();

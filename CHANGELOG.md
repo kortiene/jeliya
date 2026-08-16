@@ -160,6 +160,124 @@
   tests and adapters. The kernel adds no new runtime dependency; no concrete
   socket is implemented (those are #171/#172/#173). MSRV 1.91.
 
+- `crates/jeliya-client` gains the authoritative room/session reconciler
+  (#169): the transport-independent coordinator that sits *above* the seam and
+  ensures every detectable push gap, reconnect, local fan-out overflow, and
+  Android process-resume produces the **same** authoritative re-baseline, and
+  nothing else does. Like the kernel, it is a **sans-IO core**
+  (`src/reconcile/core.rs`) wrapped by a thin async driver
+  (`src/reconcile/driver.rs`); every fault case — push during bootstrap,
+  reconnect during open, repeated gaps, overflow, cancellation, resume, stale
+  generations — is a deterministic `step(Input) -> Vec<Action>` sequence,
+  identical on wasm and native. It consumes the seam's `EventSubscription` and
+  issues reads through `ClientHandle::call`; the seam's public call/lifecycle
+  semantics and kernel behavior remain unchanged. Malformed-frame recovery uses
+  the private adapter/reconciler path rather than adding a public event variant.
+
+  Key guarantees:
+
+  - **Every gap reason is observable.** `ResyncReason` is emitted at the *start*
+    of every reconciliation, before the baseline read settles: `Bootstrap`,
+    `Reconnect`, `Gap { reason, to }` (wire cause preserved so `backpressure`
+    / `retention` / `subscription_lapse` stay distinguishable),
+    `LocalOverflow { dropped }` (fan-out `Lagged` or per-room buffer overflow),
+    `ResyncRequiredByDaemon { from_pos }`, and `Resume`. Malformed frames use
+    the private adapter/reconciler decode-failure path and force bounded gap
+    recovery without changing the public `ClientEvent` model.
+  - **One serialized, coalesced reconciliation per room.** At most one baseline
+    read is in flight per room at a time; a new trigger while one runs coalesces
+    into a single pending re-run keeping the highest-priority reason. Repeated
+    flap therefore yields one in-flight + one queued reconciliation, never an
+    unbounded stack.
+  - **Overflow cannot permanently deduplicate an undelivered event.** The dedup
+    watermark and recent-`event_id` ring record only events the reconciler
+    validated and applied; an overflowed push is never recorded as applied and
+    is re-read by the forced fresh baseline. Any accrued rerun is a publication
+    barrier, so a partial or repudiated intermediate view is not emitted. When
+    a stronger cause performs that recovery, the deferred loss count appears as
+    an attributed `Lagged` boundary before its final view without another read.
+  - **Convergence by signed evidence.** Baseline reads (`room.timeline` or
+    `stream.resync`) and buffered live pushes converge by `pos` (ordering),
+    `event_id` (dedup), and signed `at`/`author` (insertion authority). A hole
+    in the applied position range is a protocol violation → fresh resync.
+  - **Strict origin and anchor semantics.** A replacement timeline must begin
+    with the unique position-zero `RoomCreated`; later origins are rejected on
+    authoritative, buffered, and live paths. Subscription `from_pos` is a
+    concrete inclusive anchor (zero included) treated as a completeness floor,
+    not a stop cursor: the bootstrap reads to `Complete` and retains validated
+    post-anchor events, so a push that raced the room's activation (delivered
+    while the room was untracked) is recovered by the baseline read instead of
+    vanishing. A history that completes below the anchor is structurally
+    invalid, and changing an anchor immediately fences/cancels stale I/O while
+    preserving buffered evidence and replacement intent.
+  - **Peer state replaced, never merged.** `room.members` and `room.peers` are
+    replaced wholesale from authoritative reads on every reconciliation that
+    implicates presence (bootstrap, reconnect, resume, daemon-forced). A
+    stale-generation `peer` teardown cannot resurrect a member an authoritative
+    read removed. Fences and tombstones are per device (not a room-global max),
+    same-generation changes preserve arrival order, ambiguous removed keys force
+    a refresh, and new transport epochs reset payload counters behind K7.
+  - **Generation fencing at the coordinator.** A reconciler-local monotonic
+    epoch advances on every liveness (re)establishment; a baseline completing
+    under a stale epoch is discarded (`DropStale`), never applied.
+  - **DirectClient resume without a fabricated reconnect.** `Reconciler::resume`
+    triggers the same bounded re-baseline with `reason = Resume` and emits no
+    synthetic `StateChanged` — the transport did not drop.
+  - **Bounded by construction.** All payload-bearing reconciler collections
+    carry count and byte bounds from `ReconcileLimits`: a combined event/peer
+    push budget, opaque-identifier ceiling, backend-output byte/JSON-token/depth
+    and decoded-page caps (transports still cap frames before `RawJson`),
+    rendered timeline depth + bytes, member/peer capacities, tracked-room
+    ceiling, and per-subscriber `RoomUpdate` bytes. Position-aware durable and
+    per-scan exact identity maps enforce history-wide uniqueness up to explicit
+    supported-history count/byte ceilings while permitting daemon-truncated
+    suffixes to be re-read. Backend reads are globally capped and queued
+    deterministically. Conservative defaults couple 16 active rooms, four
+    concurrent 2-MiB replies, 1-MiB history/timeline ceilings, and 256-row
+    snapshots so their aggregate stays operational rather than multi-GiB.
+    Oversized authority is rejected rather than truncated, and ordinary controls
+    use one finite serialized transaction while stop retains a dedicated slot.
+  - **Audit-hardened convergence gates.** A trigger naming a committed position
+    above the watermark (gap cursor, bounded gap end, or daemon
+    `resync_required` cursor) blocks publication until authority serves through
+    that frontier — one bounded chase, then a fail-closed park. Daemon
+    `resync_required` redirect chains require strict cursor progress within a
+    bounded length (a non-progressing redirect retries once, then parks). A
+    rollback below the rendered window whose recovery suffix leaves the window
+    empty rebuilds it with a full timeline replacement instead of publishing an
+    empty view for a room that has history. Any lowering truncation forces an
+    authoritative `room.members` replacement, so a repudiated membership event
+    cannot survive in the derived roster. Contradictory evidence at a committed
+    position discards back to before the disputed position so authority itself
+    re-proves it — the first arbitrary claimant never survives into a published
+    view. Peer pushes dropped by buffer limits (or while parked) keep their
+    generation fence against stale same-generation resurrection, and saturated
+    tombstone retention is deterministic. Quantitative `LocalOverflow` counts
+    outranked in any coalesce are banked and surfaced as an attributed `Lagged`
+    boundary before the covering view. The driver bounds push-before-reply
+    priority with a fairness budget so continuous event traffic cannot starve a
+    settled read, and the seam fan-out accounts mailbox bytes per slot so
+    synthesized loss markers never uncharge retained payload.
+
+  New public types: `Reconciler`, `ReconcileConfig`, `ReconcileLimits`,
+  `ResyncReason`, `ResyncRequired`, `RoomView`, `RoomUpdate`,
+  `RoomUpdateSubscription`, `ReconcileError` (all re-exported from
+  `jeliya_client`). `RoomUpdate::Resyncing` carries the cause before the
+  outcome; `RoomUpdate::Converged` carries the authoritative view. Mailboxes
+  coalesce causally compatible views, share payloads across subscribers, and
+  enforce both a 256-update depth and `update_mailbox_bytes`, surfacing any
+  eviction before retained later work as an attributed `Lagged` marker. One
+  shared oversized latest-authority allowance prevents permanent Lagged-only
+  delivery and replaces repeated giants rather than stacking them. Driver/run
+  cancellation and last-owner drop close subscribers and release reads through
+  an RAII terminal guard. The reconciler adds no new runtime
+  dependency; `tests/boundaries.rs` gains a source scan asserting no
+  `std::time`, `Instant::now`, `SystemTime`, `getrandom`, `rand`, or `tokio`
+  token appears in `src/reconcile/**`. The adapter-facing test suites
+  (`tests/reconcile.rs` + `tests/reconcile_driver.rs`) and the four transport
+  adapters (#171/#172/#173) with their parity suite (#175) follow as separate
+  issues. MSRV 1.91.
+
 ### Fixed
 
 - A room list backed by a daemon that supplies **no** `last_event_ts` can raise

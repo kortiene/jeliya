@@ -60,6 +60,7 @@ mod error;
 mod event;
 mod handle;
 mod kernel;
+mod reconcile;
 mod stream;
 
 #[cfg(feature = "mock")]
@@ -69,6 +70,10 @@ pub use error::{CallError, Execution, LocalError};
 pub use event::{ClientEvent, EventSubscription, RoomPush, State};
 pub use handle::{ClientHandle, Dedup};
 pub use kernel::{KernelConfig, KernelLimits, TickDelta};
+pub use reconcile::{
+    ReconcileConfig, ReconcileError, ReconcileLimits, Reconciler, ResyncReason, ResyncRequired,
+    RoomUpdate, RoomUpdateSubscription, RoomView,
+};
 pub use stream::{StreamCall, StreamCancel};
 
 // The deterministic in-memory kernel driver and its controller are the
