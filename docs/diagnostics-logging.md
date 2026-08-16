@@ -84,10 +84,11 @@ files, never the room store.
 
 ## Setting the log level and filters
 
-The filter is chosen once, from the first source that is set:
+The filter is chosen once, from the first source that **parses successfully**:
 
-1. `JELIYAD_LOG` (Jeliya-specific; wins if present),
-2. otherwise `RUST_LOG`,
+1. `JELIYAD_LOG` (Jeliya-specific; wins when set to a valid filter — a value
+   that fails to parse falls through to the next source),
+2. otherwise `RUST_LOG` (same parse rule),
 3. otherwise the built-in default `info`.
 
 So `JELIYAD_LOG` overrides `RUST_LOG`, and `RUST_LOG` is honoured only when
@@ -261,10 +262,13 @@ owned by issue #196; this checklist defers to it and names the values you must
 never paste into an issue, a chat, or any external service:
 
 - **The daemon authentication / bearer token.** By design it lives in the 0600
-  `daemon.json` portfile, not in logs — but never paste `daemon.json` either. The
-  supervisor holds this token behind a redaction shield that prints `<redacted>`,
-  so a stray debug print cannot spill it; do not defeat that by pasting the
-  portfile.
+  `daemon.json` portfile, and `jeliyad` never writes it to its logs — but
+  `jeliyad` performs **no redaction of its own log output**: if you raise the
+  filter to `trace`, values passed through debug paths can appear verbatim.
+  The `<redacted>` shield lives in the `jeliya-supervisor` crate and applies
+  only to supervisor logs and RPC errors, not to `jeliyad`'s trace output. So
+  treat every daemon log above `info` as unredacted, never paste `daemon.json`,
+  and do not assume a stray debug print elsewhere is shielded.
 - **Single-use connect tickets** — the `?ct=` values minted by
   `POST /api/session`.
 - **Invite tickets and room join material.**
