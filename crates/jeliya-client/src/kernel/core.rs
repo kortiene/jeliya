@@ -18,9 +18,13 @@ use crate::kernel::admission::Admission;
 use crate::kernel::backoff::Backoff;
 use crate::kernel::ids::{GenerationCounter, IdAllocator};
 use crate::kernel::inflight::{CallId, Entry, Ledger, Phase};
-use crate::kernel::replay::ReplayPolicy;
+use crate::kernel::replay::{is_stream_op, ReplayPolicy};
+use crate::kernel::streaming::{StreamOutcome, StreamRole, StreamTable};
 use crate::kernel::timing::{Tick, TimerId};
-use crate::kernel::transport::{Inbound, WireFrame, WireReply};
+use crate::kernel::transport::{
+    Inbound, StreamRecordIntent, StreamRecordMeta, WireFrame, WireReply,
+};
+use crate::kernel::StreamLimits;
 use crate::KernelLimits;
 
 /// One input to the core. Every non-determinism a real transport would
@@ -76,6 +80,39 @@ pub(crate) enum Input {
     TimerFired(TimerId),
     /// A caller dropped or cancelled its future (§K9).
     Cancel(CallId),
+    /// The producer's media source produced bytes for a `ProduceData` grant:
+    /// the driver has framed and sent them, and reports how far it got (§S3).
+    Produced {
+        /// The stream call.
+        call_id: CallId,
+        /// The exclusive offset the driver has now sent through.
+        sent_through: u64,
+    },
+    /// The producer's media source reached EOF, reporting the final total (§S3).
+    SourceEnd {
+        /// The stream call.
+        call_id: CallId,
+        /// The total bytes the source yielded.
+        total: u64,
+    },
+    /// The producer's media source failed to yield bytes (§S3).
+    SourceFailed {
+        /// The stream call.
+        call_id: CallId,
+    },
+    /// The receiver's media sink accepted a delivered DATA range, reporting its
+    /// new contiguous accepted high-water (§S3).
+    SinkAccepted {
+        /// The stream call.
+        call_id: CallId,
+        /// The exclusive offset the sink has now accepted through.
+        through: u64,
+    },
+    /// The receiver's media sink failed to accept bytes (§S3).
+    SinkFailed {
+        /// The stream call.
+        call_id: CallId,
+    },
 }
 
 /// One action the driver performs after a [`Core::step`]. The core decides;
@@ -112,6 +149,30 @@ pub(crate) enum Action {
     Emit(ClientEvent),
     /// Close the event bus (every subscription ends after draining).
     CloseBus,
+    /// Send one client-authored byte-stream control record (§S3). The driver
+    /// frames it via `jeliya-codec` at the boundary; the core never touches
+    /// bytes.
+    SendRecord(StreamRecordIntent),
+    /// Grant the producer's media source to send DATA covering up to `up_to`
+    /// more bytes (§S3/§S5). Already credit- and window-bounded by the core; the
+    /// driver reads ≤ `up_to` bytes, frames ≤64 KiB DATA records, sends them, and
+    /// reports [`Input::Produced`].
+    ProduceData {
+        /// The stream call.
+        call_id: CallId,
+        /// The maximum additional bytes the driver may send now.
+        up_to: u64,
+    },
+    /// Deliver an accepted inbound DATA range to the receiver's media sink
+    /// (§S3): the driver writes and reports [`Input::SinkAccepted`].
+    WriteSink {
+        /// The stream call.
+        call_id: CallId,
+        /// The range's start offset.
+        offset: u64,
+        /// The range length in bytes.
+        len: u64,
+    },
 }
 
 /// The sans-IO kernel core.
@@ -155,13 +216,37 @@ pub(crate) struct Core {
     pending_dial: Option<u64>,
     /// Monotonic dial-token source.
     next_dial_token: u64,
+    /// The byte-stream control plane (§S1): the companion sub-core keyed by the
+    /// same [`CallId`], driving `OPEN/DATA/CREDIT/END/ABORT`, credit, and the
+    /// per-stream deadline/stall timers over the request/reply core.
+    streams: StreamTable,
+    /// The served transfer bounds the streams are driven under (§6).
+    stream_limits: StreamLimits,
 }
 
 impl Core {
-    /// Build a core with the given limits and deterministic jitter seed.
+    /// Build a core with the given limits and deterministic jitter seed, using
+    /// the default stream bounds. Kept 3-arg for the request/reply unit tests,
+    /// which never drive streams.
     pub(crate) fn new(limits: KernelLimits, jitter_seed: u64, stable_principal: bool) -> Self {
+        Self::with_stream_limits(
+            limits,
+            jitter_seed,
+            stable_principal,
+            StreamLimits::default(),
+        )
+    }
+
+    /// Build a core with explicit stream bounds (§6), the production path.
+    pub(crate) fn with_stream_limits(
+        limits: KernelLimits,
+        jitter_seed: u64,
+        stable_principal: bool,
+        stream_limits: StreamLimits,
+    ) -> Self {
         let admission = Admission::new(limits.queue_depth, limits.outbound_bytes);
         let backoff = Backoff::new(limits.backoff_base, limits.backoff_cap, jitter_seed);
+        let streams = StreamTable::new(stream_limits.max_concurrent_streams);
         Self {
             limits,
             state: State::Idle,
@@ -182,6 +267,8 @@ impl Core {
             stable_principal,
             pending_dial: None,
             next_dial_token: 0,
+            streams,
+            stream_limits,
         }
     }
 
@@ -230,6 +317,40 @@ impl Core {
             Input::Inbound(frame) => self.on_inbound(frame, now, &mut actions),
             Input::TimerFired(id) => self.on_timer_fired(id, now, &mut actions),
             Input::Cancel(call_id) => self.on_cancel(call_id, now, &mut actions),
+            Input::Produced {
+                call_id,
+                sent_through,
+            } => {
+                let outcome = self.streams.on_produced(
+                    call_id,
+                    sent_through,
+                    &self.stream_limits,
+                    &mut actions,
+                );
+                self.apply_stream_outcome(call_id, outcome, now, &mut actions);
+            }
+            Input::SourceEnd { call_id, total } => {
+                let outcome = self.streams.on_source_end(call_id, total, &mut actions);
+                self.apply_stream_outcome(call_id, outcome, now, &mut actions);
+            }
+            Input::SourceFailed { call_id } => {
+                let outcome = self.streams.on_source_failed(call_id, &mut actions);
+                self.apply_stream_outcome(call_id, outcome, now, &mut actions);
+            }
+            Input::SinkAccepted { call_id, through } => {
+                let outcome = self.streams.on_sink_accepted(
+                    call_id,
+                    through,
+                    now,
+                    &self.stream_limits,
+                    &mut actions,
+                );
+                self.apply_stream_outcome(call_id, outcome, now, &mut actions);
+            }
+            Input::SinkFailed { call_id } => {
+                let outcome = self.streams.on_sink_failed(call_id, &mut actions);
+                self.apply_stream_outcome(call_id, outcome, now, &mut actions);
+            }
         }
         actions
     }
@@ -382,6 +503,11 @@ impl Core {
         // Every tombstone was a sent entry and every sent entry was just
         // reclassified, so no tombstone survives an interrupt.
         self.tombstones.clear();
+        // A stream never survives its connection (§S10): tear down every
+        // `StreamEntry`, cancelling its timers. The sent stream ledger entries
+        // were just settled `Disconnected { Unknown }` above (streams are
+        // `ReplayPolicy::Never`, §S8, so none is held).
+        self.streams.drain_all(actions);
         // No sent calls remain; the wire-id space is retired until reconnect.
         self.in_flight_count = 0;
         self.ledger.clear_wire_index();
@@ -467,6 +593,7 @@ impl Core {
                 actions.push(Action::Settle(call_id, settled));
             }
         }
+        self.streams.drain_all(actions);
         self.reset_work();
         self.transition(State::Failed, actions);
     }
@@ -507,6 +634,9 @@ impl Core {
                 actions.push(Action::Settle(call_id, settled));
             }
         }
+        // Total stop drains every stream alongside the ledger (§S11/§K11):
+        // cancel all stream timers and empty the table and its tombstones.
+        self.streams.drain_all(actions);
         self.reset_work();
         // 4. Final Stopped transition, then close every subscription.
         self.transition(State::Stopped, actions);
@@ -565,6 +695,24 @@ impl Core {
         // tiny-input/huge-key calls slip past the byte bound (AC-1, §K12).
         let payload_bytes = call.input.as_str().len() as u64
             + call.op_id.as_ref().map_or(0, |id| id.as_str().len() as u64);
+        // A byte-stream op is additionally bounded by `max_concurrent_streams`
+        // (§S11): a stream past the cap is refused **before OPEN**, visibly, like
+        // any other bounded resource. The count spans every live stream ledger
+        // entry (queued, sent-awaiting-OPEN, active, finalizing, and tombstoned),
+        // so cancel/timeout churn cannot slip a stream past the bound.
+        let stream = is_stream_op(call.op);
+        if stream
+            && self.active_stream_count() >= self.stream_limits.max_concurrent_streams as usize
+        {
+            actions.push(Action::Settle(
+                call_id,
+                Err(CallError::QueueFull {
+                    resource: "max_concurrent_streams",
+                    limit: self.stream_limits.max_concurrent_streams as u64,
+                }),
+            ));
+            return;
+        }
         if let Err(queue_full) = self.admission.try_admit(payload_bytes) {
             // QueueFull is visible, never absorbed (§K2). DefinitelyNot.
             actions.push(Action::Settle(call_id, Err(queue_full)));
@@ -596,6 +744,7 @@ impl Core {
                 phase: Phase::Queued,
                 ever_sent: false,
                 cancelled: false,
+                stream,
             },
         );
         self.queue.push_back(call_id);
@@ -631,40 +780,52 @@ impl Core {
                 actions.push(Action::DropSender(call_id));
             }
             Phase::Sent { .. } => {
+                if entry.cancelled {
+                    return;
+                }
+                // A cancelled stream past OPEN drives a real client ABORT so the
+                // daemon's transfer reservation is released (§S9), retiring its
+                // `StreamEntry`. FINALIZING is immune (the terminal reply settles
+                // it); a pre-OPEN stream has no `StreamEntry` and falls through to
+                // the ordinary sent-tombstone path. The ABORT is meaningful only
+                // on a live connection.
+                if self.state == State::Ready && self.streams.contains(call_id) {
+                    // Emits the ABORT and retires the StreamEntry; the ledger is
+                    // tombstoned below. The caller's future is already dropped
+                    // (this is the drop-driven cancel path, §K9), so no settle.
+                    let _ = self.streams.on_cancel(call_id, actions);
+                }
                 // Tombstone: keep the correlation id reserved so a real late
                 // reply is matched and discarded, but deliver nothing and never
                 // send a cancel frame or claim remote cancellation (§K9). The
                 // throttle slot is freed so a queued call can proceed.
-                if !entry.cancelled {
-                    self.in_flight_count = self.in_flight_count.saturating_sub(1);
-                    let mut release = None;
-                    if let Some(entry) = self.ledger.get_mut(call_id) {
-                        entry.cancelled = true;
-                        // A cancelled call never replays: its byte-only
-                        // reservation is released with the tombstone AND its
-                        // payload-bearing fields are dropped — a tombstone
-                        // retaining the payload would hold up to in_flight
-                        // payloads outside the released bound under
-                        // send/drop churn.
-                        entry.input = RawJson::from_string(String::new());
-                        entry.op_id = None;
-                        if entry.holds_charge {
-                            entry.holds_charge = false;
-                            release = Some(entry.payload_bytes);
-                        }
+                self.in_flight_count = self.in_flight_count.saturating_sub(1);
+                let mut release = None;
+                if let Some(entry) = self.ledger.get_mut(call_id) {
+                    entry.cancelled = true;
+                    // A cancelled call never replays: its byte-only reservation is
+                    // released with the tombstone AND its payload-bearing fields
+                    // are dropped — a tombstone retaining the payload would hold up
+                    // to in_flight payloads outside the released bound under
+                    // send/drop churn.
+                    entry.input = RawJson::from_string(String::new());
+                    entry.op_id = None;
+                    if entry.holds_charge {
+                        entry.holds_charge = false;
+                        release = Some(entry.payload_bytes);
                     }
-                    if let Some(bytes) = release {
-                        self.admission.release_bytes_only(bytes);
-                    }
-                    self.push_tombstone(call_id, actions);
-                    // The future is gone; drop its reply sender now. The ledger
-                    // entry survives as a tombstone (reclaimed by the late reply
-                    // or its deadline), but the sender must not linger, or a
-                    // client that routinely drops call futures would grow the
-                    // driver's map unboundedly (§K12, AC-7).
-                    actions.push(Action::DropSender(call_id));
-                    self.flush(now, actions);
                 }
+                if let Some(bytes) = release {
+                    self.admission.release_bytes_only(bytes);
+                }
+                self.push_tombstone(call_id, actions);
+                // The future is gone; drop its reply sender now. The ledger entry
+                // survives as a tombstone (reclaimed by the late reply or its
+                // deadline), but the sender must not linger, or a client that
+                // routinely drops call futures would grow the driver's map
+                // unboundedly (§K12, AC-7).
+                actions.push(Action::DropSender(call_id));
+                self.flush(now, actions);
             }
         }
     }
@@ -774,10 +935,215 @@ impl Core {
                     actions.push(Action::Emit(ClientEvent::from(push)));
                 }
             }
+            Inbound::Record { generation, record } => {
+                self.on_record(generation, record, now, actions)
+            }
             // A frame that parses to no envelope correlates to nothing: drop it
             // with no settle so it strands no call (§K4).
             Inbound::Malformed => {}
         }
+    }
+
+    /// Route one bound byte-stream record to the stream sub-core (§S1/§S4),
+    /// generation-fenced exactly as a reply is (§S10). OPEN installs a
+    /// `StreamEntry` (replacing the request/reply base deadline with the stream's
+    /// two timers); every other record drives the record exchange. A record for
+    /// an unknown/settled/stale-generation call resolves to nothing and is
+    /// dropped, stranding no call.
+    fn on_record(
+        &mut self,
+        generation: u64,
+        record: StreamRecordMeta,
+        now: Tick,
+        actions: &mut Vec<Action>,
+    ) {
+        // Generation-fenced routing: reuse the reply resolver so a stale or
+        // late/duplicate record drops (§S10). A tombstoned (cancelled) stream
+        // entry still resolves, so its late record is absorbed by the retired
+        // `StreamEntry` rather than mis-routed.
+        let Some(call_id) = self.ledger.resolve_reply(record.id(), generation) else {
+            return;
+        };
+        // Only a stream ledger entry participates in the record exchange.
+        if !self.ledger.get(call_id).map(|e| e.stream).unwrap_or(false) {
+            return;
+        }
+        match record {
+            StreamRecordMeta::Open {
+                stream_id, total, ..
+            } => self.on_stream_open(call_id, stream_id, total, generation, now, actions),
+            StreamRecordMeta::Credit {
+                accepted_through,
+                send_through,
+                ..
+            } => {
+                if self.streams.contains(call_id) {
+                    let outcome = self.streams.on_credit(
+                        call_id,
+                        accepted_through,
+                        send_through,
+                        now,
+                        &self.stream_limits,
+                        actions,
+                    );
+                    self.apply_stream_outcome(call_id, outcome, now, actions);
+                }
+            }
+            StreamRecordMeta::Data { offset, len, .. } => {
+                if self.streams.contains(call_id) {
+                    let outcome = self.streams.on_data(call_id, offset, len, actions);
+                    self.apply_stream_outcome(call_id, outcome, now, actions);
+                }
+            }
+            StreamRecordMeta::End { offset, .. } => {
+                if self.streams.contains(call_id) {
+                    let outcome = self.streams.on_end(call_id, offset, actions);
+                    self.apply_stream_outcome(call_id, outcome, now, actions);
+                }
+            }
+            StreamRecordMeta::Abort { .. } => {
+                if self.streams.contains(call_id) {
+                    let outcome = self.streams.on_abort(call_id, actions);
+                    self.apply_stream_outcome(call_id, outcome, now, actions);
+                }
+            }
+            StreamRecordMeta::Ack { .. } => {
+                if self.streams.contains(call_id) {
+                    let outcome = self.streams.on_ack(call_id, actions);
+                    self.apply_stream_outcome(call_id, outcome, now, actions);
+                }
+            }
+        }
+    }
+
+    /// Install a stream at OPEN (§S4/§S6): cancel the request/reply base deadline
+    /// (the connect allowance already covered the pre-OPEN handshake) and disarm
+    /// it in the ledger, then hand the stream layer two fresh timers to arm as
+    /// the absolute deadline + stall. A duplicate/late OPEN is a bound-record
+    /// fault that aborts only that stream (§S10).
+    fn on_stream_open(
+        &mut self,
+        call_id: CallId,
+        stream_id: u128,
+        total: u64,
+        open_generation: u64,
+        now: Tick,
+        actions: &mut Vec<Action>,
+    ) {
+        let Some(role) = self
+            .ledger
+            .get(call_id)
+            .filter(|e| !e.cancelled)
+            .map(|e| stream_role(e.op))
+        else {
+            return;
+        };
+        if self.streams.contains(call_id) {
+            // A second OPEN for an already-installed stream: local abort.
+            let outcome = self.streams.abort_protocol(call_id, actions);
+            self.apply_stream_outcome(call_id, outcome, now, actions);
+            return;
+        }
+        // Replace the base request/reply deadline with the stream's budget: cancel
+        // the base timer and push the ledger deadline to the far future so the
+        // request/reply timeout logic never fires for a stream call — the two
+        // stream timers govern it now.
+        let wire_id = if let Some(entry) = self.ledger.get_mut(call_id) {
+            actions.push(Action::CancelTimer(entry.deadline_timer));
+            entry.deadline_at = Tick(u64::MAX);
+            match entry.phase {
+                Phase::Sent { wire_id, .. } => wire_id,
+                Phase::Queued => return, // OPEN before send is impossible; defend.
+            }
+        } else {
+            return;
+        };
+        let deadline_timer = self.alloc_timer();
+        let stall_timer = self.alloc_timer();
+        self.streams.open(
+            call_id,
+            role,
+            wire_id,
+            stream_id,
+            total,
+            open_generation,
+            now,
+            &self.stream_limits,
+            deadline_timer,
+            stall_timer,
+            actions,
+        );
+    }
+
+    /// Apply the stream sub-core's outcome to the request/reply ledger (§S1). A
+    /// failure settles the call's terminal and tombstones it so a late Text reply
+    /// is absorbed; progress leaves the ledger untouched (the terminal Text reply
+    /// settles it later through `on_reply`).
+    fn apply_stream_outcome(
+        &mut self,
+        call_id: CallId,
+        outcome: StreamOutcome,
+        now: Tick,
+        actions: &mut Vec<Action>,
+    ) {
+        match outcome {
+            StreamOutcome::Progress => {}
+            StreamOutcome::Failed(error) => {
+                self.settle_stream_failure(call_id, error, now, actions)
+            }
+        }
+    }
+
+    /// Settle a failed stream's ledger entry and turn it into a request/reply
+    /// tombstone (§S10), mirroring the live-timeout path: decrement the in-flight
+    /// throttle, drop the payload, arm a reclaim timer so a silent daemon cannot
+    /// strand the id, and absorb a late terminal Text reply. The stream layer has
+    /// already emitted any ABORT and retired its `StreamEntry`.
+    fn settle_stream_failure(
+        &mut self,
+        call_id: CallId,
+        error: CallError,
+        now: Tick,
+        actions: &mut Vec<Action>,
+    ) {
+        let Some(entry) = self.ledger.get(call_id) else {
+            return;
+        };
+        if entry.cancelled {
+            // Already a tombstone (e.g. a redundant failure): nothing to settle.
+            return;
+        }
+        self.in_flight_count = self.in_flight_count.saturating_sub(1);
+        let reclaim = self.alloc_timer();
+        let mut release = None;
+        if let Some(entry) = self.ledger.get_mut(call_id) {
+            entry.cancelled = true;
+            entry.deadline_timer = reclaim;
+            entry.deadline_at = Tick(u64::MAX);
+            entry.input = RawJson::from_string(String::new());
+            entry.op_id = None;
+            if entry.holds_charge {
+                entry.holds_charge = false;
+                release = Some(entry.payload_bytes);
+            }
+        }
+        if let Some(bytes) = release {
+            self.admission.release_bytes_only(bytes);
+        }
+        actions.push(Action::ArmTimer {
+            id: reclaim,
+            at: now.saturating_add(self.limits.default_call_deadline),
+        });
+        self.push_tombstone(call_id, actions);
+        actions.push(Action::Settle(call_id, Err(error)));
+        self.flush(now, actions);
+    }
+
+    /// The number of live stream ledger entries — the `max_concurrent_streams`
+    /// admission count (§S11). Bounded by the ledger's own bounds, so this scan
+    /// is over a bounded set.
+    fn active_stream_count(&self) -> usize {
+        self.ledger.iter().filter(|(_, entry)| entry.stream).count()
     }
 
     fn on_reply(
@@ -794,6 +1160,13 @@ impl Core {
             return;
         };
         let entry = self.ledger.take(call_id).expect("resolved entry exists");
+        // A stream call's terminal is this Text reply (§S4): retire its
+        // `StreamEntry` — cancel any live stream timers and drop the entry (and
+        // its tombstone slot on the reclaim path) so nothing survives the
+        // settlement.
+        if entry.stream {
+            self.streams.retire(call_id, actions);
+        }
         // A sent replayable still holds its byte-only reservation; settling
         // releases it (the count slot freed at send).
         if entry.holds_charge {
@@ -828,6 +1201,19 @@ impl Core {
         if self.backoff_timer == Some(timer) {
             self.backoff_timer = None;
             self.mint_dial(actions);
+            return;
+        }
+        // A per-stream deadline or stall timer (§S6/§S7): the stream layer owns
+        // its own bounded set of timers, distinct from the ledger's per-call
+        // deadline. An `Active` stream fails honestly (Timeout + courtesy ABORT);
+        // the stall timer may instead defer itself if progress is still fresh.
+        if let Some(call_id) = self.streams.find_by_timer(timer) {
+            if let Some(outcome) =
+                self.streams
+                    .on_timer(call_id, timer, now, &self.stream_limits, actions)
+            {
+                self.apply_stream_outcome(call_id, outcome, now, actions);
+            }
             return;
         }
         let Some(call_id) = self.ledger.find_by_deadline(timer) else {
@@ -927,6 +1313,47 @@ impl Core {
     /// The consecutive-failed-reconnect counter.
     pub(crate) fn attempt(&self) -> u32 {
         self.attempt
+    }
+
+    /// The number of installed streams (active + finalizing + tombstoned) — the
+    /// AC-7 bound the controller asserts (§S11).
+    pub(crate) fn stream_count(&self) -> usize {
+        self.streams.len()
+    }
+
+    /// The number of armed per-stream timers (≤ 2 per active stream, 0 once
+    /// terminal) — the AC-7 bound the controller asserts (§S11).
+    pub(crate) fn stream_timers(&self) -> usize {
+        self.streams.armed_timers()
+    }
+
+    /// Total bytes reserved across every active stream's window — the AC-7 memory
+    /// bound the controller asserts (§S11).
+    pub(crate) fn stream_window_bytes_reserved(&self) -> u64 {
+        self.streams.window_bytes_reserved()
+    }
+
+    /// Resolve a wire id to its (sent) call on `generation` — the reference
+    /// driver uses this to key its deterministic media source by [`CallId`] when
+    /// the test scripts an OPEN (§S3).
+    pub(crate) fn wire_to_call(
+        &self,
+        wire_id: jeliya_api::RequestId,
+        generation: u64,
+    ) -> Option<CallId> {
+        self.ledger.resolve_reply(wire_id, generation)
+    }
+}
+
+/// Which half of the duplex the client drives for a stream op (§S4), by path.
+/// Only `file.share`/`file.read` reach here (gated by `is_stream_op` at
+/// dispatch); any other op defaults to `Receiver`, which is inert because no
+/// non-stream op installs a `StreamEntry`.
+fn stream_role(op: &str) -> StreamRole {
+    if op == "file.share" {
+        StreamRole::Producer
+    } else {
+        StreamRole::Receiver
     }
 }
 
@@ -2445,7 +2872,10 @@ mod tests {
 
     /// §K5/§K13: held replayable calls re-send in their original send order
     /// after a reconnect — the ledger iterates in hash order, so the core
-    /// sorts by `CallId` (monotonic at dispatch, FIFO queue).
+    /// sorts by `CallId` (monotonic at dispatch, FIFO queue). Note `file.share`
+    /// is deliberately **absent**: it is a byte-stream op, forced to
+    /// `ReplayPolicy::Never` (§S8), so it is settled on disconnect rather than
+    /// held — `file.fetch` (a non-stream dedup-set mutation) stands in its place.
     #[test]
     fn replay_hold_preserves_original_send_order() {
         let mut core = Core::new(limits(), 1, true);
@@ -2464,7 +2894,7 @@ mod tests {
             "invite.revoke",
             "message.send",
             "status.post",
-            "file.share",
+            "file.fetch",
         ];
         for op in ops {
             let call = core.alloc_call_id();
