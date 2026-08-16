@@ -42,7 +42,23 @@ test.beforeEach(async ({ page, baseURL }) => {
     const inRegion = (n: Node | null): boolean =>
       !!n && !!(n as Element).closest && !!(n as Element).closest("#live-region");
     new MutationObserver((records) => {
-      for (const rec of records) {
+      // A `characterData` record's NEW value is NOT `target.data` at callback
+      // time: the observer batches records into one microtask, so a node edited
+      // twice in one batch reads its FINAL text for both records. With
+      // `characterDataOldValue`, each record's new value is the NEXT same-target
+      // record's `oldValue` in this batch — or `target.data` for the last one.
+      const newValueOf = (i: number): string => {
+        const rec = records[i];
+        for (let j = i + 1; j < records.length; j++) {
+          const later = records[j];
+          if (later.type === "characterData" && later.target === rec.target) {
+            return later.oldValue ?? "";
+          }
+        }
+        return (rec.target as Text).data ?? "";
+      };
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
         for (const n of Array.from(rec.addedNodes)) {
           if (n.nodeType === 1) {
             const el = n as Element;
@@ -57,7 +73,7 @@ test.beforeEach(async ({ page, baseURL }) => {
           }
         }
         if (rec.type === "characterData" && inRegion((rec.target as Node).parentNode)) {
-          log.push({ type: "text", text: (rec.target as Text).data ?? "" });
+          log.push({ type: "text", text: newValueOf(i) });
         }
       }
     // Observe the Document node, not `documentElement`: an init script runs
@@ -370,7 +386,21 @@ test("rapid batched drop→recovery announces both states without a render wait 
     const inConnRegion = (n: Node | null): boolean =>
       !!n && !!(n as Element).closest && !!(n as Element).closest("#connection-live-region");
     new MutationObserver((records) => {
-      for (const rec of records) {
+      // Same batching rule as the shared witness: a `characterData` record's new
+      // value is the NEXT same-target record's `oldValue` in this batch, or
+      // `target.data` only for the last one — never `target.data` for all.
+      const newValueOf = (i: number): string => {
+        const rec = records[i];
+        for (let j = i + 1; j < records.length; j++) {
+          const later = records[j];
+          if (later.type === "characterData" && later.target === rec.target) {
+            return later.oldValue ?? "";
+          }
+        }
+        return (rec.target as Text).data ?? "";
+      };
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
         for (const n of Array.from(rec.addedNodes)) {
           if (n.nodeType === 1 /* ELEMENT_NODE */) {
             const el = n as Element;
@@ -390,7 +420,7 @@ test("rapid batched drop→recovery announces both states without a render wait 
           }
         }
         if (rec.type === "characterData" && inConnRegion((rec.target as Node).parentNode)) {
-          log.push({ type: "text", text: (rec.target as Text).data ?? "" });
+          log.push({ type: "text", text: newValueOf(i) });
         }
       }
     }).observe(document, {
