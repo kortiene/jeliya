@@ -714,3 +714,209 @@ test('developer documentation matches the MSRV and complete CI job matrix', () =
   for (const job of jobs) assert.match(contributing, new RegExp('`' + job + '`'));
   assert.match(contributing, /manually without publishing a release/);
 });
+
+// ── Issue #42: diagnostics-logging.md contract tests ──────────────────────────
+
+test('diagnostics-logging.md passes the OKF docs gate with no findings', () => {
+  const repoRoot = new URL('..', import.meta.url).pathname;
+  const allFindings = validateDocumentation({ repoRoot });
+  const docFindings = allFindings.filter(
+    (entry) => entry.file === 'docs/diagnostics-logging.md',
+  );
+  assert.deepEqual(
+    docFindings.map((entry) => `[${entry.code}] ${entry.message}`),
+    [],
+  );
+});
+
+test('diagnostics-logging.md states JELIYAD_LOG precedence, RUST_LOG fallback, and info default', () => {
+  const source = readFileSync(
+    new URL('../docs/diagnostics-logging.md', import.meta.url),
+    'utf8',
+  );
+  const jeliyaLogPos = source.indexOf('JELIYAD_LOG');
+  const rustLogPos = source.indexOf('RUST_LOG');
+  assert.ok(jeliyaLogPos !== -1, 'JELIYAD_LOG must be documented');
+  assert.ok(rustLogPos !== -1, 'RUST_LOG must be documented');
+  assert.ok(
+    jeliyaLogPos < rustLogPos,
+    'JELIYAD_LOG must appear before RUST_LOG in the document (precedence order)',
+  );
+  assert.match(source, /built-in default `info`/, 'info default must be documented');
+  assert.match(source, /`trace` is a footgun/, 'trace footgun warning must be present');
+});
+
+test('diagnostics-logging.md states YYYY-MM-DD rotation, UTC boundary, no plain jeliyad.log, and no pruning', () => {
+  const source = readFileSync(
+    new URL('../docs/diagnostics-logging.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /YYYY-MM-DD/, 'rotation date format must be documented');
+  assert.match(source, /The date boundary is \*\*UTC\*\*/, 'UTC boundary must be explicitly stated');
+  assert.match(
+    source,
+    /no plain `jeliyad\.log` file/,
+    'absence of a plain jeliyad.log file must be explicitly stated',
+  );
+  assert.match(source, /Nothing is pruned/, 'no-pruning fact must be stated');
+});
+
+test('diagnostics-logging.md states that supervised launches drain and discard stderr', () => {
+  const source = readFileSync(
+    new URL('../docs/diagnostics-logging.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /drains and discards the\s+daemon's stderr/s,
+    'supervised stderr drain-and-discard must be documented',
+  );
+  assert.match(
+    source,
+    /\*\*only\*\* place the daemon's logs appear/,
+    'dated file as the only log location in supervised mode must be prominently stated',
+  );
+});
+
+test('diagnostics-logging.md states the filter is read once at startup with no runtime reload', () => {
+  const source = readFileSync(
+    new URL('../docs/diagnostics-logging.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /filter is read \*\*exactly once at daemon startup\*\*/,
+    'once-at-startup semantics must be documented',
+  );
+  assert.match(
+    source,
+    /no runtime\s+reload/s,
+    'absence of runtime reload must be explicitly stated',
+  );
+  assert.match(
+    source,
+    /restart.*the\s+daemon|daemon.*restart/s,
+    'restart requirement must be documented',
+  );
+});
+
+test('diagnostics-logging.md distinguishes diagnostic logs from signed room event logs', () => {
+  const source = readFileSync(
+    new URL('../docs/diagnostics-logging.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /Signed room event logs/,
+    'signed room event logs must be explicitly named',
+  );
+  assert.match(
+    source,
+    /never.*something to attach to an issue/s,
+    'prohibition on attaching event logs to issues must be stated',
+  );
+  assert.match(
+    source,
+    /Diagnostic.*process.*log|Diagnostic \(process\) log/s,
+    'diagnostic/process logs must be named distinctly from room event logs',
+  );
+});
+
+test('diagnostics-logging.md redaction checklist names all required prohibited values', () => {
+  const source = readFileSync(
+    new URL('../docs/diagnostics-logging.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /bearer token/, 'bearer token must be in the redaction checklist');
+  assert.match(
+    source,
+    /Single-use connect tickets.*\?ct=/s,
+    'connect tickets must be identified by the ?ct= parameter',
+  );
+  assert.match(
+    source,
+    /[Ii]nvite tickets/,
+    'invite tickets must be in the redaction checklist',
+  );
+  assert.match(
+    source,
+    /[Mm]essage bodies/,
+    'message bodies must be in the redaction checklist',
+  );
+  assert.match(
+    source,
+    /Full private filesystem paths/,
+    'private filesystem paths must be named in the redaction checklist',
+  );
+});
+
+// ── Issue #42: source-alignment e2e tests ────────────────────────────────────
+// These tests cross the docs↔code boundary: they verify the implementation
+// sources still match the specific claims the guide makes, catching silent
+// drift before it misleads operators.
+
+test('lifecycle.rs uses JELIYAD_LOG env var and jeliyad.log rolling-appender base name', () => {
+  const lifecycle = readFileSync(
+    new URL('../crates/jeliyad/src/lifecycle.rs', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    lifecycle,
+    /try_from_env\("JELIYAD_LOG"\)/,
+    'lifecycle.rs must read the JELIYAD_LOG env var as documented',
+  );
+  assert.match(
+    lifecycle,
+    /rolling::daily\([^,]+,\s*"jeliyad\.log"\)/,
+    'lifecycle.rs must pass "jeliyad.log" as the rolling-appender base name',
+  );
+  assert.match(
+    lifecycle,
+    /data_dir\.join\("logs"\)/,
+    'lifecycle.rs must place log files in a "logs" subdirectory of the data dir',
+  );
+});
+
+test('main.rs default_data_dir uses dirs::data_dir with "Jeliya" and .jeliya-data fallback', () => {
+  const main = readFileSync(
+    new URL('../crates/jeliyad/src/main.rs', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    main,
+    /dirs::data_dir\(\)/,
+    'main.rs must use dirs::data_dir() for the platform data directory',
+  );
+  assert.match(
+    main,
+    /\.join\("Jeliya"\)/,
+    'main.rs must append "Jeliya" to the platform data directory',
+  );
+  assert.match(
+    main,
+    /\.jeliya-data/,
+    'main.rs must fall back to .jeliya-data when no platform dir is found',
+  );
+});
+
+test('supervisor.rs drains and discards daemon stderr in a background task', () => {
+  const supervisor = readFileSync(
+    new URL('../crates/jeliya-supervisor/src/supervisor.rs', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    supervisor,
+    /stderr\(Stdio::piped\(\)\)/,
+    'supervisor.rs must pipe the daemon stderr (so it can be drained)',
+  );
+  assert.match(
+    supervisor,
+    /[Dd]rain.*stderr|stderr.*[Dd]rain/s,
+    'supervisor.rs must drain the daemon stderr',
+  );
+  assert.match(
+    supervisor,
+    /[Bb]ytes are discarded|discard/,
+    'supervisor.rs must discard the drained stderr bytes',
+  );
+});
