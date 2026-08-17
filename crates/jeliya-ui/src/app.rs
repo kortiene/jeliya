@@ -20,7 +20,7 @@
 
 use dioxus::prelude::*;
 use futures::StreamExt;
-use jeliya_api::{RoomId, RoomList, RoomRow};
+use jeliya_api::{RoomId, RoomList, RoomRow, Standing};
 use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
 use jeliya_platform::navigation::{RoomDest, Route};
 use jeliya_platform::PreferenceKey;
@@ -274,6 +274,10 @@ pub fn AppRoot(
     // into the event-consumption future below). Onboarding's identity/rooms steps
     // dispatch `subject.ensure`/`room.create` through this same handle.
     let onboarding_handle = handle.clone();
+    // A clone of the client seam for the room-shell's Files/Pipes panes (#181):
+    // the event-consumption future below moves the `handle` prop, so the panes
+    // read through this clone.
+    let room_handle = handle.clone();
     // The user's local onboarding advance (§5.D "user advanced past onboarding"),
     // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
     // the onboarding step callbacks advance it as the user completes each step.
@@ -721,10 +725,26 @@ pub fn AppRoot(
                         Route::Room { room_id, dest } => {
                             let reachable = !snapshot.rooms_loaded
                                 || snapshot.rooms.iter().any(|r| r.room_id == room_id);
+                            // A departed/left/removed room opens as a read-only
+                            // archive: the Files/Pipes panes suppress share/fetch/
+                            // pipe mutations as a capability (spec D8 / #91).
+                            let read_only = snapshot
+                                .rooms
+                                .iter()
+                                .find(|r| r.room_id == room_id)
+                                .map(|r| r.standing != Standing::Active)
+                                .unwrap_or(false);
                             rsx! {
                                 main { class: "sidebar", id: "main-content", tabindex: "-1",
                                     if reachable {
-                                        RoomShell { room_id, dest, navigate }
+                                        RoomShell {
+                                            room_id,
+                                            dest,
+                                            navigate,
+                                            handle: room_handle.clone(),
+                                            services: services.clone(),
+                                            read_only,
+                                        }
                                     } else {
                                         RoomUnavailable { navigate }
                                     }

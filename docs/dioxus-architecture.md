@@ -18,8 +18,9 @@ audience: ["contributors", "maintainers", "release-engineers"]
 transport-independent kernel (#168), the M2 authoritative room/session
 reconciler (#169), the M2 platform-authority boundary (#174), the M3 web
 foundation (#176), the M3 CSS/l10n/a11y foundation (#177), the M3
-bootstrap/shell/routing/preferences (#178), and the M4 daemon supervisor
-(#170) are implemented.** Jeliya
+bootstrap/shell/routing/preferences (#178), the M3 browser Files/Pipes room
+destinations and `jeliya-platform-web` bindings (#181), and the M4 daemon
+supervisor (#170) are implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
 stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
 protocol and storage generation, and retires React, Flutter, the Dart
@@ -30,8 +31,10 @@ the milestones the status line marks implemented — or must still grow into.
 The released `v0.6.x` line and the current source candidate still ship React
 in `ui/`, Flutter in `app/`, and Dart transports in `dart/jeliya_protocol/`;
 the workspace members are now `jeliya-core`, `jeliyad`, `jeliya-api`,
-`jeliya-codec`, `jeliya-client`, and `jeliya-ui` (the shared Dioxus crate,
-#176), with `jeliya-ffi` quarantined from the active build under #166 until
+`jeliya-codec`, `jeliya-client`, `jeliya-ui` (the shared Dioxus crate, #176),
+and `jeliya-platform-web` (the wasm32-only browser file/share/clipboard/URL
+bindings, #181), with `jeliya-ffi` quarantined from the active build under
+#166 until
 #202 deletes it. [Protocol v2](protocol-v2.md) is specified and the in-tree
 daemon's wire protocol is v2-only (a v1-era browser `GET /api/session` token
 handshake survives for the served UI pending the #166 remainder); [the v1
@@ -474,6 +477,7 @@ The slices that carry this record:
 | #170 | The reusable owned/adopted `jeliyad` supervisor (`crates/jeliya-supervisor`): headless and native-only; resolves binary and data dir fail-closed; spawns-or-adopts with `Owned`/`Adopted` split; validates ready/portfile/`/api/health` agreement (PID-on-port + `protocol` + `storage_generation`); hands transports a freshly re-validated `DialTarget` (loopback WS URL with generation-gate query + redacted bearer token) on every reconnect; stops only owned daemons with bounded process-tree-safe escalation; never signals an unproven PID; never reachable from a `wasm32` build. Prerequisite of `WsNative` (#172) and M4 desktop packaging. | Landed |
 | #177 | The CSS/l10n/a11y foundation (`crates/jeliya-ui/src/l10n/`): typed-Rust catalog with compiler-enforced EN/FR key and placeholder parity (`En`/`Fr` implement a single `Catalog` trait; `rustc` enforces agreement); the wire/error display seam; the identity-palette token source; formatting locale independence from day one. Node-side gates (empty value, `fr==en`, French typography, literal scan) apply unchanged. | Landed |
 | #178 | The M3 browser shell, routing, and preferences (`crates/jeliya-ui/src/shell/`, `prefs/`, `platform_web.rs`, six new components). Host-testable pure modules: `Shell`/`shell_for` with fractional breakpoints, the router (`use_route` + canonicalization + fail-safe + last-room restore), the bootstrap/onboarding state machine, the preference schema (`jeliya.dx.v1` namespace, versioned envelope, corrupt/unsupported-version recovery, `reset_all`). Browser bindings: `WebNavigation` (History API pushState/replaceState/popstate), `WebLifecycle` (browser events → `LifecycleBus`), `WebPreferences` (session-scoped in-memory schema + boot-time legacy purge), `WebSecretStore` (tab-scoped in-memory), assembled as `WebPlatform`. New components: `GlobalNav`, `RoomShell`, `Fleet`, `Settings`, `Onboarding`, `Recovery`. Additive `Navigation::navigate_replace` (defaulted; `jeliya-platform` fake records it). The `ClientHandle` stays the deterministic mock until `WsWeb` (#171) slots in. | Landed |
+| #181 | The M3 browser Files and Pipes room destinations (`crates/jeliya-ui/src/files/`, `pipes/`, and the `FilesPane`/`PipesPane` components), replacing the #178 skeletons. Host-testable, target-agnostic orchestration: the file-list model with evidence-backed provider availability (read only from `file.list`/`room.peers` — membership presence, provider availability, and Pipe reachability stay three distinct facts, #50/#79/#94), the served size limit and preflight (#92 — no baked number; the over-limit surface interpolates the served `max_shared_file_bytes`), the safe-preview classifier (`declared_content_type` never authorizes an inline render), the typed redacting error mapping (by `ErrorCode` discriminant, never a substring), cancellation that reaches both the local copy and the wire, and the upload/fetch/publish/connect flows. New wasm-only target crate `crates/jeliya-platform-web` holds the browser `WebFiles`/`WebShare`/`WebClipboard`/`WebUrlLauncher` bindings and the `jeliya-platform-implementation` door edge — kept out of the shared `jeliya-ui` graph and admitted to `jeliya-platform`'s boundary allowlist — backed by a host-tested fail-closed minted-token registry. The `ClientHandle` stays the deterministic mock until `WsWeb` (#171); the live real-daemon and downstream security qualification (#182/#196) remain pending. | Landed |
 | #183 | The one content-addressed embedded artifact. | Planned |
 | #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |
 

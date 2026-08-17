@@ -1,0 +1,44 @@
+[package]
+name = "jeliya-platform-web"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The browser (wasm32) target implementation of jeliya-platform's file/share capabilities (#181). This is the door-edge home the architecture record wants (Decision-3/-4/-7, #174 §K4): it — not the shared jeliya-ui component graph — depends on jeliya-platform-implementation to mint PickedSource/ShareableBlob/ExportTarget/FetchedArtifact handles, keeping the factory edge out of the default UI graph. web-sys bindings compile only for wasm32; the fail-closed minted-token registry that backs anti-forgery is portable and host-tested."
+
+# The door edge lives HERE, never in the shared jeliya-ui default graph (#174
+# §K4 / #181 D0). The dependency is target-gated to wasm32: on the host the
+# crate is only its portable, host-testable registry, so `cargo check
+# --workspace` never unifies `implementation` into the host build.
+[dependencies]
+jeliya-api = { path = "../jeliya-api" }
+jeliya-platform = { path = "../jeliya-platform" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The single blessed factory door (#174). Naming it is what forces the K4
+# door-edge — asserted to live only in this target crate, never in the shared
+# jeliya-ui graph, by jeliya-platform's `tests/boundaries.rs` allowlist.
+jeliya-platform-implementation = { path = "../jeliya-platform-implementation" }
+wasm-bindgen = "0.2.126"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3.103"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+web-sys = { version = "0.3.103", features = [
+    "Window",
+    "Navigator",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlAnchorElement",
+    "Event",
+    "EventTarget",
+    "File",
+    "FileList",
+    "Blob",
+    "Clipboard",
+    "Url",
+] }
+
+[lints]
+workspace = true

@@ -13,7 +13,9 @@
 
 use jeliya_client::CallError;
 
-use super::Catalog;
+use crate::files::FlowFailure;
+
+use super::{Catalog, Formats};
 
 /// Plain-language title/message pair shared by every error surface. No raw
 /// daemon text: those fields are catalog copy only.
@@ -43,6 +45,47 @@ impl ErrorDisplay {
             } else {
                 strings.err_room_list_message().to_string()
             },
+        }
+    }
+
+    /// The friendly copy for a Files/Pipes flow failure (spec §6). The
+    /// discriminant selects redacting catalog copy; the over-limit case
+    /// **interpolates the served ceiling** through [`Formats::bytes`] (spec D3)
+    /// — no baked number appears. `Cancelled` is not a [`FlowFailure`], so this
+    /// never renders a cancellation as an error the user caused.
+    pub fn flow_failure(
+        strings: &dyn Catalog,
+        formats: Formats,
+        failure: &FlowFailure,
+    ) -> FriendlyError {
+        let message = match failure {
+            FlowFailure::TooLarge { limit, .. } => strings.err_over_limit(&formats.bytes(*limit)),
+            FlowFailure::SizeMismatch { .. } => strings.err_size_mismatch().to_string(),
+            FlowFailure::Empty => strings.err_file_empty().to_string(),
+            FlowFailure::NoReachableProvider => strings.err_no_provider().to_string(),
+            FlowFailure::DigestMismatch => strings.err_digest_mismatch().to_string(),
+            FlowFailure::FileUnknown => strings.err_file_unknown().to_string(),
+            FlowFailure::NotFetched => strings.err_not_fetched().to_string(),
+            FlowFailure::Stalled | FlowFailure::DeadlineExceeded | FlowFailure::Aborted => {
+                strings.err_transfer_interrupted().to_string()
+            }
+            FlowFailure::PipeTargetRefused => strings.err_pipe_target_refused().to_string(),
+            FlowFailure::PolicyRefused => strings.err_pipe_policy_refused().to_string(),
+            FlowFailure::PipeUnreachable => strings.err_pipe_unreachable().to_string(),
+            FlowFailure::PipeUnknown => strings.err_pipe_unknown().to_string(),
+            FlowFailure::PipeRevoked => strings.err_pipe_revoked().to_string(),
+            FlowFailure::PipeNotPublisher => strings.err_pipe_not_publisher().to_string(),
+            FlowFailure::ConnectionUnknown => strings.err_connection_unknown().to_string(),
+            FlowFailure::RoomNotLive => strings.err_room_not_live().to_string(),
+            FlowFailure::IndexUnreadable => strings.err_index_unreadable().to_string(),
+            FlowFailure::Unavailable => strings.err_capability_unavailable().to_string(),
+            FlowFailure::Denied => strings.err_capability_denied().to_string(),
+            FlowFailure::Unreadable => strings.err_source_unreadable().to_string(),
+            FlowFailure::Wire | FlowFailure::Transport => strings.err_unknown_message().to_string(),
+        };
+        FriendlyError {
+            title: strings.err_unknown_title().to_string(),
+            message,
         }
     }
 

@@ -418,6 +418,132 @@ pub trait Catalog {
     fn err_onboarding_room_create(&self) -> &'static str;
     /// The user-facing body when room creation fails (retryable).
     fn err_onboarding_room_create_body(&self) -> &'static str;
+
+    // ---- #181 Files destination ------------------------------------------
+
+    /// The Files destination heading.
+    fn files_heading(&self) -> &'static str;
+    /// The Files empty state — shown only after `file.list` has answered.
+    fn files_empty(&self) -> &'static str;
+    /// The Files loading state — shown before the first answer (unknown ≠ zero).
+    fn files_loading(&self) -> &'static str;
+    /// The "share a file" action.
+    fn files_share_action(&self) -> &'static str;
+    /// The "fetch" action (bring a file's bytes local).
+    fn files_fetch_action(&self) -> &'static str;
+    /// The "export / download" action.
+    fn files_export_action(&self) -> &'static str;
+    /// The opt-in, sandboxed preview action (inert types only).
+    fn files_preview_action(&self) -> &'static str;
+    /// The "cancel" action for an in-flight transfer.
+    fn files_cancel_action(&self) -> &'static str;
+    /// The "retry" action after a failed list/transfer.
+    fn files_retry_action(&self) -> &'static str;
+    /// The label for the peer-declared content type, marked untrusted (spec D6).
+    fn files_declared_type_label(&self) -> &'static str;
+    /// The provider-evidence section label.
+    fn files_provider_label(&self) -> &'static str;
+    /// The digest (short form) label.
+    fn files_digest_label(&self) -> &'static str;
+    /// Availability: a fetch can be served now.
+    fn files_avail_fetchable(&self) -> &'static str;
+    /// Availability: this device holds the bytes.
+    fn files_avail_on_device(&self) -> &'static str;
+    /// Availability: not currently fetchable (with provider evidence beside it).
+    fn files_avail_not_fetchable(&self) -> &'static str;
+    /// Placeholder shown for a file whose declared name failed validation
+    /// (a hostile path/control name — spec D4); the real string is never shown.
+    fn files_name_hidden(&self) -> &'static str;
+    /// The read-only-archive note (share/fetch suppressed as a capability).
+    fn files_read_only(&self) -> &'static str;
+    /// In-flight upload progress label.
+    fn files_uploading(&self) -> &'static str;
+    /// In-flight fetch progress label.
+    fn files_fetching(&self) -> &'static str;
+
+    // ---- #181 Pipes destination ------------------------------------------
+
+    /// The Pipes destination heading.
+    fn pipes_heading(&self) -> &'static str;
+    /// The Pipes empty state — shown only after `pipe.list` has answered.
+    fn pipes_empty(&self) -> &'static str;
+    /// The Pipes loading state — shown before the first answer.
+    fn pipes_loading(&self) -> &'static str;
+    /// Pipe state: a local connection is held.
+    fn pipes_state_connected(&self) -> &'static str;
+    /// Pipe state: published, nothing connected locally.
+    fn pipes_state_open(&self) -> &'static str;
+    /// Publisher reachability: a direct link.
+    fn pipes_reach_direct(&self) -> &'static str;
+    /// Publisher reachability: a relayed link.
+    fn pipes_reach_relay(&self) -> &'static str;
+    /// Publisher reachability: no link (with the reason).
+    fn pipes_reach_unavailable(&self) -> &'static str;
+    /// The "expose a pipe" action.
+    fn pipes_expose_action(&self) -> &'static str;
+    /// The "connect" action.
+    fn pipes_connect_action(&self) -> &'static str;
+    /// The "release" action (releases the local connection).
+    fn pipes_release_action(&self) -> &'static str;
+    /// The "revoke" action (owner-only; withdraws a published pipe).
+    fn pipes_revoke_action(&self) -> &'static str;
+    /// The loopback-host field label.
+    fn pipes_target_label(&self) -> &'static str;
+    /// The loopback-port field label.
+    fn pipes_port_label(&self) -> &'static str;
+    /// The audience field label.
+    fn pipes_audience_label(&self) -> &'static str;
+    /// Audience: any room member.
+    fn pipes_audience_room(&self) -> &'static str;
+    /// Audience: named subjects only.
+    fn pipes_audience_subjects(&self) -> &'static str;
+    /// The "published by" label.
+    fn pipes_published_by_label(&self) -> &'static str;
+
+    // ---- #181 Files/Pipes flow-failure bodies (spec §6) ------------------
+
+    /// Over the served size limit — interpolates the *served* ceiling (spec D3);
+    /// no baked number appears here. States that chunking is not offered.
+    fn err_over_limit(&self, limit_display: &str) -> String;
+    /// A share's bytes disagreed with its declared size (a size disagreement,
+    /// never "corruption" — spec D3).
+    fn err_size_mismatch(&self) -> &'static str;
+    /// The picked file was empty.
+    fn err_file_empty(&self) -> &'static str;
+    /// No reachable provider could serve the file (spec D2).
+    fn err_no_provider(&self) -> &'static str;
+    /// Content did not verify — a genuine integrity failure (spec D3).
+    fn err_digest_mismatch(&self) -> &'static str;
+    /// No such file in this room.
+    fn err_file_unknown(&self) -> &'static str;
+    /// The file is not held locally — fetch first.
+    fn err_not_fetched(&self) -> &'static str;
+    /// A transfer stalled, exceeded its deadline, or was aborted mid-stream.
+    fn err_transfer_interrupted(&self) -> &'static str;
+    /// The publish target is not allowed (loopback only).
+    fn err_pipe_target_refused(&self) -> &'static str;
+    /// Publishing is not permitted in this room (distinct from a bad target).
+    fn err_pipe_policy_refused(&self) -> &'static str;
+    /// The publisher is offline — the distinctive `pipe_unreachable` (#94).
+    fn err_pipe_unreachable(&self) -> &'static str;
+    /// No such pipe (or outside its audience — deliberately one answer).
+    fn err_pipe_unknown(&self) -> &'static str;
+    /// The pipe was withdrawn.
+    fn err_pipe_revoked(&self) -> &'static str;
+    /// Not the pipe's publisher.
+    fn err_pipe_not_publisher(&self) -> &'static str;
+    /// No such local connection.
+    fn err_connection_unknown(&self) -> &'static str;
+    /// The room is not live — activate first.
+    fn err_room_not_live(&self) -> &'static str;
+    /// The file/pipe index could not be read.
+    fn err_index_unreadable(&self) -> &'static str;
+    /// The capability is not available in this browser.
+    fn err_capability_unavailable(&self) -> &'static str;
+    /// Permission was refused by the user or platform.
+    fn err_capability_denied(&self) -> &'static str;
+    /// A local file could not be read or written.
+    fn err_source_unreadable(&self) -> &'static str;
 }
 
 /// Provide the resolved-locale context to a subtree and return its signal.

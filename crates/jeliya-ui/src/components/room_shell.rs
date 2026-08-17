@@ -9,11 +9,13 @@
 
 use dioxus::prelude::*;
 use jeliya_api::RoomId;
+use jeliya_client::ClientHandle;
 use jeliya_platform::navigation::{RoomDest, Route};
 
-use crate::components::NavLandmark;
+use crate::components::{FilesPane, NavLandmark, PipesPane};
 use crate::l10n::use_strings;
 use crate::shell::router::NavIntent;
+use crate::PlatformServices;
 
 /// A short, human-scannable disambiguator for a room id (the header's
 /// short-id): the last segment after any `:` prefix, truncated. Never the room
@@ -37,10 +39,26 @@ fn dest_kind_matches(dest: &RoomDest, kind: &RoomDest) -> bool {
     )
 }
 
-/// The room shell for a reachable room: header + destination strip + a
-/// per-destination skeleton pane.
+/// The room shell for a reachable room: header + destination strip + the
+/// per-destination pane. Files/Pipes are the #181 content panes; Activity/
+/// People/Agents remain skeletons (#179/#180).
 #[component]
-pub fn RoomShell(room_id: RoomId, dest: RoomDest, navigate: Callback<NavIntent>) -> Element {
+pub fn RoomShell(
+    room_id: RoomId,
+    dest: RoomDest,
+    navigate: Callback<NavIntent>,
+    /// The client seam for the Files/Pipes panes' reads and flows.
+    handle: ClientHandle,
+    /// The platform-authority seam for the Files pane's pick/stage/export.
+    services: PlatformServices,
+    /// The served `max_shared_file_bytes` (spec D3/R1), threaded to the Files
+    /// pane's preflight. `None` until the seam surfaces it (#171/#270).
+    #[props(default)]
+    max_shared_file_bytes: Option<u64>,
+    /// Whether this room is a read-only archive (suppress share/fetch — spec D8).
+    #[props(default)]
+    read_only: bool,
+) -> Element {
     let strings = use_strings();
     let nav_label = strings.room_nav_label().to_string();
     let skeleton = strings.room_dest_skeleton();
@@ -99,8 +117,38 @@ pub fn RoomShell(room_id: RoomId, dest: RoomDest, navigate: Callback<NavIntent>)
                     }
                 }
             }
-            // A per-destination skeleton placeholder; the real pane is #179–#181.
-            div { class: "room-pane-skeleton muted", id: "room-pane-skeleton", "{skeleton}" }
+            // The per-destination pane. Files/Pipes are the #181 content panes;
+            // Activity/People/Agents keep the #178 skeleton until #179/#180.
+            {
+                match &dest {
+                    RoomDest::Files { item } => {
+                        let selected = item.clone();
+                        rsx! {
+                            FilesPane {
+                                handle: handle.clone(),
+                                services: services.clone(),
+                                room_id: room_id.clone(),
+                                selected,
+                                max_shared_file_bytes,
+                                read_only,
+                            }
+                        }
+                    }
+                    RoomDest::Pipes { item } => {
+                        let selected = item.clone();
+                        rsx! {
+                            PipesPane {
+                                handle: handle.clone(),
+                                room_id: room_id.clone(),
+                                selected,
+                            }
+                        }
+                    }
+                    _ => rsx! {
+                        div { class: "room-pane-skeleton muted", id: "room-pane-skeleton", "{skeleton}" }
+                    },
+                }
+            }
         }
     }
 }

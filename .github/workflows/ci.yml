@@ -386,6 +386,18 @@ jobs:
           cargo build --locked -p jeliya-platform --example shared_component --features example \
             --target wasm32-unknown-unknown
 
+      # The browser (wasm32) door-edge bindings (#181): jeliya-platform-web's
+      # files/share/launcher modules are `#[cfg(target_arch = "wasm32")]`, so the
+      # host `--workspace` runs above compile only its portable registry module —
+      # the security-sensitive web-sys bindings that mint capability tokens
+      # through the factory door are never seen. Nothing in the wasm graph depends
+      # on this crate (jeliya-ui has no edge to it by design, §K4), so the
+      # jeliya-ui-web job never reaches it either. Compile and lint the crate for
+      # wasm32 explicitly so a compile error, a Files-trait signature drift, or a
+      # web-sys misuse in those modules goes red.
+      - name: jeliya-platform-web browser bindings (wasm32)
+        run: cargo clippy --locked -p jeliya-platform-web --target wasm32-unknown-unknown --all-targets -- -D warnings
+
       - name: Build required live-test binaries
         run: |
           set -euo pipefail

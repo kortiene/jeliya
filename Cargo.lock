@@ -2943,6 +2943,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "jeliya-platform-web"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "jeliya-api",
+ "jeliya-platform",
+ "jeliya-platform-implementation",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "jeliya-supervisor"
 version = "0.0.0"
 dependencies = [
@@ -2963,10 +2977,12 @@ version = "0.0.0"
 dependencies = [
  "dioxus",
  "futures",
+ "futures-executor",
  "jeliya-api",
  "jeliya-client",
  "jeliya-platform",
  "js-sys",
+ "time",
  "wasm-bindgen",
  "web-sys",
 ]
