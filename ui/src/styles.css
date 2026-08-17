@@ -1156,6 +1156,77 @@ button.sender-name:not(:disabled):hover {
   flex: 1;
 }
 
+/* ---------- global-nav-item (WCAG colour-contrast + target-size) ----------
+   The global-nav buttons are plain <button> elements with the
+   `.global-nav-item` class but no explicit colour or sizing — they inherited
+   a dimmed context and measured ~60×27 px in compact viewports.  This block
+   codifies the DESIGN.md ink tokens and enforces the 44 px hit-area floor
+   required on compact viewports (WCAG 2.5.5 / target-size). */
+
+.global-nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13.5px;
+  padding: 10px 12px;
+  min-height: 44px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.global-nav-item:hover:not(:disabled) {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.global-nav-item.selected {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.global-nav-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------- the NavLandmark wrapper (global-nav) ----------
+   Rail placement (wide/medium): vertical stack inside the sidebar.
+   Bottom-bar placement (compact): horizontal strip across the viewport bottom. */
+
+.global-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.global-nav-rail {
+  padding: 8px 10px 0;
+}
+
+.global-nav-bottom {
+  display: none;  /* visible only under the compact @media below */
+}
+
+@media (max-width: 768px) {
+  .global-nav-rail {
+    display: none;
+  }
+
+  .global-nav-bottom {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0;
+    background: var(--bg-raise);
+    border-top: 1px solid var(--border);
+    padding: 0;
+  }
+}
+
 .nav-soon {
   font-size: 9.5px;
   letter-spacing: 0.08em;
