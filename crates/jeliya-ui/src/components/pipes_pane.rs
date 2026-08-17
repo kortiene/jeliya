@@ -15,7 +15,7 @@ use jeliya_api::{
     Target,
 };
 use jeliya_client::{ClientHandle, Dedup};
-use jeliya_platform::CancelToken;
+use jeliya_platform::{CancelToken, PreferenceKey};
 
 use crate::components::Field;
 use crate::files::{errors::FlowStop, FlowFailure, Settled};
@@ -31,11 +31,80 @@ fn first_page() -> Page {
     }
 }
 
+/// Percent-encode just the field/record delimiters — daemon pipe/connection
+/// ids are opaque, so the session record escapes the two bytes its own
+/// framing depends on (and '%' itself) and nothing more.
+fn encode_field(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace('\t', "%09")
+        .replace('\n', "%0A")
+}
+
+/// The exact inverse of [`encode_field`] (longest substitutions first).
+fn decode_field(s: &str) -> String {
+    s.replace("%0A", "\n")
+        .replace("%09", "\t")
+        .replace("%25", "%")
+}
+
+/// Hydrate the session-scoped local-connection record for one room (empty
+/// without the seam — a mount that cannot persist simply starts fresh, the
+/// pre-fix behavior).
+fn load_connections(
+    services: &Option<PlatformServices>,
+    room_id: &RoomId,
+) -> Vec<(String, String)> {
+    let Some(services) = services else {
+        return Vec::new();
+    };
+    services
+        .preferences()
+        .get(&PreferenceKey::PipeConnections {
+            room_id: room_id.clone(),
+        })
+        .map(|raw| {
+            raw.lines()
+                .filter_map(|line| {
+                    let (pipe, conn) = line.split_once('\t')?;
+                    Some((decode_field(pipe), decode_field(conn)))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the local-connection record (empty clears the key, like a draft).
+fn persist_connections(
+    services: &Option<PlatformServices>,
+    room_id: &RoomId,
+    connections: &[(String, String)],
+) {
+    let Some(services) = services else {
+        return;
+    };
+    let key = PreferenceKey::PipeConnections {
+        room_id: room_id.clone(),
+    };
+    if connections.is_empty() {
+        services.preferences().remove(&key);
+    } else {
+        let raw = connections
+            .iter()
+            .map(|(pipe, conn)| format!("{}\t{}", encode_field(pipe), encode_field(conn)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        services.preferences().set(key, &raw);
+    }
+}
+
 /// The Pipes pane.
 #[component]
 pub fn PipesPane(
     handle: ClientHandle,
-    #[props(default)] _services: Option<PlatformServices>,
+    /// The platform-authority seam, used to persist local pipe connections
+    /// (session-scoped) so a Connected row stays releasable across remounts.
+    #[props(default)]
+    services: Option<PlatformServices>,
     room_id: RoomId,
     /// The deep-linked selected pipe, if any (`RoomDest::Pipes { item }`).
     #[props(default)]
@@ -44,14 +113,22 @@ pub fn PipesPane(
     /// (the seam gap) never guesses — Revoke is simply not shown (spec D2).
     #[props(default)]
     own_subject: Option<SubjectId>,
+    /// Whether the room is a read-only archive (spec D8): a departed room must
+    /// not offer Pipe mutations — Expose, Connect/Release, and Revoke are all
+    /// suppressed, exactly like the Files pane's share/fetch suppression.
+    #[props(default)]
+    read_only: bool,
 ) -> Element {
     let strings = use_strings();
 
     let mut reload = use_signal(|| 0_u32);
     let notice = use_signal(|| None::<String>);
-    // Connection ids captured from successful connects, so Release (which is by
-    // connection, not pipe — spec §5.C) can name them.
-    let connections = use_signal(Vec::<(String, String)>::new);
+    // Local connection ids (Release is by connection, not pipe — spec §5.C).
+    // Hydrated from the session-scoped preference so ids captured by a PREVIOUS
+    // mount of this pane still name their connections (the daemon's pipe.list
+    // reports `connected` but does not vend the id); connect/release writes
+    // keep it in step. Never authoritative — `connected` on the row is.
+    let connections = use_signal(|| load_connections(&services, &room_id));
 
     let list = {
         let handle = handle.clone();
@@ -83,11 +160,13 @@ pub fn PipesPane(
             header { class: "pane-header",
                 h2 { class: "pane-title", "{strings.pipes_heading()}" }
             }
-            ExposeForm {
-                handle: handle.clone(),
-                room_id: room_id.clone(),
-                notice,
-                reload,
+            if !read_only {
+                ExposeForm {
+                    handle: handle.clone(),
+                    room_id: room_id.clone(),
+                    notice,
+                    reload,
+                }
             }
             if let Some(message) = notice() {
                 div { class: "error-note", id: "pipes-notice", "{message}" }
@@ -133,6 +212,8 @@ pub fn PipesPane(
                                         notice,
                                         reload,
                                         connections,
+                                        services: services.clone(),
+                                        read_only,
                                     }
                                 }
                             }
@@ -251,7 +332,8 @@ fn reach_label(strings: &dyn crate::l10n::Catalog, link: &Link) -> String {
 }
 
 /// One pipe row: Connected/Open, publisher reachability, and the lifecycle
-/// actions (Connect / Release / Revoke).
+/// actions (Connect / Release / Revoke). In a read-only (departed) room the
+/// facts render but every mutation is suppressed (spec D8).
 #[component]
 fn PipeRow(
     handle: ClientHandle,
@@ -262,6 +344,13 @@ fn PipeRow(
     notice: Signal<Option<String>>,
     reload: Signal<u32>,
     connections: Signal<Vec<(String, String)>>,
+    /// The platform-authority seam for persisting connection ids (optional —
+    /// without it the row behaves as before, mount-scoped only).
+    #[props(default)]
+    services: Option<PlatformServices>,
+    /// Read-only archive: hide Connect/Release/Revoke.
+    #[props(default)]
+    read_only: bool,
 ) -> Element {
     let strings = use_strings();
     let formats = crate::l10n::use_formats();
@@ -283,19 +372,24 @@ fn PipeRow(
         let room_id = room_id.clone();
         let pipe_id = row.pipe_id.clone();
         let pipe_key = pipe_key.clone();
+        let services = services.clone();
         move |_| {
             let handle = handle.clone();
             let room_id = room_id.clone();
             let pipe_id = pipe_id.clone();
             let pipe_key = pipe_key.clone();
+            let services = services.clone();
             let mut notice = notice;
             let mut connections = connections;
             let mut reload = reload;
             let ct = CancelToken::new();
             spawn(async move {
+                let persist_room = room_id.clone();
                 match run_connect(&handle, room_id, pipe_id, &ct).await {
                     Settled::Ok(done) => {
                         connections.write().push((pipe_key, done.connection_id));
+                        let snapshot = connections.read().clone();
+                        persist_connections(&services, &persist_room, &snapshot);
                         notice.set(None);
                         reload.set(reload() + 1);
                     }
@@ -312,10 +406,14 @@ fn PipeRow(
         let handle = handle.clone();
         let conn = connection_id.clone();
         let pipe_key = pipe_key.clone();
+        let room_id = room_id.clone();
+        let services = services.clone();
         move |_| {
             let Some(conn) = conn.clone() else { return };
             let handle = handle.clone();
             let pipe_key = pipe_key.clone();
+            let room_id = room_id.clone();
+            let services = services.clone();
             let mut notice = notice;
             let mut connections = connections;
             let mut reload = reload;
@@ -324,6 +422,8 @@ fn PipeRow(
                 match run_release(&handle, conn, &ct).await {
                     Settled::Ok(()) => {
                         connections.write().retain(|(pipe, _)| pipe != &pipe_key);
+                        let snapshot = connections.read().clone();
+                        persist_connections(&services, &room_id, &snapshot);
                         reload.set(reload() + 1);
                     }
                     Settled::Failed(failure) => notice.set(Some(
@@ -374,19 +474,21 @@ fn PipeRow(
                 span { class: "pipe-published-by", "{strings.pipes_published_by_label()}: " }
                 span { class: "pipe-owner mono", "{row.published_by}" }
             }
-            div { class: "pipe-actions",
-                if connection_id.is_some() {
-                    button { class: "btn btn-sm", id: "pipe-release-{row.pipe_id}", onclick: on_release,
-                        "{strings.pipes_release_action()}"
+            if !read_only {
+                div { class: "pipe-actions",
+                    if connection_id.is_some() {
+                        button { class: "btn btn-sm", id: "pipe-release-{row.pipe_id}", onclick: on_release,
+                            "{strings.pipes_release_action()}"
+                        }
+                    } else {
+                        button { class: "btn btn-sm", id: "pipe-connect-{row.pipe_id}", onclick: on_connect,
+                            "{strings.pipes_connect_action()}"
+                        }
                     }
-                } else {
-                    button { class: "btn btn-sm", id: "pipe-connect-{row.pipe_id}", onclick: on_connect,
-                        "{strings.pipes_connect_action()}"
-                    }
-                }
-                if is_own {
-                    button { class: "btn btn-sm btn-danger", id: "pipe-revoke-{row.pipe_id}", onclick: on_revoke,
-                        "{strings.pipes_revoke_action()}"
+                    if is_own {
+                        button { class: "btn btn-sm btn-danger", id: "pipe-revoke-{row.pipe_id}", onclick: on_revoke,
+                            "{strings.pipes_revoke_action()}"
+                        }
                     }
                 }
             }

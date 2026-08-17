@@ -98,10 +98,12 @@ fn trigger_download(name: &str, bytes: &[u8]) -> Result<(), CapabilityError> {
     outcome
 }
 
-/// Open the browser file picker and resolve the selection. `Err(Cancelled)` when
-/// the dialog is dismissed with no file; `Ok(None)` never happens on the browser
-/// (a clean no-selection is a dismissal here), which the trait allows.
-async fn pick_file() -> Result<Option<web_sys::File>, CapabilityError> {
+/// Open the browser file picker and resolve the selection. The picker's three
+/// settlements: a selection (`change`), a dismissal (the input's `cancel`
+/// event — dismissing fires no `change`, so waiting only on `change` pends
+/// forever), or the caller's [`CancelToken`] (the pane's own Cancel button).
+/// All three settle; the token's race loss is `Cancelled`, like a dismissal.
+async fn pick_file(ct: &CancelToken) -> Result<Option<web_sys::File>, CapabilityError> {
     let document = web_sys::window()
         .and_then(|w| w.document())
         .ok_or(CapabilityError::Unavailable)?;
@@ -112,21 +114,46 @@ async fn pick_file() -> Result<Option<web_sys::File>, CapabilityError> {
         .ok_or(CapabilityError::Unavailable)?;
     input.set_type("file");
 
-    let (tx, rx) = futures::channel::oneshot::channel::<Option<web_sys::File>>();
+    // `Some(file_opt)` = a `change` fired; `None` = the `cancel` event fired.
+    let (tx, rx) = futures::channel::oneshot::channel::<Option<Option<web_sys::File>>>();
     let tx = Rc::new(std::cell::RefCell::new(Some(tx)));
     let input_for_change = input.clone();
+    let tx_for_change = tx.clone();
     let on_change = Closure::<dyn FnMut()>::new(move || {
         let file = input_for_change.files().and_then(|list| list.get(0));
+        if let Some(tx) = tx_for_change.borrow_mut().take() {
+            let _ = tx.send(Some(file));
+        }
+    });
+    let on_cancel = Closure::<dyn FnMut()>::new(move || {
         if let Some(tx) = tx.borrow_mut().take() {
-            let _ = tx.send(file);
+            let _ = tx.send(None);
         }
     });
     input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    input.set_oncancel(Some(on_cancel.as_ref().unchecked_ref()));
     input.click();
-    // Leak the one-shot closure for the dialog's lifetime; the pick resolves once.
+    // Leak the one-shot closures for the dialog's lifetime; the pick resolves
+    // once, and a late event after the token settled just fails to send.
     on_change.forget();
+    on_cancel.forget();
 
-    rx.await.map_err(|_| CapabilityError::Cancelled)
+    let settled = {
+        let wait = async { rx.await };
+        futures::pin_mut!(wait);
+        let cancelled = ct.cancelled();
+        futures::pin_mut!(cancelled);
+        match futures::future::select(wait, cancelled).await {
+            futures::future::Either::Left((outcome, _)) => outcome,
+            futures::future::Either::Right(((), _)) => None,
+        }
+    };
+    match settled {
+        // A `change` with a file: the selection.
+        Ok(Some(file)) => Ok(file),
+        // A `cancel` dismissal, the caller's token, or a dropped sender.
+        Ok(None) | Err(_) => Err(CapabilityError::Cancelled),
+    }
 }
 
 /// A bounded, pull-shaped reader over an in-memory staged blob.
@@ -237,11 +264,12 @@ fn release(removed: bool) -> Result<(), CapabilityError> {
 impl Files for WebFiles {
     fn pick(
         &self,
-        _ct: &CancelToken,
+        ct: &CancelToken,
     ) -> BoxFuture<'_, Result<Option<PickedSource>, CapabilityError>> {
         let sources = self.sources.clone();
+        let ct = ct.clone();
         Box::pin(async move {
-            let Some(file) = pick_file().await? else {
+            let Some(file) = pick_file(&ct).await? else {
                 return Ok(None);
             };
             let name = FileName::parse(file.name())

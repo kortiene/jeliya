@@ -139,8 +139,10 @@ pub fn RoomShell(
                         rsx! {
                             PipesPane {
                                 handle: handle.clone(),
+                                services: Some(services.clone()),
                                 room_id: room_id.clone(),
                                 selected,
+                                read_only,
                             }
                         }
                     }

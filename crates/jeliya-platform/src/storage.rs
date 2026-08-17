@@ -65,6 +65,14 @@ pub enum PreferenceKey {
         /// The room the marker is for.
         room_id: RoomId,
     },
+    /// The local pipe connections the UI holds in one room (a session-scoped
+    /// record of `pipe.connect` results), so a Connected row stays releasable
+    /// across pane remounts. Never authoritative — the daemon's `pipe.list`
+    /// `connected` flag is; this only names the ids Release needs.
+    PipeConnections {
+        /// The room the connections belong to.
+        room_id: RoomId,
+    },
     /// The UI text-language override (a BCP-47 tag). Unset follows the
     /// platform's preferred languages, falling back to English.
     TextLocale,

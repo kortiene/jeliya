@@ -133,6 +133,12 @@ impl<B: KeyValueBackend> PreferenceSchema<B> {
                     encode_component(room_id.as_str())
                 )
             }
+            PreferenceKey::PipeConnections { room_id } => {
+                format!(
+                    "{NAMESPACE}.pipeConnections.{}",
+                    encode_component(room_id.as_str())
+                )
+            }
         }
     }
 
