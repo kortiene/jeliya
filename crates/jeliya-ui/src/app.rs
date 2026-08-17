@@ -274,6 +274,10 @@ pub fn AppRoot(
     // into the event-consumption future below). Onboarding's identity/rooms steps
     // dispatch `subject.ensure`/`room.create` through this same handle.
     let onboarding_handle = handle.clone();
+    // A clone of the client seam for the #180 destination panes (People / Agents
+    // / Fleet), which issue their own reads and mutations through it. Taken here
+    // because the prop is moved into the event-consumption future below.
+    let panes_handle = handle.clone();
     // The user's local onboarding advance (§5.D "user advanced past onboarding"),
     // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
     // the onboarding step callbacks advance it as the user completes each step.
@@ -573,6 +577,21 @@ pub fn AppRoot(
     // Clones for the closures/props below; the prop `services` stays available.
     let services_reset = services.clone();
     let services_settings = services.clone();
+    let services_room = services.clone();
+    let services_fleet = services.clone();
+
+    // The local identity (self subject id) from the connection snapshot, for
+    // alias resolution and the self/"this device" marker in the #180 panes.
+    // `None` while the seam does not surface `Hello.subject` (D2/R1).
+    let self_id = connection.as_ref().and_then(|conn| match &conn.subject {
+        jeliya_api::SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
+        jeliya_api::SubjectState::Absent => None,
+    });
+    // The base instant #180's invite-expiry picker measures from. The shared
+    // component holds no clock (Decision-3); the concrete browser/desktop time
+    // is injected once the live transport lands (#171). Until then the mock
+    // ignores the value, so the epoch base is an honest placeholder.
+    let now = jeliya_api::Timestamp::new(time::OffsetDateTime::UNIX_EPOCH);
 
     // ONE render tree with ONE stable live region. The boot/terminal cover, the
     // onboarding surface, and the mounted shell are the three arms of a single
@@ -719,14 +738,34 @@ pub fn AppRoot(
                         // must not flash "unavailable" while the list is still
                         // loading.
                         Route::Room { room_id, dest } => {
-                            let reachable = !snapshot.rooms_loaded
-                                || snapshot.rooms.iter().any(|r| r.room_id == room_id);
+                            // Resolve the room's own row (capabilities + live +
+                            // standing) from the answered list; a route naming a
+                            // room absent from it is the recoverable state.
+                            let room_row = snapshot.rooms.iter().find(|r| r.room_id == room_id).cloned();
+                            let reachable = !snapshot.rooms_loaded || room_row.is_some();
                             rsx! {
                                 main { class: "sidebar", id: "main-content", tabindex: "-1",
-                                    if reachable {
-                                        RoomShell { room_id, dest, navigate }
-                                    } else {
-                                        RoomUnavailable { navigate }
+                                    match room_row {
+                                        Some(room) => rsx! {
+                                            RoomShell {
+                                                room,
+                                                dest,
+                                                navigate,
+                                                handle: panes_handle.clone(),
+                                                services: services_room.clone(),
+                                                now,
+                                                self_id: self_id.clone(),
+                                            }
+                                        },
+                                        None if reachable => rsx! {
+                                            // Not yet answered: show the shell frame is not
+                                            // possible without the row, so keep the recoverable
+                                            // state until the list answers (unknown ≠ unreachable
+                                            // is handled by `reachable` staying true pre-answer,
+                                            // but the row is required to render content).
+                                            div { class: "room-pane-skeleton muted", id: "room-loading-skeleton" }
+                                        },
+                                        None => rsx! { RoomUnavailable { navigate } },
                                     }
                                     StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                                 }
@@ -734,13 +773,23 @@ pub fn AppRoot(
                         }
                         Route::Fleet => rsx! {
                             main { class: "sidebar", id: "main-content", tabindex: "-1",
-                                FleetPane {}
+                                FleetPane {
+                                    handle: panes_handle.clone(),
+                                    services: services_fleet.clone(),
+                                    navigate,
+                                    self_id: self_id.clone(),
+                                }
                                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                             }
                         },
                         Route::Settings => rsx! {
                             main { class: "sidebar", id: "main-content", tabindex: "-1",
-                                SettingsPane { services: services_settings.clone(), subject_id: None }
+                                SettingsPane {
+                                    services: services_settings.clone(),
+                                    subject_id: self_id.clone(),
+                                    lifecycle: snapshot.lifecycle,
+                                    detail: snapshot.last_diagnostic.clone(),
+                                }
                                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                             }
                         },

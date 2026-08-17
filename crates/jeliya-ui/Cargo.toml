@@ -32,6 +32,7 @@ ui = [
     # backing and never fire. It adds no dependency to the lockfile.
     "dioxus/mounted",
     "dep:futures",
+    "dep:time",
     "jeliya-client/mock",
     # The canonical platform-authority contract (#174) and its deterministic
     # fakes. `jeliya-platform` is renderer-agnostic and wasm32-clean by
@@ -104,6 +105,13 @@ js-sys = { version = "0.3.103", optional = true }
 # consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
+# The wire timestamp type is `jeliya_api::Timestamp(time::OffsetDateTime)`. #180
+# computes absolute invite-expiry instants (`now + duration`) and renders dates,
+# so it names `time::Duration`/`OffsetDateTime` directly. Optional and enabled by
+# `ui`; `time` is pure Rust and wasm32-safe (no clock call is made — the base
+# `now` is injected), so it never enters the MSRV base graph and adds no native
+# edge to the audited browser graph. Already in the lock via `jeliya-api`.
+time = { version = "0.3", optional = true }
 
 [dev-dependencies]
 # Needed by the compose_shape integration test to name `Durability`, `Preferences`,

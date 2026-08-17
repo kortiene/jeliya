@@ -85,6 +85,12 @@ export const IDENTICAL_ALLOWLIST = Object.freeze({
   diagnostics_title:
     '“Diagnostics” is correct French for the dialog heading; identical to ' +
     'English on purpose.',
+  settings_diagnostics_heading:
+    '“Diagnostics” is correct French for the settings-card heading; identical ' +
+    'to English on purpose, exactly like diagnostics_title (#180).',
+  people_invites_heading:
+    '“Invitations” is the correct French plural for the invitations region ' +
+    'heading; identical to English on purpose (#180).',
   client_status:
     '“client” is the same word in French; the status line is the brand-neutral ' +
     '“client · {état}” framing with the state word supplied localized.',
@@ -1176,6 +1182,10 @@ const PRIMITIVE_OWNERSHIP = new Map([
   // These are structural ARIA roles, not copy — they express UI semantics.
   ['components/onboarding.rs', new Set(['role=alert'])],
   ['components/room_shell.rs', new Set(['role=tab'])],
+  // The Fleet filter is a `role=group` toggle group (Working+Online "Live" vs
+  // "All") with an aria-label — a structural ARIA role expressing UI semantics,
+  // not copy, owned by the fleet pane (#180).
+  ['components/fleet.rs', new Set(['role=group'])],
 ]);
 
 const NO_OWNED_CONSTRUCTS = new Set();

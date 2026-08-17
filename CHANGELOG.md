@@ -4,6 +4,46 @@
 
 ### Added
 
+- `crates/jeliya-ui` gains the People, Agents & Runs, global Agent Fleet,
+  Settings/alias editor, diagnostics card, and the shared destructive-confirm
+  primitive (#180). All product logic lives in new pure host-testable
+  view-model modules in `src/view/` (no Dioxus render, no `web-sys`): `roster.rs`
+  folds `room.members` and distinct `room.peers` presence as two separate facts;
+  `invites.rs` classifies invite expiry and redeemability and derives
+  re-invite targets; `agents.rs` filters `fleet.list` by `room_id` and folds
+  `status.history` runs; `fleet.rs` groups agents by actionable-attention
+  severity; `poll.rs` is the Fleet polling state machine (active-and-visible →
+  poll, resume-once — never polls while off-destination or backgrounded);
+  `capability.rs` is the typed affordance gate (a control renders only when its
+  `CapabilityToken` is present in `RoomRow.capabilities` — absent, not
+  disabled, per contract invariant 5); `load.rs` is the shared six-state
+  `LoadState<T>` (Loading/Loaded/Empty/Offline/Stale/Failed/Unauthorized).
+  `src/status/mod.rs` is the exhaustive closed-vocabulary display seam —
+  `Standing`, `Role`, `Liveness`, `Reachability`, `Link`, `Redeemability`,
+  `Severity`, and `StatusLabel` all have a compile-total match with a safe
+  localized fallback for every absent/unknown arm; forward-unknown wire values
+  fail the typed read and surface an honest `Failed` state (closed enums never
+  reclassify). `src/view/alias.rs` carries a hand-rolled versioned alias codec
+  (`v1\n<subject>\t<label>` line format; `\`, `\n`, and `\t` escaped;
+  corrupt → empty) and `ResolvedName` with You/short-id fallback — no `serde`
+  dependency enters `jeliya-ui`.
+  New thin RSX components: `PeoplePane` (roster + invites + presence +
+  capability-gated Invite/Re-invite/Revoke/Remove/Leave), `AgentsPane` (agent
+  list + run-history toggle), `FleetPane` content (all rooms, severity grouping,
+  visibility-gated poll), extended `SettingsPane` (alias editor + diagnostics
+  card), `ConfirmDialog` (accessible modal, room-disambiguator in copy, focus
+  defaults to abandoning control, single-submit), `InviteForm`, and a `read`
+  helper (`ready_call`) that gates dispatch on `ClientState::Ready`.
+  Additive `item: Option<SubjectId>` on `RoomDest::{People,Agents}` in
+  `crates/jeliya-platform/src/navigation.rs` — fourth path segment
+  (`/rooms/:id/people/:m`) parses and round-trips; all match sites updated.
+  `compose.rs` switched from a fixed-count `drive_scripted_replies` to an
+  unbounded `pump_scripted_replies` so navigation-time pane reads settle under
+  the scripted mock. AC-4 (late-join after history #46, expired-ticket
+  re-invite #47) is proved in the core conformance corpus (#161); the
+  Playwright/real-daemon path re-qualifies at #182 after `WsWeb` (#171) lands.
+  Transport remains the deterministic mock until #171. 151 host tests pass.
+
 - New workspace crate `crates/jeliya-platform` — the single injectable
   `PlatformServices` boundary for the clean-slate Dioxus stack (#156 program,
   #174). One cloneable, renderer-agnostic facade carries object-safe capability

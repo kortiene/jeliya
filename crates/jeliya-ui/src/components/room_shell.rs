@@ -1,23 +1,26 @@
-//! The room-shell skeleton (#178 §5.F): the room header (room context, always
-//! visible on every room-scoped surface) plus the room-destination navigation
-//! strip. Pane **content** (Timeline/People/Files/Pipes) is #179–#181; this
-//! renders the routing frame and a per-destination skeleton placeholder.
+//! The room shell (#178 §5.F): the room header + destination strip. #180 fills
+//! the **People** and **Agents** destinations with real content
+//! ([`super::people::PeoplePane`] / [`super::agents::AgentsPane`]); Activity is
+//! #179 and Files/Pipes are #181, still per-destination skeletons.
 //!
 //! A route naming an unreachable/departed room renders the recoverable state
 //! ([`RoomUnavailable`]) with Rooms as the way out — never a blank panel (D7 /
 //! contract rule 6).
 
 use dioxus::prelude::*;
-use jeliya_api::RoomId;
+use jeliya_api::{RoomId, RoomRow, SubjectId, Timestamp};
+use jeliya_client::ClientHandle;
 use jeliya_platform::navigation::{RoomDest, Route};
 
-use crate::components::NavLandmark;
+use super::agents::AgentsPane;
+use super::people::PeoplePane;
+use super::NavLandmark;
 use crate::l10n::use_strings;
 use crate::shell::router::NavIntent;
+use crate::PlatformServices;
 
 /// A short, human-scannable disambiguator for a room id (the header's
-/// short-id): the last segment after any `:` prefix, truncated. Never the room
-/// name (that is content, #179); this is the always-visible id context.
+/// short-id): the last segment after any `:` prefix, truncated.
 fn short_id(room_id: &RoomId) -> String {
     let raw = room_id.as_str();
     let tail = raw.rsplit(':').next().unwrap_or(raw);
@@ -25,25 +28,34 @@ fn short_id(room_id: &RoomId) -> String {
 }
 
 /// Whether `dest` is the same room destination as `kind`, ignoring any selected
-/// item (the strip highlights the Files tab whether or not a file is open).
+/// item (the strip highlights the People tab whether or not a member is open).
 fn dest_kind_matches(dest: &RoomDest, kind: &RoomDest) -> bool {
     matches!(
         (dest, kind),
         (RoomDest::Activity, RoomDest::Activity)
-            | (RoomDest::People, RoomDest::People)
-            | (RoomDest::Agents, RoomDest::Agents)
+            | (RoomDest::People { .. }, RoomDest::People { .. })
+            | (RoomDest::Agents { .. }, RoomDest::Agents { .. })
             | (RoomDest::Files { .. }, RoomDest::Files { .. })
             | (RoomDest::Pipes { .. }, RoomDest::Pipes { .. })
     )
 }
 
-/// The room shell for a reachable room: header + destination strip + a
-/// per-destination skeleton pane.
+/// The room shell for a reachable room: header + destination strip + the
+/// destination pane (People/Agents content, or a skeleton for the rest).
 #[component]
-pub fn RoomShell(room_id: RoomId, dest: RoomDest, navigate: Callback<NavIntent>) -> Element {
+pub fn RoomShell(
+    room: RoomRow,
+    dest: RoomDest,
+    navigate: Callback<NavIntent>,
+    handle: ClientHandle,
+    services: PlatformServices,
+    now: Timestamp,
+    #[props(default)] self_id: Option<SubjectId>,
+) -> Element {
     let strings = use_strings();
     let nav_label = strings.room_nav_label().to_string();
     let skeleton = strings.room_dest_skeleton();
+    let room_id = room.room_id.clone();
     let disambiguator = short_id(&room_id);
 
     let items = [
@@ -55,12 +67,12 @@ pub fn RoomShell(room_id: RoomId, dest: RoomDest, navigate: Callback<NavIntent>)
         (
             "room-dest-people",
             strings.room_dest_people(),
-            RoomDest::People,
+            RoomDest::People { item: None },
         ),
         (
             "room-dest-agents",
             strings.room_dest_agents(),
-            RoomDest::Agents,
+            RoomDest::Agents { item: None },
         ),
         (
             "room-dest-files",
@@ -76,9 +88,6 @@ pub fn RoomShell(room_id: RoomId, dest: RoomDest, navigate: Callback<NavIntent>)
 
     rsx! {
         section { class: "room-shell", id: "room-shell",
-            // The room header — room context, always visible. The short id is the
-            // disambiguator until the room name lands (#179); it is a data
-            // element (mono), not translated copy.
             header { class: "room-header", id: "room-header",
                 span { class: "room-shortid mono", "{disambiguator}" }
             }
@@ -99,8 +108,34 @@ pub fn RoomShell(room_id: RoomId, dest: RoomDest, navigate: Callback<NavIntent>)
                     }
                 }
             }
-            // A per-destination skeleton placeholder; the real pane is #179–#181.
-            div { class: "room-pane-skeleton muted", id: "room-pane-skeleton", "{skeleton}" }
+            // The destination pane.
+            match dest.clone() {
+                RoomDest::People { item } => rsx! {
+                    PeoplePane {
+                        room: room.clone(),
+                        item,
+                        handle: handle.clone(),
+                        services: services.clone(),
+                        navigate,
+                        now,
+                        self_id: self_id.clone(),
+                    }
+                },
+                RoomDest::Agents { item } => rsx! {
+                    AgentsPane {
+                        room: room.clone(),
+                        item,
+                        handle: handle.clone(),
+                        services: services.clone(),
+                        navigate,
+                        self_id: self_id.clone(),
+                    }
+                },
+                // Activity (#179) and Files/Pipes (#181) remain skeletons.
+                _ => rsx! {
+                    div { class: "room-pane-skeleton muted", id: "room-pane-skeleton", "{skeleton}" }
+                },
+            }
         }
     }
 }
@@ -174,7 +209,16 @@ mod tests {
             },
             &RoomDest::Files { item: None },
         ));
-        assert!(!dest_kind_matches(&RoomDest::People, &RoomDest::Agents));
+        assert!(dest_kind_matches(
+            &RoomDest::People {
+                item: Some(SubjectId::new("m-1")),
+            },
+            &RoomDest::People { item: None },
+        ));
+        assert!(!dest_kind_matches(
+            &RoomDest::People { item: None },
+            &RoomDest::Agents { item: None },
+        ));
     }
 
     #[test]

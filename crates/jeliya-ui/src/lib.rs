@@ -89,6 +89,19 @@ pub mod shell;
 pub mod platform_web;
 #[cfg(feature = "ui")]
 mod state;
+// The truthful status display seam (#180 §6): every closed API vocabulary
+// (Standing, Role, Liveness, Reachability, Link, Redeemability, Severity,
+// StatusLabel, room-session Open/Closed) mapped to catalog copy by an
+// exhaustive match, plus the absent/unknown fallbacks. A sibling of
+// `l10n::wire` for the typed enums.
+#[cfg(feature = "ui")]
+pub mod status;
+// The pure, host-testable view-model folds for the #180 product surfaces
+// (People roster, invitations, room agents & runs, the global fleet, the
+// capability gate, the Fleet poll machine, the LoadState six-state read, and
+// the device-local alias map). No Dioxus and no platform `cfg`.
+#[cfg(feature = "ui")]
+pub mod view;
 
 #[cfg(feature = "ui")]
 pub use app::{AppRoot, AppRootProps};
