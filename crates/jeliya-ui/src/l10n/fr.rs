@@ -356,4 +356,63 @@ impl Catalog for Fr {
             PluralCategory::Other => format!("{count_display} salons"),
         }
     }
+
+    fn archive_banner_left_title(&self) -> &'static str {
+        "Vous avez quitté ce salon"
+    }
+    fn archive_banner_removed_title(&self) -> &'static str {
+        "Vous avez été retiré de ce salon"
+    }
+    fn archive_banner_body(&self) -> &'static str {
+        "Ceci est une archive locale en lecture seule. Son historique est affiché tel quel. Il n’est pas en direct et ne reçoit aucune nouvelle activité."
+    }
+    fn archive_banner_rejoin(&self) -> &'static str {
+        "Pour revenir, il vous faut une nouvelle invitation."
+    }
+    fn archive_timeline_label(&self) -> &'static str {
+        "Historique archivé"
+    }
+    fn archive_roster_heading(&self) -> &'static str {
+        "Membres à votre départ"
+    }
+    fn archive_load_more(&self) -> &'static str {
+        "Afficher l’activité antérieure"
+    }
+    fn archive_still_active(&self) -> &'static str {
+        "Ce salon est de nouveau actif. Ouvrez-le depuis les salons."
+    }
+    fn archive_empty(&self) -> &'static str {
+        "Aucune activité archivée."
+    }
+    fn archive_loading(&self) -> &'static str {
+        "Chargement de l’archive…"
+    }
+
+    fn event_room_created(&self) -> &'static str {
+        "Salon créé"
+    }
+    fn event_agent_status(&self) -> &'static str {
+        "Statut d’agent"
+    }
+    fn event_member_joined(&self) -> &'static str {
+        "Membre arrivé"
+    }
+    fn event_member_left(&self) -> &'static str {
+        "Membre parti"
+    }
+    fn event_member_removed(&self) -> &'static str {
+        "Membre retiré"
+    }
+    fn event_invite_revoked(&self) -> &'static str {
+        "Invitation révoquée"
+    }
+    fn event_file_shared(&self) -> &'static str {
+        "Fichier partagé"
+    }
+    fn event_pipe_published(&self) -> &'static str {
+        "Pipe publié"
+    }
+    fn event_pipe_revoked(&self) -> &'static str {
+        "Pipe révoqué"
+    }
 }

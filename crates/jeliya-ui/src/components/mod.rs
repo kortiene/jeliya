@@ -25,6 +25,7 @@ pub mod live_region;
 pub mod nav;
 pub mod onboarding;
 pub mod recovery;
+pub mod room_archive;
 pub mod room_shell;
 pub mod settings;
 pub mod status;
@@ -39,6 +40,7 @@ pub use live_region::{use_announce, use_announce_context, Announcer, LiveRegion}
 pub use nav::NavLandmark;
 pub use onboarding::Onboarding;
 pub use recovery::RecoveryBanner;
+pub use room_archive::RoomArchivePane;
 pub use room_shell::{RoomShell, RoomUnavailable};
 pub use settings::SettingsPane;
 pub use status::{StatusIndicator, StatusTone};

@@ -74,6 +74,13 @@ pub mod l10n;
 // browser binding (`jeliya-platform-web`) supplies only the storage.
 #[cfg(feature = "ui")]
 pub mod prefs;
+// The pure, renderer-free departed-room archive logic (#91): the read-only
+// archive projection + paged `room.archive` fold, the historical-roster fold
+// over signed membership events (a departed caller cannot read `room.members`),
+// and the capability gate that proves the served capabilities and the archive
+// composition agree. Host-testable; `components::room_archive` is the RSX view.
+#[cfg(feature = "ui")]
+pub mod room;
 // The global-shell logic (#178 §5/§8): responsive shell selection, the router
 // (canonicalization + fail-safe + last-room restore), and the bootstrap/
 // onboarding state machine. The pure decisions live here, host-testable; the

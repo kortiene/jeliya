@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use jeliya_api::{
-    MessageSend, MessageSendOut, OpId, Operation, RoomCreate, RoomCreateOut, RoomList, RoomListOut,
-    RoomTimeline, RoomTimelineOut, StreamResync, StreamResyncOut, StreamSubscribe,
-    StreamSubscribeOut,
+    MessageSend, MessageSendOut, OpId, Operation, RoomArchive, RoomArchiveOut, RoomCreate,
+    RoomCreateOut, RoomList, RoomListOut, RoomTimeline, RoomTimelineOut, StreamResync,
+    StreamResyncOut, StreamSubscribe, StreamSubscribeOut,
 };
 
 use crate::backend::{ClientBackend, ErasedCall, RawJson};
@@ -331,6 +331,18 @@ impl ClientHandle {
         dedup: Dedup,
     ) -> impl Future<Output = Result<RoomTimelineOut, CallError>> + '_ {
         self.call::<RoomTimeline>(input, dedup)
+    }
+
+    /// `room.archive` — open a left/removed room as a local read-only archive.
+    /// A pure, network-free read that authors no event and mutates nothing, so
+    /// it takes no `op_id` (callers pass [`Dedup::None`]). Forwards to
+    /// [`call`](Self::call); the output type is preserved.
+    pub fn room_archive(
+        &self,
+        input: RoomArchive,
+        dedup: Dedup,
+    ) -> impl Future<Output = Result<RoomArchiveOut, CallError>> + '_ {
+        self.call::<RoomArchive>(input, dedup)
     }
 
     /// `stream.subscribe` — subscribe a connection to a room's pushes. Forwards

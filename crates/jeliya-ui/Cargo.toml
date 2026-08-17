@@ -111,6 +111,18 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # partially. The `fake` feature is active transitively through the `ui` feature
 # (which enables `jeliya-platform/fake`), so the test binary sees the full library.
 jeliya-platform = { path = "../jeliya-platform" }
+# TEST-ONLY: the #91 archive seam tests call async `ClientHandle::room_archive`
+# and need a synchronous executor to drive the future in a non-async test. The
+# `executor` module is not included in the `ui`-feature futures dep (which
+# carries only `std`+`async-await`), so it is pulled in here as a separate
+# dev-only activation. Resolves within the already-locked `futures` version.
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+# TEST-ONLY: the `room/` archive-fold unit tests build `jeliya_api::Event`
+# fixtures, whose `at` is a `jeliya_api::Timestamp` wrapping a
+# `time::OffsetDateTime`. Dev-only, already in the workspace lock (jeliya-api
+# depends on `time`), and excluded from the wasm graph (`--edges normal`) — so it
+# never enters the browser/MSRV build and is not a banned native crate.
+time = { version = "0.3" }
 
 # Underscored so the cargo artifact, the wasm-bindgen module, and the import in
 # `index.html` all agree on one name (the #158 spike's convention).
@@ -136,6 +148,15 @@ required-features = ["ui"]
 # to `jeliya_ui::shell` / `jeliya_ui::prefs` and `jeliya_platform::fake`.
 [[test]]
 name = "shell_178"
+required-features = ["ui"]
+
+# Focused integration tests for #91 (departed-room read-only archive).
+# Covers: ARCHIVE_PAGE_LIMIT protocol bounds, archive l10n strings (non-empty,
+# translated, honesty-compliant), source scan that the archive pane dispatches
+# no live ops, and capability-set exhaustiveness. Requires `ui` for access to
+# `jeliya_ui::room` and `jeliya_ui::l10n`.
+[[test]]
+name = "archive_91"
 required-features = ["ui"]
 
 [lints]

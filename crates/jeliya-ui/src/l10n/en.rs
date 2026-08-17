@@ -351,4 +351,63 @@ impl Catalog for En {
     fn err_onboarding_room_create_body(&self) -> &'static str {
         "The daemon did not respond. Check your connection and try again."
     }
+
+    fn archive_banner_left_title(&self) -> &'static str {
+        "You left this room"
+    }
+    fn archive_banner_removed_title(&self) -> &'static str {
+        "You were removed from this room"
+    }
+    fn archive_banner_body(&self) -> &'static str {
+        "This is a local, read-only archive. Its history is shown as it was; it is not live and receives no new activity."
+    }
+    fn archive_banner_rejoin(&self) -> &'static str {
+        "To rejoin, you need a new invite."
+    }
+    fn archive_timeline_label(&self) -> &'static str {
+        "Archived timeline"
+    }
+    fn archive_roster_heading(&self) -> &'static str {
+        "Members when you left"
+    }
+    fn archive_load_more(&self) -> &'static str {
+        "Show earlier activity"
+    }
+    fn archive_still_active(&self) -> &'static str {
+        "This room is active again. Open it from Rooms."
+    }
+    fn archive_empty(&self) -> &'static str {
+        "No archived activity."
+    }
+    fn archive_loading(&self) -> &'static str {
+        "Loading the archive…"
+    }
+
+    fn event_room_created(&self) -> &'static str {
+        "Room created"
+    }
+    fn event_agent_status(&self) -> &'static str {
+        "Agent status"
+    }
+    fn event_member_joined(&self) -> &'static str {
+        "Member joined"
+    }
+    fn event_member_left(&self) -> &'static str {
+        "Member left"
+    }
+    fn event_member_removed(&self) -> &'static str {
+        "Member removed"
+    }
+    fn event_invite_revoked(&self) -> &'static str {
+        "Invite revoked"
+    }
+    fn event_file_shared(&self) -> &'static str {
+        "File shared"
+    }
+    fn event_pipe_published(&self) -> &'static str {
+        "Pipe published"
+    }
+    fn event_pipe_revoked(&self) -> &'static str {
+        "Pipe revoked"
+    }
 }

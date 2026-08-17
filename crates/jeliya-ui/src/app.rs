@@ -20,15 +20,15 @@
 
 use dioxus::prelude::*;
 use futures::StreamExt;
-use jeliya_api::{RoomId, RoomList, RoomRow};
+use jeliya_api::{RoomId, RoomList, RoomRow, Standing, SubjectState};
 use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
 use jeliya_platform::navigation::{RoomDest, Route};
 use jeliya_platform::PreferenceKey;
 
 use crate::components::{
     use_announce_context, BootScreen, EmptyCenter, FleetPane, GlobalNav, LiveRegion, NavLandmark,
-    Onboarding, RecoveryBanner, RoomShell, RoomUnavailable, SettingsPane, SkipLink, SkipLinks,
-    StatusFooter,
+    Onboarding, RecoveryBanner, RoomArchivePane, RoomShell, RoomUnavailable, SettingsPane,
+    SkipLink, SkipLinks, StatusFooter,
 };
 use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
@@ -274,6 +274,11 @@ pub fn AppRoot(
     // into the event-consumption future below). Onboarding's identity/rooms steps
     // dispatch `subject.ensure`/`room.create` through this same handle.
     let onboarding_handle = handle.clone();
+    // A clone of the client seam for the departed-room archive pane (#91). The
+    // prop `handle` is moved into the event-consumption future below, so the
+    // render body cannot name it; the archive pane dispatches `room.archive`
+    // through this clone (every clone is the same client — an `Arc` bump).
+    let archive_handle = handle.clone();
     // The user's local onboarding advance (§5.D "user advanced past onboarding"),
     // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
     // the onboarding step callbacks advance it as the user completes each step.
@@ -573,6 +578,15 @@ pub fn AppRoot(
     // Clones for the closures/props below; the prop `services` stays available.
     let services_reset = services.clone();
     let services_settings = services.clone();
+    // The caller's own subject, when the connection snapshot names it (#91 D4):
+    // it lets a departed-room archive identify the caller's OWN signed removal to
+    // name the remover. `None` is the honest default while the seam does not
+    // surface `Hello.subject` (#178 D2/R1); the archive then states "removed"
+    // without naming anyone (#91 R5).
+    let me = connection.as_ref().and_then(|conn| match &conn.subject {
+        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
+        SubjectState::Absent => None,
+    });
 
     // ONE render tree with ONE stable live region. The boot/terminal cover, the
     // onboarding surface, and the mounted shell are the three arms of a single
@@ -709,25 +723,50 @@ pub fn AppRoot(
                             }
                             section { class: "center", id: "center", EmptyCenter {} }
                         },
-                        // A room-scoped route renders the room-shell skeleton
-                        // (header + destination strip). Reachability is a room.list
-                        // check (D7 / §5.F): once the list has ANSWERED, a route
-                        // naming a room absent from it renders the recoverable
-                        // `RoomUnavailable` state (Rooms as the way out) instead of a
-                        // shell over a room the user does not hold. Before the answer
-                        // (unknown ≠ unreachable) the shell is shown — a deep link
-                        // must not flash "unavailable" while the list is still
-                        // loading.
+                        // A room-scoped route selects its composition by the row's
+                        // STANDING (#91 D1/§7), a standing-driven, dest-agnostic
+                        // choice — no new `Route` variant:
+                        //   Active         -> the live `RoomShell` (#179 surface)
+                        //   Left | Removed -> the read-only `RoomArchivePane` (#91)
+                        //   absent from room.list, once ANSWERED -> `RoomUnavailable`
+                        //     (the recoverable "not on this device", Rooms as the way
+                        //     out) — never a shell over a room the user does not hold.
+                        // Before the list answers (unknown ≠ unreachable) the loading
+                        // room frame is shown so a deep link never flashes
+                        // "unavailable" or the archive while the list is still loading.
                         Route::Room { room_id, dest } => {
-                            let reachable = !snapshot.rooms_loaded
-                                || snapshot.rooms.iter().any(|r| r.room_id == room_id);
+                            let standing = snapshot
+                                .rooms
+                                .iter()
+                                .find(|r| r.room_id == room_id)
+                                .map(|r| r.standing);
+                            let surface = if !snapshot.rooms_loaded {
+                                rsx! { RoomShell { room_id: room_id.clone(), dest: dest.clone(), navigate } }
+                            } else {
+                                match standing {
+                                    Some(Standing::Active) => rsx! {
+                                        RoomShell { room_id: room_id.clone(), dest: dest.clone(), navigate }
+                                    },
+                                    Some(departed @ (Standing::Left | Standing::Removed)) => rsx! {
+                                        // The departed room opens as a local read-only
+                                        // archive. Keyed by room id so navigating
+                                        // between two departed rooms re-mounts the pane
+                                        // and re-reads its `room.archive`.
+                                        RoomArchivePane {
+                                            key: "{room_id}",
+                                            room_id: room_id.clone(),
+                                            my_standing: departed,
+                                            me: me.clone(),
+                                            navigate,
+                                            handle: archive_handle.clone(),
+                                        }
+                                    },
+                                    None => rsx! { RoomUnavailable { navigate } },
+                                }
+                            };
                             rsx! {
                                 main { class: "sidebar", id: "main-content", tabindex: "-1",
-                                    if reachable {
-                                        RoomShell { room_id, dest, navigate }
-                                    } else {
-                                        RoomUnavailable { navigate }
-                                    }
+                                    {surface}
                                     StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                                 }
                             }

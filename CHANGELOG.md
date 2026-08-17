@@ -359,6 +359,36 @@
   fully readable offline and re-opens on demand. Rooms created after this
   change are unaffected and stay live together.
 
+### Added
+
+- `crates/jeliya-ui` gains the **departed-room read-only archive surface**
+  (#91): a `Left`/`Removed` room now opens as an explicit, local, read-only
+  historical archive. `AppRoot`'s `Route::Room` arm branches on the room
+  row's `Standing`: `Active` → the live `RoomShell`; `Left`/`Removed` → the
+  new `RoomArchivePane`. The pane dispatches only the typed `room.archive`
+  read (`MUTATING = false`, `Dedup::None`, no `op_id`) — no Iroh session, no
+  `stream.subscribe`, no `room.activate`, no `room.members`, no
+  `room.timeline`, and no peer-hint mutation. It renders a permanent,
+  non-dismissable `DepartureBanner` (the signed left/removed fact stated
+  plainly, with the explanation that rejoining requires a fresh invite), the
+  signed timeline loaded from the paged `room.archive` reply, and a
+  `HistoricalRoster` reconstructed from the signed membership events in that
+  timeline — not from `room.members`, which is refused for a departed caller
+  under the protocol's step-5 standing gate. Every live action — composer,
+  Invite, Leave, file share/fetch, Pipes — is absent by construction (not
+  present-and-disabled), satisfying the capability-absence contract. A
+  `room_still_active` race shows an honest notice with Rooms as the way out;
+  paging loads more activity on demand. New pure host-testable module
+  `crates/jeliya-ui/src/room/` (`archive.rs` — `ArchiveView`/`DepartureFact`
+  and the paged fold; `roster.rs` — the historical-roster fold over signed
+  membership events; `capability.rs` — `FORBIDDEN_IN_ARCHIVE` and `grants`)
+  and Dioxus component `crates/jeliya-ui/src/components/room_archive.rs`;
+  EN/FR localization; integration tests in `crates/jeliya-ui/tests/archive_91.rs`.
+  Satisfies product behavior contract invariant 5 (the deliberate widening of
+  the retained Room Workbench floor: a departed room states the signed fact
+  and opens truthfully). Re-qualified per platform with the real `WsWeb`
+  transport in #182.
+
 ## [0.6.1] - 2026-07-19
 
 ### Changed
