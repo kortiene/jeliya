@@ -50,6 +50,58 @@ fn library_dependency_tree_is_free_of_transport_and_ui_crates() {
     }
 }
 
+/// The native adapter (#172) lives behind the default-off, native-only
+/// `ws-native` feature, and the browser (wasm32) build must NEVER enable it —
+/// or `tokio`, `tokio-tungstenite`, and `jeliya-supervisor` would enter the
+/// wasm graph. The shared UI crate (`jeliya-ui`) is the browser consumer; its
+/// full `web`-feature graph, resolved for `wasm32-unknown-unknown` without
+/// compiling it, must contain none of them. This is the jeliya-client-side twin
+/// of `jeliya-supervisor`'s own "absent from the wasm graph" assertion (§4.2).
+#[test]
+fn ws_native_dependencies_never_enter_the_wasm_ui_graph() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--locked",
+            "-p",
+            "jeliya-ui",
+            "--features",
+            "web",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--no-dedupe",
+        ])
+        .output()
+        .expect("cargo tree runs");
+    assert!(
+        output.status.success(),
+        "cargo tree failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tree = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    // With `--prefix none`, every crate in the graph starts a line; a banned
+    // crate anywhere in the graph therefore starts some line. Order matters:
+    // check the longer names first so the message names the specific crate.
+    for banned in [
+        "tokio-tungstenite",
+        "tokio ",
+        "tungstenite",
+        "jeliya-supervisor",
+        "jeliya-codec",
+    ] {
+        assert!(
+            !tree.lines().any(|line| line.starts_with(banned)),
+            "'{}' (a ws-native-only dependency) leaked into the wasm32 jeliya-ui \
+             `web` graph — the web build must never enable `ws-native`:\n{tree}",
+            banned.trim()
+        );
+    }
+}
+
 /// No `serde_json::Value` may appear in any public source. The erased boundary
 /// carries a JSON *text* newtype (`RawJson`), so the token appears nowhere —
 /// untrusted values are never hidden in raw JSON here. This scans every source

@@ -63,6 +63,15 @@ mod kernel;
 mod reconcile;
 mod stream;
 
+// The native async WebSocket adapter (#172): binds the sans-IO kernel to a real
+// tokio + tokio-tungstenite transport dialing a loopback `jeliyad` via the
+// reusable supervisor target resolver (#170). Default-off and native-only — the
+// `pub(crate)` `Transport`/`Driver`/`DriverIo` seams live inside this crate, so
+// the adapter lands here too, under `src/adapter/**` (outside the sans-IO
+// kernel/reconcile scan). The web (wasm32) build never enables `ws-native`.
+#[cfg(all(feature = "ws-native", not(target_arch = "wasm32")))]
+mod adapter;
+
 #[cfg(feature = "mock")]
 pub mod mock;
 
@@ -83,6 +92,16 @@ pub use stream::{StreamCall, StreamCancel};
 // backend ships behind `mock`.
 #[cfg(feature = "test-transport")]
 pub use kernel::{KernelController, SentFrame};
+
+// The native adapter's public construction surface (#172). `connect_ws_native`
+// builds a `ClientHandle` over the native WebSocket driver; `TargetSource` is
+// the injected resolver seam (the supervisor's `TargetResolver` implements it),
+// and `Dial`/`DialResolveError`/`NativeClientConfig`/`NativeError` are its
+// supporting types. Native-only and behind the default-off `ws-native` feature.
+#[cfg(all(feature = "ws-native", not(target_arch = "wasm32")))]
+pub use adapter::{
+    connect_ws_native, Dial, DialResolveError, NativeClientConfig, NativeError, TargetSource,
+};
 
 // The erasure is internal: `ClientBackend`, `ErasedCall`, and `RawJson` are
 // deliberately never exported. Depend on `jeliya_api` for the typed operations,

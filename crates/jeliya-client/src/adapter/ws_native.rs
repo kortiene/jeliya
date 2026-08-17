@@ -1,0 +1,494 @@
+//! The native WebSocket state machine: dial → generation/hello agreement →
+//! serve → reconnect → stop, framed through the protocol-v2 codec (#164).
+//!
+//! One `run_dial` future per `Action::Dial` performs, in order: a fresh resolve
+//! (every attempt), the authenticated upgrade, the **three** agreement checks
+//! (resolver health, the daemon's upgrade gate, and a matching `hello`
+//! generation) that make "connected before protocol agreement" impossible, then
+//! the per-connection read/write loops. Every failure maps to exactly one
+//! token- or generation-fenced core input; nothing here re-implements the
+//! resync logic — a loss simply produces the correct `Interrupted` and the core
+//! (and #169's reconciler) do the rest.
+
+use std::sync::{Arc, Mutex, Weak};
+
+use futures::{SinkExt, StreamExt};
+use jeliya_api::RequestId;
+use jeliya_codec::{decode_client_frame, ClientFrame, CodecBounds};
+use tokio::time::timeout;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+
+use crate::backend::RawJson;
+use crate::kernel::core::Input;
+use crate::kernel::transport::{Inbound, WireReply};
+use crate::kernel::Runtime;
+
+use super::runtime::{ConnRegistry, Deadlines};
+use super::source::{Dial, DialResolveError, TargetSource};
+
+/// Run one dial attempt to completion, injecting exactly one lifecycle input.
+pub(crate) async fn run_dial(
+    token: u64,
+    runtime: Weak<Runtime>,
+    source: Arc<dyn TargetSource>,
+    conn: Arc<Mutex<ConnRegistry>>,
+    deadlines: Deadlines,
+    write_buffer: usize,
+) {
+    // 1. Resolve — runs on EVERY attempt, so a restart's new port/token/PID
+    //    heals transparently and a changed generation fails closed.
+    let dial = match source.resolve().await {
+        Ok(dial) => dial,
+        Err(DialResolveError::Terminal(_)) => {
+            // Wrong daemon / attack shape: fail closed, no auto-retry.
+            inject(&runtime, Input::GateRefused { token });
+            return;
+        }
+        Err(DialResolveError::Transient(_)) => {
+            inject(&runtime, Input::DialFailed { token });
+            return;
+        }
+    };
+
+    // The expected generation gate travels on the (verified, token-free) URL
+    // the supervisor built (`?v=&sg=`); the `hello` must match it exactly.
+    let Some((expected_protocol, expected_sg)) = parse_gate(&dial.url) else {
+        inject(&runtime, Input::DialFailed { token });
+        return;
+    };
+
+    // 2. Build the authenticated upgrade request (the ONLY place the bearer is
+    //    exposed) and dial, bounded by the connect deadline.
+    let request = match build_request(&dial) {
+        Ok(request) => request,
+        // A request-build failure is a dial-URL/header bug: fail closed.
+        Err(()) => {
+            inject(&runtime, Input::GateRefused { token });
+            return;
+        }
+    };
+    let ws = match timeout(deadlines.connect, tokio_tungstenite::connect_async(request)).await {
+        Ok(Ok((ws, _response))) => ws,
+        Ok(Err(error)) => {
+            inject(&runtime, classify_handshake(token, &error));
+            return;
+        }
+        Err(_elapsed) => {
+            inject(&runtime, Input::DialFailed { token });
+            return;
+        }
+    };
+
+    // 3. The hello gate — never "connected" before a matching hello. Read the
+    //    first Text message, bounded by the hello deadline.
+    let mut ws = ws;
+    let hello_bytes = match timeout(deadlines.hello, ws.next()).await {
+        Ok(Some(Ok(Message::Text(text)))) => text,
+        Ok(Some(Ok(Message::Close(frame)))) => {
+            // An application close during the handshake (`4001`/`4006`) is a
+            // terminal gate refusal; anything else is transient.
+            let code = frame.map(|frame| u16::from(frame.code));
+            inject(&runtime, close_input(token, code));
+            return;
+        }
+        // A non-Text first frame is not a hello → fail closed.
+        Ok(Some(Ok(_))) => {
+            inject(&runtime, Input::GateRefused { token });
+            return;
+        }
+        // Dropped before hello, a read error, or a timeout → transient.
+        Ok(Some(Err(_))) | Ok(None) | Err(_) => {
+            inject(&runtime, Input::DialFailed { token });
+            return;
+        }
+    };
+
+    let hello = match decode_client_frame(hello_bytes.as_str().as_bytes(), &CodecBounds::default())
+    {
+        Ok(ClientFrame::Hello(hello))
+            if hello.protocol == expected_protocol && hello.storage_generation == expected_sg =>
+        {
+            hello
+        }
+        // A hello with the wrong generation, or a non-hello first frame, is the
+        // third independent agreement check refusing: fail closed.
+        Ok(_) => {
+            inject(&runtime, Input::GateRefused { token });
+            return;
+        }
+        Err(_) => {
+            inject(&runtime, Input::DialFailed { token });
+            return;
+        }
+    };
+
+    // 4. Serve. Bound inbound frames by the codec ceiling AND the served
+    //    `max_frame_bytes` from the hello (never larger than advertised).
+    let bounds = CodecBounds {
+        max_frame_bytes: (CodecBounds::default().max_frame_bytes as u64)
+            .min(hello.limits.max_frame_bytes) as usize,
+        ..CodecBounds::default()
+    };
+    let (sink, stream) = ws.split();
+    let (write_tx, write_rx) = tokio::sync::mpsc::channel::<Message>(write_buffer);
+
+    // Install the writer BEFORE injecting Connected, so the flush of any
+    // replay-held/queued calls the core issues on `Connected` reaches it.
+    {
+        let mut registry = conn.lock().expect("conn registry poisoned");
+        registry.tear_down();
+        registry.writer = Some(write_tx);
+    }
+
+    // Injecting Connected bumps the generation (or is dropped if the dial was
+    // retired by a stop). Read the generation across the injection to learn
+    // which happened and to tag this connection's inbound frames.
+    let Some(previous) = runtime.upgrade().map(|runtime| runtime.generation()) else {
+        return;
+    };
+    inject(&runtime, Input::Connected { token });
+    let Some(generation) = runtime.upgrade().map(|runtime| runtime.generation()) else {
+        return;
+    };
+    if generation == previous {
+        // Connected was dropped (stop/retired dial): tear down, close the
+        // socket best-effort, and let this attempt end.
+        conn.lock().expect("conn registry poisoned").tear_down();
+        let mut sink = sink;
+        let _ = sink.close().await;
+        return;
+    }
+
+    // Only now, with a live generation, spawn the per-connection tasks.
+    let write_task = tokio::spawn(write_loop(
+        sink,
+        write_rx,
+        generation,
+        runtime.clone(),
+        conn.clone(),
+    ));
+    let read_task = tokio::spawn(read_loop(
+        stream,
+        generation,
+        bounds,
+        runtime.clone(),
+        conn.clone(),
+    ));
+    {
+        let mut registry = conn.lock().expect("conn registry poisoned");
+        registry.generation = generation;
+        registry.read_task = Some(read_task);
+        registry.write_task = Some(write_task);
+    }
+}
+
+/// Drain the write channel to the socket; a write error is a connection loss.
+async fn write_loop(
+    mut sink: futures::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Message,
+    >,
+    mut write_rx: tokio::sync::mpsc::Receiver<Message>,
+    generation: u64,
+    runtime: Weak<Runtime>,
+    conn: Arc<Mutex<ConnRegistry>>,
+) {
+    while let Some(message) = write_rx.recv().await {
+        if sink.send(message).await.is_err() {
+            clear_writer_if_current(&conn, generation);
+            inject(&runtime, Input::Interrupted { generation });
+            return;
+        }
+    }
+    // The channel closed because the writer was dropped (the read task saw the
+    // loss and cleared it): nothing to report — it already injected.
+}
+
+/// Read inbound frames, decode them through the client-direction codec, and
+/// feed the kernel — every frame tagged with THIS connection's generation, so a
+/// straggler from a replaced connection is fenced by the core (§K7).
+async fn read_loop(
+    mut stream: futures::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+    generation: u64,
+    bounds: CodecBounds,
+    runtime: Weak<Runtime>,
+    conn: Arc<Mutex<ConnRegistry>>,
+) {
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(Message::Text(text)) => {
+                match decode_client_frame(text.as_str().as_bytes(), &bounds) {
+                    Ok(ClientFrame::Reply { id, result }) => {
+                        let Ok(request_id) = RequestId::new(id) else {
+                            // An out-of-range id correlates to nothing.
+                            inject(&runtime, Input::Inbound(Inbound::Malformed));
+                            continue;
+                        };
+                        let result = match result {
+                            Ok(text) => WireReply::Ok(RawJson::from_string(text)),
+                            Err(api) => WireReply::Err(api),
+                        };
+                        inject(
+                            &runtime,
+                            Input::Inbound(Inbound::Reply {
+                                generation,
+                                id: request_id,
+                                result,
+                            }),
+                        );
+                    }
+                    Ok(ClientFrame::Push(push)) => {
+                        inject(&runtime, Input::Inbound(Inbound::Push { generation, push }));
+                    }
+                    // A SECOND hello is a protocol violation → interrupt + close.
+                    Ok(ClientFrame::Hello(_)) => {
+                        clear_writer_if_current(&conn, generation);
+                        inject(&runtime, Input::Interrupted { generation });
+                        return;
+                    }
+                    // A frame that parses to no envelope, or is over the ceiling,
+                    // strands nothing (§K4).
+                    Ok(ClientFrame::Malformed(_)) | Err(_) => {
+                        inject(&runtime, Input::Inbound(Inbound::Malformed));
+                    }
+                }
+            }
+            // Binary = a byte-stream record. #269 owns stream lifecycle; on this
+            // base the kernel exposes no stream inbound path, so a Binary record
+            // is dropped (it can strand nothing). Wiring Binary → the stream
+            // path is the follow-up once #269 lands (spec §6 / OQ-4).
+            Ok(Message::Binary(_)) => {}
+            // Ping/Pong are handled by tungstenite; ignore them here.
+            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
+            Ok(Message::Close(_)) | Err(_) => {
+                clear_writer_if_current(&conn, generation);
+                inject(&runtime, Input::Interrupted { generation });
+                return;
+            }
+        }
+    }
+    // Stream ended (EOF): a connection loss.
+    clear_writer_if_current(&conn, generation);
+    inject(&runtime, Input::Interrupted { generation });
+}
+
+/// Feed one input to the core through the shared shell, if it still exists.
+fn inject(runtime: &Weak<Runtime>, input: Input) {
+    if let Some(runtime) = runtime.upgrade() {
+        runtime.inject(input);
+    }
+}
+
+/// Clear the live writer only when the registry still names `generation`, so a
+/// task tearing down cannot clobber a successor connection's writer.
+fn clear_writer_if_current(conn: &Arc<Mutex<ConnRegistry>>, generation: u64) {
+    let mut registry = conn.lock().expect("conn registry poisoned");
+    if registry.generation == generation {
+        registry.writer = None;
+    }
+}
+
+/// Extract the `v`/`sg` generation gate the supervisor placed on the dial URL.
+fn parse_gate(url: &url::Url) -> Option<(u64, u64)> {
+    let mut protocol = None;
+    let mut storage_generation = None;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "v" => protocol = value.parse().ok(),
+            "sg" => storage_generation = value.parse().ok(),
+            _ => {}
+        }
+    }
+    Some((protocol?, storage_generation?))
+}
+
+/// Build the authenticated upgrade request. This is the ONE place the bearer is
+/// exposed — as an `Authorization: Bearer` header, never a URL, log, or prop.
+/// `Origin` is deliberately omitted on native (the daemon accepts its absence).
+fn build_request(dial: &Dial) -> Result<http::Request<()>, ()> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let mut request = dial.url.as_str().into_client_request().map_err(|_| ())?;
+    let value =
+        http::HeaderValue::from_str(&format!("Bearer {}", dial.bearer.expose())).map_err(|_| ())?;
+    request
+        .headers_mut()
+        .insert(http::header::AUTHORIZATION, value);
+    Ok(request)
+}
+
+/// Classify a handshake failure by HTTP status (spec §7.2). `403`/`426` fail
+/// closed (a loopback forbidden-origin should not happen, and a generation
+/// mismatch is the reset path); `401` (token rotated on restart), `503`
+/// (capacity), and a connect refusal/reset all heal on the next re-resolve.
+fn classify_handshake(token: u64, error: &WsError) -> Input {
+    let status = match error {
+        WsError::Http(response) => Some(response.status().as_u16()),
+        _ => None,
+    };
+    match status {
+        Some(403) | Some(426) => Input::GateRefused { token },
+        _ => Input::DialFailed { token },
+    }
+}
+
+/// Map an application close code seen during the handshake to a core input:
+/// `4001`/`4006` fail closed, anything else is transient.
+fn close_input(token: u64, code: Option<u16>) -> Input {
+    match code {
+        Some(4001) | Some(4006) => Input::GateRefused { token },
+        _ => Input::DialFailed { token },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_gate_reads_v_and_sg() {
+        let url = url::Url::parse("ws://127.0.0.1:7420/ws?v=2&sg=5").expect("url");
+        assert_eq!(parse_gate(&url), Some((2, 5)));
+    }
+
+    #[test]
+    fn parse_gate_missing_axis_is_none() {
+        let url = url::Url::parse("ws://127.0.0.1:7420/ws?v=2").expect("url");
+        assert_eq!(parse_gate(&url), None);
+    }
+
+    #[test]
+    fn build_request_sets_a_redacted_bearer_header() {
+        let dial = Dial {
+            url: url::Url::parse("ws://127.0.0.1:7420/ws?v=2&sg=2").expect("url"),
+            bearer: jeliya_supervisor::Redacted::new(String::from("sixtyfourhexsecret")),
+        };
+        let request = build_request(&dial).expect("builds");
+        let auth = request
+            .headers()
+            .get(http::header::AUTHORIZATION)
+            .expect("authorization header");
+        assert_eq!(auth.to_str().expect("ascii"), "Bearer sixtyfourhexsecret");
+        // The token is never placed in the URL.
+        assert!(!request.uri().to_string().contains("sixtyfourhexsecret"));
+    }
+
+    #[test]
+    fn handshake_status_table_fails_closed_on_403_and_426() {
+        // A synthetic 426 response mirrors a generation-gate refusal.
+        let response = http::Response::builder()
+            .status(426)
+            .body(None::<Vec<u8>>)
+            .expect("response");
+        let error = WsError::Http(Box::new(response));
+        assert!(matches!(
+            classify_handshake(7, &error),
+            Input::GateRefused { token: 7 }
+        ));
+    }
+
+    #[test]
+    fn close_code_table_distinguishes_terminal_from_transient() {
+        assert!(matches!(
+            close_input(1, Some(4001)),
+            Input::GateRefused { .. }
+        ));
+        assert!(matches!(
+            close_input(1, Some(1000)),
+            Input::DialFailed { .. }
+        ));
+        assert!(matches!(close_input(1, None), Input::DialFailed { .. }));
+    }
+
+    #[test]
+    fn close_code_4006_is_terminal() {
+        assert!(
+            matches!(close_input(2, Some(4006)), Input::GateRefused { token: 2 }),
+            "close 4006 is an application gate refusal and must fail closed"
+        );
+    }
+
+    #[test]
+    fn handshake_401_is_transient() {
+        let response = http::Response::builder()
+            .status(401)
+            .body(None::<Vec<u8>>)
+            .expect("response");
+        let error = WsError::Http(Box::new(response));
+        assert!(
+            matches!(
+                classify_handshake(5, &error),
+                Input::DialFailed { token: 5 }
+            ),
+            "401 Unauthorized means the token rotated; the next re-resolve heals it"
+        );
+    }
+
+    #[test]
+    fn handshake_503_is_transient() {
+        let response = http::Response::builder()
+            .status(503)
+            .body(None::<Vec<u8>>)
+            .expect("response");
+        let error = WsError::Http(Box::new(response));
+        assert!(
+            matches!(classify_handshake(5, &error), Input::DialFailed { .. }),
+            "503 Service Unavailable is transient capacity; backoff and retry"
+        );
+    }
+
+    #[test]
+    fn handshake_403_is_terminal() {
+        let response = http::Response::builder()
+            .status(403)
+            .body(None::<Vec<u8>>)
+            .expect("response");
+        let error = WsError::Http(Box::new(response));
+        assert!(
+            matches!(classify_handshake(7, &error), Input::GateRefused { token: 7 }),
+            "403 Forbidden is a loopback-origin violation; fail closed (should not happen on loopback)"
+        );
+    }
+
+    #[test]
+    fn handshake_non_http_error_is_transient() {
+        use tokio_tungstenite::tungstenite::error::ProtocolError;
+        let error = WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+        assert!(
+            matches!(classify_handshake(9, &error), Input::DialFailed { .. }),
+            "a non-HTTP WS error (connect refused, reset) is transient"
+        );
+    }
+
+    #[test]
+    fn parse_gate_extra_params_are_ignored() {
+        let url = url::Url::parse("ws://127.0.0.1:7420/ws?v=2&sg=5&extra=y&foo=bar").expect("url");
+        assert_eq!(
+            parse_gate(&url),
+            Some((2, 5)),
+            "extra query params must not confuse v/sg extraction"
+        );
+    }
+
+    #[test]
+    fn parse_gate_non_numeric_v_is_none() {
+        let url = url::Url::parse("ws://127.0.0.1:7420/ws?v=foo&sg=1").expect("url");
+        assert_eq!(
+            parse_gate(&url),
+            None,
+            "a non-numeric v makes the gate unparse-able → None"
+        );
+    }
+
+    #[test]
+    fn parse_gate_non_numeric_sg_is_none() {
+        let url = url::Url::parse("ws://127.0.0.1:7420/ws?v=2&sg=bar").expect("url");
+        assert_eq!(parse_gate(&url), None);
+    }
+}
