@@ -337,4 +337,18 @@ impl Catalog for En {
     fn recovery_reset_action(&self) -> &'static str {
         "Reset local preferences"
     }
+
+    fn err_onboarding_identity(&self) -> &'static str {
+        "Couldn't create your identity"
+    }
+    fn err_onboarding_identity_body(&self) -> &'static str {
+        "The daemon did not respond. Check your connection and try again."
+    }
+
+    fn err_onboarding_room_create(&self) -> &'static str {
+        "Couldn't create the room"
+    }
+    fn err_onboarding_room_create_body(&self) -> &'static str {
+        "The daemon did not respond. Check your connection and try again."
+    }
 }

@@ -49,7 +49,7 @@ pub fn GlobalNav(route: Route, navigate: Callback<NavIntent>, shell: Shell) -> E
     let settings_active = matches!(route, Route::Settings);
 
     rsx! {
-        NavLandmark { class: class.to_string(), id: "global-nav".to_string(), label,
+        NavLandmark { role_tablist: false, class: class.to_string(), id: "global-nav".to_string(), label,
             GlobalNavItem {
                 id: "nav-rooms".to_string(),
                 label: rooms.to_string(),

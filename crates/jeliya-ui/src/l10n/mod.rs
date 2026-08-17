@@ -406,6 +406,18 @@ pub trait Catalog {
     fn recovery_body(&self) -> &'static str;
     /// The recovery banner's explicit "reset local preferences" action.
     fn recovery_reset_action(&self) -> &'static str;
+
+    // ---- Onboarding operation errors ( Finding 1 — honest error surface ) ----
+
+    /// The user-facing title when identity creation fails.
+    fn err_onboarding_identity(&self) -> &'static str;
+    /// The user-facing body when identity creation fails (retryable).
+    fn err_onboarding_identity_body(&self) -> &'static str;
+
+    /// The user-facing title when room creation fails.
+    fn err_onboarding_room_create(&self) -> &'static str;
+    /// The user-facing body when room creation fails (retryable).
+    fn err_onboarding_room_create_body(&self) -> &'static str;
 }
 
 /// Provide the resolved-locale context to a subtree and return its signal.

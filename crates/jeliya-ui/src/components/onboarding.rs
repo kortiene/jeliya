@@ -10,6 +10,13 @@
 //! - **Rooms step** — create a room ([`RoomCreate`], non-whitespace name
 //!   required) is the guaranteed terminus; the invite-ticket field is present and
 //!   validated, but the full retrying join flow is #179-adjacent (spec Q3).
+//!
+//! Errors surface honestly (Finding 1): both the identity and room-creation
+//! operations display an inline error region with the catalog message and the
+//! raw `CallError` (mono, technical detail — §5.8).  The form remains usable so
+//! the user can retry without reloading.  Focus is moved to the main element on
+//! mount (Finding 2), following the dialog/BootScreen pattern that uses
+//! `MountedEvent::set_focus`.
 
 use dioxus::prelude::*;
 use jeliya_api::{RoomCreate, RoomId, SubjectEnsure};
@@ -34,10 +41,17 @@ pub fn Onboarding(
 ) -> Element {
     match step {
         OnboardStep::Identity => rsx! {
-            IdentityStep { handle, services, on_done: move |_| on_advance.call(None) }
+            IdentityStep {
+                handle,
+                services,
+                on_done: move |_| on_advance.call(None),
+            }
         },
         OnboardStep::Rooms => rsx! {
-            RoomsStep { handle, on_created: move |room_id| on_advance.call(Some(room_id)) }
+            RoomsStep {
+                handle,
+                on_created: move |room_id| on_advance.call(Some(room_id)),
+            }
         },
     }
 }
@@ -57,6 +71,8 @@ fn IdentityStep(
     let create = strings.onboarding_create_identity();
     let self_label = strings.self_label_label().to_string();
     let self_help = strings.self_label_help().to_string();
+    let err_title = strings.err_onboarding_identity();
+    let err_body = strings.err_onboarding_identity_body();
     let current = services
         .preferences()
         .get(&jeliya_platform::PreferenceKey::SelfLabel)
@@ -65,26 +81,39 @@ fn IdentityStep(
     // control's `aria-describedby` must construct `{id}-hint` inline (#177 gate).
     let self_label_base = "onboarding-self-label";
 
+    let error = use_signal(|| None::<String>);
+
     let create_identity = move |_| {
         let handle = handle.clone();
         let on_done = on_done;
+        let mut error = error;
         spawn(async move {
-            // Idempotent: `created: false` (another tab already created it) just
-            // advances, exactly like the retiring IdentityStep's identity_exists
-            // (the daemon returns the existing subject). A refusal is left for the
-            // caller's diagnostics; onboarding does not loop.
-            if handle
+            match handle
                 .call::<SubjectEnsure>(SubjectEnsure {}, Dedup::None)
                 .await
-                .is_ok()
             {
-                on_done.call(());
+                Ok(_out) => on_done.call(()),
+                Err(e) => {
+                    // Surface the raw error string so the user gets the real
+                    // code (Calling 1 — "Failures are failures" law).
+                    error.set(Some(format!("{}: {e}", err_title)));
+                }
             }
         });
     };
 
     rsx! {
-        main { class: "onboarding", id: "onboarding-identity", tabindex: "-1",
+        main {
+            class: "onboarding",
+            id: "onboarding-identity",
+            tabindex: "-1",
+            onmounted: move |evt: MountedEvent| {
+                // Move focus to this step's main so keyboard users land on the
+                // form immediately after a transition (Finding 2; app.rs pattern).
+                spawn(async move {
+                    let _ = evt.set_focus(true).await;
+                });
+            },
             h1 { class: "onboarding-wordmark", "{app_name}" }
             h2 { class: "onboarding-title", "{title}" }
             p { class: "onboarding-body", "{body}" }
@@ -116,6 +145,15 @@ fn IdentityStep(
                 onclick: create_identity,
                 "{create}"
             }
+            if let Some(ref err) = error.peek().as_ref() {
+                div { class: "error-note", id: "onboarding-error-identity", role: "alert",
+                    // First line is the catalog-friendly title + the raw error.
+                    // The raw error string gives the real code (the "law":
+                    // "Errors surface their real code and a useful hint").
+                    p { class: "error-message", "{err_body}" }
+                    p { class: "mono", id: "onboarding-error-detail", "{err}" }
+                }
+            }
         }
     }
 }
@@ -131,9 +169,12 @@ fn RoomsStep(handle: ClientHandle, on_created: EventHandler<RoomId>) -> Element 
     let join = strings.onboarding_join_room();
     let ticket_label = strings.ticket_label().to_string();
     let ticket_help = strings.ticket_help().to_string();
+    let err_title = strings.err_onboarding_room_create();
+    let err_body = strings.err_onboarding_room_create_body();
 
     let mut name = use_signal(String::new);
     let mut ticket = use_signal(String::new);
+    let error = use_signal(|| None::<String>);
     // Dynamic hint association for the ticket field (#177 form gate): the Field
     // id is a String expression, so `aria-describedby` constructs `{id}-hint`
     // inline.
@@ -146,18 +187,34 @@ fn RoomsStep(handle: ClientHandle, on_created: EventHandler<RoomId>) -> Element 
         }
         let handle = handle.clone();
         let on_created = on_created;
+        let mut error = error;
         spawn(async move {
-            if let Ok(out) = handle
+            match handle
                 .call::<RoomCreate>(RoomCreate { name: trimmed }, Dedup::None)
                 .await
             {
-                on_created.call(out.room_id);
+                Ok(out) => on_created.call(out.room_id),
+                Err(e) => {
+                    // Surface the raw error string so the user gets the real
+                    // code (Finding 1 — "Failures are failures" law).
+                    error.set(Some(format!("{}: {e}", err_title)));
+                }
             }
         });
     };
 
     rsx! {
-        main { class: "onboarding", id: "onboarding-rooms", tabindex: "-1",
+        main {
+            class: "onboarding",
+            id: "onboarding-rooms",
+            tabindex: "-1",
+            onmounted: move |evt: MountedEvent| {
+                // Move focus to this step's main so keyboard users land on the
+                // form immediately after a transition (Finding 2; app.rs pattern).
+                spawn(async move {
+                    let _ = evt.set_focus(true).await;
+                });
+            },
             h1 { class: "onboarding-title", "{title}" }
             div { class: "onboarding-task", id: "onboarding-create-room-task",
                 Field { id: "onboarding-room-name".to_string(), label: room_name_label,
@@ -196,6 +253,12 @@ fn RoomsStep(handle: ClientHandle, on_created: EventHandler<RoomId>) -> Element 
                     id: "onboarding-join-room",
                     disabled: ticket.read().trim().is_empty(),
                     "{join}"
+                }
+            }
+            if let Some(ref err) = error.peek().as_ref() {
+                div { class: "error-note", id: "onboarding-error-rooms", role: "alert",
+                    p { class: "error-message", "{err_body}" }
+                    p { class: "mono", id: "onboarding-error-detail", "{err}" }
                 }
             }
         }

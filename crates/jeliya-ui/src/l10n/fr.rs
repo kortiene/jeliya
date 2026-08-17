@@ -336,6 +336,20 @@ impl Catalog for Fr {
         "Réinitialiser les préférences locales"
     }
 
+    fn err_onboarding_identity(&self) -> &'static str {
+        "Échec de la création de votre identité"
+    }
+    fn err_onboarding_identity_body(&self) -> &'static str {
+        "Le démon n’a pas répondu. Vérifiez votre connexion et réessayez."
+    }
+
+    fn err_onboarding_room_create(&self) -> &'static str {
+        "Échec de la création du salon"
+    }
+    fn err_onboarding_room_create_body(&self) -> &'static str {
+        "Le démon n’a pas répondu. Vérifiez votre connexion et réessayez."
+    }
+
     fn rooms_count(&self, count_display: &str, category: PluralCategory) -> String {
         match category {
             PluralCategory::One => format!("{count_display} salon"),

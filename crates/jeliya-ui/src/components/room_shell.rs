@@ -83,6 +83,7 @@ pub fn RoomShell(room_id: RoomId, dest: RoomDest, navigate: Callback<NavIntent>)
                 span { class: "room-shortid mono", "{disambiguator}" }
             }
             NavLandmark {
+                role_tablist: true,
                 class: "room-nav".to_string(),
                 id: "room-nav".to_string(),
                 label: nav_label,
@@ -120,12 +121,13 @@ fn RoomDestItem(
     } else {
         "room-dest-item"
     };
-    let current = if active { "page" } else { "false" };
+    let selected = if active { "true" } else { "false" };
     rsx! {
         button {
+            role: "tab",
+            "aria-selected": "{selected}",
             class: "{class}",
             id: "{id}",
-            "aria-current": "{current}",
             onclick: move |_| {
                 navigate
                     .call(
