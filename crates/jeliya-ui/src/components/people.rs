@@ -118,11 +118,22 @@ pub fn PeoplePane(
                             .as_ref()
                             .map(|f| crate::view::agents::agent_subjects_in_room(f, &room_id))
                             .unwrap_or_default();
-                        let peers_ok = match peers {
-                            Some(Ok(p)) => Some(p),
-                            _ => None,
+                        // A failed peers read is NOT "everyone is absent":
+                        // thread the failure into the fold so every row's
+                        // presence renders as the honest Unavailable (the
+                        // "failures are failures" law), never as disconnection.
+                        let (peers_ok, presence_failed) = match peers {
+                            Some(Ok(p)) => (Some(p), false),
+                            Some(Err(_)) => (None, live),
+                            None => (None, false),
                         };
-                        let view = fold_roster(&members, peers_ok.as_ref(), &agents, live);
+                        let view = fold_roster(
+                            &members,
+                            peers_ok.as_ref(),
+                            &agents,
+                            live,
+                            presence_failed,
+                        );
                         roster.set(if view.is_empty() {
                             LoadState::Empty
                         } else {
@@ -800,11 +811,15 @@ fn RosterRowView(
     }
 }
 
-/// Render a member's presence as text (D1): the per-device links, or the honest
-/// "not connected" when the live room shows no link.
+/// Render a member's presence as text (D1): the per-device links, the honest
+/// "not connected" when the live room shows no link, and the honest "presence
+/// unavailable" when the live read itself failed (a failure, never absence).
 fn presence_text(strings: &dyn crate::l10n::Catalog, presence: &MemberPresence) -> Element {
     match presence {
         MemberPresence::Unknown => rsx! { span { class: "muted", "{strings.presence_absent()}" } },
+        MemberPresence::Unavailable => {
+            rsx! { span { class: "muted", "{strings.presence_unavailable()}" } }
+        }
         MemberPresence::Links(links) if links.is_empty() => {
             rsx! { span { class: "muted", "{strings.presence_absent()}" } }
         }

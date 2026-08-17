@@ -103,6 +103,23 @@ pub mod status;
 #[cfg(feature = "ui")]
 pub mod view;
 
+/// The pane-poll sleep (#180 §7.3/D7): target selection lives HERE at the
+/// crate root (Decision-3), so shared panes stay free of `cfg`. The web build
+/// sleeps on the browser's `setTimeout`; host builds (unit tests, the native
+/// stub) park — host tests drive the poll machine directly and never wait on
+/// a wall clock.
+#[cfg(feature = "web")]
+pub(crate) async fn poll_sleep(ms: u32) {
+    gloo_timers::future::TimeoutFuture::new(ms).await;
+}
+
+/// The host counterpart of the web `poll_sleep`: parks forever, so a poll
+/// loop under test runs exactly one fetch and then quiesces.
+#[cfg(all(feature = "ui", not(feature = "web")))]
+pub(crate) async fn poll_sleep(_ms: u32) {
+    futures::future::pending::<()>().await;
+}
+
 #[cfg(feature = "ui")]
 pub use app::{AppRoot, AppRootProps};
 // The canonical platform-authority contract lives in `jeliya-platform` (#174).

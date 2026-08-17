@@ -294,7 +294,7 @@ mod tests {
     fn back_from_a_room_destination_walks_to_the_room_root() {
         let current = Route::Room {
             room_id: RoomId::new("r-1"),
-            dest: RoomDest::People,
+            dest: RoomDest::People { item: None },
         };
         assert_eq!(
             back_target(&current),

@@ -461,6 +461,9 @@ impl Catalog for Fr {
     fn presence_absent(&self) -> &'static str {
         "non connecté"
     }
+    fn presence_unavailable(&self) -> &'static str {
+        "présence indisponible"
+    }
     fn people_roster_heading(&self) -> &'static str {
         "Membres"
     }

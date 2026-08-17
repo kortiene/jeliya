@@ -19,6 +19,11 @@ use jeliya_api::{
 pub enum MemberPresence {
     /// The room session is Closed — presence is genuinely unavailable, not zero.
     Unknown,
+    /// The room is live but the presence READ FAILED (transport, auth, daemon).
+    /// A failure is never the same fact as "no links": rendering it as absence
+    /// would present a transport problem as authoritative disconnection (the
+    /// "failures are failures" law).
+    Unavailable,
     /// The room is live; these are this member's per-device transport links.
     /// An **empty** vector is the honest "no peer link" fact (Absent), never
     /// inferred as offline-from-membership.
@@ -84,6 +89,10 @@ impl RosterView {
 /// - `agent_subjects` are the subjects classified as agents in this room
 ///   (derived from `fleet.list`, D9).
 /// - `live` is `RoomRow.live` — the authority for whether presence is knowable.
+/// - `presence_failed` marks a live-room peers read that FAILED (transport,
+///   auth, daemon): every row's presence becomes [`MemberPresence::Unavailable`]
+///   — never rendered as absence, which would present a failure as an
+///   authoritative disconnection.
 ///
 /// A Closed room (`live == false`) always yields `MemberPresence::Unknown` and
 /// `reachability: None`, even if a stale `peers` were passed, so membership is
@@ -93,12 +102,18 @@ pub fn fold_roster(
     peers: Option<&RoomPeersOut>,
     agent_subjects: &[SubjectId],
     live: bool,
+    presence_failed: bool,
 ) -> RosterView {
-    let live_peers = if live { peers } else { None };
+    let live_peers = if live && !presence_failed {
+        peers
+    } else {
+        None
+    };
+    let failed = live && presence_failed;
     let rows = members
         .members
         .iter()
-        .map(|member| fold_row(member, live_peers, agent_subjects))
+        .map(|member| fold_row(member, live_peers, agent_subjects, failed))
         .collect();
     RosterView {
         rows,
@@ -111,18 +126,24 @@ fn fold_row(
     member: &MemberRow,
     live_peers: Option<&RoomPeersOut>,
     agent_subjects: &[SubjectId],
+    presence_failed: bool,
 ) -> RosterRow {
-    let presence = match live_peers {
-        // Closed / no peers read → presence unavailable (not zero).
-        None => MemberPresence::Unknown,
-        Some(peers) => MemberPresence::Links(
-            peers
-                .peers
-                .iter()
-                .filter(|p| p.subject_id == member.subject_id)
-                .map(|p| p.link.clone())
-                .collect(),
-        ),
+    let presence = if presence_failed {
+        // The live-room read failed: say so — never claim absence.
+        MemberPresence::Unavailable
+    } else {
+        match live_peers {
+            // Closed / no peers read → presence unavailable (not zero).
+            None => MemberPresence::Unknown,
+            Some(peers) => MemberPresence::Links(
+                peers
+                    .peers
+                    .iter()
+                    .filter(|p| p.subject_id == member.subject_id)
+                    .map(|p| p.link.clone())
+                    .collect(),
+            ),
+        }
     };
     RosterRow {
         subject_id: member.subject_id.clone(),
@@ -162,7 +183,7 @@ mod tests {
 
     #[test]
     fn a_closed_room_yields_presence_unknown_not_zero() {
-        let view = fold_roster(&members(&["a", "b"]), None, &[], false);
+        let view = fold_roster(&members(&["a", "b"]), None, &[], false, false);
         assert!(!view.session_open);
         assert_eq!(view.reachability, None);
         for row in &view.rows {
@@ -183,7 +204,7 @@ mod tests {
                 link: Link::Direct { since: ts() },
             }],
         };
-        let view = fold_roster(&members(&["a"]), Some(&peers), &[], false);
+        let view = fold_roster(&members(&["a"]), Some(&peers), &[], false, false);
         assert_eq!(view.reachability, None);
         assert!(view.rows[0].presence.is_unknown());
     }
@@ -195,7 +216,7 @@ mod tests {
             reachability: Reachability::Alone,
             peers: vec![],
         };
-        let view = fold_roster(&members(&["a"]), Some(&peers), &[], true);
+        let view = fold_roster(&members(&["a"]), Some(&peers), &[], true, false);
         assert!(view.session_open);
         assert_eq!(view.reachability, Some(Reachability::Alone));
         assert!(view.rows[0].presence.is_absent(), "live + no link = Absent");
@@ -232,6 +253,7 @@ mod tests {
             Some(&peers),
             &[SubjectId::new("b")],
             true,
+            false,
         );
         // Member a: two device links.
         match &view.rows[0].presence {
@@ -241,5 +263,24 @@ mod tests {
         // Member b is marked an agent (derived), and carries its one link.
         assert!(view.rows[1].is_agent);
         assert!(!view.rows[0].is_agent);
+    }
+
+    #[test]
+    fn a_failed_live_presence_read_is_unavailable_never_absent() {
+        // The honesty law: a transport/auth/daemon failure is not the fact
+        // "nobody is connected" — every row reports the read failure itself,
+        // and the room-level reachability is withheld (unknown, not zero).
+        let view = fold_roster(&members(&["a", "b"]), None, &[], true, true);
+        assert!(
+            view.rows
+                .iter()
+                .all(|row| row.presence == MemberPresence::Unavailable),
+            "a failed read marks every row Unavailable, not Absent"
+        );
+        assert_eq!(view.reachability, None);
+        assert!(
+            view.session_open,
+            "the room is still live — the READ failed"
+        );
     }
 }

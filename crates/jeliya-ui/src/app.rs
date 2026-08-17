@@ -839,12 +839,28 @@ pub fn AppRoot(
                                             }
                                         },
                                         None if reachable => rsx! {
-                                            // Not yet answered: show the shell frame is not
-                                            // possible without the row, so keep the recoverable
-                                            // state until the list answers (unknown ≠ unreachable
-                                            // is handled by `reachable` staying true pre-answer,
-                                            // but the row is required to render content).
-                                            div { class: "room-pane-skeleton muted", id: "room-loading-skeleton" }
+                                            if let Some(message) = room_error
+                                                .as_ref()
+                                                .filter(|_| snapshot.notice_terminal)
+                                            {
+                                                // A TERMINAL room-list failure on a
+                                                // room deep link: the list will never
+                                                // answer on its own (`rooms_loaded`
+                                                // stays false), so an indefinite
+                                                // skeleton would lie. The friendly
+                                                // failure copy plus the Diagnostics
+                                                // detail (footer) is the honest
+                                                // state — the same note the Rooms
+                                                // route renders.
+                                                div { class: "error-note", id: "notice", "{message}" }
+                                            } else {
+                                                // Not yet answered: show the shell frame is not
+                                                // possible without the row, so keep the recoverable
+                                                // state until the list answers (unknown ≠ unreachable
+                                                // is handled by `reachable` staying true pre-answer,
+                                                // but the row is required to render content).
+                                                div { class: "room-pane-skeleton muted", id: "room-loading-skeleton" }
+                                            }
                                         },
                                         None => rsx! { RoomUnavailable { navigate } },
                                     }

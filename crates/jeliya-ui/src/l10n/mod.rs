@@ -496,6 +496,9 @@ pub trait Catalog {
     fn presence_unavailable_closed(&self) -> &'static str;
     /// The per-member "no peer link" presence fact for a live room.
     fn presence_absent(&self) -> &'static str;
+    /// The per-member honest note when the live presence READ failed (a
+    /// failure, never the absence fact).
+    fn presence_unavailable(&self) -> &'static str;
     /// The roster region heading.
     fn people_roster_heading(&self) -> &'static str;
     /// The roster role column label.

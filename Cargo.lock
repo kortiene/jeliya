@@ -2963,6 +2963,7 @@ version = "0.0.0"
 dependencies = [
  "dioxus",
  "futures",
+ "gloo-timers",
  "jeliya-api",
  "jeliya-client",
  "jeliya-platform",

@@ -28,6 +28,11 @@ use crate::view::load::{LoadState, ReadOutcome};
 use crate::view::poll::{FleetPoll, PollAction};
 use crate::PlatformServices;
 
+/// The Fleet poll interval (§7.3/D7): long enough that liveness reads stay
+/// cheap against the daemon and the offline e2e suite (which runs the web
+/// build against a scripted mock) settles within a single tick.
+const POLL_INTERVAL_MS: u32 = 30_000;
+
 /// The Agent Fleet destination pane.
 #[component]
 pub fn FleetPane(
@@ -65,7 +70,8 @@ pub fn FleetPane(
 
     // The poll: mounting means active (the route is Fleet); becoming visible
     // resumes exactly once. Re-runs when `visible` changes — a background→
-    // foreground transition is one resume-fetch, backgrounding stops the loop.
+    // foreground transition is one resume-fetch, backgrounding stops the loop
+    // (the future is dropped, cancelling the interval).
     {
         let handle = handle.clone();
         let mut fleet = fleet;
@@ -92,6 +98,28 @@ pub fn FleetPane(
                             Err(err) => {
                                 let previous = fleet.read().value().cloned();
                                 fleet.set(fleet_error(&err, previous));
+                            }
+                        }
+                        // The interval the machine's docs assign to this loop
+                        // (§7.3/D7): liveness and attention go stale without
+                        // it. A poll refresh is SILENT — no Loading flicker,
+                        // prior data stays on screen; a failure surfaces
+                        // through the same honest fold as the mount read.
+                        loop {
+                            crate::poll_sleep(POLL_INTERVAL_MS).await;
+                            match ready_call(&handle, FleetList {}).await {
+                                Ok(out) => {
+                                    let view = fold_fleet(&out);
+                                    fleet.set(if view.is_empty() {
+                                        LoadState::Empty
+                                    } else {
+                                        LoadState::Loaded(view)
+                                    });
+                                }
+                                Err(err) => {
+                                    let previous = fleet.read().value().cloned();
+                                    fleet.set(fleet_error(&err, previous));
+                                }
                             }
                         }
                     }
