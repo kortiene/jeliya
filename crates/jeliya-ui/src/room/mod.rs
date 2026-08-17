@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use jeliya_api::{Event, EventId, Timestamp};
 use jeliya_client::RoomView;
 
-use crate::room::send::{op_id_for, SendEntry, SendId, SendIds, SendPhase};
+use crate::room::send::{SendEntry, SendId, SendIds, SendPhase};
 
 /// The per-room model the Activity pane renders: the reconciler's authoritative
 /// view plus the honest reconcile notices and the local pending sends.
@@ -79,16 +79,33 @@ impl RoomActivityState {
 /// dropped the instant the converged timeline surfaces its `event_id`. Retry
 /// reuses the same stable `op_id` (D4). Bounded by the active-room set (§11): a
 /// room's pending map is only as large as its unresolved sends.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+///
+/// Every fresh set mints a session-unique `namespace` for its op-ids: the
+/// daemon's dedup ledger is keyed by `(principal, op_id)`, never by component
+/// lifetime, so a per-pane counter alone collided across mounts with
+/// `op_id_conflict` (#179 review).
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PendingSends {
     entries: Vec<SendEntry>,
     ids: SendIds,
+    namespace: String,
+}
+
+impl Default for PendingSends {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PendingSends {
-    /// An empty pending set.
+    /// An empty pending set with a freshly minted session-unique op-id
+    /// namespace.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            entries: Vec::new(),
+            ids: SendIds::new(),
+            namespace: crate::room::send::next_send_namespace(),
+        }
     }
 
     /// The pending entries, in insertion order.
@@ -108,10 +125,11 @@ impl PendingSends {
 
     /// Begin a send: mint a fresh local id and its stable op_id, push a
     /// `Pending` entry, and return the id (to address later transitions). The
-    /// caller dispatches `message.send` with `Dedup::Key(op_id_for(id))`.
+    /// caller dispatches `message.send` with `Dedup::Key(entry.op_id)`.
     pub fn begin(&mut self, body: String, at: Timestamp) -> SendId {
         let client_id = self.ids.mint();
-        self.entries.push(SendEntry::new(client_id, body, at));
+        self.entries
+            .push(SendEntry::new(&self.namespace, client_id, body, at));
         client_id
     }
 
@@ -123,15 +141,15 @@ impl PendingSends {
     }
 
     /// Move a failed entry back to `Pending` for a retry, returning the body and
-    /// the **same** op_id to re-issue under (D4). `None` if the entry is gone or
-    /// is not in a retryable `Failed` phase.
+    /// the **same** op_id the entry was created with (D4). `None` if the entry
+    /// is gone or is not in a retryable `Failed` phase.
     pub fn retry(&mut self, client_id: SendId) -> Option<(String, jeliya_api::OpId)> {
         let entry = self.entries.iter_mut().find(|e| e.client_id == client_id)?;
         if !matches!(entry.phase, SendPhase::Failed { .. }) {
             return None;
         }
         entry.phase = SendPhase::Pending;
-        Some((entry.body.clone(), op_id_for(entry.client_id)))
+        Some((entry.body.clone(), entry.op_id.clone()))
     }
 
     /// Drop an entry entirely (e.g. the user dismissed a failed send).
@@ -178,7 +196,9 @@ mod tests {
         assert_eq!(id, SendId(0));
         let entry = sends.get(id).expect("entry present");
         assert_eq!(entry.phase, SendPhase::Pending);
-        assert_eq!(entry.op_id, op_id_for(id));
+        // The entry's op_id is namespaced per send set and ends at the local id.
+        assert!(entry.op_id.as_str().ends_with("-0"));
+        assert_eq!(entry.op_id, sends.get(id).unwrap().op_id);
         assert_eq!(entry.body, "hello");
     }
 
@@ -225,8 +245,8 @@ mod tests {
         // Retrying `a` reuses ITS op_id and leaves `b` untouched.
         let (body, op_id) = sends.retry(a).expect("a is retryable");
         assert_eq!(body, "first");
-        assert_eq!(op_id, op_id_for(a));
-        assert_eq!(op_id, OpId::new("dx-send-0"));
+        assert_eq!(op_id, sends.get(a).unwrap().op_id);
+        assert!(op_id.as_str().ends_with("-0"));
         assert_eq!(sends.get(a).unwrap().phase, SendPhase::Pending);
         assert!(matches!(
             sends.get(b).unwrap().phase,

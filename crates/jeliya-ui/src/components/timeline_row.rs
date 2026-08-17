@@ -13,7 +13,7 @@
 //! measurement (Decision-6) — it is pure rendering fed the pure projection.
 
 use dioxus::prelude::*;
-use jeliya_api::{Author, EventKindContent, Progress, SubjectId, Timestamp};
+use jeliya_api::{Author, Event, EventKindContent, Progress, SubjectId, Timestamp};
 
 use crate::l10n::{use_formats, use_strings, wire, Formats};
 use crate::room::projection::{DayKey, RenderUnit, Side, TimelineRow};
@@ -91,7 +91,9 @@ pub fn TimelineRowView(
         div { class: side_class(row.side),
             match row.unit.clone() {
                 RenderUnit::Event(event) => render_event(&event, self_ref, row.compact),
-                RenderUnit::Run(run) => render_run(&run, self_ref),
+                RenderUnit::Run(run) => rsx! {
+                    AgentRunView { run, self_id: self_ref.cloned() }
+                },
                 RenderUnit::Pending(entry) => render_pending(&entry, on_retry),
             }
         }
@@ -209,28 +211,62 @@ fn AgentStatusCard(
     }
 }
 
-/// A folded agent-status run: the latest card plus honest run evidence and the
-/// count of folded status posts (expand/collapse is a later view toggle).
-fn render_run(run: &AgentRun, self_id: Option<&SubjectId>) -> Element {
+/// One status card's fields, extracted from any run event (a run is built
+/// only from `AgentStatus` events — runs.rs — so the fallback is unreachable;
+/// render the card regardless rather than dropping a signed fact).
+fn status_card_parts(event: &Event) -> (jeliya_api::StatusLabel, Progress) {
+    match &event.kind {
+        EventKindContent::AgentStatus { label, progress } => (*label, progress.clone()),
+        _ => (jeliya_api::StatusLabel::Working, Progress::Absent),
+    }
+}
+
+/// A folded agent-status run: the localized summary is the expand/collapse
+/// toggle (already plural-aware catalog copy), and expanding renders EVERY
+/// retained event in the run as its own signed status card — the fold is a
+/// reversible projection, never a drop of signed facts (§5.1).
+#[component]
+fn AgentRunView(run: AgentRun, self_id: Option<SubjectId>) -> Element {
     let strings = use_strings();
     let formats = use_formats();
+    let mut expanded = use_signal(|| false);
     let count = run.summary.count as u64;
     let category = crate::l10n::plural_category(use_strings_locale(), count);
     let count_display = formats.count(count);
     let summary = strings.timeline_run_summary(&count_display, category);
-    let latest = &run.summary.latest;
-    let name = author_name(&latest.author, self_id, strings);
-    let time = clock(formats, latest.at);
-    let (label, progress) = match &latest.kind {
-        EventKindContent::AgentStatus { label, progress } => (*label, progress.clone()),
-        // A run is built only from AgentStatus events (runs.rs), so this is
-        // unreachable; render the latest as a status card regardless.
-        _ => (jeliya_api::StatusLabel::Working, Progress::Absent),
-    };
+    // The latest card renders always; expanding reveals the EARLIER retained
+    // events (the latest is already on screen) under the canonical
+    // `.agent-run-history` indent.
+    let earlier = run.events.len().saturating_sub(1);
     rsx! {
         div { class: "agent-run",
-            div { class: "agent-run-summary", "{summary}" }
-            AgentStatusCard { author: name, time, label, progress }
+            AgentStatusCard {
+                author: author_name(&run.summary.latest.author, self_id.as_ref(), strings),
+                time: clock(formats, run.summary.latest.at),
+                label: status_card_parts(&run.summary.latest).0,
+                progress: status_card_parts(&run.summary.latest).1,
+            }
+            div { class: "agent-run-controls",
+                button {
+                    class: "agent-run-toggle",
+                    r#type: "button",
+                    aria_expanded: expanded(),
+                    onclick: move |_| expanded.set(!expanded()),
+                    "{summary}"
+                }
+            }
+            if expanded() {
+                div { class: "agent-run-history",
+                    for event in &run.events[..earlier] {
+                        AgentStatusCard {
+                            author: author_name(&event.author, self_id.as_ref(), strings),
+                            time: clock(formats, event.at),
+                            label: status_card_parts(event).0,
+                            progress: status_card_parts(event).1,
+                        }
+                    }
+                }
+            }
         }
     }
 }

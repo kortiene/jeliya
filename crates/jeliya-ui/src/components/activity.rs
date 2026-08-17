@@ -344,10 +344,15 @@ pub fn ActivityPane(
                 }
             }
 
-            // The scroller. Booting is UNKNOWN, not zero: a room with no
-            // converged view shows Loading, never an empty timeline (D7).
+            // The scroller, with the CANONICAL `.timeline` class — the
+            // stylesheet makes `.timeline` the bounded flex child with
+            // `overflow-y: auto` and `min-height: 0`; an unstyled class name
+            // here meant long histories expanded the element instead of
+            // forming the scroll viewport the stick-to-bottom math needs.
+            // Booting is UNKNOWN, not zero: a room with no converged view
+            // shows Loading, never an empty timeline (D7).
             div {
-                class: "activity-timeline",
+                class: "timeline",
                 id: "activity-timeline",
                 onscroll: move |_| measure_scroll(),
                 onresize: move |_| sync_scroll(),

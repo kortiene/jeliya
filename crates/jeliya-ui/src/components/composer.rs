@@ -10,12 +10,12 @@
 use dioxus::html::{Key, Modifiers, ModifiersInteraction};
 use dioxus::prelude::*;
 use jeliya_api::{MessageSend, OpId, RoomId, Timestamp};
-use jeliya_client::{ClientHandle, Dedup};
+use jeliya_client::{ClientHandle, Dedup, Execution};
 use jeliya_platform::PreferenceKey;
 
 use crate::components::Field;
 use crate::l10n::use_strings;
-use crate::room::send::{classify_error, op_id_for, phase_for_reply, SendId};
+use crate::room::send::{classify_error, phase_for_reply, SendId, SendPhase};
 use crate::room::RoomActivityState;
 use crate::shell::Shell;
 use crate::PlatformServices;
@@ -34,9 +34,11 @@ const MAX_MESSAGE_LEN: usize = 4000;
 /// classified `Failed`/`Syncing`. Shared by the composer's first send and a
 /// timeline row's Retry, so both settle identically and — reusing the SAME
 /// `op_id` (D4) — the daemon returns the original `event_id` with no second
-/// effect on this connection. Returns `true` iff the call failed, so the
-/// first-send path can restore its draft; a retry keeps the body in the entry
-/// and has nothing to restore.
+/// effect on this connection. Returns `true` iff the draft may be restored —
+/// i.e. the daemon definitely-NOT or UNKNOWN executed; a `Definitely`-executed
+/// send is Syncing and its committed row will arrive, so restoring the body
+/// would invite a duplicate send. A retry keeps the body in the entry and has
+/// nothing to restore.
 pub(crate) async fn run_send(
     handle: ClientHandle,
     mut activity: Signal<RoomActivityState>,
@@ -50,18 +52,33 @@ pub(crate) async fn run_send(
         .await;
     match result {
         Ok(out) => {
-            activity
-                .write()
-                .sends
-                .set_phase(client_id, phase_for_reply(&out));
+            let mut state = activity.write();
+            state.sends.set_phase(client_id, phase_for_reply(&out));
+            // The committed row may ALREADY be in the timeline — the
+            // reconciler's echo can land before this reply (the documented
+            // echo-before-response ordering). Reconcile NOW against the
+            // current view: without this, both the committed row and the
+            // pending row stay visible until the next room update.
+            let timeline = state.timeline().to_vec();
+            state.sends.reconcile(&timeline);
             false
         }
         Err(error) => {
-            activity
-                .write()
-                .sends
-                .set_phase(client_id, classify_error(&error));
-            true
+            let phase = classify_error(&error);
+            // Restore the draft only when the daemon may NOT have executed
+            // (DefinitelyNot / Unknown). A `Definitely` outcome (DecodeReply:
+            // the daemon ran it but the reply was unreadable) becomes Syncing
+            // and the committed row WILL arrive — restoring the body would
+            // invite the user to send a duplicate under a new operation id.
+            let restore = matches!(
+                phase,
+                SendPhase::Failed {
+                    execution: Execution::DefinitelyNot | Execution::Unknown,
+                    ..
+                }
+            );
+            activity.write().sends.set_phase(client_id, phase);
+            restore
         }
     }
 }
@@ -82,6 +99,21 @@ pub fn Composer(
     let mut activity = activity;
     let strings = use_strings();
 
+    let draft_key = PreferenceKey::Draft {
+        room_id: room_id.clone(),
+    };
+    // Seed the text from the persisted draft ONCE (survives a route change; the
+    // browser store is session-scoped, so the composer implies no more).
+    let initial_draft = services.preferences().get(&draft_key).unwrap_or_default();
+    // EVERY hook runs unconditionally (Rules of Hooks): capabilities start
+    // empty on a deep link while room.list loads, so an early `!can_send`
+    // return ahead of these `use_signal`s would change the hook count between
+    // renders of the same component and panic.
+    let mut text = use_signal(|| initial_draft);
+    let mut height = use_signal(|| None::<f64>);
+    let mut element = use_signal(|| None::<MountedEvent>);
+    let mut overflow = use_signal(|| None::<usize>);
+
     if !can_send {
         // The capability is absent (invariant-5 floor): no disabled textarea,
         // a plain statement of the read-only fact (#91 owns the full archive).
@@ -90,17 +122,6 @@ pub fn Composer(
             div { class: "composer-readonly muted", id: "composer-readonly", "{departed}" }
         };
     }
-
-    let draft_key = PreferenceKey::Draft {
-        room_id: room_id.clone(),
-    };
-    // Seed the text from the persisted draft ONCE (survives a route change; the
-    // browser store is session-scoped, so the composer implies no more).
-    let initial_draft = services.preferences().get(&draft_key).unwrap_or_default();
-    let mut text = use_signal(|| initial_draft);
-    let mut height = use_signal(|| None::<f64>);
-    let mut element = use_signal(|| None::<MountedEvent>);
-    let mut overflow = use_signal(|| None::<usize>);
 
     let field_label = strings.composer_label();
     let placeholder = strings.composer_placeholder();
@@ -142,7 +163,18 @@ pub fn Composer(
                 return;
             }
             let client_id = activity.write().sends.begin(body.clone(), base_at);
-            let op_id = op_id_for(client_id);
+            // The entry's own stable op_id (session-unique namespace + local
+            // id) — re-deriving it here would bypass the namespace (#179
+            // review: per-pane counters collided with op_id_conflict).
+            let op_id = {
+                let state = activity.read();
+                state
+                    .sends
+                    .get(client_id)
+                    .expect("the entry begin just pushed")
+                    .op_id
+                    .clone()
+            };
             text.set(String::new());
             overflow.set(None);
             height.set(None);
@@ -154,10 +186,15 @@ pub fn Composer(
             let draft_key = draft_key.clone();
             let restore_body = body.clone();
             spawn(async move {
-                let failed = run_send(handle, activity, room_id, client_id, body, op_id).await;
-                // Restore the draft only on failure, and only if the composer is
-                // still empty (never clobber a new message the user has started).
-                if failed && text.read().trim().is_empty() {
+                // `restore` is true ONLY for never-executed/maybe-executed
+                // failures — a `Definitely`-executed send (DecodeReply) is
+                // Syncing, its committed row will arrive, and restoring the
+                // body would invite a duplicate send (#179 review).
+                let restore = run_send(handle, activity, room_id, client_id, body, op_id).await;
+                // Restore the draft only when the send may not have executed,
+                // and only if the composer is still empty (never clobber a
+                // new message the user has started).
+                if restore && text.read().trim().is_empty() {
                     text.set(restore_body.clone());
                     services.preferences().set(draft_key, &restore_body);
                 }
@@ -170,28 +207,24 @@ pub fn Composer(
         let draft_key = draft_key.clone();
         move |evt: FormEvent| {
             let value = evt.value();
-            if value.len() > MAX_MESSAGE_LEN {
-                // floor_char_boundary: never split a multibyte char (byte
-                // slicing would panic).
+            // floor_char_boundary ONCE, used for BOTH the text state and the
+            // persisted draft: slicing at MAX_MESSAGE_LEN inside a multibyte
+            // character panics, so the safe prefix is computed in one place.
+            let clamped = if value.len() > MAX_MESSAGE_LEN {
                 let mut end = MAX_MESSAGE_LEN;
                 while !value.is_char_boundary(end) {
                     end -= 1;
                 }
-                text.set(value[..end].to_string());
-                overflow.set(Some(value.len() - end));
+                value[..end].to_string()
             } else {
-                text.set(value.clone());
-                overflow.set(None);
-            }
+                value.clone()
+            };
+            overflow.set((value.len() > clamped.len()).then(|| value.len() - clamped.len()));
+            text.set(clamped.clone());
             // Persist (empty clears); measure to autosize.
-            if value.is_empty() {
+            if clamped.is_empty() {
                 services.preferences().remove(&draft_key);
             } else {
-                let clamped = if value.len() > MAX_MESSAGE_LEN {
-                    value[..MAX_MESSAGE_LEN].to_string()
-                } else {
-                    value.clone()
-                };
                 services.preferences().set(draft_key.clone(), &clamped);
             }
             measure();

@@ -19,6 +19,8 @@
 //! Dioxus, no `web-sys`, no `cfg`. It holds the decisions; the composer
 //! component ([`crate::components::composer`]) performs the dispatch.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use jeliya_api::{EventId, MessageSendOut, OpId, Timestamp};
 use jeliya_client::{CallError, Execution};
 
@@ -59,12 +61,31 @@ pub fn epoch_timestamp() -> Timestamp {
     Timestamp::new(time::OffsetDateTime::UNIX_EPOCH)
 }
 
+/// The process-local sequence backing [`next_send_namespace`]. No clock, no
+/// RNG: deterministic within a run (tests assert structure, never absolute
+/// values).
+static SEND_NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A session-unique op-id namespace for ONE pending-send set (§6/D4). The
+/// daemon's dedup ledger is keyed by `(principal, op_id)` — never by room or
+/// component lifetime — so a per-pane counter alone restarts at `dx-send-0`
+/// on every mount and collides with earlier sends, producing `op_id_conflict`
+/// instead of authoring the message. Each fresh set mints a unique namespace;
+/// within a set the per-entry counter stays stable across retries.
+pub fn next_send_namespace() -> String {
+    format!(
+        "dx-send-{}",
+        SEND_NAMESPACE_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// The stable envelope `op_id` a send (and every retry of it) carries. Derived
-/// from the local [`SendId`] so it is stable across retries of the same entry
-/// (D4) and unique per entry; the `dx-send-` prefix keeps it out of any other
-/// op-id namespace. The value is a dedup key, never a user-visible identifier.
-pub fn op_id_for(client_id: SendId) -> OpId {
-    OpId::new(format!("dx-send-{}", client_id.0))
+/// from the send set's session-unique `namespace` plus the local [`SendId`],
+/// so it is stable across retries of the same entry (D4) and unique per entry
+/// across pane lifetimes. The value is a dedup key, never a user-visible
+/// identifier.
+pub fn op_id_for(namespace: &str, client_id: SendId) -> OpId {
+    OpId::new(format!("{namespace}-{}", client_id.0))
 }
 
 /// A local send's lifecycle phase — exactly what the seam has proven (D3).
@@ -115,11 +136,11 @@ pub struct SendEntry {
 
 impl SendEntry {
     /// A fresh send in [`SendPhase::Pending`], with its stable op_id derived
-    /// from `client_id`.
-    pub fn new(client_id: SendId, body: String, at: Timestamp) -> Self {
+    /// from the send set's `namespace` and `client_id`.
+    pub fn new(namespace: &str, client_id: SendId, body: String, at: Timestamp) -> Self {
         Self {
             client_id,
-            op_id: op_id_for(client_id),
+            op_id: op_id_for(namespace, client_id),
             body,
             at,
             phase: SendPhase::Pending,
@@ -202,17 +223,32 @@ mod tests {
         let b = ids.mint();
         assert_eq!(a, SendId(0));
         assert_eq!(b, SendId(1));
-        // The op_id is derived from the client id, so it is stable across
-        // retries of the SAME entry and distinct between entries (D4).
-        assert_eq!(op_id_for(a), OpId::new("dx-send-0"));
-        assert_eq!(op_id_for(a), op_id_for(a));
-        assert_ne!(op_id_for(a), op_id_for(b));
+        // The op_id is derived from the namespace + client id, so it is stable
+        // across retries of the SAME entry and distinct between entries (D4).
+        assert_eq!(op_id_for("dx-send-t", a), OpId::new("dx-send-t-0"));
+        assert_eq!(op_id_for("dx-send-t", a), op_id_for("dx-send-t", a));
+        assert_ne!(op_id_for("dx-send-t", a), op_id_for("dx-send-t", b));
+    }
+
+    #[test]
+    fn namespaces_make_op_ids_unique_across_send_sets() {
+        // Two sets (two pane mounts) must never mint the same op_id: the
+        // daemon dedup ledger is keyed by (principal, op_id), so a collision
+        // answers op_id_conflict instead of authoring the message.
+        let ns_a = next_send_namespace();
+        let ns_b = next_send_namespace();
+        assert_ne!(ns_a, ns_b);
+        assert_ne!(
+            op_id_for(&ns_a, SendId(0)),
+            op_id_for(&ns_b, SendId(0)),
+            "fresh mounts must not collide on dx-send-…-0"
+        );
     }
 
     #[test]
     fn a_reply_moves_pending_to_syncing_with_the_event_id() {
         let mut ids = SendIds::new();
-        let entry = SendEntry::new(ids.mint(), "hi".into(), ts(1));
+        let entry = SendEntry::new("dx-send-t", ids.mint(), "hi".into(), ts(1));
         assert_eq!(entry.phase, SendPhase::Pending);
         let phase = phase_for_reply(&send_out("event-1"));
         assert_eq!(
@@ -291,7 +327,7 @@ mod tests {
     #[test]
     fn a_syncing_entry_reconciles_only_on_its_own_event_id() {
         let mut ids = SendIds::new();
-        let mut entry = SendEntry::new(ids.mint(), "hi".into(), ts(1));
+        let mut entry = SendEntry::new("dx-send-t", ids.mint(), "hi".into(), ts(1));
         entry.phase = phase_for_reply(&send_out("event-1"));
         let has_other = |id: &EventId| id.as_str() == "event-2";
         let has_own = |id: &EventId| id.as_str() == "event-1";
@@ -299,12 +335,12 @@ mod tests {
         assert!(entry.reconciled_by(&has_own));
 
         // A still-Pending entry never reconciles (no event_id yet).
-        let pending = SendEntry::new(ids.mint(), "hi".into(), ts(1));
+        let pending = SendEntry::new("dx-send-t", ids.mint(), "hi".into(), ts(1));
         assert!(!pending.reconciled_by(&has_own));
 
         // A Syncing entry with an UNKNOWN event_id (DecodeReply) reconciles by
         // absence, never by a timeline id match.
-        let mut decoded = SendEntry::new(ids.mint(), "hi".into(), ts(1));
+        let mut decoded = SendEntry::new("dx-send-t", ids.mint(), "hi".into(), ts(1));
         decoded.phase = SendPhase::Syncing { event_id: None };
         assert!(!decoded.reconciled_by(&has_own));
     }

@@ -310,7 +310,7 @@ mod tests {
     }
 
     fn pending(id: u64, at: i64) -> SendEntry {
-        SendEntry::new(SendId(id), "draft".into(), ts(at))
+        SendEntry::new("dx-send-t", SendId(id), "draft".into(), ts(at))
     }
 
     #[test]
