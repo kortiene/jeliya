@@ -191,6 +191,14 @@ pub fn AppRoot(
     /// their own). Defaults to the wide shell.
     #[props(default = Shell::Wide)]
     initial_shell: Shell,
+    /// Composition's viewport-watcher registration (web: a `matchMedia`
+    /// listener at the compact boundary; `None` off the web target). Called
+    /// ONCE with the handler composition invokes on every boundary crossing,
+    /// so the shell selection tracks resizes, zoom, and rotation rather than
+    /// freezing at the launch width. Kept as an injected callback so this
+    /// shared component stays free of `web-sys`/`cfg` (Decision-3).
+    #[props(default)]
+    on_shell_subscribe: Option<Callback<Callback<Shell>>>,
     /// The visible recovery banner to show when corrupt/unsupported new-format
     /// preference state was reset at boot (#178 §6.4). `None` on the ordinary
     /// fresh-tab path.
@@ -246,9 +254,17 @@ pub fn AppRoot(
     let last_room = preferences.get(&PreferenceKey::LastRoom).map(RoomId::new);
     let router = use_route(services.clone(), router_raw_path, last_room);
     // The responsive shell — an injected reactive input; composition pushes
-    // `matchMedia` updates on the web target (§8). Held in a signal so a future
+    // `matchMedia` updates on the web target (§8). Held in a signal so a
     // resize updates it; seeded from the prop.
-    let shell = use_signal(|| initial_shell);
+    let mut shell = use_signal(|| initial_shell);
+    // Register the shell handler with composition's viewport watcher exactly
+    // once (the prop is static for the app's lifetime). Without a watcher
+    // (non-web targets) the launch shell simply persists, as before.
+    use_effect(move || {
+        if let Some(register) = on_shell_subscribe {
+            register.call(Callback::new(move |next: Shell| shell.set(next)));
+        }
+    });
     // The visible recovery banner (§6.4), dismissable once acknowledged. The
     // corrupt/unsupported keys were already reset at boot (that is what produced
     // this view); the explicit action clears the remaining enumerated top-level
@@ -574,6 +590,16 @@ pub fn AppRoot(
     let current_route = router.route.read().clone();
     let active_shell = shell();
     let navigate = router.navigate;
+    // The root pane state tracks the route: the stylesheet's compact rules show
+    // exactly one pane per `pane-*` class, and a room/fleet/settings destination
+    // is full-surface content, not rail content (its `main` carries the
+    // `.destination` class the grid spans across both columns).
+    let pane_class = match &current_route {
+        Route::Rooms => "pane-rooms",
+        Route::Room { .. } => "pane-room",
+        Route::Fleet => "pane-fleet",
+        Route::Settings => "pane-settings",
+    };
     // Clones for the closures/props below; the prop `services` stays available.
     let services_reset = services.clone();
     let services_settings = services.clone();
@@ -634,14 +660,68 @@ pub fn AppRoot(
                     match room {
                         None => onboarding_progress.set(OnboardProgress::RoomsStep),
                         Some(room_id) => {
-                            onboarding_progress.set(OnboardProgress::Done);
-                            navigate
-                                .call(
-                                    NavIntent::push(Route::Room {
-                                        room_id,
-                                        dest: RoomDest::Activity,
-                                    }),
-                                );
+                            // The room now exists (room.create returned it), but
+                            // the already-answered room.list does not name it — a
+                            // route lookup against that stale list renders
+                            // `RoomUnavailable` for the room the user just made.
+                            // Re-read the list AUTHORITATIVELY before navigating;
+                            // only a successful read opens the room. A transport
+                            // drop retries across recovery exactly like the mount
+                            // read; any other failure is terminal — surface the
+                            // raw detail and land on Rooms, never on a fabricated
+                            // "unavailable" for a room that was just created.
+                            let handle = onboarding_handle.clone();
+                            spawn(async move {
+                                let mut recovery = handle.subscribe();
+                                loop {
+                                    match handle.call::<RoomList>(RoomList {}, Dedup::None).await
+                                    {
+                                        Ok(out) => {
+                                            let mut state = ui.write();
+                                            state.set_rooms(out.rooms);
+                                            state.clear_notice();
+                                            drop(state);
+                                            onboarding_progress.set(OnboardProgress::Done);
+                                            navigate.call(NavIntent::push(Route::Room {
+                                                room_id: room_id.clone(),
+                                                dest: RoomDest::Activity,
+                                            }));
+                                            return;
+                                        }
+                                        Err(CallError::Disconnected { .. }) => {
+                                            // Wait for leave-and-re-enter Ready
+                                            // (the settlement can outrun the
+                                            // lifecycle event), then retry.
+                                            let mut left_ready =
+                                                handle.state() != State::Ready;
+                                            loop {
+                                                if left_ready && handle.state() == State::Ready
+                                                {
+                                                    break;
+                                                }
+                                                match recovery.next().await {
+                                                    Some(ClientEvent::StateChanged {
+                                                        to, ..
+                                                    }) => {
+                                                        if to != State::Ready {
+                                                            left_ready = true;
+                                                        }
+                                                    }
+                                                    Some(_) => {}
+                                                    None => return,
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            ui.write()
+                                                .set_terminal_notice(diagnostic_notice(&error));
+                                            onboarding_progress.set(OnboardProgress::Done);
+                                            navigate.call(NavIntent::push(Route::Rooms));
+                                            return;
+                                        }
+                                    }
+                                }
+                            });
                         }
                     }
                 },
@@ -655,10 +735,11 @@ pub fn AppRoot(
             SkipLinks {
                 SkipLink { anchor: "rooms-nav".to_string(), label: skip_rooms }
             }
-            // A root pane state is always set (`pane-rooms`): the shared stylesheet
-            // hides `.sidebar`/`.center` on compact viewports unless a pane is
-            // selected, so a plain `app` root renders blank on a phone WebView.
-            div { class: "app pane-rooms", id: "app-root",
+            // A root pane state is always set: the shared stylesheet hides
+            // `.sidebar`/`.center`/`.destination` on compact viewports unless a
+            // pane is selected, so a plain `app` root renders blank on a phone
+            // WebView. The class tracks the route (see `pane_class` above).
+            div { class: "app {pane_class}", id: "app-root",
                 // The page's single `<h1>`, at the always-rendered root. Visually
                 // hidden because the visible headings already show on screen; it
                 // names the page for assistive tech.
@@ -744,7 +825,7 @@ pub fn AppRoot(
                             let room_row = snapshot.rooms.iter().find(|r| r.room_id == room_id).cloned();
                             let reachable = !snapshot.rooms_loaded || room_row.is_some();
                             rsx! {
-                                main { class: "sidebar", id: "main-content", tabindex: "-1",
+                                main { class: "destination", id: "main-content", tabindex: "-1",
                                     match room_row {
                                         Some(room) => rsx! {
                                             RoomShell {
@@ -772,7 +853,7 @@ pub fn AppRoot(
                             }
                         }
                         Route::Fleet => rsx! {
-                            main { class: "sidebar", id: "main-content", tabindex: "-1",
+                            main { class: "destination", id: "main-content", tabindex: "-1",
                                 FleetPane {
                                     handle: panes_handle.clone(),
                                     services: services_fleet.clone(),
@@ -783,7 +864,7 @@ pub fn AppRoot(
                             }
                         },
                         Route::Settings => rsx! {
-                            main { class: "sidebar", id: "main-content", tabindex: "-1",
+                            main { class: "destination", id: "main-content", tabindex: "-1",
                                 SettingsPane {
                                     services: services_settings.clone(),
                                     subject_id: self_id.clone(),

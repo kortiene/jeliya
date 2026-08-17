@@ -19,7 +19,7 @@
 //! `MountedEvent::set_focus`.
 
 use dioxus::prelude::*;
-use jeliya_api::{RoomCreate, RoomId, SubjectEnsure};
+use jeliya_api::{InviteRedeem, RoomCreate, RoomId, SubjectEnsure};
 use jeliya_client::{ClientHandle, Dedup};
 
 use crate::components::Field;
@@ -180,12 +180,22 @@ fn RoomsStep(handle: ClientHandle, on_created: EventHandler<RoomId>) -> Element 
     // inline.
     let ticket_base = "onboarding-ticket";
 
+    // In-flight latches: a mutation button must never dispatch a second call
+    // while the first is unanswered — room-name homonyms are valid, so a
+    // double-click would otherwise create TWO rooms while onboarding advances
+    // on whichever reply lands first. The latch releases only on error (on
+    // success this surface unmounts as onboarding completes).
+    let mut creating = use_signal(|| false);
+    let mut joining = use_signal(|| false);
+
+    let handle_create = handle.clone();
     let create_room = move |_| {
         let trimmed = name.peek().trim().to_owned();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || creating() {
             return;
         }
-        let handle = handle.clone();
+        creating.set(true);
+        let handle = handle_create.clone();
         let on_created = on_created;
         let mut error = error;
         spawn(async move {
@@ -198,6 +208,32 @@ fn RoomsStep(handle: ClientHandle, on_created: EventHandler<RoomId>) -> Element 
                     // Surface the raw error string so the user gets the real
                     // code (Finding 1 — "Failures are failures" law).
                     error.set(Some(format!("{}: {e}", err_title)));
+                    creating.set(false);
+                }
+            }
+        });
+    };
+
+    let join_room = move |_| {
+        let capability = ticket.peek().trim().to_owned();
+        if capability.is_empty() || joining() {
+            return;
+        }
+        joining.set(true);
+        let handle = handle.clone();
+        let on_created = on_created;
+        let mut error = error;
+        spawn(async move {
+            match handle
+                .call::<InviteRedeem>(InviteRedeem { capability }, Dedup::None)
+                .await
+            {
+                // A replay (`joined: false`) still names the room — the user's
+                // membership exists either way, so both outcomes advance.
+                Ok(out) => on_created.call(out.room_id),
+                Err(e) => {
+                    error.set(Some(format!("{}: {e}", err_title)));
+                    joining.set(false);
                 }
             }
         });
@@ -228,6 +264,7 @@ fn RoomsStep(handle: ClientHandle, on_created: EventHandler<RoomId>) -> Element 
                 button {
                     class: "btn btn-primary",
                     id: "onboarding-create-room",
+                    disabled: creating(),
                     onclick: create_room,
                     "{create}"
                 }
@@ -245,13 +282,16 @@ fn RoomsStep(handle: ClientHandle, on_created: EventHandler<RoomId>) -> Element 
                         oninput: move |evt| ticket.set(evt.value()),
                     }
                 }
-                // The join action is present; the full retrying join flow is
-                // #179-adjacent (spec Q3). The button validates a non-empty
-                // ticket but does not yet dispatch room.join.
+                // The join action redeems the ticket's capability through
+                // `invite.redeem`; both a fresh join and a replay advance to
+                // the named room. The full retrying join flow is #179-adjacent
+                // (spec Q3) — this dispatches the mutation honestly, with the
+                // raw error code on failure.
                 button {
                     class: "btn",
                     id: "onboarding-join-room",
-                    disabled: ticket.read().trim().is_empty(),
+                    disabled: ticket.read().trim().is_empty() || joining(),
+                    onclick: join_room,
                     "{join}"
                 }
             }
