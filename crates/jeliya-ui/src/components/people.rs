@@ -129,7 +129,10 @@ pub fn PeoplePane(
                             LoadState::Loaded(view)
                         });
                     }
-                    Err(err) => roster.set(load_error(&err)),
+                    Err(err) => {
+                        let previous = roster.read().value().cloned();
+                        roster.set(load_error(&err, previous));
+                    }
                 }
 
                 match ready_call(
@@ -149,7 +152,10 @@ pub fn PeoplePane(
                             LoadState::Loaded(view)
                         });
                     }
-                    Err(err) => invites.set(load_error(&err)),
+                    Err(err) => {
+                        let previous = invites.read().value().cloned();
+                        invites.set(load_error(&err, previous));
+                    }
                 }
             }
         });
@@ -248,7 +254,10 @@ pub fn PeoplePane(
                         // Disclose the fresh capability ONCE (never persisted).
                         minted.set(Some(out.capability));
                         // Revoke the stale ticket so it cannot be presented.
-                        let _ = handle
+                        // If revoke fails with an ambiguous outcome, the stale
+                        // ticket may still be redeemable — surface that to the
+                        // user so they know it must be re-tried.
+                        match handle
                             .call::<InviteRevoke>(
                                 InviteRevoke {
                                     room_id,
@@ -256,7 +265,15 @@ pub fn PeoplePane(
                                 },
                                 Dedup::None,
                             )
-                            .await;
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(revoke_err) => {
+                                if revoke_err.execution() == Execution::Unknown {
+                                    couldnt.set(true);
+                                }
+                            }
+                        }
                     }
                     Err(err) => {
                         if err.execution() == Execution::Unknown {
@@ -535,17 +552,23 @@ async fn dispatch_mutation(handle: &ClientHandle, op: MutationOp) -> Result<(), 
 }
 
 /// Map a read error to the truthful [`LoadState`] arm (idempotent-read policy).
-fn load_error<T>(err: &jeliya_client::CallError) -> LoadState<T> {
+fn load_error<T>(err: &jeliya_client::CallError, previous: Option<T>) -> LoadState<T> {
     // `member.remove`-style authorization is a wire refusal; a coarse check is
     // enough here (the typed code lives in jeliya-api).
     let unauthorized = matches!(err, jeliya_client::CallError::Wire(_));
     match ReadOutcome::classify(err, unauthorized) {
         ReadOutcome::Offline => LoadState::Offline,
         ReadOutcome::Unauthorized => LoadState::Unauthorized,
-        ReadOutcome::Failed => LoadState::Failed(crate::l10n::FriendlyError {
-            title: String::new(),
-            message: String::new(),
-        }),
+        ReadOutcome::Failed => {
+            if let Some(v) = previous {
+                LoadState::Stale(v)
+            } else {
+                LoadState::Failed(crate::l10n::FriendlyError {
+                    title: String::new(),
+                    message: String::new(),
+                })
+            }
+        }
     }
 }
 

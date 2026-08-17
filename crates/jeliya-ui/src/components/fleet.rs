@@ -24,7 +24,7 @@ use crate::shell::router::NavIntent;
 use crate::status;
 use crate::view::alias::AliasMap;
 use crate::view::fleet::{fold_fleet, AttentionGroup, FleetFilter, FleetRowView, FleetView};
-use crate::view::load::LoadState;
+use crate::view::load::{LoadState, ReadOutcome};
 use crate::view::poll::{FleetPoll, PollAction};
 use crate::PlatformServices;
 
@@ -89,7 +89,10 @@ pub fn FleetPane(
                                     LoadState::Loaded(view)
                                 });
                             }
-                            Err(err) => fleet.set(fleet_error(&err)),
+                            Err(err) => {
+                                let previous = fleet.read().value().cloned();
+                                fleet.set(fleet_error(&err, previous));
+                            }
                         }
                     }
                     PollAction::Stop => {}
@@ -126,6 +129,9 @@ pub fn FleetPane(
                         rsx! { p { class: "muted", id: "fleet-empty-filtered", "{strings.fleet_empty()}" } }
                     } else {
                         rsx! {
+                            if matches!(&*fleet.read(), LoadState::Stale(_)) {
+                                p { class: "muted", id: "fleet-stale-indicator", "{strings.state_stale()}" }
+                            }
                             for (group , rows) in groups.iter() {
                                 section { key: "{group:?}", class: "fleet-group",
                                     Heading {
@@ -163,16 +169,26 @@ fn attention_heading(strings: &dyn crate::l10n::Catalog, group: AttentionGroup) 
     }
 }
 
-/// Map a fleet read error to the truthful state.
-fn fleet_error(err: &jeliya_client::CallError) -> LoadState<FleetView> {
-    use crate::view::load::ReadOutcome;
+/// Map a fleet read error to the truthful state. When a previous value
+/// exists, a transient failure produces [`LoadState::Stale`] so the honest
+/// data stays on screen with a stale indication (repo law: no fake state).
+fn fleet_error(
+    err: &jeliya_client::CallError,
+    previous: Option<FleetView>,
+) -> LoadState<FleetView> {
     match ReadOutcome::classify(err, matches!(err, jeliya_client::CallError::Wire(_))) {
         ReadOutcome::Offline => LoadState::Offline,
         ReadOutcome::Unauthorized => LoadState::Unauthorized,
-        ReadOutcome::Failed => LoadState::Failed(crate::l10n::FriendlyError {
-            title: String::new(),
-            message: String::new(),
-        }),
+        ReadOutcome::Failed => {
+            if let Some(v) = previous {
+                LoadState::Stale(v)
+            } else {
+                LoadState::Failed(crate::l10n::FriendlyError {
+                    title: String::new(),
+                    message: String::new(),
+                })
+            }
+        }
     }
 }
 

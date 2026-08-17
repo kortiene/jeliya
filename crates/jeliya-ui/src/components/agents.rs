@@ -29,15 +29,21 @@ fn first_page() -> Page {
     }
 }
 
-fn load_error<T>(err: &jeliya_client::CallError) -> LoadState<T> {
+fn load_error<T>(err: &jeliya_client::CallError, previous: Option<T>) -> LoadState<T> {
     use crate::view::load::ReadOutcome;
     match ReadOutcome::classify(err, matches!(err, jeliya_client::CallError::Wire(_))) {
         ReadOutcome::Offline => LoadState::Offline,
         ReadOutcome::Unauthorized => LoadState::Unauthorized,
-        ReadOutcome::Failed => LoadState::Failed(crate::l10n::FriendlyError {
-            title: String::new(),
-            message: String::new(),
-        }),
+        ReadOutcome::Failed => {
+            if let Some(v) = previous {
+                LoadState::Stale(v)
+            } else {
+                LoadState::Failed(crate::l10n::FriendlyError {
+                    title: String::new(),
+                    message: String::new(),
+                })
+            }
+        }
     }
 }
 
@@ -73,7 +79,10 @@ pub fn AgentsPane(
                             LoadState::Loaded(view)
                         });
                     }
-                    Err(err) => agents.set(load_error(&err)),
+                    Err(err) => {
+                        let previous = agents.read().value().cloned();
+                        agents.set(load_error(&err, previous));
+                    }
                 }
             }
         });
@@ -174,7 +183,10 @@ fn AgentRow(
                             LoadState::Loaded(view)
                         }));
                     }
-                    Err(err) => history.set(Some(load_error(&err))),
+                    Err(err) => {
+                        let previous = history.read().as_ref().and_then(|s| s.value().cloned());
+                        history.set(Some(load_error(&err, previous)));
+                    }
                 }
             }
         });
