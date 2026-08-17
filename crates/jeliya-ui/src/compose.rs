@@ -38,6 +38,10 @@ pub struct WebComposition {
     /// The mock controller. `Rc` so the composition stays `Clone` for a Dioxus
     /// hook; single-threaded on the browser target.
     pub controller: Rc<MockController>,
+    /// Preference-schema anomalies found at boot (corrupt/unsupported new-format
+    /// state that was reset), driving the visible recovery banner (#178 §6.4).
+    /// Empty on the host fake and on a fresh browser tab.
+    pub anomalies: Vec<crate::prefs::SchemaAnomaly>,
 }
 
 /// Build the browser composition: the deterministic mock behind a
@@ -56,14 +60,28 @@ pub fn web_composition() -> WebComposition {
             }),
         )
         .build();
+    // Inject the real browser `WebPlatform` on the `web` target (#178 §5.A/§3.3):
+    // History-API navigation, browser lifecycle, session-scoped versioned
+    // preferences + the boot-time legacy purge, in-memory secrets. Off the `web`
+    // target (host tests, MSRV, the compose-shape check) the browser-shaped
+    // deterministic fake stands in — same browser SHAPE (session-scoped, no
+    // window, no private directory), host-compilable. The `ClientHandle` stays
+    // the deterministic mock until #171's `WsWeb` lands behind the same handle.
+    let (services, anomalies) = {
+        #[cfg(feature = "web")]
+        {
+            crate::platform_web::WebPlatform::build()
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            (PlatformServices::fake_browser(), Vec::new())
+        }
+    };
     WebComposition {
         handle,
-        // The browser-shaped deterministic fake from the canonical
-        // `jeliya-platform` contract (#174): session-scoped preferences, no
-        // window actions, browser-blob sources. M3's live web-sys services
-        // replace it behind the unchanged facade.
-        services: PlatformServices::fake_browser(),
+        services,
         controller: Rc::new(controller),
+        anomalies,
     }
 }
 
@@ -75,6 +93,20 @@ pub fn WebRoot() -> Element {
     let composition = use_hook(web_composition);
     let handle = composition.handle.clone();
     let services = composition.services.clone();
+
+    // #178: the visible recovery banner (from boot-time schema anomalies), the
+    // launch path (for the router's mount canonicalization + last-room restore),
+    // and the responsive shell — all read here at composition, so `AppRoot` stays
+    // free of `web-sys`/`cfg` (Decision-3).
+    let recovery = crate::shell::bootstrap::RecoveryView::from_anomalies(&composition.anomalies);
+    let raw_path = web_raw_path();
+    let initial_shell = web_shell();
+    // The scripted daemon connection snapshot (§5.D / D2) that drives AppRoot's
+    // bootstrap/onboarding fold. `None` on the ordinary fresh tab (the seam does
+    // not yet surface `Hello.subject` — D2/R1), so the shell mounts on the
+    // lifecycle alone; a marker-gated `?onboard=` fixture scripts a snapshot so the
+    // offline suite can drive first-run onboarding against the deterministic mock.
+    let connection = web_connection_snapshot();
 
     // The injected `<html lang>` setter AppRoot calls REACTIVELY on the resolved
     // locale (mount and any live switch). Confined here (web-sys); never in the
@@ -122,7 +154,103 @@ pub fn WebRoot() -> Element {
     });
 
     rsx! {
-        AppRoot { handle, services, platform_locale: platform_locale(), on_locale_lang }
+        AppRoot {
+            handle,
+            services,
+            platform_locale: platform_locale(),
+            on_locale_lang,
+            raw_path,
+            initial_shell,
+            recovery,
+            connection,
+        }
+    }
+}
+
+/// The scripted daemon connection snapshot (#178 §5.D / D2) for `AppRoot`'s
+/// bootstrap/onboarding fold — the ONE place the browser's onboarding fixture is
+/// read.
+///
+/// In production the `ClientHandle` seam does not yet surface `Hello.subject`
+/// (D2/R1), so this returns `None` and the shell mounts on the lifecycle alone
+/// (the fresh-tab / a11y-matrix path). A marker-gated `?onboard=<identity|rooms>`
+/// fixture scripts a snapshot so the offline suite can drive first-run onboarding
+/// against the deterministic mock: `identity` → subject `Absent` (the identity
+/// step), `rooms` → subject `Present` with the scripted empty `room.list` (the
+/// rooms step). Gated on the SAME e2e `localStorage` marker as `?boot=`/`?rooms=`,
+/// so production — loopback or not — never arms it, and `None` everywhere off the
+/// `web` target.
+fn web_connection_snapshot() -> Option<crate::shell::bootstrap::ConnectionSnapshot> {
+    #[cfg(feature = "web")]
+    {
+        use crate::shell::bootstrap::ConnectionSnapshot;
+        use jeliya_api::{DeviceId, SubjectId, SubjectState};
+
+        let window = web_sys::window()?;
+        let armed = window
+            .local_storage()
+            .ok()
+            .flatten()
+            .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+            .as_deref()
+            == Some("1");
+        if !armed {
+            return None;
+        }
+        let search = window.location().search().ok()?;
+        let value = search
+            .trim_start_matches('?')
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("onboard="))?;
+        let subject = match value {
+            "identity" => SubjectState::Absent,
+            "rooms" => SubjectState::Present {
+                subject_id: SubjectId::new("blake3:onboarding-subject"),
+                device_id: DeviceId::new("blake3:onboarding-device"),
+            },
+            _ => return None,
+        };
+        Some(ConnectionSnapshot {
+            subject,
+            storage_generation: 1,
+        })
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        None
+    }
+}
+
+/// The launch `location.pathname` for the router's mount canonicalization
+/// (#178 §5.C) — the ONE place the raw pre-parse path is read. `None` off the
+/// `web` target (host/native), where `AppRoot` defaults to the canonical Rooms
+/// path.
+fn web_raw_path() -> Option<String> {
+    #[cfg(feature = "web")]
+    {
+        Some(crate::platform_web::location_pathname())
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        None
+    }
+}
+
+/// The responsive shell at launch (#178 §8), from the viewport width. A static
+/// initial read (the `AppRoot` shell signal exists for a future `matchMedia`
+/// resize subscription — Q4); defaults to the wide shell off the `web` target.
+fn web_shell() -> crate::shell::Shell {
+    #[cfg(feature = "web")]
+    {
+        let width = web_sys::window()
+            .and_then(|w| w.inner_width().ok())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(crate::shell::WIDE_MIN);
+        crate::shell::shell_for(width)
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        crate::shell::Shell::Wide
     }
 }
 

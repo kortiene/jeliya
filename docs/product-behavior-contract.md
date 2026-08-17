@@ -396,10 +396,12 @@ credential material: the tab-scoped session credential and its tickets are
 the only browser-held secrets, and they too die with the tab
 ([first-release distribution boundary](first-release-distribution.md)).
 
-The namespaces the persisting platforms use are not named here: #178 fixes
-the packaged-shell WebView key namespace, #185 the desktop preferences
-store and its version key, and #173 the Android data directory. Each must
-be a name no retiring client ever wrote.
+#178 established the browser preference namespace (`jeliya.dx.v1`) and the
+enumerated legacy-key purge (applied once at `WebPlatform` construction;
+removes only keys in the closed allowlist, never reads them as state). The
+desktop preferences store and its version key (#185) and the Android data
+directory (#173) remain ahead. Each must be a name no retiring client ever
+wrote.
 
 ## PlatformServices
 

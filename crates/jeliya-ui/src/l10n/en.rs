@@ -215,4 +215,126 @@ impl Catalog for En {
             PluralCategory::Other => format!("{count_display} rooms"),
         }
     }
+
+    fn nav_global_label(&self) -> &'static str {
+        "Primary"
+    }
+    fn dest_rooms(&self) -> &'static str {
+        "Rooms"
+    }
+    fn dest_fleet(&self) -> &'static str {
+        "Agent Fleet"
+    }
+    fn dest_settings(&self) -> &'static str {
+        "Settings"
+    }
+
+    fn onboarding_identity_title(&self) -> &'static str {
+        "Create your identity"
+    }
+    fn onboarding_identity_body(&self) -> &'static str {
+        "Your identity is a keypair on this device. There is no account and no password to recover."
+    }
+    fn onboarding_create_identity(&self) -> &'static str {
+        "Create identity"
+    }
+    fn identity_id_label(&self) -> &'static str {
+        "Your identity"
+    }
+    fn identity_copy(&self) -> &'static str {
+        "Copy"
+    }
+    fn identity_unrecoverable(&self) -> &'static str {
+        "This is your permanent peer-to-peer identity. It cannot be recovered if lost."
+    }
+
+    fn onboarding_rooms_title(&self) -> &'static str {
+        "Start or join a room"
+    }
+    fn onboarding_create_room(&self) -> &'static str {
+        "Create a room"
+    }
+    fn room_name_label(&self) -> &'static str {
+        "Room name"
+    }
+    fn onboarding_join_room(&self) -> &'static str {
+        "Join with a ticket"
+    }
+    fn ticket_label(&self) -> &'static str {
+        "Invite ticket"
+    }
+    fn ticket_help(&self) -> &'static str {
+        "Paste an invite ticket a room member shared with you."
+    }
+
+    fn self_label_label(&self) -> &'static str {
+        "Your name"
+    }
+    fn self_label_help(&self) -> &'static str {
+        "Shown on this device only. It is never sent to anyone."
+    }
+
+    fn settings_heading(&self) -> &'static str {
+        "Settings"
+    }
+    fn settings_identity_heading(&self) -> &'static str {
+        "Identity"
+    }
+    fn settings_language_heading(&self) -> &'static str {
+        "Language"
+    }
+    fn settings_text_locale_label(&self) -> &'static str {
+        "Interface language"
+    }
+    fn settings_formatting_locale_label(&self) -> &'static str {
+        "Number and date format"
+    }
+    fn settings_locale_follow_system(&self) -> &'static str {
+        "Follow system"
+    }
+    fn settings_session_only_note(&self) -> &'static str {
+        "Applies this session — not saved on this browser."
+    }
+
+    fn fleet_heading(&self) -> &'static str {
+        "Agent Fleet"
+    }
+    fn fleet_loading(&self) -> &'static str {
+        "Agent Fleet is not available yet."
+    }
+
+    fn room_nav_label(&self) -> &'static str {
+        "Room"
+    }
+    fn room_dest_activity(&self) -> &'static str {
+        "Activity"
+    }
+    fn room_dest_people(&self) -> &'static str {
+        "People"
+    }
+    fn room_dest_agents(&self) -> &'static str {
+        "Agents"
+    }
+    fn room_dest_files(&self) -> &'static str {
+        "Files"
+    }
+    fn room_dest_pipes(&self) -> &'static str {
+        "Pipes"
+    }
+    fn room_dest_skeleton(&self) -> &'static str {
+        "Nothing to show here yet."
+    }
+    fn room_unavailable(&self) -> &'static str {
+        "This room isn’t available on this device. Return to Rooms."
+    }
+
+    fn recovery_title(&self) -> &'static str {
+        "Local preferences reset"
+    }
+    fn recovery_body(&self) -> &'static str {
+        "Some local preferences couldn’t be read and were reset to their defaults."
+    }
+    fn recovery_reset_action(&self) -> &'static str {
+        "Reset local preferences"
+    }
 }

@@ -210,6 +210,132 @@ impl Catalog for Fr {
         )
     }
 
+    fn nav_global_label(&self) -> &'static str {
+        "Principal"
+    }
+    fn dest_rooms(&self) -> &'static str {
+        "Salons"
+    }
+    fn dest_fleet(&self) -> &'static str {
+        "Flotte d’agents"
+    }
+    fn dest_settings(&self) -> &'static str {
+        "Paramètres"
+    }
+
+    fn onboarding_identity_title(&self) -> &'static str {
+        "Créez votre identité"
+    }
+    fn onboarding_identity_body(&self) -> &'static str {
+        "Votre identité est une paire de clés sur cet appareil. Il n’y a ni compte ni mot de passe à récupérer."
+    }
+    fn onboarding_create_identity(&self) -> &'static str {
+        "Créer l’identité"
+    }
+    fn identity_id_label(&self) -> &'static str {
+        "Votre identité"
+    }
+    fn identity_copy(&self) -> &'static str {
+        "Copier"
+    }
+    fn identity_unrecoverable(&self) -> &'static str {
+        "Ceci est votre identité pair-à-pair permanente. Elle est irrécupérable en cas de perte."
+    }
+
+    fn onboarding_rooms_title(&self) -> &'static str {
+        "Créez ou rejoignez un salon"
+    }
+    fn onboarding_create_room(&self) -> &'static str {
+        "Créer un salon"
+    }
+    fn room_name_label(&self) -> &'static str {
+        "Nom du salon"
+    }
+    fn onboarding_join_room(&self) -> &'static str {
+        "Rejoindre avec un ticket"
+    }
+    fn ticket_label(&self) -> &'static str {
+        "Ticket d’invitation"
+    }
+    fn ticket_help(&self) -> &'static str {
+        "Collez un ticket d’invitation qu’un membre du salon a partagé avec vous."
+    }
+
+    fn self_label_label(&self) -> &'static str {
+        "Votre nom"
+    }
+    fn self_label_help(&self) -> &'static str {
+        "Affiché uniquement sur cet appareil. Il n’est jamais envoyé à personne."
+    }
+
+    fn settings_heading(&self) -> &'static str {
+        "Paramètres"
+    }
+    fn settings_identity_heading(&self) -> &'static str {
+        "Identité"
+    }
+    fn settings_language_heading(&self) -> &'static str {
+        "Langue"
+    }
+    fn settings_text_locale_label(&self) -> &'static str {
+        "Langue de l’interface"
+    }
+    fn settings_formatting_locale_label(&self) -> &'static str {
+        "Format des nombres et des dates"
+    }
+    fn settings_locale_follow_system(&self) -> &'static str {
+        "Suivre le système"
+    }
+    fn settings_session_only_note(&self) -> &'static str {
+        "S’applique à cette session — non enregistré sur ce navigateur."
+    }
+
+    fn fleet_heading(&self) -> &'static str {
+        "Flotte d’agents"
+    }
+    fn fleet_loading(&self) -> &'static str {
+        "La flotte d’agents n’est pas encore disponible."
+    }
+
+    fn room_nav_label(&self) -> &'static str {
+        "Salon"
+    }
+    fn room_dest_activity(&self) -> &'static str {
+        "Activité"
+    }
+    fn room_dest_people(&self) -> &'static str {
+        "Personnes"
+    }
+    fn room_dest_agents(&self) -> &'static str {
+        // `agents` is a never-translate lexicon term (docs/glossary-fr.md);
+        // identical to English on purpose, as the retiring React catalog had it.
+        "Agents"
+    }
+    fn room_dest_files(&self) -> &'static str {
+        "Fichiers"
+    }
+    fn room_dest_pipes(&self) -> &'static str {
+        // Coined protocol term, kept verbatim — the retiring React catalog
+        // rendered `Pipes` identically in French too.
+        "Pipes"
+    }
+    fn room_dest_skeleton(&self) -> &'static str {
+        "Rien à afficher ici pour l’instant."
+    }
+    fn room_unavailable(&self) -> &'static str {
+        "Ce salon n’est pas disponible sur cet appareil. Revenez aux salons."
+    }
+
+    fn recovery_title(&self) -> &'static str {
+        "Préférences locales réinitialisées"
+    }
+    fn recovery_body(&self) -> &'static str {
+        "Certaines préférences locales n’ont pas pu être lues et ont été réinitialisées."
+    }
+    fn recovery_reset_action(&self) -> &'static str {
+        "Réinitialiser les préférences locales"
+    }
+
     fn rooms_count(&self, count_display: &str, category: PluralCategory) -> String {
         match category {
             PluralCategory::One => format!("{count_display} salon"),

@@ -18,17 +18,29 @@
 pub mod a11y;
 pub mod diagnostics;
 pub mod dialog;
+pub mod fleet;
 pub mod form;
+pub mod global_nav;
 pub mod live_region;
 pub mod nav;
+pub mod onboarding;
+pub mod recovery;
+pub mod room_shell;
+pub mod settings;
 pub mod status;
 
 pub use a11y::{Heading, MainRegion, SkipLink, SkipLinks, VisuallyHidden};
 pub use diagnostics::DiagnosticsDialog;
 pub use dialog::Dialog;
+pub use fleet::FleetPane;
 pub use form::Field;
+pub use global_nav::GlobalNav;
 pub use live_region::{use_announce, use_announce_context, Announcer, LiveRegion};
 pub use nav::NavLandmark;
+pub use onboarding::Onboarding;
+pub use recovery::RecoveryBanner;
+pub use room_shell::{RoomShell, RoomUnavailable};
+pub use settings::SettingsPane;
 pub use status::{StatusIndicator, StatusTone};
 
 use dioxus::prelude::*;

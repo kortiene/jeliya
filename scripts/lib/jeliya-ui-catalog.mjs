@@ -58,6 +58,10 @@ const NEVER_TRANSLATE = new Set([
   'endpoints',
   'ticket',
   'tickets',
+  // Coined Jeliya protocol terms kept verbatim in French, as the retiring React
+  // catalog rendered them (`roomDestPipes: 'Pipes'` in fr.ts).
+  'pipe',
+  'pipes',
   'id',
   'ids',
   'hash',
