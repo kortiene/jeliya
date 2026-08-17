@@ -142,6 +142,14 @@ impl Shared {
             }
             Action::Emit(event) => deferred.work.push(DeferredWake::Emit(event)),
             Action::CloseBus => deferred.work.push(DeferredWake::CloseBus),
+            // Unreachable on this adapter: the direct actor refuses every
+            // `stream.*` operation (they are connection-scoped — the engine
+            // dispatcher answers `SubscriptionUnknown`), so the core never
+            // opens a stream here and never emits stream actions. The debug
+            // assertion keeps that honest if the deferred stream work lands.
+            Action::SendRecord(_) | Action::ProduceData { .. } | Action::WriteSink { .. } => {
+                debug_assert!(false, "stream actions are unreachable on the direct adapter");
+            }
         }
     }
 }
