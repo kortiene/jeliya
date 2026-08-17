@@ -145,7 +145,7 @@ async fn pick_file(ct: &CancelToken) -> Result<Option<web_sys::File>, Capability
         futures::pin_mut!(cancelled);
         match futures::future::select(wait, cancelled).await {
             futures::future::Either::Left((outcome, _)) => outcome,
-            futures::future::Either::Right(((), _)) => None,
+            futures::future::Either::Right(((), _)) => Ok(None),
         }
     };
     match settled {
