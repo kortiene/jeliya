@@ -42,7 +42,23 @@ test.beforeEach(async ({ page, baseURL }) => {
     const inRegion = (n: Node | null): boolean =>
       !!n && !!(n as Element).closest && !!(n as Element).closest("#live-region");
     new MutationObserver((records) => {
-      for (const rec of records) {
+      // A `characterData` record's NEW value is NOT `target.data` at callback
+      // time: the observer batches records into one microtask, so a node edited
+      // twice in one batch reads its FINAL text for both records. With
+      // `characterDataOldValue`, each record's new value is the NEXT same-target
+      // record's `oldValue` in this batch — or `target.data` for the last one.
+      const newValueOf = (i: number): string => {
+        const rec = records[i];
+        for (let j = i + 1; j < records.length; j++) {
+          const later = records[j];
+          if (later.type === "characterData" && later.target === rec.target) {
+            return later.oldValue ?? "";
+          }
+        }
+        return (rec.target as Text).data ?? "";
+      };
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
         for (const n of Array.from(rec.addedNodes)) {
           if (n.nodeType === 1) {
             const el = n as Element;
@@ -57,7 +73,7 @@ test.beforeEach(async ({ page, baseURL }) => {
           }
         }
         if (rec.type === "characterData" && inRegion((rec.target as Node).parentNode)) {
-          log.push({ type: "text", text: (rec.target as Text).data ?? "" });
+          log.push({ type: "text", text: newValueOf(i) });
         }
       }
     // Observe the Document node, not `documentElement`: an init script runs
@@ -344,6 +360,144 @@ test("the connection live region announces a drop and its recovery exactly once 
     announcements.length,
     `the drop and recovery must each be announced exactly once: ${JSON.stringify(log)}`,
   ).toBe(2);
+});
+
+// #276 — the complementary proof: both the DROP and the RECOVERY are heard even
+// when both StateChanged events are already buffered before Dioxus renders (the
+// batched scenario). The existing stepped test above sidesteps this by waiting for
+// the drop text to render before driving `ready`; this test removes that crutch.
+test("rapid batched drop→recovery announces both states without a render wait between", async ({
+  page,
+}) => {
+  // Arm the marker-gated connection hook (no `?boot=`, so the shell still reaches Ready).
+  await page.addInitScript(() => {
+    window.localStorage.setItem("jeliya-e2e-boot-fixture", "1");
+  });
+  // Install a RECORD-based witness for #connection-live-region before the app boots.
+  // Records are read from the mutation RECORDS directly (characterData edits and
+  // replacement text nodes), NOT by re-reading textContent at observer-callback time:
+  // the observer batches records into one microtask, so re-reading textContent would
+  // see only the final DOM text of that batch and silently miss the intermediate drop —
+  // exactly the failure this test must detect (#276 AC-1). Reading from the record
+  // itself keeps each mutation distinct regardless of how the browser batches callbacks.
+  await page.addInitScript(() => {
+    const log: { type: string; text: string }[] = [];
+    (window as unknown as { __connRecordLog: typeof log }).__connRecordLog = log;
+    const inConnRegion = (n: Node | null): boolean =>
+      !!n && !!(n as Element).closest && !!(n as Element).closest("#connection-live-region");
+    new MutationObserver((records) => {
+      // Same batching rule as the shared witness: a `characterData` record's new
+      // value is the NEXT same-target record's `oldValue` in this batch, or
+      // `target.data` only for the last one — never `target.data` for all.
+      const newValueOf = (i: number): string => {
+        const rec = records[i];
+        for (let j = i + 1; j < records.length; j++) {
+          const later = records[j];
+          if (later.type === "characterData" && later.target === rec.target) {
+            return later.oldValue ?? "";
+          }
+        }
+        return (rec.target as Text).data ?? "";
+      };
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
+        for (const n of Array.from(rec.addedNodes)) {
+          if (n.nodeType === 1 /* ELEMENT_NODE */) {
+            const el = n as Element;
+            const region =
+              el.id === "connection-live-region"
+                ? el
+                : el.querySelector?.("#connection-live-region");
+            if (region) {
+              log.push({ type: "mount", text: region.textContent ?? "" });
+            }
+          } else if (
+            n.nodeType === 3 /* TEXT_NODE */ &&
+            (rec.target as Element)?.id === "connection-live-region"
+          ) {
+            // A replacement text node added directly under the region = a text update.
+            log.push({ type: "text", text: (n as Text).data ?? "" });
+          }
+        }
+        if (rec.type === "characterData" && inConnRegion((rec.target as Node).parentNode)) {
+          log.push({ type: "text", text: newValueOf(i) });
+        }
+      }
+    }).observe(document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      characterDataOldValue: true,
+    });
+  });
+
+  await gotoReadyShell(page);
+
+  // Wait for the marker-gated e2e hook (installed once wasm boots and sees the marker).
+  await page.waitForFunction(
+    () =>
+      typeof (window as unknown as { __jeliyaE2eConnState?: unknown }).__jeliyaE2eConnState ===
+      "function",
+  );
+
+  // Drive BOTH transitions in ONE synchronous evaluate — no render wait between.
+  // Both StateChanged events land in the subscriber buffer before the consume loop
+  // yields, so the old single-signal announcer would overwrite the drop with the
+  // recovery and only one announcement would be heard. The queue-based announcer
+  // (#276) enqueues both as distinct messages and drains one per render frame, so
+  // both states each occupy the live region for their own committed render.
+  await page.evaluate(() => {
+    const hook = (
+      window as unknown as { __jeliyaE2eConnState: (s: string) => void }
+    ).__jeliyaE2eConnState;
+    hook("interrupted");
+    hook("ready");
+  });
+
+  // Poll until both render frames have committed: the drain effect runs at lowest
+  // priority and each drain step writes `displayed`, which forces a render before
+  // the effect can run again — so two queued messages require two render cycles.
+  type LogEntry = { type: string; text: string };
+  await expect
+    .poll(async () => {
+      const entries: LogEntry[] = await page.evaluate(
+        () =>
+          (window as unknown as { __connRecordLog: { type: string; text: string }[] })
+            .__connRecordLog,
+      );
+      return entries.filter((e) => e.type === "text" && e.text.trim() !== "").length;
+    })
+    .toBe(2);
+
+  const log: LogEntry[] = await page.evaluate(
+    () =>
+      (window as unknown as { __connRecordLog: { type: string; text: string }[] })
+        .__connRecordLog,
+  );
+
+  // The region node must be stable — mounted once and never remounted between the
+  // two render frames that commit the drop and the recovery respectively.
+  expect(
+    log.filter((e) => e.type === "mount").length,
+    `the connection region must mount once and stay stable across both render frames: ${JSON.stringify(log)}`,
+  ).toBe(1);
+
+  const announcements = log.filter((e) => e.type === "text" && e.text.trim() !== "");
+  expect(
+    announcements.length,
+    `the drop and recovery must each be announced exactly once (not coalesced, not re-announced): ${JSON.stringify(log)}`,
+  ).toBe(2);
+
+  // The DROP (Interrupted → "Connection status: Reconnecting") must render BEFORE
+  // the RECOVERY (Ready → "Connection status: Connected").
+  expect(
+    announcements[0].text,
+    `first announcement must be the drop (Reconnecting): ${JSON.stringify(announcements)}`,
+  ).toContain("Reconnecting");
+  expect(
+    announcements[1].text,
+    `second announcement must be the recovery (Connected): ${JSON.stringify(announcements)}`,
+  ).toContain("Connected");
 });
 
 // Hit-test the real geometry of every visible interactive control (WCAG 2.5.8):
