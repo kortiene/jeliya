@@ -280,6 +280,34 @@
 
 ### Fixed
 
+- `pipe.revoke` is now **idempotent at the room-fact layer**: a second (or Nth)
+  revoke of an already-withdrawn pipe replays the **original** withdrawal —
+  returning the first revoke's exact `event_id`, `pos`, and `revoked_at` — and
+  authors **nothing** further. Previously the daemon published a fresh signed
+  `pipe.closed` on every revoke (the op_id dedup ledger only covers a *same*-
+  op_id replay, not a genuinely distinct second request), so an already-revoked
+  pipe grew a second committed `pipe_revoked` event; under concurrent load the
+  two authors could straddle a millisecond boundary and the second's differing
+  instant broke the "returns the original withdrawal" guarantee — a correctness
+  defect that surfaced as a flaky conformance case. `RoomSupervisor::pipe_close`
+  now consults the canonically-earliest committed `pipe.closed` (after, not
+  before, the unknown-pipe and publisher-only guards, so `pipe_unknown` /
+  `pipe_not_publisher` are unchanged — including for a non-publisher re-revoking
+  a closed pipe) and returns it without authoring; the withdrawal-event lookup
+  selects the first canonical-order match rather than the last; and concurrent
+  distinct-op_id revokes of the same pipe are serialized per `(room, pipe)` so a
+  check-then-author cannot interleave into two withdrawals. No wire/schema,
+  op_id-ledger, or `pipe.connect`/`pipe.list`/`pipe.release` change. Issue #271.
+
+- The serve-crate test
+  `websocket_file_share_progress_resets_stall_but_not_absolute_deadline` now
+  drives its stall/deadline timers off a **paused** virtual clock
+  (`tokio::time::pause()` + `advance`), matching its two siblings, instead of a
+  real `tokio::time::sleep`. The real sleep drifted against the daemon's
+  `Instant`-based timers under concurrent CI load and intermittently reordered
+  the CREDIT/ABORT records; the conversion asserts the same observable sequence
+  and post-conditions and passes deterministically under load. Issue #271.
+
 - A room list backed by a daemon that supplies **no** `last_event_ts` can raise
   an unread dot again. Nothing seeded a baseline for such a room, and the
   unread predicate reads an unseeded room as not-unread, so no dot could ever
