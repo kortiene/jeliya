@@ -139,11 +139,10 @@ async fn pick_file(ct: &CancelToken) -> Result<Option<web_sys::File>, Capability
     on_cancel.forget();
 
     let settled = {
-        let wait = async { rx.await };
-        futures::pin_mut!(wait);
         let cancelled = ct.cancelled();
+        futures::pin_mut!(rx);
         futures::pin_mut!(cancelled);
-        match futures::future::select(wait, cancelled).await {
+        match futures::future::select(rx, cancelled).await {
             futures::future::Either::Left((outcome, _)) => outcome,
             futures::future::Either::Right(((), _)) => Ok(None),
         }
