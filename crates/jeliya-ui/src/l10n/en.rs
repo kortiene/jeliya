@@ -351,4 +351,121 @@ impl Catalog for En {
     fn err_onboarding_room_create_body(&self) -> &'static str {
         "The daemon did not respond. Check your connection and try again."
     }
+
+    fn activity_empty(&self) -> &'static str {
+        "No activity yet."
+    }
+    fn activity_loading(&self) -> &'static str {
+        "Loading activity…"
+    }
+    fn activity_resyncing(&self) -> &'static str {
+        "Reconciling with the daemon…"
+    }
+    fn activity_recovering_loss(&self) -> &'static str {
+        "Some updates were dropped — recovering…"
+    }
+    fn activity_new_messages(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} new message"),
+            PluralCategory::Other => format!("{count_display} new messages"),
+        }
+    }
+    fn activity_new_activity(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} new update"),
+            PluralCategory::Other => format!("{count_display} new updates"),
+        }
+    }
+    fn activity_departed(&self) -> &'static str {
+        "You are no longer in this room. Its history stays here, read-only."
+    }
+
+    fn timeline_you(&self) -> &'static str {
+        "You"
+    }
+    fn timeline_unresolved_sender(&self) -> &'static str {
+        "Unknown sender"
+    }
+    fn timeline_agent_chip(&self) -> &'static str {
+        "agent"
+    }
+    fn timeline_run_summary(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} status update"),
+            PluralCategory::Other => format!("{count_display} status updates"),
+        }
+    }
+
+    fn filter_conversation(&self) -> &'static str {
+        "Messages"
+    }
+    fn filter_agent_runs(&self) -> &'static str {
+        "Agent runs"
+    }
+    fn filter_membership(&self) -> &'static str {
+        "Membership"
+    }
+    fn filter_files(&self) -> &'static str {
+        "Files"
+    }
+    fn filter_pipes(&self) -> &'static str {
+        "Pipes"
+    }
+
+    fn sysline_room_created(&self, who: &str) -> String {
+        format!("{who} created the room")
+    }
+    fn sysline_member_joined(&self, who: &str, role: &str) -> String {
+        format!("{who} joined as {role}")
+    }
+    fn sysline_member_left(&self, who: &str) -> String {
+        format!("{who} left")
+    }
+    fn sysline_member_removed(&self, who: &str, by: &str) -> String {
+        format!("{who} was removed by {by}")
+    }
+    fn sysline_invite_revoked(&self) -> &'static str {
+        "An invitation was revoked"
+    }
+    fn sysline_pipe_revoked(&self) -> &'static str {
+        "A pipe was revoked"
+    }
+    fn file_open_in_files(&self) -> &'static str {
+        "Open in Files"
+    }
+    fn pipe_open_in_pipes(&self) -> &'static str {
+        "Open in Pipes"
+    }
+
+    fn composer_label(&self) -> &'static str {
+        "Message"
+    }
+    fn composer_placeholder(&self) -> &'static str {
+        "Write a message…"
+    }
+    fn composer_send(&self) -> &'static str {
+        "Send"
+    }
+    fn composer_enter_hint(&self) -> &'static str {
+        "Enter to send, Shift+Enter for a new line"
+    }
+    fn composer_attach(&self) -> &'static str {
+        "Attach a file"
+    }
+    fn composer_attach_unavailable(&self) -> &'static str {
+        "Attachments are not available yet."
+    }
+
+    fn send_sending(&self) -> &'static str {
+        "Sending…"
+    }
+    fn send_failed_not_sent(&self) -> &'static str {
+        "Not sent"
+    }
+    fn send_failed_maybe(&self) -> &'static str {
+        "May not have sent"
+    }
+    fn send_retry(&self) -> &'static str {
+        "Retry"
+    }
 }
