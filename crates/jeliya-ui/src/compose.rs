@@ -118,6 +118,19 @@ pub fn WebRoot() -> Element {
     #[cfg(not(feature = "web"))]
     let on_locale_lang: Option<Callback<String>> = None;
 
+    // The viewport watcher AppRoot registers its shell handler with ONCE: a
+    // `matchMedia` listener at the compact boundary recomputes the shell from
+    // the live width on every crossing (resize, zoom-induced crossing, device
+    // rotation), so the rail/bottom-bar element identity never freezes at the
+    // launch width. Confined here (web-sys); other targets pass `None` and
+    // keep the launch shell, as before.
+    #[cfg(feature = "web")]
+    let on_shell_subscribe = Some(use_callback(|handler: Callback<crate::shell::Shell>| {
+        install_shell_watcher(handler)
+    }));
+    #[cfg(not(feature = "web"))]
+    let on_shell_subscribe: Option<Callback<Callback<crate::shell::Shell>>> = None;
+
     use_future(move || {
         let composition = composition.clone();
         async move {
@@ -163,10 +176,39 @@ pub fn WebRoot() -> Element {
             on_locale_lang,
             raw_path,
             initial_shell,
+            on_shell_subscribe,
             recovery,
             connection,
         }
     }
+}
+
+/// Install the ONE viewport watcher for the app's lifetime: a `matchMedia`
+/// listener at the compact boundary ([`crate::shell::COMPACT_MAX`]) that
+/// recomputes the shell from the live `innerWidth` on every crossing and
+/// pushes it to AppRoot's registered handler. Never removed — the root lives
+/// as long as the page, matching the composition's other root-level installs.
+#[cfg(feature = "web")]
+fn install_shell_watcher(handler: Callback<crate::shell::Shell>) {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let query = format!("(max-width: {}px)", crate::shell::COMPACT_MAX);
+    let Ok(Some(mql)) = window.match_media(&query) else {
+        return;
+    };
+    let on_change = Closure::<dyn FnMut()>::new(move || {
+        let width = web_sys::window()
+            .and_then(|w| w.inner_width().ok())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(crate::shell::WIDE_MIN);
+        handler.call(crate::shell::shell_for(width));
+    });
+    mql.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    on_change.forget();
 }
 
 /// The scripted daemon connection snapshot (#178 §5.D / D2) for `AppRoot`'s

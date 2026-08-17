@@ -96,7 +96,7 @@ dioxus = { version = "=0.7.9", default-features = false, optional = true }
 # visibilitychange/pagehide). All resolve within the already-locked `web-sys`
 # crate — new feature flags, not a new dependency, so the wasm graph gains no
 # edge (asserted by `scripts/check-jeliya-ui-wasm-graph.sh`).
-web-sys = { version = "0.3.103", optional = true, features = ["Window", "Navigator", "Document", "Element", "Location", "Storage", "History", "EventTarget", "Event", "VisibilityState"] }
+web-sys = { version = "0.3.103", optional = true, features = ["Window", "Navigator", "Document", "Element", "Location", "Storage", "History", "EventTarget", "Event", "VisibilityState", "MediaQueryList"] }
 # Web-only, gated by `web`: install a marker-gated e2e hook (`window.__jeliyaE2eConnState`)
 # that drives the mock's connection lifecycle so the a11y matrix can verify the connection
 # live-region announce-once wiring against a REAL transition. Same compiled-in-but-armed-
