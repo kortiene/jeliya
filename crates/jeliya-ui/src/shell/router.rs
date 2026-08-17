@@ -227,6 +227,10 @@ mod hook {
         // NavigationRequested carries the platform's already-parsed route (the
         // binding maps a popstate path through the same fail-safe parse), so the
         // mirror simply mirrors it — no second parse, no second state machine.
+        // A native BackRequested is consumed in-app one hierarchy step at a
+        // time (`back_target`); an unconsumed Back at the root is handed back
+        // to the platform, never silently dropped (the navigation contract:
+        // Back must not silently become an exit).
         {
             let services = services.clone();
             use_future(move || {
@@ -234,11 +238,19 @@ mod hook {
                 async move {
                     let mut sub = services.lifecycle().subscribe();
                     while let Some(delivery) = sub.next().await {
-                        if let LifecycleDelivery::Event(LifecycleEvent::NavigationRequested {
-                            route: requested,
-                        }) = delivery
-                        {
-                            route.set(requested);
+                        match delivery {
+                            LifecycleDelivery::Event(LifecycleEvent::NavigationRequested {
+                                route: requested,
+                            }) => {
+                                route.set(requested);
+                            }
+                            LifecycleDelivery::Event(LifecycleEvent::BackRequested) => {
+                                match back_target(&route.peek()) {
+                                    Some(target) => navigate.call(NavIntent::push(target)),
+                                    None => services.navigation().hand_back_to_platform(),
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -249,11 +261,69 @@ mod hook {
     }
 }
 
+/// The in-app target a consumed Back walks to (§5.A): a room destination backs
+/// up to the room's Activity root, a room root or a global destination backs
+/// up to Rooms, and Rooms itself has no in-app back — `None` there means the
+/// gesture is handed back to the platform through
+/// [`jeliya_platform::navigation::Navigation::hand_back_to_platform`].
+pub fn back_target(current: &Route) -> Option<Route> {
+    match current {
+        Route::Room {
+            room_id,
+            dest: RoomDest::Activity,
+        } => {
+            let _ = room_id;
+            Some(Route::Rooms)
+        }
+        Route::Room { room_id, .. } => Some(Route::Room {
+            room_id: room_id.clone(),
+            dest: RoomDest::Activity,
+        }),
+        Route::Fleet | Route::Settings => Some(Route::Rooms),
+        Route::Rooms => None,
+    }
+}
+
 pub use hook::{use_route, RouteApi};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn back_from_a_room_destination_walks_to_the_room_root() {
+        let current = Route::Room {
+            room_id: RoomId::new("r-1"),
+            dest: RoomDest::People,
+        };
+        assert_eq!(
+            back_target(&current),
+            Some(Route::Room {
+                room_id: RoomId::new("r-1"),
+                dest: RoomDest::Activity,
+            })
+        );
+    }
+
+    #[test]
+    fn back_from_a_room_root_walks_to_rooms() {
+        let current = Route::Room {
+            room_id: RoomId::new("r-1"),
+            dest: RoomDest::Activity,
+        };
+        assert_eq!(back_target(&current), Some(Route::Rooms));
+    }
+
+    #[test]
+    fn back_from_a_global_destination_walks_to_rooms() {
+        assert_eq!(back_target(&Route::Fleet), Some(Route::Rooms));
+        assert_eq!(back_target(&Route::Settings), Some(Route::Rooms));
+    }
+
+    #[test]
+    fn back_from_rooms_is_handed_to_the_platform() {
+        assert_eq!(back_target(&Route::Rooms), None);
+    }
 
     #[test]
     fn a_malformed_path_falls_back_to_rooms_and_replaces() {
