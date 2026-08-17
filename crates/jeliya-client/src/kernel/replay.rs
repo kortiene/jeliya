@@ -68,6 +68,20 @@ fn op_id_deduplicated(op: &str) -> bool {
     )
 }
 
+/// The two client-driven byte-stream operations (§S8). They appear in the
+/// protocol's `op_id`-deduplicated set (`file.share` mints a dedup key), but a
+/// **byte stream never survives its connection**: retrying the bytes requires a
+/// new `op_id` from offset zero, and a mid-stream disconnect's `op_id` replay
+/// returns the recorded *failure* (`stream_aborted{transport_lost}`), not the
+/// original result — the "wrong answer, not a duplicate" rule (§K5). So a stream
+/// op is [`ReplayPolicy::Never`] regardless of `mutating`/`op_id`, gated here
+/// **before** the dedup-set check so `op_id_deduplicated`'s shared-set meaning
+/// stays intact for the daemon-side intent (#233). Recognized by path exactly as
+/// `derive` recognizes every other op.
+pub(crate) fn is_stream_op(op: &str) -> bool {
+    matches!(op, "file.share" | "file.read")
+}
+
 impl ReplayPolicy {
     /// Derive the policy from an [`ErasedCall`](crate::backend::ErasedCall)'s
     /// routing facts. Only a mutating operation carrying a caller-chosen
@@ -91,6 +105,13 @@ impl ReplayPolicy {
         op_id: Option<&OpId>,
         stable_principal: bool,
     ) -> Self {
+        // A byte stream never auto-replays (§S8): the gate runs before the
+        // dedup-set check so a `file.share`'s dedup key still means "dedup this
+        // op_id" to the daemon, while the client refuses to hold-and-re-send its
+        // Text request across a reconnect and strand the stream's byte state.
+        if is_stream_op(op) {
+            return ReplayPolicy::Never;
+        }
         if stable_principal && mutating && op_id.is_some() && op_id_deduplicated(op) {
             ReplayPolicy::ReplayableUnderOpId
         } else {
@@ -173,5 +194,33 @@ mod tests {
     fn only_the_replayable_policy_reports_replayable() {
         assert!(ReplayPolicy::ReplayableUnderOpId.is_replayable());
         assert!(!ReplayPolicy::Never.is_replayable());
+    }
+
+    /// §S8: `file.share` is `mutating` and lives in the `op_id`-deduplicated
+    /// set, so before the stream gate it derived `ReplayableUnderOpId` under a
+    /// stable principal — a defect, because a byte stream never survives its
+    /// connection. The stream gate forces `Never` regardless.
+    #[test]
+    fn file_share_stream_op_never_replays_even_with_op_id() {
+        let op_id = OpId::new("stable-key");
+        assert_eq!(
+            ReplayPolicy::derive("file.share", true, Some(&op_id), true),
+            ReplayPolicy::Never
+        );
+    }
+
+    /// §S8: `file.read` is non-mutating and would already be `Never`, but the
+    /// gate makes the "streams never replay" rule explicit and path-based, not
+    /// an accident of the mutating flag.
+    #[test]
+    fn file_read_stream_op_never_replays() {
+        let op_id = OpId::new("stable-key");
+        assert_eq!(
+            ReplayPolicy::derive("file.read", false, Some(&op_id), true),
+            ReplayPolicy::Never
+        );
+        assert!(is_stream_op("file.read"));
+        assert!(is_stream_op("file.share"));
+        assert!(!is_stream_op("message.send"));
     }
 }

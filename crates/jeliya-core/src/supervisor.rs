@@ -306,6 +306,12 @@ pub(crate) struct RoomSession {
     is_owner: bool,
 }
 
+/// Per-`(room, pipe)` async guard cells that serialize concurrent revokes of
+/// the same pipe (see [`RoomSupervisor::pipe_close`]). The outer std mutex is
+/// held only for the get-or-insert of the per-key cell; the inner
+/// [`TokioMutex`] is what is held across the author/poll critical section.
+type RevokeGuards = StdMutex<HashMap<(RoomId, [u8; SHORT_ID_LEN]), Arc<TokioMutex<()>>>>;
+
 /// The daemon's room supervisor: shared data dir + one session per open room.
 ///
 /// `sessions` sits behind a *std* mutex that is only ever held for the brief
@@ -332,6 +338,15 @@ pub(crate) struct RoomSupervisor {
     /// maintains the same fold incrementally (`Node::snapshot`), so the cache
     /// can never go stale against a growing open room.
     snapshot_cache: StdMutex<HashMap<RoomId, (u64, MembershipSnapshot)>>,
+    /// Serializes concurrent revokes of the SAME pipe so a check-then-author
+    /// cannot interleave into two withdrawals. Keyed per `(room, pipe)`;
+    /// distinct pipes and rooms never contend. In-memory, like the op_id
+    /// dedup ledger, and bounded by the number of distinct pipes ever revoked
+    /// on this daemon (a pipe id is 16 bytes, so the count is tiny). The map's
+    /// std mutex is held only for the get-or-insert; the per-key async mutex is
+    /// what is held across `node.pipe_close` + the `find_pipe_event` poll, so no
+    /// std guard ever crosses an `.await`.
+    revoke_guards: RevokeGuards,
     #[cfg(test)]
     fold_invocations: AtomicUsize,
 }
@@ -442,6 +457,7 @@ impl RoomSupervisor {
             sessions: StdMutex::new(HashMap::new()),
             structural: TokioMutex::new(()),
             snapshot_cache: StdMutex::new(HashMap::new()),
+            revoke_guards: StdMutex::new(HashMap::new()),
             #[cfg(test)]
             fold_invocations: AtomicUsize::new(0),
         })
@@ -3220,6 +3236,38 @@ impl RoomSupervisor {
             }
         }
 
+        // Serialize concurrent revokes of the SAME pipe so the
+        // read-existing-close -> author critical section below is atomic per
+        // pipe: two distinct-op_id revokes of one pipe cannot both read
+        // "not yet closed" and both author. Acquired only after the ownership
+        // guard, so a non-publisher never contends here. Only the per-key async
+        // mutex is held across the awaits; the map's std mutex is dropped first.
+        let authoring_cell = {
+            let mut guards = self
+                .revoke_guards
+                .lock()
+                .expect("revoke guard map poisoned");
+            guards.entry((room_id, pipe_id)).or_default().clone()
+        };
+        let _authoring = authoring_cell.lock().await;
+
+        // Idempotent replay: an already-withdrawn pipe returns its ORIGINAL
+        // withdrawal and authors nothing further, so a second (or Nth) revoke of
+        // a closed pipe is a pure local read serving the first revoke's exact
+        // event id / pos / instant. This runs only after the publisher relation
+        // is confirmed above, so a non-publisher re-revoking a closed pipe still
+        // gets pipe_not_publisher, never a laundered success. `release_pipe_
+        // connections` is intentionally skipped on this path (the first revoke
+        // already released them; the pipe is closed, so no live connection
+        // remains). Sync scope: the !Sync store never crosses the await.
+        {
+            let store = self.open_store()?;
+            if let Some(event_id) = original_pipe_closed(&store, &room_id, pipe_id)? {
+                return Ok(event_id);
+            }
+        }
+
+        // First withdrawal: author exactly one signed pipe.closed.
         let session = self.session(&room_id)?;
         session
             .node
@@ -3241,9 +3289,13 @@ impl RoomSupervisor {
         Ok(event_id)
     }
 
-    /// Find the freshest persisted pipe event of `ty` for `pipe_id` (the
-    /// engine persists synchronously on publish; a short retry covers WAL
-    /// visibility across connections).
+    /// Find the **canonically-earliest** persisted pipe event of `ty` for
+    /// `pipe_id` (the engine persists synchronously on publish; a short retry
+    /// covers WAL visibility across connections). Returning the first
+    /// `(lamport, event_id)`-ordered match — not the last — keeps the served
+    /// id/pos/instant identical to the ORIGINAL event if two `pipe.closed` rows
+    /// ever coexist; a pipe has exactly one `pipe.opened`, so the publish path
+    /// is unaffected.
     async fn find_pipe_event(
         &self,
         room_id: &RoomId,
@@ -3268,7 +3320,19 @@ impl RoomSupervisor {
                         _ => false,
                     };
                     if matches {
+                        // First canonical-order match wins. `by_type` orders
+                        // causally-complete rows ascending by `(lamport,
+                        // event_id)` (the same order `room_tail` and
+                        // `committed_pos_and_instant` rank over), so the first
+                        // match is the ORIGINAL event. Should two `pipe.closed`
+                        // rows ever coexist (a legacy store, or a lost author
+                        // race before the per-pipe guard) the earliest is
+                        // returned, keeping the served id/pos/instant stable
+                        // rather than flaky. A pipe has exactly one
+                        // `pipe.opened`, so the publish-path lookup is
+                        // unaffected.
                         found = Some(bare_event_hex(&se.event_id));
+                        break;
                     }
                 }
                 found
@@ -4142,6 +4206,44 @@ fn open_pipe(
             if let Content::PipeOpened(p) = ev.content {
                 if p.pipe_id == pipe_id {
                     return Ok(Some(p));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The bare event-id hex of the **original** `pipe.closed` for `pipe_id` in
+/// canonical timeline order, or `None` if the pipe has never been closed in the
+/// local log.
+///
+/// "Original" is the first *committed* close in the same `room_tail`-ordered,
+/// [`is_committed`](crate::projection::is_committed)-filtered scan that
+/// [`TypedSupervisor::committed_pos_and_instant`](crate::typed) ranks over — the
+/// canonical `(lamport, event_id)` order. Deriving the replayed id from that
+/// exact order is what makes a re-revoke serve the same `pos`/`revoked_at` the
+/// first revoke served, rather than a `by_type` "last wins" pick. Read-only and
+/// sync-scoped, matching the surrounding pipe helpers (no `!Sync` store borrow
+/// crosses an await).
+fn original_pipe_closed(
+    store: &EventStore,
+    room_id: &RoomId,
+    pipe_id: [u8; SHORT_ID_LEN],
+) -> CoreResult<Option<String>> {
+    let rows = store.room_tail(room_id, u32::MAX).map_err(|e| {
+        internal(
+            "could not read the room tail for the original pipe.closed",
+            e,
+        )
+    })?;
+    for se in &rows {
+        if !crate::projection::is_committed(se) {
+            continue; // a non-committed close holds no position and is not "the original"
+        }
+        if let Ok(ev) = SignedEvent::decode(&se.wire.signed) {
+            if let Content::PipeClosed(p) = ev.content {
+                if p.pipe_id == pipe_id {
+                    return Ok(Some(bare_event_hex(&se.event_id)));
                 }
             }
         }
@@ -6778,5 +6880,261 @@ mod tests {
         assert_eq!(err.kind, ErrorKind::InvalidParams);
 
         sup.close_room(&room_id).await.unwrap();
+    }
+
+    /// A second (or Nth) `pipe.close` with a *distinct* logical op must replay
+    /// the ORIGINAL withdrawal rather than authoring a fresh `pipe.closed` event.
+    /// The store must contain exactly one committed `pipe.closed` for the pipe
+    /// after any number of sequential revokes, and both calls must return the
+    /// same event id.
+    ///
+    /// Regression for #271: before the idempotent-replay fix the second call
+    /// always authored a second committed `pipe.closed`, causing `revoked_at` to
+    /// drift under concurrent CI load and failing the corpus case
+    /// `pipe_revoke_of_an_already_revoked_pipe_returns_the_original_withdrawal`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pipe_close_of_an_already_closed_pipe_replays_the_original_and_authors_nothing() {
+        let dir = tempdir().unwrap();
+        let profile = crate::identity::create(dir.path()).unwrap();
+        let sup = RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap();
+        let room_id_str = sup.create_room("Idempotent Revoke").unwrap();
+        let room_id: RoomId = room_id_str.parse().unwrap();
+        sup.open_room(&room_id_str, &[]).await.unwrap();
+
+        let self_id: iroh_rooms::identity::IdentityKey = profile.identity_id.parse().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        let (pipe_id, _) = sup
+            .pipe_expose_multi(&room_id, target, &target.to_string(), &[self_id])
+            .await
+            .unwrap();
+        let pipe_id_hex = hex::encode(pipe_id);
+
+        // First revoke: must author exactly one committed `pipe.closed`.
+        let event_id_1 = sup.pipe_close(&room_id_str, &pipe_id_hex).await.unwrap();
+        {
+            let store = sup.open_store().unwrap();
+            let pipe_closed_count = store
+                .by_type(&room_id, EventType::PipeClosed)
+                .unwrap()
+                .iter()
+                .filter(|se| {
+                    SignedEvent::decode(&se.wire.signed)
+                        .ok()
+                        .and_then(|ev| {
+                            if let Content::PipeClosed(p) = ev.content {
+                                Some(p)
+                            } else {
+                                None
+                            }
+                        })
+                        .map(|p| p.pipe_id == pipe_id)
+                        .unwrap_or(false)
+                })
+                .count();
+            assert_eq!(
+                pipe_closed_count, 1,
+                "first revoke must author exactly one pipe.closed"
+            );
+        }
+
+        // Second revoke (distinct logical request; domain-state idempotency, not
+        // op_id dedup): must return the ORIGINAL event id without authoring a new
+        // `pipe.closed`.
+        let event_id_2 = sup.pipe_close(&room_id_str, &pipe_id_hex).await.unwrap();
+        assert_eq!(
+            event_id_2, event_id_1,
+            "second revoke must replay the ORIGINAL event id, not author a fresh one"
+        );
+        {
+            let store = sup.open_store().unwrap();
+            let pipe_closed_count = store
+                .by_type(&room_id, EventType::PipeClosed)
+                .unwrap()
+                .iter()
+                .filter(|se| {
+                    SignedEvent::decode(&se.wire.signed)
+                        .ok()
+                        .and_then(|ev| {
+                            if let Content::PipeClosed(p) = ev.content {
+                                Some(p)
+                            } else {
+                                None
+                            }
+                        })
+                        .map(|p| p.pipe_id == pipe_id)
+                        .unwrap_or(false)
+                })
+                .count();
+            assert_eq!(
+                pipe_closed_count, 1,
+                "second revoke must not author a new pipe.closed — domain-state idempotency"
+            );
+        }
+
+        sup.close_room(&room_id_str).await.unwrap();
+        drop(listener);
+    }
+
+    /// Two concurrent `pipe.close` calls with distinct logical op contexts
+    /// (no shared op_id dedup) must converge on a single withdrawal: both
+    /// return the same event id, and the store contains exactly one committed
+    /// `pipe.closed`. Closes the concurrent-distinct-op_id window from #271
+    /// §2.3 via the per-`(room, pipe)` `RevokeGuards` mutex that makes the
+    /// check-then-author section atomic per pipe.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pipe_close_concurrent_distinct_op_revokes_converge_on_one_withdrawal() {
+        let dir = tempdir().unwrap();
+        let profile = crate::identity::create(dir.path()).unwrap();
+        let sup = Arc::new(RoomSupervisor::new(dir.path().to_path_buf(), true).unwrap());
+        let room_id_str = sup.create_room("Concurrent Revoke").unwrap();
+        let room_id: RoomId = room_id_str.parse().unwrap();
+        sup.open_room(&room_id_str, &[]).await.unwrap();
+
+        let self_id: iroh_rooms::identity::IdentityKey = profile.identity_id.parse().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        let (pipe_id, _) = sup
+            .pipe_expose_multi(&room_id, target, &target.to_string(), &[self_id])
+            .await
+            .unwrap();
+        let pipe_id_hex = hex::encode(pipe_id);
+
+        // Fire two concurrent revokes for the same pipe from the same publisher.
+        let sup_a = Arc::clone(&sup);
+        let room_str_a = room_id_str.clone();
+        let hex_a = pipe_id_hex.clone();
+        let sup_b = Arc::clone(&sup);
+        let room_str_b = room_id_str.clone();
+        let hex_b = pipe_id_hex.clone();
+        let (result_a, result_b) = tokio::join!(
+            async move { sup_a.pipe_close(&room_str_a, &hex_a).await },
+            async move { sup_b.pipe_close(&room_str_b, &hex_b).await },
+        );
+
+        let id_a = result_a.unwrap();
+        let id_b = result_b.unwrap();
+        assert_eq!(
+            id_a, id_b,
+            "concurrent distinct-op_id revokes must converge on the same event id"
+        );
+
+        // Exactly one `pipe.closed` must have been committed.
+        {
+            let store = sup.open_store().unwrap();
+            let closed_count = store
+                .by_type(&room_id, EventType::PipeClosed)
+                .unwrap()
+                .into_iter()
+                .filter(|se| {
+                    SignedEvent::decode(&se.wire.signed)
+                        .ok()
+                        .and_then(|ev| {
+                            if let Content::PipeClosed(p) = ev.content {
+                                Some(p)
+                            } else {
+                                None
+                            }
+                        })
+                        .map(|p| p.pipe_id == pipe_id)
+                        .unwrap_or(false)
+                })
+                .count();
+            assert_eq!(
+                closed_count, 1,
+                "concurrent revokes must converge on exactly one withdrawal"
+            );
+        }
+
+        sup.close_room(&room_id_str).await.unwrap();
+        drop(listener);
+    }
+
+    /// A non-publisher revoking an *already-closed* pipe must still receive
+    /// `PipeDenied` (→ `pipe_not_publisher`), never a laundered success from
+    /// the idempotent-replay path. The ownership guard runs before the
+    /// replay-lookup in `pipe_close`, so a closed pipe never becomes a
+    /// confirmation oracle. Extends
+    /// `pipe_close_refuses_a_room_authority_that_did_not_publish` to cover the
+    /// already-closed case added by the #271 fix.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pipe_close_of_an_already_closed_pipe_refuses_non_publisher() {
+        let owner_dir = tempdir().unwrap();
+        let owner_profile = crate::identity::create(owner_dir.path()).unwrap();
+        let owner = RoomSupervisor::new(owner_dir.path().to_path_buf(), true).unwrap();
+        let room_id_str = owner.create_room("Closed Pipe Auth").unwrap();
+        let room_id: RoomId = room_id_str.parse().unwrap();
+        let opened = owner.open_room(&room_id_str, &[]).await.unwrap();
+        let owner_addr = opened["endpoint"]["addr"].as_str().unwrap().to_owned();
+
+        let member_dir = tempdir().unwrap();
+        let member_profile = crate::identity::create(member_dir.path()).unwrap();
+        let member = RoomSupervisor::new(member_dir.path().to_path_buf(), true).unwrap();
+        let ticket = owner
+            .create_invite(&room_id_str, &member_profile.identity_id, "member", None)
+            .await
+            .unwrap();
+        member
+            .join_room(&ticket, None, std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        member
+            .open_room(&room_id_str, std::slice::from_ref(&owner_addr))
+            .await
+            .unwrap();
+        wait_member_status(&owner, &room_id_str, &member_profile.identity_id, "active").await;
+
+        // MEMBER publishes a pipe with the owner as audience.
+        let owner_id: iroh_rooms::identity::IdentityKey =
+            owner_profile.identity_id.parse().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        let (pipe_id, _) = member
+            .pipe_expose_multi(
+                &room_id,
+                target,
+                &target.to_string(),
+                std::slice::from_ref(&owner_id),
+            )
+            .await
+            .unwrap();
+        let pipe_id_hex = hex::encode(pipe_id);
+
+        // Wait for the pipe.opened to reach the owner's store.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let pipes = owner.pipe_list(&room_id_str).await.unwrap();
+            if pipes
+                .iter()
+                .any(|p| p["pipe_id"].as_str() == Some(pipe_id_hex.as_str()))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the member's pipe.opened to reach the owner"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // Publisher (member) closes the pipe first.
+        member.pipe_close(&room_id_str, &pipe_id_hex).await.unwrap();
+
+        // Non-publisher (owner) must still get PipeDenied on the closed pipe.
+        // The ownership guard runs before the idempotent-replay lookup, so the
+        // closed pipe must never become a laundered success for a non-publisher.
+        let err = owner
+            .pipe_close(&room_id_str, &pipe_id_hex)
+            .await
+            .expect_err("non-publisher must not get success on a closed pipe");
+        assert_eq!(
+            err.kind,
+            ErrorKind::PipeDenied,
+            "pipe_not_publisher must be returned even when the pipe is already closed"
+        );
+
+        member.close_room(&room_id_str).await.unwrap();
+        owner.close_room(&room_id_str).await.unwrap();
+        drop(listener);
     }
 }

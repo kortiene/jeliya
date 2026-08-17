@@ -33,6 +33,7 @@ pub(crate) mod diag;
 pub(crate) mod ids;
 pub(crate) mod inflight;
 pub(crate) mod replay;
+pub(crate) mod streaming;
 pub(crate) mod timing;
 pub(crate) mod transport;
 
@@ -102,6 +103,62 @@ impl Default for KernelLimits {
     }
 }
 
+/// The served transfer bounds a stream is driven under (protocol §Served limits
+/// / §Byte-stream framing, §6). A host reads these from the daemon's served
+/// limits object and passes them in; none defaults silently to "unbounded".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StreamLimits {
+    /// Fixed connect allowance in a stream's absolute budget
+    /// (`transfer_connect_allowance_ms`), as a [`TickDelta`].
+    pub transfer_connect_allowance: TickDelta,
+    /// The floor throughput the size-aware absolute budget is computed from
+    /// (`transfer_floor_bits_per_second`). Zero is an invalid served
+    /// configuration; the size term degrades to zero (the stall timer remains
+    /// the effective bound) and construction debug-asserts against it.
+    pub transfer_floor_bits_per_second: u64,
+    /// Ticks per second — maps the served ms / bit-rate limits into the kernel's
+    /// abstract tick unit. Default `1000` (1 tick = 1 ms), matching
+    /// [`KernelLimits`].
+    pub budget_ticks_per_second: u64,
+    /// Zero-accepted-progress window before an honest stall failure
+    /// (`transfer_stall_ms`), as a [`TickDelta`].
+    pub transfer_stall: TickDelta,
+    /// The byte-bounded per-stream read-ahead (producer) / quarantine (receiver)
+    /// window — the client's cumulative-credit ceiling. Bounds memory
+    /// independent of file size (§S5).
+    pub stream_window_bytes: u64,
+    /// The maximum number of concurrent streams the client will drive; a stream
+    /// past it is refused before OPEN (bounds the stream table, §S11).
+    pub max_concurrent_streams: u32,
+}
+
+impl Default for StreamLimits {
+    /// Conservative, documented defaults: a 1 MiB window, a 64 kbit/s floor, a
+    /// 30-second connect allowance and stall window (in the default 1 tick = 1
+    /// ms convention), and up to 64 concurrent streams.
+    fn default() -> Self {
+        Self {
+            transfer_connect_allowance: TickDelta::from_ticks(30_000),
+            transfer_floor_bits_per_second: 64_000,
+            budget_ticks_per_second: 1_000,
+            transfer_stall: TickDelta::from_ticks(30_000),
+            stream_window_bytes: 1024 * 1024,
+            max_concurrent_streams: 64,
+        }
+    }
+}
+
+impl StreamLimits {
+    /// Whether the served configuration is representable: a non-zero floor and
+    /// ticks-per-second (§6). An invalid configuration does not panic in
+    /// release — the size-aware deadline term degrades to zero and the stall
+    /// timer remains the effective bound — but it debug-asserts so a misconfigured
+    /// host is caught in tests.
+    pub(crate) fn is_representable(&self) -> bool {
+        self.transfer_floor_bits_per_second != 0 && self.budget_ticks_per_second != 0
+    }
+}
+
 /// Kernel construction inputs that are not limits.
 ///
 /// [`Default`] pairs the conservative [`KernelLimits::default`] with a zero
@@ -135,6 +192,10 @@ pub struct KernelConfig {
     /// `false` (replay disabled)**: an adapter must opt in, never the
     /// reverse (§K5).
     pub stable_principal: bool,
+    /// The served byte-stream bounds (§6). Validated at construction (non-zero
+    /// floor and ticks-per-second); an invalid served configuration degrades the
+    /// size-aware deadline term to zero and debug-asserts.
+    pub streams: StreamLimits,
 }
 
 /// The driver-owned mutable state the async shell and the controller share: the
@@ -174,6 +235,36 @@ struct Shared {
     /// A send observed the broken transport during the current apply batch;
     /// `drive` surfaces it as `Input::Interrupted` after the batch.
     send_failed: bool,
+    /// The client-authored byte-stream records the core asked the driver to send
+    /// since the last drain, as redaction-safe [`SentRecord`] views (§S3/§S12).
+    /// Bounded FIFO exactly like `outbound` (K12): an undrained log evicts its
+    /// oldest entry and counts the loss.
+    outbound_records: std::collections::VecDeque<SentRecord>,
+    /// Records evicted from the bounded record log without being observed.
+    outbound_records_overflow: u64,
+    /// The deterministic media state per producer stream: the reference driver's
+    /// `i mod 251` byte source, keyed by [`CallId`] (§S3). A receiver stream has
+    /// no source and never appears here; its sink accepts every delivered range.
+    stream_media: HashMap<CallId, StreamMedia>,
+    /// Media inputs the driver must feed back to the core after the current apply
+    /// batch — a `ProduceData`/`WriteSink` action is fulfilled synchronously by
+    /// the deterministic source/sink, exactly as a real adapter's media loop
+    /// would, and reported here (drained by `drive`, mirroring `send_failed`).
+    pending_media: std::collections::VecDeque<Input>,
+}
+
+/// The deterministic producer source state the reference driver owns (§S3): the
+/// total the daemon's OPEN admitted and how far the `i mod 251` source has been
+/// read. Byte values are never stored — only offsets — so the driver is as
+/// byte-bounded as the core.
+struct StreamMedia {
+    /// The reply-correlation id, so an outbound DATA observation is keyed by the
+    /// same wire id the test sees.
+    wire_id: u64,
+    /// The source's total byte count (from the scripted OPEN).
+    total: u64,
+    /// How far the source has been read and framed.
+    produced: u64,
 }
 
 /// Work that must happen **after** the `Shared` mutex is released: settling a
@@ -286,7 +377,68 @@ impl Shared {
             }
             Action::Emit(event) => deferred.work.push(DeferredWake::Emit(event)),
             Action::CloseBus => deferred.work.push(DeferredWake::CloseBus),
+            Action::SendRecord(intent) => {
+                // The driver frames the record via jeliya-codec at the boundary
+                // (real adapters, #171/#172/#173); the reference driver records a
+                // redaction-safe observation so tests can assert the control-plane
+                // ordering (§S3/§S12). The byte layout is never handled here.
+                self.record_outbound(SentRecord::from_intent(&intent));
+            }
+            Action::ProduceData { call_id, up_to } => {
+                // The deterministic source produces exactly the granted bytes
+                // (the core bounds `up_to` by credit, window, and total), frames
+                // them, sends them, and reports how far it got (§S3). A single
+                // DATA observation covers the whole grant; the byte content is the
+                // `i mod 251` source and is never stored.
+                let framed = self.stream_media.get_mut(&call_id).map(|media| {
+                    let offset = media.produced;
+                    let sent_through = media.produced.saturating_add(up_to).min(media.total);
+                    media.produced = sent_through;
+                    (media.wire_id, offset, sent_through, media.total)
+                });
+                if let Some((wire_id, offset, sent_through, total)) = framed {
+                    let len = sent_through.saturating_sub(offset);
+                    if len > 0 {
+                        self.record_outbound(SentRecord {
+                            id: wire_id,
+                            kind: "data",
+                            a: offset,
+                            b: len,
+                        });
+                    }
+                    self.pending_media.push_back(Input::Produced {
+                        call_id,
+                        sent_through,
+                    });
+                    if sent_through >= total {
+                        self.pending_media
+                            .push_back(Input::SourceEnd { call_id, total });
+                    }
+                }
+            }
+            Action::WriteSink {
+                call_id,
+                offset,
+                len,
+            } => {
+                // The deterministic sink accepts every delivered range
+                // contiguously and reports its new accepted high-water (§S3).
+                self.pending_media.push_back(Input::SinkAccepted {
+                    call_id,
+                    through: offset.saturating_add(len),
+                });
+            }
         }
+    }
+
+    /// Append one redaction-safe outbound-record observation to the bounded log
+    /// (K12): an undrained log evicts its oldest entry and counts the loss.
+    fn record_outbound(&mut self, record: SentRecord) {
+        if self.outbound_records.len() >= OUTBOUND_LOG_CAP {
+            self.outbound_records.pop_front();
+            self.outbound_records_overflow = self.outbound_records_overflow.saturating_add(1);
+        }
+        self.outbound_records.push_back(record);
     }
 
     /// Step the core, apply the resulting actions, and return the wake work
@@ -307,6 +459,18 @@ impl Shared {
             let now = self.now;
             let generation = self.core.generation();
             let actions = self.core.step(Input::Interrupted { generation }, now);
+            self.apply(actions, &mut deferred);
+        }
+        // The deterministic media seam is driven to completion within the same
+        // drive (§S3): a `ProduceData`/`WriteSink` action is fulfilled by the
+        // source/sink and reported back to the core, which may grant more or
+        // finish — exactly the loop a real adapter's media task runs, but
+        // synchronous and deterministic. Bounded: each producer step advances
+        // toward its total and each sink step advances the accepted high-water,
+        // so the queue drains.
+        while let Some(input) = self.pending_media.pop_front() {
+            let now = self.now;
+            let actions = self.core.step(input, now);
             self.apply(actions, &mut deferred);
         }
         deferred
@@ -540,6 +704,70 @@ pub struct SentFrame {
     pub op: &'static str,
 }
 
+/// A redaction-safe view of one client-authored byte-stream control or DATA
+/// record the kernel asked the driver to send (§S3/§S12). It carries only the
+/// wire id, a kind tag, and two numeric offset/value fields — never a payload
+/// byte, name, or digest. The two fields' meaning is per kind:
+///
+/// | `kind` | `a` | `b` |
+/// |---|---|---|
+/// | `"data"` | offset | length |
+/// | `"credit"` | `accepted_through` | `send_through` |
+/// | `"end"` | offset | 0 |
+/// | `"abort"` | `high_water` | 0 |
+/// | `"ack"` | `high_water` | 0 |
+///
+/// Publicly visible only through the feature-gated re-export in `lib.rs`.
+#[derive(Clone, Copy, Debug)]
+pub struct SentRecord {
+    /// The stream's reply-correlation id.
+    pub id: u64,
+    /// The record kind tag (`"data"`, `"credit"`, `"end"`, `"abort"`, `"ack"`).
+    pub kind: &'static str,
+    /// The first numeric field (see the type-level table).
+    pub a: u64,
+    /// The second numeric field (see the type-level table).
+    pub b: u64,
+}
+
+impl SentRecord {
+    /// Build the observation for one outbound control-record intent.
+    fn from_intent(intent: &crate::kernel::transport::StreamRecordIntent) -> Self {
+        use crate::kernel::transport::StreamRecordIntent as I;
+        match *intent {
+            I::Credit {
+                id,
+                accepted_through,
+                send_through,
+                ..
+            } => SentRecord {
+                id: id.get(),
+                kind: "credit",
+                a: accepted_through,
+                b: send_through,
+            },
+            I::End { id, offset, .. } => SentRecord {
+                id: id.get(),
+                kind: "end",
+                a: offset,
+                b: 0,
+            },
+            I::Abort { id, high_water, .. } => SentRecord {
+                id: id.get(),
+                kind: "abort",
+                a: high_water,
+                b: 0,
+            },
+            I::Ack { id, high_water, .. } => SentRecord {
+                id: id.get(),
+                kind: "ack",
+                a: high_water,
+                b: 0,
+            },
+        }
+    }
+}
+
 #[cfg(feature = "test-transport")]
 pub use in_memory::KernelController;
 
@@ -549,7 +777,7 @@ mod in_memory {
     use jeliya_api::{ApiError, Incarnation, RequestId};
 
     use crate::handle::ClientHandle;
-    use crate::kernel::transport::{Inbound, WireReply};
+    use crate::kernel::transport::{Inbound, StreamAbortReason, StreamRecordMeta, WireReply};
 
     /// The daemon incarnation the in-memory controller reports on a plain
     /// `connect()` (and every internal `Input::Connected`): a fixed constant,
@@ -570,9 +798,18 @@ mod in_memory {
         /// no scheduling dependence — the same guarantees the #167 mock gives
         /// the seam, now for the kernel.
         pub fn with_kernel(config: KernelConfig) -> (ClientHandle, KernelController) {
+            debug_assert!(
+                config.streams.is_representable(),
+                "StreamLimits floor and ticks-per-second must be non-zero (§6)"
+            );
             let runtime = Arc::new(Runtime {
                 shared: Mutex::new(Shared {
-                    core: Core::new(config.limits, config.jitter_seed, config.stable_principal),
+                    core: Core::with_stream_limits(
+                        config.limits,
+                        config.jitter_seed,
+                        config.stable_principal,
+                        config.streams,
+                    ),
                     bus: Arc::new(EventBus::new()),
                     now: Tick::ZERO,
                     senders: HashMap::new(),
@@ -582,6 +819,10 @@ mod in_memory {
                     dialing: false,
                     fail_next_send: false,
                     send_failed: false,
+                    outbound_records: std::collections::VecDeque::new(),
+                    outbound_records_overflow: 0,
+                    stream_media: HashMap::new(),
+                    pending_media: std::collections::VecDeque::new(),
                 }),
                 delivery: Mutex::new(std::collections::VecDeque::new()),
                 draining: std::sync::atomic::AtomicBool::new(false),
@@ -807,6 +1048,14 @@ mod in_memory {
             self.drive_serialized(Input::Inbound(Inbound::Malformed));
         }
 
+        /// Advance the virtual clock WITHOUT firing any due timer: the one
+        /// knob event-ordering tests need to process a transport event at or
+        /// past a deadline before its `TimerFired` input runs (the production
+        /// driver interleaves these arbitrarily).
+        pub fn advance_clock_only(&self, ticks: u64) {
+            self.lock().now.advance(TickDelta(ticks));
+        }
+
         /// Advance the virtual clock by `ticks`, firing every timer now due (in
         /// ascending fire-time order).
         pub fn advance(&self, ticks: u64) {
@@ -883,6 +1132,175 @@ mod in_memory {
         pub fn senders(&self) -> usize {
             self.lock().senders.len()
         }
+
+        // -- stream lifecycle scripting (#269) ------------------------------
+        //
+        // The controller is the deterministic in-memory stream driver (§S3): it
+        // delivers OPEN/CREDIT/DATA/END/ABORT/ACK, drives the `i mod 251` source
+        // and a receiver-accepted sink, and exposes the outbound records and the
+        // AC-7 bounds. Every method is clock-free; the media flows synchronously
+        // within `drive`.
+
+        /// Deliver the daemon's OPEN for `wire_id`, admitting `total` bytes, on
+        /// the current generation. For a producer stream this also arms the
+        /// deterministic `i mod 251` source of `total` bytes.
+        pub fn open(&self, wire_id: u64, total: u64) {
+            let generation = self.generation();
+            let id = RequestId::new(wire_id).expect("wire id within range");
+            {
+                let mut shared = self.lock();
+                if let Some(call_id) = shared.core.wire_to_call(id, generation) {
+                    shared.stream_media.insert(
+                        call_id,
+                        StreamMedia {
+                            wire_id,
+                            total,
+                            produced: 0,
+                        },
+                    );
+                }
+            }
+            self.deliver_record(
+                StreamRecordMeta::Open {
+                    id,
+                    stream_id: stream_id_for(wire_id),
+                    total,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon CREDIT for `wire_id` (the client is the producer).
+        pub fn credit(&self, wire_id: u64, accepted_through: u64, send_through: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Credit {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    accepted_through,
+                    send_through,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon DATA range for `wire_id` (the client is the
+        /// receiver); the deterministic sink accepts it and advances credit.
+        pub fn deliver_data(&self, wire_id: u64, offset: u64, len: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Data {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    offset,
+                    len,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver the daemon's END for `wire_id` at `offset` (the client is the
+        /// receiver).
+        pub fn end(&self, wire_id: u64, offset: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::End {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    offset,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon ABORT for `wire_id` with a high-water mark; the
+        /// client ACKs and settles the stream (§S4).
+        pub fn abort(&self, wire_id: u64, high_water: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Abort {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    high_water,
+                    reason: StreamAbortReason::Cancelled,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon ACK for the client's ABORT of `wire_id`.
+        pub fn ack(&self, wire_id: u64, high_water: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Ack {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    high_water,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a record tagged with an explicit generation — used to prove a
+        /// stale-generation record is fenced (§S10).
+        pub fn deliver_data_at_generation(
+            &self,
+            wire_id: u64,
+            offset: u64,
+            len: u64,
+            generation: u64,
+        ) {
+            self.deliver_record(
+                StreamRecordMeta::Data {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    offset,
+                    len,
+                },
+                generation,
+            );
+        }
+
+        fn deliver_record(&self, record: StreamRecordMeta, generation: u64) {
+            self.drive_serialized(Input::Inbound(Inbound::Record { generation, record }));
+        }
+
+        /// Take the client-authored outbound stream records since the last drain,
+        /// as redaction-safe [`SentRecord`] views (§S3).
+        pub fn take_outbound_records(&self) -> Vec<SentRecord> {
+            self.lock().outbound_records.drain(..).collect()
+        }
+
+        /// Records evicted from the bounded record log without being observed —
+        /// 0 in any test that drains.
+        pub fn outbound_records_overflow(&self) -> u64 {
+            self.lock().outbound_records_overflow
+        }
+
+        /// The number of installed streams (active + finalizing + tombstoned) —
+        /// asserted within `max_concurrent_streams`, and `0` after stop (§S11).
+        pub fn streams(&self) -> usize {
+            self.lock().core.stream_count()
+        }
+
+        /// The number of armed per-stream timers — asserted `<= 2 ·` active
+        /// streams, and `0` after every stream is terminal (§S11).
+        pub fn stream_timers(&self) -> usize {
+            self.lock().core.stream_timers()
+        }
+
+        /// Total bytes reserved across every active stream's window — asserted
+        /// `<= streams() · stream_window_bytes` (§S11).
+        pub fn stream_window_bytes_reserved(&self) -> u64 {
+            self.lock().core.stream_window_bytes_reserved()
+        }
+    }
+
+    /// A nonzero connection-local stream id for the reference driver, derived
+    /// from the wire id. The core adopts OPEN's `stream_id` and ignores it on
+    /// later records (routing is by call), so any nonzero value serves.
+    fn stream_id_for(wire_id: u64) -> u128 {
+        (wire_id as u128).wrapping_add(1).max(1)
     }
 
     #[cfg(test)]
@@ -959,6 +1377,7 @@ mod in_memory {
                 },
                 jitter_seed: 1,
                 stable_principal: true,
+                streams: StreamLimits::default(),
             });
             handle.start();
             controller.connect();
@@ -1013,6 +1432,7 @@ mod in_memory {
                 },
                 jitter_seed: 1,
                 stable_principal: true,
+                streams: StreamLimits::default(),
             });
             // Idle: both calls queue; the second overflows the depth-1 queue.
             let _first = handle.call::<RoomList>(RoomList {}, Dedup::None);
