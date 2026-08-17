@@ -371,56 +371,86 @@ impl Supervisor {
                     // bug — so it is preserved even on a nonzero exit. Drop our stdin
                     // first so a well-behaved daemon can exit on EOF.
                     drop(stdin);
-                    // Capture the pgid (== leader pid) BEFORE the reaping wait:
-                    // once `wait()` reaps the leader, `child.id()` is None and the
+                    // Capture the pgid (== leader pid) BEFORE any reaping wait:
+                    // once the leader is reaped, `child.id()` is None and the
                     // isolated group can no longer be reached by pid. A faulty or
                     // overridden binary may have spawned a descendant into this
                     // group with its stdio closed and then exited; the reaped-leader
                     // arms must sweep the group so no descendant keeps holding the
                     // data-dir lock (or writing state) while the caller retries. The
-                    // `_` arm leaves the child un-reaped, so `abandon_child` →
-                    // `force_kill_tree` already reaches the group via `child.id()`.
+                    // `abandon_child` arms leave the child un-reaped, so
+                    // `force_kill_tree` still reaches the group via `child.id()`.
                     let leader_pgid = guard.as_mut().id();
-                    // The announcement deadline ALREADY expired inside `read_announcement`,
-                    // so do NOT grant a SECOND full `Timeouts::spawn` here — a hung or
-                    // overridden daemon that emitted no line AND ignores stdin-EOF would
-                    // otherwise push `start_or_adopt` to ~2x the configured bound. A
-                    // NONBLOCKING `try_wait` catches a child that already exited silently:
-                    // a silent exit closes stdout, which is exactly why `read_announcement`
-                    // returned (its EOF), so the leader is already reaped-able. A non-zero
-                    // exit is the retryable held-lock / startup-failure `Wedged`; a zero
-                    // exit keeps the original handshake error. A child STILL ALIVE after
-                    // the deadline is hung/overridden and goes straight to bounded forced
-                    // cleanup (`abandon_child`), never another spawn interval.
-                    match guard.as_mut().try_wait() {
-                        Ok(Some(status)) if !status.success() => {
-                            if let Some(pgid) = leader_pgid {
-                                // Propagate a verified group-cleanup failure: a
-                                // descendant surviving SIGKILL (still holding the
-                                // data-dir lock) must not be masked by `Wedged`/the
-                                // spawn error, which invite a retry that would wedge.
-                                process::kill_reaped_process_group(pgid).await?;
+
+                    if stdout_closed {
+                        // EOF: stdout closed with no line. For a single-process daemon
+                        // the leader has exited (or is exiting) and no descendant still
+                        // holds fd 1 — an inherited-and-open fd 1 would keep the pipe
+                        // from reporting EOF — so the exit status is IMMINENT. AWAIT it,
+                        // BOUNDED by `teardown`, instead of sampling `try_wait` once: the
+                        // single nonblocking poll RACES the reap. The async reader can
+                        // deliver EOF a hair before `waitpid(WNOHANG)` sees the zombie,
+                        // which mis-routed a silent nonzero exit into `abandon_child` and
+                        // surfaced `Handshake("stdout closed before the announcement")`
+                        // instead of the retryable `Wedged` (#277). `wait()` is woken by
+                        // the runtime's child reaper the instant the zombie is reapable,
+                        // so it does NOT burn the budget — the `teardown` ceiling only
+                        // bounds a pathological "closed fd 1 but kept running" binary.
+                        // `deadline_from` SATURATES so a `Duration::MAX` teardown cannot
+                        // overflow-panic the timer.
+                        match tokio::time::timeout_at(
+                            validate::deadline_from(self.timeouts.teardown),
+                            guard.as_mut().wait(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(status)) => {
+                                if let Some(pgid) = leader_pgid {
+                                    // Propagate a verified group-cleanup failure: a
+                                    // descendant surviving SIGKILL (still holding the
+                                    // data-dir lock) must not be masked by `Wedged`/the
+                                    // spawn error, which invite a retry that would wedge.
+                                    process::kill_reaped_process_group(pgid).await?;
+                                }
+                                // A silent nonzero exit is the retryable held-lock /
+                                // startup-failure `Wedged` (spec §6.5); a clean (zero)
+                                // exit keeps the original handshake error.
+                                if !status.success() {
+                                    return Err(SupervisorError::Wedged);
+                                }
+                                return Err(error);
                             }
-                            // `Wedged` ONLY for the SILENT (stdout-closed) exit; a
-                            // malformed/other announcement fault is preserved so a
-                            // persistent bug is not retried forever.
-                            if stdout_closed {
-                                return Err(SupervisorError::Wedged);
-                            }
-                            return Err(error);
+                            // The child closed stdout but did not exit within `teardown`
+                            // (overridden/pathological), or the wait itself errored:
+                            // force-kill the group and surface the handshake fault — NOT
+                            // the simple retryable held-lock case, so it is not masked as
+                            // `Wedged`.
+                            _ => return Err(abandon_child(guard.as_mut(), error).await),
                         }
+                    }
+
+                    // A NON-EOF fault (malformed JSON or a read error) is a SPECIFIC
+                    // handshake fault: the announcement deadline ALREADY expired inside
+                    // `read_announcement`, so do NOT grant a SECOND full `Timeouts::spawn`
+                    // here — a hung or overridden daemon that emitted no line AND ignores
+                    // stdin-EOF would otherwise push `start_or_adopt` to ~2x the
+                    // configured bound. A single NONBLOCKING `try_wait` reaps a child that
+                    // already exited without extending a hung one; the error is preserved
+                    // regardless of the exit status so a persistent packaging/protocol bug
+                    // is NOT masked as retryable `Wedged`.
+                    match guard.as_mut().try_wait() {
                         Ok(Some(_)) => {
                             if let Some(pgid) = leader_pgid {
                                 // Propagate a verified group-cleanup failure: a
                                 // descendant surviving SIGKILL (still holding the
-                                // data-dir lock) must not be masked by `Wedged`/the
-                                // spawn error, which invite a retry that would wedge.
+                                // data-dir lock) must not be masked by the spawn error,
+                                // which invites a retry that would wedge.
                                 process::kill_reaped_process_group(pgid).await?;
                             }
                             return Err(error);
                         }
-                        // Still running after the deadline (`Ok(None)`) or an errored
-                        // wait: force-kill the group now, bounded, rather than waiting.
+                        // Still running (`Ok(None)`) or an errored wait: force-kill the
+                        // group now, bounded, rather than waiting.
                         _ => return Err(abandon_child(guard.as_mut(), error).await),
                     }
                 }

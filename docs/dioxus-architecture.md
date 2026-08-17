@@ -195,6 +195,15 @@ distinguishes never-sent work from work that may have executed; only
 operations with an explicit, tested v2 deduplication guarantee may replay,
 and everything else never auto-replays; generations are fenced.
 
+**The stream lifecycle layer** (#269) extends the kernel: `call_stream::<FileShare>`
+(upload) and `call_stream::<FileRead>` (download) now drive a full
+`OPEN → DATA/CREDIT → END → Text reply` lifecycle through the kernel, with
+credit-bounded outbound bytes, a per-stream absolute deadline
+(`transfer_connect_allowance + floor-throughput term`), and a stall timer. The
+byte-free sub-core (`kernel/streaming`) holds only offset scalars; framing stays
+owned by `jeliya-codec` and the daemon executor (#233/#242/#243), executed at
+the driver boundary exactly as `WireFrame`↔bytes are today.
+
 **One resync path** (#169): `ResyncRequired { generation, reason }` is the
 only gap and resync path for v2 clients. There is no legacy bootstrap
 fallback.
