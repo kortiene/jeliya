@@ -62,3 +62,14 @@ incumbent, hung shutdown, abrupt death, adoption, …) drives a real `jeliyad`
 built from the workspace and lands with the focused-test slice; the pure-logic
 guards (portfile parsing, loopback, token redaction, dial-URL shape) are unit
 tests co-located with the code.
+
+The exit-status classification on the **`stdout_closed` path** (no announcement +
+stdout EOF → `Wedged` on nonzero, preserved handshake error on zero) uses a
+bounded `wait()` woken by the runtime's child reaper, **not** a single nonblocking
+`try_wait()`. A single poll races the reap: the async reader can observe stdout
+EOF before `waitpid(WNOHANG)` sees the zombie, silently misclassifying a
+`Wedged` case as `Handshake` (#277). `stdout_eof_before_a_nonzero_exit_still_surfaces_wedged`
+in `tests/eviction_refuse.rs` deterministically reproduces this ordering via a
+stub that closes stdout first and exits after a short delay, so any regression
+back to `try_wait()` is caught on first CI run rather than appearing as
+intermittent flakiness on unrelated PRs.
