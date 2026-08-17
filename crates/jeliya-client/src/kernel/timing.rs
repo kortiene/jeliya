@@ -52,6 +52,11 @@ impl Tick {
     pub(crate) fn advance(&mut self, delta: TickDelta) {
         self.0 = self.0.saturating_add(delta.0);
     }
+
+    /// The underlying tick count, for span arithmetic in the stream layer.
+    pub(crate) fn ticks(self) -> u64 {
+        self.0
+    }
 }
 
 /// A driver-scheduled timer's identity. The core allocates these monotonically;
