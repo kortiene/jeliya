@@ -163,7 +163,7 @@ pub fn ActivityPane(
 
                     // When the room converges, advance the LastSeen marker to the
                     // newest signed event timestamp (§9).
-                    if let RoomUpdate::Converged(ref view) = update {
+                    if let RoomUpdate::Converged(_) = update {
                         let last_seen_at = {
                             let snapshot = activity.peek();
                             snapshot.newest_signed_at()
