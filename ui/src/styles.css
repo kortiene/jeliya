@@ -1211,7 +1211,7 @@ button.sender-name:not(:disabled):hover {
   display: none;  /* visible only under the compact @media below */
 }
 
-@media (max-width: 768px) {
+@media (max-width: 899.98px) {
   .global-nav-rail {
     display: none;
   }
