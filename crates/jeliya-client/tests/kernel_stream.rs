@@ -76,9 +76,12 @@ fn file_share_producer_drives_full_lifecycle() {
     assert_eq!(controller.outstanding(), 0, "the call is fully settled");
 }
 
-/// AC-1 (receiver, zero-byte): `file.read` on a zero-byte file drives
-/// OPEN(0) → no initial CREDIT (window ceiling = 0) → END(0) → terminal reply.
-/// The stream retires cleanly with no orphaned timers.
+/// AC-1 (receiver, zero-byte): `file.read` on a zero-byte file drives the
+/// protocol's mandatory empty-file handshake OPEN(0) → CREDIT(0,0) → END(0) →
+/// terminal reply. The CREDIT is required even though no window is needed: the
+/// daemon's producer waits for it before it may send END, so omitting it
+/// stalls an empty download until timeout. The stream retires cleanly with no
+/// orphaned timers.
 #[test]
 fn file_read_zero_byte_receiver_complete_lifecycle() {
     let (handle, controller) = ready();
@@ -95,15 +98,16 @@ fn file_read_zero_byte_receiver_complete_lifecycle() {
         let wire = sent[0].id;
 
         controller.open(wire, 0);
-        // total=0: initial grant ceiling = min(stream_window_bytes, 0) = 0; no CREDIT.
+        // total=0: the mandatory CREDIT(0,0) opens the zero-byte handshake.
         let credits: Vec<_> = controller
             .take_outbound_records()
             .into_iter()
             .filter(|r| r.kind == "credit")
             .collect();
-        assert!(credits.is_empty(), "no CREDIT issued for a zero-byte file");
+        assert_eq!(credits.len(), 1, "a zero-byte file still owes CREDIT(0,0)");
+        assert_eq!((credits[0].a, credits[0].b), (0, 0));
 
-        // Daemon sends END immediately: offset=0, total=0.
+        // The daemon may now send END: offset=0, total=0.
         controller.end(wire, 0);
 
         controller.deliver_reply(

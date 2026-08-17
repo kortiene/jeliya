@@ -19,7 +19,9 @@ use crate::kernel::backoff::Backoff;
 use crate::kernel::ids::{GenerationCounter, IdAllocator};
 use crate::kernel::inflight::{CallId, Entry, Ledger, Phase};
 use crate::kernel::replay::{is_stream_op, ReplayPolicy};
-use crate::kernel::streaming::{StreamOutcome, StreamRole, StreamTable};
+use crate::kernel::streaming::{
+    stream_deadline_at, StreamOutcome, StreamPhase, StreamRole, StreamTable,
+};
 use crate::kernel::timing::{Tick, TimerId};
 use crate::kernel::transport::{
     Inbound, StreamRecordIntent, StreamRecordMeta, WireFrame, WireReply,
@@ -1044,13 +1046,18 @@ impl Core {
             self.apply_stream_outcome(call_id, outcome, now, actions);
             return;
         }
-        // Replace the base request/reply deadline with the stream's budget: cancel
-        // the base timer and push the ledger deadline to the far future so the
-        // request/reply timeout logic never fires for a stream call — the two
-        // stream timers govern it now.
+        // Replace the base request/reply deadline with the stream's budget:
+        // cancel the base timer and record the COMPUTED stream deadline in the
+        // ledger — never `u64::MAX`. The absolute deadline must bind regardless
+        // of event ordering (the same guarantee `on_reply`/`on_interrupted`
+        // give ordinary calls): a reply or disconnect processed at or after the
+        // stream deadline but before its `TimerFired` input settles `Timeout`,
+        // not a dishonest success/`Disconnected`. The stream's own deadline
+        // timer is armed at the same instant below, so both paths agree.
+        let stream_deadline = stream_deadline_at(now, total, &self.stream_limits);
         let wire_id = if let Some(entry) = self.ledger.get_mut(call_id) {
             actions.push(Action::CancelTimer(entry.deadline_timer));
-            entry.deadline_at = Tick(u64::MAX);
+            entry.deadline_at = stream_deadline;
             match entry.phase {
                 Phase::Sent { wire_id, .. } => wire_id,
                 Phase::Queued => return, // OPEN before send is impossible; defend.
@@ -1159,6 +1166,20 @@ impl Core {
         let Some(call_id) = self.ledger.resolve_reply(id, generation) else {
             return;
         };
+        // A SUCCESS reply is only valid once the stream is `Finalizing` (after
+        // END — §S4). An `Ok` arriving while the stream is still `Active`
+        // claims success before the byte exchange completed; settling it would
+        // report a dishonest success and discard the live stream. Treat it as
+        // the protocol fault it is (abort the stream, settle `Timeout`) — a
+        // pre-OPEN dedup-hit success remains valid because no `StreamEntry`
+        // exists yet.
+        if matches!(result, WireReply::Ok(_))
+            && self.streams.phase_of(call_id) == Some(StreamPhase::Active)
+        {
+            let outcome = self.streams.abort_protocol(call_id, actions);
+            self.apply_stream_outcome(call_id, outcome, now, actions);
+            return;
+        }
         let entry = self.ledger.take(call_id).expect("resolved entry exists");
         // A stream call's terminal is this Text reply (§S4): retire its
         // `StreamEntry` — cancel any live stream timers and drop the entry (and

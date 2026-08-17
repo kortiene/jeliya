@@ -7,7 +7,10 @@
 //! ```
 
 use futures::executor::block_on;
-use jeliya_api::{FileId, FileRead, FileReadOut, FileShare, OpId, RoomCreate, RoomId, RoomList};
+use jeliya_api::{
+    ApiError, EnforcedAt, FileId, FileRead, FileReadOut, FileShare, OpId, RoomCreate, RoomId,
+    RoomList,
+};
 use jeliya_client::{
     CallError, Dedup, Execution, KernelConfig, KernelLimits, State, StreamLimits, TickDelta,
 };
@@ -1553,10 +1556,13 @@ fn stream_max_concurrent_exceeded_settles_queue_full() {
     );
 }
 
-/// §S4 (daemon ABORT): a daemon-initiated ABORT retires the stream, elicits a
-/// client ACK, and settles the call `Cancelled { Unknown }`.  The success path
-/// never uses ACK (§S4: "ACK is ABORT-only"), so an ACK in the outbound records
-/// proves the daemon-ABORT path was taken, not a client cancel.
+/// §S4 (daemon ABORT): a daemon-initiated ABORT elicits a client ACK and then
+/// the call is settled by the daemon's AUTHORITATIVE error reply — never by a
+/// locally invented `Cancelled`, which would discard the exact error
+/// (`file_too_large`, `declared_size_mismatch`, …) the reply carries. The
+/// success path never uses ACK (§S4: "ACK is ABORT-only"), so an ACK in the
+/// outbound records proves the daemon-ABORT path was taken, not a client
+/// cancel.
 #[test]
 fn stream_daemon_abort_settles_cancelled() {
     let (handle, controller) = default_ready();
@@ -1583,29 +1589,40 @@ fn stream_daemon_abort_settles_cancelled() {
         records.iter().any(|r| r.kind == "ack"),
         "client ACKs the daemon ABORT"
     );
-    // Timers are cancelled immediately; the Retired tombstone stays in the stream
-    // table until the daemon's late Text reply (or interrupt) calls streams.retire().
+    // The stream enters FINALIZING immunity: timers cancelled, and the call is
+    // NOT settled locally — the daemon's exact error reply must settle it.
     assert_eq!(
         controller.stream_timers(),
         0,
         "no orphaned stream timers after ABORT"
     );
-
-    let err = block_on(fut).expect_err("daemon ABORT settles the call");
-    assert!(
-        matches!(
-            err,
-            CallError::Cancelled {
-                execution: Execution::Unknown
-            }
-        ),
-        "expected Cancelled{{Unknown}}, got {err:?}"
+    assert_eq!(
+        controller.outstanding(),
+        1,
+        "the call awaits the authoritative reply, not a local settlement"
     );
-    // Tombstone absorbs the daemon's late Text reply; interrupt clears both
-    // the stream-table entry and the ledger tombstone (§S11).
-    controller.interrupt();
-    assert_eq!(controller.streams(), 0);
-    assert_eq!(controller.outstanding(), 0);
+
+    // The daemon's exact terminal error reply settles the call with the REAL
+    // error, not an invented Cancelled.
+    controller.deliver_error(
+        wire,
+        ApiError::FileTooLarge {
+            declared_bytes: 600,
+            limit_bytes: 500,
+            enforced_at: EnforcedAt::StageDeclared,
+        },
+    );
+    let err = block_on(fut).expect_err("the authoritative reply settles the call");
+    assert!(
+        matches!(err, CallError::Wire(ApiError::FileTooLarge { .. })),
+        "expected the daemon's exact FileTooLarge error, got {err:?}"
+    );
+    assert_eq!(
+        controller.streams(),
+        0,
+        "the reply retires the stream entry"
+    );
+    assert_eq!(controller.outstanding(), 0, "the reply settles the ledger");
 }
 
 /// AC-2: DATA is only emitted within the in-effect `send_through` grant; a
@@ -1857,4 +1874,260 @@ fn late_daemon_abort_in_finalizing_is_ignored() {
     });
     assert_eq!(controller.streams(), 0, "the stream is fully retired");
     assert_eq!(controller.outstanding(), 0, "the call is fully settled");
+}
+
+/// §S5 (producer window): the send window anchors at ACKNOWLEDGED progress,
+/// never at `sent_offset` — a CREDIT far larger than the window must not let
+/// the producer outrun its acknowledgements (the `window_reserved` bound in
+/// §S11). DATA pauses once `window` bytes are unacked and resumes only when
+/// CREDIT advances the accepted high-water.
+#[test]
+fn stream_producer_window_anchored_to_acknowledged_progress() {
+    let (handle, controller) = ClientHandle::with_kernel(KernelConfig {
+        streams: StreamLimits {
+            stream_window_bytes: 100,
+            ..StreamLimits::default()
+        },
+        ..KernelConfig::default()
+    });
+    handle.start();
+    controller.connect();
+
+    let _fut = handle.call_stream::<FileShare>(
+        FileShare {
+            room_id: RoomId::new("r1"),
+            name: "window.bin".into(),
+            declared_bytes: 1_000,
+            declared_content_type: "application/octet-stream".into(),
+        },
+        Dedup::None,
+    );
+    let wire = controller.take_outbound()[0].id;
+    controller.open(wire, 1_000);
+
+    // CREDIT grants 1000 with zero bytes acknowledged: the window caps the
+    // in-flight DATA at 100 regardless.
+    controller.credit(wire, 0, 1_000);
+    let step1 = controller.take_outbound_records();
+    let sent1: u64 = step1.iter().filter(|r| r.kind == "data").map(|r| r.b).sum();
+    assert_eq!(sent1, 100, "unacked DATA bounded by the 100-byte window");
+    assert!(
+        controller.stream_window_bytes_reserved() <= 100,
+        "reserved window bytes never exceed the advertised bound"
+    );
+
+    // No further DATA until the accepted high-water advances.
+    controller.credit(wire, 100, 1_000);
+    let step2 = controller.take_outbound_records();
+    let sent2: u64 = step2.iter().filter(|r| r.kind == "data").map(|r| r.b).sum();
+    assert_eq!(
+        sent2, 100,
+        "production resumes only as acks free the window"
+    );
+}
+
+/// §S3 (ABORT offset): a producer's ABORT carries the greatest ACCEPTED
+/// high-water observed in CREDIT — never `sent_offset`, which the receiver may
+/// reject as malformed and which can strand the transfer reservation.
+#[test]
+fn stream_producer_abort_carries_accepted_high_water() {
+    let (handle, controller) = default_ready();
+
+    let mut fut = handle.call_stream::<FileShare>(
+        FileShare {
+            room_id: RoomId::new("r1"),
+            name: "hw.bin".into(),
+            declared_bytes: 500,
+            declared_content_type: "application/octet-stream".into(),
+        },
+        Dedup::None,
+    );
+    let wire = controller.take_outbound()[0].id;
+    controller.open(wire, 500);
+    controller.credit(wire, 0, 200); // 200 bytes sent, none acknowledged
+    controller.take_outbound_records();
+    controller.credit(wire, 50, 400); // accepted high-water is 50
+    controller.take_outbound_records();
+
+    fut.cancel(Execution::Unknown);
+    let _ = block_on(fut);
+    let aborts: Vec<_> = controller
+        .take_outbound_records()
+        .into_iter()
+        .filter(|r| r.kind == "abort")
+        .collect();
+    assert_eq!(aborts.len(), 1, "exactly one ABORT on cancel");
+    assert_eq!(
+        aborts[0].a, 50,
+        "ABORT offset is the accepted high-water, not sent_offset"
+    );
+}
+
+/// §S4 (ACK validity): an ACK is valid only in response to a client ABORT. An
+/// unsolicited ACK addressed to an ACTIVE stream is a protocol fault — the
+/// stream aborts `protocol_error` and settles `Timeout` rather than silently
+/// retiring and hanging the call forever.
+#[test]
+fn stream_unsolicited_ack_in_active_is_protocol_fault() {
+    let (handle, controller) = default_ready();
+
+    let fut = handle.call_stream::<FileShare>(
+        FileShare {
+            room_id: RoomId::new("r1"),
+            name: "ack.bin".into(),
+            declared_bytes: 400,
+            declared_content_type: "application/octet-stream".into(),
+        },
+        Dedup::None,
+    );
+    let wire = controller.take_outbound()[0].id;
+    controller.open(wire, 400);
+    controller.credit(wire, 0, 200);
+    controller.take_outbound_records();
+
+    controller.ack(wire, 0);
+    let err = block_on(fut).expect_err("unsolicited ACK settles honestly");
+    assert!(
+        matches!(err, CallError::Timeout),
+        "expected Timeout on the protocol fault, got {err:?}"
+    );
+    let records = controller.take_outbound_records();
+    assert!(
+        records.iter().any(|r| r.kind == "abort"),
+        "a protocol_error ABORT answers the invalid ACK"
+    );
+    controller.interrupt(); // drain_all clears the ABORT tombstone and ledger entry (§S11)
+    assert_eq!(controller.streams(), 0);
+    assert_eq!(controller.outstanding(), 0, "the call never hangs");
+}
+
+/// §S4 (crossing ABORTs): when the daemon's ABORT crosses our own in flight,
+/// BOTH sides still complete the explicit ACK exchange — dropping the daemon's
+/// ABORT unACKed makes it wait out `transfer_stall_ms` and close the
+/// connection (4007), disrupting unrelated requests.
+#[test]
+fn stream_crossing_aborts_still_complete_ack_exchange() {
+    let (handle, controller) = default_ready();
+
+    let mut fut = handle.call_stream::<FileShare>(
+        FileShare {
+            room_id: RoomId::new("r1"),
+            name: "cross.bin".into(),
+            declared_bytes: 400,
+            declared_content_type: "application/octet-stream".into(),
+        },
+        Dedup::None,
+    );
+    let wire = controller.take_outbound()[0].id;
+    controller.open(wire, 400);
+    controller.credit(wire, 0, 200);
+    controller.take_outbound_records();
+
+    // Our ABORT goes out (local cancel) and settles; the daemon's ABORT
+    // crosses it in flight.
+    fut.cancel(Execution::Unknown);
+    let _ = block_on(fut);
+    controller.take_outbound_records();
+    controller.abort(wire, 0);
+
+    let records = controller.take_outbound_records();
+    assert!(
+        records.iter().any(|r| r.kind == "ack"),
+        "a crossing daemon ABORT is still ACKed"
+    );
+    controller.interrupt();
+    assert_eq!(controller.streams(), 0);
+}
+
+/// §S4 (terminal ordering): a success reply is valid only from FINALIZING. An
+/// `Ok` reply arriving while the stream is still ACTIVE claims success before
+/// the byte exchange completed — a protocol fault, settled `Timeout` with a
+/// `protocol_error` ABORT, never a dishonest success.
+#[test]
+fn stream_ok_reply_while_active_is_protocol_fault() {
+    let (handle, controller) = default_ready();
+
+    let fut = handle.call_stream::<FileShare>(
+        FileShare {
+            room_id: RoomId::new("r1"),
+            name: "early.bin".into(),
+            declared_bytes: 400,
+            declared_content_type: "application/octet-stream".into(),
+        },
+        Dedup::None,
+    );
+    let wire = controller.take_outbound()[0].id;
+    controller.open(wire, 400);
+    controller.credit(wire, 0, 200);
+    controller.take_outbound_records();
+
+    controller.deliver_reply(
+        wire,
+        "{\"room_id\":\"r1\",\"file_id\":\"f1\",\"event_id\":\"e1\",\"pos\":0,\"bytes\":400,\"digest\":\"d\"}",
+    );
+    let err = block_on(fut).expect_err("an early Ok is a protocol fault");
+    assert!(
+        matches!(err, CallError::Timeout),
+        "expected Timeout on the early Ok, got {err:?}"
+    );
+    let records = controller.take_outbound_records();
+    assert!(
+        records.iter().any(|r| r.kind == "abort"),
+        "a protocol_error ABORT answers the early Ok"
+    );
+    controller.interrupt(); // drain_all clears the ABORT tombstone and ledger entry (§S11)
+    assert_eq!(controller.streams(), 0);
+    assert_eq!(controller.outstanding(), 0);
+}
+
+/// §S6 (deadline ordering): the absolute stream deadline binds regardless of
+/// event ordering — a reply processed at or after the deadline but BEFORE its
+/// `TimerFired` input settles `Timeout`, never success. (The reference driver
+/// interleaves transport events and timers arbitrarily; the ledger carries
+/// the computed deadline so both orders agree.)
+#[test]
+fn stream_reply_at_deadline_settles_timeout_not_success() {
+    let (handle, controller) = ClientHandle::with_kernel(KernelConfig {
+        streams: StreamLimits {
+            transfer_connect_allowance: TickDelta::from_ticks(100),
+            transfer_floor_bits_per_second: 64_000,
+            budget_ticks_per_second: 1_000,
+            transfer_stall: TickDelta::from_ticks(50_000),
+            stream_window_bytes: 1024 * 1024,
+            max_concurrent_streams: 4,
+        },
+        ..KernelConfig::default()
+    });
+    handle.start();
+    controller.connect();
+
+    let fut = handle.call_stream::<FileShare>(
+        FileShare {
+            room_id: RoomId::new("r1"),
+            name: "race.bin".into(),
+            declared_bytes: 200,
+            declared_content_type: "application/octet-stream".into(),
+        },
+        Dedup::None,
+    );
+    let wire = controller.take_outbound()[0].id;
+    controller.open(wire, 200); // deadline armed at t=125
+    controller.credit(wire, 0, 100);
+    controller.take_outbound_records();
+
+    // The reply is processed at t=126 — past the t=125 deadline — but its
+    // `TimerFired` input has not run yet.
+    controller.advance_clock_only(126);
+    controller.deliver_reply(
+        wire,
+        "{\"room_id\":\"r1\",\"file_id\":\"f1\",\"event_id\":\"e1\",\"pos\":0,\"bytes\":200,\"digest\":\"d\"}",
+    );
+    let err = block_on(fut).expect_err("a reply past the deadline settles Timeout");
+    assert!(
+        matches!(err, CallError::Timeout),
+        "expected Timeout for the past-deadline reply, got {err:?}"
+    );
+    controller.interrupt();
+    assert_eq!(controller.streams(), 0);
+    assert_eq!(controller.outstanding(), 0);
 }

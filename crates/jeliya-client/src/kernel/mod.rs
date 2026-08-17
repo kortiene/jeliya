@@ -1017,6 +1017,14 @@ mod in_memory {
             self.drive_serialized(Input::Inbound(Inbound::Malformed));
         }
 
+        /// Advance the virtual clock WITHOUT firing any due timer: the one
+        /// knob event-ordering tests need to process a transport event at or
+        /// past a deadline before its `TimerFired` input runs (the production
+        /// driver interleaves these arbitrarily).
+        pub fn advance_clock_only(&self, ticks: u64) {
+            self.lock().now.advance(TickDelta(ticks));
+        }
+
         /// Advance the virtual clock by `ticks`, firing every timer now due (in
         /// ascending fire-time order).
         pub fn advance(&self, ticks: u64) {

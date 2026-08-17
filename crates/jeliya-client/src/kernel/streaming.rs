@@ -90,13 +90,20 @@ pub(crate) struct StreamEntry {
 
 impl StreamEntry {
     /// The producer's send grant this credit state permits (§S5): send up to the
-    /// credit ceiling, capped by the read-ahead window and the file total. `0`
-    /// means "paused for credit" and emits no `ProduceData`.
+    /// credit ceiling, capped by the ACKNOWLEDGED-progress window and the
+    /// declared total plus the daemon-authorized probe byte. The window anchors
+    /// at `accepted_through`, never `sent_offset` — otherwise a CREDIT larger
+    /// than the window would let the producer outrun every acknowledgement and
+    /// `window_reserved()` would exceed its advertised bound (§S11). The
+    /// `total + 1` headroom lets the source consume the daemon's declared+1
+    /// probe credit so a true EOF is distinguished from an over-long source
+    /// (which the daemon then refuses `declared_size_mismatch`). `0` means
+    /// "paused for credit" and emits no `ProduceData`.
     fn producer_grant(&self, window: u64) -> u64 {
         let ceiling = self
             .send_through
-            .min(self.sent_offset.saturating_add(window))
-            .min(self.total);
+            .min(self.accepted_through.saturating_add(window))
+            .min(self.total.saturating_add(1));
         ceiling.saturating_sub(self.sent_offset)
     }
 
@@ -119,12 +126,15 @@ impl StreamEntry {
         }
     }
 
-    /// The high-water mark to carry on an outbound ABORT (§S3).
+    /// The high-water mark to carry on an outbound ABORT (§S3): the ACCEPTED
+    /// high-water for either role — a receiver's local `accepted_through`, a
+    /// producer's greatest `accepted_through` observed in CREDIT (protocol
+    /// §ABORT: "a receiver accepts a producer ABORT offset when it equals any
+    /// `accepted_through` value that receiver previously issued"). A producer
+    /// offset beyond that (`sent_offset`) is rejectable as malformed and can
+    /// strand the transfer reservation.
     fn high_water(&self) -> u64 {
-        match self.role {
-            StreamRole::Producer => self.sent_offset,
-            StreamRole::Receiver => self.accepted_through,
-        }
+        self.accepted_through
     }
 }
 
@@ -197,6 +207,12 @@ impl StreamTable {
     /// The role of an installed stream, if any.
     pub(crate) fn role(&self, call_id: CallId) -> Option<StreamRole> {
         self.entries.get(&call_id).map(|entry| entry.role)
+    }
+
+    /// The phase of an installed stream, if any — the core gates terminal-reply
+    /// settlement on it (a success reply is only valid from `Finalizing`).
+    pub(crate) fn phase_of(&self, call_id: CallId) -> Option<StreamPhase> {
+        self.entries.get(&call_id).map(|entry| entry.phase)
     }
 
     /// The number of installed streams (active + finalizing + retired) — the
@@ -276,8 +292,19 @@ impl StreamTable {
             at: now.saturating_add(limits.transfer_stall),
         });
         if role == StreamRole::Receiver {
-            // Grant the opening credit window immediately (§S4/§S5).
-            if let Some(send_through) = entry.receiver_grant(limits.stream_window_bytes) {
+            if total == 0 {
+                // The zero-byte handshake is OPEN, CREDIT(0,0), END(0) — the
+                // CREDIT is MANDATORY even though no window is needed: the
+                // daemon's producer waits for it before it may send END, so
+                // skipping it stalls an empty download until timeout.
+                actions.push(Action::SendRecord(StreamRecordIntent::Credit {
+                    id: wire_id,
+                    stream_id,
+                    accepted_through: 0,
+                    send_through: 0,
+                }));
+            } else if let Some(send_through) = entry.receiver_grant(limits.stream_window_bytes) {
+                // Grant the opening credit window immediately (§S4/§S5).
                 entry.granted_through = send_through;
                 actions.push(Action::SendRecord(StreamRecordIntent::Credit {
                     id: wire_id,
@@ -594,44 +621,72 @@ impl StreamTable {
         StreamOutcome::Progress
     }
 
-    /// Inbound ABORT from the daemon (§S4): ACK it, then settle the stream
-    /// honestly. The daemon's authoritative Text error reply, if it follows,
-    /// resolves the ledger tombstone.
+    /// Inbound ABORT from the daemon (§S4): ACK it, then await the daemon's
+    /// authoritative Text reply — it carries the exact terminal error
+    /// (`file_too_large`, `declared_size_mismatch`, …) and is the ONLY honest
+    /// settlement for a daemon-originated abort. Settling `Cancelled` here
+    /// would discard that reply into the ledger tombstone and lose the real
+    /// error. A daemon ABORT that crosses our own outbound ABORT (we are
+    /// already `Retired`) is still ACKed: the protocol requires BOTH sides to
+    /// complete the ACK exchange in that race, or the daemon waits out
+    /// `transfer_stall_ms` and closes the connection (`4007`), disrupting
+    /// unrelated requests.
     pub(crate) fn on_abort(&mut self, call_id: CallId, actions: &mut Vec<Action>) -> StreamOutcome {
         let Some(entry) = self.entries.get(&call_id) else {
             return StreamOutcome::Progress;
         };
-        if matches!(entry.phase, StreamPhase::Retired) {
-            return StreamOutcome::Progress;
-        }
-        if matches!(entry.phase, StreamPhase::Finalizing) {
-            // FINALIZING is uncancellable (§S7) — including from the daemon's
-            // side: only the terminal reply settles it. A late ABORT here is a
-            // protocol anomaly, dropped like a record to a Retired tombstone;
-            // settling it would double-settle against the in-flight reply.
-            return StreamOutcome::Progress;
-        }
         let (wire_id, stream_id, high_water) = (entry.wire_id, entry.stream_id, entry.high_water());
-        actions.push(Action::SendRecord(StreamRecordIntent::Ack {
-            id: wire_id,
-            stream_id,
-            high_water,
-        }));
-        // Tear the stream down; the ledger settles Disconnected-class Unknown —
-        // bytes may have partially landed on either side.
-        self.retire_to_tombstone(call_id, actions);
-        StreamOutcome::Failed(CallError::Cancelled {
-            execution: Execution::Unknown,
-        })
+        match entry.phase {
+            StreamPhase::Retired => {
+                // The crossing-ABORT race: our ABORT is already out and the
+                // ledger already settled; complete the ACK exchange only.
+                actions.push(Action::SendRecord(StreamRecordIntent::Ack {
+                    id: wire_id,
+                    stream_id,
+                    high_water,
+                }));
+                StreamOutcome::Progress
+            }
+            StreamPhase::Finalizing => {
+                // FINALIZING is uncancellable (§S7) — including from the daemon's
+                // side: only the terminal reply settles it. A late ABORT here is a
+                // protocol anomaly, dropped like a record to a Retired tombstone;
+                // settling it would double-settle against the in-flight reply.
+                StreamOutcome::Progress
+            }
+            StreamPhase::Active => {
+                // ACK first (the daemon sends its exact error reply only after
+                // the ACK), then await that reply with FINALIZING immunity:
+                // timers cancelled, only the reply settles the ledger.
+                actions.push(Action::SendRecord(StreamRecordIntent::Ack {
+                    id: wire_id,
+                    stream_id,
+                    high_water,
+                }));
+                self.finalize(call_id, actions);
+                StreamOutcome::Progress
+            }
+        }
     }
 
-    /// Inbound ACK for the client's ABORT (§S4): the exchange is complete;
-    /// nothing further to send. Retire quietly.
+    /// Inbound ACK (§S4): valid ONLY in response to a client ABORT — i.e. for a
+    /// `Retired` stream whose ABORT is outstanding — where it completes the
+    /// exchange. An ACK addressed to an `Active` stream is a protocol fault:
+    /// silently retiring the stream would orphan the ledger entry (whose base
+    /// deadline no longer governs it) and hang the call forever, so the stream
+    /// is aborted `protocol_error` and settled honestly instead.
     pub(crate) fn on_ack(&mut self, call_id: CallId, actions: &mut Vec<Action>) -> StreamOutcome {
-        if self.entries.contains_key(&call_id) {
-            self.retire_to_tombstone(call_id, actions);
+        match self.entries.get(&call_id).map(|entry| entry.phase) {
+            Some(StreamPhase::Retired) => {
+                self.retire_to_tombstone(call_id, actions);
+                StreamOutcome::Progress
+            }
+            Some(StreamPhase::Active) => self.abort_protocol(call_id, actions),
+            // No such stream, or FINALIZING (we sent no ABORT — a spurious
+            // record; dropping it cannot strand anything: the terminal reply
+            // still settles the call).
+            _ => StreamOutcome::Progress,
         }
-        StreamOutcome::Progress
     }
 
     /// A caller cancelled an `Active` stream (§S9): emit a courtesy ABORT and
