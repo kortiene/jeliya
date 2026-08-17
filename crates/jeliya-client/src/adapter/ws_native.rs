@@ -16,7 +16,8 @@ use futures::{SinkExt, StreamExt};
 use jeliya_api::RequestId;
 use jeliya_codec::{decode_client_frame, ClientFrame, CodecBounds};
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::{Bytes, Error as WsError, Message};
 
 use crate::backend::RawJson;
 use crate::kernel::core::Input;
@@ -67,7 +68,20 @@ pub(crate) async fn run_dial(
             return;
         }
     };
-    let ws = match timeout(deadlines.connect, tokio_tungstenite::connect_async(request)).await {
+    // The transport must accept every CONFORMING frame: tungstenite's small
+    // defaults (16 MiB frame / 64 MiB message) would kill the connection
+    // before the negotiated post-hello bounds — never larger than the codec
+    // ceiling — can enforce the real limit. The daemon configures its own
+    // acceptor to the served `max_frame_bytes`; mirror that ceiling here.
+    let mut config = WebSocketConfig::default();
+    config.max_message_size = Some(CodecBounds::default().max_frame_bytes);
+    config.max_frame_size = Some(CodecBounds::default().max_frame_bytes);
+    let ws = match timeout(
+        deadlines.connect,
+        tokio_tungstenite::connect_async_with_config(request, Some(config), false),
+    )
+    .await
+    {
         Ok(Ok((ws, _response))) => ws,
         Ok(Err(error)) => {
             inject(&runtime, classify_handshake(token, &error));
@@ -132,6 +146,21 @@ pub(crate) async fn run_dial(
     let (sink, stream) = ws.split();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel::<Message>(write_buffer);
 
+    // The daemon closes a connection that sends nothing within the served
+    // `idle_timeout_ms` (4004) and resets that deadline ONLY for inbound
+    // client frames — so even a push-busy but request-idle client must
+    // produce activity. Ping at half the served timeout (bounded below so a
+    // pathological served value cannot spin); the task dies with the
+    // connection through the same registry, and its sends simply fail once
+    // the writer is gone.
+    let keepalive_task = if hello.limits.idle_timeout_ms > 0 {
+        let period =
+            std::time::Duration::from_millis((hello.limits.idle_timeout_ms / 2).max(1_000));
+        Some(tokio::spawn(keepalive_loop(write_tx.clone(), period)))
+    } else {
+        None
+    };
+
     // Install the writer BEFORE injecting Connected, so the flush of any
     // replay-held/queued calls the core issues on `Connected` reaches it.
     {
@@ -179,6 +208,26 @@ pub(crate) async fn run_dial(
         registry.generation = generation;
         registry.read_task = Some(read_task);
         registry.write_task = Some(write_task);
+        registry.keepalive_task = keepalive_task;
+    }
+}
+
+/// Send one Ping per `period` until the write channel is gone (the connection
+/// was torn down — the read side already reported the loss). Ping/Pong rides
+/// tungstenite's own framing; the daemon counts any inbound frame as
+/// activity, which is what keeps an otherwise idle connection under its
+/// served `idle_timeout_ms` alive.
+async fn keepalive_loop(tx: tokio::sync::mpsc::Sender<Message>, period: std::time::Duration) {
+    let mut interval = tokio::time::interval(period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick fires immediately; skip it — the handshake itself was
+    // just activity.
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        if tx.send(Message::Ping(Bytes::new())).await.is_err() {
+            return;
+        }
     }
 }
 

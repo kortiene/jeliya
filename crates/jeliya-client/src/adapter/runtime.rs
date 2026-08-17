@@ -108,17 +108,24 @@ pub(crate) struct ConnRegistry {
     pub(crate) read_task: Option<JoinHandle<()>>,
     /// The connection's write task.
     pub(crate) write_task: Option<JoinHandle<()>>,
+    /// The connection's keepalive task (periodic Ping under the served
+    /// `idle_timeout_ms`). `None` off the native adapter and when the served
+    /// timeout is 0.
+    pub(crate) keepalive_task: Option<JoinHandle<()>>,
 }
 
 impl ConnRegistry {
-    /// Abort the connection's read/write tasks and drop the writer. Aborting an
-    /// already-finished task is harmless; dropping the writer closes the write
-    /// channel so its task ends.
+    /// Abort the connection's read/write/keepalive tasks and drop the writer.
+    /// Aborting an already-finished task is harmless; dropping the writer
+    /// closes the write channel so its task ends.
     pub(crate) fn tear_down(&mut self) {
         if let Some(task) = self.read_task.take() {
             task.abort();
         }
         if let Some(task) = self.write_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.keepalive_task.take() {
             task.abort();
         }
         self.writer = None;
