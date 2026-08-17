@@ -455,6 +455,9 @@ impl Catalog for En {
     fn composer_attach_unavailable(&self) -> &'static str {
         "Attachments are not available yet."
     }
+    fn composer_too_long(&self) -> &'static str {
+        "Message too long — trimmed to the maximum length."
+    }
 
     fn send_sending(&self) -> &'static str {
         "Sending…"

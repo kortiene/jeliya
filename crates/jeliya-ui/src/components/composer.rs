@@ -24,6 +24,10 @@ use crate::PlatformServices;
 /// grown composer never eats the timeline.
 const AUTOSIZE_CAP: f64 = 160.0;
 
+/// The maximum composed-message length in bytes. Longer input is clamped and
+/// surfaced as an inline error (#179 §8, D3).
+const MAX_MESSAGE_LEN: usize = 4000;
+
 /// Dispatch one `message.send` under its stable `op_id` and settle the addressed
 /// pending entry's phase from the seam's evidence alone (D3): a reply → `Syncing`,
 /// a `DecodeReply` `Definitely` → `Syncing{None}`, any other error → the
@@ -96,6 +100,7 @@ pub fn Composer(
     let mut text = use_signal(|| initial_draft);
     let mut height = use_signal(|| None::<f64>);
     let mut element = use_signal(|| None::<MountedEvent>);
+    let mut overflow = use_signal(|| None::<usize>);
 
     let field_label = strings.composer_label();
     let placeholder = strings.composer_placeholder();
@@ -139,6 +144,7 @@ pub fn Composer(
             let client_id = activity.write().sends.begin(body.clone(), base_at);
             let op_id = op_id_for(client_id);
             text.set(String::new());
+            overflow.set(None);
             height.set(None);
             services.preferences().remove(&draft_key);
 
@@ -164,12 +170,29 @@ pub fn Composer(
         let draft_key = draft_key.clone();
         move |evt: FormEvent| {
             let value = evt.value();
-            text.set(value.clone());
+            if value.len() > MAX_MESSAGE_LEN {
+                // floor_char_boundary: never split a multibyte char (byte
+                // slicing would panic).
+                let mut end = MAX_MESSAGE_LEN;
+                while !value.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.set(value[..end].to_string());
+                overflow.set(Some(value.len() - end));
+            } else {
+                text.set(value.clone());
+                overflow.set(None);
+            }
             // Persist (empty clears); measure to autosize.
             if value.is_empty() {
                 services.preferences().remove(&draft_key);
             } else {
-                services.preferences().set(draft_key.clone(), &value);
+                let clamped = if value.len() > MAX_MESSAGE_LEN {
+                    value[..MAX_MESSAGE_LEN].to_string()
+                } else {
+                    value.clone()
+                };
+                services.preferences().set(draft_key.clone(), &clamped);
             }
             measure();
         }
@@ -244,6 +267,14 @@ pub fn Composer(
             }
             if let Some(hint) = enter_hint {
                 div { class: "composer-hint muted", id: "composer-hint", "{hint}" }
+            }
+            if overflow.peek().is_some() {
+                div {
+                    class: "composer-error muted",
+                    id: "composer-error",
+                    role: "alert",
+                    "{strings.composer_too_long()}",
+                }
             }
         }
     }

@@ -17,7 +17,8 @@ use dioxus::html::geometry::PixelsVector2D;
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::{CapabilityToken, EventKindContent, RoomId, SubjectId};
-use jeliya_client::Reconciler;
+use jeliya_client::{Reconciler, RoomUpdate};
+use jeliya_platform::PreferenceKey;
 
 use crate::components::composer::{run_send, Composer};
 use crate::components::timeline_row::TimelineRowView;
@@ -150,13 +151,55 @@ pub fn ActivityPane(
     {
         let reconciler = reconciler.clone();
         let room_id = room_id.clone();
+        let services = services.clone();
         use_future(move || {
             let reconciler = reconciler.clone();
             let room_id = room_id.clone();
+            let services = services.clone();
             async move {
                 let mut sub = reconciler.subscribe();
                 while let Some(update) = sub.next().await {
                     activity.write().apply_update(&room_id, &update);
+
+                    // When the room converges, advance the LastSeen marker to the
+                    // newest signed event timestamp (§9).
+                    if let RoomUpdate::Converged(ref view) = update {
+                        let last_seen_at = {
+                            let snapshot = activity.peek();
+                            snapshot.newest_signed_at()
+                        };
+                        if let Some(at) = last_seen_at {
+                            let at_str = at
+                                .into_inner()
+                                .format(&time::format_description::well_known::Rfc3339)
+                                .expect(
+                                    "RFC 3339 formatting always succeeds for a valid Timestamp",
+                                );
+                            // §9: recency moves only FORWARD — a re-converged
+                            // baseline must never rewind the mark. Both values
+                            // are written by this same RFC 3339 path, so the
+                            // string order is the time order.
+                            let existing =
+                                services
+                                    .clone()
+                                    .preferences()
+                                    .get(&PreferenceKey::LastSeen {
+                                        room_id: room_id.clone(),
+                                    });
+                            let dominated =
+                                existing.as_deref().is_some_and(|e| e >= at_str.as_str());
+                            if !dominated {
+                                let services = services.clone();
+                                let room_id = room_id.clone();
+                                spawn(async move {
+                                    services
+                                        .preferences()
+                                        .set(PreferenceKey::LastSeen { room_id }, &at_str);
+                                });
+                            }
+                        }
+                    }
+
                     // Scroll accounting counts SIGNED items only — a local pending
                     // send is the user's own work, never announced as "new activity".
                     let (count, loading) = {

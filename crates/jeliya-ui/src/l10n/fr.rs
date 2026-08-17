@@ -463,6 +463,9 @@ impl Catalog for Fr {
     fn composer_attach_unavailable(&self) -> &'static str {
         "Les pièces jointes ne sont pas encore disponibles."
     }
+    fn composer_too_long(&self) -> &'static str {
+        "Message trop long — tronqué à la longueur maximale."
+    }
 
     fn send_sending(&self) -> &'static str {
         "Envoi…"

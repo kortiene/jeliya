@@ -499,6 +499,9 @@ pub trait Catalog {
     fn composer_attach(&self) -> &'static str;
     /// The honest "attachments are not available yet" state (until #181).
     fn composer_attach_unavailable(&self) -> &'static str;
+    /// The message is too long. Rendered as an inline error when the user's
+    /// draft exceeds the maximum message length.
+    fn composer_too_long(&self) -> &'static str;
 
     /// A pending send's honest in-flight/awaiting-commit label — never a
     /// delivery receipt.

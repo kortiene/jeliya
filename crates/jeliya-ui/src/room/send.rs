@@ -170,21 +170,11 @@ pub fn classify_error(error: &CallError) -> SendPhase {
 }
 
 /// The protocol `code` discriminant of a typed daemon refusal, or `None` for a
-/// transport/local failure. Derived from the seam's own [`CallError`] `Display`,
-/// which the seam already renders as `"daemon returned a typed error: {code}"`
-/// with **no** payload — an `op_id_conflict` never prints the conflicting key
-/// (§11 / seam §K15). This crate carries no `serde_json` (the raw-JSON boundary
-/// the prefs module forbids), so the code is read from that stable Display
-/// rather than re-serializing the [`ApiError`](jeliya_api::ApiError); if the
-/// prefix ever changes the whole (still-redacted) message is used, never a leak.
+/// transport/local failure. Derived from the seam's [`CallError::as_wire`] so
+/// the code is the enum variant name — no string parsing, no payload exposure
+/// (§K15).
 fn wire_code(error: &CallError) -> Option<String> {
-    const WIRE_PREFIX: &str = "daemon returned a typed error: ";
-    error.as_wire().map(|_| {
-        let text = error.to_string();
-        text.strip_prefix(WIRE_PREFIX)
-            .unwrap_or(text.as_str())
-            .to_string()
-    })
+    error.as_wire().map(|api| api.wire_code().to_owned())
 }
 
 #[cfg(test)]
