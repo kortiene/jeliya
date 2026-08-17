@@ -137,7 +137,11 @@ async fn route(mut req: Request<Incoming>, state: AppState, ui: UiSource) -> Res
         if req.method() != Method::GET {
             return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
         }
-        return health(&state);
+        // Mirror CORS for a loopback `Origin` so a cross-origin dev/test page
+        // (a wasm-bindgen-test harness on another loopback port) can read the
+        // status it fetches on every dial. Same-origin production is
+        // unaffected; a remote origin still gets nothing.
+        return apply_cors(local_origin(&req), health(&state));
     }
     // CORS preflight for the cross-origin dev UI (localhost:5173 → daemon
     // port). A non-simple request (the upload's Content-Type, a Bearer header)

@@ -29,6 +29,20 @@ example = ["mock", "dep:dioxus"]
 # own fault suite can reuse them. CI runs the kernel suite with
 # `cargo test -p jeliya-client --features test-transport`.
 test-transport = []
+# The browser WebSocket/session adapter (#171). Pulls the codec's client edge
+# plus the wasm-only browser crates (`web-sys`/`js-sys`/`wasm-bindgen`), and is
+# default-off so the native library tree stays free of them and the
+# `cargo tree` boundary test is unaffected (it runs on the host target, where
+# the target-cfg'd browser deps below never appear). Build it with
+# `cargo build -p jeliya-client --features ws-web --target wasm32-unknown-unknown`.
+ws-web = [
+  "dep:jeliya-codec",
+  "dep:serde",
+  "dep:wasm-bindgen",
+  "dep:wasm-bindgen-futures",
+  "dep:js-sys",
+  "dep:web-sys",
+]
 
 [dependencies]
 jeliya-api = { path = "../jeliya-api" }
@@ -50,11 +64,40 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # pulling `tao`/`wry`/a web renderer, so the component links on native and
 # wasm32 alike.
 dioxus = { version = "=0.7.9", default-features = false, features = ["minimal"], optional = true }
+# The protocol's only JSON, both directions. Optional and enabled solely by
+# `ws-web`: the client edge (`encode_request`/`decode_client_frame`) is used by
+# the browser adapter, so the codec never enters the native library tree (the
+# boundary scan runs with default features off). It is wasm32-clean by
+# construction (no Iroh/WebSocket/tokio), so it links in the browser graph.
+jeliya-codec = { path = "../jeliya-codec", optional = true }
+# Derive for the tiny wasm-only `/api/health` and `/api/session` response views
+# (`session.rs`). Optional and `ws-web`-gated; the wasm graph already carries
+# serde via `jeliya-api`.
+serde = { version = "1", features = ["derive"], optional = true }
+
+# The browser adapter's `!Send` crates (#171). Confined to `wasm32-unknown-unknown`
+# AND the default-off `ws-web` feature, so they enter neither the native library
+# tree (the `cargo tree` boundary test) nor any non-wasm build. `wasm-bindgen` is
+# pinned to the reproducible-build version (#176; `wasm-bindgen-cli@0.2.126`);
+# a mismatch breaks that CLI contract, so it is reused exactly, never floated.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2.126", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3.103", optional = true }
+web-sys = { version = "0.3.103", optional = true, features = [
+  "WebSocket", "MessageEvent", "CloseEvent", "BinaryType", "Event",
+  "Window", "Request", "RequestInit", "RequestMode", "Response",
+  "AbortController", "AbortSignal", "Location", "Performance", "Crypto", "console",
+] }
 
 [dev-dependencies]
 # `block_on` for the native behaviour suite; the `executor` feature is dev-only
 # so it never reaches the library or the wasm build.
 futures = { version = "0.3", features = ["std", "async-await", "executor"] }
+# Browser test harness for the WsWeb adapter (#171 §9.2, AC-6). Compiles on
+# all targets (no-op on native); only wasm-bindgen-test-runner executes the
+# `#[wasm_bindgen_test]` functions. Must match the locked wasm-bindgen 0.2.126.
+wasm-bindgen-test = "0.3"
 
 [[example]]
 name = "shared_component"
@@ -87,3 +130,15 @@ name = "reconcile_driver"
 # via futures::executor::LocalPool (clock-free, no tokio). CI runs:
 # `cargo test -p jeliya-client --features mock`
 required-features = ["mock"]
+
+[[test]]
+name = "ws_web_browser"
+# Real-browser integration tests for the WsWeb adapter (#171 §9.2, AC-6).
+# Requires a live jeliyad instance; the harness script injects daemon
+# coordinates via JELIYAD_WEB_TEST_PORT and JELIYAD_WEB_TEST_TOKEN (read by
+# build.rs). Tests skip gracefully when the env vars are absent. CI runs:
+# `bash scripts/run-ws-web-browser-tests.sh`
+# (which invokes:
+#  cargo test -p jeliya-client --features ws-web
+#             --target wasm32-unknown-unknown --test ws_web_browser)
+required-features = ["ws-web"]

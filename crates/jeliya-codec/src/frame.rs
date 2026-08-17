@@ -198,8 +198,10 @@ fn recover_id(bytes: &[u8]) -> Option<u64> {
     rest[..end].parse().ok().filter(|id| *id <= MAX_REQUEST_ID)
 }
 
-/// Walks a decoded value enforcing depth and array-length bounds.
-fn check_bounds(
+/// Walks a decoded value enforcing depth and array-length bounds. Shared by
+/// the server request path and the client edge ([`crate::decode_client_frame`]),
+/// so both directions apply one bounds policy.
+pub(crate) fn check_bounds(
     value: &serde_json::Value,
     bounds: &CodecBounds,
     depth: usize,

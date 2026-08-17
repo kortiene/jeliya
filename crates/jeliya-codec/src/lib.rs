@@ -45,6 +45,7 @@
 #![deny(missing_docs)]
 
 mod byte_stream;
+mod client;
 mod error;
 mod frame;
 mod gate;
@@ -56,6 +57,7 @@ pub use byte_stream::{
     StreamHeaderField, StreamIdentity, StreamRecord, StreamRecordBody, StreamRecordBodyView,
     StreamRecordKind, StreamRecordView, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
 };
+pub use client::{decode_client_frame, encode_request, ClientInbound};
 pub use error::{CodecError, GateRejection};
 pub use frame::push_to_bytes;
 pub use frame::{Frame, Reply, Request};

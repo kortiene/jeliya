@@ -1,13 +1,14 @@
-//! The Transport/driver seam the adapters implement (§K13) and the frame types
-//! that cross it.
+//! The [`Driver`] seam the adapters implement (§K13) and the frame types that
+//! cross it.
 //!
 //! The kernel drives an abstract transport: it emits [`crate::kernel::core`]
 //! `Action`s and the driver performs them, converting between the seam's erased
 //! JSON text ([`RawJson`]) and the codec (#164) byte form at the driver
 //! boundary. This module **defines** the seam; it implements **no** real
 //! socket. `WsWeb` (#171), `WsNative` (#172), and `DirectClient` (#173) each
-//! provide a concrete [`Transport`] + [`Driver`]; #168 provides only the
-//! deterministic in-memory driver used by tests (see [`crate::kernel`]).
+//! provide a concrete [`Driver`] the generic runtime (`kernel/runtime.rs`)
+//! binds to the core; #168 provides only the deterministic in-memory
+//! controller used by tests (see [`crate::kernel`]).
 
 use std::task::{Context, Poll};
 
@@ -15,7 +16,7 @@ use jeliya_api::{ApiError, OpId, RequestId};
 
 use crate::backend::RawJson;
 use crate::kernel::diag::Redacted;
-use crate::kernel::timing::Tick;
+use crate::kernel::timing::{Tick, TimerId};
 
 /// One already-encoded outbound request, as the kernel hands it to the
 /// transport. It carries the correlation id, the operation name, the caller's
@@ -103,44 +104,83 @@ pub(crate) enum Inbound {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TransportClosed;
 
-/// One connection attempt's byte pipe, opened by the driver after it
-/// resolves/authenticates and passes the generation gate. The kernel never
-/// dials directly — it emits an `Action::Dial` and the driver calls the
-/// adapter.
-///
-/// Object-safe and I/O-shaped, mirroring how `ClientBackend` erases the four
-/// adapters. #171/#172/#173 implement it; #168 ships only the in-memory driver.
-pub(crate) trait Transport: Send + 'static {
-    /// Push one already-encoded frame toward the peer. Non-blocking; the driver
-    /// owns any real back-pressure/flush. Returns `Err(TransportClosed)` if the
-    /// pipe is broken, which the driver turns into a connection-loss input.
-    fn send(&mut self, frame: WireFrame) -> Result<(), TransportClosed>;
-
-    /// The next inbound frame, or the connection's end. Adapters map their
-    /// native read into this; the driver tags each frame with the current
-    /// generation before handing it to the core.
-    fn poll_inbound(&mut self, cx: &mut Context<'_>) -> Poll<Option<Inbound>>;
+/// One event a [`Driver`] surfaces to the runtime (`kernel/runtime.rs`), each
+/// mapping one-to-one onto a core [`Input`](crate::kernel::core::Input). Every
+/// dial outcome is token-fenced and every inbound frame is generation-tagged by
+/// the driver **before** it becomes an event, so the core drops stragglers from
+/// retired attempts and replaced connections (§K7).
+pub(crate) enum DriverEvent {
+    /// One inbound frame, already generation-tagged by the driver.
+    Inbound(Inbound),
+    /// The outstanding dial completed and passed the driver's own protocol
+    /// validation (for `WsWeb`: a valid `hello`). Echoes the dial token.
+    Connected {
+        /// The completing dial attempt's token.
+        token: u64,
+    },
+    /// The outstanding dial failed before connecting (recoverable). Echoes the
+    /// dial token.
+    DialFailed {
+        /// The failing dial attempt's token.
+        token: u64,
+    },
+    /// The outstanding dial was refused terminally (protocol/generation gate).
+    /// Echoes the dial token.
+    GateRefused {
+        /// The refused dial attempt's token.
+        token: u64,
+    },
+    /// A live connection was lost, tagged with the generation it was on.
+    Interrupted {
+        /// The lost transport's connection generation.
+        generation: u64,
+    },
+    /// A driver timer fired.
+    TimerFired(TimerId),
 }
 
-/// What an adapter provides to build a kernel-backed `ClientBackend`: a dialer
-/// (opens a [`Transport`], performs the generation gate, yields a generation),
-/// plus the injected clock the driver uses. `DirectClient` (#173) supplies a
-/// dialer that is always-ready and never reconnects.
+/// What an adapter provides so the generic runtime (`kernel/runtime.rs`) can
+/// bind it to the sans-IO core: a combined **event source** ([`poll_event`])
+/// and **action sink** (`send`/`dial`/`arm_timer`/…), plus the injected clock.
+/// `WsWeb` (#171) is the first implementor; `WsNative` (#172) and
+/// `DirectClient` (#173) reuse the same runtime.
 ///
-/// The contract is **spawn-free**: the driver owns the event loop (the test
-/// driver steps manually; real adapters spawn via the platform/supervisor, not
-/// this crate), which keeps `wasm32-unknown-unknown` clean and determinism
-/// total (§3 boundary invariants).
-pub(crate) trait Driver: Send + 'static {
-    /// The transport this driver opens on a successful dial.
-    type Transport: Transport;
+/// **Not `Send`.** The bound is deliberately relaxed from the seam's
+/// `ClientBackend: Send + Sync`: on `wasm32-unknown-unknown` a driver holds
+/// `!Send` browser handles (`web_sys::WebSocket`, JS `Closure`s). The runtime
+/// confines the driver to a `spawn_local`'d pump and keeps the `Send + Sync`
+/// backend half free of it (§5, the mailbox split); native drivers remain
+/// `Send` in practice. The contract is still **spawn-free at this seam**: the
+/// platform spawns the pump (`spawn_local` on wasm; the supervisor runtime on
+/// native), never this library.
+///
+/// [`poll_event`]: Driver::poll_event
+pub(crate) trait Driver: 'static {
+    /// The next event from the transport/dialer/timer, or `Pending`. The
+    /// runtime registers `cx`'s waker so a JS callback (or a native read) can
+    /// wake the pump when the next event is ready.
+    fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<DriverEvent>;
 
-    /// Begin one dial. On success the driver reports `Connected` to the core
-    /// with the fresh generation; on failure it reports a connection loss.
-    fn dial(&mut self);
+    /// Push one already-encoded frame toward the peer. Non-blocking. Returns
+    /// `Err(TransportClosed)` if the pipe is broken, which the runtime turns
+    /// into an `Interrupted` input (the send/close race, §K14).
+    fn send(&mut self, frame: WireFrame) -> Result<(), TransportClosed>;
+
+    /// Begin one dial identified by `token`. Every outcome the driver later
+    /// surfaces ([`DriverEvent::Connected`] / [`DriverEvent::DialFailed`] /
+    /// [`DriverEvent::GateRefused`]) echoes this token, so the core can fence a
+    /// straggler from a retired attempt.
+    fn dial(&mut self, token: u64);
 
     /// Cancel any in-progress dial/backoff (total stop, §K11).
     fn cancel_dial(&mut self);
+
+    /// Arm a driver timer to fire at `at` (logical time), feeding
+    /// [`DriverEvent::TimerFired`] when it does.
+    fn arm_timer(&mut self, id: TimerId, at: Tick);
+
+    /// Cancel a previously-armed driver timer.
+    fn cancel_timer(&mut self, id: TimerId);
 
     /// The current logical time, read from the platform clock **outside** this
     /// library — never from `std::time` inside it.

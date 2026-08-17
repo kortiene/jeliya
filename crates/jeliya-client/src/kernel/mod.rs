@@ -33,6 +33,7 @@ pub(crate) mod diag;
 pub(crate) mod ids;
 pub(crate) mod inflight;
 pub(crate) mod replay;
+pub(crate) mod runtime;
 pub(crate) mod timing;
 pub(crate) mod transport;
 
@@ -180,7 +181,7 @@ struct Shared {
 /// partitioning by type would reorder cross-surface effects (e.g. a
 /// settlement waker running before the `Stopping` transition it follows in
 /// `on_stop`'s documented sequence).
-enum DeferredWake {
+pub(crate) enum DeferredWake {
     Settle(
         oneshot::Sender<Result<RawJson, CallError>>,
         Result<RawJson, CallError>,
@@ -190,21 +191,31 @@ enum DeferredWake {
 }
 
 #[must_use]
-struct Deferred {
-    bus: Arc<EventBus>,
-    work: Vec<DeferredWake>,
+pub(crate) struct Deferred {
+    pub(crate) bus: Arc<EventBus>,
+    pub(crate) work: Vec<DeferredWake>,
     /// Fired after this batch delivers — a synchronous caller (`stop`) that
     /// found another thread draining awaits it, so "already draining" is
     /// never mistaken for "already delivered".
-    done: Option<oneshot::Sender<()>>,
+    pub(crate) done: Option<oneshot::Sender<()>>,
 }
 
 impl Deferred {
-    fn is_empty(&self) -> bool {
+    /// A batch reusable by any runtime (`kernel/runtime.rs`): the same
+    /// re-entrancy-safe deferred-wake contract, freshly opened on `bus`.
+    pub(crate) fn new(bus: Arc<EventBus>) -> Self {
+        Self {
+            bus,
+            work: Vec::new(),
+            done: None,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
         self.work.is_empty() && self.done.is_none()
     }
 
-    fn deliver(self) {
+    pub(crate) fn deliver(self) {
         for wake in self.work {
             match wake {
                 DeferredWake::Settle(sender, result) => {

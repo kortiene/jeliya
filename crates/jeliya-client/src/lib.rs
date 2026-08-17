@@ -63,6 +63,12 @@ mod kernel;
 mod reconcile;
 mod stream;
 
+// The browser WebSocket/session adapter (#171). Target-cfg + feature gated so
+// the wasm-only browser crates never enter the native library tree (the
+// `cargo tree` boundary test) and the module is invisible to the native build.
+#[cfg(all(target_arch = "wasm32", feature = "ws-web"))]
+mod ws_web;
+
 #[cfg(feature = "mock")]
 pub mod mock;
 
@@ -75,6 +81,15 @@ pub use reconcile::{
     RoomUpdate, RoomUpdateSubscription, RoomView,
 };
 pub use stream::{StreamCall, StreamCancel};
+
+// The browser adapter's public constructor and its injectable endpoint/session
+// seam (#171). Only present on `wasm32-unknown-unknown` with `ws-web`; the
+// native seam is untouched.
+#[cfg(all(target_arch = "wasm32", feature = "ws-web"))]
+pub use ws_web::{
+    connect_ws_web, Endpoint, ExplicitResolver, GetTokenResolver, SessionError, SessionResolver,
+    WsWebConfig,
+};
 
 // The deterministic in-memory kernel driver and its controller are the
 // reference substrate the four real adapters (#171/#172/#173) are diffed
