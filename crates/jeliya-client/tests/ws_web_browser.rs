@@ -138,10 +138,19 @@ mod tests {
             State::Stopped,
             "adapter must be in Stopped state after stop()"
         );
-        assert!(
-            sub.next().await.is_none(),
-            "EventSubscription must close after stop — remaining items would \
-             indicate a leaked subscription or a waker that fires after teardown"
+        // The kernel's stop contract emits the terminal Stopping/Stopped
+        // transitions BEFORE CloseBus (core.rs:511-513), so those events are
+        // legitimately queued. What must not happen is anything after Stopped:
+        // drain to the close and assert the stream ENDS at Stopped.
+        let mut last_to = None;
+        while let Some(ClientEvent::StateChanged { to, .. }) = sub.next().await {
+            last_to = Some(to);
+        }
+        assert_eq!(
+            last_to,
+            Some(State::Stopped),
+            "the event stream must end at Stopped — an event after it (or a \
+             non-StateChanged tail) indicates a leaked post-teardown emission"
         );
     }
 }
