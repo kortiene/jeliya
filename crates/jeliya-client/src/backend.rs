@@ -87,6 +87,20 @@ pub(crate) trait ClientBackend: Send + Sync {
     /// Graceful shutdown: settle all accepted work, close all event streams,
     /// then resolve (§D6).
     fn stop(&self) -> BoxFuture<'static, ()>;
+
+    /// Register one stream call's media under its dedup `OpId`, **before**
+    /// the call is dispatched (the driver binds the key to the stream's wire
+    /// id when it performs the request's send). Backends whose drivers move
+    /// no bytes (the mock) refuse honestly with
+    /// [`LocalError::UnsupportedMedia`](crate::LocalError::UnsupportedMedia).
+    fn register_stream_media(
+        &self,
+        key: jeliya_api::OpId,
+        media: crate::media::StreamMedia,
+    ) -> Result<(), crate::error::LocalError> {
+        let _ = (key, media);
+        Err(crate::error::LocalError::UnsupportedMedia)
+    }
 }
 
 /// Compile-time proof that [`ClientBackend`] stays object-safe. If a future

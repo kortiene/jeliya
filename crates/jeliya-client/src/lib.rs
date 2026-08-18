@@ -60,6 +60,7 @@ mod error;
 mod event;
 mod handle;
 mod kernel;
+pub mod media;
 mod reconcile;
 mod stream;
 
@@ -68,6 +69,14 @@ mod stream;
 // `cargo tree` boundary test) and the module is invisible to the native build.
 #[cfg(all(target_arch = "wasm32", feature = "ws-web"))]
 mod ws_web;
+// The adapter's media REGISTRY is pure Rust — no browser types — so it (and
+// its unit tests: the bounded-registration eviction and the one-Produced-
+// per-grant invariant) also compiles on the host under the feature, giving
+// the logic a genuinely executed test target outside the browser. The wasm
+// build consumes the same file through `ws_web::media`.
+#[cfg(all(feature = "ws-web", not(target_arch = "wasm32")))]
+#[path = "ws_web/media.rs"]
+mod ws_web_media;
 // The native async WebSocket adapter (#172): binds the sans-IO kernel to a real
 // tokio + tokio-tungstenite transport dialing a loopback `jeliyad` via the
 // reusable supervisor target resolver (#170). Default-off and native-only — the

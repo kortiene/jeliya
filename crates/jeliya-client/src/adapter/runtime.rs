@@ -26,6 +26,7 @@ use crate::kernel::{KernelBackend, Runtime};
 use crate::KernelConfig;
 
 use super::clock::Clock;
+use super::media::MediaRegistry;
 use super::source::TargetSource;
 use super::ws_native;
 
@@ -95,14 +96,14 @@ pub(crate) struct Deadlines {
 /// The live connection's I/O state, shared between [`NativeIo`] and the dial/
 /// read/write tasks *without* the kernel's `Shared` lock, so a task can install
 /// or clear it without deadlocking against a `send` in progress.
-#[derive(Default)]
 pub(crate) struct ConnRegistry {
     /// The generation the current live connection runs under (0 before any
     /// connect). A read/write task clears the writer only when this still names
     /// its own connection, so a delayed teardown cannot clobber a successor.
     pub(crate) generation: u64,
     /// The live connection's bounded write channel, or `None` when
-    /// disconnected. `NativeIo::send` pushes encoded Text frames here.
+    /// disconnected. `NativeIo::send` pushes encoded Text frames here; the
+    /// media registry's record sends push framed Binary frames.
     pub(crate) writer: Option<mpsc::Sender<Message>>,
     /// The connection's read task.
     pub(crate) read_task: Option<JoinHandle<()>>,
@@ -112,12 +113,33 @@ pub(crate) struct ConnRegistry {
     /// `idle_timeout_ms`). `None` off the native adapter and when the served
     /// timeout is 0.
     pub(crate) keepalive_task: Option<JoinHandle<()>>,
+    /// The connection's byte-stream media registry (§S3): registered caller
+    /// media, per-stream bound state, and the inbound quarantine buffers.
+    /// Lives here so teardown clears it with the tasks — a stream never
+    /// survives its connection.
+    pub(crate) media: MediaRegistry,
 }
 
 impl ConnRegistry {
+    /// A fresh registry whose inbound quarantine cap is the kernel's
+    /// `stream_window_bytes` doubled, and whose outstanding-registration
+    /// bound is `registered_cap`.
+    pub(crate) fn new(stream_window_bytes: u64, registered_cap: usize) -> Self {
+        Self {
+            generation: 0,
+            writer: None,
+            read_task: None,
+            write_task: None,
+            keepalive_task: None,
+            media: MediaRegistry::new(stream_window_bytes, registered_cap),
+        }
+    }
+
     /// Abort the connection's read/write/keepalive tasks and drop the writer.
     /// Aborting an already-finished task is harmless; dropping the writer
-    /// closes the write channel so its task ends.
+    /// closes the write channel so its task ends. The media registry's bound
+    /// streams die with the connection (their tasks abort here too);
+    /// registrations survive to bind on the next connection's sends.
     pub(crate) fn tear_down(&mut self) {
         if let Some(task) = self.read_task.take() {
             task.abort();
@@ -129,6 +151,7 @@ impl ConnRegistry {
             task.abort();
         }
         self.writer = None;
+        self.media.clear();
     }
 }
 
@@ -199,28 +222,75 @@ impl DriverIo for NativeIo {
         self.clock.now()
     }
 
-    // Byte-stream media is not wired on the native adapter yet: a stream
-    // record cannot be framed onto the wire from here, so these effects are
-    // dropped and the stream's stall timer settles the call honestly
-    // (Timeout) rather than reporting progress that never happened. The
-    // debug assertion keeps the gap loud in tests until the native media
-    // drive lands (the codec-side framing exists: jeliya-codec).
+    /// Frame one stream control record via `jeliya-codec` and push it onto
+    /// the live write channel. A full/closed channel (or an unframeable
+    /// record) is a connection loss exactly like a failed Text send:
+    /// `send_failed`, reclassified by the core after the batch.
     fn send_record(&mut self, intent: crate::kernel::transport::StreamRecordIntent) {
-        let _ = intent;
-        debug_assert!(
-            false,
-            "stream records are not yet wired on the native adapter"
-        );
+        let registry = self.conn.lock().expect("conn registry poisoned");
+        let sent = registry
+            .writer
+            .as_ref()
+            .is_some_and(|writer| MediaRegistry::send_record(writer, &intent));
+        drop(registry);
+        if !sent {
+            self.send_failed = true;
+        }
     }
 
-    fn produce(&mut self, call_id: crate::kernel::inflight::CallId, up_to: u64) {
-        let _ = (call_id, up_to);
-        debug_assert!(false, "stream media is not yet wired on the native adapter");
+    /// Forward one producer grant to the stream's media task; a stream with
+    /// no media task (unregistered or sink-bound) queues an honest
+    /// `SourceFailed` for the shell's post-batch re-drive.
+    fn produce(
+        &mut self,
+        id: jeliya_api::RequestId,
+        call_id: crate::kernel::inflight::CallId,
+        up_to: u64,
+    ) {
+        self.conn
+            .lock()
+            .expect("conn registry poisoned")
+            .media
+            .produce(id, call_id, up_to);
     }
 
-    fn write_sink(&mut self, call_id: crate::kernel::inflight::CallId, offset: u64, len: u64) {
-        let _ = (call_id, offset, len);
-        debug_assert!(false, "stream media is not yet wired on the native adapter");
+    /// Hand one accepted inbound range to the stream's sink; the resulting
+    /// `SinkAccepted`/`SinkFailed` input is queued for the shell (the driver
+    /// never injects while holding the registry lock).
+    fn write_sink(
+        &mut self,
+        id: jeliya_api::RequestId,
+        call_id: crate::kernel::inflight::CallId,
+        offset: u64,
+        len: u64,
+    ) {
+        self.conn
+            .lock()
+            .expect("conn registry poisoned")
+            .media
+            .write_sink(id, call_id, offset, len);
+    }
+
+    /// Register one stream's media under its dedup key, before the call is
+    /// dispatched; the bind to the wire id happens at the stream op's send.
+    fn register_media(&mut self, key: jeliya_api::OpId, media: crate::media::StreamMedia) {
+        self.conn
+            .lock()
+            .expect("conn registry poisoned")
+            .media
+            .register(key, media);
+    }
+
+    /// Drain the media inputs fulfilled synchronously during this apply
+    /// batch (`SourceFailed` for an unregistered stream, `SinkAccepted`/
+    /// `SinkFailed` for sink hand-offs) — re-driven by the shell after the
+    /// batch, mirroring `take_send_failed`.
+    fn take_pending_media(&mut self) -> std::collections::VecDeque<Input> {
+        self.conn
+            .lock()
+            .expect("conn registry poisoned")
+            .media
+            .take_pending()
     }
 
     fn send(&mut self, frame: WireFrame) {
@@ -242,7 +312,14 @@ impl DriverIo for NativeIo {
             }
         };
         let message = Message::text(text);
-        let registry = self.conn.lock().expect("conn registry poisoned");
+        let mut registry = self.conn.lock().expect("conn registry poisoned");
+        // A stream op's send binds its wire id to the caller's registered
+        // media (§S3 media seam): the op id the caller deduped under is the
+        // only key both sides share, and the wire id is the only key the
+        // media effects later arrive with.
+        if crate::kernel::replay::is_stream_op(frame.op) {
+            registry.media.bind(frame.id, frame.op_id);
+        }
         match registry.writer.as_ref() {
             // A full or closed channel is a connection loss: surface it as
             // Interrupted after this batch (a real driver cannot report a write
@@ -365,7 +442,16 @@ pub fn connect_ws_native<S: TargetSource>(
     kernel.stable_principal = false;
 
     let source: Arc<dyn TargetSource> = Arc::new(source);
-    let conn = Arc::new(Mutex::new(ConnRegistry::default()));
+    // The media registry's inbound quarantine cap follows the kernel's
+    // stream window, and its outstanding-registration bound the in-flight
+    // limit + margin (mirroring the write channel's sizing rationale) —
+    // both captured before `kernel` moves into the runtime.
+    let stream_window_bytes = kernel.streams.stream_window_bytes;
+    let registered_cap = (kernel.limits.in_flight as usize).saturating_add(64);
+    let conn = Arc::new(Mutex::new(ConnRegistry::new(
+        stream_window_bytes,
+        registered_cap,
+    )));
     let deadlines = Deadlines {
         connect: config.connect_timeout,
         hello: config.hello_timeout,

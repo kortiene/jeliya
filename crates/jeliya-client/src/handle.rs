@@ -186,6 +186,30 @@ impl ClientHandle {
         }
     }
 
+    /// Register one stream call's media under its dedup key, **before**
+    /// dispatching the call with the same key:
+    ///
+    /// ```ignore
+    /// let key = OpId::new("share-7");
+    /// handle.register_stream_media(key.clone(), jeliya_client::media::shared_bytes(bytes))?;
+    /// let call = handle.call_stream::<FileShare>(input, Dedup::Key(key));
+    /// ```
+    ///
+    /// A `file.share` needs a [`StreamMedia::Source`] whose `len()` equals the
+    /// request's `declared_bytes`; a `file.read` needs a
+    /// [`StreamMedia::Sink`](crate::media::StreamMedia) to collect the bytes.
+    /// Backends whose drivers move no bytes (the mock) refuse honestly with
+    /// [`LocalError::UnsupportedMedia`]. A stream dispatched without its media
+    /// fails honestly at its first media effect (`source_failed`/
+    /// `sink_failed`) — never a silent stall.
+    pub fn register_stream_media(
+        &self,
+        key: jeliya_api::OpId,
+        media: crate::media::StreamMedia,
+    ) -> Result<(), LocalError> {
+        self.inner.register_stream_media(key, media)
+    }
+
     /// Serialize the input and hand the erased call to the backend *now*,
     /// returning the in-flight reply future (or the encode error). Shared by
     /// [`call`](Self::call) and [`call_stream`](Self::call_stream); dispatch is

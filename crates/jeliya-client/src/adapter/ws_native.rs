@@ -14,16 +14,20 @@ use std::sync::{Arc, Mutex, Weak};
 
 use futures::{SinkExt, StreamExt};
 use jeliya_api::RequestId;
-use jeliya_codec::{decode_client_frame, ClientFrame, CodecBounds};
+use jeliya_codec::{
+    decode_client_frame, decode_stream_identity, decode_stream_kind, decode_stream_record_view,
+    ClientFrame, CodecBounds, StreamCodecError, StreamRecordBodyView, StreamRecordKind,
+};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Error as WsError, Message};
 
 use crate::backend::RawJson;
 use crate::kernel::core::Input;
-use crate::kernel::transport::{Inbound, WireReply};
+use crate::kernel::transport::{Inbound, StreamRecordMeta, WireReply};
 use crate::kernel::Runtime;
 
+use super::media::map_abort_reason;
 use super::runtime::{ConnRegistry, Deadlines};
 use super::source::{Dial, DialResolveError, TargetSource};
 
@@ -285,6 +289,13 @@ async fn read_loop(
                             inject(&runtime, Input::Inbound(Inbound::Malformed));
                             continue;
                         };
+                        // A stream's terminal reply prunes its media state
+                        // (task, quarantine buffer) — cheap when the id binds
+                        // no stream (§S10 retire-on-reply).
+                        conn.lock()
+                            .expect("conn registry poisoned")
+                            .media
+                            .prune(request_id);
                         let result = match result {
                             Ok(text) => WireReply::Ok(RawJson::from_string(text)),
                             Err(api) => WireReply::Err(api),
@@ -314,11 +325,44 @@ async fn read_loop(
                     }
                 }
             }
-            // Binary = a byte-stream record. #269 owns stream lifecycle; on this
-            // base the kernel exposes no stream inbound path, so a Binary record
-            // is dropped (it can strand nothing). Wiring Binary → the stream
-            // path is the follow-up once #269 lands (spec §6 / OQ-4).
-            Ok(Message::Binary(_)) => {}
+            // Binary = a byte-stream record (§S3/§S10): staged decode per
+            // the codec's documented order — identity, registry binding
+            // lookup, kind, full structural view — then the byte-free meta
+            // reaches the core. A codec-fatal or unbindable record strands
+            // nothing: `Inbound::Malformed`, exactly as for text (§K4).
+            Ok(Message::Binary(bytes)) => {
+                match decode_inbound_stream_record(&conn, generation, &bounds, &runtime, &bytes) {
+                    Ok(record) => inject(
+                        &runtime,
+                        Input::Inbound(Inbound::Record { generation, record }),
+                    ),
+                    // Stream-local: only the named stream aborts
+                    // (`protocol_error`); the connection lives on.
+                    Err(RecordRefusal::StreamLocal(id)) => {
+                        inject(&runtime, Input::StreamFault { generation, id });
+                    }
+                    // Connection-fatal: close with the protocol's code
+                    // (best-effort through the writer), then report the loss
+                    // exactly as a transport drop — the core tears every
+                    // stream down as `transport_lost`.
+                    Err(RecordRefusal::Fatal(code)) => {
+                        {
+                            let registry = conn.lock().expect("conn registry poisoned");
+                            if let Some(writer) = registry.writer.as_ref() {
+                                let _ = writer.try_send(Message::Close(Some(
+                                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                        code: code.into(),
+                                        reason: "".into(),
+                                    },
+                                )));
+                            }
+                        }
+                        clear_writer_if_current(&conn, generation);
+                        inject(&runtime, Input::Interrupted { generation });
+                        return;
+                    }
+                }
+            }
             // Ping/Pong are handled by tungstenite; ignore them here.
             Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
             Ok(Message::Close(_)) | Err(_) => {
@@ -341,12 +385,147 @@ fn inject(runtime: &Weak<Runtime>, input: Input) {
 }
 
 /// Clear the live writer only when the registry still names `generation`, so a
-/// task tearing down cannot clobber a successor connection's writer.
+/// task tearing down cannot clobber a successor connection's writer. The
+/// connection's media dies with it — a stream never survives its connection
+/// (§S10), mirroring the core's own drain on `Interrupted`.
 fn clear_writer_if_current(conn: &Arc<Mutex<ConnRegistry>>, generation: u64) {
     let mut registry = conn.lock().expect("conn registry poisoned");
     if registry.generation == generation {
         registry.writer = None;
+        registry.media.clear();
     }
+}
+
+/// Decode one inbound Binary message into the byte-free record meta the core
+/// consumes, performing the driver-side media work first (§S3/§S10):
+///
+/// 1. [`decode_stream_identity`] — over the frame ceiling is `Fatal(4005)`;
+///    a short header, bad magic, or invalid identity is `Fatal(4007)`;
+/// 2. the media registry's binding lookup by request id — a record with no
+///    trustworthy outstanding binding is `Fatal(4007)` (protocol §Malformed
+///    stream records: "there is no safe request to answer");
+/// 3. [`decode_stream_kind`] — an unknown kind cannot be classified and is
+///    `Fatal(4007)`;
+/// 4. [`decode_stream_record_view`] — the full structural decode: a
+///    malformed daemon OPEN/END/ABORT/ACK (a terminal/binding failure) is
+///    `Fatal(4007)`, while a malformed nonterminal DATA or CREDIT on the
+///    active binding is [`RecordRefusal::StreamLocal`] — only that stream
+///    aborts, via the kernel's `StreamFault` input;
+/// 5. per-kind media work: OPEN spawns the source media task, DATA
+///    quarantines its payload **before** the meta is handed onward (a cap
+///    breach or discontinuity is a credit/offset violation → `StreamLocal`),
+///    so the `WriteSink` the meta provokes always finds its bytes buffered.
+///
+/// The generation tag is the caller's (this connection's), so the core fences
+/// stragglers itself.
+fn decode_inbound_stream_record(
+    conn: &Arc<Mutex<ConnRegistry>>,
+    _generation: u64,
+    bounds: &CodecBounds,
+    runtime: &Weak<Runtime>,
+    bytes: &Bytes,
+) -> Result<StreamRecordMeta, RecordRefusal> {
+    let identity = decode_stream_identity(bytes, bounds).map_err(|error| match error {
+        StreamCodecError::FrameTooLarge { .. } => RecordRefusal::Fatal(4005),
+        _ => RecordRefusal::Fatal(4007),
+    })?;
+    let wire_id = identity.request_id();
+    let stream_id = identity.stream_id().get();
+    let mut registry = conn.lock().expect("conn registry poisoned");
+    if !registry.media.is_bound(wire_id) {
+        return Err(RecordRefusal::Fatal(4007));
+    }
+    let kind = decode_stream_kind(bytes, bounds).map_err(|_| RecordRefusal::Fatal(4007))?;
+    let view = decode_stream_record_view(bytes, bounds).map_err(|_| {
+        // A terminal control that fails structural decode is a binding
+        // failure the connection cannot recover from; a nonterminal
+        // DATA/CREDIT aborts only its stream (protocol §Malformed stream
+        // records).
+        match kind {
+            StreamRecordKind::Data | StreamRecordKind::Credit => {
+                RecordRefusal::StreamLocal(wire_id)
+            }
+            _ => RecordRefusal::Fatal(4007),
+        }
+    })?;
+    match view.body {
+        StreamRecordBodyView::Open { total } => {
+            // The producer's media task starts at admission: it owns the
+            // source and the grant channel until the terminal reply prunes
+            // it or the connection dies.
+            let writer = registry.writer.clone();
+            if let Some(writer) = writer {
+                registry.media.spawn_source_task(
+                    wire_id,
+                    stream_id,
+                    &writer,
+                    runtime.clone(),
+                    *bounds,
+                );
+            }
+            Ok(StreamRecordMeta::Open {
+                id: wire_id,
+                stream_id,
+                total,
+            })
+        }
+        StreamRecordBodyView::Data { offset, payload } => {
+            if !registry.media.deliver_data(wire_id, offset, payload) {
+                // A cap breach or offset discontinuity on a bound stream is
+                // a credit/offset violation: stream-local, never fatal.
+                return Err(RecordRefusal::StreamLocal(wire_id));
+            }
+            Ok(StreamRecordMeta::Data {
+                id: wire_id,
+                stream_id,
+                offset,
+                len: payload.len() as u64,
+            })
+        }
+        StreamRecordBodyView::Credit {
+            accepted_through,
+            send_through,
+        } => Ok(StreamRecordMeta::Credit {
+            id: wire_id,
+            stream_id,
+            accepted_through,
+            send_through,
+        }),
+        StreamRecordBodyView::End { total } => Ok(StreamRecordMeta::End {
+            id: wire_id,
+            stream_id,
+            offset: total,
+        }),
+        StreamRecordBodyView::Abort {
+            accepted_through,
+            reason,
+        } => Ok(StreamRecordMeta::Abort {
+            id: wire_id,
+            stream_id,
+            high_water: accepted_through,
+            reason: map_abort_reason(reason),
+        }),
+        StreamRecordBodyView::Ack { accepted_through } => Ok(StreamRecordMeta::Ack {
+            id: wire_id,
+            stream_id,
+            high_water: accepted_through,
+        }),
+    }
+}
+
+/// The severity of a refused inbound Binary record (protocol §Malformed
+/// stream records / §Size and record refusal): which close code kills the
+/// connection, or which single stream a bound-record fault aborts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordRefusal {
+    /// Connection-fatal: the carried code is the protocol's (`4005` for an
+    /// over-ceiling message, `4007` for an untrustworthy binding or a
+    /// malformed terminal control). The connection dies and the core tears
+    /// every stream down as `transport_lost`.
+    Fatal(u16),
+    /// Stream-local: a structurally malformed nonterminal DATA/CREDIT on an
+    /// active binding. Only the named stream aborts (`protocol_error`).
+    StreamLocal(RequestId),
 }
 
 /// Extract the `v`/`sg` generation gate the supervisor placed on the dial URL.

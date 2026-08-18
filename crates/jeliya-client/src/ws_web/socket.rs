@@ -13,20 +13,27 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use jeliya_api::RequestId;
-use jeliya_codec::{decode_client_frame, encode_request, ClientFrame, CodecBounds};
+use jeliya_api::{OpId, RequestId};
+use jeliya_codec::{
+    decode_client_frame, decode_stream_identity, decode_stream_kind, decode_stream_record_view,
+    encode_request, ClientFrame, CodecBounds, StreamRecordBodyView,
+};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{AbortController, BinaryType, CloseEvent, Event, MessageEvent, WebSocket};
 
 use crate::backend::RawJson;
+use crate::kernel::inflight::CallId;
 use crate::kernel::timing::{Tick, TimerId};
 use crate::kernel::transport::{
-    Driver, DriverEvent, Inbound, TransportClosed, WireFrame, WireReply,
+    Driver, DriverEvent, Inbound, MediaEvent, StreamRecordIntent, StreamRecordMeta,
+    TransportClosed, WireFrame, WireReply,
 };
+use crate::media::StreamMedia;
 
 use super::diag::RedactedUrl;
+use super::media::{self, ProduceOutcome, WebMediaRegistry};
 use super::session::{Endpoint, SessionResolver};
 use super::{session, timers};
 
@@ -80,6 +87,12 @@ struct DriverState {
     dial_abort: Option<AbortController>,
     /// Armed kernel timers, keyed by [`TimerId`].
     timers: HashMap<TimerId, KernelTimer>,
+    /// The byte-stream media registry (§S3): registered caller media,
+    /// per-stream bound state, and the inbound quarantine buffers. Lives in
+    /// this one `RefCell` so every access — send-bind, produce grant, sink
+    /// hand-off, message decode, teardown — is serialized on the single
+    /// thread.
+    media: WebMediaRegistry,
 }
 
 impl DriverState {
@@ -94,7 +107,10 @@ impl DriverState {
 
     /// Detach and drop the current socket, its callbacks, its context, and any
     /// in-flight dial fetch. Called only from the pump (`dial`/`cancel_dial`),
-    /// so no callback is dropped while it is executing.
+    /// so no callback is dropped while it is executing. The connection's
+    /// bound media dies with it — a stream never survives its connection
+    /// (§S10); caller registrations survive to bind on the next connection's
+    /// sends.
     fn teardown_socket(&mut self) {
         if let Some(ws) = self.socket.take() {
             ws.set_onopen(None);
@@ -112,6 +128,7 @@ impl DriverState {
         if let Some(abort) = self.dial_abort.take() {
             abort.abort();
         }
+        self.media.clear();
     }
 }
 
@@ -121,7 +138,9 @@ struct SocketCtx {
     token: u64,
     /// The storage generation presented at the gate; the `hello` must match it.
     expected_sg: u64,
-    bounds: CodecBounds,
+    /// This connection's decode/media bounds — the compiled ceiling until a
+    /// valid `hello` narrows it to the served `max_frame_bytes`.
+    bounds: Cell<CodecBounds>,
     /// Set once a valid `hello` is seen; flips the message handler to steady
     /// state and disarms the pre-connect failure paths.
     validated: Cell<bool>,
@@ -140,12 +159,16 @@ pub(crate) struct WsWebDriver {
 }
 
 impl WsWebDriver {
-    /// Build a driver over `endpoint`, obtaining credentials via `session` and
-    /// bounding the wait for a valid `hello` by `hello_timeout_ms`.
+    /// Build a driver over `endpoint`, obtaining credentials via `session`,
+    /// bounding the wait for a valid `hello` by `hello_timeout_ms`, and
+    /// bounding the media registry's inbound quarantine by the kernel's
+    /// `stream_window_bytes`.
     pub(crate) fn new(
         endpoint: Endpoint,
         session: Rc<dyn SessionResolver>,
         hello_timeout_ms: u32,
+        stream_window_bytes: u64,
+        registered_cap: usize,
     ) -> Self {
         let config = Rc::new(DialConfig {
             endpoint,
@@ -163,6 +186,7 @@ impl WsWebDriver {
             active_dial_token: None,
             dial_abort: None,
             timers: HashMap::new(),
+            media: WebMediaRegistry::new(stream_window_bytes, registered_cap),
         }));
         Self { state, config }
     }
@@ -188,11 +212,84 @@ impl Driver for WsWebDriver {
             frame.input.as_str(),
         );
         let text = String::from_utf8(bytes).map_err(|_| TransportClosed)?;
-        let state = self.state.borrow();
+        let mut state = self.state.borrow_mut();
+        // A stream op's send binds its wire id to the caller's registered
+        // media (§S3 media seam): the op id the caller deduped under is the
+        // only key both sides share, and the wire id is the only key the
+        // media effects later arrive with.
+        if crate::kernel::replay::is_stream_op(frame.op) {
+            state.media.bind(frame.id, frame.op_id);
+        }
         match &state.socket {
             Some(ws) => ws.send_with_str(&text).map_err(|_| TransportClosed),
             None => Err(TransportClosed),
         }
+    }
+
+    fn media_event(&mut self, event: MediaEvent) {
+        // Same queue `poll_event` drains: media results keep their order
+        // relative to transport events.
+        self.state.borrow_mut().push(DriverEvent::Media(event));
+    }
+
+    fn send_record(&mut self, intent: StreamRecordIntent) -> Result<(), TransportClosed> {
+        let record = media::intent_record(&intent).ok_or(TransportClosed)?;
+        let bounds = self
+            .state
+            .borrow()
+            .socket_ctx
+            .as_ref()
+            .map(|ctx| ctx.bounds.get())
+            .unwrap_or(self.config.bounds);
+        let framed =
+            jeliya_codec::encode_stream_record(&record, &bounds).map_err(|_| TransportClosed)?;
+        let state = self.state.borrow();
+        match &state.socket {
+            Some(ws) => ws.send_with_u8_array(&framed).map_err(|_| TransportClosed),
+            None => Err(TransportClosed),
+        }
+    }
+
+    fn produce(&mut self, id: RequestId, call_id: CallId, up_to: u64) {
+        let mut state = self.state.borrow_mut();
+        let generation = state.generation;
+        let outcome = {
+            let socket = state.socket.clone();
+            // The live connection's hello-negotiated bounds (the served
+            // `max_frame_bytes`), falling back to the compiled ceiling only
+            // before the first validated connection.
+            let bounds = state
+                .socket_ctx
+                .as_ref()
+                .map(|ctx| ctx.bounds.get())
+                .unwrap_or(self.config.bounds);
+            let mut send = |framed: &[u8]| -> bool {
+                socket
+                    .as_ref()
+                    .is_some_and(|ws| ws.send_with_u8_array(framed).is_ok())
+            };
+            state.media.produce(id, call_id, up_to, &bounds, &mut send)
+        };
+        match outcome {
+            ProduceOutcome::Events(events) => {
+                for event in events {
+                    state.push(DriverEvent::Media(event));
+                }
+            }
+            // The socket refused a DATA frame mid-grant: a connection loss,
+            // reported on the generation the broken transport was on.
+            ProduceOutcome::Closed => state.push(DriverEvent::Interrupted { generation }),
+        }
+    }
+
+    fn write_sink(&mut self, id: RequestId, call_id: CallId, offset: u64, len: u64) {
+        let mut state = self.state.borrow_mut();
+        let event = state.media.write_sink(id, call_id, offset, len);
+        state.push(DriverEvent::Media(event));
+    }
+
+    fn register_media(&mut self, key: OpId, media: StreamMedia) {
+        self.state.borrow_mut().media.register(key, media);
     }
 
     fn dial(&mut self, token: u64) {
@@ -356,7 +453,7 @@ fn wire_socket(
         state: state.clone(),
         token,
         expected_sg: sg,
-        bounds: config.bounds,
+        bounds: std::cell::Cell::new(config.bounds),
         validated: Cell::new(false),
         socket_gen: Cell::new(0),
         signalled_loss: Cell::new(false),
@@ -421,7 +518,7 @@ fn on_first_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
         // A non-text first frame is not a v2 hello.
         return protocol_fail(ctx);
     };
-    match decode_client_frame(text.as_bytes(), &ctx.bounds) {
+    match decode_client_frame(text.as_bytes(), &ctx.bounds.get()) {
         Ok(ClientFrame::Hello(hello)) => {
             if hello.protocol != CLIENT_PROTOCOL {
                 return protocol_fail(ctx);
@@ -438,6 +535,15 @@ fn on_first_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
                 return;
             }
             // Validated: only now is the connection reported to the core.
+            // Adopt the SERVED frame limit for this connection's decode and
+            // media bounds (never larger than the codec's compiled ceiling),
+            // exactly as the native adapter does — a daemon serving a tighter
+            // `max_frame_bytes` must never receive oversized DATA from us.
+            ctx.bounds.set(CodecBounds {
+                max_frame_bytes: (CodecBounds::default().max_frame_bytes as u64)
+                    .min(hello.limits.max_frame_bytes) as usize,
+                ..CodecBounds::default()
+            });
             cancel_hello_deadline(ctx);
             ctx.validated.set(true);
             let mut state = ctx.state.borrow_mut();
@@ -466,8 +572,9 @@ fn on_first_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
 /// Steady-state frames, tagged with this socket's generation-at-connect.
 fn on_steady_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
     let generation = ctx.socket_gen.get();
-    let inbound = match ev.data().as_string() {
-        Some(text) => match decode_client_frame(text.as_bytes(), &ctx.bounds) {
+    let data = ev.data();
+    let inbound = match data.as_string() {
+        Some(text) => match decode_client_frame(text.as_bytes(), &ctx.bounds.get()) {
             Ok(ClientFrame::Reply { id, result }) => match RequestId::new(id) {
                 Ok(request_id) => {
                     let reply = match result {
@@ -489,11 +596,161 @@ fn on_steady_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
                 Inbound::Malformed
             }
         },
-        // A Binary frame (byte-stream media) is out of #171's scope; drop it
-        // safely — the core discards a Malformed inbound and never panics.
-        None => Inbound::Malformed,
+        // Binary = a byte-stream record (§S3/§S10): staged decode per the
+        // codec's documented order — identity, binding lookup, kind, full
+        // structural view — then the byte-free meta reaches the core, with
+        // refusals routed by the protocol's severity ladder (§Malformed
+        // stream records): stream-local faults abort only their stream;
+        // connection-fatal conditions close the socket carrying the
+        // protocol's code and surface as a transport loss.
+        None => match data.dyn_into::<js_sys::ArrayBuffer>() {
+            Ok(buffer) => {
+                let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                match decode_inbound_stream_record(ctx, &bytes) {
+                    Ok(record) => Inbound::Record { generation, record },
+                    Err(WebRecordRefusal::StreamLocal(id)) => {
+                        ctx.state
+                            .borrow_mut()
+                            .push(DriverEvent::StreamFault { generation, id });
+                        // Nothing further flows through this handler for the
+                        // faulted record; the core aborts only that stream.
+                        return;
+                    }
+                    Err(WebRecordRefusal::Fatal(code)) => {
+                        // Close the socket carrying the protocol's code
+                        // (best-effort), then surface the loss.
+                        let mut state = ctx.state.borrow_mut();
+                        if let Some(ws) = state.socket.as_ref() {
+                            let _ = ws.close_with_code_and_reason(code, "");
+                        }
+                        state.push(DriverEvent::Interrupted { generation });
+                        return;
+                    }
+                }
+            }
+            // Neither text nor an ArrayBuffer (a Blob or unknown binary
+            // type): the socket was opened with `binaryType = "arraybuffer"`,
+            // so this correlates to nothing.
+            Err(_) => Inbound::Malformed,
+        },
     };
+    // A stream's terminal reply prunes its media state (quarantine buffer)
+    // before the reply meta reaches the core — cheap when the id binds no
+    // stream (§S10 retire-on-reply).
+    if let Inbound::Reply { id, .. } = &inbound {
+        ctx.state.borrow_mut().media.prune(*id);
+    }
     ctx.state.borrow_mut().push(DriverEvent::Inbound(inbound));
+}
+
+/// The severity of a refused inbound Binary record (protocol §Malformed
+/// stream records / §Size and record refusal) — the browser mirror of the
+/// native adapter's classification.
+enum WebRecordRefusal {
+    /// Connection-fatal: `4005` for an over-ceiling message, `4007` for an
+    /// untrustworthy binding or a malformed terminal control. The socket
+    /// closes and the core tears every stream down as `transport_lost`.
+    Fatal(u16),
+    /// Stream-local: a structurally malformed nonterminal DATA/CREDIT on an
+    /// active binding. Only the named stream aborts (`protocol_error`).
+    StreamLocal(RequestId),
+}
+
+/// Decode one inbound Binary message into the byte-free record meta the core
+/// consumes, performing the driver-side media work first (§S3/§S10):
+///
+/// 1. [`decode_stream_identity`] — over the frame ceiling is `Fatal(4005)`;
+///    a short header, bad magic, or invalid identity is `Fatal(4007)`;
+/// 2. the media registry's binding lookup by request id — a record with no
+///    trustworthy outstanding binding is `Fatal(4007)`;
+/// 3. [`decode_stream_kind`] — an unknown kind cannot be classified and is
+///    `Fatal(4007)`;
+/// 4. [`decode_stream_record_view`] — a malformed daemon OPEN/END/ABORT/ACK
+///    is `Fatal(4007)` (a terminal/binding failure); a malformed nonterminal
+///    DATA/CREDIT on the active binding is `StreamLocal`;
+/// 5. per-kind media work: DATA quarantines its payload (a cap breach or
+///    discontinuity is a credit/offset violation → `StreamLocal`) **before**
+///    the meta is handed onward, so the `WriteSink` the meta provokes always
+///    finds its bytes buffered. OPEN spawns nothing — fulfillment on this
+///    adapter is single-threaded and pull-driven by the kernel's
+///    `ProduceData` grant.
+fn decode_inbound_stream_record(
+    ctx: &Rc<SocketCtx>,
+    bytes: &[u8],
+) -> Result<StreamRecordMeta, WebRecordRefusal> {
+    let identity =
+        decode_stream_identity(bytes, &ctx.bounds.get()).map_err(|error| match error {
+            jeliya_codec::StreamCodecError::FrameTooLarge { .. } => WebRecordRefusal::Fatal(4005),
+            _ => WebRecordRefusal::Fatal(4007),
+        })?;
+    let wire_id = identity.request_id();
+    let stream_id = identity.stream_id().get();
+    let mut state = ctx.state.borrow_mut();
+    if !state.media.is_bound(wire_id) {
+        return Err(WebRecordRefusal::Fatal(4007));
+    }
+    let kind =
+        decode_stream_kind(bytes, &ctx.bounds.get()).map_err(|_| WebRecordRefusal::Fatal(4007))?;
+    let view = decode_stream_record_view(bytes, &ctx.bounds.get()).map_err(|_| match kind {
+        jeliya_codec::StreamRecordKind::Data | jeliya_codec::StreamRecordKind::Credit => {
+            WebRecordRefusal::StreamLocal(wire_id)
+        }
+        _ => WebRecordRefusal::Fatal(4007),
+    })?;
+    let record = match view.body {
+        StreamRecordBodyView::Open { total } => {
+            // Adopt the daemon's stream id BEFORE the meta reaches the core:
+            // outbound DATA frames must carry the pair the daemon authored.
+            state.media.adopt_open_stream_id(wire_id, stream_id);
+            StreamRecordMeta::Open {
+                id: wire_id,
+                stream_id,
+                total,
+            }
+        }
+        StreamRecordBodyView::Data { offset, payload } => {
+            if !state.media.deliver_data(wire_id, offset, payload) {
+                // A cap breach or offset discontinuity on a bound stream is
+                // a credit/offset violation: stream-local, never fatal.
+                return Err(WebRecordRefusal::StreamLocal(wire_id));
+            }
+            StreamRecordMeta::Data {
+                id: wire_id,
+                stream_id,
+                offset,
+                len: payload.len() as u64,
+            }
+        }
+        StreamRecordBodyView::Credit {
+            accepted_through,
+            send_through,
+        } => StreamRecordMeta::Credit {
+            id: wire_id,
+            stream_id,
+            accepted_through,
+            send_through,
+        },
+        StreamRecordBodyView::End { total } => StreamRecordMeta::End {
+            id: wire_id,
+            stream_id,
+            offset: total,
+        },
+        StreamRecordBodyView::Abort {
+            accepted_through,
+            reason,
+        } => StreamRecordMeta::Abort {
+            id: wire_id,
+            stream_id,
+            high_water: accepted_through,
+            reason: media::map_abort_reason(reason),
+        },
+        StreamRecordBodyView::Ack { accepted_through } => StreamRecordMeta::Ack {
+            id: wire_id,
+            stream_id,
+            high_water: accepted_through,
+        },
+    };
+    Ok(record)
 }
 
 /// A first frame that is not a well-formed `hello`: terminal, token-fenced.
@@ -520,6 +777,10 @@ fn handle_loss(ctx: &Rc<SocketCtx>, code: Option<u16>) {
     let mut state = ctx.state.borrow_mut();
     if ctx.validated.get() {
         let generation = ctx.socket_gen.get();
+        // The connection's bound media dies with it — a stream never survives
+        // its connection (§S10), mirroring the core's own drain on
+        // `Interrupted`. Registrations survive to bind on the reconnect.
+        state.media.clear();
         state.push(DriverEvent::Interrupted { generation });
     } else {
         if state.active_dial_token != Some(ctx.token) {

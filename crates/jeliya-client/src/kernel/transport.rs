@@ -16,6 +16,7 @@ use jeliya_api::{ApiError, OpId, RequestId};
 
 use crate::backend::RawJson;
 use crate::kernel::diag::Redacted;
+use crate::kernel::inflight::CallId;
 use crate::kernel::timing::{Tick, TimerId};
 
 /// One already-encoded outbound request, as the kernel hands it to the
@@ -401,6 +402,46 @@ pub(crate) enum Inbound {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TransportClosed;
 
+/// One byte-stream media fulfilment result a driver surfaces to the runtime,
+/// mapping one-to-one onto the core's media inputs (§S3): `Produced`/
+/// `SourceEnd`/`SourceFailed` from a producer grant, `SinkAccepted`/
+/// `SinkFailed` from a receiver hand-off. Like every stream type here it
+/// carries only ids and numeric offsets — never payload bytes (§S2/§S12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MediaEvent {
+    /// The source framed and sent bytes; reports the new sent-through offset.
+    Produced {
+        /// The stream call the grant fulfils.
+        call_id: CallId,
+        /// The exclusive offset the driver has now sent through.
+        sent_through: u64,
+    },
+    /// The source reached EOF; reports its final total.
+    SourceEnd {
+        /// The stream call.
+        call_id: CallId,
+        /// The total bytes the source yielded.
+        total: u64,
+    },
+    /// The source failed to yield bytes (an honest abort, never a stall).
+    SourceFailed {
+        /// The stream call.
+        call_id: CallId,
+    },
+    /// The sink accepted a delivered range; reports the new high-water.
+    SinkAccepted {
+        /// The stream call.
+        call_id: CallId,
+        /// The exclusive offset the sink has now accepted through.
+        through: u64,
+    },
+    /// The sink refused bytes (an honest abort, never a stall).
+    SinkFailed {
+        /// The stream call.
+        call_id: CallId,
+    },
+}
+
 /// One event a [`Driver`] surfaces to the runtime (`kernel/runtime.rs`), each
 /// mapping one-to-one onto a core [`Input`](crate::kernel::core::Input). Every
 /// dial outcome is token-fenced and every inbound frame is generation-tagged by
@@ -437,6 +478,22 @@ pub(crate) enum DriverEvent {
     },
     /// A driver timer fired.
     TimerFired(TimerId),
+    /// One byte-stream media fulfilment result (§S3), surfaced exactly like
+    /// the core's other media inputs — the runtime maps it onto the matching
+    /// [`Input`](crate::kernel::core::Input) variant.
+    Media(MediaEvent),
+    /// The driver decoded a structurally malformed **nonterminal** DATA or
+    /// CREDIT record on an active binding (protocol §Malformed stream
+    /// records): the stream-local half of the codec's severity rule, mapped
+    /// onto [`Input::StreamFault`](crate::kernel::core::Input::StreamFault).
+    /// Connection-fatal conditions arrive as
+    /// [`DriverEvent::Interrupted`] instead.
+    StreamFault {
+        /// The generation the delivering connection is on.
+        generation: u64,
+        /// The malformed record's reply-correlation id.
+        id: RequestId,
+    },
 }
 
 /// What an adapter provides so the generic runtime (`kernel/runtime.rs`) can
@@ -485,6 +542,67 @@ pub(crate) trait Driver: 'static {
     /// The current logical time, read from the platform clock **outside** this
     /// library — never from `std::time` inside it.
     fn now(&self) -> Tick;
+
+    /// Queue one byte-stream media fulfilment result for the runtime to feed
+    /// the core (§S3). Drivers route it into the **same queue `poll_event`
+    /// drains**, so media results keep their order relative to transport
+    /// events. This is a seam method (not a plain internal) because the
+    /// default [`Driver::produce`]/[`Driver::write_sink`] implementations
+    /// report their honest failures through it.
+    fn media_event(&mut self, event: MediaEvent);
+
+    /// Send one client-authored byte-stream control record (§S3): frame it
+    /// via `jeliya-codec` at this boundary and push it onto the transport.
+    /// Returns `Err(TransportClosed)` exactly like [`Driver::send`] when the
+    /// pipe is broken.
+    ///
+    /// **Default (drivers that author no stream records):** the record is
+    /// dropped and the gap kept loud in tests via a debug assertion — the
+    /// same honesty contract the runtime shell had before the media drive
+    /// landed. A conforming driver that reaches stream effects implements
+    /// this; a driver that never does (no byte-stream transport) never
+    /// receives the action.
+    fn send_record(&mut self, intent: StreamRecordIntent) -> Result<(), TransportClosed> {
+        debug_assert!(
+            false,
+            "send_record reached a driver that authors no stream records"
+        );
+        let _ = intent;
+        Ok(())
+    }
+
+    /// Fulfil one `ProduceData` grant (§S3): read ≤ `up_to` bytes from the
+    /// stream's registered source in codec-bounded chunks, frame and send
+    /// them, and surface `Produced`/`SourceEnd`/`SourceFailed` through
+    /// [`Driver::media_event`]. `id` is the stream's wire id — the key the
+    /// driver's media registry is organized by.
+    ///
+    /// **Default (drivers that move no bytes):** an honest `SourceFailed`
+    /// for the call — the core aborts the stream and settles it, never a
+    /// silent stall.
+    fn produce(&mut self, _id: RequestId, call_id: CallId, _up_to: u64) {
+        self.media_event(MediaEvent::SourceFailed { call_id });
+    }
+
+    /// Hand one accepted inbound DATA range to the stream's registered sink
+    /// (§S3), surfacing `SinkAccepted`/`SinkFailed` through
+    /// [`Driver::media_event`]. `id` is the stream's wire id (see
+    /// [`Driver::produce`]).
+    ///
+    /// **Default (drivers that move no bytes):** an honest `SinkFailed` for
+    /// the call.
+    fn write_sink(&mut self, _id: RequestId, call_id: CallId, _offset: u64, _len: u64) {
+        self.media_event(MediaEvent::SinkFailed { call_id });
+    }
+
+    /// Register one stream's media under its operation's dedup `OpId`, before
+    /// the call is dispatched; the driver binds the key to the stream's wire
+    /// id when it performs the stream op's [`Driver::send`].
+    ///
+    /// **Default (drivers that move no bytes):** the registration is dropped,
+    /// so an unregistered stream later fails honestly at
+    /// [`Driver::produce`]/[`Driver::write_sink`].
+    fn register_media(&mut self, _key: OpId, _media: crate::media::StreamMedia) {}
 }
 
 #[cfg(test)]

@@ -522,6 +522,7 @@ impl StreamTable {
             );
         }
         actions.push(Action::WriteSink {
+            id: entry.wire_id,
             call_id,
             offset,
             len,
@@ -555,21 +556,33 @@ impl StreamTable {
             progressed
         };
         if progressed {
-            // Extend credit as the quarantine drains.
-            if let Some(entry) = self.entries.get(&call_id) {
-                if let Some(send_through) = entry.receiver_grant(limits.stream_window_bytes) {
-                    let (wire_id, stream_id, accepted_through) =
-                        (entry.wire_id, entry.stream_id, entry.accepted_through);
-                    if let Some(entry) = self.entries.get_mut(&call_id) {
-                        entry.granted_through = send_through;
-                    }
-                    actions.push(Action::SendRecord(StreamRecordIntent::Credit {
-                        id: wire_id,
-                        stream_id,
-                        accepted_through,
-                        send_through,
-                    }));
-                }
+            // Extend credit as the quarantine drains — and REPORT the
+            // acceptance. The terminal CREDIT is not optional: a live
+            // producer may END "only after every DATA byte it sent has been
+            // acknowledged by CREDIT" (protocol §END), and the receiver's
+            // ceiling is capped at `total`, so the final acceptance often
+            // cannot extend the window. Sending CREDIT on every accepted
+            // advance (cumulative, monotonic — an identical repeat is
+            // idempotent per §Credit) is what unblocks the producer's END;
+            // without it a window-covered stream accepts every byte and
+            // still stalls to timeout (found live against jeliyad).
+            if let Some(entry) = self.entries.get_mut(&call_id) {
+                let ceiling = entry
+                    .receiver_grant(limits.stream_window_bytes)
+                    .unwrap_or(entry.granted_through.max(entry.accepted_through));
+                entry.granted_through = entry.granted_through.max(ceiling);
+                let (wire_id, stream_id, accepted_through, send_through) = (
+                    entry.wire_id,
+                    entry.stream_id,
+                    entry.accepted_through,
+                    entry.granted_through,
+                );
+                actions.push(Action::SendRecord(StreamRecordIntent::Credit {
+                    id: wire_id,
+                    stream_id,
+                    accepted_through,
+                    send_through,
+                }));
             }
         }
         StreamOutcome::Progress
@@ -584,6 +597,24 @@ impl StreamTable {
         self.fail(
             call_id,
             StreamAbortReason::SinkFailed,
+            CallError::Timeout,
+            actions,
+        )
+    }
+
+    /// The driver decoded a structurally malformed nonterminal DATA/CREDIT on
+    /// this active binding (protocol §Malformed stream records): abort only
+    /// this stream with the closed `protocol_error` tag — the stream-local
+    /// half of the codec's severity rule. A late fault for a stream already
+    /// terminal is absorbed by the retired entry.
+    pub(crate) fn on_protocol_fault(
+        &mut self,
+        call_id: CallId,
+        actions: &mut Vec<Action>,
+    ) -> StreamOutcome {
+        self.fail(
+            call_id,
+            StreamAbortReason::ProtocolError,
             CallError::Timeout,
             actions,
         )
@@ -766,8 +797,17 @@ impl StreamTable {
             return;
         }
         let up_to = entry.producer_grant(limits.stream_window_bytes);
-        if up_to > 0 {
-            actions.push(Action::ProduceData { call_id, up_to });
+        if up_to > 0 || entry.total == 0 {
+            // A zero-total source is granted a zero-length read: the driver's
+            // `read_at(0, &mut [])` observes EOF and reports `SourceEnd{0}`,
+            // which is the only path to the mandatory END(0) — without this
+            // grant an empty `file.share` stalls until timeout (the driver
+            // never touches an ungranted source).
+            actions.push(Action::ProduceData {
+                id: entry.wire_id,
+                call_id,
+                up_to,
+            });
         }
     }
 

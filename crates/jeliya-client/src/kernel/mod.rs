@@ -348,12 +348,13 @@ impl Shared {
             }
             // The media effects a real driver fulfills from its registered byte
             // source/sink; the in-memory driver runs the deterministic rig (§S3).
-            Action::ProduceData { call_id, up_to } => self.io.produce(call_id, up_to),
+            Action::ProduceData { id, call_id, up_to } => self.io.produce(id, call_id, up_to),
             Action::WriteSink {
+                id,
                 call_id,
                 offset,
                 len,
-            } => self.io.write_sink(call_id, offset, len),
+            } => self.io.write_sink(id, call_id, offset, len),
         }
     }
 
@@ -560,6 +561,17 @@ impl KernelBackend {
 }
 
 impl ClientBackend for KernelBackend {
+    fn register_stream_media(
+        &self,
+        key: jeliya_api::OpId,
+        media: crate::media::StreamMedia,
+    ) -> Result<(), crate::error::LocalError> {
+        // The driver owns the registry (§S3 media seam); registration is a
+        // plain insert under the same lock every effect crosses.
+        self.lock().io.register_media(key, media);
+        Ok(())
+    }
+
     fn dispatch(&self, call: ErasedCall) -> BoxFuture<'static, Result<RawJson, CallError>> {
         let (receiver, call_id) = {
             let mut shared = self.lock();
@@ -1162,6 +1174,16 @@ mod in_memory {
 
         fn deliver_record(&self, record: StreamRecordMeta, generation: u64) {
             self.drive_serialized(Input::Inbound(Inbound::Record { generation, record }));
+        }
+
+        /// Deliver a driver-detected structural fault on `wire_id`'s stream
+        /// (a malformed nonterminal DATA/CREDIT the codec refused): the core
+        /// aborts only that stream with `protocol_error` (§Malformed stream
+        /// records). Mirrors what a real driver injects.
+        pub fn stream_fault(&self, wire_id: u64) {
+            let generation = self.generation();
+            let id = RequestId::new(wire_id).expect("wire id within range");
+            self.drive_serialized(Input::StreamFault { generation, id });
         }
 
         /// Take the client-authored outbound stream records since the last drain,

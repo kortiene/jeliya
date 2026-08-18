@@ -55,6 +55,11 @@ pub enum LocalError {
     /// cannot honestly claim otherwise.
     #[error("backend invariant failed")]
     Backend,
+    /// The backend does not implement the requested capability — today, stream
+    /// media registration on a backend with no byte-stream driver (the mock).
+    /// `execution()` is [`Execution::DefinitelyNot`]: nothing was sent.
+    #[error("backend does not support stream media")]
+    UnsupportedMedia,
 }
 
 /// Why one [`ClientHandle::call`](crate::ClientHandle::call) did not return a
@@ -171,6 +176,8 @@ impl CallError {
                 LocalError::EncodeRequest => Execution::DefinitelyNot,
                 LocalError::DecodeReply => Execution::Definitely,
                 LocalError::Backend => Execution::Unknown,
+                // The capability was refused before any call was sent.
+                LocalError::UnsupportedMedia => Execution::DefinitelyNot,
             },
         }
     }
