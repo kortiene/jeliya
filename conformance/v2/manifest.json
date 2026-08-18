@@ -28,12 +28,14 @@
   "blocked_on_upstream": {
     "U1": "ConnEvent must carry the connection generation and a typed offline reason",
     "U2": "a progress-observing or streaming blob-fetch API (8 cases: 3 progress/stall, 1 deadline, 4 cancellation)",
-    "U3": "a size-distinguishable fetch outcome (1 fetch-stream size case)"
+    "U3": "a size-distinguishable fetch outcome (1 fetch-stream size case)",
+    "U4": "harness cannot restart a daemon within a case"
   },
   "blocked_case_counts": {
     "U1": 5,
     "U2": 8,
     "U3": 1,
+    "U4": 1,
     "blocked_on_record": 1
   },
   "blocked_on_upstream_cases": {
@@ -98,6 +100,12 @@
         "file": "files.json",
         "case": "fetch_stream_refuses_a_peer_serving_more_than_it_declared"
       }
+    ],
+    "U4": [
+      {
+        "file": "handshake.json",
+        "case": "the_daemon_incarnation_changes_across_a_restart"
+      }
     ]
   },
   "blocked_on_record_cases": [
@@ -108,19 +116,19 @@
     }
   ],
   "target_counts": {
-    "untargeted": 336,
+    "untargeted": 339,
     "daemon": 0,
     "in_process_core": 1,
     "client_adapter": 5
   },
   "totals": {
-    "cases": 342,
+    "cases": 345,
     "attributed_to_an_operation": 238,
-    "not_operation_scoped": 104,
-    "conforming_to_the_dsl": 342,
+    "not_operation_scoped": 107,
+    "conforming_to_the_dsl": 345,
     "distinct_step_verbs_in_use": 7,
     "quarantined": 0,
-    "blocked_on_upstream": 14,
+    "blocked_on_upstream": 15,
     "blocked_on_record": 1
   },
   "per_file_totals": {
@@ -131,18 +139,20 @@
       "blocked_on_upstream": {
         "U1": 0,
         "U2": 8,
-        "U3": 1
+        "U3": 1,
+        "U4": 0
       },
       "blocked_on_record": 0
     },
     "handshake.json": {
-      "cases": 69,
+      "cases": 72,
       "attributed_to_an_operation": 0,
-      "not_operation_scoped": 69,
+      "not_operation_scoped": 72,
       "blocked_on_upstream": {
         "U1": 1,
         "U2": 0,
-        "U3": 0
+        "U3": 0,
+        "U4": 1
       },
       "blocked_on_record": 0
     },
@@ -153,7 +163,8 @@
       "blocked_on_upstream": {
         "U1": 0,
         "U2": 0,
-        "U3": 0
+        "U3": 0,
+        "U4": 0
       },
       "blocked_on_record": 0
     },
@@ -164,7 +175,8 @@
       "blocked_on_upstream": {
         "U1": 1,
         "U2": 0,
-        "U3": 0
+        "U3": 0,
+        "U4": 0
       },
       "blocked_on_record": 0
     },
@@ -175,7 +187,8 @@
       "blocked_on_upstream": {
         "U1": 2,
         "U2": 0,
-        "U3": 0
+        "U3": 0,
+        "U4": 0
       },
       "blocked_on_record": 0
     },
@@ -186,7 +199,8 @@
       "blocked_on_upstream": {
         "U1": 0,
         "U2": 0,
-        "U3": 0
+        "U3": 0,
+        "U4": 0
       },
       "blocked_on_record": 0
     },
@@ -197,7 +211,8 @@
       "blocked_on_upstream": {
         "U1": 1,
         "U2": 0,
-        "U3": 0
+        "U3": 0,
+        "U4": 0
       },
       "blocked_on_record": 1
     }
@@ -518,6 +533,7 @@
         "gate_runs_before_the_upgrade_so_a_refusal_is_a_status_not_a_close_code",
         "health_limits_object_carries_all_sixteen_named_integer_fields",
         "health_serves_the_version_object_and_no_data_dir",
+        "hello_carries_a_daemon_incarnation_identity",
         "hello_carries_no_pid_no_port_and_no_data_dir",
         "hello_is_the_first_frame_and_arrives_exactly_once",
         "hello_limits_are_identical_to_the_layer_0_limits",
@@ -544,6 +560,8 @@
         "session_ticket_expires_and_never_carries_the_daemon_token",
         "session_ticket_is_single_use_and_burned_on_redemption",
         "storage_generation_is_discoverable_before_the_gate",
+        "the_daemon_incarnation_changes_across_a_restart",
+        "the_daemon_incarnation_is_stable_across_connections",
         "version_object_is_byte_identical_across_ready_line_portfile_and_health",
         "wrong_typed_envelope_members_are_refused_without_executing"
       ],
@@ -591,7 +609,7 @@
         "the_push_stream_is_not_a_membership_oracle"
       ]
     },
-    "count": 104
+    "count": 107
   },
   "normalization": "Normalized in #213; `files.json` re-transcribed in pass 3, which added the `stream` DSL key (the files domain is not expressible without it), restored the record's file request and reply shapes, repaired the split assertion fragments, and retired two cases whose subject - an unknown declared size - v2 does not represent."
 }

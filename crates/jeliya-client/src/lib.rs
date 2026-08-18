@@ -78,7 +78,7 @@ pub mod mock;
 pub use error::{CallError, Execution, LocalError};
 pub use event::{ClientEvent, EventSubscription, RoomPush, State};
 pub use handle::{ClientHandle, Dedup};
-pub use kernel::{KernelConfig, KernelLimits, TickDelta};
+pub use kernel::{KernelConfig, KernelLimits, StreamLimits, TickDelta};
 pub use reconcile::{
     ReconcileConfig, ReconcileError, ReconcileLimits, Reconciler, ResyncReason, ResyncRequired,
     RoomUpdate, RoomUpdateSubscription, RoomView,
@@ -91,7 +91,7 @@ pub use stream::{StreamCall, StreamCancel};
 // library's normal build carries no test scaffolding, mirroring how the mock
 // backend ships behind `mock`.
 #[cfg(feature = "test-transport")]
-pub use kernel::{KernelController, SentFrame};
+pub use kernel::{KernelController, SentFrame, SentRecord};
 
 // The native adapter's public construction surface (#172). `connect_ws_native`
 // builds a `ClientHandle` over the native WebSocket driver; `TargetSource` is

@@ -34,6 +34,7 @@ pub(crate) mod driver_io;
 pub(crate) mod ids;
 pub(crate) mod inflight;
 pub(crate) mod replay;
+pub(crate) mod streaming;
 pub(crate) mod timing;
 pub(crate) mod transport;
 
@@ -49,14 +50,14 @@ use crate::backend::{ClientBackend, ErasedCall, RawJson};
 use crate::error::{CallError, LocalError};
 use crate::event::{ClientEvent, EventBus, EventSubscription, State};
 use crate::kernel::core::{Action, Core, Input};
-use crate::kernel::driver_io::{DriverIo, InMemoryIo};
+use crate::kernel::driver_io::{DriverIo, InMemoryIo, StreamMedia};
 use crate::kernel::inflight::CallId;
 
 // The redaction-safe outbound view is public only through the feature-gated
 // re-export in `lib.rs`; the controller (test-transport) and that re-export are
 // its only consumers, so gate the re-export to the same feature.
 #[cfg(feature = "test-transport")]
-pub use crate::kernel::driver_io::SentFrame;
+pub use crate::kernel::driver_io::{SentFrame, SentRecord};
 
 /// The kernel's hard bounds. Every field is explicit; none defaults silently to
 /// "unbounded". The adapter/host chooses them, with the documented
@@ -109,6 +110,62 @@ impl Default for KernelLimits {
     }
 }
 
+/// The served transfer bounds a stream is driven under (protocol §Served limits
+/// / §Byte-stream framing, §6). A host reads these from the daemon's served
+/// limits object and passes them in; none defaults silently to "unbounded".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StreamLimits {
+    /// Fixed connect allowance in a stream's absolute budget
+    /// (`transfer_connect_allowance_ms`), as a [`TickDelta`].
+    pub transfer_connect_allowance: TickDelta,
+    /// The floor throughput the size-aware absolute budget is computed from
+    /// (`transfer_floor_bits_per_second`). Zero is an invalid served
+    /// configuration; the size term degrades to zero (the stall timer remains
+    /// the effective bound) and construction debug-asserts against it.
+    pub transfer_floor_bits_per_second: u64,
+    /// Ticks per second — maps the served ms / bit-rate limits into the kernel's
+    /// abstract tick unit. Default `1000` (1 tick = 1 ms), matching
+    /// [`KernelLimits`].
+    pub budget_ticks_per_second: u64,
+    /// Zero-accepted-progress window before an honest stall failure
+    /// (`transfer_stall_ms`), as a [`TickDelta`].
+    pub transfer_stall: TickDelta,
+    /// The byte-bounded per-stream read-ahead (producer) / quarantine (receiver)
+    /// window — the client's cumulative-credit ceiling. Bounds memory
+    /// independent of file size (§S5).
+    pub stream_window_bytes: u64,
+    /// The maximum number of concurrent streams the client will drive; a stream
+    /// past it is refused before OPEN (bounds the stream table, §S11).
+    pub max_concurrent_streams: u32,
+}
+
+impl Default for StreamLimits {
+    /// Conservative, documented defaults: a 1 MiB window, a 64 kbit/s floor, a
+    /// 30-second connect allowance and stall window (in the default 1 tick = 1
+    /// ms convention), and up to 64 concurrent streams.
+    fn default() -> Self {
+        Self {
+            transfer_connect_allowance: TickDelta::from_ticks(30_000),
+            transfer_floor_bits_per_second: 64_000,
+            budget_ticks_per_second: 1_000,
+            transfer_stall: TickDelta::from_ticks(30_000),
+            stream_window_bytes: 1024 * 1024,
+            max_concurrent_streams: 64,
+        }
+    }
+}
+
+impl StreamLimits {
+    /// Whether the served configuration is representable: a non-zero floor and
+    /// ticks-per-second (§6). An invalid configuration does not panic in
+    /// release — the size-aware deadline term degrades to zero and the stall
+    /// timer remains the effective bound — but it debug-asserts so a misconfigured
+    /// host is caught in tests.
+    pub(crate) fn is_representable(&self) -> bool {
+        self.transfer_floor_bits_per_second != 0 && self.budget_ticks_per_second != 0
+    }
+}
+
 /// Kernel construction inputs that are not limits.
 ///
 /// [`Default`] pairs the conservative [`KernelLimits::default`] with a zero
@@ -123,19 +180,29 @@ pub struct KernelConfig {
     /// syscall inside the library. It is not a credential; it only decorrelates
     /// reconnect storms.
     pub jitter_seed: u64,
-    /// Whether the driver certifies **continuity of the daemon's complete
-    /// dedup scope** across the replay window: a stable session principal (a
-    /// stable `client_id`) AND the same daemon incarnation. The dedup ledger
-    /// is keyed `(principal, op_id)` and is deliberately in-memory — a
-    /// daemon restart empties it while the storage-generation gate still
-    /// passes, so a replay against the new incarnation re-executes the
-    /// mutation even under a stable `client_id`. `DirectClient` (in-process:
-    /// daemon restart = client restart) can certify; a socket adapter can
-    /// only do so once the protocol's `hello` carries a daemon incarnation
-    /// identity to fence on (tracked as a protocol follow-up). **Defaults to
+    /// Whether the driver certifies a **stable session principal** across the
+    /// replay window: the adapter supplies a stable `client_id`, so the dedup
+    /// ledger's `(principal, op_id)` key survives a reconnect. This is the
+    /// **static** half of dedup-scope continuity, knowable at construction.
+    ///
+    /// The **dynamic** half — "the daemon has not restarted between the send
+    /// and the replay" — is no longer conflated here (#270). The dedup ledger
+    /// is in-memory, so a restart empties it while the storage-generation gate
+    /// still passes; the kernel now fences that at runtime by comparing the
+    /// `hello` incarnation across reconnects and dropping any replay-held call
+    /// when it changes (see [`Input::Connected`](crate::kernel::core) and
+    /// §K5). An adapter therefore sets this `true` when it supplies a stable
+    /// `client_id` **and** forwards each connection's `hello.incarnation` to
+    /// the core; the incarnation fence guarantees a replay-eligible call is
+    /// dropped, not re-sent, if the daemon restarted. `DirectClient` certifies
+    /// trivially (in-process: daemon restart = client restart). **Defaults to
     /// `false` (replay disabled)**: an adapter must opt in, never the
     /// reverse (§K5).
     pub stable_principal: bool,
+    /// The served byte-stream bounds (§6). Validated at construction (non-zero
+    /// floor and ticks-per-second); an invalid served configuration degrades the
+    /// size-aware deadline term to zero and debug-asserts.
+    pub streams: StreamLimits,
 }
 
 /// The driver-owned mutable state the async shell and the controller share: the
@@ -259,6 +326,21 @@ impl Shared {
             }
             Action::Emit(event) => deferred.work.push(DeferredWake::Emit(event)),
             Action::CloseBus => deferred.work.push(DeferredWake::CloseBus),
+            Action::SendRecord(intent) => {
+                // The driver frames the record via jeliya-codec at the boundary
+                // (real adapters, #171/#172/#173); the reference driver records a
+                // redaction-safe observation so tests can assert the control-plane
+                // ordering (§S3/§S12). The byte layout is never handled here.
+                self.io.send_record(intent);
+            }
+            // The media effects a real driver fulfills from its registered byte
+            // source/sink; the in-memory driver runs the deterministic rig (§S3).
+            Action::ProduceData { call_id, up_to } => self.io.produce(call_id, up_to),
+            Action::WriteSink {
+                call_id,
+                offset,
+                len,
+            } => self.io.write_sink(call_id, offset, len),
         }
     }
 
@@ -282,6 +364,24 @@ impl Shared {
             let generation = self.core.generation();
             let actions = self.core.step(Input::Interrupted { generation }, now);
             self.apply(actions, &mut deferred);
+        }
+        // The deterministic media seam is driven to completion within the same
+        // drive (§S3): a `ProduceData`/`WriteSink` action is fulfilled by the
+        // source/sink and reported back to the core, which may grant more or
+        // finish — exactly the loop a real adapter's media task runs, but
+        // synchronous and deterministic. Bounded: each producer step advances
+        // toward its total and each sink step advances the accepted high-water,
+        // so the queue drains.
+        loop {
+            let mut pending = self.io.take_pending_media();
+            if pending.is_empty() {
+                break;
+            }
+            while let Some(input) = pending.pop_front() {
+                let now = self.io.now();
+                let actions = self.core.step(input, now);
+                self.apply(actions, &mut deferred);
+            }
         }
         deferred
     }
@@ -568,10 +668,20 @@ pub use in_memory::KernelController;
 #[cfg(feature = "test-transport")]
 mod in_memory {
     use super::*;
-    use jeliya_api::{ApiError, RequestId};
+    use jeliya_api::{ApiError, Incarnation, RequestId};
 
     use crate::handle::ClientHandle;
-    use crate::kernel::transport::{Inbound, WireReply};
+    use crate::kernel::transport::{Inbound, StreamAbortReason, StreamRecordMeta, WireReply};
+
+    /// The daemon incarnation the in-memory controller reports on a plain
+    /// `connect()` (and every internal `Input::Connected`): a fixed constant,
+    /// so a reconnect to the same "daemon" leaves the incarnation fence (D4)
+    /// quiescent and pre-#270 reconnect/replay behaviour is unchanged. A test
+    /// that models a daemon **restart** calls [`KernelController::
+    /// connect_with_incarnation`] with a distinct value to fire the fence.
+    fn default_incarnation() -> Incarnation {
+        Incarnation::new("in-memory-incarnation")
+    }
 
     impl ClientHandle {
         /// Build a kernel-backed handle over the deterministic in-memory driver,
@@ -582,9 +692,18 @@ mod in_memory {
         /// no scheduling dependence — the same guarantees the #167 mock gives
         /// the seam, now for the kernel.
         pub fn with_kernel(config: KernelConfig) -> (ClientHandle, KernelController) {
+            debug_assert!(
+                config.streams.is_representable(),
+                "StreamLimits floor and ticks-per-second must be non-zero (§6)"
+            );
             let runtime = Arc::new(Runtime {
                 shared: Mutex::new(Shared {
-                    core: Core::new(config.limits, config.jitter_seed, config.stable_principal),
+                    core: Core::with_stream_limits(
+                        config.limits,
+                        config.jitter_seed,
+                        config.stable_principal,
+                        config.streams,
+                    ),
                     bus: Arc::new(EventBus::new()),
                     senders: HashMap::new(),
                     io: Box::new(InMemoryIo::new()),
@@ -663,8 +782,20 @@ mod in_memory {
         }
 
         /// Complete a dial: a live connection is established and passes the
-        /// generation gate. Returns the fresh generation.
+        /// generation gate. Returns the fresh generation. Reports the fixed
+        /// [`default_incarnation`], modelling a reconnect to the **same**
+        /// running daemon.
         pub fn connect(&self) -> u64 {
+            self.connect_with_incarnation(default_incarnation())
+        }
+
+        /// Complete a dial reporting an explicit daemon incarnation — the seam
+        /// a socket adapter fills from `hello.incarnation`. A value distinct
+        /// from the previous connection's models a daemon **restart**: the
+        /// kernel then drops every replay-held call (settling
+        /// `Disconnected { Unknown }`) instead of re-sending it against the
+        /// restarted daemon's empty dedup ledger (§K5, D4/D6).
+        pub fn connect_with_incarnation(&self, incarnation: Incarnation) -> u64 {
             let generation = {
                 let mut shared = self.lock();
                 shared.in_memory().dialing = false;
@@ -672,7 +803,7 @@ mod in_memory {
                     .core
                     .pending_dial()
                     .expect("connect() with no dial in progress");
-                let deferred = shared.drive(Input::Connected { token });
+                let deferred = shared.drive(Input::Connected { token, incarnation });
                 self.runtime.enqueue(deferred);
                 shared.core.generation()
             };
@@ -690,7 +821,10 @@ mod in_memory {
                 if shared.core.pending_dial() == Some(token) {
                     shared.in_memory().dialing = false;
                 }
-                let deferred = shared.drive(Input::Connected { token });
+                let deferred = shared.drive(Input::Connected {
+                    token,
+                    incarnation: default_incarnation(),
+                });
                 self.runtime.enqueue(deferred);
             }
             self.runtime.drain_delivery();
@@ -799,6 +933,14 @@ mod in_memory {
             self.drive_serialized(Input::Inbound(Inbound::Malformed));
         }
 
+        /// Advance the virtual clock WITHOUT firing any due timer: the one
+        /// knob event-ordering tests need to process a transport event at or
+        /// past a deadline before its `TimerFired` input runs (the production
+        /// driver interleaves these arbitrarily).
+        pub fn advance_clock_only(&self, ticks: u64) {
+            self.lock().in_memory().advance(ticks);
+        }
+
         /// Advance the virtual clock by `ticks`, firing every timer now due (in
         /// ascending fire-time order).
         pub fn advance(&self, ticks: u64) {
@@ -876,6 +1018,175 @@ mod in_memory {
         pub fn senders(&self) -> usize {
             self.lock().senders.len()
         }
+
+        // -- stream lifecycle scripting (#269) ------------------------------
+        //
+        // The controller is the deterministic in-memory stream driver (§S3): it
+        // delivers OPEN/CREDIT/DATA/END/ABORT/ACK, drives the `i mod 251` source
+        // and a receiver-accepted sink, and exposes the outbound records and the
+        // AC-7 bounds. Every method is clock-free; the media flows synchronously
+        // within `drive`.
+
+        /// Deliver the daemon's OPEN for `wire_id`, admitting `total` bytes, on
+        /// the current generation. For a producer stream this also arms the
+        /// deterministic `i mod 251` source of `total` bytes.
+        pub fn open(&self, wire_id: u64, total: u64) {
+            let generation = self.generation();
+            let id = RequestId::new(wire_id).expect("wire id within range");
+            {
+                let mut shared = self.lock();
+                if let Some(call_id) = shared.core.wire_to_call(id, generation) {
+                    shared.in_memory().stream_media.insert(
+                        call_id,
+                        StreamMedia {
+                            wire_id,
+                            total,
+                            produced: 0,
+                        },
+                    );
+                }
+            }
+            self.deliver_record(
+                StreamRecordMeta::Open {
+                    id,
+                    stream_id: stream_id_for(wire_id),
+                    total,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon CREDIT for `wire_id` (the client is the producer).
+        pub fn credit(&self, wire_id: u64, accepted_through: u64, send_through: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Credit {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    accepted_through,
+                    send_through,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon DATA range for `wire_id` (the client is the
+        /// receiver); the deterministic sink accepts it and advances credit.
+        pub fn deliver_data(&self, wire_id: u64, offset: u64, len: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Data {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    offset,
+                    len,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver the daemon's END for `wire_id` at `offset` (the client is the
+        /// receiver).
+        pub fn end(&self, wire_id: u64, offset: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::End {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    offset,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon ABORT for `wire_id` with a high-water mark; the
+        /// client ACKs and settles the stream (§S4).
+        pub fn abort(&self, wire_id: u64, high_water: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Abort {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    high_water,
+                    reason: StreamAbortReason::Cancelled,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a daemon ACK for the client's ABORT of `wire_id`.
+        pub fn ack(&self, wire_id: u64, high_water: u64) {
+            let generation = self.generation();
+            self.deliver_record(
+                StreamRecordMeta::Ack {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    high_water,
+                },
+                generation,
+            );
+        }
+
+        /// Deliver a record tagged with an explicit generation — used to prove a
+        /// stale-generation record is fenced (§S10).
+        pub fn deliver_data_at_generation(
+            &self,
+            wire_id: u64,
+            offset: u64,
+            len: u64,
+            generation: u64,
+        ) {
+            self.deliver_record(
+                StreamRecordMeta::Data {
+                    id: RequestId::new(wire_id).expect("wire id within range"),
+                    stream_id: stream_id_for(wire_id),
+                    offset,
+                    len,
+                },
+                generation,
+            );
+        }
+
+        fn deliver_record(&self, record: StreamRecordMeta, generation: u64) {
+            self.drive_serialized(Input::Inbound(Inbound::Record { generation, record }));
+        }
+
+        /// Take the client-authored outbound stream records since the last drain,
+        /// as redaction-safe [`SentRecord`] views (§S3).
+        pub fn take_outbound_records(&self) -> Vec<SentRecord> {
+            self.lock().in_memory().outbound_records.drain(..).collect()
+        }
+
+        /// Records evicted from the bounded record log without being observed —
+        /// 0 in any test that drains.
+        pub fn outbound_records_overflow(&self) -> u64 {
+            self.lock().in_memory().outbound_records_overflow
+        }
+
+        /// The number of installed streams (active + finalizing + tombstoned) —
+        /// asserted within `max_concurrent_streams`, and `0` after stop (§S11).
+        pub fn streams(&self) -> usize {
+            self.lock().core.stream_count()
+        }
+
+        /// The number of armed per-stream timers — asserted `<= 2 ·` active
+        /// streams, and `0` after every stream is terminal (§S11).
+        pub fn stream_timers(&self) -> usize {
+            self.lock().core.stream_timers()
+        }
+
+        /// Total bytes reserved across every active stream's window — asserted
+        /// `<= streams() · stream_window_bytes` (§S11).
+        pub fn stream_window_bytes_reserved(&self) -> u64 {
+            self.lock().core.stream_window_bytes_reserved()
+        }
+    }
+
+    /// A nonzero connection-local stream id for the reference driver, derived
+    /// from the wire id. The core adopts OPEN's `stream_id` and ignores it on
+    /// later records (routing is by call), so any nonzero value serves.
+    fn stream_id_for(wire_id: u64) -> u128 {
+        (wire_id as u128).wrapping_add(1).max(1)
     }
 
     #[cfg(test)]
@@ -952,6 +1263,7 @@ mod in_memory {
                 },
                 jitter_seed: 1,
                 stable_principal: true,
+                streams: StreamLimits::default(),
             });
             handle.start();
             controller.connect();
@@ -1006,6 +1318,7 @@ mod in_memory {
                 },
                 jitter_seed: 1,
                 stable_principal: true,
+                streams: StreamLimits::default(),
             });
             // Idle: both calls queue; the second overflows the depth-1 queue.
             let _first = handle.call::<RoomList>(RoomList {}, Dedup::None);

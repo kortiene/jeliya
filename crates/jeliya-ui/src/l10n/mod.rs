@@ -318,6 +318,106 @@ pub trait Catalog {
     /// the caller passes the count already formatted under the formatting locale
     /// and the [`PluralCategory`] computed under the text locale.
     fn rooms_count(&self, count_display: &str, category: PluralCategory) -> String;
+
+    // ---- #178 global shell, onboarding, settings, recovery -----------------
+
+    /// The global-destination navigation landmark's accessible name.
+    fn nav_global_label(&self) -> &'static str;
+    /// Global destination: the Rooms list.
+    fn dest_rooms(&self) -> &'static str;
+    /// Global destination: the Agent Fleet.
+    fn dest_fleet(&self) -> &'static str;
+    /// Global destination: Settings.
+    fn dest_settings(&self) -> &'static str;
+
+    /// Onboarding identity step: the title.
+    fn onboarding_identity_title(&self) -> &'static str;
+    /// Onboarding identity step: the explanatory body.
+    fn onboarding_identity_body(&self) -> &'static str;
+    /// Onboarding identity step: the "create identity" action.
+    fn onboarding_create_identity(&self) -> &'static str;
+    /// The label beside the shortened, copyable subject id.
+    fn identity_id_label(&self) -> &'static str;
+    /// The "copy" action for the subject id.
+    fn identity_copy(&self) -> &'static str;
+    /// The note that the identity is the unrecoverable P2P identity.
+    fn identity_unrecoverable(&self) -> &'static str;
+
+    /// Onboarding rooms step: the title.
+    fn onboarding_rooms_title(&self) -> &'static str;
+    /// Onboarding rooms step: the "create a room" action.
+    fn onboarding_create_room(&self) -> &'static str;
+    /// The room-name field label.
+    fn room_name_label(&self) -> &'static str;
+    /// Onboarding rooms step: the "join with a ticket" action.
+    fn onboarding_join_room(&self) -> &'static str;
+    /// The invite-ticket field label.
+    fn ticket_label(&self) -> &'static str;
+    /// Help text for the invite-ticket field.
+    fn ticket_help(&self) -> &'static str;
+
+    /// The self-label field label (shared by onboarding and settings).
+    fn self_label_label(&self) -> &'static str;
+    /// Help text for the self-label field ("on this device, never sent").
+    fn self_label_help(&self) -> &'static str;
+
+    /// The Settings destination heading.
+    fn settings_heading(&self) -> &'static str;
+    /// The Settings identity section heading.
+    fn settings_identity_heading(&self) -> &'static str;
+    /// The Settings language section heading.
+    fn settings_language_heading(&self) -> &'static str;
+    /// The text-locale switcher label.
+    fn settings_text_locale_label(&self) -> &'static str;
+    /// The formatting-locale switcher label.
+    fn settings_formatting_locale_label(&self) -> &'static str;
+    /// The "follow system" option in a locale switcher.
+    fn settings_locale_follow_system(&self) -> &'static str;
+    /// The honesty note that a browser preference applies this session only.
+    fn settings_session_only_note(&self) -> &'static str;
+
+    /// The Agent Fleet destination heading.
+    fn fleet_heading(&self) -> &'static str;
+    /// The Agent Fleet skeleton/loading placeholder.
+    fn fleet_loading(&self) -> &'static str;
+
+    /// The room-destination navigation strip's accessible name.
+    fn room_nav_label(&self) -> &'static str;
+    /// Room destination: Activity.
+    fn room_dest_activity(&self) -> &'static str;
+    /// Room destination: People.
+    fn room_dest_people(&self) -> &'static str;
+    /// Room destination: Agents.
+    fn room_dest_agents(&self) -> &'static str;
+    /// Room destination: Files.
+    fn room_dest_files(&self) -> &'static str;
+    /// Room destination: Pipes.
+    fn room_dest_pipes(&self) -> &'static str;
+    /// A per-destination skeleton placeholder shown while its content
+    /// (#179–#181) is not yet built.
+    fn room_dest_skeleton(&self) -> &'static str;
+    /// The recoverable state for a route naming an unreachable/departed room:
+    /// the plain fact, with Rooms as the way out.
+    fn room_unavailable(&self) -> &'static str;
+
+    /// The recovery banner title (corrupt/unsupported new-format state was reset).
+    fn recovery_title(&self) -> &'static str;
+    /// The recovery banner body: a plain "your local preferences were reset".
+    fn recovery_body(&self) -> &'static str;
+    /// The recovery banner's explicit "reset local preferences" action.
+    fn recovery_reset_action(&self) -> &'static str;
+
+    // ---- Onboarding operation errors ( Finding 1 — honest error surface ) ----
+
+    /// The user-facing title when identity creation fails.
+    fn err_onboarding_identity(&self) -> &'static str;
+    /// The user-facing body when identity creation fails (retryable).
+    fn err_onboarding_identity_body(&self) -> &'static str;
+
+    /// The user-facing title when room creation fails.
+    fn err_onboarding_room_create(&self) -> &'static str;
+    /// The user-facing body when room creation fails (retryable).
+    fn err_onboarding_room_create_body(&self) -> &'static str;
 }
 
 /// Provide the resolved-locale context to a subtree and return its signal.

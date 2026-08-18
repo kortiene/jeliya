@@ -1011,12 +1011,24 @@ impl FakeController {
             .collect()
     }
 
-    /// Every navigation, in order.
+    /// Every pushed navigation, in order.
     pub fn navigations(&self) -> Vec<Route> {
         self.effects()
             .into_iter()
             .filter_map(|effect| match effect {
                 RecordedEffect::Navigated { route } => Some(route),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every replacing navigation (#178 D4), in order — the canonicalizing
+    /// redirects that must not grow Back history.
+    pub fn replaced_navigations(&self) -> Vec<Route> {
+        self.effects()
+            .into_iter()
+            .filter_map(|effect| match effect {
+                RecordedEffect::NavigatedReplace { route } => Some(route),
                 _ => None,
             })
             .collect()
@@ -2062,6 +2074,12 @@ impl Navigation for FakePlatform {
     fn navigate(&self, route: Route) {
         *self.inner.route.lock().expect("route poisoned") = route.clone();
         self.inner.record(RecordedEffect::Navigated { route });
+    }
+
+    fn navigate_replace(&self, route: Route) {
+        *self.inner.route.lock().expect("route poisoned") = route.clone();
+        self.inner
+            .record(RecordedEffect::NavigatedReplace { route });
     }
 
     fn hand_back_to_platform(&self) {

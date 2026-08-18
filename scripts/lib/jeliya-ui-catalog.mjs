@@ -58,6 +58,10 @@ const NEVER_TRANSLATE = new Set([
   'endpoints',
   'ticket',
   'tickets',
+  // Coined Jeliya protocol terms kept verbatim in French, as the retiring React
+  // catalog rendered them (`roomDestPipes: 'Pipes'` in fr.ts).
+  'pipe',
+  'pipes',
   'id',
   'ids',
   'hash',
@@ -1166,7 +1170,12 @@ const PRIMITIVE_OWNERSHIP = new Map([
   // NAME (presence): the primitive owns the whole attribute/element it renders.
   ['components/dialog.rs', new Set(['role=dialog', 'aria-modal'])],
   ['components/live_region.rs', new Set(['role=status', 'aria-live'])],
-  ['components/nav.rs', new Set(['nav'])],
+  ['components/nav.rs', new Set(['nav', 'role=tablist'])],
+  // ARIA roles owned by component files: `tablist` for nav.rs tablist variant,
+  // `tab` for room_shell.rs destination tabs, `alert` for onboarding error regions.
+  // These are structural ARIA roles, not copy — they express UI semantics.
+  ['components/onboarding.rs', new Set(['role=alert'])],
+  ['components/room_shell.rs', new Set(['role=tab'])],
 ]);
 
 const NO_OWNED_CONSTRUCTS = new Set();
@@ -1489,8 +1498,147 @@ function testItemSpans(skeleton) {
   return spans;
 }
 
-/** Report user-visible literals in one Rust component/app source. */
-export function scanComponentLiterals(file, source) {
+/** Every `fn NAME(params) { body }` definition in a Rust skeleton, as
+ *  `{ name, fnStart, paramsStart, bodyOpen, bodyClose }` (all code-unit offsets;
+ *  `bodyClose` is the matching `}`). A bodyless declaration — a `trait` method
+ *  `fn foo(&self) -> &str;` — is SKIPPED: taking its "first `{`" would swallow the
+ *  next item's body, corrupting resolution. The body `{` is found at
+ *  paren/bracket depth 0 so a `;` inside a return type (`-> [u8; 4]`) is not
+ *  mistaken for a declaration terminator. Nested (inner) `fn`s are not enumerated
+ *  separately (their calls are still seen as part of the enclosing body); this is
+ *  the documented one-fn-per-scope shape. Shared by the per-file helper resolver
+ *  and the cross-module index so the two never disagree about where a body is. */
+export function enumerateFnDefs(skeleton) {
+  const defs = [];
+  const re = /\bfn\s+([A-Za-z_]\w*)\s*\(/g;
+  for (let m = re.exec(skeleton); m; m = re.exec(skeleton)) {
+    const fnStart = m.index;
+    const name = m[1];
+    const paramsStart = m.index + m[0].length - 1; // at the opening '('
+    let i = paramsStart;
+    let depth = 0;
+    for (; i < skeleton.length; i += 1) {
+      if (skeleton[i] === '(') depth += 1;
+      else if (skeleton[i] === ')') {
+        depth -= 1;
+        if (depth === 0) {
+          i += 1;
+          break;
+        }
+      }
+    }
+    // From the param close, the body `{` is the first `{` at paren/bracket depth 0.
+    // A depth-0 `;` first ⇒ a bodyless declaration (trait method) — skip it.
+    let bodyOpen = -1;
+    let d = 0;
+    for (let j = i; j < skeleton.length; j += 1) {
+      const c = skeleton[j];
+      if (c === '(' || c === '[') d += 1;
+      else if (c === ')' || c === ']') d -= 1;
+      else if (d === 0 && c === ';') break;
+      else if (d === 0 && c === '{') {
+        bodyOpen = j;
+        break;
+      }
+    }
+    if (bodyOpen === -1) {
+      re.lastIndex = Math.max(i, paramsStart + 1);
+      continue;
+    }
+    const bodyClose = matchingBrace(skeleton, bodyOpen);
+    if (bodyClose === -1) {
+      re.lastIndex = bodyOpen + 1;
+      continue;
+    }
+    defs.push({ name, fnStart, paramsStart, bodyOpen, bodyClose });
+    re.lastIndex = bodyClose; // resume after this body (nested fns fold into it)
+  }
+  return defs;
+}
+
+/** The raw call PATHS that sit in an RSX COPY position of a scanned skeleton —
+ *  expression children `{ helper() }` / `{ Recv::helper() }` and copy-bearing
+ *  attribute values `label: helper()` (gated by `COPY_ATTRS`). Structural
+ *  positions (`id: id_for()`) are deliberately excluded. `inTest`/`inRsx` are the
+ *  same predicates the per-file scanner uses. This is the ONE implementation of
+ *  the fiddly in-RSX / in-test / copy-attribute detection, shared by
+ *  `scanComponentLiterals` (its local roots) and `buildCopyModuleIndex` (the
+ *  global roots) so they cannot drift. */
+function rsxCopyHelperPaths(skeleton, inTest, inRsx) {
+  const paths = [];
+  // Expression-CHILD calls: `{ helper() }` — the `{` follows the element body `{`,
+  // a sibling child's `}`, or a sibling string (blanked to `"`).
+  const childCallRe = /[{}"]\s*\{\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
+  for (let m = childCallRe.exec(skeleton); m; m = childCallRe.exec(skeleton)) {
+    const at = m.index + m[0].lastIndexOf('{');
+    if (inTest(at) || !inRsx(at)) continue;
+    paths.push(m[1]);
+  }
+  // Copy-ATTRIBUTE call values: `label: helper()` / `label: Recv::helper()`.
+  const attrCallRe = /([A-Za-z_]\w*)\s*:\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
+  for (let m = attrCallRe.exec(skeleton); m; m = attrCallRe.exec(skeleton)) {
+    if (inTest(m.index) || !inRsx(m.index)) continue;
+    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) paths.push(m[2]);
+  }
+  return paths;
+}
+
+/** Public wrapper over `rsxCopyHelperPaths`: scan one source and return its RSX
+ *  copy-position helper call paths as `[{ path }]`. Exported for unit tests and
+ *  reused as the index's per-file root collector. */
+export function collectRsxCopyHelperCalls(source) {
+  const { skeleton } = scanRustSource(source);
+  const testSpans = testItemSpans(skeleton);
+  const inTest = (pos) => testSpans.some(([s, e]) => pos >= s && pos < e);
+  const ranges = rsxRanges(skeleton);
+  const inRsx = (pos) => ranges.some(([start, end]) => pos >= start && pos < end);
+  return rsxCopyHelperPaths(skeleton, inTest, inRsx).map((path) => ({ path }));
+}
+
+/** The concrete impl/type receiver a `fn` at `fnStart` is scoped to, or `null` for
+ *  a free / module-level fn. Generalizes the per-file `scopeMatches` walk to
+ *  RETURN the receiver instead of testing a candidate: walk out to the innermost
+ *  enclosing `{`, and if its header is an `impl`, the LAST identifier (after
+ *  stripping generic args) is the implementing type (`impl Trait for Type` → Type,
+ *  `impl Type` → Type). An enclosing inline `mod`/block contributes to the module
+ *  path, not a receiver, so it yields `null` (deeper inline modules are a
+ *  documented partial — see the cross-module index notes). */
+function enclosingReceiver(skeleton, fnStart) {
+  let depth = 0;
+  for (let i = fnStart - 1; i >= 0; i -= 1) {
+    const c = skeleton[i];
+    if (c === '}') {
+      depth += 1;
+    } else if (c === '{') {
+      if (depth === 0) {
+        let s = i - 1;
+        while (s >= 0 && !'{};'.includes(skeleton[s])) s -= 1;
+        const header = skeleton.slice(s + 1, i).replace(/<[^>]*>/g, ' ');
+        if (/\bimpl\b/.test(header)) {
+          const ids = (header.match(/[A-Za-z_]\w*/g) || []).filter(
+            (t) => !['impl', 'for', 'where', 'dyn'].includes(t),
+          );
+          return ids.length ? ids[ids.length - 1] : null;
+        }
+        return null; // module-level (inline mod / free fn)
+      }
+      depth -= 1;
+    }
+  }
+  return null;
+}
+
+/** Report user-visible literals in one Rust component/app source.
+ *
+ *  `options.seedCopyHelpers` is an optional array of `{ name, receiver }` that
+ *  this file must treat as copy-helper ROOTS in addition to those it collects from
+ *  its own RSX — the seam the cross-module driver uses to say "a helper defined in
+ *  THIS file is invoked as copy from ANOTHER module". Everything downstream
+ *  (`scopeMatches`, `helperBodies`, the body-literal judgement) is reused
+ *  unchanged, so a seeded helper is judged exactly like a locally-invoked one and
+ *  the finding is attributed to the file the literal lives in. Default `[]` ⇒
+ *  byte-identical to the historical two-argument behavior. */
+export function scanComponentLiterals(file, source, options = {}) {
   const { skeleton, literals, comments } = scanRustSource(source);
   const lines = source.split('\n');
   // Test-only items are not shipped copy — but production code can FOLLOW an inline
@@ -1653,19 +1801,18 @@ export function scanComponentLiterals(file, source) {
     const { name, receiver } = parsePath(path);
     if (name) copyHelpers.set(`${receiver ?? ''}\0${name}`, { name, receiver });
   };
-  // Expression-CHILD calls: `{ helper() }` / `{ Recv::helper() }` — the `{` follows the
-  // element body `{`, a sibling child's `}`, or a sibling string (blanked to `"`).
-  const childCallRe = /[{}"]\s*\{\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
-  for (let m = childCallRe.exec(skeleton); m; m = childCallRe.exec(skeleton)) {
-    const at = m.index + m[0].lastIndexOf('{');
-    if (inTest(at) || !inRsx(at)) continue;
-    addHelper(m[1]);
-  }
-  // Copy-ATTRIBUTE call values: `label: helper()` / `label: Recv::helper()`.
-  const attrCallRe = /([A-Za-z_]\w*)\s*:\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
-  for (let m = attrCallRe.exec(skeleton); m; m = attrCallRe.exec(skeleton)) {
-    if (inTest(m.index) || !inRsx(m.index)) continue;
-    if (COPY_ATTRS.has(normalizeAttrName(m[1]))) addHelper(m[2]);
+  // Local RSX copy-helper roots (shared detection with the cross-module index).
+  for (const path of rsxCopyHelperPaths(skeleton, inTest, inRsx)) addHelper(path);
+  // Cross-module SEEDS: helpers defined in THIS file that the driver found to be
+  // reachable from an RSX copy position in ANOTHER module. Adding them to
+  // `copyHelpers` makes their bodies resolve here just like a local root, so a
+  // literal hidden in a helper invoked via a qualified path (`crate::state::x()`)
+  // is flagged against the file it lives in. Default `[]` ⇒ no change.
+  for (const seed of options.seedCopyHelpers ?? []) {
+    if (seed && seed.name) {
+      const receiver = seed.receiver ?? null;
+      copyHelpers.set(`${receiver ?? ''}\0${seed.name}`, { name: seed.name, receiver });
+    }
   }
   // Whether the `fn` starting at `fnPos` lives inside an `impl`/`mod` block whose header
   // names `receiver` — so `Recv::name` resolves only Recv's method. A bare call
@@ -1693,6 +1840,7 @@ export function scanComponentLiterals(file, source) {
   // receiver), TRANSITIVELY: a copy helper that calls another helper renders that
   // callee's literal too, so follow the calls each resolved body makes. `visited` (keyed
   // by receiver+name) bounds it and breaks cycles; unresolved names are harmless no-ops.
+  const allFnDefs = enumerateFnDefs(skeleton);
   const helperBodies = [];
   const visited = new Set();
   const pending = [...copyHelpers.values()];
@@ -1701,32 +1849,16 @@ export function scanComponentLiterals(file, source) {
     const key = `${receiver ?? ''}\0${name}`;
     if (visited.has(key)) continue;
     visited.add(key);
-    const defRe = new RegExp(`\\bfn\\s+${name}\\s*\\(`, 'g');
-    for (let m = defRe.exec(skeleton); m; m = defRe.exec(skeleton)) {
-      if (!scopeMatches(m.index, receiver)) continue;
-      let i = m.index + m[0].length - 1; // at the opening '('
-      let depth = 0;
-      for (; i < skeleton.length; i += 1) {
-        if (skeleton[i] === '(') depth += 1;
-        else if (skeleton[i] === ')') {
-          depth -= 1;
-          if (depth === 0) {
-            i += 1;
-            break;
-          }
-        }
-      }
-      while (i < skeleton.length && skeleton[i] !== '{') i += 1;
-      const close = matchingBrace(skeleton, i);
-      if (close !== -1) {
-        helperBodies.push([i, close]);
-        const body = skeleton.slice(i, close);
-        const bodyCallRe = /((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
-        for (let c = bodyCallRe.exec(body); c; c = bodyCallRe.exec(body)) {
-          const parsed = parsePath(c[1]);
-          if (parsed.name && !visited.has(`${parsed.receiver ?? ''}\0${parsed.name}`)) {
-            pending.push(parsed);
-          }
+    for (const def of allFnDefs) {
+      if (def.name !== name) continue;
+      if (!scopeMatches(def.fnStart, receiver)) continue;
+      helperBodies.push([def.bodyOpen, def.bodyClose]);
+      const body = skeleton.slice(def.bodyOpen, def.bodyClose);
+      const bodyCallRe = /((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
+      for (let c = bodyCallRe.exec(body); c; c = bodyCallRe.exec(body)) {
+        const parsed = parsePath(c[1]);
+        if (parsed.name && !visited.has(`${parsed.receiver ?? ''}\0${parsed.name}`)) {
+          pending.push(parsed);
         }
       }
     }
@@ -2277,6 +2409,214 @@ export function componentFiles(repoRoot) {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-module copy-helper resolution (#275)
+//
+// The per-file scanner resolves a copy helper only against fn bodies in the SAME
+// file, so copy hidden in a helper in one module and invoked via a qualified path
+// from another (`div { {crate::state::hardcoded()} }`, body in `state.rs`) slips
+// the gate. These pure helpers build a whole-crate index of fn definitions and the
+// RSX copy roots, resolve calls by QUALIFIED MODULE PATH (never terminal name, so
+// `crate::labels::title` is not conflated with an unrelated `fn title` elsewhere),
+// and compute the transitive copy-reachable set across files. The driver then
+// SEEDS each per-file scan with the reachable helpers defined in it, so the body
+// literal is judged and reported by the existing per-file classifier — one
+// classifier, two body-finders.
+//
+// Documented residual gaps (#275 non-goals — not full Rust name resolution):
+//   1. Re-exports (`pub use`) and glob imports (`use other::*`) are not followed;
+//      only qualified `crate::<mod>::<fn>` and same-module bare / `Recv::` calls
+//      resolve. A helper laundered through a re-export can still hide copy.
+//   2. Macro-generated modules/functions are invisible to the text scan.
+//   3. Inline nested `mod` blocks contribute only the file's module path; a call
+//      qualified past an inline submodule may under-resolve (the common jeliya-ui
+//      shape is one module per file).
+//   4. Inherent-method receivers across modules (`crate::state::Widget::label`) are
+//      modeled for the single-segment tail shape only; trait dispatch and
+//      multi-segment type paths are not.
+//   5. `bin/*.rs` are ISOLATED namespaces (module key `bin:<name>`): a bin's
+//      `crate::` never resolves into the library and vice-versa (faithful to Rust).
+//   6. A match-pattern literal in a resolved helper body is judged exactly as the
+//      per-file scanner judges it (§2/§3 of the spec) — a shared pre-existing
+//      limitation, not introduced here.
+// ---------------------------------------------------------------------------
+
+/** Map a repo-relative `*.rs` path to its Rust module path, or `null` when it is
+ *  not under a crate `src` root. The heuristic covers the common
+ *  `crate::<file>::<fn>` shape (see gap 3 for inline submodules):
+ *   - `state.rs → crate::state`, `components/dialog.rs → crate::components::dialog`
+ *   - a directory module `l10n/mod.rs → crate::l10n` (trailing `mod` dropped)
+ *   - a top-level `lib.rs`/`main.rs → crate` (the crate root sentinel)
+ *   - `bin/<name>.rs → bin:<name>` (a SEPARATE binary crate namespace, gap 5). */
+export function moduleForFile(repoRelPath) {
+  const p = String(repoRelPath).split(sep).join('/');
+  for (const rootRaw of LITERAL_SCAN_ROOTS) {
+    const rootStr = String(rootRaw).split(sep).join('/');
+    // Only a `<crate-dir>/src` root defines a module tree; a bare `.rs` scan root
+    // (a single file) has no module path.
+    if (!/(^|\/)src$/.test(rootStr)) continue;
+    const prefix = `${rootStr}/`;
+    if (!p.startsWith(prefix)) continue;
+    let rel = p.slice(prefix.length);
+    if (!rel.endsWith('.rs')) return null;
+    rel = rel.slice(0, -3);
+    let segs = rel.split('/').filter(Boolean);
+    if (segs.length > 1 && segs[segs.length - 1] === 'mod') segs = segs.slice(0, -1);
+    if (segs[0] === 'bin' && segs.length >= 2) return `bin:${segs.slice(1).join('::')}`;
+    if (segs.length === 0) return 'crate';
+    if (segs.length === 1 && (segs[0] === 'lib' || segs[0] === 'main')) return 'crate';
+    return `crate::${segs.join('::')}`;
+  }
+  return null;
+}
+
+/** The multimap key for a resolved fn: `(module, receiver, name)`. Module strings
+ *  never contain a space, so a space separator is unambiguous. */
+const copyDefKey = (module, receiver, name) => `${module} ${receiver ?? ''} ${name}`;
+
+const copyRootOf = (module) => (module && module.startsWith('bin:') ? module : 'crate');
+const copyModuleSegments = (module) => {
+  if (!module || module === 'crate' || module.startsWith('bin:')) return [];
+  return module.replace(/^crate::/, '').split('::');
+};
+const copyModuleString = (root, segs) => {
+  if (root.startsWith('bin:')) return root;
+  return segs.length ? `crate::${segs.join('::')}` : 'crate';
+};
+
+/** Build the whole-crate copy index from `[{ file, source }]` (repo-relative path +
+ *  text). Returns `{ defsByKey, keysByModuleName, knownModules, roots }`:
+ *   - `defsByKey`: `copyDefKey → def[]` where a def is `{ module, name, receiver,
+ *     calls }` (`calls` = the raw outgoing call paths in the body, for transitive
+ *     tracing). A multimap because a name may be defined in several impls.
+ *   - `keysByModuleName`: `"module\0name" → Set<defKey>` for bare-call resolution
+ *     (any receiver in the caller module).
+ *   - `knownModules`: every indexed module path AND all its ancestor prefixes, for
+ *     longest-prefix qualifier matching.
+ *   - `roots`: `{ path, callerModule }` for every RSX copy-position call. */
+export function buildCopyModuleIndex(files) {
+  const defsByKey = new Map();
+  const keysByModuleName = new Map();
+  const knownModules = new Set();
+  const roots = [];
+  const addKnown = (module) => {
+    if (module.startsWith('bin:')) {
+      knownModules.add(module);
+      return;
+    }
+    knownModules.add('crate');
+    const segs = copyModuleSegments(module);
+    for (let k = 1; k <= segs.length; k += 1) knownModules.add(`crate::${segs.slice(0, k).join('::')}`);
+  };
+  for (const { file, source } of files) {
+    const module = moduleForFile(file);
+    if (module === null) continue;
+    addKnown(module);
+    const { skeleton } = scanRustSource(source);
+    const testSpans = testItemSpans(skeleton);
+    const inTest = (pos) => testSpans.some(([s, e]) => pos >= s && pos < e);
+    const ranges = rsxRanges(skeleton);
+    const inRsx = (pos) => ranges.some(([start, end]) => pos >= start && pos < end);
+    for (const path of rsxCopyHelperPaths(skeleton, inTest, inRsx)) roots.push({ path, callerModule: module });
+    for (const def of enumerateFnDefs(skeleton)) {
+      if (inTest(def.fnStart)) continue; // test-only fns are not shipped copy
+      const receiver = enclosingReceiver(skeleton, def.fnStart);
+      const body = skeleton.slice(def.bodyOpen, def.bodyClose);
+      const calls = [];
+      const bodyCallRe = /((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*\(/g;
+      for (let c = bodyCallRe.exec(body); c; c = bodyCallRe.exec(body)) calls.push(c[1]);
+      const key = copyDefKey(module, receiver, def.name);
+      if (!defsByKey.has(key)) defsByKey.set(key, []);
+      defsByKey.get(key).push({ module, name: def.name, receiver, calls });
+      const mn = `${module}\0${def.name}`;
+      if (!keysByModuleName.has(mn)) keysByModuleName.set(mn, new Set());
+      keysByModuleName.get(mn).add(key);
+    }
+  }
+  return { defsByKey, keysByModuleName, knownModules, roots };
+}
+
+/** Resolve one call `path` made from `callerModule` to the `copyDefKey`s it can
+ *  reach in `index`. Returns only keys that actually exist (an unresolvable path
+ *  is a harmless `[]`).
+ *   - bare `name()` → any receiver's `name` in the caller module.
+ *   - `crate::…` absolute from the caller's crate root; `self::…` relative to the
+ *     caller module; `super::…` relative to its parent.
+ *   - a concrete qualifier `a::b::…::Last` → the longest prefix that is a known
+ *     module is the module, the remaining tail (0 or 1 segment) is the receiver;
+ *     if no qualifier prefix is a known module, the last segment is treated as a
+ *     receiver in the caller module (the same-file `Recv::helper()` behavior). */
+export function resolveCall(path, callerModule, index) {
+  const segs = String(path)
+    .split('::')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segs.length === 0) return [];
+  const name = segs[segs.length - 1];
+  const qual = segs.slice(0, -1);
+  const keyIfExists = (key) => (index.defsByKey.has(key) ? [key] : []);
+
+  if (qual.length === 0) {
+    const set = index.keysByModuleName.get(`${callerModule}\0${name}`);
+    return set ? [...set] : [];
+  }
+
+  const root = copyRootOf(callerModule);
+  const head = qual[0];
+  let absSegs;
+  let allowRootBase; // a `crate`/`self`/`super` head explicitly names the root
+  if (head === 'crate') {
+    absSegs = qual.slice(1);
+    allowRootBase = true;
+  } else if (head === 'self') {
+    absSegs = copyModuleSegments(callerModule).concat(qual.slice(1));
+    allowRootBase = true;
+  } else if (head === 'super') {
+    absSegs = copyModuleSegments(callerModule).slice(0, -1).concat(qual.slice(1));
+    allowRootBase = true;
+  } else {
+    absSegs = qual.slice();
+    allowRootBase = false;
+  }
+
+  const minK = allowRootBase ? 0 : 1;
+  for (let k = absSegs.length; k >= minK; k -= 1) {
+    const candidate = copyModuleString(root, absSegs.slice(0, k));
+    if (!index.knownModules.has(candidate)) continue;
+    const tail = absSegs.slice(k);
+    if (tail.length === 0) return keyIfExists(copyDefKey(candidate, null, name));
+    if (tail.length === 1) return keyIfExists(copyDefKey(candidate, tail[0], name));
+    return []; // deeper than the supported single-receiver tail (gap 3/4)
+  }
+  // No qualifier prefix is a known module: treat the last segment as a receiver in
+  // the caller module (a `Recv::helper()` on a type local to the caller).
+  return keyIfExists(copyDefKey(callerModule, absSegs[absSegs.length - 1], name));
+}
+
+/** The closed set of copy-returning `copyDefKey`s: the direct RSX roots and every
+ *  fn transitively reachable from them across module boundaries. BFS over a finite
+ *  key space with a `visited` set (breaks cycles). */
+export function resolveCopyReachableFns(index) {
+  const visited = new Set();
+  const worklist = [];
+  for (const { path, callerModule } of index.roots) {
+    for (const key of resolveCall(path, callerModule, index)) worklist.push(key);
+  }
+  while (worklist.length > 0) {
+    const key = worklist.pop();
+    if (visited.has(key)) continue;
+    visited.add(key);
+    for (const def of index.defsByKey.get(key) ?? []) {
+      for (const callPath of def.calls) {
+        for (const next of resolveCall(callPath, def.module, index)) {
+          if (!visited.has(next)) worklist.push(next);
+        }
+      }
+    }
+  }
+  return visited;
+}
+
+// ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
 
@@ -2289,6 +2629,27 @@ function toRepoPath(repoRoot, path) {
   return relative(repoRoot, path).split(sep).join('/');
 }
 
+/** The `[{ file, source }]` list the literal scan runs over (repo-relative paths).
+ *  From the in-memory `files` seam when provided (filtered to the literal-scan
+ *  roots, excluding the locale catalogs, matching `componentFiles`), else read
+ *  from disk. One read per file, reused by both the cross-module index and the
+ *  per-file scan. */
+function literalScanFiles(root, files) {
+  if (files) {
+    const localeSet = new Set(Object.values(LOCALE_FILES));
+    const underScanRoot = (p) =>
+      LITERAL_SCAN_ROOTS.some((r) => (/\.rs$/.test(r) ? p === r : p.startsWith(`${r}/`)));
+    return [...files.entries()]
+      .filter(([p]) => underScanRoot(p) && !localeSet.has(p))
+      .map(([file, source]) => ({ file, source }))
+      .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  }
+  return componentFiles(root).map((absolute) => ({
+    file: toRepoPath(root, absolute),
+    source: readFileSync(absolute, 'utf8'),
+  }));
+}
+
 /** Run the selected rule groups against a repository tree and return sorted
  *  findings. `only` is a subset of {'catalog','typography','literals'}; default
  *  runs all three. `allowlist` is a parameter so the companion test can drive
@@ -2297,11 +2658,16 @@ export function checkJeliyaUiI18n({
   repoRoot = DEFAULT_REPO_ROOT,
   only = ['catalog', 'typography', 'literals'],
   allowlist = IDENTICAL_ALLOWLIST,
+  files = null,
 } = {}) {
   const root = resolve(repoRoot);
   const groups = new Set(only);
   const findings = [];
+  // Optional in-memory seam: `files` is a `Map<repoRelPath, source>` that bypasses
+  // disk entirely (additive; absent ⇒ today's `readFileSync` behavior), so a
+  // driver-level test can run hermetically without a temp tree.
   const read = (relativePath) => {
+    if (files) return files.get(relativePath) ?? null;
     const absolute = resolve(root, relativePath);
     return existsSync(absolute) ? readFileSync(absolute, 'utf8') : null;
   };
@@ -2324,9 +2690,28 @@ export function checkJeliyaUiI18n({
   }
 
   if (groups.has('literals')) {
-    for (const absolute of componentFiles(root)) {
-      const file = toRepoPath(root, absolute);
-      findings.push(...scanComponentLiterals(file, readFileSync(absolute, 'utf8')));
+    // Two-phase: build the cross-module copy index and resolve the reachable
+    // copy-fn set ONCE, then run each per-file scan SEEDED with the reachable
+    // helpers defined in it (so a literal in `state.rs`, reached only via a
+    // qualified call from another module, is flagged against `state.rs`).
+    const list = literalScanFiles(root, files);
+    const index = buildCopyModuleIndex(list);
+    const reachable = resolveCopyReachableFns(index);
+    // Group the reachable helpers by defining module, deduped by receiver+name.
+    const seedsByModule = new Map();
+    for (const key of reachable) {
+      for (const def of index.defsByKey.get(key) ?? []) {
+        if (!seedsByModule.has(def.module)) seedsByModule.set(def.module, new Map());
+        seedsByModule.get(def.module).set(`${def.receiver ?? ''}\0${def.name}`, {
+          name: def.name,
+          receiver: def.receiver,
+        });
+      }
+    }
+    for (const { file, source } of list) {
+      const module = moduleForFile(file);
+      const seeds = module !== null && seedsByModule.has(module) ? [...seedsByModule.get(module).values()] : [];
+      findings.push(...scanComponentLiterals(file, source, { seedCopyHelpers: seeds }));
     }
   }
 

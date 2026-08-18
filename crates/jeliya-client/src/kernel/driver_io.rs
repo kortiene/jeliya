@@ -20,8 +20,10 @@
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 
+use crate::kernel::core::Input;
+use crate::kernel::inflight::CallId;
 use crate::kernel::timing::{Tick, TickDelta, TimerId};
-use crate::kernel::transport::WireFrame;
+use crate::kernel::transport::{StreamRecordIntent, WireFrame};
 
 /// The bound on the in-memory driver's outbound observation log: frames a test
 /// never drains are evicted oldest-first (counted in `outbound_overflow`) so
@@ -40,6 +42,84 @@ pub struct SentFrame {
     pub id: u64,
     /// The operation's wire name.
     pub op: &'static str,
+}
+
+/// A redaction-safe view of one client-authored byte-stream control or DATA
+/// record the kernel asked the driver to send (§S3/§S12). It carries only the
+/// wire id, a kind tag, and two numeric offset/value fields — never a payload
+/// byte, name, or digest. The two fields' meaning is per kind:
+///
+/// | `kind` | `a` | `b` |
+/// |---|---|---|
+/// | `"data"` | offset | length |
+/// | `"credit"` | `accepted_through` | `send_through` |
+/// | `"end"` | offset | 0 |
+/// | `"abort"` | `high_water` | 0 |
+/// | `"ack"` | `high_water` | 0 |
+///
+/// Publicly visible only through the feature-gated re-export in `lib.rs`.
+#[derive(Clone, Copy, Debug)]
+pub struct SentRecord {
+    /// The stream's reply-correlation id.
+    pub id: u64,
+    /// The record kind tag (`"data"`, `"credit"`, `"end"`, `"abort"`, `"ack"`).
+    pub kind: &'static str,
+    /// The first numeric field (see the type-level table).
+    pub a: u64,
+    /// The second numeric field (see the type-level table).
+    pub b: u64,
+}
+
+impl SentRecord {
+    /// Build the observation for one outbound control-record intent.
+    fn from_intent(intent: &StreamRecordIntent) -> Self {
+        use crate::kernel::transport::StreamRecordIntent as I;
+        match *intent {
+            I::Credit {
+                id,
+                accepted_through,
+                send_through,
+                ..
+            } => SentRecord {
+                id: id.get(),
+                kind: "credit",
+                a: accepted_through,
+                b: send_through,
+            },
+            I::End { id, offset, .. } => SentRecord {
+                id: id.get(),
+                kind: "end",
+                a: offset,
+                b: 0,
+            },
+            I::Abort { id, high_water, .. } => SentRecord {
+                id: id.get(),
+                kind: "abort",
+                a: high_water,
+                b: 0,
+            },
+            I::Ack { id, high_water, .. } => SentRecord {
+                id: id.get(),
+                kind: "ack",
+                a: high_water,
+                b: 0,
+            },
+        }
+    }
+}
+
+/// The deterministic producer source state the reference driver owns (§S3): the
+/// total the daemon's OPEN admitted and how far the `i mod 251` source has been
+/// read. Byte values are never stored — only offsets — so the driver is as
+/// byte-bounded as the core.
+pub(crate) struct StreamMedia {
+    /// The reply-correlation id, so an outbound DATA observation is keyed by the
+    /// wire id the test scripted.
+    pub(crate) wire_id: u64,
+    /// The source's total byte count (from the scripted OPEN).
+    pub(crate) total: u64,
+    /// How far the source has been read.
+    pub(crate) produced: u64,
 }
 
 /// The transport-touching effects the async shell delegates. The shell owns
@@ -81,6 +161,30 @@ pub(crate) trait DriverIo: Send {
         false
     }
 
+    /// Perform `Action::SendRecord`: frame the record via jeliya-codec and
+    /// enqueue it to the live sink (native), or record its redaction-safe view
+    /// (in-memory). The byte layout is never handled by the shell.
+    fn send_record(&mut self, intent: StreamRecordIntent);
+
+    /// Perform `Action::ProduceData`: fulfill the grant from the stream's
+    /// registered byte source (native: real media; in-memory: the
+    /// deterministic `i mod 251` rig), reporting `Produced`/`SourceEnd`
+    /// through the pending-media queue.
+    fn produce(&mut self, call_id: CallId, up_to: u64);
+
+    /// Perform `Action::WriteSink`: hand the accepted range to the stream's
+    /// sink, reporting `SinkAccepted` through the pending-media queue.
+    fn write_sink(&mut self, call_id: CallId, offset: u64, len: u64);
+
+    /// Drain media inputs the driver fulfilled during the current apply batch
+    /// (`Produced`/`SourceEnd`/`SinkAccepted`), re-driven by the shell after
+    /// the batch — mirroring [`DriverIo::take_send_failed`]. The default is
+    /// for drivers with no in-shell media (the native adapter fulfills media
+    /// from its own tasks and injects the inputs itself).
+    fn take_pending_media(&mut self) -> VecDeque<Input> {
+        VecDeque::new()
+    }
+
     /// Downcast hook for the `test-transport` controller, the only consumer
     /// that needs the concrete [`InMemoryIo`] (to advance the virtual clock,
     /// inspect timers, and read the outbound log). The native driver never
@@ -114,6 +218,19 @@ pub(crate) struct InMemoryIo {
     /// A send observed the broken transport during the current apply batch;
     /// the shell surfaces it as `Input::Interrupted` after the batch.
     pub(crate) send_failed: bool,
+    /// The client-authored byte-stream records the core asked the driver to
+    /// send since the last drain, as redaction-safe [`SentRecord`] views
+    /// (§S3/§S12). Bounded FIFO exactly like `outbound` (§K12).
+    pub(crate) outbound_records: VecDeque<SentRecord>,
+    /// Records evicted from the bounded record log without being observed.
+    pub(crate) outbound_records_overflow: u64,
+    /// The deterministic media state per producer stream (§S3), keyed by
+    /// [`CallId`]. A receiver stream has no source and never appears here;
+    /// its sink accepts every delivered range.
+    pub(crate) stream_media: HashMap<CallId, StreamMedia>,
+    /// Media inputs the rig fulfilled during the current apply batch, drained
+    /// by the shell's `drive` afterwards (§S3).
+    pub(crate) pending_media: VecDeque<Input>,
 }
 
 impl InMemoryIo {
@@ -127,7 +244,22 @@ impl InMemoryIo {
             dialing: false,
             fail_next_send: false,
             send_failed: false,
+            outbound_records: VecDeque::new(),
+            outbound_records_overflow: 0,
+            stream_media: HashMap::new(),
+            pending_media: VecDeque::new(),
         }
+    }
+
+    /// Append one redaction-safe outbound-record observation to the bounded
+    /// log (§K12): an undrained log evicts its oldest entry and counts the
+    /// loss.
+    fn record_outbound(&mut self, record: SentRecord) {
+        if self.outbound_records.len() >= OUTBOUND_LOG_CAP {
+            self.outbound_records.pop_front();
+            self.outbound_records_overflow = self.outbound_records_overflow.saturating_add(1);
+        }
+        self.outbound_records.push_back(record);
     }
 
     /// Advance the virtual clock by `ticks`.
@@ -177,6 +309,56 @@ impl DriverIo for InMemoryIo {
 
     fn cancel_dial(&mut self) {
         self.dialing = false;
+    }
+
+    fn send_record(&mut self, intent: StreamRecordIntent) {
+        self.record_outbound(SentRecord::from_intent(&intent));
+    }
+
+    fn produce(&mut self, call_id: CallId, up_to: u64) {
+        // The deterministic source produces exactly the granted bytes (the
+        // core bounds `up_to` by credit, window, and total), frames them,
+        // sends them, and reports how far it got (§S3). A single DATA
+        // observation covers the whole grant; the byte content is the
+        // `i mod 251` source and is never stored.
+        let framed = self.stream_media.get_mut(&call_id).map(|media| {
+            let offset = media.produced;
+            let sent_through = media.produced.saturating_add(up_to).min(media.total);
+            media.produced = sent_through;
+            (media.wire_id, offset, sent_through, media.total)
+        });
+        if let Some((wire_id, offset, sent_through, total)) = framed {
+            let len = sent_through.saturating_sub(offset);
+            if len > 0 {
+                self.record_outbound(SentRecord {
+                    id: wire_id,
+                    kind: "data",
+                    a: offset,
+                    b: len,
+                });
+            }
+            self.pending_media.push_back(Input::Produced {
+                call_id,
+                sent_through,
+            });
+            if sent_through >= total {
+                self.pending_media
+                    .push_back(Input::SourceEnd { call_id, total });
+            }
+        }
+    }
+
+    fn write_sink(&mut self, call_id: CallId, offset: u64, len: u64) {
+        // The deterministic sink accepts every delivered range contiguously
+        // and reports its new accepted high-water (§S3).
+        self.pending_media.push_back(Input::SinkAccepted {
+            call_id,
+            through: offset.saturating_add(len),
+        });
+    }
+
+    fn take_pending_media(&mut self) -> VecDeque<Input> {
+        std::mem::take(&mut self.pending_media)
     }
 
     fn take_send_failed(&mut self) -> bool {

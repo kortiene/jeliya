@@ -67,6 +67,11 @@ impl Tick {
     pub(crate) fn saturating_ms_from(self, earlier: Tick) -> u64 {
         self.0.saturating_sub(earlier.0)
     }
+
+    /// The underlying tick count, for span arithmetic in the stream layer.
+    pub(crate) fn ticks(self) -> u64 {
+        self.0
+    }
 }
 
 /// A driver-scheduled timer's identity. The core allocates these monotonically;

@@ -23,16 +23,17 @@ exact `v0.6.1` source candidate is
 `a1af1cdc974bc307317779afa0765c3988cb871f`; no current v0.6.0 evidence
 transfers to it.
 
-**Amended 2026-07-27 (issue #157).** Every capability recorded below belongs to
+**Amended 2026-07-27 (issue #157); further amended 2026-08-16 (issue #178).** Every capability recorded below belongs to
 the retiring stack. The
 [Dioxus clean-slate architecture](dioxus-architecture.md) record decides that
 React, Flutter, the Dart protocol package, the C ABI, and `jeliya-ffi` are
 replaced by one clean-slate typed Rust client stack rendered by Dioxus 0.7 in
 the platform's system WebView, on one new protocol and storage generation.
-That program is decided and entirely unbuilt: no Dioxus code exists in this
-tree, and nothing is retired before its replacement is qualified. Every
-released `v0.6.0` fact on this page, the retained certified evidence, and the
-`v0.6.1` candidate designation are unaffected and remain the current evidence.
+M3 web foundation slices (#176, #177, #178) are implemented and CI-gated; the
+full program continues and nothing is retired before its replacement is
+qualified. Every released `v0.6.0` fact on this page, the retained certified
+evidence, and the `v0.6.1` candidate designation are unaffected and remain the
+current evidence.
 
 ## Snapshot boundary
 
@@ -91,11 +92,11 @@ branch.
 
 | Capability | Implementation | Verification | Public release | Honest current claim |
 |---|---|---|---|---|
-| Dioxus web client (`jeliya-ui` in the browser) | planned | unverified | unreleased | Decided, not built. The record requires one Dioxus 0.7 client in the browser's WebSocket path through the `WsWeb` adapter, holding no Iroh dependency and no identity of its own. No Dioxus code exists in this tree; the embedded React UI above remains the shipped web surface, and React is removed only after the Dioxus web release candidate passes. |
+| Dioxus web client (`jeliya-ui` in the browser) | partial | unverified | unreleased | M3 slices implemented and CI-gated: the shared `jeliya-ui` crate (#176), the CSS/l10n/a11y foundation (#177), and the browser shell/routing/preferences (#178) are in-tree. The real browser WebSocket transport (`WsWeb`, #171) is not yet implemented; the shell renders against the deterministic mock and opens no socket. The embedded React UI remains the shipped web surface; React is removed only after the Dioxus web release candidate passes (#200). |
 | Dioxus desktop packages (macOS, Linux, and any approved Windows target) | planned | unverified | unreleased | Decided, not built. The record names WebKitGTK for Linux and WebView2 for Windows, and names macOS only as the system WebView (WebKit). Windows is not a committed first-release target: its scope decision may include it or formally defer it. Desktop qualification is required per platform, and a missing platform gate blocks only that platform's publication row. |
 | Android `DirectClient` client | planned | unverified | unreleased | Decided, not built. The record requires typed `jeliya-core` in-process behind one bounded serialized actor, with no JSON, Dart, C ABI, socket, token, or portfile in the path. No Android system-WebView floor or evergreen policy has been decided; that is an open gap. The Flutter Android app, the Dart protocol package, the C ABI, and `jeliya-ffi` are retired only atomically, after a clean-install `DirectClient` candidate passes. |
 | Protocol v2 | planned | unverified | unreleased | Decided, not specified. Its handshake and version gate, envelopes, operations, errors, limits, and independently authored conformance corpus are open work, and this page describes none of them. [The daemon protocol](PROTOCOL.md) v1 remains the contract every released daemon speaks. The v1 100 MiB shared-file limit is a reference, not a v2 decision. |
-| Single embedded Dioxus artifact | planned | unverified | unreleased | Decided, not built. The record requires one reproducible, content-addressed web artifact whose exact bytes are embedded in every daemon target, with a sealed manifest and failure on legacy-artifact consumption. No such artifact is produced, and no React or renderer rollback artifact is planned. |
+| Single embedded Dioxus artifact | partial | unverified | unreleased | The reproducible artifact exists (`crates/jeliya-ui/dist`, #176): byte-identical across two clean builds, embedded in the daemon with a build-time guard that rejects React output. The sealed content-addressed manifest (#183) and the release-line cutover (#200) remain ahead. No React or renderer rollback artifact is planned. |
 
 ## Preview publication rule
 

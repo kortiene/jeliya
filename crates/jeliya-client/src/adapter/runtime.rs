@@ -199,6 +199,30 @@ impl DriverIo for NativeIo {
         self.clock.now()
     }
 
+    // Byte-stream media is not wired on the native adapter yet: a stream
+    // record cannot be framed onto the wire from here, so these effects are
+    // dropped and the stream's stall timer settles the call honestly
+    // (Timeout) rather than reporting progress that never happened. The
+    // debug assertion keeps the gap loud in tests until the native media
+    // drive lands (the codec-side framing exists: jeliya-codec).
+    fn send_record(&mut self, intent: crate::kernel::transport::StreamRecordIntent) {
+        let _ = intent;
+        debug_assert!(
+            false,
+            "stream records are not yet wired on the native adapter"
+        );
+    }
+
+    fn produce(&mut self, call_id: crate::kernel::inflight::CallId, up_to: u64) {
+        let _ = (call_id, up_to);
+        debug_assert!(false, "stream media is not yet wired on the native adapter");
+    }
+
+    fn write_sink(&mut self, call_id: crate::kernel::inflight::CallId, offset: u64, len: u64) {
+        let _ = (call_id, offset, len);
+        debug_assert!(false, "stream media is not yet wired on the native adapter");
+    }
+
     fn send(&mut self, frame: WireFrame) {
         // The codec owns all JSON: assemble the request envelope there, then
         // push one Text message to the live write channel. The payload/op_id

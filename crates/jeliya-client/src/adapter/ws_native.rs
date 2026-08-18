@@ -175,7 +175,13 @@ pub(crate) async fn run_dial(
     let Some(previous) = runtime.upgrade().map(|runtime| runtime.generation()) else {
         return;
     };
-    inject(&runtime, Input::Connected { token });
+    inject(
+        &runtime,
+        Input::Connected {
+            token,
+            incarnation: hello.incarnation.clone(),
+        },
+    );
     let Some(generation) = runtime.upgrade().map(|runtime| runtime.generation()) else {
         return;
     };

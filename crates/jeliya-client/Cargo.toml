@@ -110,6 +110,14 @@ name = "kernel_fault"
 required-features = ["test-transport"]
 
 [[test]]
+name = "kernel_stream"
+# Happy-path lifecycle coverage for the kernel stream layer (#269 §8): the
+# producer (`file.share`) and receiver (`file.read`) OPEN→DATA/CREDIT→END→reply
+# sequences over the deterministic in-memory driver. CI runs:
+# `cargo test -p jeliya-client --features test-transport`
+required-features = ["test-transport"]
+
+[[test]]
 name = "reconcile_driver"
 # End-to-end tests for the async reconciler driver (#169 §7 step 10):
 # bootstrap, reconnect, resume, overflow recovery, and clean stop — each

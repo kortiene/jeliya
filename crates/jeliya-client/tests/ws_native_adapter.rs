@@ -57,6 +57,7 @@ fn fast_config() -> NativeClientConfig {
             },
             jitter_seed: 0,
             stable_principal: false,
+            streams: jeliya_client::StreamLimits::default(),
         },
         connect_timeout: Duration::from_millis(100),
         hello_timeout: Duration::from_millis(100),
@@ -112,6 +113,7 @@ fn hello_json(storage_generation: u64) -> String {
         limits: test_limits(),
         subject: jeliya_api::SubjectState::Absent,
         resume: jeliya_api::Resume::Fresh,
+        incarnation: jeliya_api::Incarnation::new("ws-native-test-incarnation"),
     })
     .expect("Hello serializes")
 }
@@ -381,6 +383,7 @@ fn reconnect_after_server_disconnect_returns_to_ready() {
                 },
                 jitter_seed: 0,
                 stable_principal: false,
+                streams: jeliya_client::StreamLimits::default(),
             },
             connect_timeout: Duration::from_millis(300),
             hello_timeout: Duration::from_millis(300),
