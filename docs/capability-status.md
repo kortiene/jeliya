@@ -23,6 +23,7 @@ exact `v0.6.1` source candidate is
 `a1af1cdc974bc307317779afa0765c3988cb871f`; no current v0.6.0 evidence
 transfers to it.
 
+**Amended 2026-07-27 (issue #157); further amended 2026-08-16 (issues #178, #181) and 2026-08-17 (issue #179).** Every capability recorded below belongs to
 **Amended 2026-07-27 (issue #157); further amended 2026-08-16 (issue #178) and 2026-08-17 (issues #179, #180).** Every capability recorded below belongs to
 the retiring stack. The
 [Dioxus clean-slate architecture](dioxus-architecture.md) record decides that
@@ -92,6 +93,7 @@ branch.
 
 | Capability | Implementation | Verification | Public release | Honest current claim |
 |---|---|---|---|---|
+| Dioxus web client (`jeliya-ui` in the browser) | partial | unverified | unreleased | M3 slices implemented and CI-gated: the shared `jeliya-ui` crate (#176), the CSS/l10n/a11y foundation (#177), the browser shell/routing/preferences (#178), and the browser Files/Pipes room destinations with `jeliya-platform-web` bindings (#181) are in-tree. The real browser WebSocket transport (`WsWeb`, #171) is not yet implemented; the client renders against the deterministic mock and opens no socket. The embedded React UI remains the shipped web surface; React is removed only after the Dioxus web release candidate passes (#200). |
 | Dioxus web client (`jeliya-ui` in the browser) | partial | unverified | unreleased | M3 slices implemented and CI-gated: the shared `jeliya-ui` crate (#176), the CSS/l10n/a11y foundation (#177), and the browser shell/routing/preferences (#178) are in-tree. The real browser WebSocket transport (`WsWeb`, #171) is not yet implemented; the shell renders against the deterministic mock and opens no socket. The embedded React UI remains the shipped web surface; React is removed only after the Dioxus web release candidate passes (#200). |
 | Dioxus web client (`jeliya-ui` in the browser) | partial | unverified | unreleased | M3 slices implemented and CI-gated: the shared `jeliya-ui` crate (#176), the CSS/l10n/a11y foundation (#177), the browser shell/routing/preferences (#178), and the room Activity/timeline/composer/drafts/pending-send (#179) are in-tree. The real browser WebSocket transport (`WsWeb`, #171) is not yet implemented; the surface renders against the deterministic mock and opens no socket. The embedded React UI remains the shipped web surface; React is removed only after the Dioxus web release candidate passes (#200). |
 | Dioxus desktop packages (macOS, Linux, and any approved Windows target) | planned | unverified | unreleased | Decided, not built. The record names WebKitGTK for Linux and WebView2 for Windows, and names macOS only as the system WebView (WebKit). Windows is not a committed first-release target: its scope decision may include it or formally defer it. Desktop qualification is required per platform, and a missing platform gate blocks only that platform's publication row. |

@@ -862,6 +862,13 @@ pub fn AppRoot(
                             // room absent from it is the recoverable state.
                             let room_row = snapshot.rooms.iter().find(|r| r.room_id == room_id).cloned();
                             let reachable = !snapshot.rooms_loaded || room_row.is_some();
+                            // A departed/left/removed room opens read-only: the
+                            // Files/Pipes panes suppress share/fetch/pipe mutations
+                            // as a capability (spec D8 / #91).
+                            let read_only = room_row
+                                .as_ref()
+                                .map(|r| r.standing != Standing::Active)
+                                .unwrap_or(false);
                             rsx! {
                                 main { class: "destination", id: "main-content", tabindex: "-1",
                                     // The composition is selected by the row's STANDING
@@ -878,6 +885,7 @@ pub fn AppRoot(
                                                 services: services_room.clone(),
                                                 now,
                                                 self_id: self_id.clone(),
+                                                read_only,
                                                 shell: active_shell,
                                             }
                                         },

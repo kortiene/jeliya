@@ -135,7 +135,16 @@ futures = { version = "0.3", default-features = false, features = ["executor"] }
 # TEST-ONLY: the `room/` archive-fold unit tests build `jeliya_api::Event`
 # fixtures whose `at` wraps `time::OffsetDateTime`. Dev-only, already in the
 # workspace lock, excluded from the wasm graph (`--edges normal`).
-time = { version = "0.3" }
+time = { version = "0.3", default-features = false }
+# Needed only by #181's `files::`/`pipes::` unit-test fixtures to build a
+# `jeliya_api::Timestamp` (whose constructor takes an `OffsetDateTime`). A
+# dev-dependency, so it never enters the shipped default/`ui`/`web` graph or the
+# wasm-graph scan.
+# Synchronous single-threaded executor for #181's async flow integration tests.
+# `futures-executor` is already in the workspace lockfile (pulled by jeliya-client
+# and others); declaring it here adds no new download and never enters the shipped
+# default/`ui`/`web` graph.
+futures-executor = "0.3"
 
 # Underscored so the cargo artifact, the wasm-bindgen module, and the import in
 # `index.html` all agree on one name (the #158 spike's convention).
@@ -170,6 +179,15 @@ required-features = ["ui"]
 # `ui` for `jeliya_ui::room`/`jeliya_ui::l10n` and `jeliya-client/mock`.
 [[test]]
 name = "archive_91"
+required-features = ["ui"]
+
+# End-to-end async-flow integration tests for #181 (Files + Pipes + browser
+# PlatformServices). Drives `run_upload`, `run_fetch_export`, `run_connect`,
+# `run_release`, `run_revoke`, and `run_publish` against in-process mocks via
+# `futures_executor::block_on` + `futures::future::join`. Requires `ui` for
+# access to the file/pipe orchestration and `jeliya_platform/fake`.
+[[test]]
+name = "files_pipes_181"
 required-features = ["ui"]
 
 [lints]

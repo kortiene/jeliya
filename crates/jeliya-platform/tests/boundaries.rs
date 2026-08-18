@@ -159,7 +159,14 @@ fn no_retired_local_file_url_in_source() {
 /// Adding a name here is the deliberate, reviewable act that admits an M3–M5
 /// target crate; nothing outside this list may enable the feature, depend on
 /// the door crate, or spell the `implementation` path.
-const IMPLEMENTATION_DOOR_CRATES: [&str; 1] = ["jeliya-platform-implementation"];
+///
+/// `jeliya-platform-web` is the first such target crate (#181 D0): the browser
+/// `WebFiles` binding mints handles through the door, so the edge lives in that
+/// wasm-only target crate — never in the shared `jeliya-ui` component graph
+/// (which `no_shared_ui_selection_reaches_the_implementation_surface` still
+/// pins clean across `ui`/`web`/`native`).
+const IMPLEMENTATION_DOOR_CRATES: [&str; 2] =
+    ["jeliya-platform-implementation", "jeliya-platform-web"];
 
 /// Whether a manifest admits the `implementation` factory surface.
 ///
