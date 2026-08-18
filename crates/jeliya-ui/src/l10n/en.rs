@@ -352,6 +352,189 @@ impl Catalog for En {
         "The daemon did not respond. Check your connection and try again."
     }
 
+    // ---- #181 Files destination ------------------------------------------
+
+    fn files_heading(&self) -> &'static str {
+        "Files"
+    }
+    fn files_empty(&self) -> &'static str {
+        "No files shared yet"
+    }
+    fn files_loading(&self) -> &'static str {
+        "Loading files…"
+    }
+    fn files_share_action(&self) -> &'static str {
+        "Share a file"
+    }
+    fn files_fetch_action(&self) -> &'static str {
+        "Fetch"
+    }
+    fn files_export_action(&self) -> &'static str {
+        "Export / download"
+    }
+    fn files_preview_action(&self) -> &'static str {
+        "Preview"
+    }
+    fn files_cancel_action(&self) -> &'static str {
+        "Cancel"
+    }
+    fn files_retry_action(&self) -> &'static str {
+        "Retry"
+    }
+    fn files_declared_type_label(&self) -> &'static str {
+        "Declared type (untrusted)"
+    }
+    fn files_provider_label(&self) -> &'static str {
+        "Providers"
+    }
+    fn files_digest_label(&self) -> &'static str {
+        "Digest"
+    }
+    fn files_avail_fetchable(&self) -> &'static str {
+        "Fetchable"
+    }
+    fn files_avail_on_device(&self) -> &'static str {
+        "On this device"
+    }
+    fn files_avail_not_fetchable(&self) -> &'static str {
+        "Not currently fetchable"
+    }
+    fn files_name_hidden(&self) -> &'static str {
+        "(unsafe file name hidden)"
+    }
+    fn files_read_only(&self) -> &'static str {
+        "This room is a read-only archive. Sharing and fetching are unavailable."
+    }
+    fn files_uploading(&self) -> &'static str {
+        "Uploading…"
+    }
+    fn files_fetching(&self) -> &'static str {
+        "Fetching…"
+    }
+
+    // ---- #181 Pipes destination ------------------------------------------
+
+    fn pipes_heading(&self) -> &'static str {
+        "Pipes"
+    }
+    fn pipes_empty(&self) -> &'static str {
+        "No pipes exposed yet"
+    }
+    fn pipes_loading(&self) -> &'static str {
+        "Loading pipes…"
+    }
+    fn pipes_state_connected(&self) -> &'static str {
+        "Connected"
+    }
+    fn pipes_state_open(&self) -> &'static str {
+        "Open"
+    }
+    fn pipes_reach_direct(&self) -> &'static str {
+        "Publisher reachable (direct)"
+    }
+    fn pipes_reach_relay(&self) -> &'static str {
+        "Publisher reachable (relay)"
+    }
+    fn pipes_reach_unavailable(&self) -> &'static str {
+        "Publisher unavailable"
+    }
+    fn pipes_expose_action(&self) -> &'static str {
+        "Expose a pipe"
+    }
+    fn pipes_connect_action(&self) -> &'static str {
+        "Connect"
+    }
+    fn pipes_release_action(&self) -> &'static str {
+        "Release"
+    }
+    fn pipes_revoke_action(&self) -> &'static str {
+        "Revoke"
+    }
+    fn pipes_target_label(&self) -> &'static str {
+        "Loopback host"
+    }
+    fn pipes_port_label(&self) -> &'static str {
+        "Port number"
+    }
+    fn pipes_audience_label(&self) -> &'static str {
+        "Audience"
+    }
+    fn pipes_audience_room(&self) -> &'static str {
+        "Any room member"
+    }
+    fn pipes_audience_subjects(&self) -> &'static str {
+        "Named subjects only"
+    }
+    fn pipes_published_by_label(&self) -> &'static str {
+        "Published by"
+    }
+
+    // ---- #181 Files/Pipes flow-failure bodies (spec §6) ------------------
+
+    fn err_over_limit(&self, limit_display: &str) -> String {
+        format!(
+            "This file is larger than the shared-file limit of {limit_display}. \
+             Files cannot be split into parts, so it can’t be shared."
+        )
+    }
+    fn err_size_mismatch(&self) -> &'static str {
+        "The file’s size disagreed with what was declared."
+    }
+    fn err_file_empty(&self) -> &'static str {
+        "The file is empty — there’s nothing to share."
+    }
+    fn err_no_provider(&self) -> &'static str {
+        "No reachable provider could serve this file right now."
+    }
+    fn err_digest_mismatch(&self) -> &'static str {
+        "The fetched bytes did not match the expected digest."
+    }
+    fn err_file_unknown(&self) -> &'static str {
+        "No such file in this room."
+    }
+    fn err_not_fetched(&self) -> &'static str {
+        "The file isn’t held on this device yet — fetch it first."
+    }
+    fn err_transfer_interrupted(&self) -> &'static str {
+        "The transfer didn’t complete."
+    }
+    fn err_pipe_target_refused(&self) -> &'static str {
+        "That target isn’t allowed. Pipes may only point at a loopback address."
+    }
+    fn err_pipe_policy_refused(&self) -> &'static str {
+        "Publishing a pipe isn’t permitted in this room."
+    }
+    fn err_pipe_unreachable(&self) -> &'static str {
+        "The pipe’s publisher is offline and can’t serve it right now."
+    }
+    fn err_pipe_unknown(&self) -> &'static str {
+        "No such pipe."
+    }
+    fn err_pipe_revoked(&self) -> &'static str {
+        "This pipe was withdrawn by its publisher."
+    }
+    fn err_pipe_not_publisher(&self) -> &'static str {
+        "Only the pipe’s publisher can revoke it."
+    }
+    fn err_connection_unknown(&self) -> &'static str {
+        "There’s no such local connection to release."
+    }
+    fn err_room_not_live(&self) -> &'static str {
+        "The room isn’t live — activate it first."
+    }
+    fn err_index_unreadable(&self) -> &'static str {
+        "This room’s index couldn’t be read."
+    }
+    fn err_capability_unavailable(&self) -> &'static str {
+        "That isn’t available in this browser."
+    }
+    fn err_capability_denied(&self) -> &'static str {
+        "Permission was refused."
+    }
+    fn err_source_unreadable(&self) -> &'static str {
+        "The file couldn’t be read."
+    }
+
     // ---- #180 truthful status vocabulary -----------------------------------
 
     fn room_open(&self) -> &'static str {

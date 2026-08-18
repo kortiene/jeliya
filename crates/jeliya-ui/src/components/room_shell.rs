@@ -15,7 +15,7 @@ use jeliya_platform::navigation::{RoomDest, Route};
 
 use super::agents::AgentsPane;
 use super::people::PeoplePane;
-use super::{ActivityPane, NavLandmark};
+use super::{ActivityPane, FilesPane, NavLandmark, PipesPane};
 use crate::l10n::use_strings;
 use crate::shell::router::NavIntent;
 use crate::shell::Shell;
@@ -43,23 +43,38 @@ fn dest_kind_matches(dest: &RoomDest, kind: &RoomDest) -> bool {
 }
 
 /// The room shell for a reachable room: header + destination strip + the
-/// destination pane (People/Agents content, or a skeleton for the rest).
+/// per-destination pane. Activity (#179), People/Agents (#180), and
+/// Files/Pipes (#181) are all real content panes.
 #[component]
 pub fn RoomShell(
     room: RoomRow,
     dest: RoomDest,
     navigate: Callback<NavIntent>,
     handle: ClientHandle,
+    /// The platform-authority seam, forwarded to the panes (drafts, files,
+    /// pipe-connection persistence).
     services: PlatformServices,
+    /// The base instant #180's invite-expiry picker measures from (injected —
+    /// the shared component holds no clock, Decision-3).
     now: Timestamp,
-    #[props(default)] self_id: Option<SubjectId>,
+    /// The local subject id when known (for "You" attribution); `None` until
+    /// `Hello.subject` is surfaced (#270).
+    #[props(default)]
+    self_id: Option<SubjectId>,
+    /// The served `max_shared_file_bytes` (spec D3/R1), threaded to the Files
+    /// pane's preflight. `None` until the seam surfaces it (#171/#270).
+    #[props(default)]
+    max_shared_file_bytes: Option<u64>,
+    /// Whether this room is a read-only archive (suppress share/fetch and
+    /// pipe mutations as a capability — spec D8 / #91).
+    #[props(default)]
+    read_only: bool,
     /// The responsive shell (the Activity composer's keyboard fork; #178 §8).
     #[props(default = Shell::Wide)]
     shell: Shell,
 ) -> Element {
     let strings = use_strings();
     let nav_label = strings.room_nav_label().to_string();
-    let skeleton = strings.room_dest_skeleton();
     let room_id = room.room_id.clone();
     let disambiguator = short_id(&room_id);
 
@@ -146,10 +161,31 @@ pub fn RoomShell(
                         self_id: self_id.clone(),
                     }
                 },
-                // Files/Pipes (#181) remain skeletons.
-                _ => rsx! {
-                    div { class: "room-pane-skeleton muted", id: "room-pane-skeleton", "{skeleton}" }
-                },
+                RoomDest::Files { item } => {
+                    let selected = item.clone();
+                    rsx! {
+                        FilesPane {
+                            handle: handle.clone(),
+                            services: services.clone(),
+                            room_id: room_id.clone(),
+                            selected,
+                            max_shared_file_bytes,
+                            read_only,
+                        }
+                    }
+                }
+                RoomDest::Pipes { item } => {
+                    let selected = item.clone();
+                    rsx! {
+                        PipesPane {
+                            handle: handle.clone(),
+                            services: Some(services.clone()),
+                            room_id: room_id.clone(),
+                            selected,
+                            read_only,
+                        }
+                    }
+                }
             }
         }
     }

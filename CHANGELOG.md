@@ -44,6 +44,46 @@
   Playwright/real-daemon path re-qualifies at #182 after `WsWeb` (#171) lands.
   Transport remains the deterministic mock until #171. 151 host tests pass.
 
+
+- Browser **Files** and **Pipes** room destinations for the clean-slate Dioxus
+  stack (#156 program, #181), replacing the #178 skeleton panes at
+  `/rooms/:roomId/files` and `/rooms/:roomId/pipes`. Host-testable, target-
+  agnostic orchestration lands in `crates/jeliya-ui/src/{files,pipes}`: file
+  pick → bounded staged upload (`file.share`), the file list with
+  **evidence-backed** provider availability read only from
+  `file.list`/`room.peers` fields (membership presence, file-provider
+  availability, and Pipe publisher reachability stay three distinct protocol
+  facts and are never inferred from one another — #50/#79/#94), fetch → read →
+  export/download (`file.fetch` + `file.read`), transfer cancellation that
+  reaches both the local copy and the wire (a cancel is never `Ok`), and the
+  full Pipe lifecycle (publish/expose with loopback-only client-side target
+  validation, list, connect, release, revoke) with `pipe_unreachable` vs
+  `pipe_unknown` vs `pipe_revoked` rendered distinctly. The v2 maximum-file-size
+  policy (#92) is enforced from the **served** `max_shared_file_bytes` (never a
+  compiled-in constant) with a distinctive, explained over-limit surface that
+  interpolates the served value; a size refusal is never rendered as an
+  integrity failure. Peer-declared `declared_content_type` is treated as
+  untrusted and never authorizes an inline render (export/download plus, at most,
+  an opt-in sandboxed preview for a tiny inert allowlist); external opens go only
+  through the allowlisted `SafeExternalUrl` launcher. Confinement is structural —
+  no path or URL appears in any request, prop, sink, or handle, and peer names
+  cross fail-closed through `FileName::parse` — retaining the #122 destination-
+  escape/symlink coverage in the new stack independent of that closed issue.
+  Every daemon failure maps by typed `ErrorCode` discriminant (never an English
+  substring) to redacting copy carrying no bytes, path, digest beyond a short
+  form, or bearer token. The `ClientHandle` stays the deterministic mock until
+  #171's `WsWeb`, so the live real-daemon Files/Pipes qualification (§13, #182)
+  and the downstream security qualification (#196) remain pending.
+- New workspace crate `crates/jeliya-platform-web` (#181) — the browser (wasm32)
+  target implementation of `jeliya-platform`'s file/share capabilities
+  (`WebFiles`/`WebShare`/`WebClipboard`/`WebUrlLauncher`) and the **door-edge
+  home**: introducing a real `Files` binding forces a dependency on the
+  `jeliya-platform-implementation` factory door, so that edge lives in this
+  wasm-only target crate rather than the shared `jeliya-ui` component graph
+  (#174 §K4, extended in `jeliya-platform`'s boundary allowlist). A portable,
+  host-tested fail-closed minted-token registry backs anti-forgery at runtime
+  (a handle the service did not mint resolves nowhere), the guarantee that
+  survives Cargo feature unification.
 - New workspace crate `crates/jeliya-platform` — the single injectable
   `PlatformServices` boundary for the clean-slate Dioxus stack (#156 program,
   #174). One cloneable, renderer-agnostic facade carries object-safe capability

@@ -172,8 +172,8 @@ impl PendingSends {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::room::send::{op_id_for, SendPhase};
-    use jeliya_api::{Author, EventId, EventKindContent, MessageSendOut, OpId, RoomId};
+    use crate::room::send::SendPhase;
+    use jeliya_api::{Author, EventId, EventKindContent, MessageSendOut, RoomId};
 
     fn ts(secs: i64) -> Timestamp {
         Timestamp::new(time::OffsetDateTime::from_unix_timestamp(secs).expect("valid instant"))

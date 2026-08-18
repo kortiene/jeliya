@@ -346,6 +346,190 @@ impl Catalog for Fr {
     fn err_onboarding_room_create(&self) -> &'static str {
         "Échec de la création du salon"
     }
+    // ---- #181 Files destination ------------------------------------------
+
+    fn files_heading(&self) -> &'static str {
+        "Fichiers"
+    }
+    fn files_empty(&self) -> &'static str {
+        "Aucun fichier partagé pour l’instant"
+    }
+    fn files_loading(&self) -> &'static str {
+        "Chargement des fichiers…"
+    }
+    fn files_share_action(&self) -> &'static str {
+        "Partager un fichier"
+    }
+    fn files_fetch_action(&self) -> &'static str {
+        "Récupérer"
+    }
+    fn files_export_action(&self) -> &'static str {
+        "Exporter / télécharger"
+    }
+    fn files_preview_action(&self) -> &'static str {
+        "Aperçu"
+    }
+    fn files_cancel_action(&self) -> &'static str {
+        "Annuler"
+    }
+    fn files_retry_action(&self) -> &'static str {
+        "Réessayer"
+    }
+    fn files_declared_type_label(&self) -> &'static str {
+        "Type déclaré (non fiable)"
+    }
+    fn files_provider_label(&self) -> &'static str {
+        "Fournisseurs"
+    }
+    fn files_digest_label(&self) -> &'static str {
+        "Empreinte"
+    }
+    fn files_avail_fetchable(&self) -> &'static str {
+        "Récupérable"
+    }
+    fn files_avail_on_device(&self) -> &'static str {
+        "Sur cet appareil"
+    }
+    fn files_avail_not_fetchable(&self) -> &'static str {
+        "Actuellement non récupérable"
+    }
+    fn files_name_hidden(&self) -> &'static str {
+        "(nom de fichier dangereux masqué)"
+    }
+    fn files_read_only(&self) -> &'static str {
+        "Ce salon est une archive en lecture seule. Le partage et la récupération sont indisponibles."
+    }
+    fn files_uploading(&self) -> &'static str {
+        "Téléversement…"
+    }
+    fn files_fetching(&self) -> &'static str {
+        "Récupération…"
+    }
+
+    // ---- #181 Pipes destination ------------------------------------------
+
+    fn pipes_heading(&self) -> &'static str {
+        // Terme protocolaire, conservé verbatim (glossaire Tier 2).
+        "Pipes"
+    }
+    fn pipes_empty(&self) -> &'static str {
+        "Aucun pipe exposé pour l’instant"
+    }
+    fn pipes_loading(&self) -> &'static str {
+        "Chargement des pipes…"
+    }
+    fn pipes_state_connected(&self) -> &'static str {
+        "Connecté"
+    }
+    fn pipes_state_open(&self) -> &'static str {
+        "Ouvert"
+    }
+    fn pipes_reach_direct(&self) -> &'static str {
+        "Éditeur joignable (direct)"
+    }
+    fn pipes_reach_relay(&self) -> &'static str {
+        "Éditeur joignable (relay)"
+    }
+    fn pipes_reach_unavailable(&self) -> &'static str {
+        "Éditeur indisponible"
+    }
+    fn pipes_expose_action(&self) -> &'static str {
+        "Exposer un pipe"
+    }
+    fn pipes_connect_action(&self) -> &'static str {
+        "Se connecter"
+    }
+    fn pipes_release_action(&self) -> &'static str {
+        "Libérer"
+    }
+    fn pipes_revoke_action(&self) -> &'static str {
+        "Révoquer"
+    }
+    fn pipes_target_label(&self) -> &'static str {
+        "Hôte loopback"
+    }
+    fn pipes_port_label(&self) -> &'static str {
+        "Numéro de port"
+    }
+    fn pipes_audience_label(&self) -> &'static str {
+        "Destinataires"
+    }
+    fn pipes_audience_room(&self) -> &'static str {
+        "Tout membre du salon"
+    }
+    fn pipes_audience_subjects(&self) -> &'static str {
+        "Sujets nommés uniquement"
+    }
+    fn pipes_published_by_label(&self) -> &'static str {
+        "Publié par"
+    }
+
+    // ---- #181 Files/Pipes flow-failure bodies (spec §6) ------------------
+
+    fn err_over_limit(&self, limit_display: &str) -> String {
+        format!(
+            "Ce fichier dépasse la limite de fichier partagé de {limit_display}. \
+             Les fichiers ne peuvent pas être découpés, il ne peut donc pas être partagé."
+        )
+    }
+    fn err_size_mismatch(&self) -> &'static str {
+        "La taille du fichier ne correspond pas à celle déclarée."
+    }
+    fn err_file_empty(&self) -> &'static str {
+        "Le fichier est vide — il n’y a rien à partager."
+    }
+    fn err_no_provider(&self) -> &'static str {
+        "Aucun fournisseur joignable ne peut servir ce fichier pour le moment."
+    }
+    fn err_digest_mismatch(&self) -> &'static str {
+        "Les octets récupérés ne correspondent pas à l’empreinte attendue."
+    }
+    fn err_file_unknown(&self) -> &'static str {
+        "Aucun fichier de ce type dans ce salon."
+    }
+    fn err_not_fetched(&self) -> &'static str {
+        "Le fichier n’est pas encore présent sur cet appareil — récupérez-le d’abord."
+    }
+    fn err_transfer_interrupted(&self) -> &'static str {
+        "Le transfert ne s’est pas terminé."
+    }
+    fn err_pipe_target_refused(&self) -> &'static str {
+        "Cette cible n’est pas autorisée. Un pipe ne peut viser qu’une adresse loopback."
+    }
+    fn err_pipe_policy_refused(&self) -> &'static str {
+        "La publication d’un pipe n’est pas autorisée dans ce salon."
+    }
+    fn err_pipe_unreachable(&self) -> &'static str {
+        "L’éditeur du pipe est hors ligne et ne peut pas le servir pour le moment."
+    }
+    fn err_pipe_unknown(&self) -> &'static str {
+        "Aucun pipe de ce type."
+    }
+    fn err_pipe_revoked(&self) -> &'static str {
+        "Ce pipe a été retiré par son éditeur."
+    }
+    fn err_pipe_not_publisher(&self) -> &'static str {
+        "Seul l’éditeur du pipe peut le révoquer."
+    }
+    fn err_connection_unknown(&self) -> &'static str {
+        "Il n’existe aucune connexion locale de ce type à libérer."
+    }
+    fn err_room_not_live(&self) -> &'static str {
+        "Le salon n’est pas actif — activez-le d’abord."
+    }
+    fn err_index_unreadable(&self) -> &'static str {
+        "L’index de ce salon n’a pas pu être lu."
+    }
+    fn err_capability_unavailable(&self) -> &'static str {
+        "Ceci n’est pas disponible dans ce navigateur."
+    }
+    fn err_capability_denied(&self) -> &'static str {
+        "L’autorisation a été refusée."
+    }
+    fn err_source_unreadable(&self) -> &'static str {
+        "Le fichier n’a pas pu être lu."
+    }
+
     fn err_onboarding_room_create_body(&self) -> &'static str {
         "Le démon n’a pas répondu. Vérifiez votre connexion et réessayez."
     }

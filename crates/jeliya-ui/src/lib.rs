@@ -67,6 +67,16 @@ pub mod compose;
 // cannot see (empty value, `fr==en`, plurals, French typography, literal scan).
 #[cfg(feature = "ui")]
 pub mod l10n;
+// Host-testable Files/Pipes orchestration (#181 §5.B/§5.C): the pure decisions
+// (truthful availability, served size limit, safe-preview policy, typed error
+// mapping, cancellation) that drive the `ClientHandle` file/pipe operations and
+// the `PlatformServices` file capabilities. Renderer- and `web-sys`-free and
+// target-agnostic, so desktop (#184) / Android (#192) reuse them; the browser
+// bindings live in `jeliya-platform-web`.
+#[cfg(feature = "ui")]
+pub mod files;
+#[cfg(feature = "ui")]
+pub mod pipes;
 // The fresh, namespaced, versioned browser preference schema (#178 §6): the
 // pure "decision" half of `WebPreferences` — namespace, envelope, key
 // derivation, corrupt/unsupported-version recovery, and the enumerated
