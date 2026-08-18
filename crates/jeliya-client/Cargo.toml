@@ -110,11 +110,15 @@ web-sys = { version = "0.3.103", optional = true, features = [
   "Window", "Request", "RequestInit", "RequestMode", "Response",
   "AbortController", "AbortSignal", "Location", "Performance", "Crypto", "console",
 ] }
+
+# The DirectClient adapter (#173) is native-only and default-off. These are
+# OPTIONAL (compiled only when `direct` is on) and confined to
+# `cfg(not(target_arch = "wasm32"))`, so the wasm build and the library's normal
+# `--no-default-features` tree carry neither `tokio` nor `jeliya-core`
+# (transitively `iroh-rooms`) — the ban `tests/boundaries.rs` enforces. Only the
+# executor-agnostic runtime pieces the kernel already needs stay unconditional.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # --- ws-native adapter (#172), all optional + default-off + native-only ---
-# `rt` (not `rt-multi-thread`): the adapter BORROWS the caller's runtime via a
-# captured `Handle` and `tokio::spawn`; it never constructs a runtime (the same
-# rule the supervisor follows). No `macros`.
-tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util", "sync"], optional = true }
 # Aligned to the daemon's `tokio-tungstenite = "0.30"` (already in the lock), so
 # no new major and no server/client version drift.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"], optional = true }
@@ -124,27 +128,21 @@ http = { version = "1", optional = true }
 url = { version = "2", optional = true }
 # The client-direction codec (request encode + reply/push/hello decode). The
 # codec owns all JSON, keeping `jeliya-client`'s no-`serde_json::Value` rule.
-jeliya-codec = { path = "../jeliya-codec", optional = true }
 # The reusable supervisor target resolver (#170): the injected source of
 # verified loopback endpoint + redacted token facts. The adapter holds only a
 # `TargetResolver`, never a `Sidecar`, so it can dial but never kill a daemon.
 jeliya-supervisor = { path = "../jeliya-supervisor", optional = true }
 
-# The DirectClient adapter (#173) is native-only and default-off. These are
-# OPTIONAL (compiled only when `direct` is on) and confined to
-# `cfg(not(target_arch = "wasm32"))`, so the wasm build and the library's normal
-# `--no-default-features` tree carry neither `tokio` nor `jeliya-core`
-# (transitively `iroh-rooms`) — the ban `tests/boundaries.rs` enforces. Only the
-# executor-agnostic runtime pieces the kernel already needs stay unconditional.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # `rt-multi-thread` matches how the in-process engine is hosted in production
 # (`jeliya-ffi`'s own multi-thread runtime): `Engine::new` sets up iroh, which
 # needs a driven reactor, so a single-threaded caller would stall. The library
 # never constructs a runtime itself (`tokio::spawn` alone suffices) — the flavor
 # is the app's choice — but the adapter's own tests build a multi-thread runtime.
-tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros"], optional = true }
+# The feature union serves both adapters: ws-native (#172) borrows the caller's
+# runtime via a captured Handle and needs net/io-util; direct (#173) needs
+# rt-multi-thread for the in-process engine and macros for its tests.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "time", "macros"], optional = true }
 jeliya-core = { path = "../jeliya-core", optional = true }
-jeliya-codec = { path = "../jeliya-codec", optional = true }
 
 [dev-dependencies]
 # `block_on` for the native behaviour suite; the `executor` feature is dev-only
