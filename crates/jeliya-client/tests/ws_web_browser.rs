@@ -18,8 +18,8 @@
 mod tests {
     use futures::StreamExt;
     use jeliya_client::{
-        connect_ws_web, ClientEvent, Dedup, Endpoint, ExplicitResolver, KernelConfig, State,
-        WsWebConfig,
+        connect_ws_web, media, ClientEvent, ClientHandle, Dedup, Endpoint, ExplicitResolver,
+        KernelConfig, State, WsWebConfig,
     };
     use wasm_bindgen_test::*;
 
@@ -29,6 +29,23 @@ mod tests {
     // If absent, both resolve to None and each test exits early (graceful skip).
     const DAEMON_PORT: Option<&str> = option_env!("JELIYAD_WEB_TEST_PORT");
     const DAEMON_TOKEN: Option<&str> = option_env!("JELIYAD_WEB_TEST_TOKEN");
+    const DAEMON2_PORT: Option<&str> = option_env!("JELIYAD2_WEB_TEST_PORT");
+    const DAEMON2_TOKEN: Option<&str> = option_env!("JELIYAD2_WEB_TEST_TOKEN");
+
+    /// Yield to the event loop for `ms` so the adapter's spawn_local pump can
+    /// drain socket traffic between poll attempts (a busy loop on the one
+    /// thread would starve the very IO it is waiting for).
+    async fn sleep_ms(ms: u32) {
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .expect("window")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
+                .expect("set_timeout");
+        });
+        wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .expect("timer promise");
+    }
 
     fn make_config() -> Option<WsWebConfig> {
         let port = DAEMON_PORT?;
@@ -47,6 +64,19 @@ mod tests {
             // indefinitely when the daemon is unreachable.
             hello_timeout_ms: 8_000,
         })
+    }
+
+    /// Reach Ready against the live daemon or give up (the earlier connect
+    /// test owns the failure diagnosis).
+    async fn ready_handle() -> Option<(ClientHandle, jeliya_client::EventSubscription)> {
+        let config = make_config()?;
+        let handle = connect_ws_web(config);
+        let mut sub = handle.subscribe();
+        handle.start();
+        if !wait_for_state(&mut sub, State::Ready).await {
+            return None;
+        }
+        Some((handle, sub))
     }
 
     // Poll the EventSubscription until the target state or a terminal state.
@@ -151,6 +181,228 @@ mod tests {
             Some(State::Stopped),
             "the event stream must end at Stopped — an event after it (or a \
              non-StateChanged tail) indicates a leaked post-teardown emission"
+        );
+    }
+
+    // Byte-stream media against the LIVE daemon (#233 client remainder / the
+    // adapter stream-media slice). Unlike every suite above, these two tests
+    // move real file bytes over the socket: `file.share` uploads a
+    // deterministic pattern from a registered ByteSource (OPEN → CREDIT →
+    // DATA* → END → terminal reply, framed as JBS2 Binary messages), and
+    // `file.read` downloads them back into a registered ByteSink (OPEN →
+    // client CREDIT → DATA* → END → terminal reply) with the collected bytes
+    // verified against the exact pattern — a real digest-level round trip,
+    // never the mock.
+    //
+    // Bootstrap mirrors the conformance corpus's files success case
+    // (conformance/v2/files.json): subject.ensure → room.create →
+    // room.activate, then the streamed share.
+
+    /// The deterministic upload pattern (not `i mod 251` — that rig is the
+    /// in-memory driver's; a live round trip deserves an independent pattern).
+    fn share_pattern(len: usize) -> Vec<u8> {
+        (0..len).map(|i| ((i * 7 + 13) % 256) as u8).collect()
+    }
+
+    async fn ensure_subject_and_live_room(handle: &ClientHandle) -> jeliya_api::RoomId {
+        // The subject is global to the daemon; ensure is idempotent.
+        let _ = handle
+            .call::<jeliya_api::SubjectEnsure>(jeliya_api::SubjectEnsure {}, Dedup::None)
+            .await
+            .expect("subject.ensure resolves against the live daemon");
+        let room = handle
+            .call::<jeliya_api::RoomCreate>(
+                jeliya_api::RoomCreate {
+                    name: String::from("ws-web-stream-media"),
+                },
+                Dedup::None,
+            )
+            .await
+            .expect("room.create resolves");
+        handle
+            .call::<jeliya_api::RoomActivate>(
+                jeliya_api::RoomActivate {
+                    room_id: room.room_id.clone(),
+                },
+                Dedup::None,
+            )
+            .await
+            .expect("room.activate resolves");
+        room.room_id
+    }
+
+    #[wasm_bindgen_test]
+    async fn live_file_share_uploads_real_bytes_over_the_socket() {
+        let Some((handle, _sub)) = ready_handle().await else {
+            return;
+        };
+        let room_id = ensure_subject_and_live_room(&handle).await;
+
+        let pattern = share_pattern(2048);
+        let op_id = jeliya_api::OpId::new("ws-web-live-share-1");
+        handle
+            .register_stream_media(op_id.clone(), media::shared_bytes(pattern.clone()))
+            .expect("the web adapter registers stream media");
+
+        let out = handle
+            .call_stream::<jeliya_api::FileShare>(
+                jeliya_api::FileShare {
+                    room_id: room_id.clone(),
+                    name: String::from("live-share.bin"),
+                    declared_bytes: pattern.len() as u64,
+                    declared_content_type: String::from("application/octet-stream"),
+                },
+                Dedup::Key(op_id),
+            )
+            .await
+            .expect("the streamed file.share resolves against the live daemon");
+        assert_eq!(out.bytes, 2048, "every pattern byte was accepted");
+        assert!(!out.digest.is_empty(), "the daemon reports its digest");
+    }
+
+    // The two-daemon byte-stream matrix (the honest live `file.read`):
+    // `file.read` streams only LOCALLY-HELD bytes, and a daemon never fetches
+    // from itself (the supervisor's fetch excludes its own device), so a
+    // single daemon can never serve a read-back of its own upload — by
+    // design, exactly as the corpus records (`resource:fetched_file` is
+    // "unestablishable single-subject"). The real download needs a second,
+    // invited daemon: A receives the streamed share; B joins the room, p2p-
+    // fetches the bytes from provider A, and streams them back out over its
+    // own socket. The collected bytes must equal the uploaded pattern
+    // exactly — a digest-level round trip across two live daemons and three
+    // byte transfers (browser→A upload, A→B p2p fetch, B→browser download).
+    #[wasm_bindgen_test]
+    async fn live_two_daemon_share_fetch_read_round_trip() {
+        let (Some(port2), Some(token2)) = (DAEMON2_PORT, DAEMON2_TOKEN) else {
+            return; // no second daemon configured — graceful skip
+        };
+        let Some((ha, _sub_a)) = ready_handle().await else {
+            return;
+        };
+        let hb = connect_ws_web(WsWebConfig {
+            endpoint: Endpoint::Explicit {
+                http_base: format!("http://127.0.0.1:{port2}"),
+                ws_url: format!("ws://127.0.0.1:{port2}/ws"),
+            },
+            session: Box::new(ExplicitResolver::new("token", token2.to_string())),
+            kernel: KernelConfig::default(),
+            hello_timeout_ms: 8_000,
+        });
+        let mut sub_b = hb.subscribe();
+        hb.start();
+        if !wait_for_state(&mut sub_b, State::Ready).await {
+            return; // second daemon unreachable — its own connect test's domain
+        }
+
+        // A: subject + live room; B: subject; A mints, B redeems, B activates.
+        let room_id = ensure_subject_and_live_room(&ha).await;
+        let subject_b = hb
+            .call::<jeliya_api::SubjectEnsure>(jeliya_api::SubjectEnsure {}, Dedup::None)
+            .await
+            .expect("B subject.ensure")
+            .subject_id;
+        let minted = ha
+            .call::<jeliya_api::InviteMint>(
+                jeliya_api::InviteMint {
+                    room_id: room_id.clone(),
+                    subject_id: subject_b,
+                    role: jeliya_api::Role::Member,
+                    // `time`'s `now` is unsupported on wasm32-unknown-unknown;
+                    // the browser clock (ms since the Unix epoch) is the
+                    // platform's own source for an expiry.
+                    expires_at: jeliya_api::Timestamp::new(
+                        time::OffsetDateTime::from_unix_timestamp_nanos(
+                            (js_sys::Date::now() as i128 + 3_600_000) * 1_000_000,
+                        )
+                        .expect("unix timestamp"),
+                    ),
+                },
+                Dedup::None,
+            )
+            .await
+            .expect("A invite.mint");
+        hb.call::<jeliya_api::InviteRedeem>(
+            jeliya_api::InviteRedeem {
+                capability: minted.capability,
+            },
+            Dedup::None,
+        )
+        .await
+        .expect("B invite.redeem");
+        hb.call::<jeliya_api::RoomActivate>(
+            jeliya_api::RoomActivate {
+                room_id: room_id.clone(),
+            },
+            Dedup::None,
+        )
+        .await
+        .expect("B room.activate");
+
+        // A receives the streamed share.
+        let pattern = share_pattern(1536);
+        let share_op = jeliya_api::OpId::new("ws-web-two-daemon-share-1");
+        ha.register_stream_media(share_op.clone(), media::shared_bytes(pattern.clone()))
+            .expect("register the share source");
+        let shared = ha
+            .call_stream::<jeliya_api::FileShare>(
+                jeliya_api::FileShare {
+                    room_id: room_id.clone(),
+                    name: String::from("live-roundtrip.bin"),
+                    declared_bytes: pattern.len() as u64,
+                    declared_content_type: String::from("application/octet-stream"),
+                },
+                Dedup::Key(share_op),
+            )
+            .await
+            .expect("the streamed share resolves on A");
+        assert_eq!(shared.bytes, pattern.len() as u64);
+
+        // B fetches from provider A — bounded wait: the room session must
+        // sync the signed file_shared event and connect the daemons first.
+        let mut fetched = false;
+        for _ in 0..60 {
+            match hb
+                .call::<jeliya_api::FileFetch>(
+                    jeliya_api::FileFetch {
+                        room_id: room_id.clone(),
+                        file_id: shared.file_id.clone(),
+                    },
+                    Dedup::None,
+                )
+                .await
+            {
+                Ok(out) => {
+                    assert_eq!(out.bytes, pattern.len() as u64);
+                    fetched = true;
+                    break;
+                }
+                Err(_) => {
+                    sleep_ms(2_000).await;
+                }
+            }
+        }
+        assert!(fetched, "B must fetch the file from provider A");
+
+        // B streams the bytes back out; the sink must collect the exact pattern.
+        let (sink, sink_media) = media::collected_bytes();
+        let read_op = jeliya_api::OpId::new("ws-web-two-daemon-read-1");
+        hb.register_stream_media(read_op.clone(), sink_media)
+            .expect("register the read sink");
+        let header = hb
+            .call_stream::<jeliya_api::FileRead>(
+                jeliya_api::FileRead {
+                    room_id,
+                    file_id: shared.file_id,
+                },
+                Dedup::Key(read_op),
+            )
+            .await
+            .expect("the streamed file.read resolves on B");
+        assert_eq!(header.bytes, pattern.len() as u64);
+        let collected = sink.take();
+        assert_eq!(
+            collected, pattern,
+            "the bytes the browser collected from B are exactly the bytes it              uploaded to A — a real round trip over two live daemons, not the mock"
         );
     }
 }

@@ -627,11 +627,16 @@ fn decode_inbound_stream_record(ctx: &Rc<SocketCtx>, bytes: &[u8]) -> Result<Str
     decode_stream_kind(bytes, &ctx.bounds).map_err(|_| ())?;
     let view = decode_stream_record_view(bytes, &ctx.bounds).map_err(|_| ())?;
     let record = match view.body {
-        StreamRecordBodyView::Open { total } => StreamRecordMeta::Open {
-            id: wire_id,
-            stream_id,
-            total,
-        },
+        StreamRecordBodyView::Open { total } => {
+            // Adopt the daemon's stream id BEFORE the meta reaches the core:
+            // outbound DATA frames must carry the pair the daemon authored.
+            state.media.adopt_open_stream_id(wire_id, stream_id);
+            StreamRecordMeta::Open {
+                id: wire_id,
+                stream_id,
+                total,
+            }
+        }
         StreamRecordBodyView::Data { offset, payload } => {
             if !state.media.deliver_data(wire_id, offset, payload) {
                 return Err(());

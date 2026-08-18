@@ -51,6 +51,13 @@ pub(crate) struct BoundWebStream {
     /// The call id observed at the first media effect (`produce`/
     /// `write_sink` both receive it).
     call_id: Option<CallId>,
+    /// The stream id the DAEMON adopted at OPEN — recorded when the OPEN
+    /// record is decoded, and required for framing outbound DATA: the daemon
+    /// routes client records by the `(request id, stream id)` pair it
+    /// authored, so a fabricated id is rejected (the native registry adopts
+    /// the same value at its OPEN; `None` means no OPEN was seen yet, and a
+    /// grant before OPEN cannot happen — the core arms media only after it).
+    stream_id: Option<u128>,
     /// The producer's read position (how far the source has been framed).
     produced: u64,
     /// Quarantined inbound DATA, keyed by offset — bounded by the registry's
@@ -66,6 +73,7 @@ impl BoundWebStream {
         Self {
             media: None,
             call_id: None,
+            stream_id: None,
             produced: 0,
             inbound: BTreeMap::new(),
             inbound_bytes: 0,
@@ -145,6 +153,18 @@ impl WebMediaRegistry {
         self.bound.contains_key(&wire_id)
     }
 
+    /// Record the stream id the daemon adopted at OPEN for a bound stream.
+    /// Called from the OPEN decode, before the record meta reaches the core;
+    /// the id is the one outbound DATA must carry (see `BoundWebStream::
+    /// stream_id`). A no-op for an unbound wire id — an OPEN for a stream
+    /// this driver never sent is the caller's binding-lookup failure, not a
+    /// registry entry.
+    pub(crate) fn adopt_open_stream_id(&mut self, wire_id: RequestId, stream_id: u128) {
+        if let Some(stream) = self.bound.get_mut(&wire_id) {
+            stream.stream_id = Some(stream_id);
+        }
+    }
+
     /// Fulfil one `ProduceData` grant synchronously (single thread): read ≤
     /// `up_to` bytes from the bound source in codec-bounded chunks, frame
     /// each as a DATA record, and hand the framed bytes to `send` (the live
@@ -177,6 +197,17 @@ impl WebMediaRegistry {
         let Some(source) = source else {
             return ProduceOutcome::Events(vec![MediaEvent::SourceFailed { call_id }]);
         };
+        // The daemon's OPEN stream id, without which DATA cannot be framed:
+        // the daemon routes by the pair it authored (the native registry
+        // adopts the same value at its OPEN).
+        let Some(bound_stream_id) = self
+            .bound
+            .get(&id)
+            .and_then(|stream| stream.stream_id)
+            .filter(|sid| *sid != 0)
+        else {
+            return ProduceOutcome::Events(vec![MediaEvent::SourceFailed { call_id }]);
+        };
         let mut events = Vec::new();
         let mut position = position;
         let mut remaining = up_to;
@@ -199,7 +230,7 @@ impl WebMediaRegistry {
                 return ProduceOutcome::Events(events);
             }
             buf.truncate(read);
-            let identity = match StreamIdentity::new(id.get(), stream_id_for(id)) {
+            let identity = match StreamIdentity::new(id.get(), bound_stream_id) {
                 Ok(identity) => identity,
                 Err(_) => {
                     events.push(MediaEvent::SourceFailed { call_id });
@@ -359,15 +390,6 @@ impl WebMediaRegistry {
     pub(crate) fn clear(&mut self) {
         self.bound.clear();
     }
-}
-
-/// A nonzero connection-local stream id for an outbound DATA record, derived
-/// from the wire id. The daemon adopted its own stream id at OPEN; outbound
-/// client DATA is routed by the reply-correlation request id (the core routes
-/// by call, never by the stream id), so any nonzero identity the codec
-/// accepts serves — mirroring the reference rig's convention.
-fn stream_id_for(wire_id: RequestId) -> u128 {
-    (wire_id.get() as u128).wrapping_add(1).max(1)
 }
 
 /// Map one kernel record intent onto the codec's record type. `None` only

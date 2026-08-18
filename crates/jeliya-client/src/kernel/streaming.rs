@@ -556,21 +556,33 @@ impl StreamTable {
             progressed
         };
         if progressed {
-            // Extend credit as the quarantine drains.
-            if let Some(entry) = self.entries.get(&call_id) {
-                if let Some(send_through) = entry.receiver_grant(limits.stream_window_bytes) {
-                    let (wire_id, stream_id, accepted_through) =
-                        (entry.wire_id, entry.stream_id, entry.accepted_through);
-                    if let Some(entry) = self.entries.get_mut(&call_id) {
-                        entry.granted_through = send_through;
-                    }
-                    actions.push(Action::SendRecord(StreamRecordIntent::Credit {
-                        id: wire_id,
-                        stream_id,
-                        accepted_through,
-                        send_through,
-                    }));
-                }
+            // Extend credit as the quarantine drains — and REPORT the
+            // acceptance. The terminal CREDIT is not optional: a live
+            // producer may END "only after every DATA byte it sent has been
+            // acknowledged by CREDIT" (protocol §END), and the receiver's
+            // ceiling is capped at `total`, so the final acceptance often
+            // cannot extend the window. Sending CREDIT on every accepted
+            // advance (cumulative, monotonic — an identical repeat is
+            // idempotent per §Credit) is what unblocks the producer's END;
+            // without it a window-covered stream accepts every byte and
+            // still stalls to timeout (found live against jeliyad).
+            if let Some(entry) = self.entries.get_mut(&call_id) {
+                let ceiling = entry
+                    .receiver_grant(limits.stream_window_bytes)
+                    .unwrap_or(entry.granted_through.max(entry.accepted_through));
+                entry.granted_through = entry.granted_through.max(ceiling);
+                let (wire_id, stream_id, accepted_through, send_through) = (
+                    entry.wire_id,
+                    entry.stream_id,
+                    entry.accepted_through,
+                    entry.granted_through,
+                );
+                actions.push(Action::SendRecord(StreamRecordIntent::Credit {
+                    id: wire_id,
+                    stream_id,
+                    accepted_through,
+                    send_through,
+                }));
             }
         }
         StreamOutcome::Progress

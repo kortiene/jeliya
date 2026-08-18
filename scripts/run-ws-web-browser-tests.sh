@@ -56,14 +56,29 @@ cleanup() {
         # Give the daemon a moment to close its portfile-locked resources.
         sleep 0.2
     fi
-    rm -rf "$TMPDIR"
+    if [ -n "${DAEMON2_PID:-}" ]; then
+        kill "$DAEMON2_PID" 2>/dev/null || true
+        sleep 0.2
+    fi
+    rm -rf "$TMPDIR" "$TMPDIR2"
 }
 trap cleanup EXIT
 
-"$JELIYAD_BIN" --port 0 --data-dir "$TMPDIR" --no-open --loopback &
+# RealNetwork mode (no --loopback): the two-daemon round-trip test needs the
+# invited join to dial the minter via discovery, which loopback mode (relay
+# disabled, no address hints) cannot do. Single-daemon tests are unaffected.
+"$JELIYAD_BIN" --port 0 --data-dir "$TMPDIR" --no-open &
 DAEMON_PID=$!
 
-# ---- Wait for the portfile ------------------------------------------------
+# A second daemon for the two-daemon byte-stream round-trip test
+# (file.share on A → p2p file.fetch by B → streamed file.read on B).
+# RealNetwork mode (no --loopback): the invited join dials the minter via
+# discovery, which loopback mode cannot do (relay disabled, no hints).
+TMPDIR2="$(mktemp -d)"
+"$JELIYAD_BIN" --port 0 --data-dir "$TMPDIR2" --no-open &
+DAEMON2_PID=$!
+
+# ---- Wait for both portfiles ----------------------------------------------
 DEADLINE=$(( SECONDS + 20 ))
 until [ -f "$PORTFILE" ] && python3 -c "
 import json, sys
@@ -72,6 +87,18 @@ sys.exit(0 if pf.get('port') and pf.get('auth_token') else 1)
 " 2>/dev/null; do
     if [ $SECONDS -ge $DEADLINE ]; then
         echo "ERROR: daemon did not write a valid portfile within 20 s" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+PORTFILE2="$TMPDIR2/daemon.json"
+until [ -f "$PORTFILE2" ] && python3 -c "
+import json, sys
+pf = json.load(open('$PORTFILE2'))
+sys.exit(0 if pf.get('port') and pf.get('auth_token') else 1)
+" 2>/dev/null; do
+    if [ $SECONDS -ge $DEADLINE ]; then
+        echo "ERROR: second daemon did not write a valid portfile within 20 s" >&2
         exit 1
     fi
     sleep 0.1
@@ -87,14 +114,23 @@ pf = json.load(open('$PORTFILE'))
 tok = pf['auth_token']
 print(tok['inner'] if isinstance(tok, dict) else tok)
 ")"
+DAEMON2_PORT="$(python3 -c "import json; pf=json.load(open('$PORTFILE2')); print(pf['port'])")"
+DAEMON2_TOKEN="$(python3 -c "
+import json
+pf = json.load(open('$PORTFILE2'))
+tok = pf['auth_token']
+print(tok['inner'] if isinstance(tok, dict) else tok)
+")"
 
-echo "ws_web browser tests: jeliyad on port $DAEMON_PORT (pid=$DAEMON_PID)"
+echo "ws_web browser tests: jeliyad on port $DAEMON_PORT (pid=$DAEMON_PID), second on $DAEMON2_PORT (pid=$DAEMON2_PID)"
 
 # ---- Expose daemon coordinates to build.rs --------------------------------
 # build.rs re-emits these as cargo:rustc-env= so option_env!() resolves in
 # the wasm32 test binary at compile time.
 export JELIYAD_WEB_TEST_PORT="$DAEMON_PORT"
 export JELIYAD_WEB_TEST_TOKEN="$DAEMON_TOKEN"
+export JELIYAD2_WEB_TEST_PORT="$DAEMON2_PORT"
+export JELIYAD2_WEB_TEST_TOKEN="$DAEMON2_TOKEN"
 
 # ---- Run the browser test suite -------------------------------------------
 # CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER tells cargo to invoke

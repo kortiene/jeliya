@@ -107,7 +107,8 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3.103", optional = true }
 web-sys = { version = "0.3.103", optional = true, features = [
   "WebSocket", "MessageEvent", "CloseEvent", "BinaryType", "Event",
-  "Window", "Request", "RequestInit", "RequestMode", "Response",
+  "Window",
+  "Request", "RequestInit", "RequestMode", "Response",
   "AbortController", "AbortSignal", "Location", "Performance", "Crypto", "console",
 ] }
 
@@ -150,6 +151,12 @@ jeliya-core = { path = "../jeliya-core", optional = true }
 # ever re-implemented in a test. Dev-only, so the library's dependency
 # boundary (tests/boundaries.rs scans `--edges no-dev`) is unchanged.
 jeliya-codec = { path = "../jeliya-codec" }
+# The live native probe (tests/live_native_probe.rs) parses the daemon's
+# health object for the dial gate's storage generation. Dev-only, and the
+# same version the library already locks.
+serde_json = "1"
+# The probe also builds an invite's absolute expiry (`Timestamp`). Dev-only.
+time = { version = "0.3", features = ["macros"] }
 # `block_on` for the native behaviour suite; the `executor` feature is dev-only
 # so it never reaches the library or the wasm build.
 futures = { version = "0.3", features = ["std", "async-await", "executor"] }
@@ -218,4 +225,11 @@ name = "ws_native_adapter"
 # services. Tests cover terminal/transient resolve paths, the hello gate, and
 # the stop/cleanup invariants. CI runs:
 # `cargo test -p jeliya-client --features ws-native`
+required-features = ["ws-native"]
+
+[[test]]
+name = "live_native_probe"
+# The two-daemon live round-trip probe (see the test's doc comment). Gated
+# like the ws-native suite it mirrors; run with -- --ignored against two
+# live --loopback daemons (coordinates via JELIYAD_PROBE* env vars).
 required-features = ["ws-native"]

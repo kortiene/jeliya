@@ -169,3 +169,72 @@ fn file_read_receiver_drives_full_lifecycle() {
     assert_eq!(controller.stream_timers(), 0, "no stream timer survives");
     assert_eq!(controller.outstanding(), 0, "the call is fully settled");
 }
+
+/// The receiver's terminal acceptance CREDIT (protocol §Credit/END): "the
+/// producer sends END only after every DATA byte it sent has been acknowledged
+/// by CREDIT" — for `file.read` the daemon is the producer, and it may END
+/// only once the client reports `accepted_through == total`. The client's
+/// credit ceiling is capped at `total`, so once the opening window covers the
+/// whole file the window can never EXTEND again — the acceptance report is
+/// itself the reason to send the final CREDIT, not a window extension.
+///
+/// Found live: against a real jeliyad, a 64 KiB `file.read` (window 1 MiB)
+/// received every DATA byte, sink-accepted all of them, and then stalled —
+/// the daemon's `ready_for_end` waits for the acknowledgement this test
+/// pins. The deterministic rig scripted END unconditionally, so the gap was
+/// invisible until the live daemon.
+#[test]
+fn file_read_receiver_reports_terminal_acceptance_credit() {
+    let (handle, controller) = ready();
+    block_on(async {
+        let fut = handle.call_stream::<FileRead>(
+            FileRead {
+                room_id: RoomId::new("r1"),
+                file_id: FileId::new("f1"),
+            },
+            Dedup::None,
+        );
+        let sent = controller.take_outbound();
+        let wire = sent[0].id;
+
+        // Default window (1 MiB) covers the whole 300-byte file: the opening
+        // CREDIT already grants send_through = total.
+        controller.open(wire, 300);
+        let opening: Vec<_> = controller
+            .take_outbound_records()
+            .into_iter()
+            .filter(|r| r.kind == "credit")
+            .collect();
+        assert!(!opening.is_empty(), "the opening credit is granted");
+        assert!(
+            opening.iter().all(|r| r.b <= 300),
+            "credit within the total"
+        );
+
+        // All bytes arrive and are sink-accepted. The terminal CREDIT must
+        // now report accepted_through == total (300) — even though the
+        // window cannot extend past the total — or a live producer has no
+        // permission path to END and the stream stalls to timeout.
+        controller.deliver_data(wire, 0, 300);
+        let after_data: Vec<_> = controller
+            .take_outbound_records()
+            .into_iter()
+            .filter(|r| r.kind == "credit")
+            .collect();
+        assert!(
+            after_data.iter().any(|r| r.a == 300),
+            "the terminal acceptance CREDIT reports accepted_through == total; got {after_data:?}"
+        );
+
+        controller.end(wire, 300);
+        controller.deliver_reply(
+            wire,
+            "{\"room_id\":\"r1\",\"file_id\":\"f1\",\"bytes\":300,\"declared_content_type\":\"application/octet-stream\"}",
+        );
+        let out: FileReadOut = fut.await.expect("terminal reply resolves the stream");
+        assert_eq!(out.bytes, 300);
+    });
+    assert_eq!(controller.streams(), 0, "the stream is fully retired");
+    assert_eq!(controller.stream_timers(), 0, "no stream timer survives");
+    assert_eq!(controller.outstanding(), 0, "the call is fully settled");
+}
