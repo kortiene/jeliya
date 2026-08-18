@@ -63,6 +63,11 @@ mod kernel;
 mod reconcile;
 mod stream;
 
+// The browser WebSocket/session adapter (#171). Target-cfg + feature gated so
+// the wasm-only browser crates never enter the native library tree (the
+// `cargo tree` boundary test) and the module is invisible to the native build.
+#[cfg(all(target_arch = "wasm32", feature = "ws-web"))]
+mod ws_web;
 // The native async WebSocket adapter (#172): binds the sans-IO kernel to a real
 // tokio + tokio-tungstenite transport dialing a loopback `jeliyad` via the
 // reusable supervisor target resolver (#170). Default-off and native-only — the
@@ -94,8 +99,16 @@ pub use reconcile::{
 };
 pub use stream::{StreamCall, StreamCancel};
 
+// The browser adapter's public constructor and its injectable endpoint/session
+// seam (#171). Only present on `wasm32-unknown-unknown` with `ws-web`; the
+// native seam is untouched.
 #[cfg(all(not(target_arch = "wasm32"), feature = "direct"))]
 pub use direct::{connect_direct, DirectConfig, OwnershipError};
+#[cfg(all(target_arch = "wasm32", feature = "ws-web"))]
+pub use ws_web::{
+    connect_ws_web, Endpoint, ExplicitResolver, GetTokenResolver, SessionError, SessionResolver,
+    WsWebConfig,
+};
 
 // The deterministic in-memory kernel driver and its controller are the
 // reference substrate the four real adapters (#171/#172/#173) are diffed
