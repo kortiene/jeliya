@@ -75,7 +75,6 @@ pub fn RoomShell(
 ) -> Element {
     let strings = use_strings();
     let nav_label = strings.room_nav_label().to_string();
-    let skeleton = strings.room_dest_skeleton();
     let room_id = room.room_id.clone();
     let disambiguator = short_id(&room_id);
 

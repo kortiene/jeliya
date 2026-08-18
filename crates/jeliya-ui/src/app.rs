@@ -23,7 +23,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use futures::StreamExt;
-use jeliya_api::{RoomId, RoomList, RoomRow, Standing, SubjectId, SubjectState};
+use jeliya_api::{RoomId, RoomList, RoomRow, Standing};
 use jeliya_client::{
     CallError, ClientEvent, ClientHandle, Dedup, ReconcileConfig, Reconciler, State,
 };
@@ -327,15 +327,6 @@ pub fn AppRoot(
     // / Fleet), which issue their own reads and mutations through it. Taken here
     // because the prop is moved into the event-consumption future below.
     let panes_handle = handle.clone();
-    // read through this clone.
-    let room_handle = handle.clone();
-    // The local subject id, when the connection snapshot surfaced it (#270's
-    // `Hello.subject`), so timeline rows can attribute "You" to self; `None`
-    // until the seam surfaces it (the current mock gap — self shows as a short id).
-    let self_id: Option<SubjectId> = connection.as_ref().and_then(|conn| match &conn.subject {
-        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
-        SubjectState::Absent => None,
-    });
     // The user's local onboarding advance (§5.D "user advanced past onboarding"),
     // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
     // the onboarding step callbacks advance it as the user completes each step.

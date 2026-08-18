@@ -521,7 +521,7 @@ mod tests {
         // v=0 with SCHEMA_VERSION=1 (no migration defined) → UnsupportedOlder.
         let key = PreferenceKey::SelfLabel;
         let backend_key = PreferenceSchema::<InMemoryBackend>::backend_key(&key);
-        let old = format!("{{\"v\":0,\"value\":\"legacy\"}}");
+        let old = "{\"v\":0,\"value\":\"legacy\"}".to_string();
         let schema = PreferenceSchema::new(InMemoryBackend::seeded([(backend_key, old)]));
         assert_eq!(
             schema.get(&key),
