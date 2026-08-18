@@ -30,6 +30,7 @@ pub(crate) mod admission;
 pub(crate) mod backoff;
 pub(crate) mod core;
 pub(crate) mod diag;
+pub(crate) mod driver_io;
 pub(crate) mod ids;
 pub(crate) mod inflight;
 pub(crate) mod replay;
@@ -49,8 +50,16 @@ use crate::backend::{ClientBackend, ErasedCall, RawJson};
 use crate::error::{CallError, LocalError};
 use crate::event::{ClientEvent, EventBus, EventSubscription, State};
 use crate::kernel::core::{Action, Core, Input};
+#[cfg(feature = "test-transport")]
+use crate::kernel::driver_io::StreamMedia;
+use crate::kernel::driver_io::{DriverIo, InMemoryIo};
 use crate::kernel::inflight::CallId;
-use crate::kernel::timing::{Tick, TimerId};
+
+// The redaction-safe outbound view is public only through the feature-gated
+// re-export in `lib.rs`; the controller (test-transport) and that re-export are
+// its only consumers, so gate the re-export to the same feature.
+#[cfg(feature = "test-transport")]
+pub use crate::kernel::driver_io::{SentFrame, SentRecord};
 
 /// The kernel's hard bounds. Every field is explicit; none defaults silently to
 /// "unbounded". The adapter/host chooses them, with the documented
@@ -199,72 +208,37 @@ pub struct KernelConfig {
 }
 
 /// The driver-owned mutable state the async shell and the controller share: the
-/// sans-IO core plus the real resources the core's `Action`s manipulate (the
-/// event bus, the reply senders, the virtual clock, the armed timers, and the
-/// in-memory transport buffers).
+/// sans-IO core, the event bus, the per-call reply senders, and the injected
+/// [`DriverIo`] that performs the transport-touching effects (send, timers,
+/// dial, and the current-time read). Swapping the `DriverIo` is the whole of
+/// how one delivery/wake machinery drives both the in-memory reference and the
+/// native adapter.
 struct Shared {
     core: Core,
     bus: Arc<EventBus>,
-    /// The virtual clock — the sole source of time, advanced only by the
-    /// controller. Real adapters replace this with the platform clock.
-    now: Tick,
     /// The per-call reply senders, keyed by [`CallId`]. Owning the senders here
     /// (not in the core) keeps the sans-IO core free of I/O while still
     /// guaranteeing exactly-once settlement: a `Settle` action removes the
     /// sender, so a second settle for the same id is a no-op.
     senders: HashMap<CallId, oneshot::Sender<Result<RawJson, CallError>>>,
-    /// Armed timers: id → fire time. The controller fires the due ones as it
-    /// advances the clock.
-    timers: HashMap<TimerId, Tick>,
-    /// Frames the core asked the transport to send, retained so the controller
-    /// can learn the wire ids it must reply to. **Bounded** (K12) twice over:
-    /// an undrained log evicts its oldest entry and counts the loss, and each
-    /// entry is the redaction-safe METADATA view only — retaining the full
-    /// `WireFrame` would keep every near-limit payload alive (up to the cap ×
-    /// the 16 MiB byte budget) after admission already released it, since
-    /// `take_outbound` never exposes more than the id and operation anyway.
-    outbound: std::collections::VecDeque<SentFrame>,
-    /// Frames evicted from the bounded outbound log without being observed.
-    outbound_overflow: u64,
-    /// Whether a dial/backoff is in progress.
-    dialing: bool,
-    /// Scripted send/close race (§K14 `fail_send`): when set, the next
-    /// `Action::Send` drops its frame and records `send_failed` instead of
-    /// reaching the transport.
-    fail_next_send: bool,
-    /// A send observed the broken transport during the current apply batch;
-    /// `drive` surfaces it as `Input::Interrupted` after the batch.
-    send_failed: bool,
-    /// The client-authored byte-stream records the core asked the driver to send
-    /// since the last drain, as redaction-safe [`SentRecord`] views (§S3/§S12).
-    /// Bounded FIFO exactly like `outbound` (K12): an undrained log evicts its
-    /// oldest entry and counts the loss.
-    outbound_records: std::collections::VecDeque<SentRecord>,
-    /// Records evicted from the bounded record log without being observed.
-    outbound_records_overflow: u64,
-    /// The deterministic media state per producer stream: the reference driver's
-    /// `i mod 251` byte source, keyed by [`CallId`] (§S3). A receiver stream has
-    /// no source and never appears here; its sink accepts every delivered range.
-    stream_media: HashMap<CallId, StreamMedia>,
-    /// Media inputs the driver must feed back to the core after the current apply
-    /// batch — a `ProduceData`/`WriteSink` action is fulfilled synchronously by
-    /// the deterministic source/sink, exactly as a real adapter's media loop
-    /// would, and reported here (drained by `drive`, mirroring `send_failed`).
-    pending_media: std::collections::VecDeque<Input>,
+    /// The transport-touching effects. `Send`/`ArmTimer`/`CancelTimer`/`Dial`/
+    /// `CancelDial` delegate here, and `now()` reads the driver's clock; the
+    /// in-memory driver keeps virtual state while the native driver hands
+    /// effects to async tasks.
+    io: Box<dyn DriverIo>,
 }
 
-/// The deterministic producer source state the reference driver owns (§S3): the
-/// total the daemon's OPEN admitted and how far the `i mod 251` source has been
-/// read. Byte values are never stored — only offsets — so the driver is as
-/// byte-bounded as the core.
-struct StreamMedia {
-    /// The reply-correlation id, so an outbound DATA observation is keyed by the
-    /// same wire id the test sees.
-    wire_id: u64,
-    /// The source's total byte count (from the scripted OPEN).
-    total: u64,
-    /// How far the source has been read and framed.
-    produced: u64,
+impl Shared {
+    /// The concrete in-memory driver, for the `test-transport` controller —
+    /// the only consumer that advances the virtual clock, inspects timers, and
+    /// reads the outbound log. Panics if the shell is not the in-memory one,
+    /// which is impossible: only `with_kernel` builds a controller.
+    fn in_memory(&mut self) -> &mut InMemoryIo {
+        self.io
+            .as_any_mut()
+            .downcast_mut::<InMemoryIo>()
+            .expect("the test-transport controller drives the in-memory driver")
+    }
 }
 
 /// Work that must happen **after** the `Shared` mutex is released: settling a
@@ -329,37 +303,14 @@ impl Shared {
 
     fn apply_one(&mut self, action: Action, deferred: &mut Deferred) {
         match action {
-            Action::Send(frame) => {
-                if self.fail_next_send || self.send_failed {
-                    // The scripted send/close race (§K14): the pipe breaks at
-                    // the first write, and a broken transport fails every
-                    // later write in the same batch too — no frame after the
-                    // failure reaches the wire. The loss surfaces to the core
-                    // after this apply batch.
-                    self.fail_next_send = false;
-                    self.send_failed = true;
-                } else {
-                    if self.outbound.len() >= OUTBOUND_LOG_CAP {
-                        self.outbound.pop_front();
-                        self.outbound_overflow = self.outbound_overflow.saturating_add(1);
-                    }
-                    // Redact at APPEND time: the log keeps only what
-                    // take_outbound exposes, so the payload and op_id drop
-                    // with the frame here instead of living in the log.
-                    self.outbound.push_back(SentFrame {
-                        id: frame.id.get(),
-                        op: frame.op,
-                    });
-                }
-            }
-            Action::ArmTimer { id, at } => {
-                self.timers.insert(id, at);
-            }
-            Action::CancelTimer(id) => {
-                self.timers.remove(&id);
-            }
-            Action::Dial { .. } => self.dialing = true,
-            Action::CancelDial => self.dialing = false,
+            // The five transport-touching effects cross the DriverIo seam; the
+            // in-memory driver records them, the native driver performs real
+            // I/O. The rest are runtime-neutral and stay here.
+            Action::Send(frame) => self.io.send(frame),
+            Action::ArmTimer { id, at } => self.io.arm_timer(id, at),
+            Action::CancelTimer(id) => self.io.cancel_timer(id),
+            Action::Dial { token } => self.io.dial(token),
+            Action::CancelDial => self.io.cancel_dial(),
             Action::Settle(call_id, result) => {
                 if let Some(sender) = self.senders.remove(&call_id) {
                     // Delivered after the Shared lock drops (§K12 wake
@@ -382,63 +333,17 @@ impl Shared {
                 // (real adapters, #171/#172/#173); the reference driver records a
                 // redaction-safe observation so tests can assert the control-plane
                 // ordering (§S3/§S12). The byte layout is never handled here.
-                self.record_outbound(SentRecord::from_intent(&intent));
+                self.io.send_record(intent);
             }
-            Action::ProduceData { call_id, up_to } => {
-                // The deterministic source produces exactly the granted bytes
-                // (the core bounds `up_to` by credit, window, and total), frames
-                // them, sends them, and reports how far it got (§S3). A single
-                // DATA observation covers the whole grant; the byte content is the
-                // `i mod 251` source and is never stored.
-                let framed = self.stream_media.get_mut(&call_id).map(|media| {
-                    let offset = media.produced;
-                    let sent_through = media.produced.saturating_add(up_to).min(media.total);
-                    media.produced = sent_through;
-                    (media.wire_id, offset, sent_through, media.total)
-                });
-                if let Some((wire_id, offset, sent_through, total)) = framed {
-                    let len = sent_through.saturating_sub(offset);
-                    if len > 0 {
-                        self.record_outbound(SentRecord {
-                            id: wire_id,
-                            kind: "data",
-                            a: offset,
-                            b: len,
-                        });
-                    }
-                    self.pending_media.push_back(Input::Produced {
-                        call_id,
-                        sent_through,
-                    });
-                    if sent_through >= total {
-                        self.pending_media
-                            .push_back(Input::SourceEnd { call_id, total });
-                    }
-                }
-            }
+            // The media effects a real driver fulfills from its registered byte
+            // source/sink; the in-memory driver runs the deterministic rig (§S3).
+            Action::ProduceData { call_id, up_to } => self.io.produce(call_id, up_to),
             Action::WriteSink {
                 call_id,
                 offset,
                 len,
-            } => {
-                // The deterministic sink accepts every delivered range
-                // contiguously and reports its new accepted high-water (§S3).
-                self.pending_media.push_back(Input::SinkAccepted {
-                    call_id,
-                    through: offset.saturating_add(len),
-                });
-            }
+            } => self.io.write_sink(call_id, offset, len),
         }
-    }
-
-    /// Append one redaction-safe outbound-record observation to the bounded log
-    /// (K12): an undrained log evicts its oldest entry and counts the loss.
-    fn record_outbound(&mut self, record: SentRecord) {
-        if self.outbound_records.len() >= OUTBOUND_LOG_CAP {
-            self.outbound_records.pop_front();
-            self.outbound_records_overflow = self.outbound_records_overflow.saturating_add(1);
-        }
-        self.outbound_records.push_back(record);
     }
 
     /// Step the core, apply the resulting actions, and return the wake work
@@ -449,14 +354,15 @@ impl Shared {
             work: Vec::new(),
             done: None,
         };
-        let now = self.now;
+        let now = self.io.now();
         let actions = self.core.step(input, now);
         self.apply(actions, &mut deferred);
-        // A scripted send failure is a connection loss observed at write
+        // A synchronous send failure is a connection loss observed at write
         // time: report it to the core exactly as a real driver would (§K14) —
-        // tagged with the generation of the transport that broke.
-        while std::mem::take(&mut self.send_failed) {
-            let now = self.now;
+        // tagged with the generation of the transport that broke. (The native
+        // driver reports write loss asynchronously and returns `false` here.)
+        while self.io.take_send_failed() {
+            let now = self.io.now();
             let generation = self.core.generation();
             let actions = self.core.step(Input::Interrupted { generation }, now);
             self.apply(actions, &mut deferred);
@@ -468,20 +374,20 @@ impl Shared {
         // synchronous and deterministic. Bounded: each producer step advances
         // toward its total and each sink step advances the accepted high-water,
         // so the queue drains.
-        while let Some(input) = self.pending_media.pop_front() {
-            let now = self.now;
-            let actions = self.core.step(input, now);
-            self.apply(actions, &mut deferred);
+        loop {
+            let mut pending = self.io.take_pending_media();
+            if pending.is_empty() {
+                break;
+            }
+            while let Some(input) = pending.pop_front() {
+                let now = self.io.now();
+                let actions = self.core.step(input, now);
+                self.apply(actions, &mut deferred);
+            }
         }
         deferred
     }
 }
-
-/// The bound on the driver's outbound observation log: frames a test never
-/// drains are evicted oldest-first (counted in `outbound_overflow`) so the
-/// reference driver honours K12's no-unbounded-collection guarantee even
-/// under dispatch/cancel churn with no `take_outbound`.
-const OUTBOUND_LOG_CAP: usize = 1024;
 
 /// The shared runtime: the locked driver state plus the serialized delivery
 /// queue. The queue's boundedness rests on the async waker contract (`wake`
@@ -493,13 +399,80 @@ const OUTBOUND_LOG_CAP: usize = 1024;
 /// cloned handle and thread — and drained by a single drainer after the lock
 /// drops, so wakers run outside the lock yet cross-thread delivery can never
 /// invert two drives' effects.
-struct Runtime {
+///
+/// `pub(crate)` so the native adapter (#172) can build one over its own
+/// [`DriverIo`] and `inject` inputs from its async tasks, reusing this one
+/// tested shell rather than duplicating the wake hygiene.
+pub(crate) struct Runtime {
     shared: Mutex<Shared>,
     delivery: Mutex<std::collections::VecDeque<Deferred>>,
     draining: std::sync::atomic::AtomicBool,
 }
 
 impl Runtime {
+    /// Build a runtime over an injected [`DriverIo`] the constructor derives
+    /// from the runtime's own `Weak` — the native driver needs that back-edge
+    /// to `inject` inputs from its tasks, so construction is cyclic. The
+    /// in-memory reference has no such need and builds `Runtime` directly.
+    pub(crate) fn new_cyclic_with_io<F>(config: crate::KernelConfig, make_io: F) -> Arc<Self>
+    where
+        F: FnOnce(&Weak<Runtime>) -> Box<dyn DriverIo>,
+    {
+        Arc::new_cyclic(|weak| Runtime {
+            shared: Mutex::new(Shared {
+                core: Core::new(config.limits, config.jitter_seed, config.stable_principal),
+                bus: Arc::new(EventBus::new()),
+                senders: HashMap::new(),
+                io: make_io(weak),
+            }),
+            delivery: Mutex::new(std::collections::VecDeque::new()),
+            draining: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Drive one input with globally serialized delivery: the deferred batch is
+    /// enqueued while the `Shared` lock is held (queue order == drive order
+    /// across threads), then drained outside every lock. This is the moral
+    /// equivalent of the controller's `drive_serialized`, driven by real async
+    /// events instead of a test — the native adapter's tasks call it.
+    pub(crate) fn inject(&self, input: Input) {
+        {
+            let mut shared = self.shared.lock().expect("kernel shared state poisoned");
+            let deferred = shared.drive(input);
+            self.enqueue(deferred);
+        }
+        self.drain_delivery();
+    }
+
+    /// The current connection generation (0 before the first connect). The
+    /// native adapter reads it after a `Connected` to tag the live
+    /// connection's inbound frames.
+    pub(crate) fn generation(&self) -> u64 {
+        self.shared
+            .lock()
+            .expect("kernel shared state poisoned")
+            .core
+            .generation()
+    }
+
+    /// A snapshot of the current lifecycle [`State`].
+    pub(crate) fn state(&self) -> State {
+        self.shared
+            .lock()
+            .expect("kernel shared state poisoned")
+            .core
+            .state()
+    }
+
+    /// The outstanding dial attempt's token, if a dial is in progress.
+    pub(crate) fn pending_dial(&self) -> Option<u64> {
+        self.shared
+            .lock()
+            .expect("kernel shared state poisoned")
+            .core
+            .pending_dial()
+    }
+
     /// Enqueue one deferred batch for serialized delivery — called while the
     /// `Shared` lock is held so queue order equals drive order. An empty
     /// batch (no wakes, no completion notification) is skipped on EVERY
@@ -555,6 +528,12 @@ pub(crate) struct KernelBackend {
 }
 
 impl KernelBackend {
+    /// Wrap an existing runtime as a `ClientBackend`. The native adapter (#172)
+    /// builds the runtime over its own [`DriverIo`] and hands it here.
+    pub(crate) fn new(runtime: Arc<Runtime>) -> Self {
+        Self { runtime }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.runtime
             .shared
@@ -562,16 +541,10 @@ impl KernelBackend {
             .expect("kernel shared state poisoned")
     }
 
-    /// Drive one input with globally serialized delivery: the deferred batch
-    /// is enqueued while the `Shared` lock is still held (queue order ==
-    /// drive order across threads), then drained outside every lock.
+    /// Drive one input with globally serialized delivery (see
+    /// [`Runtime::inject`]).
     fn drive_serialized(&self, input: Input) {
-        {
-            let mut shared = self.lock();
-            let deferred = shared.drive(input);
-            self.runtime.enqueue(deferred);
-        }
-        self.runtime.drain_delivery();
+        self.runtime.inject(input);
     }
 }
 
@@ -691,83 +664,6 @@ impl Drop for DispatchFuture {
 // Deterministic in-memory driver + controller (the Verification substrate).
 // ---------------------------------------------------------------------------
 
-/// A redaction-safe view of one sent frame: the controller learns the wire
-/// id it must reply to and the operation name, never the payload or `op_id`.
-/// Defined outside the gated driver module because the outbound log stores
-/// exactly this view (redacted at append time); publicly visible only
-/// through the feature-gated re-export in `lib.rs` — this module is private.
-#[derive(Clone, Copy, Debug)]
-pub struct SentFrame {
-    /// The wire correlation id.
-    pub id: u64,
-    /// The operation's wire name.
-    pub op: &'static str,
-}
-
-/// A redaction-safe view of one client-authored byte-stream control or DATA
-/// record the kernel asked the driver to send (§S3/§S12). It carries only the
-/// wire id, a kind tag, and two numeric offset/value fields — never a payload
-/// byte, name, or digest. The two fields' meaning is per kind:
-///
-/// | `kind` | `a` | `b` |
-/// |---|---|---|
-/// | `"data"` | offset | length |
-/// | `"credit"` | `accepted_through` | `send_through` |
-/// | `"end"` | offset | 0 |
-/// | `"abort"` | `high_water` | 0 |
-/// | `"ack"` | `high_water` | 0 |
-///
-/// Publicly visible only through the feature-gated re-export in `lib.rs`.
-#[derive(Clone, Copy, Debug)]
-pub struct SentRecord {
-    /// The stream's reply-correlation id.
-    pub id: u64,
-    /// The record kind tag (`"data"`, `"credit"`, `"end"`, `"abort"`, `"ack"`).
-    pub kind: &'static str,
-    /// The first numeric field (see the type-level table).
-    pub a: u64,
-    /// The second numeric field (see the type-level table).
-    pub b: u64,
-}
-
-impl SentRecord {
-    /// Build the observation for one outbound control-record intent.
-    fn from_intent(intent: &crate::kernel::transport::StreamRecordIntent) -> Self {
-        use crate::kernel::transport::StreamRecordIntent as I;
-        match *intent {
-            I::Credit {
-                id,
-                accepted_through,
-                send_through,
-                ..
-            } => SentRecord {
-                id: id.get(),
-                kind: "credit",
-                a: accepted_through,
-                b: send_through,
-            },
-            I::End { id, offset, .. } => SentRecord {
-                id: id.get(),
-                kind: "end",
-                a: offset,
-                b: 0,
-            },
-            I::Abort { id, high_water, .. } => SentRecord {
-                id: id.get(),
-                kind: "abort",
-                a: high_water,
-                b: 0,
-            },
-            I::Ack { id, high_water, .. } => SentRecord {
-                id: id.get(),
-                kind: "ack",
-                a: high_water,
-                b: 0,
-            },
-        }
-    }
-}
-
 #[cfg(feature = "test-transport")]
 pub use in_memory::KernelController;
 
@@ -811,18 +707,8 @@ mod in_memory {
                         config.streams,
                     ),
                     bus: Arc::new(EventBus::new()),
-                    now: Tick::ZERO,
                     senders: HashMap::new(),
-                    timers: HashMap::new(),
-                    outbound: std::collections::VecDeque::new(),
-                    outbound_overflow: 0,
-                    dialing: false,
-                    fail_next_send: false,
-                    send_failed: false,
-                    outbound_records: std::collections::VecDeque::new(),
-                    outbound_records_overflow: 0,
-                    stream_media: HashMap::new(),
-                    pending_media: std::collections::VecDeque::new(),
+                    io: Box::new(InMemoryIo::new()),
                 }),
                 delivery: Mutex::new(std::collections::VecDeque::new()),
                 draining: std::sync::atomic::AtomicBool::new(false),
@@ -869,8 +755,9 @@ mod in_memory {
         /// the armed reconnect-backoff timer between attempts — so an actively
         /// retrying client is distinguishable from one with no retry work.
         pub fn is_dialing(&self) -> bool {
-            let shared = self.lock();
-            shared.dialing || shared.core.backoff_armed()
+            let mut shared = self.lock();
+            let dialing = shared.in_memory().dialing;
+            dialing || shared.core.backoff_armed()
         }
 
         /// Script the next `Action::Send` to fail at the transport — the
@@ -887,13 +774,13 @@ mod in_memory {
         /// the safe direction — it only ever withholds a provable-negative,
         /// never invites an unguarded retry.
         pub fn fail_send(&self) {
-            self.lock().fail_next_send = true;
+            self.lock().in_memory().fail_next_send = true;
         }
 
         /// Take the frames the kernel has asked the transport to send since the
         /// last drain, as redaction-safe [`SentFrame`] views.
         pub fn take_outbound(&self) -> Vec<SentFrame> {
-            self.lock().outbound.drain(..).collect()
+            self.lock().in_memory().outbound.drain(..).collect()
         }
 
         /// Complete a dial: a live connection is established and passes the
@@ -913,7 +800,7 @@ mod in_memory {
         pub fn connect_with_incarnation(&self, incarnation: Incarnation) -> u64 {
             let generation = {
                 let mut shared = self.lock();
-                shared.dialing = false;
+                shared.in_memory().dialing = false;
                 let token = shared
                     .core
                     .pending_dial()
@@ -934,7 +821,7 @@ mod in_memory {
             {
                 let mut shared = self.lock();
                 if shared.core.pending_dial() == Some(token) {
-                    shared.dialing = false;
+                    shared.in_memory().dialing = false;
                 }
                 let deferred = shared.drive(Input::Connected {
                     token,
@@ -1053,18 +940,19 @@ mod in_memory {
         /// past a deadline before its `TimerFired` input runs (the production
         /// driver interleaves these arbitrarily).
         pub fn advance_clock_only(&self, ticks: u64) {
-            self.lock().now.advance(TickDelta(ticks));
+            self.lock().in_memory().advance(ticks);
         }
 
         /// Advance the virtual clock by `ticks`, firing every timer now due (in
         /// ascending fire-time order).
         pub fn advance(&self, ticks: u64) {
-            self.lock().now.advance(TickDelta(ticks));
+            self.lock().in_memory().advance(ticks);
             loop {
                 let drove = {
                     let mut shared = self.lock();
-                    let now = shared.now;
-                    let due = shared
+                    let io = shared.in_memory();
+                    let now = io.now;
+                    let due = io
                         .timers
                         .iter()
                         .filter(|(_, at)| **at <= now)
@@ -1075,7 +963,7 @@ mod in_memory {
                         .map(|(id, _)| *id);
                     match due {
                         Some(id) => {
-                            shared.timers.remove(&id);
+                            shared.in_memory().timers.remove(&id);
                             let deferred = shared.drive(Input::TimerFired(id));
                             self.runtime.enqueue(deferred);
                             true
@@ -1116,13 +1004,13 @@ mod in_memory {
 
         /// The number of armed driver timers.
         pub fn armed_timers(&self) -> usize {
-            self.lock().timers.len()
+            self.lock().in_memory().timers.len()
         }
 
         /// Frames evicted from the bounded outbound log without being
         /// observed by `take_outbound` — 0 in any test that drains.
         pub fn outbound_overflow(&self) -> u64 {
-            self.lock().outbound_overflow
+            self.lock().in_memory().outbound_overflow
         }
 
         /// The number of live per-call reply senders held by the driver. On the
@@ -1150,7 +1038,7 @@ mod in_memory {
             {
                 let mut shared = self.lock();
                 if let Some(call_id) = shared.core.wire_to_call(id, generation) {
-                    shared.stream_media.insert(
+                    shared.in_memory().stream_media.insert(
                         call_id,
                         StreamMedia {
                             wire_id,
@@ -1268,13 +1156,13 @@ mod in_memory {
         /// Take the client-authored outbound stream records since the last drain,
         /// as redaction-safe [`SentRecord`] views (§S3).
         pub fn take_outbound_records(&self) -> Vec<SentRecord> {
-            self.lock().outbound_records.drain(..).collect()
+            self.lock().in_memory().outbound_records.drain(..).collect()
         }
 
         /// Records evicted from the bounded record log without being observed —
         /// 0 in any test that drains.
         pub fn outbound_records_overflow(&self) -> u64 {
-            self.lock().outbound_records_overflow
+            self.lock().in_memory().outbound_records_overflow
         }
 
         /// The number of installed streams (active + finalizing + tombstoned) —

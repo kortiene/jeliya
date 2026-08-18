@@ -449,6 +449,59 @@
   compiles in one place. CI gains a dedicated `jeliya-client DirectClient
   adapter` job (clippy + tests under `--features direct`). MSRV 1.91.
 
+- `jeliya-client` gains the native protocol-v2 WebSocket adapter `WsNative`
+  (#172), behind the default-off, native-only `ws-native` feature. It binds
+  the transport-independent kernel (#168) to a real `tokio` +
+  `tokio-tungstenite` transport that dials a loopback `jeliyad` via the
+  reusable supervisor `TargetResolver` (#170). Landing order within the change:
+
+  - **Codec client direction** (`jeliya-codec/src/client.rs`, new): the
+    protocol-v2 encoder for outbound request envelopes (`encode_request`) and
+    the decoder for inbound daemon Text frames (`decode_client_frame` →
+    `ClientFrame::{Hello, Reply, Push, Malformed}`). JSON stays in the codec;
+    `jeliya-client` never touches `serde_json::Value`.
+
+  - **`DriverIo` seam** (`src/kernel/driver_io.rs`): a `pub(crate)` trait
+    (`send`, `arm_timer`, `cancel_timer`, `dial`, `cancel_dial`) that factors
+    the transport-touching arms out of `Shared::apply_one`, making the kernel's
+    async shell — `Deferred`/`Runtime`/`drain_delivery`/ABBA-avoidance —
+    reusable by all adapters. The existing in-memory driver becomes `InMemoryIo`
+    implementing `DriverIo`; the entire `test-transport` and `kernel_fault`
+    suite passes unchanged (the refactor's acceptance gate).
+
+  - **Native adapter** (`src/adapter/`): `source.rs` (the injected
+    `TargetSource` seam + fail-closed-vs-retry classification of every
+    `SupervisorError`); `runtime.rs` (`connect_ws_native` constructor + async
+    `RealDriver` loop); `ws_native.rs` (dial → hello agreement → serve →
+    reconnect → stop); `clock.rs` (monotonic `Instant` → `Tick`, 1 ms =
+    1 tick). Public construction surface re-exported from `jeliya_client`:
+    `connect_ws_native`, `TargetSource`, `Dial`, `DialResolveError`,
+    `NativeClientConfig`, `NativeError`.
+
+  - **Security posture**: the bearer is a `Redacted<String>` exposed only when
+    composing the `Authorization: Bearer` header — never a URL, log line, or
+    value the `ClientHandle` surfaces, so it is unreachable from WebView JS.
+    `Connected` is not reported until three independent checks agree: resolver
+    health proof, daemon upgrade gate (`101`), and matching `hello` generation.
+    Stale/malformed discovery fails closed. Only verified loopback endpoints
+    (`127.0.0.1:<port>`) are dialed; a portfile advertising a non-loopback host
+    is rejected before any connection attempt.
+
+  - **Wasm-graph boundary guard** (`tests/boundaries.rs`): a new structural
+    test resolves the `jeliya-ui` `web` feature tree for
+    `wasm32-unknown-unknown` and asserts `tokio`, `tokio-tungstenite`, and
+    `jeliya-supervisor` are absent — the jeliya-client-side twin of the
+    supervisor's own wasm-graph assertion. Default library, wasm, and
+    MSRV/clippy builds are unaffected.
+
+  `stable_principal = false` by default (replay disabled) until #270 provides
+  a daemon-incarnation fence. The real-daemon integration matrix (token
+  rotation, stale portfile, abrupt daemon death, same-generation adoption,
+  version mismatch, reconnect, stop) is `#[ignore]`-deferred and runs
+  explicitly with a live `jeliyad`. Reconnect routes through #169's reconciler
+  with no new resync logic in the adapter; it only guarantees the correct
+  lifecycle+generation signal.
+
 ### Fixed
 
 - `pipe.revoke` is now **idempotent at the room-fact layer**: a second (or Nth)

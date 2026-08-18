@@ -356,6 +356,19 @@ jobs:
           cargo build --locked -p jeliya-client --example shared_component --features example \
             --target wasm32-unknown-unknown
 
+      # The #172 native WebSocket adapter (src/adapter/**, tests/ws_native_adapter.rs)
+      # sits behind the default-off, native-only `ws-native` feature, so the
+      # `--workspace` run above compiles it to nothing. Run its deterministic
+      # integration suite explicitly — the step the crate manifest and spec §10.1
+      # document — and lint it clippy-clean under the same feature with the
+      # repo-standard `-D warnings`, so a regression in the adapter or its tests
+      # goes red.
+      - name: jeliya-client native WebSocket adapter (ws-native)
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p jeliya-client --features ws-native --all-targets -- -D warnings
+          cargo test --locked -p jeliya-client --features ws-native
+
       # The #174 PlatformServices behaviour suite (tests/capabilities.rs, AC-6)
       # drives the deterministic fakes behind the default-off `fake` feature, so
       # the `--workspace` run above compiles it to nothing. Run it explicitly —
