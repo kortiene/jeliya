@@ -20,7 +20,11 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use jeliya_api::{
-    CapabilityToken, LastEvent, Role, RoomId, RoomList, RoomListOut, RoomRow, Standing,
+    CapabilityToken, DeviceId, FleetList, FleetListOut, FleetRow, InviteId, InviteList,
+    InviteListOut, InviteRow, LastEvent, LastSeen, LatestStatus, Link, Liveness, MemberRow,
+    PeerRow, Reachability, Redeemability, Role, RoomId, RoomList, RoomListOut, RoomMembers,
+    RoomMembersOut, RoomPeers, RoomPeersOut, RoomRow, Standing, StatusLabel, SubjectId, Timestamp,
+    Truncated,
 };
 use jeliya_client::mock::{MockController, MockScript, Program};
 use jeliya_client::{ClientHandle, State};
@@ -54,12 +58,35 @@ pub struct WebComposition {
 /// daemon and enough to render the shell. Timeline, membership, and the
 /// composer are the Room Workbench port (a later M3 slice), out of scope here.
 pub fn web_composition() -> WebComposition {
+    // Scripted reference replies for the #180 destination reads (People / Agents
+    // / Fleet), so a room navigated to via the `?rooms=N` offline fixture renders
+    // real content against the deterministic mock rather than an honest read
+    // failure. Matched by op NAME (not room), so one reply serves any room; a
+    // second read of the same op (a post-mutation refresh, or a second pane)
+    // exhausts the script and surfaces the truthful Failed/offline state — the
+    // real web end-to-end proof is #171/#182 (R1/R4).
     let (handle, controller) = MockScript::new()
         .on(
             "room.list",
             Program::reply_ok::<RoomList>(&RoomListOut {
                 rooms: fixture_rooms(),
             }),
+        )
+        .on(
+            "room.members",
+            Program::reply_ok::<RoomMembers>(&fixture_members()),
+        )
+        .on(
+            "invite.list",
+            Program::reply_ok::<InviteList>(&fixture_invites()),
+        )
+        .on(
+            "fleet.list",
+            Program::reply_ok::<FleetList>(&fixture_fleet()),
+        )
+        .on(
+            "room.peers",
+            Program::reply_ok::<RoomPeers>(&fixture_peers()),
         )
         .build();
     // Inject the real browser `WebPlatform` on the `web` target (#178 §5.A/§3.3):
@@ -162,7 +189,12 @@ pub fn WebRoot() -> Element {
                 Some(state) => composition.controller.set_state(state),
                 None => {
                     composition.controller.set_state(State::Ready);
-                    drive_scripted_replies(&composition.controller, SCRIPTED_MOUNT_READS).await;
+                    // #180: the destination panes issue their reads at NAVIGATION
+                    // time, not only at mount, so a fixed pass count would leave a
+                    // People/Agents/Fleet read unsettled. Pump continuously —
+                    // parking on `pending_call` between dispatches (no busy loop)
+                    // and delivering each scripted reply as the app dispatches it.
+                    pump_scripted_replies(&composition.controller).await;
                 }
             }
         }
@@ -359,6 +391,14 @@ fn boot_fixture_state() -> Option<State> {
 /// production (no marker), which render the honest empty list. Mirrors the
 /// `test_room` shape used by the state-fold unit tests.
 fn fixture_rooms() -> Vec<RoomRow> {
+    let mut caps = fixture_caps();
+    // The Activity composer is gated on `MessageSend` (#179 D8): the populated
+    // fixture always grants it so the offline Activity pane renders a live
+    // composer rather than the departed-room read-only floor. The `?caps=1`
+    // fixture adds the full #180 affordance set on top.
+    if !caps.contains(&CapabilityToken::MessageSend) {
+        caps.push(CapabilityToken::MessageSend);
+    }
     (0..rooms_fixture_count())
         .map(|i| RoomRow {
             room_id: RoomId::new(format!("fixture-room-{i}")),
@@ -368,12 +408,151 @@ fn fixture_rooms() -> Vec<RoomRow> {
             role: Role::Member,
             member_count: 1,
             last_event: LastEvent::Absent,
-            // The Activity composer is gated on `MessageSend` (#179 D8); the
-            // populated-shell fixture grants it so the offline pane renders a
-            // live composer rather than the departed-room read-only floor.
-            capabilities: vec![CapabilityToken::MessageSend],
+            capabilities: caps.clone(),
         })
         .collect()
+}
+
+/// The capability list for the `?caps=1` offline fixture (web only, marker-gated).
+/// When armed, every action token is present so the #180 e2e suite can verify
+/// that capability-gated affordances appear (D6 positive case). Returns an empty
+/// list everywhere else, so the default fixture (affordances absent, D6 negative
+/// case) is unchanged.
+fn fixture_caps() -> Vec<CapabilityToken> {
+    #[cfg(feature = "web")]
+    {
+        let Some(window) = web_sys::window() else {
+            return Vec::new();
+        };
+        let armed = window
+            .local_storage()
+            .ok()
+            .flatten()
+            .and_then(|storage| storage.get_item(BOOT_FIXTURE_MARKER).ok().flatten())
+            .as_deref()
+            == Some("1");
+        if !armed {
+            return Vec::new();
+        }
+        let Ok(search) = window.location().search() else {
+            return Vec::new();
+        };
+        let has_caps = search
+            .trim_start_matches('?')
+            .split('&')
+            .any(|pair| pair == "caps=1");
+        if has_caps {
+            vec![
+                CapabilityToken::InviteMint,
+                CapabilityToken::InviteRevoke,
+                CapabilityToken::MemberRemove,
+                CapabilityToken::RoomLeave,
+                CapabilityToken::RoomActivate,
+            ]
+        } else {
+            Vec::new()
+        }
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        Vec::new()
+    }
+}
+
+/// A deterministic reference instant for the offline fixtures (the mock has no
+/// clock; the value is cosmetic).
+fn fixture_ts() -> Timestamp {
+    Timestamp::new(time::OffsetDateTime::UNIX_EPOCH)
+}
+
+/// A reference roster: an authority and an ordinary member (the second is also
+/// an agent in `fixture_fleet`, exercising the derived agent marker).
+fn fixture_members() -> RoomMembersOut {
+    RoomMembersOut {
+        room_id: RoomId::new("fixture-room-0"),
+        members: vec![
+            MemberRow {
+                subject_id: SubjectId::new("blake3:fixture-authority"),
+                role: Role::Authority,
+                standing: Standing::Active,
+                joined_at: fixture_ts(),
+            },
+            MemberRow {
+                subject_id: SubjectId::new("blake3:fixture-agent"),
+                role: Role::Member,
+                standing: Standing::Active,
+                joined_at: fixture_ts(),
+            },
+        ],
+    }
+}
+
+/// A reference invitations page: one outstanding, one expired (offers Revoke and
+/// Re-invite respectively).
+fn fixture_invites() -> InviteListOut {
+    InviteListOut {
+        room_id: RoomId::new("fixture-room-0"),
+        invites: vec![
+            InviteRow {
+                invite_id: InviteId::new("inv-outstanding"),
+                subject_id: SubjectId::new("blake3:fixture-invitee"),
+                role: Role::Member,
+                expires_at: fixture_ts(),
+                redeemability: Redeemability::Outstanding,
+            },
+            InviteRow {
+                invite_id: InviteId::new("inv-expired"),
+                subject_id: SubjectId::new("blake3:fixture-expired"),
+                role: Role::Member,
+                expires_at: fixture_ts(),
+                redeemability: Redeemability::Expired,
+            },
+        ],
+        truncated: Truncated::Complete,
+    }
+}
+
+/// A reference fleet: a working agent and a blocked one (needs-a-person).
+fn fixture_fleet() -> FleetListOut {
+    FleetListOut {
+        agents: vec![
+            FleetRow {
+                subject_id: SubjectId::new("blake3:fixture-agent"),
+                room_id: RoomId::new("fixture-room-0"),
+                liveness: Liveness::Working,
+                latest_status: LatestStatus::Present {
+                    label: StatusLabel::Working,
+                    at: fixture_ts(),
+                },
+                last_seen: LastSeen::Present { at: fixture_ts() },
+            },
+            FleetRow {
+                subject_id: SubjectId::new("blake3:fixture-blocked"),
+                room_id: RoomId::new("fixture-room-0"),
+                liveness: Liveness::Stale,
+                latest_status: LatestStatus::Present {
+                    label: StatusLabel::Blocked,
+                    at: fixture_ts(),
+                },
+                last_seen: LastSeen::Absent,
+            },
+        ],
+    }
+}
+
+/// A reference peers answer for a live room.
+fn fixture_peers() -> RoomPeersOut {
+    RoomPeersOut {
+        room_id: RoomId::new("fixture-room-0"),
+        reachability: Reachability::Connected,
+        peers: vec![PeerRow {
+            subject_id: SubjectId::new("blake3:fixture-agent"),
+            device_id: DeviceId::new("blake3:fixture-device"),
+            link: Link::Direct {
+                since: fixture_ts(),
+            },
+        }],
+    }
 }
 
 /// The room count a `?rooms=N` query parameter requests (a11y matrix populated-shell
@@ -516,17 +695,40 @@ fn set_document_lang(tag: &str) {
     }
 }
 
-/// How many scripted mount reads the compositions carry — exactly the
-/// `room.list` reply today. A new scripted read must bump this in lockstep,
-/// or the driver stops delivering before the new read settles.
+/// How many scripted mount reads the native composition carries — exactly the
+/// `room.list` reply today. (The web root now pumps continuously — #180 — so
+/// this fixed count applies only to the `native` stub.)
+#[cfg(feature = "native")]
 const SCRIPTED_MOUNT_READS: usize = 1;
 
 /// Await each dispatch and settle it, `expected` times: the event-driven
-/// pump both roots share.
+/// pump the native root uses for its fixed mount reads.
+#[cfg(feature = "native")]
 async fn drive_scripted_replies(controller: &MockController, expected: usize) {
     for _ in 0..expected {
         controller.pending_call().await;
         while controller.deliver_next() {}
+    }
+}
+
+/// Continuously settle scripted replies as the app dispatches them (#180): park
+/// on `pending_call` until a call is pending, deliver every currently
+/// deliverable reply, and repeat. On `stop()` `pending_call` resolves with
+/// nothing deliverable, ending the pump — so it never outlives the backend and
+/// never busy-loops (the reference script contains no hanging programs). This
+/// lets navigation-time pane reads settle without guessing a pass count.
+async fn pump_scripted_replies(controller: &MockController) {
+    loop {
+        controller.pending_call().await;
+        let mut delivered = false;
+        while controller.deliver_next() {
+            delivered = true;
+        }
+        // Nothing deliverable after a wake means the backend is stopping (no
+        // scripted program hangs), so the pump is done.
+        if !delivered {
+            break;
+        }
     }
 }
 

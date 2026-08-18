@@ -23,7 +23,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use futures::StreamExt;
-use jeliya_api::{RoomId, RoomList, RoomRow, SubjectId, SubjectState};
+use jeliya_api::{RoomId, RoomList, RoomRow};
 use jeliya_client::{
     CallError, ClientEvent, ClientHandle, Dedup, ReconcileConfig, Reconciler, State,
 };
@@ -323,16 +323,10 @@ pub fn AppRoot(
     // into the event-consumption future below). Onboarding's identity/rooms steps
     // dispatch `subject.ensure`/`room.create` through this same handle.
     let onboarding_handle = handle.clone();
-    // A clone forwarded to the room shell's Activity pane (#179) for its composer
-    // and reconciler drive; taken before `handle` moves into the future below.
-    let room_handle = handle.clone();
-    // The local subject id, when the connection snapshot surfaced it (#270's
-    // `Hello.subject`), so timeline rows can attribute "You" to self; `None`
-    // until the seam surfaces it (the current mock gap — self shows as a short id).
-    let self_id: Option<SubjectId> = connection.as_ref().and_then(|conn| match &conn.subject {
-        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
-        SubjectState::Absent => None,
-    });
+    // A clone of the client seam for the #180 destination panes (People / Agents
+    // / Fleet), which issue their own reads and mutations through it. Taken here
+    // because the prop is moved into the event-consumption future below.
+    let panes_handle = handle.clone();
     // The user's local onboarding advance (§5.D "user advanced past onboarding"),
     // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
     // the onboarding step callbacks advance it as the user completes each step.
@@ -617,8 +611,6 @@ pub fn AppRoot(
                 }
             }
         };
-    // The connected subject id is derived above (the timeline "You" seam); the
-    // Settings identity surface reads the same daemon-truth value.
     let rooms_label = strings.rooms_heading().to_string();
     let skip_rooms = strings.skip_to_rooms().to_string();
     let app_name = strings.app_name();
@@ -644,6 +636,21 @@ pub fn AppRoot(
     // Clones for the closures/props below; the prop `services` stays available.
     let services_reset = services.clone();
     let services_settings = services.clone();
+    let services_room = services.clone();
+    let services_fleet = services.clone();
+
+    // The local identity (self subject id) from the connection snapshot, for
+    // alias resolution and the self/"this device" marker in the #180 panes.
+    // `None` while the seam does not surface `Hello.subject` (D2/R1).
+    let self_id = connection.as_ref().and_then(|conn| match &conn.subject {
+        jeliya_api::SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
+        jeliya_api::SubjectState::Absent => None,
+    });
+    // The base instant #180's invite-expiry picker measures from. The shared
+    // component holds no clock (Decision-3); the concrete browser/desktop time
+    // is injected once the live transport lands (#171). Until then the mock
+    // ignores the value, so the epoch base is an honest placeholder.
+    let now = jeliya_api::Timestamp::new(time::OffsetDateTime::UNIX_EPOCH);
 
     // ONE render tree with ONE stable live region. The boot/terminal cover, the
     // onboarding surface, and the mounted shell are the three arms of a single
@@ -845,30 +852,51 @@ pub fn AppRoot(
                         // must not flash "unavailable" while the list is still
                         // loading.
                         Route::Room { room_id, dest } => {
-                            let found = snapshot.rooms.iter().find(|r| r.room_id == room_id);
-                            let reachable = !snapshot.rooms_loaded || found.is_some();
-                            // The routed room's typed capabilities gate the
-                            // composer (#179 D8). Empty when the row is not yet
-                            // known (before the list answers) — the composer is
-                            // suppressed until the capability is proven present.
-                            let capabilities = found
-                                .map(|r| r.capabilities.clone())
-                                .unwrap_or_default();
+                            // Resolve the room's own row (capabilities + live +
+                            // standing) from the answered list; a route naming a
+                            // room absent from it is the recoverable state.
+                            let room_row = snapshot.rooms.iter().find(|r| r.room_id == room_id).cloned();
+                            let reachable = !snapshot.rooms_loaded || room_row.is_some();
                             rsx! {
                                 main { class: "destination", id: "main-content", tabindex: "-1",
-                                    if reachable {
-                                        RoomShell {
-                                            room_id,
-                                            dest,
-                                            navigate,
-                                            handle: room_handle.clone(),
-                                            services: services.clone(),
-                                            capabilities,
-                                            shell: active_shell,
-                                            self_id: self_id.clone(),
-                                        }
-                                    } else {
-                                        RoomUnavailable { navigate }
+                                    match room_row {
+                                        Some(room) => rsx! {
+                                            RoomShell {
+                                                room,
+                                                dest,
+                                                navigate,
+                                                handle: panes_handle.clone(),
+                                                services: services_room.clone(),
+                                                now,
+                                                self_id: self_id.clone(),
+                                                shell: active_shell,
+                                            }
+                                        },
+                                        None if reachable => rsx! {
+                                            if let Some(message) = room_error
+                                                .as_ref()
+                                                .filter(|_| snapshot.notice_terminal)
+                                            {
+                                                // A TERMINAL room-list failure on a
+                                                // room deep link: the list will never
+                                                // answer on its own (`rooms_loaded`
+                                                // stays false), so an indefinite
+                                                // skeleton would lie. The friendly
+                                                // failure copy plus the Diagnostics
+                                                // detail (footer) is the honest
+                                                // state — the same note the Rooms
+                                                // route renders.
+                                                div { class: "error-note", id: "notice", "{message}" }
+                                            } else {
+                                                // Not yet answered: show the shell frame is not
+                                                // possible without the row, so keep the recoverable
+                                                // state until the list answers (unknown ≠ unreachable
+                                                // is handled by `reachable` staying true pre-answer,
+                                                // but the row is required to render content).
+                                                div { class: "room-pane-skeleton muted", id: "room-loading-skeleton" }
+                                            }
+                                        },
+                                        None => rsx! { RoomUnavailable { navigate } },
                                     }
                                     StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                                 }
@@ -876,13 +904,23 @@ pub fn AppRoot(
                         }
                         Route::Fleet => rsx! {
                             main { class: "destination", id: "main-content", tabindex: "-1",
-                                FleetPane {}
+                                FleetPane {
+                                    handle: panes_handle.clone(),
+                                    services: services_fleet.clone(),
+                                    navigate,
+                                    self_id: self_id.clone(),
+                                }
                                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                             }
                         },
                         Route::Settings => rsx! {
                             main { class: "destination", id: "main-content", tabindex: "-1",
-                                SettingsPane { services: services_settings.clone(), subject_id: self_id.clone() }
+                                SettingsPane {
+                                    services: services_settings.clone(),
+                                    subject_id: self_id.clone(),
+                                    lifecycle: snapshot.lifecycle,
+                                    detail: snapshot.last_diagnostic.clone(),
+                                }
                                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                             }
                         },
