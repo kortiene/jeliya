@@ -9,7 +9,7 @@ description = "Protocol-v2 Text/Binary WebSocket codec: bounded JSON envelopes a
 [dependencies]
 jeliya-api = { path = "../jeliya-api" }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 thiserror = "2"
 
 [dev-dependencies]

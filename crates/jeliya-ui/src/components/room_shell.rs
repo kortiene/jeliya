@@ -1,26 +1,28 @@
-//! The room-shell skeleton (#178 §5.F): the room header (room context, always
-//! visible on every room-scoped surface) plus the room-destination navigation
-//! strip. Pane **content** (Timeline/People/Files/Pipes) is #179–#181; this
-//! renders the routing frame and a per-destination skeleton placeholder.
+//! The room shell (#178 §5.F): the room header + destination strip. Activity
+//! (#179, [`super::activity::ActivityPane`]) and, from #180, the **People** and
+//! **Agents** destinations ([`super::people::PeoplePane`] /
+//! [`super::agents::AgentsPane`]) render real content; Files/Pipes (#181) are
+//! still per-destination skeletons.
 //!
 //! A route naming an unreachable/departed room renders the recoverable state
 //! ([`RoomUnavailable`]) with Rooms as the way out — never a blank panel (D7 /
 //! contract rule 6).
 
 use dioxus::prelude::*;
-use jeliya_api::{CapabilityToken, RoomId, SubjectId};
+use jeliya_api::{RoomId, RoomRow, SubjectId, Timestamp};
 use jeliya_client::ClientHandle;
 use jeliya_platform::navigation::{RoomDest, Route};
 
-use crate::components::{ActivityPane, FilesPane, NavLandmark, PipesPane};
+use super::agents::AgentsPane;
+use super::people::PeoplePane;
+use super::{ActivityPane, FilesPane, NavLandmark, PipesPane};
 use crate::l10n::use_strings;
 use crate::shell::router::NavIntent;
 use crate::shell::Shell;
 use crate::PlatformServices;
 
 /// A short, human-scannable disambiguator for a room id (the header's
-/// short-id): the last segment after any `:` prefix, truncated. Never the room
-/// name (that is content, #179); this is the always-visible id context.
+/// short-id): the last segment after any `:` prefix, truncated.
 fn short_id(room_id: &RoomId) -> String {
     let raw = room_id.as_str();
     let tail = raw.rsplit(':').next().unwrap_or(raw);
@@ -28,52 +30,53 @@ fn short_id(room_id: &RoomId) -> String {
 }
 
 /// Whether `dest` is the same room destination as `kind`, ignoring any selected
-/// item (the strip highlights the Files tab whether or not a file is open).
+/// item (the strip highlights the People tab whether or not a member is open).
 fn dest_kind_matches(dest: &RoomDest, kind: &RoomDest) -> bool {
     matches!(
         (dest, kind),
         (RoomDest::Activity, RoomDest::Activity)
-            | (RoomDest::People, RoomDest::People)
-            | (RoomDest::Agents, RoomDest::Agents)
+            | (RoomDest::People { .. }, RoomDest::People { .. })
+            | (RoomDest::Agents { .. }, RoomDest::Agents { .. })
             | (RoomDest::Files { .. }, RoomDest::Files { .. })
             | (RoomDest::Pipes { .. }, RoomDest::Pipes { .. })
     )
 }
 
 /// The room shell for a reachable room: header + destination strip + the
-/// per-destination pane. Files/Pipes are the #181 content panes; Activity/
-/// People/Agents remain skeletons (#179/#180).
+/// per-destination pane. Activity (#179), People/Agents (#180), and
+/// Files/Pipes (#181) are all real content panes.
 #[component]
 pub fn RoomShell(
-    room_id: RoomId,
+    room: RoomRow,
     dest: RoomDest,
     navigate: Callback<NavIntent>,
-    /// The client seam for the Files/Pipes panes' reads and flows.
     handle: ClientHandle,
-    /// The platform-authority seam for the Files pane's pick/stage/export.
+    /// The platform-authority seam, forwarded to the panes (drafts, files,
+    /// pipe-connection persistence).
     services: PlatformServices,
-    /// The served `max_shared_file_bytes` (spec D3/R1), threaded to the Files
-    /// pane's preflight. `None` until the seam surfaces it (#171/#270).
-    #[props(default)]
-    max_shared_file_bytes: Option<u64>,
-    /// Whether this room is a read-only archive (suppress share/fetch — spec D8).
-    #[props(default)]
-    read_only: bool,
-    /// The routed room's typed capabilities, from its `room.list` row — the
-    /// Activity composer's `MessageSend` gate (#179 D8).
-    #[props(default)]
-    capabilities: Vec<CapabilityToken>,
-    /// The responsive shell (the Activity composer's keyboard fork; #178 §8).
-    #[props(default = Shell::Wide)]
-    shell: Shell,
+    /// The base instant #180's invite-expiry picker measures from (injected —
+    /// the shared component holds no clock, Decision-3).
+    now: Timestamp,
     /// The local subject id when known (for "You" attribution); `None` until
     /// `Hello.subject` is surfaced (#270).
     #[props(default)]
     self_id: Option<SubjectId>,
+    /// The served `max_shared_file_bytes` (spec D3/R1), threaded to the Files
+    /// pane's preflight. `None` until the seam surfaces it (#171/#270).
+    #[props(default)]
+    max_shared_file_bytes: Option<u64>,
+    /// Whether this room is a read-only archive (suppress share/fetch and
+    /// pipe mutations as a capability — spec D8 / #91).
+    #[props(default)]
+    read_only: bool,
+    /// The responsive shell (the Activity composer's keyboard fork; #178 §8).
+    #[props(default = Shell::Wide)]
+    shell: Shell,
 ) -> Element {
     let strings = use_strings();
     let nav_label = strings.room_nav_label().to_string();
     let skeleton = strings.room_dest_skeleton();
+    let room_id = room.room_id.clone();
     let disambiguator = short_id(&room_id);
 
     let items = [
@@ -85,12 +88,12 @@ pub fn RoomShell(
         (
             "room-dest-people",
             strings.room_dest_people(),
-            RoomDest::People,
+            RoomDest::People { item: None },
         ),
         (
             "room-dest-agents",
             strings.room_dest_agents(),
-            RoomDest::Agents,
+            RoomDest::Agents { item: None },
         ),
         (
             "room-dest-files",
@@ -106,9 +109,6 @@ pub fn RoomShell(
 
     rsx! {
         section { class: "room-shell", id: "room-shell",
-            // The room header — room context, always visible. The short id is the
-            // disambiguator until the room name lands (#179); it is a data
-            // element (mono), not translated copy.
             header { class: "room-header", id: "room-header",
                 span { class: "room-shortid mono", "{disambiguator}" }
             }
@@ -129,49 +129,63 @@ pub fn RoomShell(
                     }
                 }
             }
-            // The per-destination pane. Activity (#179) and Files/Pipes (#181)
-            // are the real content panes; People/Agents keep the #178 skeleton
-            // until #180.
-            {
-                match &dest {
-                    RoomDest::Activity => rsx! {
-                        ActivityPane {
+            // The destination pane.
+            match dest.clone() {
+                RoomDest::Activity => rsx! {
+                    ActivityPane {
+                        handle: handle.clone(),
+                        services: services.clone(),
+                        room_id: room_id.clone(),
+                        capabilities: room.capabilities.clone(),
+                        shell,
+                        self_id: self_id.clone(),
+                    }
+                },
+                RoomDest::People { item } => rsx! {
+                    PeoplePane {
+                        room: room.clone(),
+                        item,
+                        handle: handle.clone(),
+                        services: services.clone(),
+                        navigate,
+                        now,
+                        self_id: self_id.clone(),
+                    }
+                },
+                RoomDest::Agents { item } => rsx! {
+                    AgentsPane {
+                        room: room.clone(),
+                        item,
+                        handle: handle.clone(),
+                        services: services.clone(),
+                        navigate,
+                        self_id: self_id.clone(),
+                    }
+                },
+                RoomDest::Files { item } => {
+                    let selected = item.clone();
+                    rsx! {
+                        FilesPane {
                             handle: handle.clone(),
                             services: services.clone(),
                             room_id: room_id.clone(),
-                            capabilities: capabilities.clone(),
-                            shell,
-                            self_id: self_id.clone(),
-                        }
-                    },
-                    RoomDest::Files { item } => {
-                        let selected = item.clone();
-                        rsx! {
-                            FilesPane {
-                                handle: handle.clone(),
-                                services: services.clone(),
-                                room_id: room_id.clone(),
-                                selected,
-                                max_shared_file_bytes,
-                                read_only,
-                            }
+                            selected,
+                            max_shared_file_bytes,
+                            read_only,
                         }
                     }
-                    RoomDest::Pipes { item } => {
-                        let selected = item.clone();
-                        rsx! {
-                            PipesPane {
-                                handle: handle.clone(),
-                                services: Some(services.clone()),
-                                room_id: room_id.clone(),
-                                selected,
-                                read_only,
-                            }
+                }
+                RoomDest::Pipes { item } => {
+                    let selected = item.clone();
+                    rsx! {
+                        PipesPane {
+                            handle: handle.clone(),
+                            services: Some(services.clone()),
+                            room_id: room_id.clone(),
+                            selected,
+                            read_only,
                         }
                     }
-                    _ => rsx! {
-                        div { class: "room-pane-skeleton muted", id: "room-pane-skeleton", "{skeleton}" }
-                    },
                 }
             }
         }
@@ -247,7 +261,16 @@ mod tests {
             },
             &RoomDest::Files { item: None },
         ));
-        assert!(!dest_kind_matches(&RoomDest::People, &RoomDest::Agents));
+        assert!(dest_kind_matches(
+            &RoomDest::People {
+                item: Some(SubjectId::new("m-1")),
+            },
+            &RoomDest::People { item: None },
+        ));
+        assert!(!dest_kind_matches(
+            &RoomDest::People { item: None },
+            &RoomDest::Agents { item: None },
+        ));
     }
 
     #[test]

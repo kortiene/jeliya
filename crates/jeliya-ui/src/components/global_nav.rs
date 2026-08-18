@@ -112,7 +112,7 @@ mod tests {
         assert!(rooms_is_active(&Route::Rooms));
         assert!(rooms_is_active(&Route::Room {
             room_id: jeliya_api::RoomId::new("r-1"),
-            dest: RoomDest::People,
+            dest: RoomDest::People { item: None },
         }));
         assert!(!rooms_is_active(&Route::Fleet));
         assert!(!rooms_is_active(&Route::Settings));

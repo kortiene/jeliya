@@ -32,6 +32,7 @@ ui = [
     # backing and never fire. It adds no dependency to the lockfile.
     "dioxus/mounted",
     "dep:futures",
+    "dep:time",
     "jeliya-client/mock",
     # The canonical platform-authority contract (#174) and its deterministic
     # fakes. `jeliya-platform` is renderer-agnostic and wasm32-clean by
@@ -51,7 +52,7 @@ ui = [
 # dedicated web job. It adds `dioxus/web` on top of `ui`; it must never pull
 # `dioxus-desktop`/`wry`/`tao`/`tokio`/`openssl-sys` (asserted by
 # `scripts/check-jeliya-ui-wasm-graph.sh`).
-web = ["ui", "dioxus/web", "dep:web-sys", "dep:wasm-bindgen", "dep:js-sys"]
+web = ["ui", "dioxus/web", "dep:web-sys", "dep:wasm-bindgen", "dep:js-sys", "dep:gloo-timers"]
 
 # The system-WebView shell target (M4: #186-#189). This slice defines the
 # layering seam — `compose.rs` carries the mock-composed `NativeComposition` /
@@ -105,14 +106,19 @@ web-sys = { version = "0.3.103", optional = true, features = ["Window", "Navigat
 # adds nothing new to the wasm graph and never enters the default/`ui`/MSRV graph.
 wasm-bindgen = { version = "0.2.126", optional = true }
 js-sys = { version = "0.3.103", optional = true }
+# Web-only, gated by `web`: the Fleet poll interval's sleep (#180 §7.3/D7).
+# Pure setTimeout futures over the already-locked wasm-bindgen/js-sys — no new
+# graph edge beyond the crate itself, and never in the default/`ui`/MSRV graph.
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 # Executor-agnostic, wasm32-safe async primitives for the app root's event
 # consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
-# Optional and enabled by `ui`: `jeliya_api::Timestamp` wraps `time::OffsetDateTime`,
-# and #179's pure `room/` core + composer need to name it and the wasm-safe
-# `UNIX_EPOCH` const. Already resolved in the lock via `jeliya-api` (features are
-# unified across the graph), wasm32-clean, and out of the default/MSRV graph.
+# The wire timestamp type is `jeliya_api::Timestamp(time::OffsetDateTime)`. #179's pure
+# `room/` core and composer and #180's invite-expiry instants and date rendering both name
+# `time::Duration`/`OffsetDateTime` directly. Optional and enabled by `ui`; pure Rust and
+# wasm32-safe (no clock call is made — the base `now` is injected), already in the lock
+# via `jeliya-api`, out of the default/MSRV graph.
 time = { version = "0.3", optional = true }
 
 [dev-dependencies]

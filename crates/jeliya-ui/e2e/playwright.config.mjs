@@ -45,6 +45,10 @@ export default defineConfig({
     // legacy key purge. Runs at the default Desktop Chrome viewport; compact/wide
     // topology tests override per-describe via test.use({ viewport }).
     { name: "shell", testMatch: /shell-178\.spec\.ts$/ },
+    // The #180 destination-pane smoke: People/Agents/Fleet/Settings/Diagnostics
+    // render, capability-gated affordances, deep links, Fleet filter, and the
+    // bounded diagnostics field set. Runs offline against the same dist/ artifact.
+    { name: "shell-180", testMatch: /shell-180\.spec\.ts$/ },
     // The #179 Activity pane smoke: pane structure, loading state, filter chip
     // interactions, composer keyboard contract (desktop enter hint / compact
     // suppression), and per-room draft persistence across in-app route changes.

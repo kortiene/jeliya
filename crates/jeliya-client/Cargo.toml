@@ -29,6 +29,20 @@ example = ["mock", "dep:dioxus"]
 # own fault suite can reuse them. CI runs the kernel suite with
 # `cargo test -p jeliya-client --features test-transport`.
 test-transport = []
+# The browser WebSocket/session adapter (#171). Pulls the codec's client edge
+# plus the wasm-only browser crates (`web-sys`/`js-sys`/`wasm-bindgen`), and is
+# default-off so the native library tree stays free of them and the
+# `cargo tree` boundary test is unaffected (it runs on the host target, where
+# the target-cfg'd browser deps below never appear). Build it with
+# `cargo build -p jeliya-client --features ws-web --target wasm32-unknown-unknown`.
+ws-web = [
+  "dep:jeliya-codec",
+  "dep:serde",
+  "dep:wasm-bindgen",
+  "dep:wasm-bindgen-futures",
+  "dep:js-sys",
+  "dep:web-sys",
+]
 # The native async WebSocket adapter (#172): binds the sans-IO kernel to a real
 # tokio + tokio-tungstenite transport that dials a loopback `jeliyad` via the
 # reusable supervisor target resolver (#170). Default-off and native-only — the
@@ -71,11 +85,40 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # pulling `tao`/`wry`/a web renderer, so the component links on native and
 # wasm32 alike.
 dioxus = { version = "=0.7.9", default-features = false, features = ["minimal"], optional = true }
+# The protocol's only JSON, both directions. Optional and enabled solely by
+# `ws-web`: the client edge (`encode_request`/`decode_client_frame`) is used by
+# the browser adapter, so the codec never enters the native library tree (the
+# boundary scan runs with default features off). It is wasm32-clean by
+# construction (no Iroh/WebSocket/tokio), so it links in the browser graph.
+jeliya-codec = { path = "../jeliya-codec", optional = true }
+# Derive for the tiny wasm-only `/api/health` and `/api/session` response views
+# (`session.rs`). Optional and `ws-web`-gated; the wasm graph already carries
+# serde via `jeliya-api`.
+serde = { version = "1", features = ["derive"], optional = true }
+
+# The browser adapter's `!Send` crates (#171). Confined to `wasm32-unknown-unknown`
+# AND the default-off `ws-web` feature, so they enter neither the native library
+# tree (the `cargo tree` boundary test) nor any non-wasm build. `wasm-bindgen` is
+# pinned to the reproducible-build version (#176; `wasm-bindgen-cli@0.2.126`);
+# a mismatch breaks that CLI contract, so it is reused exactly, never floated.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2.126", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3.103", optional = true }
+web-sys = { version = "0.3.103", optional = true, features = [
+  "WebSocket", "MessageEvent", "CloseEvent", "BinaryType", "Event",
+  "Window", "Request", "RequestInit", "RequestMode", "Response",
+  "AbortController", "AbortSignal", "Location", "Performance", "Crypto", "console",
+] }
+
+# The DirectClient adapter (#173) is native-only and default-off. These are
+# OPTIONAL (compiled only when `direct` is on) and confined to
+# `cfg(not(target_arch = "wasm32"))`, so the wasm build and the library's normal
+# `--no-default-features` tree carry neither `tokio` nor `jeliya-core`
+# (transitively `iroh-rooms`) — the ban `tests/boundaries.rs` enforces. Only the
+# executor-agnostic runtime pieces the kernel already needs stay unconditional.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # --- ws-native adapter (#172), all optional + default-off + native-only ---
-# `rt` (not `rt-multi-thread`): the adapter BORROWS the caller's runtime via a
-# captured `Handle` and `tokio::spawn`; it never constructs a runtime (the same
-# rule the supervisor follows). No `macros`.
-tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util", "sync"], optional = true }
 # Aligned to the daemon's `tokio-tungstenite = "0.30"` (already in the lock), so
 # no new major and no server/client version drift.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"], optional = true }
@@ -85,32 +128,30 @@ http = { version = "1", optional = true }
 url = { version = "2", optional = true }
 # The client-direction codec (request encode + reply/push/hello decode). The
 # codec owns all JSON, keeping `jeliya-client`'s no-`serde_json::Value` rule.
-jeliya-codec = { path = "../jeliya-codec", optional = true }
 # The reusable supervisor target resolver (#170): the injected source of
 # verified loopback endpoint + redacted token facts. The adapter holds only a
 # `TargetResolver`, never a `Sidecar`, so it can dial but never kill a daemon.
 jeliya-supervisor = { path = "../jeliya-supervisor", optional = true }
 
-# The DirectClient adapter (#173) is native-only and default-off. These are
-# OPTIONAL (compiled only when `direct` is on) and confined to
-# `cfg(not(target_arch = "wasm32"))`, so the wasm build and the library's normal
-# `--no-default-features` tree carry neither `tokio` nor `jeliya-core`
-# (transitively `iroh-rooms`) — the ban `tests/boundaries.rs` enforces. Only the
-# executor-agnostic runtime pieces the kernel already needs stay unconditional.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # `rt-multi-thread` matches how the in-process engine is hosted in production
 # (`jeliya-ffi`'s own multi-thread runtime): `Engine::new` sets up iroh, which
 # needs a driven reactor, so a single-threaded caller would stall. The library
 # never constructs a runtime itself (`tokio::spawn` alone suffices) — the flavor
 # is the app's choice — but the adapter's own tests build a multi-thread runtime.
-tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros"], optional = true }
+# The feature union serves both adapters: ws-native (#172) borrows the caller's
+# runtime via a captured Handle and needs net/io-util; direct (#173) needs
+# rt-multi-thread for the in-process engine and macros for its tests.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "time", "macros"], optional = true }
 jeliya-core = { path = "../jeliya-core", optional = true }
-jeliya-codec = { path = "../jeliya-codec", optional = true }
 
 [dev-dependencies]
 # `block_on` for the native behaviour suite; the `executor` feature is dev-only
 # so it never reaches the library or the wasm build.
 futures = { version = "0.3", features = ["std", "async-await", "executor"] }
+# Browser test harness for the WsWeb adapter (#171 §9.2, AC-6). Compiles on
+# all targets (no-op on native); only wasm-bindgen-test-runner executes the
+# `#[wasm_bindgen_test]` functions. Must match the locked wasm-bindgen 0.2.126.
+wasm-bindgen-test = "0.3"
 
 [[example]]
 name = "shared_component"
@@ -151,6 +192,18 @@ name = "reconcile_driver"
 # via futures::executor::LocalPool (clock-free, no tokio). CI runs:
 # `cargo test -p jeliya-client --features mock`
 required-features = ["mock"]
+
+[[test]]
+name = "ws_web_browser"
+# Real-browser integration tests for the WsWeb adapter (#171 §9.2, AC-6).
+# Requires a live jeliyad instance; the harness script injects daemon
+# coordinates via JELIYAD_WEB_TEST_PORT and JELIYAD_WEB_TEST_TOKEN (read by
+# build.rs). Tests skip gracefully when the env vars are absent. CI runs:
+# `bash scripts/run-ws-web-browser-tests.sh`
+# (which invokes:
+#  cargo test -p jeliya-client --features ws-web
+#             --target wasm32-unknown-unknown --test ws_web_browser)
+required-features = ["ws-web"]
 
 [[test]]
 name = "ws_native_adapter"

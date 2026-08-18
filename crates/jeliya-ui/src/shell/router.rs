@@ -294,7 +294,7 @@ mod tests {
     fn back_from_a_room_destination_walks_to_the_room_root() {
         let current = Route::Room {
             room_id: RoomId::new("r-1"),
-            dest: RoomDest::People,
+            dest: RoomDest::People { item: None },
         };
         assert_eq!(
             back_target(&current),
@@ -361,7 +361,7 @@ mod tests {
             res.route,
             Route::Room {
                 room_id: RoomId::new("r-1"),
-                dest: RoomDest::People,
+                dest: RoomDest::People { item: None },
             }
         );
         assert_eq!(res.replace_to, None);
@@ -404,7 +404,7 @@ mod tests {
     fn should_push_dedupes_navigating_to_the_current_path() {
         let people = Route::Room {
             room_id: RoomId::new("r-1"),
-            dest: RoomDest::People,
+            dest: RoomDest::People { item: None },
         };
         assert!(!should_push(&people, &people));
         assert!(should_push(&people, &Route::Rooms));
