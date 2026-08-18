@@ -8,8 +8,8 @@
 
 use futures::executor::block_on;
 use jeliya_api::{
-    ApiError, EnforcedAt, FileId, FileRead, FileReadOut, FileShare, OpId, RoomCreate, RoomId,
-    RoomList,
+    ApiError, EnforcedAt, FileId, FileRead, FileReadOut, FileShare, Incarnation, OpId, RoomCreate,
+    RoomId, RoomList,
 };
 use jeliya_client::{
     CallError, Dedup, Execution, KernelConfig, KernelLimits, State, StreamLimits, TickDelta,
@@ -2130,4 +2130,163 @@ fn stream_reply_at_deadline_settles_timeout_not_success() {
     controller.interrupt();
     assert_eq!(controller.streams(), 0);
     assert_eq!(controller.outstanding(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// #270 Daemon incarnation replay fence (§K5, D4/D6)
+// ---------------------------------------------------------------------------
+
+/// #270 §9 row 1: on the **first** connect, no held work exists, so no call
+/// is dropped regardless of which incarnation is reported. The kernel
+/// transitions to Ready and dispatched calls flush normally.
+#[test]
+fn incarnation_fence_first_connect_drops_nothing() {
+    let (handle, controller) = ClientHandle::with_kernel(KernelConfig {
+        limits: KernelLimits::default(),
+        jitter_seed: 42,
+        stable_principal: true,
+        ..KernelConfig::default()
+    });
+    handle.start();
+    // First connect: supply an explicit incarnation — no prior to compare.
+    controller.connect_with_incarnation(Incarnation::new("inc-first"));
+    assert_eq!(handle.state(), State::Ready);
+
+    // A call dispatched immediately after the first connect sends normally.
+    let fut = handle.call::<RoomList>(RoomList {}, Dedup::None);
+    let sent = controller.take_outbound();
+    assert_eq!(sent.len(), 1, "call flushes on the first connection");
+    controller.deliver_reply(sent[0].id, "{\"rooms\":[]}");
+    let _ = block_on(fut).expect("call settles Ok");
+    assert_eq!(controller.outstanding(), 0);
+}
+
+/// #270 §9 row 3 / AC-2 (integration path): a keyed mutation held across a
+/// reconnect is **dropped** `Disconnected { Unknown }` — not re-sent — when
+/// the daemon incarnation changed. The future resolves to the honest
+/// `Disconnected { Unknown }` error and the held call's admission charge is
+/// fully released so a new call is admitted and sent on the new connection.
+#[test]
+fn incarnation_fence_changed_drops_held_call_and_frees_admission() {
+    let (handle, controller) = ready(KernelLimits {
+        max_reconnect_attempts: 4,
+        backoff_base: TickDelta::from_ticks(1),
+        backoff_cap: TickDelta::from_ticks(1),
+        ..KernelLimits::default()
+    });
+
+    let held_fut = handle.call::<RoomCreate>(
+        RoomCreate {
+            name: "held".into(),
+        },
+        Dedup::Key(OpId::new("op-inc-drop")),
+    );
+    assert_eq!(controller.take_outbound().len(), 1, "keyed mutation sent");
+
+    // Lose the connection: the replayable call is held.
+    controller.interrupt();
+    assert_eq!(controller.replay_held(), 1, "call held for replay");
+
+    // Reconnect to a DIFFERENT incarnation — daemon restarted.
+    controller.advance(1);
+    controller.connect_with_incarnation(Incarnation::new("inc-restart"));
+
+    // The held call must be dropped Unknown, not re-sent.
+    assert_eq!(
+        controller.replay_held(),
+        0,
+        "replay hold drained after incarnation change"
+    );
+    assert_eq!(
+        controller.take_outbound().len(),
+        0,
+        "the dropped call is not re-sent against the new incarnation's empty ledger"
+    );
+    assert_eq!(controller.outstanding(), 0, "ledger entry removed");
+    assert_eq!(handle.state(), State::Ready);
+
+    let err = block_on(held_fut).expect_err("the dropped call settles Unknown");
+    assert!(
+        matches!(
+            err,
+            CallError::Disconnected {
+                execution: Execution::Unknown
+            }
+        ),
+        "expected Disconnected{{Unknown}}, got {err:?}"
+    );
+
+    // Admission is fully released: a new call is accepted and sent normally.
+    let new_fut = handle.call::<RoomList>(RoomList {}, Dedup::None);
+    let new_sent = controller.take_outbound();
+    assert_eq!(
+        new_sent.len(),
+        1,
+        "new call admitted and sent on new incarnation"
+    );
+    controller.deliver_reply(new_sent[0].id, "{\"rooms\":[]}");
+    let _ = block_on(new_fut).expect("new call settles Ok after incarnation drop");
+    assert_eq!(controller.outstanding(), 0);
+}
+
+/// #270 §9 row 6: with `stable_principal = false` nothing is ever placed in
+/// the replay hold (§K5), so a changed incarnation across a reconnect is a
+/// silent no-op — it must not panic and must not produce a spurious settle.
+/// The call is already settled `Disconnected { Unknown }` at interrupt time
+/// (not held), so the incarnation comparison never fires against live work.
+#[test]
+fn incarnation_fence_stable_principal_false_incarnation_change_is_a_no_op() {
+    let (handle, controller) = ClientHandle::with_kernel(KernelConfig {
+        limits: KernelLimits {
+            max_reconnect_attempts: 4,
+            backoff_base: TickDelta::from_ticks(1),
+            backoff_cap: TickDelta::from_ticks(1),
+            ..KernelLimits::default()
+        },
+        jitter_seed: 42,
+        stable_principal: false,
+        ..KernelConfig::default()
+    });
+    handle.start();
+    controller.connect_with_incarnation(Incarnation::new("inc-a"));
+    assert_eq!(handle.state(), State::Ready);
+
+    // A keyed mutation with no stable_principal is ReplayPolicy::Never.
+    let fut = handle.call::<RoomCreate>(
+        RoomCreate {
+            name: "no-stable-principal".into(),
+        },
+        Dedup::Key(OpId::new("op-no-replay")),
+    );
+    assert_eq!(controller.take_outbound().len(), 1, "call sent");
+
+    // Interrupt: nothing is held — ReplayPolicy::Never settles Unknown immediately.
+    controller.interrupt();
+    assert_eq!(
+        controller.replay_held(),
+        0,
+        "nothing held without stable_principal"
+    );
+
+    // Reconnect with a different incarnation — must not panic or re-settle.
+    controller.advance(1);
+    controller.connect_with_incarnation(Incarnation::new("inc-b"));
+    assert_eq!(handle.state(), State::Ready);
+    assert_eq!(controller.outstanding(), 0, "no stale entry in the ledger");
+    assert_eq!(
+        controller.take_outbound().len(),
+        0,
+        "no spurious re-send after incarnation change with no held work"
+    );
+
+    let err = block_on(fut).expect_err("already settled at interrupt time");
+    assert!(
+        matches!(
+            err,
+            CallError::Disconnected {
+                execution: Execution::Unknown
+            }
+        ),
+        "sent non-replayable: Disconnected{{Unknown}}, got {err:?}"
+    );
 }

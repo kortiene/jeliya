@@ -173,16 +173,22 @@ pub struct KernelConfig {
     /// syscall inside the library. It is not a credential; it only decorrelates
     /// reconnect storms.
     pub jitter_seed: u64,
-    /// Whether the driver certifies **continuity of the daemon's complete
-    /// dedup scope** across the replay window: a stable session principal (a
-    /// stable `client_id`) AND the same daemon incarnation. The dedup ledger
-    /// is keyed `(principal, op_id)` and is deliberately in-memory — a
-    /// daemon restart empties it while the storage-generation gate still
-    /// passes, so a replay against the new incarnation re-executes the
-    /// mutation even under a stable `client_id`. `DirectClient` (in-process:
-    /// daemon restart = client restart) can certify; a socket adapter can
-    /// only do so once the protocol's `hello` carries a daemon incarnation
-    /// identity to fence on (tracked as a protocol follow-up). **Defaults to
+    /// Whether the driver certifies a **stable session principal** across the
+    /// replay window: the adapter supplies a stable `client_id`, so the dedup
+    /// ledger's `(principal, op_id)` key survives a reconnect. This is the
+    /// **static** half of dedup-scope continuity, knowable at construction.
+    ///
+    /// The **dynamic** half — "the daemon has not restarted between the send
+    /// and the replay" — is no longer conflated here (#270). The dedup ledger
+    /// is in-memory, so a restart empties it while the storage-generation gate
+    /// still passes; the kernel now fences that at runtime by comparing the
+    /// `hello` incarnation across reconnects and dropping any replay-held call
+    /// when it changes (see [`Input::Connected`](crate::kernel::core) and
+    /// §K5). An adapter therefore sets this `true` when it supplies a stable
+    /// `client_id` **and** forwards each connection's `hello.incarnation` to
+    /// the core; the incarnation fence guarantees a replay-eligible call is
+    /// dropped, not re-sent, if the daemon restarted. `DirectClient` certifies
+    /// trivially (in-process: daemon restart = client restart). **Defaults to
     /// `false` (replay disabled)**: an adapter must opt in, never the
     /// reverse (§K5).
     pub stable_principal: bool,
@@ -768,10 +774,20 @@ pub use in_memory::KernelController;
 #[cfg(feature = "test-transport")]
 mod in_memory {
     use super::*;
-    use jeliya_api::{ApiError, RequestId};
+    use jeliya_api::{ApiError, Incarnation, RequestId};
 
     use crate::handle::ClientHandle;
     use crate::kernel::transport::{Inbound, StreamAbortReason, StreamRecordMeta, WireReply};
+
+    /// The daemon incarnation the in-memory controller reports on a plain
+    /// `connect()` (and every internal `Input::Connected`): a fixed constant,
+    /// so a reconnect to the same "daemon" leaves the incarnation fence (D4)
+    /// quiescent and pre-#270 reconnect/replay behaviour is unchanged. A test
+    /// that models a daemon **restart** calls [`KernelController::
+    /// connect_with_incarnation`] with a distinct value to fire the fence.
+    fn default_incarnation() -> Incarnation {
+        Incarnation::new("in-memory-incarnation")
+    }
 
     impl ClientHandle {
         /// Build a kernel-backed handle over the deterministic in-memory driver,
@@ -881,8 +897,20 @@ mod in_memory {
         }
 
         /// Complete a dial: a live connection is established and passes the
-        /// generation gate. Returns the fresh generation.
+        /// generation gate. Returns the fresh generation. Reports the fixed
+        /// [`default_incarnation`], modelling a reconnect to the **same**
+        /// running daemon.
         pub fn connect(&self) -> u64 {
+            self.connect_with_incarnation(default_incarnation())
+        }
+
+        /// Complete a dial reporting an explicit daemon incarnation — the seam
+        /// a socket adapter fills from `hello.incarnation`. A value distinct
+        /// from the previous connection's models a daemon **restart**: the
+        /// kernel then drops every replay-held call (settling
+        /// `Disconnected { Unknown }`) instead of re-sending it against the
+        /// restarted daemon's empty dedup ledger (§K5, D4/D6).
+        pub fn connect_with_incarnation(&self, incarnation: Incarnation) -> u64 {
             let generation = {
                 let mut shared = self.lock();
                 shared.dialing = false;
@@ -890,7 +918,7 @@ mod in_memory {
                     .core
                     .pending_dial()
                     .expect("connect() with no dial in progress");
-                let deferred = shared.drive(Input::Connected { token });
+                let deferred = shared.drive(Input::Connected { token, incarnation });
                 self.runtime.enqueue(deferred);
                 shared.core.generation()
             };
@@ -908,7 +936,10 @@ mod in_memory {
                 if shared.core.pending_dial() == Some(token) {
                     shared.dialing = false;
                 }
-                let deferred = shared.drive(Input::Connected { token });
+                let deferred = shared.drive(Input::Connected {
+                    token,
+                    incarnation: default_incarnation(),
+                });
                 self.runtime.enqueue(deferred);
             }
             self.runtime.drain_delivery();

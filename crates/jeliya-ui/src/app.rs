@@ -20,20 +20,65 @@
 
 use dioxus::prelude::*;
 use futures::StreamExt;
-use jeliya_api::RoomList;
+use jeliya_api::{RoomId, RoomList, RoomRow, SubjectId, SubjectState};
 use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
+use jeliya_platform::navigation::{RoomDest, Route};
 use jeliya_platform::PreferenceKey;
 
 use crate::components::{
-    use_announce_context, BootScreen, EmptyCenter, LiveRegion, NavLandmark, RoomListItem, SkipLink,
-    SkipLinks, StatusFooter,
+    use_announce_context, BootScreen, EmptyCenter, FleetPane, GlobalNav, LiveRegion, NavLandmark,
+    Onboarding, RecoveryBanner, RoomShell, RoomUnavailable, SettingsPane, SkipLink, SkipLinks,
+    StatusFooter,
 };
 use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
     LocaleState,
 };
+use crate::shell::bootstrap::{
+    derive_boot_view, BootView, ConnectionSnapshot, FailureView, OnboardStep, RecoveryView,
+    RoomsKnowledge,
+};
+use crate::shell::router::{use_route, NavIntent};
+use crate::shell::Shell;
 use crate::state::UiState;
 use crate::PlatformServices;
+
+/// A selectable room row (#178 §5.F): the existing `.room-select` markup, made
+/// navigable — selecting the room pushes `Route::Room{ id, Activity }`. Kept
+/// beside the display-only `RoomListItem` primitive so the row that navigates is
+/// distinct from the one used in non-routed contexts.
+#[component]
+fn RoomSelectableItem(room: RoomRow, navigate: Callback<NavIntent>) -> Element {
+    let strings = use_strings();
+    let untitled = strings.room_untitled();
+    let label = if room.name.trim().is_empty() {
+        untitled.to_string()
+    } else {
+        room.name.clone()
+    };
+    let room_id = room.room_id.clone();
+    rsx! {
+        div { class: "room-item", "data-room": "{room.room_id}",
+            button {
+                class: "room-select",
+                onclick: move |_| {
+                    navigate
+                        .call(
+                            NavIntent::push(Route::Room {
+                                room_id: room_id.clone(),
+                                dest: RoomDest::Activity,
+                            }),
+                        )
+                },
+                span { class: "room-info",
+                    span { class: "room-name-line",
+                        span { class: "room-name", "{label}" }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Whether a `prev → to` lifecycle transition is announced through the CONNECTION
 /// live region: a DROP to a problem state (`Interrupted`/`Failed`/`Stopped`), or a
@@ -56,6 +101,58 @@ fn announces_connection_change(prev: Option<State>, to: State, through_problem: 
                 Some(State::Interrupted | State::Failed | State::Stopped)
             ));
     is_problem || recovered
+}
+
+/// The room-list knowledge the bootstrap fold (§5.D) consumes, read from the
+/// folded [`UiState`]: a terminal read failure is [`RoomsKnowledge::Failed`] (a
+/// shell-time error, never an empty account), an answered read is
+/// [`RoomsKnowledge::Loaded`], and anything before the first answer is
+/// [`RoomsKnowledge::Unknown`] — *booting is unknown, not zero*. A retryable
+/// (non-terminal) disconnect notice leaves `rooms_loaded` false, so it too reads
+/// as `Unknown` (recovering), never as a spurious zero.
+fn rooms_knowledge(ui: &UiState) -> RoomsKnowledge {
+    if ui.notice.is_some() && ui.notice_terminal {
+        RoomsKnowledge::Failed
+    } else if ui.rooms_loaded {
+        RoomsKnowledge::Loaded {
+            count: ui.rooms.len(),
+        }
+    } else {
+        RoomsKnowledge::Unknown
+    }
+}
+
+/// Local onboarding progress the pure daemon-truth fold cannot express on its
+/// own: the deterministic mock has no re-`Hello`, so once the user creates an
+/// identity the scripted connection snapshot still reads `Absent`, and once they
+/// create a room the scripted `room.list` still reads zero. This records the
+/// user's own advance so the shell moves forward — the spec's "*or user advanced
+/// past onboarding*" [`BootView::Shell`] path (§5.D). It rides `AppRoot` as a
+/// signal, never a second copy of daemon truth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OnboardProgress {
+    /// No local advance yet — follow the fold as-is.
+    Following,
+    /// Identity created locally → force the rooms step (the snapshot still reads
+    /// `Absent`).
+    RoomsStep,
+    /// A room was created/joined → onboarding complete; mount the shell (the
+    /// snapshot still reads zero rooms).
+    Done,
+}
+
+/// Fold the local onboarding [`OnboardProgress`] over the daemon-truth
+/// [`BootView`]. Only the onboarding steps are overridable; a cover/failure/shell
+/// view from the fold is authoritative and passes through unchanged (a terminal
+/// state must win over a stale local advance — §5.D).
+fn advance_boot(view: BootView, progress: OnboardProgress) -> BootView {
+    match (view, progress) {
+        (BootView::Onboarding(_), OnboardProgress::Done) => BootView::Shell,
+        (BootView::Onboarding(OnboardStep::Identity), OnboardProgress::RoomsStep) => {
+            BootView::Onboarding(OnboardStep::Rooms)
+        }
+        (other, _) => other,
+    }
 }
 
 /// The application root component (the spec's `app_root`).
@@ -83,6 +180,42 @@ pub fn AppRoot(
     /// stays free of `web-sys`/`cfg` (Decision-3).
     #[props(default)]
     on_locale_lang: Option<Callback<String>>,
+    /// The pre-parse `location.pathname` at launch (#178 §5.C), injected from
+    /// composition where the `web-sys` read is confined. Drives the router's
+    /// mount canonicalization and last-room restore. Defaults to the canonical
+    /// Rooms path for host/mock renders.
+    #[props(default)]
+    raw_path: Option<String>,
+    /// The responsive shell at launch (#178 §8), an injected reactive input (the
+    /// web target subscribes `matchMedia` in composition; other targets provide
+    /// their own). Defaults to the wide shell.
+    #[props(default = Shell::Wide)]
+    initial_shell: Shell,
+    /// Composition's viewport-watcher registration (web: a `matchMedia`
+    /// listener at the compact boundary; `None` off the web target). Called
+    /// ONCE with the handler composition invokes on every boundary crossing,
+    /// so the shell selection tracks resizes, zoom, and rotation rather than
+    /// freezing at the launch width. Kept as an injected callback so this
+    /// shared component stays free of `web-sys`/`cfg` (Decision-3).
+    #[props(default)]
+    on_shell_subscribe: Option<Callback<Callback<Shell>>>,
+    /// The visible recovery banner to show when corrupt/unsupported new-format
+    /// preference state was reset at boot (#178 §6.4). `None` on the ordinary
+    /// fresh-tab path.
+    #[props(default)]
+    recovery: Option<RecoveryView>,
+    /// The read-only daemon connection snapshot (#178 §5.D / D2): identity
+    /// presence + storage generation captured from `Hello`. Drives the
+    /// bootstrap/onboarding fold ([`derive_boot_view`]) — subject `Absent` opens
+    /// the identity step, subject `Present` + zero rooms the rooms step, and a
+    /// `Present` subject with rooms the mounted shell. Scripted by composition
+    /// against the deterministic mock today (the `ClientHandle` seam does not yet
+    /// surface it — D2/R1); the real value arrives from `Hello` with #171/#270.
+    /// `None` is the honest seam-gap default: no snapshot from the seam, so the
+    /// shell mounts on the lifecycle alone exactly as before (the fresh-tab and
+    /// a11y-matrix path).
+    #[props(default)]
+    connection: Option<ConnectionSnapshot>,
 ) -> Element {
     let mut ui = use_signal(UiState::new);
 
@@ -113,6 +246,31 @@ pub fn AppRoot(
     let locale = use_locale_context(initial_locale);
     let announcers = use_announce_context();
 
+    // The router (#178 §5.C): the mirror `Signal<Route>` + a navigate handle.
+    // Seeded from the injected raw path (canonicalized once at mount via
+    // replace) and the `LastRoom` preference (restored once, only from the bare
+    // root). The route IS the navigation state — no second machine.
+    let router_raw_path = raw_path.clone().unwrap_or_else(|| Route::Rooms.to_path());
+    let last_room = preferences.get(&PreferenceKey::LastRoom).map(RoomId::new);
+    let router = use_route(services.clone(), router_raw_path, last_room);
+    // The responsive shell — an injected reactive input; composition pushes
+    // `matchMedia` updates on the web target (§8). Held in a signal so a
+    // resize updates it; seeded from the prop.
+    let mut shell = use_signal(|| initial_shell);
+    // Register the shell handler with composition's viewport watcher exactly
+    // once (the prop is static for the app's lifetime). Without a watcher
+    // (non-web targets) the launch shell simply persists, as before.
+    use_effect(move || {
+        if let Some(register) = on_shell_subscribe {
+            register.call(Callback::new(move |next: Shell| shell.set(next)));
+        }
+    });
+    // The visible recovery banner (§6.4), dismissable once acknowledged. The
+    // corrupt/unsupported keys were already reset at boot (that is what produced
+    // this view); the explicit action clears the remaining enumerated top-level
+    // preferences and dismisses the banner.
+    let mut recovery_view = use_signal(|| recovery.clone());
+
     // `<html lang>` tracks the resolved TEXT locale REACTIVELY: the injected
     // `on_locale_lang` callback (a `web-sys` setter on the web target; `None`
     // elsewhere) is called on mount AND whenever the locale signal changes, so a
@@ -127,6 +285,15 @@ pub fn AppRoot(
             apply.call(tag);
         }
     });
+
+    // A clone of the client seam for the onboarding surface (the prop is moved
+    // into the event-consumption future below). Onboarding's identity/rooms steps
+    // dispatch `subject.ensure`/`room.create` through this same handle.
+    let onboarding_handle = handle.clone();
+    // The user's local onboarding advance (§5.D "user advanced past onboarding"),
+    // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
+    // the onboarding step callbacks advance it as the user completes each step.
+    let mut onboarding_progress = use_signal(|| OnboardProgress::Following);
 
     use_future(move || {
         let handle = handle.clone();
@@ -360,36 +527,98 @@ pub fn AppRoot(
         .as_ref()
         .map(|_| ErrorDisplay::room_list_failure(strings, snapshot.notice_terminal).message);
 
-    // The boot/terminal cover: initial activation ("connecting…") and the
-    // stop/failure states, each with its own honest label. `Interrupted` was
-    // Ready and is recovering, so the shell stays mounted (`StatusFooter` reports
-    // it) rather than hiding the rooms behind a cover; the stop/failure states
-    // render their own label — a "connecting" cover over a terminal state would be
-    // a lie. Labels are catalog copy, so the cover speaks the resolved locale.
-    let boot_target = match snapshot.lifecycle {
+    // The boot/terminal cover label from the lifecycle ALONE — the honest default
+    // when no connection snapshot is available from the seam (D2/R1). `Interrupted`
+    // was Ready and is recovering, so the shell stays mounted (`StatusFooter`
+    // reports it) rather than hiding the rooms behind a cover; the stop/failure
+    // states render their own label — a "connecting" cover over a terminal state
+    // would be a lie. Labels are catalog copy, so the cover speaks the resolved
+    // locale.
+    let lifecycle_cover = match snapshot.lifecycle {
         State::Ready | State::Interrupted => None,
-        State::Idle | State::Connecting => Some(strings.boot_connecting()),
-        State::Stopping => Some(strings.boot_stopping()),
-        State::Stopped => Some(strings.boot_stopped()),
-        State::Failed => Some(strings.boot_failed()),
+        State::Idle | State::Connecting => Some(strings.boot_connecting().to_string()),
+        State::Stopping => Some(strings.boot_stopping().to_string()),
+        State::Stopped => Some(strings.boot_stopped().to_string()),
+        State::Failed => Some(strings.boot_failed().to_string()),
     };
+
+    // The bootstrap/onboarding fold (§5.D / D2). When a connection snapshot IS
+    // available (scripted against the mock today; the real `Hello` snapshot with
+    // #171/#270), daemon truth — lifecycle + identity presence + room-list
+    // knowledge — decides cover vs. onboarding vs. shell, with the user's local
+    // advance folded in (`advance_boot`). When it is absent (`None`, the seam-gap
+    // default), the shell mounts on the lifecycle alone, preserving the fresh-tab /
+    // a11y-matrix path. `cover_label` and `onboarding_step` are mutually exclusive;
+    // when both are `None` the mounted shell renders.
+    let (cover_label, onboarding_step): (Option<String>, Option<OnboardStep>) =
+        match connection.as_ref() {
+            None => (lifecycle_cover, None),
+            Some(conn) => {
+                let view = advance_boot(
+                    derive_boot_view(snapshot.lifecycle, Some(conn), rooms_knowledge(&snapshot)),
+                    onboarding_progress(),
+                );
+                match view {
+                    BootView::Booting => (Some(strings.boot_connecting().to_string()), None),
+                    BootView::Failed(FailureView::Stopping) => {
+                        (Some(strings.boot_stopping().to_string()), None)
+                    }
+                    BootView::Failed(FailureView::Stopped) => {
+                        (Some(strings.boot_stopped().to_string()), None)
+                    }
+                    BootView::Failed(FailureView::Failed) => {
+                        (Some(strings.boot_failed().to_string()), None)
+                    }
+                    BootView::Onboarding(step) => (None, Some(step)),
+                    BootView::Shell => (None, None),
+                }
+            }
+        };
+    // The connected subject, when the connection snapshot names it: the
+    // Settings identity surface renders the ID only from daemon truth — never
+    // assumed from local state.
+    let self_id: Option<SubjectId> = connection.as_ref().and_then(|conn| match &conn.subject {
+        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
+        SubjectState::Absent => None,
+    });
     let rooms_label = strings.rooms_heading().to_string();
     let skip_rooms = strings.skip_to_rooms().to_string();
     let app_name = strings.app_name();
     let rooms_empty = strings.rooms_empty();
     let rooms_loading = strings.rooms_loading();
 
-    // ONE render tree with ONE stable live region. The boot/terminal cover and the
-    // mounted shell are the two arms of a single lifecycle conditional; the
-    // `LiveRegion` sits OUTSIDE it, so it is the SAME template node — the SAME DOM
-    // element — across a boot↔shell transition (`Ready`→`Failed`/`Stopped` and
-    // back). Assistive tech then tracks one stable region rather than observing a
-    // node removed and a different one mounted mid-announcement (§5.6). The boot
-    // cover stays a ROOT child (never inside the `.app` grid, whose
-    // `height: var(--vh-full)` a nested full-viewport cover would blow up); all
-    // hooks are declared above, so this single return is order-safe.
+    // The current route (the mirror) and shell, read for the destination switch
+    // and the global-nav highlight. Reading the signals here subscribes this
+    // render to them, so a navigation or a resize re-renders the shell.
+    let current_route = router.route.read().clone();
+    let active_shell = shell();
+    let navigate = router.navigate;
+    // The root pane state tracks the route: the stylesheet's compact rules show
+    // exactly one pane per `pane-*` class, and a room/fleet/settings destination
+    // is full-surface content, not rail content (its `main` carries the
+    // `.destination` class the grid spans across both columns).
+    let pane_class = match &current_route {
+        Route::Rooms => "pane-rooms",
+        Route::Room { .. } => "pane-room",
+        Route::Fleet => "pane-fleet",
+        Route::Settings => "pane-settings",
+    };
+    // Clones for the closures/props below; the prop `services` stays available.
+    let services_reset = services.clone();
+    let services_settings = services.clone();
+
+    // ONE render tree with ONE stable live region. The boot/terminal cover, the
+    // onboarding surface, and the mounted shell are the three arms of a single
+    // conditional; the `LiveRegion`s sit OUTSIDE it, so each is the SAME template
+    // node — the SAME DOM element — across a cover↔onboarding↔shell transition
+    // (`Ready`→`Failed`/`Stopped` and back, or onboarding→shell). Assistive tech
+    // then tracks one stable region rather than observing a node removed and a
+    // different one mounted mid-announcement (§5.6). The boot cover stays a ROOT
+    // child (never inside the `.app` grid, whose `height: var(--vh-full)` a nested
+    // full-viewport cover would blow up); all hooks are declared above, so this
+    // single return is order-safe.
     rsx! {
-        if let Some(target) = boot_target {
+        if let Some(label) = cover_label {
             // No room-list notice on the cover: the room.list error is a
             // Ready-time read failure, orthogonal to why the client is
             // stopping/failed, and the friendly copy refers to a Diagnostics
@@ -399,8 +628,91 @@ pub fn AppRoot(
             // StatusFooter → Diagnostics) is where a room.list failure and its raw
             // detail belong.
             BootScreen {
-                target: target.to_string(),
+                target: label,
                 notice: None,
+            }
+        } else if let Some(step) = onboarding_step {
+            // First-run onboarding (§5.E), reached only when the connection
+            // snapshot says so: subject `Absent` → the identity step, subject
+            // `Present` with zero rooms → the rooms step. Advancing folds into
+            // `onboarding_progress` — identity done moves to the rooms step, a
+            // created/joined room completes onboarding and mounts the shell opened
+            // at that room. The full-page onboarding surface stands in for the
+            // shell (no global nav), so the live regions below stay the app's one
+            // stable pair across the onboarding↔shell transition.
+            Onboarding {
+                handle: onboarding_handle.clone(),
+                services: services.clone(),
+                step,
+                on_advance: move |room: Option<RoomId>| {
+                    match room {
+                        None => onboarding_progress.set(OnboardProgress::RoomsStep),
+                        Some(room_id) => {
+                            // The room now exists (room.create returned it), but
+                            // the already-answered room.list does not name it — a
+                            // route lookup against that stale list renders
+                            // `RoomUnavailable` for the room the user just made.
+                            // Re-read the list AUTHORITATIVELY before navigating;
+                            // only a successful read opens the room. A transport
+                            // drop retries across recovery exactly like the mount
+                            // read; any other failure is terminal — surface the
+                            // raw detail and land on Rooms, never on a fabricated
+                            // "unavailable" for a room that was just created.
+                            let handle = onboarding_handle.clone();
+                            spawn(async move {
+                                let mut recovery = handle.subscribe();
+                                loop {
+                                    match handle.call::<RoomList>(RoomList {}, Dedup::None).await
+                                    {
+                                        Ok(out) => {
+                                            let mut state = ui.write();
+                                            state.set_rooms(out.rooms);
+                                            state.clear_notice();
+                                            drop(state);
+                                            onboarding_progress.set(OnboardProgress::Done);
+                                            navigate.call(NavIntent::push(Route::Room {
+                                                room_id: room_id.clone(),
+                                                dest: RoomDest::Activity,
+                                            }));
+                                            return;
+                                        }
+                                        Err(CallError::Disconnected { .. }) => {
+                                            // Wait for leave-and-re-enter Ready
+                                            // (the settlement can outrun the
+                                            // lifecycle event), then retry.
+                                            let mut left_ready =
+                                                handle.state() != State::Ready;
+                                            loop {
+                                                if left_ready && handle.state() == State::Ready
+                                                {
+                                                    break;
+                                                }
+                                                match recovery.next().await {
+                                                    Some(ClientEvent::StateChanged {
+                                                        to, ..
+                                                    }) => {
+                                                        if to != State::Ready {
+                                                            left_ready = true;
+                                                        }
+                                                    }
+                                                    Some(_) => {}
+                                                    None => return,
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            ui.write()
+                                                .set_terminal_notice(diagnostic_notice(&error));
+                                            onboarding_progress.set(OnboardProgress::Done);
+                                            navigate.call(NavIntent::push(Route::Rooms));
+                                            return;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                },
             }
         } else {
             // Skip links are the FIRST focusable region and move focus (not just
@@ -411,66 +723,117 @@ pub fn AppRoot(
             SkipLinks {
                 SkipLink { anchor: "rooms-nav".to_string(), label: skip_rooms }
             }
-            // A root pane state is always set (`pane-rooms`): the shared stylesheet
-            // hides `.sidebar`/`.center` on compact viewports unless a pane is
-            // selected, so a plain `app` root renders blank on a phone WebView.
-            div { class: "app pane-rooms", id: "app-root",
+            // A root pane state is always set: the shared stylesheet hides
+            // `.sidebar`/`.center`/`.destination` on compact viewports unless a
+            // pane is selected, so a plain `app` root renders blank on a phone
+            // WebView. The class tracks the route (see `pane_class` above).
+            div { class: "app {pane_class}", id: "app-root",
                 // The page's single `<h1>`, at the always-rendered root. Visually
                 // hidden because the visible headings already show on screen; it
                 // names the page for assistive tech.
                 h1 { class: "visually-hidden", "{app_name}" }
-                // The rooms pane is the PRIMARY content, so it is the `<main>`
-                // landmark — and `pane-rooms` keeps it visible on EVERY viewport,
-                // so every viewport has a main landmark (the fix for the compact
-                // main gap). The room list within is a NAMED `<nav>`.
-                main { class: "sidebar", id: "main-content", tabindex: "-1",
-                    // The notice lives here, not the `.center` pane (hidden on
-                    // compact). Terminal failures get copy that does not promise a
-                    // retry (§5.8); the raw detail is in Diagnostics.
-                    if let Some(message) = room_error.as_ref() {
-                        div { class: "error-note", id: "notice", "{message}" }
-                    }
-                    // The room list is a NAMED navigation landmark — routed through
-                    // the shared `NavLandmark` primitive (Decision-6), not a raw
-                    // `nav`, so accessibility invariants added to the primitive reach
-                    // the primary room route and cannot be bypassed. `NavLandmark`
-                    // renders the same `nav` with `aria-label`/`tabindex="-1"`.
-                    NavLandmark {
-                        class: "rooms-list",
-                        id: "rooms-nav",
-                        label: "{rooms_label}",
-                        // Loading vs empty is shown ONLY when there is no notice: a
-                        // terminal failure is neither "loading" nor an empty
-                        // account, so the shell must not render "No rooms yet" or
-                        // announce 0 rooms for a failed load.
-                        if snapshot.rooms.is_empty() && snapshot.notice.is_none() {
-                            // "No rooms yet" is an ANSWER, not a default: before the
-                            // first reply an empty vector means "not answered yet".
-                            if snapshot.rooms_loaded {
-                                div { class: "rooms-empty muted", id: "rooms-empty", "{rooms_empty}" }
-                            } else {
-                                div { class: "rooms-empty muted", id: "rooms-loading", "{rooms_loading}" }
+                // Global-destination navigation (#178 §5.F/§8): Rooms / Fleet /
+                // Settings, with placement (rail vs. compact bottom bar) driven by
+                // the injected `Shell` value — never a `cfg` (D6). The active
+                // destination is derived from the route (D1).
+                GlobalNav { route: current_route.clone(), navigate, shell: active_shell }
+                // The visible recovery banner (§6.4, AC-5): shown when corrupt or
+                // unsupported new-format preference state was reset at boot. It
+                // overlays the shell rather than replacing it — the app stays
+                // usable (D7). The action clears the enumerated top-level
+                // preferences and dismisses the banner (the corrupt keys were
+                // already purged at boot).
+                if let Some(rec) = recovery_view() {
+                    RecoveryBanner {
+                        recovery: rec,
+                        on_reset: move |_| {
+                            for key in [
+                                PreferenceKey::LastRoom,
+                                PreferenceKey::Aliases,
+                                PreferenceKey::SelfLabel,
+                                PreferenceKey::TextLocale,
+                                PreferenceKey::FormattingLocale,
+                            ] {
+                                services_reset.preferences().remove(&key);
                             }
-                        }
-                        for room in snapshot.rooms.iter() {
-                            RoomListItem {
-                                key: "{room.room_id}",
-                                room: room.clone(),
-                                selected: false,
-                            }
-                        }
+                            recovery_view.set(None);
+                        },
                     }
-                    // The footer reports the connection state accessibly and hosts
-                    // the Diagnostics disclosure carrying the raw failure detail.
-                    // Diagnostics shows the LAST error detail (`last_diagnostic`),
-                    // which survives a recovery that cleared the primary `notice`
-                    // banner — so opening it after a transient disconnect still shows
-                    // the failure that occurred, not "no errors recorded".
-                    StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                 }
-                // The desktop-only detail pane — a plain `<section>` (NOT a second
-                // landmark), `display:none` on compact. Carries the centre's h2.
-                section { class: "center", id: "center", EmptyCenter {} }
+                // The destination pane, switched on the route (D1 — the route IS
+                // the state). Rooms keeps the existing landmarked rooms shell; the
+                // other destinations render skeletons (content is #179–#181).
+                {
+                    match current_route.clone() {
+                        Route::Rooms => rsx! {
+                            // The rooms pane is the PRIMARY content, so it is the
+                            // `<main>` landmark, visible on every viewport. The room
+                            // list within is a NAMED `<nav>` (the `NavLandmark`
+                            // primitive, Decision-6).
+                            main { class: "sidebar", id: "main-content", tabindex: "-1",
+                                if let Some(message) = room_error.as_ref() {
+                                    div { class: "error-note", id: "notice", "{message}" }
+                                }
+                                NavLandmark {
+                                    class: "rooms-list",
+                                    id: "rooms-nav",
+                                    label: "{rooms_label}",
+                                    if snapshot.rooms.is_empty() && snapshot.notice.is_none() {
+                                        if snapshot.rooms_loaded {
+                                            div { class: "rooms-empty muted", id: "rooms-empty", "{rooms_empty}" }
+                                        } else {
+                                            div { class: "rooms-empty muted", id: "rooms-loading", "{rooms_loading}" }
+                                        }
+                                    }
+                                    for room in snapshot.rooms.iter() {
+                                        RoomSelectableItem {
+                                            key: "{room.room_id}",
+                                            room: room.clone(),
+                                            navigate,
+                                        }
+                                    }
+                                }
+                                StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
+                            }
+                            section { class: "center", id: "center", EmptyCenter {} }
+                        },
+                        // A room-scoped route renders the room-shell skeleton
+                        // (header + destination strip). Reachability is a room.list
+                        // check (D7 / §5.F): once the list has ANSWERED, a route
+                        // naming a room absent from it renders the recoverable
+                        // `RoomUnavailable` state (Rooms as the way out) instead of a
+                        // shell over a room the user does not hold. Before the answer
+                        // (unknown ≠ unreachable) the shell is shown — a deep link
+                        // must not flash "unavailable" while the list is still
+                        // loading.
+                        Route::Room { room_id, dest } => {
+                            let reachable = !snapshot.rooms_loaded
+                                || snapshot.rooms.iter().any(|r| r.room_id == room_id);
+                            rsx! {
+                                main { class: "destination", id: "main-content", tabindex: "-1",
+                                    if reachable {
+                                        RoomShell { room_id, dest, navigate }
+                                    } else {
+                                        RoomUnavailable { navigate }
+                                    }
+                                    StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
+                                }
+                            }
+                        }
+                        Route::Fleet => rsx! {
+                            main { class: "destination", id: "main-content", tabindex: "-1",
+                                FleetPane {}
+                                StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
+                            }
+                        },
+                        Route::Settings => rsx! {
+                            main { class: "destination", id: "main-content", tabindex: "-1",
+                                SettingsPane { services: services_settings.clone(), subject_id: self_id.clone() }
+                                StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
+                            }
+                        },
+                    }
+                }
             }
         }
         // TWO stable polite live regions — content and connection — both OUTSIDE
@@ -494,8 +857,45 @@ fn diagnostic_notice(error: &CallError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::announces_connection_change;
+    use super::{advance_boot, announces_connection_change, rooms_knowledge, OnboardProgress};
+    use crate::shell::bootstrap::{
+        derive_boot_view, BootView, ConnectionSnapshot, FailureView, OnboardStep, RoomsKnowledge,
+    };
+    use crate::state::UiState;
+    use jeliya_api::{
+        DeviceId, LastEvent, Role, RoomId, RoomRow, Standing, SubjectId, SubjectState,
+    };
     use jeliya_client::State;
+
+    fn test_room(id: &str) -> RoomRow {
+        RoomRow {
+            room_id: RoomId::new(id),
+            name: id.to_string(),
+            standing: Standing::Active,
+            live: false,
+            role: Role::Member,
+            member_count: 1,
+            last_event: LastEvent::Absent,
+            capabilities: Vec::new(),
+        }
+    }
+
+    fn absent() -> ConnectionSnapshot {
+        ConnectionSnapshot {
+            subject: SubjectState::Absent,
+            storage_generation: 1,
+        }
+    }
+
+    fn present() -> ConnectionSnapshot {
+        ConnectionSnapshot {
+            subject: SubjectState::Present {
+                subject_id: SubjectId::new("blake3:subject"),
+                device_id: DeviceId::new("blake3:device"),
+            },
+            storage_generation: 1,
+        }
+    }
 
     #[test]
     fn a_recovery_after_a_missed_interrupt_is_announced() {
@@ -561,5 +961,137 @@ mod tests {
             assert!(announces_connection_change(Some(State::Ready), to, false));
             assert!(announces_connection_change(None, to, false));
         }
+    }
+
+    #[test]
+    fn rooms_knowledge_reads_the_folded_snapshot() {
+        // Before any answer — unknown, never a spurious zero.
+        let ui = UiState::new();
+        assert_eq!(rooms_knowledge(&ui), RoomsKnowledge::Unknown);
+
+        // An answered empty read is Loaded{0} (the rooms-onboarding trigger), not
+        // Unknown — the daemon has answered "no rooms".
+        let mut loaded_empty = UiState::new();
+        loaded_empty.set_rooms(Vec::new());
+        assert_eq!(
+            rooms_knowledge(&loaded_empty),
+            RoomsKnowledge::Loaded { count: 0 }
+        );
+
+        // An answered non-empty read carries the count.
+        let mut loaded = UiState::new();
+        loaded.set_rooms(vec![test_room("r-1"), test_room("r-2")]);
+        assert_eq!(
+            rooms_knowledge(&loaded),
+            RoomsKnowledge::Loaded { count: 2 }
+        );
+
+        // A TERMINAL read failure is Failed (a shell-time error), not an empty
+        // account.
+        let mut failed = UiState::new();
+        failed.set_terminal_notice("room.list: boom");
+        assert_eq!(rooms_knowledge(&failed), RoomsKnowledge::Failed);
+
+        // A RETRYABLE (non-terminal) disconnect notice leaves the read unanswered
+        // — still Unknown (recovering), never a spurious zero or a Failed.
+        let mut retrying = UiState::new();
+        retrying.set_notice("room.list: transient");
+        assert_eq!(rooms_knowledge(&retrying), RoomsKnowledge::Unknown);
+    }
+
+    #[test]
+    fn advance_boot_overrides_only_the_onboarding_steps() {
+        use BootView::*;
+        // No local advance yet — the fold passes through.
+        assert_eq!(
+            advance_boot(
+                Onboarding(OnboardStep::Identity),
+                OnboardProgress::Following
+            ),
+            Onboarding(OnboardStep::Identity)
+        );
+        // Identity done locally → the rooms step (the mock snapshot still reads
+        // Absent; there is no re-Hello).
+        assert_eq!(
+            advance_boot(
+                Onboarding(OnboardStep::Identity),
+                OnboardProgress::RoomsStep
+            ),
+            Onboarding(OnboardStep::Rooms)
+        );
+        // RoomsStep overrides ONLY the identity step, never the rooms step itself.
+        assert_eq!(
+            advance_boot(Onboarding(OnboardStep::Rooms), OnboardProgress::RoomsStep),
+            Onboarding(OnboardStep::Rooms)
+        );
+        // A created/joined room completes onboarding → the shell, from either step.
+        assert_eq!(
+            advance_boot(Onboarding(OnboardStep::Rooms), OnboardProgress::Done),
+            Shell
+        );
+        assert_eq!(
+            advance_boot(Onboarding(OnboardStep::Identity), OnboardProgress::Done),
+            Shell
+        );
+        // Non-onboarding views are authoritative — a local advance never rewrites
+        // them (a terminal state must win over a stale advance).
+        assert_eq!(advance_boot(Shell, OnboardProgress::Done), Shell);
+        assert_eq!(advance_boot(Booting, OnboardProgress::RoomsStep), Booting);
+        assert_eq!(
+            advance_boot(Failed(FailureView::Stopping), OnboardProgress::Done),
+            Failed(FailureView::Stopping)
+        );
+    }
+
+    #[test]
+    fn app_boot_decision_walks_first_run_onboarding_to_the_shell() {
+        // The exact decision `AppRoot` makes, end to end, from a scripted snapshot:
+        // a fresh daemon (subject Absent) at Ready opens the IDENTITY step — the
+        // first-run onboarding the shell used to skip.
+        let identity = advance_boot(
+            derive_boot_view(State::Ready, Some(&absent()), RoomsKnowledge::Unknown),
+            OnboardProgress::Following,
+        );
+        assert_eq!(identity, BootView::Onboarding(OnboardStep::Identity));
+
+        // After the identity step completes (local RoomsStep advance), the ROOMS
+        // step shows even though the mock snapshot still reads Absent.
+        let rooms = advance_boot(
+            derive_boot_view(State::Ready, Some(&absent()), RoomsKnowledge::Unknown),
+            OnboardProgress::RoomsStep,
+        );
+        assert_eq!(rooms, BootView::Onboarding(OnboardStep::Rooms));
+
+        // A Present subject with zero answered rooms is itself the rooms step…
+        let present_zero = advance_boot(
+            derive_boot_view(
+                State::Ready,
+                Some(&present()),
+                RoomsKnowledge::Loaded { count: 0 },
+            ),
+            OnboardProgress::Following,
+        );
+        assert_eq!(present_zero, BootView::Onboarding(OnboardStep::Rooms));
+
+        // …and once a room exists (or the user advanced past onboarding) the shell
+        // mounts.
+        let shell_from_rooms = advance_boot(
+            derive_boot_view(
+                State::Ready,
+                Some(&present()),
+                RoomsKnowledge::Loaded { count: 1 },
+            ),
+            OnboardProgress::Following,
+        );
+        assert_eq!(shell_from_rooms, BootView::Shell);
+        let shell_from_advance = advance_boot(
+            derive_boot_view(
+                State::Ready,
+                Some(&present()),
+                RoomsKnowledge::Loaded { count: 0 },
+            ),
+            OnboardProgress::Done,
+        );
+        assert_eq!(shell_from_advance, BootView::Shell);
     }
 }
