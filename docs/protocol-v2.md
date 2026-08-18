@@ -3,7 +3,7 @@ type: "Reference"
 title: "Jeliya protocol v2"
 description: "Normative clean-slate contract between the typed Rust core and every Jeliya client: the generation gate, approved operations, byte-stream framing, errors, sequenced pushes, authoritative resync, and binding conformance corpus."
 tags: ["clean-slate", "conformance", "protocol", "security"]
-timestamp: "2026-08-03T17:54:45Z"
+timestamp: "2026-08-16T00:00:00Z"
 status: "canonical"
 implementation_status: "partial"
 verification_status: "unverified"
@@ -356,6 +356,7 @@ The daemon's first Text message after upgrade is exactly one `hello`:
 { "t": "hello",
   "protocol": 2,
   "storage_generation": 1,
+  "incarnation": "<incarnation>",
   "limits": { "...": "as above" },
   "subject": { "state": "present", "subject_id": "<subject_id>", "device_id": "<device_id>" },
   "resume": { "state": "fresh" } }
@@ -366,6 +367,20 @@ The daemon's first Text message after upgrade is exactly one `hello`:
 adoption check that needs pid and port is Layer 0.
 
 `subject.state` is a tagged variant — `present` or `absent` — never a null.
+
+`incarnation` is a required opaque string: a per-process nonce, freshly minted
+at each daemon start, identical for every connection of one running process. It
+is **orthogonal to `storage_generation`**: the storage generation is a
+persistent property of the on-disk data and survives a restart; the incarnation
+identifies the running process and does not. A client that replays a
+deduplicated mutation across a reconnect (see
+[`op_id`](#request-deduplication-lives-in-the-envelope)) MUST treat a changed
+incarnation as a restarted daemon with an empty in-memory dedup ledger and MUST
+NOT replay against it — it settles the held work as a disconnect of unknown
+execution instead. `incarnation` is disclosed only after the gate, in `hello`;
+it is **not** part of the Layer-0 discovery object, is not a credential, and
+grants nothing. A client only ever compares two incarnations for equality; it
+never parses, orders, or interprets the value.
 
 ## The envelope
 
@@ -939,7 +954,7 @@ belongs to exactly one operation.
 
 | Type | Form |
 |---|---|
-| `<room_id>` `<subject_id>` `<device_id>` `<event_id>` `<invite_id>` `<file_id>` `<pipe_id>` `<op_id>` | opaque strings, each a distinct domain |
+| `<room_id>` `<subject_id>` `<device_id>` `<event_id>` `<invite_id>` `<file_id>` `<pipe_id>` `<op_id>` `<incarnation>` | opaque strings, each a distinct domain |
 | `<request_id>` | the request envelope's integer `id` in `0..=9_007_199_254_740_991`, echoed in stream records and the terminal reply |
 | `<ts>` | RFC 3339 UTC instant with a `Z` offset |
 | `<uint>` | JSON number, integral, `>= 0` |
@@ -958,6 +973,7 @@ belongs to exactly one operation.
 | `author` | variant: `resolved {subject_id, role, standing}`, `unresolved` |
 | `subject` | variant: `present {subject_id, device_id}`, `absent` — `hello` only |
 | `resume` | variant: `fresh`, `resumed {from_pos}` — `hello` only |
+| `<incarnation>` | opaque string — `hello` only; a per-process daemon nonce, compared for equality to fence replay across a restart (orthogonal to `storage_generation`) |
 | `gap.to` | variant: `bounded {pos}`, `open` |
 | `gap.reason` | bare enum: `backpressure`, `retention`, `subscription_lapse` |
 | `target` | `{ host, port }` — one object, never two sibling fields |
@@ -2025,6 +2041,18 @@ client's `op_id` collide with or replay another's.
 
 The ledger survives reconnection, because the case that motivates retry is a
 reply lost to a dropped connection.
+
+The ledger is **in-memory and process-scoped**: it survives a reconnect but not
+a daemon restart, and a restart empties it while the persistent
+`storage_generation` is unchanged. So the reconnect a client replays across
+could be to a *restarted* daemon whose ledger no longer holds the original
+result, where a replay would re-execute the mutation rather than return it. The
+[`hello` incarnation](#layer-2) is how a client detects this: it is a
+per-process nonce, so a changed incarnation across a reconnect means the daemon
+restarted. A client MUST NOT replay a keyed mutation across an incarnation
+change — it settles the held work as a disconnect of unknown execution instead,
+never re-executing it against a fresh ledger. (The incarnation makes the
+in-memory ledger *safe across restarts*, not durable.)
 
 | Policy | Operations |
 |---|---|
