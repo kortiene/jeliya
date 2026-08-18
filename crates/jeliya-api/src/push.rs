@@ -599,6 +599,82 @@ pub enum ApiError {
     },
 }
 
+impl ApiError {
+    /// The `code` discriminant for this error — the `snake_case` variant name
+    /// that appears in the JSON `code` field (the serde `tag` produced by the
+    /// `#[serde(tag = "code", rename_all = "snake_case")]` attribute). Used by
+    /// the UI send-state machine to classify a daemon refusal without parsing
+    /// strings (§K15): the code is the discriminant, never a payload.
+    pub fn wire_code(&self) -> &'static str {
+        match self {
+            Self::ForbiddenOrigin => "forbidden_origin",
+            Self::ProtocolUnsupported { .. } => "protocol_unsupported",
+            Self::StorageGenerationMismatch { .. } => "storage_generation_mismatch",
+            Self::Unauthenticated => "unauthenticated",
+            Self::NotReady => "not_ready",
+            Self::FrameTooLarge { .. } => "frame_too_large",
+            Self::IdleTimeout { .. } => "idle_timeout",
+            Self::PairingCodeInvalid { .. } => "pairing_code_invalid",
+            Self::SessionExpired => "session_expired",
+            Self::MalformedFrame => "malformed_frame",
+            Self::UnknownOperation { .. } => "unknown_operation",
+            Self::InvalidArgument { .. } => "invalid_argument",
+            Self::OpIdConflict { .. } => "op_id_conflict",
+            Self::ResourceExhausted { .. } => "resource_exhausted",
+            Self::SubjectAbsent => "subject_absent",
+            Self::SubjectStoreUnwritable => "subject_store_unwritable",
+            Self::ShutdownInProgress => "shutdown_in_progress",
+            Self::RoomNotAvailable { .. } => "room_not_available",
+            Self::RoomIndexUnreadable => "room_index_unreadable",
+            Self::RoomNameInvalid { .. } => "room_name_invalid",
+            Self::SoleAuthorityCannotLeave { .. } => "sole_authority_cannot_leave",
+            Self::CursorUnknown { .. } => "cursor_unknown",
+            Self::TransportUnavailable { .. } => "transport_unavailable",
+            Self::AuthorityCannotBeRemoved { .. } => "authority_cannot_be_removed",
+            Self::MemberUnknown { .. } => "member_unknown",
+            Self::MembershipEnded { .. } => "membership_ended",
+            Self::InsufficientStanding { .. } => "insufficient_standing",
+            Self::MembershipUnresolved { .. } => "membership_unresolved",
+            Self::RoomStillActive { .. } => "room_still_active",
+            Self::RoomNotLive { .. } => "room_not_live",
+            Self::InviteeAlreadyMember { .. } => "invitee_already_member",
+            Self::RoleNotGrantable { .. } => "role_not_grantable",
+            Self::InviteIndexUnreadable => "invite_index_unreadable",
+            Self::InviteUnknown { .. } => "invite_unknown",
+            Self::CapabilityInvalid => "capability_invalid",
+            Self::CapabilityExpired { .. } => "capability_expired",
+            Self::CapabilityRevoked { .. } => "capability_revoked",
+            Self::CapabilityRedeemed { .. } => "capability_redeemed",
+            Self::MessageTooLarge { .. } => "message_too_large",
+            Self::StatusLabelUnknown { .. } => "status_label_unknown",
+            Self::StatusSubjectUnknown { .. } => "status_subject_unknown",
+            Self::FleetProjectionUnavailable => "fleet_projection_unavailable",
+            Self::DeclaredSizeMismatch { .. } => "declared_size_mismatch",
+            Self::FileTooLarge { .. } => "file_too_large",
+            Self::FileIndexUnreadable => "file_index_unreadable",
+            Self::FileUnknown { .. } => "file_unknown",
+            Self::FileNotFetched { .. } => "file_not_fetched",
+            Self::ProviderUnreachable { .. } => "provider_unreachable",
+            Self::DigestMismatch { .. } => "digest_mismatch",
+            Self::TransferStalled { .. } => "transfer_stalled",
+            Self::TransferDeadlineExceeded { .. } => "transfer_deadline_exceeded",
+            Self::StreamAborted { .. } => "stream_aborted",
+            Self::TransferUnknown { .. } => "transfer_unknown",
+            Self::PipeTargetRefused { .. } => "pipe_target_refused",
+            Self::PolicyRefused { .. } => "policy_refused",
+            Self::PipeIndexUnreadable => "pipe_index_unreadable",
+            Self::PipeUnknown { .. } => "pipe_unknown",
+            Self::PipeUnreachable { .. } => "pipe_unreachable",
+            Self::PipeRevoked { .. } => "pipe_revoked",
+            Self::PipeNotPublisher { .. } => "pipe_not_publisher",
+            Self::ConnectionUnknown { .. } => "connection_unknown",
+            Self::SubscriptionLimitReached { .. } => "subscription_limit_reached",
+            Self::SubscriptionUnknown { .. } => "subscription_unknown",
+            Self::ResyncRequired { .. } => "resync_required",
+        }
+    }
+}
+
 /// The client's declared protocol generation, or its stated absence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
