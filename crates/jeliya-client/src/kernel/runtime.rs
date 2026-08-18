@@ -574,9 +574,9 @@ mod tests {
 
         // Feed Connected — the runtime turns it into Input::Connected.
         inner.borrow_mut().push(DriverEvent::Connected {
-                        token,
-                        incarnation: jeliya_api::Incarnation::new("runtime-test"),
-                    });
+            token,
+            incarnation: jeliya_api::Incarnation::new("runtime-test"),
+        });
         pool.run_until_stalled();
 
         assert_eq!(
@@ -648,9 +648,9 @@ mod tests {
         pool.run_until_stalled();
         let token = inner.borrow().dials[0];
         inner.borrow_mut().push(DriverEvent::Connected {
-                        token,
-                        incarnation: jeliya_api::Incarnation::new("runtime-test"),
-                    });
+            token,
+            incarnation: jeliya_api::Incarnation::new("runtime-test"),
+        });
         pool.run_until_stalled();
         assert_eq!(handle.state(), State::Ready);
 
@@ -690,12 +690,10 @@ mod tests {
         handle.start();
         pool.run_until_stalled();
         let token1 = inner.borrow().dials[0];
-        inner
-            .borrow_mut()
-            .push(DriverEvent::Connected {
-                token: token1,
-                incarnation: jeliya_api::Incarnation::new("runtime-test"),
-            });
+        inner.borrow_mut().push(DriverEvent::Connected {
+            token: token1,
+            incarnation: jeliya_api::Incarnation::new("runtime-test"),
+        });
         pool.run_until_stalled();
         assert_eq!(handle.state(), State::Ready);
 
