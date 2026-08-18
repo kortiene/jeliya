@@ -146,6 +146,101 @@ fn reconciler_source_has_no_wall_clock_rng_or_runtime() {
     );
 }
 
+/// The `direct` feature's optional native deps (`tokio`, `jeliya-core`,
+/// `jeliya-codec`) and their transitive `iroh-rooms` must not appear in the
+/// `jeliya-ui` browser (`wasm32`) build graph: the `direct` feature is
+/// native-only and must never leak into the browser artifact.
+///
+/// `cargo tree --target wasm32-unknown-unknown` resolves the wasm32 dependency
+/// graph without compiling it, so this assertion runs even where the wasm32
+/// std target is not installed — exactly as `jeliya-platform`'s twin test does.
+///
+/// This is the Rust counterpart of `scripts/check-jeliya-ui-wasm-graph.sh`
+/// scoped to the `direct` feature's contribution (§11).
+#[test]
+fn direct_feature_deps_absent_from_jeliya_ui_wasm_graph() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "-p",
+            "jeliya-ui",
+            "--features",
+            "web",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--edges",
+            "no-dev",
+        ])
+        .output()
+        .expect("cargo tree runs");
+    assert!(
+        output.status.success(),
+        "cargo tree failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tree = String::from_utf8_lossy(&output.stdout);
+    // The direct feature's three optional deps plus the iroh family they
+    // transitively carry must never appear in the browser build. `jeliya-core`
+    // and `jeliya-codec` are cfg-guarded `cfg(not(wasm32))` + optional, so a
+    // misconfiguration (e.g. moving them to base deps or removing the cfg)
+    // would fail this check before it could ship.
+    for banned in ["tokio", "jeliya-core", "jeliya-codec", "iroh-rooms"] {
+        assert!(
+            !tree
+                .lines()
+                .any(|line| line.to_lowercase().contains(banned)),
+            "forbidden dep '{banned}' is reachable from the jeliya-ui wasm32 'web' build — \
+             the 'direct' feature's native deps must not leak into the browser graph:\n{tree}"
+        );
+    }
+}
+
+/// The `src/direct/**` module must contain no retired v1 seam, Dart, or C-ABI
+/// tokens (§10.5, §13 AC-1). The direct data path is in-process and typed;
+/// these strings have no legitimate use in it.
+///
+/// Banned patterns:
+/// - `handle_frame` — the retired v1 JSON-envelope seam (`Engine::handle_frame(String)`).
+/// - `nativePort` / `SendPort` — Dart `SendPort` API; gone with `jeliya-ffi`.
+/// - `portfile` — daemon portfile; DirectClient uses no daemon.
+/// - `extern "C"` — C-ABI export; gone with `jeliya-ffi`.
+#[test]
+fn direct_source_has_no_forbidden_v1_or_ffi_tokens() {
+    let direct_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/direct"));
+    if !direct_dir.exists() {
+        // The `direct` module may not be present on all builds; the feature
+        // is default-off. If the source directory is absent, the constraint
+        // is vacuously satisfied.
+        return;
+    }
+    const BANNED: [&str; 5] = [
+        "handle_frame",
+        "nativePort",
+        "SendPort",
+        "portfile",
+        r#"extern "C""#,
+    ];
+    let mut offenders = Vec::new();
+    for path in rust_sources(direct_dir) {
+        let text = std::fs::read_to_string(&path).expect("readable direct source");
+        for (index, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for banned in BANNED {
+                if line.contains(banned) {
+                    offenders.push(format!("{}:{} ({banned})", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "forbidden v1/FFI token found in src/direct — the direct path must contain \
+         no handle_frame, Dart port, C-ABI, or daemon portfile: {offenders:?}"
+    );
+}
+
 /// Collect every `.rs` file under `dir`, recursively.
 fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut sources = Vec::new();

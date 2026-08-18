@@ -334,6 +334,17 @@ jobs:
       - name: jeliya-client kernel fault suite (test-transport)
         run: cargo test --locked -p jeliya-client --features test-transport
 
+      # The #173 Android DirectClient adapter is behind the default-off,
+      # native-only `direct` feature with optional deps (`tokio`, `jeliya-core`,
+      # `jeliya-codec`), so the workspace run and the wasm build never compile
+      # it. A default-off feature with no CI step never runs (the #172 review's
+      # MUST-FIX lesson), so lint and test it explicitly on a native target.
+      - name: jeliya-client DirectClient adapter (direct)
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p jeliya-client --features direct --all-targets -- -D warnings
+          cargo test --locked -p jeliya-client --features direct
+
       # AC-6: the minimal shared Dioxus component compiles against the mock for
       # both a native target and wasm32-unknown-unknown, with no per-component
       # cfg. The `example` feature enables the mock and pulls in the optional

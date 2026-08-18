@@ -411,6 +411,44 @@
   (pure `room/` modules) pass. The offline reconciler-read Playwright fixtures
   and the live re-qualification are deferred to the tests phase (#182).
 
+- `crates/jeliya-client` gains the `DirectClient` Android adapter (#173),
+  the production replacement for `crates/jeliya-ffi/src/host.rs`. Enabled by
+  the default-off, native-only `direct` feature; `wasm32` and
+  `--no-default-features` graphs are unchanged. Key properties:
+
+  - **No JSON, Dart, C ABI, socket, token, or portfile in the data path.**
+    The engine is called only through `Engine::execute_with(TypedCall, …)` and
+    observed only through `subscribe_pushes() -> Push`. The one in-process
+    struct↔struct transform (the shared `ClientHandle` edge forces it) reuses
+    the daemon's own router (`route` → `TypedCall`), so adapter contract tests
+    match WS view-level outcomes by construction, not by coincidence.
+  - **Serialized dispatch** through a bounded mpsc request channel.
+    `DirectEngineActor` runs one call at a time — the WAL-race guard inherited
+    from the FFI host — so "calls execute serially" is structural, not a
+    contract the adapter has to maintain separately.
+  - **One owner per canonical data directory.** `OwnershipRegistry` mints an
+    `OwnerToken` for the first caller and refuses all subsequent `start` calls
+    with `OwnershipError` until the token is dropped.
+  - **Push loop runs for the engine's whole life,** not only while subscribers
+    are present, so the join-bootstrap `accept_joins` window stays open.
+  - **Honest lifecycle.** DirectClient never fabricates a reconnect: it emits
+    no `StateChanged(Connecting)` after the first open, never arms a backoff
+    timer, and never calls `Reconciler::resume` on behalf of the caller. Resume
+    is explicitly the caller's responsibility, via `Reconciler::resume()`, which
+    re-baselines every active room with `ResyncReason::Resume`.
+  - **Bounded teardown.** Stop drains accepted calls and awaits
+    `close_all_rooms` (10 s) before dropping the engine. The teardown outcome
+    (`TeardownOutcome::clean`) is propagated truthfully.
+  - **Reuses the kernel and reconciler unchanged** (`KernelConfig::stable_principal = true`
+    is the one DirectClient-specific setting: the in-process principal is
+    session-stable, enabling op-id dedup within the session).
+
+  New public API exported from `jeliya_client`: `DirectConfig`, `connect_direct`,
+  `OwnershipError` (all behind the `direct` feature). `jeliya-codec` gains
+  `pub use` re-exports of `route` and `Call` so the shared in-process bridge
+  compiles in one place. CI gains a dedicated `jeliya-client DirectClient
+  adapter` job (clippy + tests under `--features direct`). MSRV 1.91.
+
 ### Fixed
 
 - `pipe.revoke` is now **idempotent at the room-fact layer**: a second (or Nth)

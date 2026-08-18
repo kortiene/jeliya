@@ -16,7 +16,8 @@ audience: ["contributors", "maintainers", "release-engineers"]
 **Status: DECIDED 2026-07-27. M1's typed-API slices have landed (the #165,
 #166, and #233 remainders stay open); the M2 entry seam (#167), the M2
 transport-independent kernel (#168), the M2 authoritative room/session
-reconciler (#169), the M2 platform-authority boundary (#174), the M3 web
+reconciler (#169), the M2 platform-authority boundary (#174), the M2
+DirectClient Android adapter (#173), the M3 web
 foundation (#176), the M3 CSS/l10n/a11y foundation (#177), the M3
 bootstrap/shell/routing/preferences (#178), and the M3 room Activity/timeline/
 composer/drafts/pending-send (#179), and the M4 daemon supervisor
@@ -222,9 +223,9 @@ fallback.
 Pretending `DirectClient` reconnects is an explicit non-goal (#173). One
 fault-injected suite must prove all four expose the same view-level contract
 while retaining honest transport-specific lifecycle differences (#175). No
-such suite exists; of the four adapters only the deterministic mock has
-landed (shipped with the seam, #167) — `WsWeb`, `WsNative`, and
-`DirectClient` do not yet exist.
+such suite exists yet; `DirectClient` (#173) has landed alongside the
+deterministic mock (shipped with the seam, #167). `WsWeb` (#171) and
+`WsNative` (#172) land in parallel branches.
 
 **`PlatformServices`** (#174) keeps platform authority out of shared RSX
 components through one injectable boundary covering files, persistence,
