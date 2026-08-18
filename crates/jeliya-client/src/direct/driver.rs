@@ -220,7 +220,14 @@ impl DirectDriverTask {
                 self.reply_rx = Some(channels.reply_rx);
                 self.push_rx = Some(channels.push_rx);
                 self.lag_rx = Some(channels.lag_rx);
-                self.feed(Input::Connected { token });
+                // In-process, a daemon restart is a client restart, so the
+                // incarnation is a fixed constant — the fence never fires, and
+                // the driver never emits Interrupted, so no replay window ever
+                // opens (§5.3).
+                self.feed(Input::Connected {
+                    token,
+                    incarnation: jeliya_api::Incarnation::new("direct-in-process"),
+                });
             }
             Err(_) => self.feed(Input::GateRefused { token }),
         }
