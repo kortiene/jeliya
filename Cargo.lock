@@ -2967,6 +2967,7 @@ dependencies = [
  "jeliya-client",
  "jeliya-platform",
  "js-sys",
+ "time",
  "wasm-bindgen",
  "web-sys",
 ]

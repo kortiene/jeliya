@@ -1176,6 +1176,9 @@ const PRIMITIVE_OWNERSHIP = new Map([
   // These are structural ARIA roles, not copy — they express UI semantics.
   ['components/onboarding.rs', new Set(['role=alert'])],
   ['components/room_shell.rs', new Set(['role=tab'])],
+  // `alert` for the composer overflow error region (same structural-role
+  // justification as onboarding's error regions).
+  ['components/composer.rs', new Set(['role=alert'])],
 ]);
 
 const NO_OWNED_CONSTRUCTS = new Set();
