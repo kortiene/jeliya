@@ -14,16 +14,20 @@ use std::sync::{Arc, Mutex, Weak};
 
 use futures::{SinkExt, StreamExt};
 use jeliya_api::RequestId;
-use jeliya_codec::{decode_client_frame, ClientFrame, CodecBounds};
+use jeliya_codec::{
+    decode_client_frame, decode_stream_identity, decode_stream_kind, decode_stream_record_view,
+    ClientFrame, CodecBounds, StreamRecordBodyView,
+};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Bytes, Error as WsError, Message};
 
 use crate::backend::RawJson;
 use crate::kernel::core::Input;
-use crate::kernel::transport::{Inbound, WireReply};
+use crate::kernel::transport::{Inbound, StreamRecordMeta, WireReply};
 use crate::kernel::Runtime;
 
+use super::media::map_abort_reason;
 use super::runtime::{ConnRegistry, Deadlines};
 use super::source::{Dial, DialResolveError, TargetSource};
 
@@ -285,6 +289,13 @@ async fn read_loop(
                             inject(&runtime, Input::Inbound(Inbound::Malformed));
                             continue;
                         };
+                        // A stream's terminal reply prunes its media state
+                        // (task, quarantine buffer) — cheap when the id binds
+                        // no stream (§S10 retire-on-reply).
+                        conn.lock()
+                            .expect("conn registry poisoned")
+                            .media
+                            .prune(request_id);
                         let result = match result {
                             Ok(text) => WireReply::Ok(RawJson::from_string(text)),
                             Err(api) => WireReply::Err(api),
@@ -314,11 +325,20 @@ async fn read_loop(
                     }
                 }
             }
-            // Binary = a byte-stream record. #269 owns stream lifecycle; on this
-            // base the kernel exposes no stream inbound path, so a Binary record
-            // is dropped (it can strand nothing). Wiring Binary → the stream
-            // path is the follow-up once #269 lands (spec §6 / OQ-4).
-            Ok(Message::Binary(_)) => {}
+            // Binary = a byte-stream record (§S3/§S10): staged decode per
+            // the codec's documented order — identity, registry binding
+            // lookup, kind, full structural view — then the byte-free meta
+            // reaches the core. A codec-fatal or unbindable record strands
+            // nothing: `Inbound::Malformed`, exactly as for text (§K4).
+            Ok(Message::Binary(bytes)) => {
+                match decode_inbound_stream_record(&conn, generation, &bounds, &runtime, &bytes) {
+                    Ok(record) => inject(
+                        &runtime,
+                        Input::Inbound(Inbound::Record { generation, record }),
+                    ),
+                    Err(()) => inject(&runtime, Input::Inbound(Inbound::Malformed)),
+                }
+            }
             // Ping/Pong are handled by tungstenite; ignore them here.
             Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
             Ok(Message::Close(_)) | Err(_) => {
@@ -341,11 +361,109 @@ fn inject(runtime: &Weak<Runtime>, input: Input) {
 }
 
 /// Clear the live writer only when the registry still names `generation`, so a
-/// task tearing down cannot clobber a successor connection's writer.
+/// task tearing down cannot clobber a successor connection's writer. The
+/// connection's media dies with it — a stream never survives its connection
+/// (§S10), mirroring the core's own drain on `Interrupted`.
 fn clear_writer_if_current(conn: &Arc<Mutex<ConnRegistry>>, generation: u64) {
     let mut registry = conn.lock().expect("conn registry poisoned");
     if registry.generation == generation {
         registry.writer = None;
+        registry.media.clear();
+    }
+}
+
+/// Decode one inbound Binary message into the byte-free record meta the core
+/// consumes, performing the driver-side media work first (§S3/§S10):
+///
+/// 1. [`decode_stream_identity`] — codec-fatal (bad magic, short header,
+///    over-ceiling) fails closed as `Malformed`;
+/// 2. the media registry's binding lookup by request id — a record for a
+///    wire id this connection never bound correlates to nothing;
+/// 3. [`decode_stream_kind`] and [`decode_stream_record_view`] — the full
+///    structural decode, still borrowing the payload;
+/// 4. per-kind media work: OPEN spawns the source media task, DATA
+///    quarantines its payload (a cap breach is protocol trouble →
+///    `Malformed`) **before** the meta is handed onward, so the `WriteSink`
+///    the meta provokes always finds its bytes buffered.
+///
+/// `Err(())` is the `Inbound::Malformed` signal; the generation tag is the
+/// caller's (this connection's), so the core fences stragglers itself.
+fn decode_inbound_stream_record(
+    conn: &Arc<Mutex<ConnRegistry>>,
+    _generation: u64,
+    bounds: &CodecBounds,
+    runtime: &Weak<Runtime>,
+    bytes: &Bytes,
+) -> Result<StreamRecordMeta, ()> {
+    let identity = decode_stream_identity(bytes, bounds).map_err(|_| ())?;
+    let wire_id = identity.request_id();
+    let stream_id = identity.stream_id().get();
+    let mut registry = conn.lock().expect("conn registry poisoned");
+    if !registry.media.is_bound(wire_id) {
+        return Err(());
+    }
+    decode_stream_kind(bytes, bounds).map_err(|_| ())?;
+    let view = decode_stream_record_view(bytes, bounds).map_err(|_| ())?;
+    match view.body {
+        StreamRecordBodyView::Open { total } => {
+            // The producer's media task starts at admission: it owns the
+            // source and the grant channel until the terminal reply prunes
+            // it or the connection dies.
+            let writer = registry.writer.clone();
+            if let Some(writer) = writer {
+                registry.media.spawn_source_task(
+                    wire_id,
+                    stream_id,
+                    &writer,
+                    runtime.clone(),
+                    *bounds,
+                );
+            }
+            Ok(StreamRecordMeta::Open {
+                id: wire_id,
+                stream_id,
+                total,
+            })
+        }
+        StreamRecordBodyView::Data { offset, payload } => {
+            if !registry.media.deliver_data(wire_id, offset, payload) {
+                return Err(());
+            }
+            Ok(StreamRecordMeta::Data {
+                id: wire_id,
+                stream_id,
+                offset,
+                len: payload.len() as u64,
+            })
+        }
+        StreamRecordBodyView::Credit {
+            accepted_through,
+            send_through,
+        } => Ok(StreamRecordMeta::Credit {
+            id: wire_id,
+            stream_id,
+            accepted_through,
+            send_through,
+        }),
+        StreamRecordBodyView::End { total } => Ok(StreamRecordMeta::End {
+            id: wire_id,
+            stream_id,
+            offset: total,
+        }),
+        StreamRecordBodyView::Abort {
+            accepted_through,
+            reason,
+        } => Ok(StreamRecordMeta::Abort {
+            id: wire_id,
+            stream_id,
+            high_water: accepted_through,
+            reason: map_abort_reason(reason),
+        }),
+        StreamRecordBodyView::Ack { accepted_through } => Ok(StreamRecordMeta::Ack {
+            id: wire_id,
+            stream_id,
+            high_water: accepted_through,
+        }),
     }
 }
 

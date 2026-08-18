@@ -35,6 +35,7 @@
 //!   matching `hello` generation.
 
 mod clock;
+mod media;
 mod runtime;
 mod source;
 mod ws_native;
