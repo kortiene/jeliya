@@ -18,13 +18,19 @@
 //! detail into the Diagnostics dialog while primary copy stays friendly catalog
 //! text.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::{RoomId, RoomList, RoomRow, Standing, SubjectId, SubjectState};
-use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
+use jeliya_client::{
+    CallError, ClientEvent, ClientHandle, Dedup, ReconcileConfig, Reconciler, State,
+};
 use jeliya_platform::navigation::{RoomDest, Route};
 use jeliya_platform::PreferenceKey;
 
+use crate::components::SavedViewMap;
 use crate::components::{
     use_announce_context, BootScreen, EmptyCenter, FleetPane, GlobalNav, LiveRegion, NavLandmark,
     Onboarding, RecoveryBanner, RoomShell, RoomUnavailable, SettingsPane, SkipLink, SkipLinks,
@@ -34,6 +40,7 @@ use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
     LocaleState,
 };
+use crate::room::scroll::SavedView;
 use crate::shell::bootstrap::{
     derive_boot_view, BootView, ConnectionSnapshot, FailureView, OnboardStep, RecoveryView,
     RoomsKnowledge,
@@ -219,6 +226,32 @@ pub fn AppRoot(
 ) -> Element {
     let mut ui = use_signal(UiState::new);
 
+    // The authoritative per-room reconciler (#169), DERIVED from the injected
+    // `ClientHandle` (not a third root input — §3.1): constructed once, provided
+    // to the subtree so the Activity pane (#179) can activate rooms and fold its
+    // `RoomUpdate` fan-out. A single `use_future` drives `run()` for the app's
+    // lifetime (the driver never spawns). The App-level saved-view map lets a
+    // room switch restore the same reading position (§7 AC). Under the mock the
+    // reconciler's baseline reads are unscripted, so it parks quiescently (a
+    // failed read parks the room, never a busy loop); the pane shows Loading
+    // honestly until #171's `WsWeb` (or the offline timeline fixture) feeds it.
+    let reconciler_handle = handle.clone();
+    let reconciler = use_hook(|| {
+        Rc::new(Reconciler::new(
+            reconciler_handle,
+            ReconcileConfig::default(),
+        ))
+    });
+    use_context_provider(|| reconciler.clone());
+    use_context_provider(|| Signal::new(HashMap::<RoomId, SavedView>::new()) as SavedViewMap);
+    {
+        let reconciler = reconciler.clone();
+        use_future(move || {
+            let reconciler = reconciler.clone();
+            async move { reconciler.run().await }
+        });
+    }
+
     // Resolve the locale from the two persisted preferences AND the injected
     // platform language, in that precedence (Decision-5, `LocaleState::resolve`):
     // an explicit stored preference wins, else the platform language, else the
@@ -294,6 +327,13 @@ pub fn AppRoot(
     // the event-consumption future below moves the `handle` prop, so the panes
     // read through this clone.
     let room_handle = handle.clone();
+    // The local subject id, when the connection snapshot surfaced it (#270's
+    // `Hello.subject`), so timeline rows can attribute "You" to self; `None`
+    // until the seam surfaces it (the current mock gap — self shows as a short id).
+    let self_id: Option<SubjectId> = connection.as_ref().and_then(|conn| match &conn.subject {
+        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
+        SubjectState::Absent => None,
+    });
     // The user's local onboarding advance (§5.D "user advanced past onboarding"),
     // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
     // the onboarding step callbacks advance it as the user completes each step.
@@ -578,13 +618,8 @@ pub fn AppRoot(
                 }
             }
         };
-    // The connected subject, when the connection snapshot names it: the
-    // Settings identity surface renders the ID only from daemon truth — never
-    // assumed from local state.
-    let self_id: Option<SubjectId> = connection.as_ref().and_then(|conn| match &conn.subject {
-        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
-        SubjectState::Absent => None,
-    });
+    // The connected subject id is derived above (the timeline "You" seam); the
+    // Settings identity surface reads the same daemon-truth value.
     let rooms_label = strings.rooms_heading().to_string();
     let skip_rooms = strings.skip_to_rooms().to_string();
     let app_name = strings.app_name();
@@ -822,6 +857,15 @@ pub fn AppRoot(
                                 .find(|r| r.room_id == room_id)
                                 .map(|r| r.standing != Standing::Active)
                                 .unwrap_or(false);
+                            // The routed room's typed capabilities gate the
+                            // Activity composer (#179 D8); empty before the row
+                            // is known.
+                            let capabilities = snapshot
+                                .rooms
+                                .iter()
+                                .find(|r| r.room_id == room_id)
+                                .map(|r| r.capabilities.clone())
+                                .unwrap_or_default();
                             rsx! {
                                 main { class: "destination", id: "main-content", tabindex: "-1",
                                     if reachable {
@@ -832,6 +876,9 @@ pub fn AppRoot(
                                             handle: room_handle.clone(),
                                             services: services.clone(),
                                             read_only,
+                                            capabilities,
+                                            shell: active_shell,
+                                            self_id: self_id.clone(),
                                         }
                                     } else {
                                         RoomUnavailable { navigate }

@@ -317,7 +317,259 @@
   adapters (#171/#172/#173) with their parity suite (#175) follow as separate
   issues. MSRV 1.91.
 
+- `crates/jeliya-client` gains the kernel stream lifecycle layer (#269):
+  `call_stream::<FileShare>` and `call_stream::<FileRead>` now drive a full
+  `OPEN → DATA/CREDIT → END → terminal Text reply` lifecycle (or `ABORT` on
+  failure) through the kernel against the deterministic in-memory transport.
+  The stream layer is a byte-free companion state machine
+  (`src/kernel/streaming.rs`) over the same sans-IO core that drives
+  request/reply — `StreamEntry` holds only offset scalars, never payload bytes,
+  so the framing (`JBS2` header, per-kind field rules, offset arithmetic) stays
+  owned by `jeliya-codec` and the daemon executor (#233/#242/#243). The
+  transport seam (`kernel/transport.rs`) grows a binary-record concept
+  (`StreamRecordIntent`, `StreamRecordMeta`, `Inbound::Record`) and a media seam
+  (source/sink `Action`/`Input` variants) so adapters can frame via `jeliya-codec`
+  at the driver boundary without the core holding any bytes.
+
+  Key guarantees:
+
+  - **Credit-bounded outbound bytes.** Outbound DATA never exceeds the daemon's
+    cumulative `send_through`; the read-ahead window is byte-bounded
+    (`stream_window_bytes`) independent of file size; ACK is ABORT-only — never
+    on the success path.
+  - **Per-stream absolute deadline.** Armed at OPEN as
+    `transfer_connect_allowance + ceil(total·8 / transfer_floor_bits_per_second)`,
+    replacing the request/reply base deadline. Produces `CallError::Timeout`
+    (`Unknown`) on expiry and sends a courtesy client ABORT to release the
+    daemon's transfer reservation.
+  - **Stall timer.** A stream that stops making accepted progress for
+    `transfer_stall` fails honestly. The timer re-arms on every accepted-progress
+    event; `Finalizing` (END emitted or accepted, awaiting the terminal reply)
+    is uncancellable — neither timer aborts it.
+  - **Honest teardown.** ABORT/ACK, connection loss, cancellation, and total
+    stop each settle the terminal exactly once and leave no unbounded task, map,
+    or timer behind. Stream tombstones (bounded at `max_concurrent_streams`,
+    evicted FIFO) absorb late daemon records so stranded state is structurally
+    impossible.
+  - **Streams never auto-replay.** `file.share` and `file.read` are now
+    `ReplayPolicy::Never` regardless of `mutating`, `op_id`, or
+    `stable_principal`. Previously, `"file.share"` appeared in the
+    `op_id_deduplicated` set, so a `file.share` dispatched with `Dedup::Key`
+    under `stable_principal = true` would have had its Text request re-sent
+    across a reconnect into a mid-stream `op_id` — returning
+    `stream_aborted{transport_lost}` as if it were the original result. The
+    gate is `is_stream_op` in `replay.rs`; the fix is covered by a
+    red-before-green test (`replay_hold_preserves_original_send_order` swapped
+    `file.share` → `file.fetch`).
+  - **Bounded by construction.** `StreamTable` (active, finalizing, and
+    tombstoned streams), per-stream timers (≤ 2 while Active, 0 on terminal),
+    and the outbound read-ahead / inbound quarantine window are all statically
+    or configurably bounded; `streams()`, `stream_timers()`, and
+    `stream_window_bytes_reserved()` observers let fault tests assert every
+    bound holds under churn and after stop.
+
+  New public type: `StreamLimits` (re-exported from `jeliya_client`) — the
+  six served transfer bounds a stream is driven under
+  (`transfer_connect_allowance`, `transfer_floor_bits_per_second`,
+  `budget_ticks_per_second`, `transfer_stall`, `stream_window_bytes`,
+  `max_concurrent_streams`); validated at `KernelConfig` construction so an
+  invalid served configuration refuses readiness before any stream is admitted.
+  The `test-transport` feature's `KernelController` gains `open`, `credit`,
+  `deliver_data`, `end`, `abort`, `ack`, and the corresponding observers
+  (`take_outbound_records`, `streams`, `stream_timers`,
+  `stream_window_bytes_reserved`) so every stream fault is a deterministic
+  sequence of `step` calls, identical on wasm and native.
+  `SentRecord` (re-exported for adapter tests) captures outbound record
+  observations (id, kind tag, offset, length) in a redaction-safe form — no
+  payload bytes, file names, or free strings.
+  The stream layer adds no new runtime dependency; `boundaries.rs`'s existing
+  `src/kernel/**` token scan covers the new module unchanged.
+  MSRV 1.91.
+
+- `crates/jeliya-ui` gains the room **Activity** destination (#179 — M3,
+  first room-content slice): the signed timeline, composer, and
+  evidence-backed send lifecycle under `/rooms/:roomId/activity`, replacing
+  the `RoomShell` Activity skeleton with the real pane. The split is a pure,
+  renderer-/web-sys-free `room/` core (`projection`, `runs`, `send`, `scroll`,
+  `reconcile`) whose exhaustiveness the compiler enforces, and thin Dioxus
+  components (`ActivityPane`, `Composer`, `TimelineRowView`) that own DOM
+  measurement through the renderer-agnostic mounted element API — no `web-sys`,
+  no `cfg` (Decision-3/-6).
+
+  Key properties:
+
+  - **Exhaustive, total event projection.** A `match` over the closed
+    10-kind `EventKindContent` that `rustc` forces to be exhaustive — no
+    `return null` silent drop of any signed fact. A kind without a bespoke
+    card renders as an inspectable generic row (author + signed time + localized
+    kind label + safe metadata); a genuinely undecodable wire kind never reaches
+    the view (the reconciler's `DecodeFailed` path forces a resync first).
+  - **Folding / grouping as reversible view state.** Maximal same-author
+    `AgentStatus` run folding (`RunSummary { count, first_at, last_at }`), five
+    view-only activity filters (conversation / agent-runs / membership / files /
+    pipes), day dividers, and 5-minute same-sender message compacting — all
+    computed on top of the signed list, never mutating or dropping a signed
+    fact. The counter and scroll accounting count the unfolded, unfiltered items.
+  - **Evidence-backed send state machine.** `Pending` (call in flight) →
+    `Syncing { event_id }` (daemon authored the event; awaiting the committed
+    row) → **dropped** the instant the reconciler surfaces that `event_id`. A
+    failed call classifies through `CallError::execution()`: `DefinitelyNot`
+    ("not sent", clean retry), `Unknown` ("may not have sent", retry offered,
+    never auto-taken), `Definitely` (treated as `Syncing`; a committed row will
+    arrive). No fabricated "delivered" or checkmark (contract no-fake-state
+    rules).
+  - **Stable-`op_id` idempotent retry.** Each send mints one stable `OpId`
+    (derived from the local `SendId`); Retry re-issues with the same `op_id`,
+    so the daemon ledger returns the original `event_id` with no second effect
+    on this connection (D4, contract rule 7). No auto-replay.
+  - **Reconciler wired into `AppRoot`.** `AppRoot` constructs one
+    `Reconciler` via `use_hook` and drives `reconciler.run()` via `use_future`;
+    the Activity pane activates/deactivates its room on mount/unmount and
+    folds the `RoomUpdateSubscription` into a `RoomActivityState` signal.
+    Pending `Syncing` entries drop the instant the converged timeline contains
+    their `event_id`; no duplicate can appear on reconnect.
+  - **Pure scroll model.** `room/scroll.rs` holds stick-to-bottom / restore /
+    new-item accounting as plain Rust math (no DOM); `ActivityPane` feeds it
+    Dioxus-measured numbers and applies the result through the mounted element
+    API. The "N new messages / N new activity" affordance words itself by what
+    the trailing new items actually are.
+  - **Per-room drafts across route changes.** `PreferenceKey::Draft{room_id}`
+    in the `jeliya.dx.v1` namespace (session-scoped `WebPreferences`). Draft
+    restoration on failure is guarded against clobbering fresh user input.
+    Autosize re-derives from the restored draft on remount; no stored geometry.
+  - **Capability-gated composer.** When the room lacks `MessageSend` (a
+    departed room), the composer is suppressed as a typed capability outcome —
+    not a disabled textarea — and the signed left/removed fact is stated
+    plainly (D8, invariant 5 floor). Files/Pipes events render as inspectable
+    inert references until #181.
+  - **l10n.** All copy through the #177 typed catalog with
+    compiler-enforced EN/FR parity; new timeline/composer catalog methods.
+
+  The real-browser transport (`WsWeb`, #171) is not yet in place; the surface
+  renders against the deterministic mock exactly as #176/#178 do. Host tests
+  (pure `room/` modules) pass. The offline reconciler-read Playwright fixtures
+  and the live re-qualification are deferred to the tests phase (#182).
+
+- `crates/jeliya-client` gains the `DirectClient` Android adapter (#173),
+  the production replacement for `crates/jeliya-ffi/src/host.rs`. Enabled by
+  the default-off, native-only `direct` feature; `wasm32` and
+  `--no-default-features` graphs are unchanged. Key properties:
+
+  - **No JSON, Dart, C ABI, socket, token, or portfile in the data path.**
+    The engine is called only through `Engine::execute_with(TypedCall, …)` and
+    observed only through `subscribe_pushes() -> Push`. The one in-process
+    struct↔struct transform (the shared `ClientHandle` edge forces it) reuses
+    the daemon's own router (`route` → `TypedCall`), so adapter contract tests
+    match WS view-level outcomes by construction, not by coincidence.
+  - **Serialized dispatch** through a bounded mpsc request channel.
+    `DirectEngineActor` runs one call at a time — the WAL-race guard inherited
+    from the FFI host — so "calls execute serially" is structural, not a
+    contract the adapter has to maintain separately.
+  - **One owner per canonical data directory.** `OwnershipRegistry` mints an
+    `OwnerToken` for the first caller and refuses all subsequent `start` calls
+    with `OwnershipError` until the token is dropped.
+  - **Push loop runs for the engine's whole life,** not only while subscribers
+    are present, so the join-bootstrap `accept_joins` window stays open.
+  - **Honest lifecycle.** DirectClient never fabricates a reconnect: it emits
+    no `StateChanged(Connecting)` after the first open, never arms a backoff
+    timer, and never calls `Reconciler::resume` on behalf of the caller. Resume
+    is explicitly the caller's responsibility, via `Reconciler::resume()`, which
+    re-baselines every active room with `ResyncReason::Resume`.
+  - **Bounded teardown.** Stop drains accepted calls and awaits
+    `close_all_rooms` (10 s) before dropping the engine. The teardown outcome
+    (`TeardownOutcome::clean`) is propagated truthfully.
+  - **Reuses the kernel and reconciler unchanged** (`KernelConfig::stable_principal = true`
+    is the one DirectClient-specific setting: the in-process principal is
+    session-stable, enabling op-id dedup within the session).
+
+  New public API exported from `jeliya_client`: `DirectConfig`, `connect_direct`,
+  `OwnershipError` (all behind the `direct` feature). `jeliya-codec` gains
+  `pub use` re-exports of `route` and `Call` so the shared in-process bridge
+  compiles in one place. CI gains a dedicated `jeliya-client DirectClient
+  adapter` job (clippy + tests under `--features direct`). MSRV 1.91.
+
+- `jeliya-client` gains the native protocol-v2 WebSocket adapter `WsNative`
+  (#172), behind the default-off, native-only `ws-native` feature. It binds
+  the transport-independent kernel (#168) to a real `tokio` +
+  `tokio-tungstenite` transport that dials a loopback `jeliyad` via the
+  reusable supervisor `TargetResolver` (#170). Landing order within the change:
+
+  - **Codec client direction** (`jeliya-codec/src/client.rs`, new): the
+    protocol-v2 encoder for outbound request envelopes (`encode_request`) and
+    the decoder for inbound daemon Text frames (`decode_client_frame` →
+    `ClientFrame::{Hello, Reply, Push, Malformed}`). JSON stays in the codec;
+    `jeliya-client` never touches `serde_json::Value`.
+
+  - **`DriverIo` seam** (`src/kernel/driver_io.rs`): a `pub(crate)` trait
+    (`send`, `arm_timer`, `cancel_timer`, `dial`, `cancel_dial`) that factors
+    the transport-touching arms out of `Shared::apply_one`, making the kernel's
+    async shell — `Deferred`/`Runtime`/`drain_delivery`/ABBA-avoidance —
+    reusable by all adapters. The existing in-memory driver becomes `InMemoryIo`
+    implementing `DriverIo`; the entire `test-transport` and `kernel_fault`
+    suite passes unchanged (the refactor's acceptance gate).
+
+  - **Native adapter** (`src/adapter/`): `source.rs` (the injected
+    `TargetSource` seam + fail-closed-vs-retry classification of every
+    `SupervisorError`); `runtime.rs` (`connect_ws_native` constructor + async
+    `RealDriver` loop); `ws_native.rs` (dial → hello agreement → serve →
+    reconnect → stop); `clock.rs` (monotonic `Instant` → `Tick`, 1 ms =
+    1 tick). Public construction surface re-exported from `jeliya_client`:
+    `connect_ws_native`, `TargetSource`, `Dial`, `DialResolveError`,
+    `NativeClientConfig`, `NativeError`.
+
+  - **Security posture**: the bearer is a `Redacted<String>` exposed only when
+    composing the `Authorization: Bearer` header — never a URL, log line, or
+    value the `ClientHandle` surfaces, so it is unreachable from WebView JS.
+    `Connected` is not reported until three independent checks agree: resolver
+    health proof, daemon upgrade gate (`101`), and matching `hello` generation.
+    Stale/malformed discovery fails closed. Only verified loopback endpoints
+    (`127.0.0.1:<port>`) are dialed; a portfile advertising a non-loopback host
+    is rejected before any connection attempt.
+
+  - **Wasm-graph boundary guard** (`tests/boundaries.rs`): a new structural
+    test resolves the `jeliya-ui` `web` feature tree for
+    `wasm32-unknown-unknown` and asserts `tokio`, `tokio-tungstenite`, and
+    `jeliya-supervisor` are absent — the jeliya-client-side twin of the
+    supervisor's own wasm-graph assertion. Default library, wasm, and
+    MSRV/clippy builds are unaffected.
+
+  `stable_principal = false` by default (replay disabled) until #270 provides
+  a daemon-incarnation fence. The real-daemon integration matrix (token
+  rotation, stale portfile, abrupt daemon death, same-generation adoption,
+  version mismatch, reconnect, stop) is `#[ignore]`-deferred and runs
+  explicitly with a live `jeliyad`. Reconnect routes through #169's reconciler
+  with no new resync logic in the adapter; it only guarantees the correct
+  lifecycle+generation signal.
+
 ### Fixed
+
+- `pipe.revoke` is now **idempotent at the room-fact layer**: a second (or Nth)
+  revoke of an already-withdrawn pipe replays the **original** withdrawal —
+  returning the first revoke's exact `event_id`, `pos`, and `revoked_at` — and
+  authors **nothing** further. Previously the daemon published a fresh signed
+  `pipe.closed` on every revoke (the op_id dedup ledger only covers a *same*-
+  op_id replay, not a genuinely distinct second request), so an already-revoked
+  pipe grew a second committed `pipe_revoked` event; under concurrent load the
+  two authors could straddle a millisecond boundary and the second's differing
+  instant broke the "returns the original withdrawal" guarantee — a correctness
+  defect that surfaced as a flaky conformance case. `RoomSupervisor::pipe_close`
+  now consults the canonically-earliest committed `pipe.closed` (after, not
+  before, the unknown-pipe and publisher-only guards, so `pipe_unknown` /
+  `pipe_not_publisher` are unchanged — including for a non-publisher re-revoking
+  a closed pipe) and returns it without authoring; the withdrawal-event lookup
+  selects the first canonical-order match rather than the last; and concurrent
+  distinct-op_id revokes of the same pipe are serialized per `(room, pipe)` so a
+  check-then-author cannot interleave into two withdrawals. No wire/schema,
+  op_id-ledger, or `pipe.connect`/`pipe.list`/`pipe.release` change. Issue #271.
+
+- The serve-crate test
+  `websocket_file_share_progress_resets_stall_but_not_absolute_deadline` now
+  drives its stall/deadline timers off a **paused** virtual clock
+  (`tokio::time::pause()` + `advance`), matching its two siblings, instead of a
+  real `tokio::time::sleep`. The real sleep drifted against the daemon's
+  `Instant`-based timers under concurrent CI load and intermittently reordered
+  the CREDIT/ABORT records; the conversion asserts the same observable sequence
+  and post-conditions and passes deterministically under load. Issue #271.
 
 - A room list backed by a daemon that supplies **no** `last_event_ts` can raise
   an unread dot again. Nothing seeded a baseline for such a room, and the

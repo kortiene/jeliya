@@ -2888,9 +2888,16 @@ version = "0.0.0"
 dependencies = [
  "dioxus",
  "futures",
+ "http",
  "jeliya-api",
+ "jeliya-codec",
+ "jeliya-core",
+ "jeliya-supervisor",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
 ]
 
 [[package]]

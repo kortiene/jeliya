@@ -58,6 +58,7 @@ retained as a valid, dated evidence record about the revision it examined.
 
 ## Operations and release evidence
 
+- [Diagnostics and logging](diagnostics-logging.md) - Enable, locate, follow, rotate, and safely share `jeliyad` diagnostic logs on the released daemon and packaged desktop, and the boundary that keeps signed room event logs out of troubleshooting.
 - [Accessibility release checklist](accessibility-checklist.md) - The screen-reader and keyboard behaviours automated checks cannot prove, verified by hand before a release.
 - [Real-network NAT runbook](realnet-runbook.md) - Procedure for proving direct or relayed connectivity across two networks.
 - [v0.6.1 evidence boundary](evidence/v0.6.1/index.md) - Empty qualification boundary reserved for fresh, signed v0.6.1 manifests after candidate designation.

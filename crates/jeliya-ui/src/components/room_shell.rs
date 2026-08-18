@@ -8,13 +8,14 @@
 //! contract rule 6).
 
 use dioxus::prelude::*;
-use jeliya_api::RoomId;
+use jeliya_api::{CapabilityToken, RoomId, SubjectId};
 use jeliya_client::ClientHandle;
 use jeliya_platform::navigation::{RoomDest, Route};
 
-use crate::components::{FilesPane, NavLandmark, PipesPane};
+use crate::components::{ActivityPane, FilesPane, NavLandmark, PipesPane};
 use crate::l10n::use_strings;
 use crate::shell::router::NavIntent;
+use crate::shell::Shell;
 use crate::PlatformServices;
 
 /// A short, human-scannable disambiguator for a room id (the header's
@@ -58,6 +59,17 @@ pub fn RoomShell(
     /// Whether this room is a read-only archive (suppress share/fetch — spec D8).
     #[props(default)]
     read_only: bool,
+    /// The routed room's typed capabilities, from its `room.list` row — the
+    /// Activity composer's `MessageSend` gate (#179 D8).
+    #[props(default)]
+    capabilities: Vec<CapabilityToken>,
+    /// The responsive shell (the Activity composer's keyboard fork; #178 §8).
+    #[props(default = Shell::Wide)]
+    shell: Shell,
+    /// The local subject id when known (for "You" attribution); `None` until
+    /// `Hello.subject` is surfaced (#270).
+    #[props(default)]
+    self_id: Option<SubjectId>,
 ) -> Element {
     let strings = use_strings();
     let nav_label = strings.room_nav_label().to_string();
@@ -117,10 +129,21 @@ pub fn RoomShell(
                     }
                 }
             }
-            // The per-destination pane. Files/Pipes are the #181 content panes;
-            // Activity/People/Agents keep the #178 skeleton until #179/#180.
+            // The per-destination pane. Activity (#179) and Files/Pipes (#181)
+            // are the real content panes; People/Agents keep the #178 skeleton
+            // until #180.
             {
                 match &dest {
+                    RoomDest::Activity => rsx! {
+                        ActivityPane {
+                            handle: handle.clone(),
+                            services: services.clone(),
+                            room_id: room_id.clone(),
+                            capabilities: capabilities.clone(),
+                            shell,
+                            self_id: self_id.clone(),
+                        }
+                    },
                     RoomDest::Files { item } => {
                         let selected = item.clone();
                         rsx! {

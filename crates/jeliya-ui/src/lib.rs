@@ -84,6 +84,14 @@ pub mod pipes;
 // browser binding (`jeliya-platform-web`) supplies only the storage.
 #[cfg(feature = "ui")]
 pub mod prefs;
+// The pure, renderer-agnostic core of the room Activity destination (#179): the
+// exhaustive event projection, agent-status run folding + activity filters, the
+// evidence-backed send state machine, the pure scroll math, and the fold of the
+// reconciler's `RoomUpdate` stream into a per-room view. Host-testable; the thin
+// Dioxus components in `components::{activity,composer,timeline_row}` render it
+// and own DOM measurement through the mounted element API (Decision-3/-6).
+#[cfg(feature = "ui")]
+pub mod room;
 // The global-shell logic (#178 §5/§8): responsive shell selection, the router
 // (canonicalization + fail-safe + last-room restore), and the bootstrap/
 // onboarding state machine. The pure decisions live here, host-testable; the

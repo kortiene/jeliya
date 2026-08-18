@@ -40,6 +40,11 @@ ui = [
     # crate's wasm-graph check).
     "dep:jeliya-platform",
     "jeliya-platform/fake",
+    # #179: the pure `room/` core and the composer name `jeliya_api::Timestamp`
+    # (which wraps `time::OffsetDateTime`) and the wasm-safe `UNIX_EPOCH` const
+    # for a local send's ordering instant. `time` is already in the lock via
+    # `jeliya-api` and is wasm32-clean, so it adds no crate and no native edge.
+    "dep:time",
 ]
 
 # The browser DOM renderer. Built ONLY for `wasm32-unknown-unknown`, in the
@@ -104,6 +109,11 @@ js-sys = { version = "0.3.103", optional = true }
 # consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
+# Optional and enabled by `ui`: `jeliya_api::Timestamp` wraps `time::OffsetDateTime`,
+# and #179's pure `room/` core + composer need to name it and the wasm-safe
+# `UNIX_EPOCH` const. Already resolved in the lock via `jeliya-api` (features are
+# unified across the graph), wasm32-clean, and out of the default/MSRV graph.
+time = { version = "0.3", optional = true }
 
 [dev-dependencies]
 # Needed by the compose_shape integration test to name `Durability`, `Preferences`,

@@ -16,6 +16,8 @@
 //! through the semantic primitives below (Decision-6).
 
 pub mod a11y;
+pub mod activity;
+pub mod composer;
 pub mod diagnostics;
 pub mod dialog;
 pub mod files_pane;
@@ -30,8 +32,10 @@ pub mod recovery;
 pub mod room_shell;
 pub mod settings;
 pub mod status;
+pub mod timeline_row;
 
 pub use a11y::{Heading, MainRegion, SkipLink, SkipLinks, VisuallyHidden};
+pub use activity::{ActivityPane, SavedViewMap};
 pub use diagnostics::DiagnosticsDialog;
 pub use dialog::Dialog;
 pub use files_pane::FilesPane;
