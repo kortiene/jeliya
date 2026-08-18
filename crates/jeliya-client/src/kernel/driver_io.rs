@@ -169,12 +169,22 @@ pub(crate) trait DriverIo: Send {
     /// Perform `Action::ProduceData`: fulfill the grant from the stream's
     /// registered byte source (native: real media; in-memory: the
     /// deterministic `i mod 251` rig), reporting `Produced`/`SourceEnd`
-    /// through the pending-media queue.
-    fn produce(&mut self, call_id: CallId, up_to: u64);
+    /// through the pending-media queue. `id` is the stream's wire id — the
+    /// key a real driver's media registry is organized by.
+    fn produce(&mut self, id: jeliya_api::RequestId, call_id: CallId, up_to: u64);
 
     /// Perform `Action::WriteSink`: hand the accepted range to the stream's
-    /// sink, reporting `SinkAccepted` through the pending-media queue.
-    fn write_sink(&mut self, call_id: CallId, offset: u64, len: u64);
+    /// sink, reporting `SinkAccepted` through the pending-media queue. `id`
+    /// is the stream's wire id (see [`DriverIo::produce`]).
+    fn write_sink(&mut self, id: jeliya_api::RequestId, call_id: CallId, offset: u64, len: u64);
+
+    /// Register one stream's media under its dedup `OpId`, before the call is
+    /// dispatched. A real driver binds the registration to the wire id when
+    /// it performs the stream op's `Action::Send`; the reference rig
+    /// synthesizes its own deterministic media, so the default is a no-op that
+    /// lets an unregistered stream fail honestly at `produce`/`write_sink`
+    /// time (`SourceFailed`/`SinkFailed` on the real drivers).
+    fn register_media(&mut self, _key: jeliya_api::OpId, _media: crate::media::StreamMedia) {}
 
     /// Drain media inputs the driver fulfilled during the current apply batch
     /// (`Produced`/`SourceEnd`/`SinkAccepted`), re-driven by the shell after
@@ -315,7 +325,7 @@ impl DriverIo for InMemoryIo {
         self.record_outbound(SentRecord::from_intent(&intent));
     }
 
-    fn produce(&mut self, call_id: CallId, up_to: u64) {
+    fn produce(&mut self, _id: jeliya_api::RequestId, call_id: CallId, up_to: u64) {
         // The deterministic source produces exactly the granted bytes (the
         // core bounds `up_to` by credit, window, and total), frames them,
         // sends them, and reports how far it got (§S3). A single DATA
@@ -348,7 +358,7 @@ impl DriverIo for InMemoryIo {
         }
     }
 
-    fn write_sink(&mut self, call_id: CallId, offset: u64, len: u64) {
+    fn write_sink(&mut self, _id: jeliya_api::RequestId, call_id: CallId, offset: u64, len: u64) {
         // The deterministic sink accepts every delivered range contiguously
         // and reports its new accepted high-water (§S3).
         self.pending_media.push_back(Input::SinkAccepted {

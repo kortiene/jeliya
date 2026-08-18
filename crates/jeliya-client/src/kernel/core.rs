@@ -11,7 +11,7 @@
 
 use std::collections::VecDeque;
 
-use jeliya_api::Incarnation;
+use jeliya_api::{Incarnation, RequestId};
 
 use crate::backend::{ErasedCall, RawJson};
 use crate::error::{CallError, Execution};
@@ -168,6 +168,9 @@ pub(crate) enum Action {
     /// driver reads ≤ `up_to` bytes, frames ≤64 KiB DATA records, sends them, and
     /// reports [`Input::Produced`].
     ProduceData {
+        /// The stream's wire id, so a driver can key its media without a
+        /// `CallId` mapping it cannot have (the driver sees `RequestId`s).
+        id: RequestId,
         /// The stream call.
         call_id: CallId,
         /// The maximum additional bytes the driver may send now.
@@ -176,6 +179,8 @@ pub(crate) enum Action {
     /// Deliver an accepted inbound DATA range to the receiver's media sink
     /// (§S3): the driver writes and reports [`Input::SinkAccepted`].
     WriteSink {
+        /// The stream's wire id (see [`Action::ProduceData`]'s `id`).
+        id: RequestId,
         /// The stream call.
         call_id: CallId,
         /// The range's start offset.

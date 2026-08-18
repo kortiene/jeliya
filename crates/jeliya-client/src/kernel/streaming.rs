@@ -522,6 +522,7 @@ impl StreamTable {
             );
         }
         actions.push(Action::WriteSink {
+            id: entry.wire_id,
             call_id,
             offset,
             len,
@@ -767,7 +768,11 @@ impl StreamTable {
         }
         let up_to = entry.producer_grant(limits.stream_window_bytes);
         if up_to > 0 {
-            actions.push(Action::ProduceData { call_id, up_to });
+            actions.push(Action::ProduceData {
+                id: entry.wire_id,
+                call_id,
+                up_to,
+            });
         }
     }
 

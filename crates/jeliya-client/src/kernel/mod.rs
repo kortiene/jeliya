@@ -348,12 +348,13 @@ impl Shared {
             }
             // The media effects a real driver fulfills from its registered byte
             // source/sink; the in-memory driver runs the deterministic rig (§S3).
-            Action::ProduceData { call_id, up_to } => self.io.produce(call_id, up_to),
+            Action::ProduceData { id, call_id, up_to } => self.io.produce(id, call_id, up_to),
             Action::WriteSink {
+                id,
                 call_id,
                 offset,
                 len,
-            } => self.io.write_sink(call_id, offset, len),
+            } => self.io.write_sink(id, call_id, offset, len),
         }
     }
 
@@ -560,6 +561,17 @@ impl KernelBackend {
 }
 
 impl ClientBackend for KernelBackend {
+    fn register_stream_media(
+        &self,
+        key: jeliya_api::OpId,
+        media: crate::media::StreamMedia,
+    ) -> Result<(), crate::error::LocalError> {
+        // The driver owns the registry (§S3 media seam); registration is a
+        // plain insert under the same lock every effect crosses.
+        self.lock().io.register_media(key, media);
+        Ok(())
+    }
+
     fn dispatch(&self, call: ErasedCall) -> BoxFuture<'static, Result<RawJson, CallError>> {
         let (receiver, call_id) = {
             let mut shared = self.lock();

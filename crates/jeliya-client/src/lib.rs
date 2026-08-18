@@ -60,6 +60,7 @@ mod error;
 mod event;
 mod handle;
 mod kernel;
+pub mod media;
 mod reconcile;
 mod stream;
 

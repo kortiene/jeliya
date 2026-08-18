@@ -213,13 +213,24 @@ impl DriverIo for NativeIo {
         );
     }
 
-    fn produce(&mut self, call_id: crate::kernel::inflight::CallId, up_to: u64) {
-        let _ = (call_id, up_to);
+    fn produce(
+        &mut self,
+        id: jeliya_api::RequestId,
+        call_id: crate::kernel::inflight::CallId,
+        up_to: u64,
+    ) {
+        let _ = (id, call_id, up_to);
         debug_assert!(false, "stream media is not yet wired on the native adapter");
     }
 
-    fn write_sink(&mut self, call_id: crate::kernel::inflight::CallId, offset: u64, len: u64) {
-        let _ = (call_id, offset, len);
+    fn write_sink(
+        &mut self,
+        id: jeliya_api::RequestId,
+        call_id: crate::kernel::inflight::CallId,
+        offset: u64,
+        len: u64,
+    ) {
+        let _ = (id, call_id, offset, len);
         debug_assert!(false, "stream media is not yet wired on the native adapter");
     }
 
