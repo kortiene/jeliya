@@ -148,7 +148,10 @@ impl Shared {
             // opens a stream here and never emits stream actions. The debug
             // assertion keeps that honest if the deferred stream work lands.
             Action::SendRecord(_) | Action::ProduceData { .. } | Action::WriteSink { .. } => {
-                debug_assert!(false, "stream actions are unreachable on the direct adapter");
+                debug_assert!(
+                    false,
+                    "stream actions are unreachable on the direct adapter"
+                );
             }
         }
     }
