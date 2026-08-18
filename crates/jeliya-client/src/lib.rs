@@ -63,18 +63,52 @@ mod kernel;
 mod reconcile;
 mod stream;
 
+// The browser WebSocket/session adapter (#171). Target-cfg + feature gated so
+// the wasm-only browser crates never enter the native library tree (the
+// `cargo tree` boundary test) and the module is invisible to the native build.
+#[cfg(all(target_arch = "wasm32", feature = "ws-web"))]
+mod ws_web;
+// The native async WebSocket adapter (#172): binds the sans-IO kernel to a real
+// tokio + tokio-tungstenite transport dialing a loopback `jeliyad` via the
+// reusable supervisor target resolver (#170). Default-off and native-only — the
+// `pub(crate)` `Transport`/`Driver`/`DriverIo` seams live inside this crate, so
+// the adapter lands here too, under `src/adapter/**` (outside the sans-IO
+// kernel/reconcile scan). The web (wasm32) build never enables `ws-native`.
+#[cfg(all(feature = "ws-native", not(target_arch = "wasm32")))]
+mod adapter;
+// The Android in-process DirectClient adapter (#173): the fourth kernel adapter,
+// binding the bounded kernel core to the typed `jeliya-core` `Engine` in-process
+// through one serialized actor. Native-only and behind the default-off `direct`
+// feature, so it never enters the wasm build or the library's transport-free
+// dependency tree (asserted by `tests/boundaries.rs`); its `tokio`/clock/engine
+// machinery lives entirely here, never under `src/kernel/**` or
+// `src/reconcile/**`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "direct"))]
+mod direct;
+
 #[cfg(feature = "mock")]
 pub mod mock;
 
 pub use error::{CallError, Execution, LocalError};
 pub use event::{ClientEvent, EventSubscription, RoomPush, State};
 pub use handle::{ClientHandle, Dedup};
-pub use kernel::{KernelConfig, KernelLimits, TickDelta};
+pub use kernel::{KernelConfig, KernelLimits, StreamLimits, TickDelta};
 pub use reconcile::{
     ReconcileConfig, ReconcileError, ReconcileLimits, Reconciler, ResyncReason, ResyncRequired,
     RoomUpdate, RoomUpdateSubscription, RoomView,
 };
 pub use stream::{StreamCall, StreamCancel};
+
+// The browser adapter's public constructor and its injectable endpoint/session
+// seam (#171). Only present on `wasm32-unknown-unknown` with `ws-web`; the
+// native seam is untouched.
+#[cfg(all(not(target_arch = "wasm32"), feature = "direct"))]
+pub use direct::{connect_direct, DirectConfig, OwnershipError};
+#[cfg(all(target_arch = "wasm32", feature = "ws-web"))]
+pub use ws_web::{
+    connect_ws_web, Endpoint, ExplicitResolver, GetTokenResolver, SessionError, SessionResolver,
+    WsWebConfig,
+};
 
 // The deterministic in-memory kernel driver and its controller are the
 // reference substrate the four real adapters (#171/#172/#173) are diffed
@@ -82,7 +116,17 @@ pub use stream::{StreamCall, StreamCancel};
 // library's normal build carries no test scaffolding, mirroring how the mock
 // backend ships behind `mock`.
 #[cfg(feature = "test-transport")]
-pub use kernel::{KernelController, SentFrame};
+pub use kernel::{KernelController, SentFrame, SentRecord};
+
+// The native adapter's public construction surface (#172). `connect_ws_native`
+// builds a `ClientHandle` over the native WebSocket driver; `TargetSource` is
+// the injected resolver seam (the supervisor's `TargetResolver` implements it),
+// and `Dial`/`DialResolveError`/`NativeClientConfig`/`NativeError` are its
+// supporting types. Native-only and behind the default-off `ws-native` feature.
+#[cfg(all(feature = "ws-native", not(target_arch = "wasm32")))]
+pub use adapter::{
+    connect_ws_native, Dial, DialResolveError, NativeClientConfig, NativeError, TargetSource,
+};
 
 // The erasure is internal: `ClientBackend`, `ErasedCall`, and `RawJson` are
 // deliberately never exported. Depend on `jeliya_api` for the typed operations,

@@ -2378,6 +2378,14 @@ button.sender-name:not(:disabled):hover {
 
 .agent-run-toggle {
   font-size: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-mute);
+  cursor: pointer;
+  text-decoration: underline;
+  /* The compact target-size floor applies to every interactive control. */
+  min-height: 44px;
 }
 
 .agent-run-history {

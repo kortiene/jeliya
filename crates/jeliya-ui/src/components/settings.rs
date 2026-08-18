@@ -13,10 +13,12 @@
 
 use dioxus::prelude::*;
 use jeliya_api::SubjectId;
+use jeliya_client::State;
 use jeliya_platform::{Durability, PreferenceKey};
 
 use crate::components::{Field, Heading};
-use crate::l10n::{use_locale, Locale, LocaleState};
+use crate::l10n::{use_locale, use_strings, Locale, LocaleState};
+use crate::view::alias::AliasMap;
 use crate::PlatformServices;
 
 /// A short, copyable rendering of the subject id (last colon-segment, truncated)
@@ -33,7 +35,17 @@ fn short_subject(id: &SubjectId) -> String {
 /// unknown). `services` is the injected platform-authority seam (preferences,
 /// clipboard).
 #[component]
-pub fn SettingsPane(services: PlatformServices, subject_id: Option<SubjectId>) -> Element {
+pub fn SettingsPane(
+    services: PlatformServices,
+    subject_id: Option<SubjectId>,
+    /// The client lifecycle state, for the diagnostics card (#180 §7.5).
+    #[props(default = State::Idle)]
+    lifecycle: State,
+    /// The last recorded, secret-scrubbed failure detail, for the diagnostics
+    /// card. `None` when nothing has failed.
+    #[props(default)]
+    detail: Option<String>,
+) -> Element {
     // The resolved-locale context signal AppRoot provides; writing it applies a
     // switch live (every consumer reads it per render).
     let mut locale = use_context::<Signal<LocaleState>>();
@@ -53,7 +65,7 @@ pub fn SettingsPane(services: PlatformServices, subject_id: Option<SubjectId>) -
             // -- Identity -----------------------------------------------------
             section { class: "settings-section", id: "settings-identity",
                 Heading { level: 3, class: "settings-section-title".to_string(), "{identity_heading}" }
-                IdentityRow { services: services.clone(), subject_id }
+                IdentityRow { services: services.clone(), subject_id: subject_id.clone() }
             }
 
             // -- Language -----------------------------------------------------
@@ -92,8 +104,185 @@ pub fn SettingsPane(services: PlatformServices, subject_id: Option<SubjectId>) -
             section { class: "settings-section", id: "settings-self-label",
                 SelfLabelEditor { services: services.clone() }
             }
+
+            // -- Device-local aliases (#180 §7.4) -----------------------------
+            section { class: "settings-section", id: "settings-aliases",
+                AliasEditor { services: services.clone(), self_id: subject_id.clone() }
+            }
+
+            // -- Diagnostics card (#180 §7.5) ---------------------------------
+            section { class: "settings-section", id: "settings-diagnostics",
+                DiagnosticsCard {
+                    services: services.clone(),
+                    lifecycle,
+                    detail,
+                    self_id: subject_id,
+                }
+            }
         }
     }
+}
+
+/// The device-local alias editor (#180 §7.4): one editable name per identity id,
+/// plus an add-identity row. Names are `PreferenceKey::Aliases` (caller-
+/// serialized), stated "on this device, never sent", and excluded from
+/// diagnostics (§11).
+#[component]
+fn AliasEditor(services: PlatformServices, self_id: Option<SubjectId>) -> Element {
+    let strings = use_strings();
+    let heading = strings.settings_aliases_heading();
+    let help = strings.settings_alias_help();
+    // Bump to re-read the map after a write (session-scoped prefs).
+    let mut version = use_signal(|| 0u32);
+    let _ = version();
+    let map = AliasMap::parse(
+        services
+            .preferences()
+            .get(&PreferenceKey::Aliases)
+            .as_deref(),
+    );
+
+    // The rows to show: every existing alias, plus the self id (so the operator
+    // can name themselves — self otherwise falls back to "You").
+    let mut subjects: Vec<SubjectId> = map.iter().map(|(id, _)| SubjectId::new(id)).collect();
+    if let Some(me) = self_id.as_ref() {
+        if !subjects.iter().any(|s| s == me) {
+            subjects.insert(0, me.clone());
+        }
+    }
+
+    let _ = heading;
+    rsx! {
+        Heading { level: 3, class: "settings-section-title".to_string(), "{strings.settings_aliases_heading()}" }
+        p { class: "settings-note muted", id: "aliases-help", "{help}" }
+        if subjects.is_empty() {
+            p { class: "muted", id: "aliases-empty", "{strings.self_you()}" }
+        }
+        div { class: "alias-list", id: "alias-list",
+            for subject in subjects.iter() {
+                AliasRow {
+                    key: "{subject}",
+                    services: services.clone(),
+                    subject: subject.clone(),
+                    current: map.get(subject).unwrap_or_default().to_string(),
+                    on_changed: move |_| {
+                        let next = version.peek().wrapping_add(1);
+                        version.set(next);
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// One alias row: the identity's short id and an editable name.
+#[component]
+fn AliasRow(
+    services: PlatformServices,
+    subject: SubjectId,
+    current: String,
+    on_changed: EventHandler<()>,
+) -> Element {
+    let strings = use_strings();
+    let short = short_subject(&subject);
+    let field_id = format!("alias-{short}");
+    let subject_attr = subject.as_str().to_owned();
+    rsx! {
+        div { class: "alias-row", "data-subject": "{subject_attr}",
+            span { class: "alias-subject mono", "{short}" }
+            Field { id: field_id.clone(), label: strings.settings_alias_subject_label().to_string(),
+                input {
+                    class: "input",
+                    id: field_id.clone(),
+                    r#type: "text",
+                    value: "{current}",
+                    oninput: move |evt| {
+                        let mut map = AliasMap::parse(
+                            services.preferences().get(&PreferenceKey::Aliases).as_deref(),
+                        );
+                        map.set(&subject, &evt.value());
+                        services.preferences().set(PreferenceKey::Aliases, &map.serialize());
+                        on_changed.call(());
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// The diagnostics card (#180 §7.5): bounded (a fixed field set), redacted
+/// (secret-scrubbed; no self-label, aliases, capabilities, or full identities),
+/// and actionable (a copy action). The same content the `DiagnosticsDialog`
+/// discloses, inline.
+#[component]
+fn DiagnosticsCard(
+    services: PlatformServices,
+    lifecycle: State,
+    detail: Option<String>,
+    self_id: Option<SubjectId>,
+) -> Element {
+    let strings = use_strings();
+    let heading = strings.settings_diagnostics_heading();
+    let state_label = strings.settings_diagnostics_state_label();
+    let detail_label = strings.settings_diagnostics_detail_label();
+    let no_detail = strings.diagnostics_no_detail();
+    let redaction = strings.settings_diagnostics_redaction_note();
+
+    // The BOUNDED, REDACTED field set: the client state, a SHORTENED identity
+    // (never the full id), and the already-scrubbed last-error detail. The
+    // self-label, alias map, and any minted capability are deliberately absent.
+    let lifecycle_raw = format!("{lifecycle:?}");
+    let identity_short = self_id.as_ref().map(short_subject);
+    let copy_text =
+        diagnostics_copy_text(&lifecycle_raw, identity_short.as_deref(), detail.as_deref());
+
+    rsx! {
+        Heading { level: 3, class: "settings-section-title".to_string(), "{heading}" }
+        dl { class: "diagnostics-card", id: "diagnostics-card",
+            dt { "{state_label}" }
+            dd { class: "mono", id: "diagnostics-card-state", "{lifecycle_raw}" }
+            if let Some(short) = identity_short.as_ref() {
+                dt { "{strings.identity_id_label()}" }
+                dd { class: "mono", id: "diagnostics-card-identity", "{short}" }
+            }
+            dt { "{detail_label}" }
+            match detail.as_ref() {
+                Some(detail) => rsx! { dd { class: "mono", id: "diagnostics-card-detail", "{detail}" } },
+                None => rsx! { dd { class: "muted", id: "diagnostics-card-detail", "{no_detail}" } },
+            }
+        }
+        p { class: "settings-note muted", id: "diagnostics-redaction", "{redaction}" }
+        button {
+            r#type: "button",
+            class: "btn btn-sm",
+            id: "diagnostics-copy",
+            onclick: move |_| {
+                let services = services.clone();
+                let text = copy_text.clone();
+                spawn(async move {
+                    let _ = services.clipboard().write_text(&text).await;
+                });
+            },
+            "{strings.settings_diagnostics_copy()}"
+        }
+    }
+}
+
+/// Build the copyable diagnostics text — the same bounded, redacted field set.
+fn diagnostics_copy_text(
+    lifecycle: &str,
+    identity_short: Option<&str>,
+    detail: Option<&str>,
+) -> String {
+    let mut out = format!("state: {lifecycle}\n");
+    if let Some(short) = identity_short {
+        out.push_str(&format!("identity: {short}\n"));
+    }
+    match detail {
+        Some(detail) => out.push_str(&format!("last_error: {detail}\n")),
+        None => out.push_str("last_error: none\n"),
+    }
+    out
 }
 
 /// The identity row: the shortened, copyable subject id + the unrecoverable note.
@@ -313,5 +502,95 @@ mod tests {
             short_subject(&SubjectId::new("blake3:abcdefghijklmnop")),
             "abcdefghijkl"
         );
+    }
+
+    // ---- diagnostics_copy_text: AC-6 bounded, redacted, no secrets --------
+
+    #[test]
+    fn diagnostics_copy_text_contains_lifecycle_state() {
+        let text = diagnostics_copy_text("Ready", None, None);
+        assert!(text.contains("state: Ready"), "lifecycle state must appear");
+    }
+
+    #[test]
+    fn diagnostics_copy_text_includes_short_identity_when_supplied() {
+        // The caller is responsible for shortening the id before passing it
+        // here; this test verifies the field is forwarded verbatim and that
+        // no full-id prefix (e.g. "blake3:") is added by the function itself.
+        let text = diagnostics_copy_text("Ready", Some("abcdefghijkl"), None);
+        assert!(text.contains("identity: abcdefghijkl"));
+        assert!(!text.contains("blake3:"), "full id prefix must not appear");
+    }
+
+    #[test]
+    fn diagnostics_copy_text_omits_identity_line_when_none() {
+        let text = diagnostics_copy_text("Idle", None, None);
+        assert!(
+            !text.contains("identity:"),
+            "identity line must be absent when the subject_id is unknown"
+        );
+    }
+
+    #[test]
+    fn diagnostics_copy_text_says_none_when_no_detail() {
+        let text = diagnostics_copy_text("Ready", None, None);
+        assert!(
+            text.contains("last_error: none"),
+            "absent detail renders as none"
+        );
+        assert!(
+            !text.contains("last_error: none\nlast_error:"),
+            "must not be doubled"
+        );
+    }
+
+    #[test]
+    fn diagnostics_copy_text_includes_detail_when_present() {
+        let text = diagnostics_copy_text("Ready", None, Some("connection refused"));
+        assert!(text.contains("last_error: connection refused"));
+        assert!(!text.contains("last_error: none"));
+    }
+
+    #[test]
+    fn diagnostics_copy_text_all_fields_present_and_bounded() {
+        // With all three inputs: state + identity + detail, no extra fields.
+        let text = diagnostics_copy_text("Reconnecting", Some("shortid123"), Some("timeout"));
+        assert!(text.contains("state: Reconnecting"));
+        assert!(text.contains("identity: shortid123"));
+        assert!(text.contains("last_error: timeout"));
+        // Bounded: no unexpected sensitive fields (no self-label, no full
+        // capabilities, no raw error backtraces).
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            3,
+            "exactly three lines: state, identity, last_error"
+        );
+    }
+
+    // ---- parse_locale_choice: locale switcher correctness -----------------
+
+    #[test]
+    fn parse_locale_choice_maps_en_and_fr_tags_to_explicit() {
+        assert_eq!(
+            parse_locale_choice(Locale::En.tag()),
+            LocaleChoice::Explicit(Locale::En)
+        );
+        assert_eq!(
+            parse_locale_choice(Locale::Fr.tag()),
+            LocaleChoice::Explicit(Locale::Fr)
+        );
+    }
+
+    #[test]
+    fn parse_locale_choice_falls_back_to_system_for_unknown_input() {
+        // Any value that is not a known BCP-47 tag maps to System (clears
+        // the explicit preference).
+        assert_eq!(
+            parse_locale_choice(LOCALE_VALUE_SYSTEM),
+            LocaleChoice::System
+        );
+        assert_eq!(parse_locale_choice("de"), LocaleChoice::System);
+        assert_eq!(parse_locale_choice(""), LocaleChoice::System);
     }
 }

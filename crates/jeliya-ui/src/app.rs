@@ -18,13 +18,19 @@
 //! detail into the Diagnostics dialog while primary copy stays friendly catalog
 //! text.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use futures::StreamExt;
-use jeliya_api::{RoomId, RoomList, RoomRow, Standing, SubjectId, SubjectState};
-use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
+use jeliya_api::{RoomId, RoomList, RoomRow, Standing};
+use jeliya_client::{
+    CallError, ClientEvent, ClientHandle, Dedup, ReconcileConfig, Reconciler, State,
+};
 use jeliya_platform::navigation::{RoomDest, Route};
 use jeliya_platform::PreferenceKey;
 
+use crate::components::SavedViewMap;
 use crate::components::{
     use_announce_context, BootScreen, EmptyCenter, FleetPane, GlobalNav, LiveRegion, NavLandmark,
     Onboarding, RecoveryBanner, RoomArchivePane, RoomShell, RoomUnavailable, SettingsPane,
@@ -34,6 +40,7 @@ use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
     LocaleState,
 };
+use crate::room::scroll::SavedView;
 use crate::shell::bootstrap::{
     derive_boot_view, BootView, ConnectionSnapshot, FailureView, OnboardStep, RecoveryView,
     RoomsKnowledge,
@@ -219,6 +226,32 @@ pub fn AppRoot(
 ) -> Element {
     let mut ui = use_signal(UiState::new);
 
+    // The authoritative per-room reconciler (#169), DERIVED from the injected
+    // `ClientHandle` (not a third root input — §3.1): constructed once, provided
+    // to the subtree so the Activity pane (#179) can activate rooms and fold its
+    // `RoomUpdate` fan-out. A single `use_future` drives `run()` for the app's
+    // lifetime (the driver never spawns). The App-level saved-view map lets a
+    // room switch restore the same reading position (§7 AC). Under the mock the
+    // reconciler's baseline reads are unscripted, so it parks quiescently (a
+    // failed read parks the room, never a busy loop); the pane shows Loading
+    // honestly until #171's `WsWeb` (or the offline timeline fixture) feeds it.
+    let reconciler_handle = handle.clone();
+    let reconciler = use_hook(|| {
+        Rc::new(Reconciler::new(
+            reconciler_handle,
+            ReconcileConfig::default(),
+        ))
+    });
+    use_context_provider(|| reconciler.clone());
+    use_context_provider(|| Signal::new(HashMap::<RoomId, SavedView>::new()) as SavedViewMap);
+    {
+        let reconciler = reconciler.clone();
+        use_future(move || {
+            let reconciler = reconciler.clone();
+            async move { reconciler.run().await }
+        });
+    }
+
     // Resolve the locale from the two persisted preferences AND the injected
     // platform language, in that precedence (Decision-5, `LocaleState::resolve`):
     // an explicit stored preference wins, else the platform language, else the
@@ -290,6 +323,10 @@ pub fn AppRoot(
     // into the event-consumption future below). Onboarding's identity/rooms steps
     // dispatch `subject.ensure`/`room.create` through this same handle.
     let onboarding_handle = handle.clone();
+    // A clone of the client seam for the #180 destination panes (People / Agents
+    // / Fleet), which issue their own reads and mutations through it. Taken here
+    // because the prop is moved into the event-consumption future below.
+    let panes_handle = handle.clone();
     // A clone of the client seam for the departed-room archive pane (#91). The
     // prop `handle` is moved into the event-consumption future below, so the
     // render body cannot name it; the archive pane dispatches `room.archive`
@@ -579,13 +616,6 @@ pub fn AppRoot(
                 }
             }
         };
-    // The connected subject, when the connection snapshot names it: the
-    // Settings identity surface renders the ID only from daemon truth — never
-    // assumed from local state.
-    let self_id: Option<SubjectId> = connection.as_ref().and_then(|conn| match &conn.subject {
-        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
-        SubjectState::Absent => None,
-    });
     let rooms_label = strings.rooms_heading().to_string();
     let skip_rooms = strings.skip_to_rooms().to_string();
     let app_name = strings.app_name();
@@ -611,15 +641,21 @@ pub fn AppRoot(
     // Clones for the closures/props below; the prop `services` stays available.
     let services_reset = services.clone();
     let services_settings = services.clone();
-    // The caller's own subject, when the connection snapshot names it (#91 D4):
-    // it lets a departed-room archive identify the caller's OWN signed removal to
-    // name the remover. `None` is the honest default while the seam does not
-    // surface `Hello.subject` (#178 D2/R1); the archive then states "removed"
-    // without naming anyone (#91 R5).
-    let me = connection.as_ref().and_then(|conn| match &conn.subject {
-        SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
-        SubjectState::Absent => None,
+    let services_room = services.clone();
+    let services_fleet = services.clone();
+
+    // The local identity (self subject id) from the connection snapshot, for
+    // alias resolution and the self/"this device" marker in the #180 panes.
+    // `None` while the seam does not surface `Hello.subject` (D2/R1).
+    let self_id = connection.as_ref().and_then(|conn| match &conn.subject {
+        jeliya_api::SubjectState::Present { subject_id, .. } => Some(subject_id.clone()),
+        jeliya_api::SubjectState::Absent => None,
     });
+    // The base instant #180's invite-expiry picker measures from. The shared
+    // component holds no clock (Decision-3); the concrete browser/desktop time
+    // is injected once the live transport lands (#171). Until then the mock
+    // ignores the value, so the epoch base is an honest placeholder.
+    let now = jeliya_api::Timestamp::new(time::OffsetDateTime::UNIX_EPOCH);
 
     // ONE render tree with ONE stable live region. The boot/terminal cover, the
     // onboarding surface, and the mounted shell are the three arms of a single
@@ -811,63 +847,103 @@ pub fn AppRoot(
                             }
                             section { class: "center", id: "center", EmptyCenter {} }
                         },
-                        // A room-scoped route selects its composition by the row's
-                        // STANDING (#91 D1/§7), a standing-driven, dest-agnostic
-                        // choice — no new `Route` variant:
-                        //   Active         -> the live `RoomShell` (#179 surface)
-                        //   Left | Removed -> the read-only `RoomArchivePane` (#91)
-                        //   absent from room.list, once ANSWERED -> `RoomUnavailable`
-                        //     (the recoverable "not on this device", Rooms as the way
-                        //     out) — never a shell over a room the user does not hold.
-                        // Before the list answers (unknown ≠ unreachable) the loading
-                        // room frame is shown so a deep link never flashes
-                        // "unavailable" or the archive while the list is still loading.
+                        // A room-scoped route renders the room-shell skeleton
+                        // (header + destination strip). Reachability is a room.list
+                        // check (D7 / §5.F): once the list has ANSWERED, a route
+                        // naming a room absent from it renders the recoverable
+                        // `RoomUnavailable` state (Rooms as the way out) instead of a
+                        // shell over a room the user does not hold. Before the answer
+                        // (unknown ≠ unreachable) the shell is shown — a deep link
+                        // must not flash "unavailable" while the list is still
+                        // loading.
                         Route::Room { room_id, dest } => {
-                            let standing = snapshot
-                                .rooms
-                                .iter()
-                                .find(|r| r.room_id == room_id)
-                                .map(|r| r.standing);
-                            let surface = if !snapshot.rooms_loaded {
-                                rsx! { RoomShell { room_id: room_id.clone(), dest: dest.clone(), navigate } }
-                            } else {
-                                match standing {
-                                    Some(Standing::Active) => rsx! {
-                                        RoomShell { room_id: room_id.clone(), dest: dest.clone(), navigate }
-                                    },
-                                    Some(departed @ (Standing::Left | Standing::Removed)) => rsx! {
-                                        // The departed room opens as a local read-only
-                                        // archive. Keyed by room id so navigating
-                                        // between two departed rooms re-mounts the pane
-                                        // and re-reads its `room.archive`.
-                                        RoomArchivePane {
-                                            key: "{room_id}",
-                                            room_id: room_id.clone(),
-                                            my_standing: departed,
-                                            me: me.clone(),
-                                            navigate,
-                                            handle: archive_handle.clone(),
-                                        }
-                                    },
-                                    None => rsx! { RoomUnavailable { navigate } },
-                                }
-                            };
+                            // Resolve the room's own row (capabilities + live +
+                            // standing) from the answered list; a route naming a
+                            // room absent from it is the recoverable state.
+                            let room_row = snapshot.rooms.iter().find(|r| r.room_id == room_id).cloned();
+                            let reachable = !snapshot.rooms_loaded || room_row.is_some();
                             rsx! {
                                 main { class: "destination", id: "main-content", tabindex: "-1",
-                                    {surface}
+                                    // The composition is selected by the row's STANDING
+                                    // (#91 D1/§7), a standing-driven, dest-agnostic choice —
+                                    // no new `Route` variant: Active -> the live `RoomShell`;
+                                    // Left/Removed -> the read-only `RoomArchivePane` (#91).
+                                    match room_row {
+                                        Some(room) if room.standing == Standing::Active => rsx! {
+                                            RoomShell {
+                                                room,
+                                                dest,
+                                                navigate,
+                                                handle: panes_handle.clone(),
+                                                services: services_room.clone(),
+                                                now,
+                                                self_id: self_id.clone(),
+                                                shell: active_shell,
+                                            }
+                                        },
+                                        Some(room) => rsx! {
+                                            // The departed room opens as a local read-only
+                                            // archive. Keyed by room id so navigating
+                                            // between two departed rooms re-mounts the pane
+                                            // and re-reads its `room.archive`.
+                                            RoomArchivePane {
+                                                key: "{room_id}",
+                                                room_id: room_id.clone(),
+                                                my_standing: room.standing,
+                                                me: self_id.clone(),
+                                                navigate,
+                                                handle: archive_handle.clone(),
+                                            }
+                                        },
+                                        None if reachable => rsx! {
+                                            if let Some(message) = room_error
+                                                .as_ref()
+                                                .filter(|_| snapshot.notice_terminal)
+                                            {
+                                                // A TERMINAL room-list failure on a
+                                                // room deep link: the list will never
+                                                // answer on its own (`rooms_loaded`
+                                                // stays false), so an indefinite
+                                                // skeleton would lie. The friendly
+                                                // failure copy plus the Diagnostics
+                                                // detail (footer) is the honest
+                                                // state — the same note the Rooms
+                                                // route renders.
+                                                div { class: "error-note", id: "notice", "{message}" }
+                                            } else {
+                                                // Not yet answered: show the shell frame is not
+                                                // possible without the row, so keep the recoverable
+                                                // state until the list answers (unknown ≠ unreachable
+                                                // is handled by `reachable` staying true pre-answer,
+                                                // but the row is required to render content).
+                                                div { class: "room-pane-skeleton muted", id: "room-loading-skeleton" }
+                                            }
+                                        },
+                                        None => rsx! { RoomUnavailable { navigate } },
+                                    }
                                     StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                                 }
                             }
                         }
                         Route::Fleet => rsx! {
                             main { class: "destination", id: "main-content", tabindex: "-1",
-                                FleetPane {}
+                                FleetPane {
+                                    handle: panes_handle.clone(),
+                                    services: services_fleet.clone(),
+                                    navigate,
+                                    self_id: self_id.clone(),
+                                }
                                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                             }
                         },
                         Route::Settings => rsx! {
                             main { class: "destination", id: "main-content", tabindex: "-1",
-                                SettingsPane { services: services_settings.clone(), subject_id: self_id.clone() }
+                                SettingsPane {
+                                    services: services_settings.clone(),
+                                    subject_id: self_id.clone(),
+                                    lifecycle: snapshot.lifecycle,
+                                    detail: snapshot.last_diagnostic.clone(),
+                                }
                                 StatusFooter { state: snapshot.lifecycle, detail: snapshot.last_diagnostic.clone() }
                             }
                         },

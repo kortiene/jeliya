@@ -334,6 +334,17 @@ jobs:
       - name: jeliya-client kernel fault suite (test-transport)
         run: cargo test --locked -p jeliya-client --features test-transport
 
+      # The #173 Android DirectClient adapter is behind the default-off,
+      # native-only `direct` feature with optional deps (`tokio`, `jeliya-core`,
+      # `jeliya-codec`), so the workspace run and the wasm build never compile
+      # it. A default-off feature with no CI step never runs (the #172 review's
+      # MUST-FIX lesson), so lint and test it explicitly on a native target.
+      - name: jeliya-client DirectClient adapter (direct)
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p jeliya-client --features direct --all-targets -- -D warnings
+          cargo test --locked -p jeliya-client --features direct
+
       # AC-6: the minimal shared Dioxus component compiles against the mock for
       # both a native target and wasm32-unknown-unknown, with no per-component
       # cfg. The `example` feature enables the mock and pulls in the optional
@@ -344,6 +355,19 @@ jobs:
           cargo build --locked -p jeliya-client --example shared_component --features example
           cargo build --locked -p jeliya-client --example shared_component --features example \
             --target wasm32-unknown-unknown
+
+      # The #172 native WebSocket adapter (src/adapter/**, tests/ws_native_adapter.rs)
+      # sits behind the default-off, native-only `ws-native` feature, so the
+      # `--workspace` run above compiles it to nothing. Run its deterministic
+      # integration suite explicitly — the step the crate manifest and spec §10.1
+      # document — and lint it clippy-clean under the same feature with the
+      # repo-standard `-D warnings`, so a regression in the adapter or its tests
+      # goes red.
+      - name: jeliya-client native WebSocket adapter (ws-native)
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p jeliya-client --features ws-native --all-targets -- -D warnings
+          cargo test --locked -p jeliya-client --features ws-native
 
       # The #174 PlatformServices behaviour suite (tests/capabilities.rs, AC-6)
       # drives the deterministic fakes behind the default-off `fake` feature, so
@@ -746,6 +770,82 @@ jobs:
             crates/jeliya-ui/e2e/playwright-report
             crates/jeliya-ui/e2e/test-results
           retention-days: 14
+
+  # ---- #171 WsWeb browser integration tests --------------------------------
+  jeliya-client-ws-web:
+    # Real-browser integration tests for the WsWeb adapter (#171 §9.2, AC-6).
+    # Starts a supervised jeliyad, runs the wasm-bindgen-test suite in headless
+    # Chromium, tears the daemon down. Non-required initially (matching the
+    # jeliya-ui-web precedent): add to branch protection after the first green
+    # run. The wasm32 build check (AC-1: no Iroh/native deps) runs first as a
+    # fast gate before the more expensive browser launch.
+    name: jeliya-client ws-web (wasm32 build + browser tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust 1.96.0
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.96.0
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.8.2
+        with:
+          key: jeliya-client-ws-web
+
+      # Pinned CLI matching the locked wasm-bindgen 0.2.126; installs
+      # wasm-bindgen-test-runner (the browser test executor) alongside the CLI.
+      - name: Install pinned wasm-bindgen-cli
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+
+      # chromium-driver provides the chromedriver binary that wasm-bindgen-test-
+      # runner drives to run `wasm_bindgen_test_configure!(run_in_browser)` tests.
+      - name: Install chromium-driver
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install --yes --no-install-recommends chromium-driver
+
+      # AC-1: the ws-web feature graph must link on wasm32 without pulling
+      # Iroh, tokio, or any native-only crate. A build failure here is the
+      # canonical signal; the cargo tree boundary check runs separately in
+      # rust-runtime via tests/boundaries.rs.
+      - name: wasm32 build check (AC-1)
+        run: |
+          cargo build --locked -p jeliya-client \
+            --features ws-web \
+            --target wasm32-unknown-unknown
+
+      # Build jeliyad for the test harness (native, no cross-compile needed).
+      - name: Build jeliyad
+        run: cargo build --locked -p jeliyad
+
+      # AC-6: the three real-browser scenarios (connect→Ready, room.list
+      # resolves, stop→Stopped+stream-closes). The harness script starts
+      # jeliyad on a random loopback port, injects the coordinates into
+      # build.rs via env vars, runs the wasm-bindgen-test suite, then tears
+      # the daemon down. wasm-bindgen-test-runner is picked up from PATH
+      # (installed above); CHROMEDRIVER is picked up from PATH (chromium-driver).
+      - name: Browser integration tests (AC-6)
+        env:
+          JELIYAD_BIN: ${{ github.workspace }}/target/debug/jeliyad
+          CHROMEDRIVER: /usr/bin/chromedriver
+        run: bash scripts/run-ws-web-browser-tests.sh
+
+      - name: Preserve browser test failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jeliya-client-ws-web-evidence
+          path: /tmp/wasm-bindgen-test-*
+          retention-days: 7
 
   # ---- #177 Dioxus catalog / literal / French-typography gates ----
   # Three independently-named contexts over ONE parser

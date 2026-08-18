@@ -11,12 +11,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildCopyModuleIndex,
   checkCatalogs,
   checkJeliyaUiI18n,
   componentFiles,
   DEFAULT_REPO_ROOT,
   identityExemption,
+  moduleForFile,
   parseCatalog,
+  resolveCall,
+  resolveCopyReachableFns,
   scanComponentLiterals,
   slotsEqual,
 } from './lib/jeliya-ui-catalog.mjs';
@@ -2180,6 +2184,171 @@ test('literal scan: a structural attr computed as if/else is NOT flagged; a copy
   assert.ok(
     scanComponentLiterals('x.rs', copy).some((f) => f.code === 'copy-attribute'),
     'a copy-bearing attr (label) computed as if/else still carries copy that must be flagged',
+  );
+});
+
+// ── #275 cross-module copy-helper resolution ─────────────────────────────────
+
+test('cross-module: moduleForFile maps src paths to qualified Rust module paths (#275 unit-modulepath)', () => {
+  assert.equal(moduleForFile('crates/jeliya-ui/src/state.rs'), 'crate::state');
+  assert.equal(moduleForFile('crates/jeliya-ui/src/l10n/mod.rs'), 'crate::l10n');
+  assert.equal(moduleForFile('crates/jeliya-ui/src/components/dialog.rs'), 'crate::components::dialog');
+  assert.equal(moduleForFile('crates/jeliya-ui/src/lib.rs'), 'crate');
+  assert.equal(moduleForFile('crates/jeliya-ui/src/bin/web.rs'), 'bin:web');
+  assert.equal(moduleForFile('src/lib.rs'), null, 'path outside a known crate src root → null');
+  assert.equal(moduleForFile('crates/other/src/lib.rs'), null, 'path under a different crate → null');
+});
+
+test('cross-module: resolveCall resolves crate-qualified call by module path, not terminal name (#275 unit-resolvecall)', () => {
+  const fixtures = [
+    {
+      file: 'crates/jeliya-ui/src/app.rs',
+      source: `fn C() -> Element { rsx! { div { {crate::state::hardcoded()} } } }`,
+    },
+    { file: 'crates/jeliya-ui/src/state.rs', source: `pub fn hardcoded() -> &'static str { "Delete account" }` },
+    { file: 'crates/jeliya-ui/src/other.rs', source: `pub fn hardcoded() -> &'static str { "Impostor" }` },
+  ];
+  const index = buildCopyModuleIndex(fixtures);
+  const hits = resolveCall('crate::state::hardcoded', 'crate::app', index);
+  assert.ok(hits.length > 0, 'crate::state::hardcoded must resolve to at least one key');
+  assert.ok(
+    hits.every((k) => k.startsWith('crate::state ')),
+    `resolved keys must be in crate::state, got: ${JSON.stringify(hits)}`,
+  );
+  const otherHits = resolveCall('crate::other::hardcoded', 'crate::app', index);
+  assert.ok(
+    otherHits.every((k) => k.startsWith('crate::other ')),
+    'a same-named fn in another module resolves to THAT module, not crate::state',
+  );
+  assert.ok(
+    !hits.some((k) => k.startsWith('crate::other ')),
+    'crate::state::hardcoded must not reach crate::other::hardcoded',
+  );
+});
+
+test('cross-module: resolveCall returns empty for an unknown module (#275 unit-resolvecall-unknown)', () => {
+  const index = buildCopyModuleIndex([]);
+  assert.deepEqual(resolveCall('crate::nonexistent::fn_name', 'crate::app', index), []);
+});
+
+test('cross-module: resolveCopyReachableFns follows a two-hop chain across three files (#275 unit-reachable)', () => {
+  const fixtures = [
+    {
+      file: 'crates/jeliya-ui/src/app.rs',
+      source: `fn C() -> Element { rsx! { div { {crate::a::outer()} } } }`,
+    },
+    { file: 'crates/jeliya-ui/src/a.rs', source: `pub fn outer() -> String { crate::b::inner().to_owned() }` },
+    { file: 'crates/jeliya-ui/src/b.rs', source: `pub fn inner() -> &'static str { "Delete account" }` },
+  ];
+  const index = buildCopyModuleIndex(fixtures);
+  const reachable = resolveCopyReachableFns(index);
+  assert.ok(
+    [...reachable].some((k) => k.startsWith('crate::a ') && k.endsWith(' outer')),
+    'outer (the direct RSX root) must be reachable',
+  );
+  assert.ok(
+    [...reachable].some((k) => k.startsWith('crate::b ') && k.endsWith(' inner')),
+    'inner (two hops from the RSX root) must be transitively reachable',
+  );
+});
+
+test('cross-module: resolveCopyReachableFns terminates on a cycle (#275 unit-cycle)', () => {
+  const fixtures = [
+    {
+      file: 'crates/jeliya-ui/src/app.rs',
+      source: `fn C() -> Element { rsx! { div { {crate::x::foo()} } } }`,
+    },
+    {
+      file: 'crates/jeliya-ui/src/x.rs',
+      source: `pub fn foo() -> &'static str { bar() } pub fn bar() -> &'static str { foo() }`,
+    },
+  ];
+  const index = buildCopyModuleIndex(fixtures);
+  const reachable = resolveCopyReachableFns(index);
+  assert.ok([...reachable].some((k) => k.endsWith(' foo')), 'foo is reachable');
+  assert.ok([...reachable].some((k) => k.endsWith(' bar')), 'bar is reached before the cycle closes');
+});
+
+test('driver: crate::state::hardcoded() cross-module literal is flagged (#275 case-1)', () => {
+  const files = new Map([
+    [
+      'crates/jeliya-ui/src/app.rs',
+      `fn C() -> Element { rsx! { div { {crate::state::hardcoded()} } } }`,
+    ],
+    [
+      'crates/jeliya-ui/src/state.rs',
+      `pub fn hardcoded() -> &'static str { "Delete account" }`,
+    ],
+  ]);
+  const findings = checkJeliyaUiI18n({ only: ['literals'], files });
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message) && /state\.rs$/.test(f.file)),
+    `expected rust-text for "Delete account" in state.rs; got: ${JSON.stringify(findings)}`,
+  );
+});
+
+test('driver: crate::labels::title() does not falsely flag an unrelated fn title() in another module (#275 case-2)', () => {
+  // A name-only index would mark every `fn title` body as copy and wrongly flag
+  // "selected-state". Qualified-module keying prevents this: only crate::labels::title
+  // is a copy-helper root — crate::state::title is never reached.
+  const files = new Map([
+    [
+      'crates/jeliya-ui/src/app.rs',
+      `fn C() -> Element { rsx! { div { {crate::labels::title()} } } }`,
+    ],
+    [
+      'crates/jeliya-ui/src/labels.rs',
+      `pub fn title(strings: &dyn Catalog) -> String { strings.title() }`,
+    ],
+    [
+      'crates/jeliya-ui/src/state.rs',
+      `pub fn title() -> &'static str { "selected-state" }`,
+    ],
+  ]);
+  const findings = checkJeliyaUiI18n({ only: ['literals'], files });
+  assert.ok(
+    !findings.some((f) => /selected-state/.test(f.message)),
+    `crate::state::title must not be reached via crate::labels::title(); got: ${JSON.stringify(findings)}`,
+  );
+});
+
+test('driver: transitive cross-file copy-helper chain is flagged (#275 case-3)', () => {
+  const files = new Map([
+    [
+      'crates/jeliya-ui/src/app.rs',
+      `fn C() -> Element { rsx! { div { {crate::a::outer()} } } }`,
+    ],
+    [
+      'crates/jeliya-ui/src/a.rs',
+      `pub fn outer() -> String { crate::b::inner().to_owned() }`,
+    ],
+    [
+      'crates/jeliya-ui/src/b.rs',
+      `pub fn inner() -> &'static str { "Delete account" }`,
+    ],
+  ]);
+  const findings = checkJeliyaUiI18n({ only: ['literals'], files });
+  assert.ok(
+    findings.some((f) => f.code === 'rust-text' && /Delete account/.test(f.message) && /b\.rs$/.test(f.file)),
+    `expected rust-text for "Delete account" in b.rs; got: ${JSON.stringify(findings)}`,
+  );
+});
+
+test('driver: i18n-exempt silences a cross-module helper-body literal (#275 exempt)', () => {
+  const files = new Map([
+    [
+      'crates/jeliya-ui/src/app.rs',
+      `fn C() -> Element { rsx! { div { {crate::state::hardcoded()} } } }`,
+    ],
+    [
+      'crates/jeliya-ui/src/state.rs',
+      `pub fn hardcoded() -> &'static str {\n    // i18n-exempt: technical identifier\n    "Delete account"\n}`,
+    ],
+  ]);
+  const findings = checkJeliyaUiI18n({ only: ['literals'], files });
+  assert.ok(
+    !findings.some((f) => /Delete account/.test(f.message)),
+    `an i18n-exempt cross-module helper literal must be silenced; got: ${JSON.stringify(findings)}`,
   );
 });
 

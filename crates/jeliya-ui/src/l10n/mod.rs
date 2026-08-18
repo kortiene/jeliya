@@ -419,6 +419,355 @@ pub trait Catalog {
     /// The user-facing body when room creation fails (retryable).
     fn err_onboarding_room_create_body(&self) -> &'static str;
 
+    // ---- #180 truthful status vocabulary (status/mod.rs seam) --------------
+
+    /// Room session: the live room fact.
+    fn room_open(&self) -> &'static str;
+    /// Room session: the closed room fact.
+    fn room_closed(&self) -> &'static str;
+
+    /// Reachability: bringing transports up.
+    fn reachability_connecting(&self) -> &'static str;
+    /// Reachability: at least one peer link exists.
+    fn reachability_connected(&self) -> &'static str;
+    /// Reachability: live with no peers ("No peers connected" — never "Alone").
+    fn reachability_alone(&self) -> &'static str;
+    /// Reachability: not live.
+    fn reachability_offline(&self) -> &'static str;
+
+    /// Agent liveness: executing.
+    fn liveness_working(&self) -> &'static str;
+    /// Agent liveness: reachable and not executing.
+    fn liveness_online(&self) -> &'static str;
+    /// Agent liveness: not reachable.
+    fn liveness_offline(&self) -> &'static str;
+    /// Agent liveness: evidence too old to vouch for.
+    fn liveness_stale(&self) -> &'static str;
+
+    /// Status label: announced, not executing.
+    fn status_label_online(&self) -> &'static str;
+    /// Status label: not executing, ready.
+    fn status_label_idle(&self) -> &'static str;
+    /// Status label: in claim arbitration.
+    fn status_label_claiming(&self) -> &'static str;
+    /// Status label: executing.
+    fn status_label_working(&self) -> &'static str;
+    /// Status label: task succeeded.
+    fn status_label_done(&self) -> &'static str;
+    /// Status label: task failed.
+    fn status_label_failed(&self) -> &'static str;
+    /// Status label: stopped and needs a person ("needs a person").
+    fn status_label_blocked(&self) -> &'static str;
+
+    /// Invite redeemability: redeemable now.
+    fn redeemability_outstanding(&self) -> &'static str;
+    /// Invite redeemability: past its expiry.
+    fn redeemability_expired(&self) -> &'static str;
+    /// Invite redeemability: withdrawn by the authority.
+    fn redeemability_revoked(&self) -> &'static str;
+    /// Invite redeemability: already converted into membership.
+    fn redeemability_redeemed(&self) -> &'static str;
+
+    /// Link reason: no dial was ever attempted.
+    fn link_reason_never_dialed(&self) -> &'static str;
+    /// Link reason: a dial was attempted and failed.
+    fn link_reason_dial_failed(&self) -> &'static str;
+    /// Link reason: no route to the peer.
+    fn link_reason_no_route(&self) -> &'static str;
+    /// Link reason: the link was up and closed.
+    fn link_reason_closed(&self) -> &'static str;
+    /// The "not connected" lead for an absent per-device link.
+    fn link_not_connected(&self) -> &'static str;
+
+    /// Absent latest status ("no status yet") — never a fabricated liveness.
+    fn status_none_yet(&self) -> &'static str;
+    /// Absent last-seen ("never seen").
+    fn last_seen_never(&self) -> &'static str;
+    /// The unlabelled-self fallback name.
+    fn self_you(&self) -> &'static str;
+
+    // ---- #180 People pane --------------------------------------------------
+
+    /// The People destination heading.
+    fn people_heading(&self) -> &'static str;
+    /// The presence-summary region heading.
+    fn people_presence_heading(&self) -> &'static str;
+    /// The honest note when a Closed room's presence is unavailable.
+    fn presence_unavailable_closed(&self) -> &'static str;
+    /// The per-member "no peer link" presence fact for a live room.
+    fn presence_absent(&self) -> &'static str;
+    /// The per-member honest note when the live presence READ failed (a
+    /// failure, never the absence fact).
+    fn presence_unavailable(&self) -> &'static str;
+    /// The roster region heading.
+    fn people_roster_heading(&self) -> &'static str;
+    /// The roster role column label.
+    fn roster_role_label(&self) -> &'static str;
+    /// The roster standing column label.
+    fn roster_standing_label(&self) -> &'static str;
+    /// The roster joined-at column label.
+    fn roster_joined_label(&self) -> &'static str;
+    /// The roster per-member presence line label.
+    fn roster_presence_label(&self) -> &'static str;
+    /// The derived agent marker on a roster/agent row.
+    fn roster_agent_marker(&self) -> &'static str;
+    /// The "this device" marker beside the self row.
+    fn self_this_device(&self) -> &'static str;
+    /// The roster empty state (only after the answer).
+    fn people_no_members(&self) -> &'static str;
+    /// The invitations region heading.
+    fn people_invites_heading(&self) -> &'static str;
+    /// The invitations empty state.
+    fn invites_empty(&self) -> &'static str;
+    /// The label beside an invite's absolute expiry.
+    fn invite_expires_label(&self) -> &'static str;
+    /// The label beside an invite's bound identity.
+    fn invite_bound_label(&self) -> &'static str;
+
+    /// Action: issue an invitation.
+    fn action_invite(&self) -> &'static str;
+    /// Action: revoke an outstanding invitation.
+    fn action_revoke(&self) -> &'static str;
+    /// Action: remove a member.
+    fn action_remove(&self) -> &'static str;
+    /// Action: re-invite (mint fresh + revoke stale) after expiry.
+    fn action_reinvite(&self) -> &'static str;
+    /// Action: leave the room.
+    fn action_leave(&self) -> &'static str;
+    /// Action: activate a Closed room to read presence.
+    fn action_activate(&self) -> &'static str;
+
+    /// The once-shown minted-capability disclosure heading.
+    fn invite_capability_heading(&self) -> &'static str;
+    /// The once-shown minted-capability note (hand off now; never stored).
+    fn invite_capability_note(&self) -> &'static str;
+    /// The copy action for the minted capability.
+    fn invite_capability_copy(&self) -> &'static str;
+
+    // ---- #180 Invite form --------------------------------------------------
+
+    /// The issue-invitation form heading.
+    fn invite_form_heading(&self) -> &'static str;
+    /// The subject-id field label.
+    fn invite_subject_label(&self) -> &'static str;
+    /// The subject-id field help/example (never pre-seeded with the self id).
+    fn invite_subject_help(&self) -> &'static str;
+    /// The role selector label.
+    fn invite_role_label(&self) -> &'static str;
+    /// The "member only; authority not grantable" note.
+    fn invite_role_member_note(&self) -> &'static str;
+    /// The expiry selector label.
+    fn invite_expiry_label(&self) -> &'static str;
+    /// Expiry option: one hour.
+    fn invite_expiry_1h(&self) -> &'static str;
+    /// Expiry option: one day.
+    fn invite_expiry_1d(&self) -> &'static str;
+    /// Expiry option: seven days.
+    fn invite_expiry_7d(&self) -> &'static str;
+    /// The issue-invitation submit action.
+    fn invite_submit(&self) -> &'static str;
+
+    // ---- #180 Agents & Runs pane -------------------------------------------
+
+    /// The Agents & Runs destination heading.
+    fn agents_heading(&self) -> &'static str;
+    /// The agent-row liveness fact label.
+    fn agents_liveness_label(&self) -> &'static str;
+    /// The agent-row latest-status fact label.
+    fn agents_status_label(&self) -> &'static str;
+    /// The agent-row last-seen fact label.
+    fn agents_last_seen_label(&self) -> &'static str;
+    /// The Agents empty state (only after the answer).
+    fn agents_empty(&self) -> &'static str;
+    /// The run-history disclosure trigger.
+    fn run_history_open(&self) -> &'static str;
+    /// The run-history disclosure heading.
+    fn run_history_heading(&self) -> &'static str;
+    /// The run-history empty state.
+    fn run_history_empty(&self) -> &'static str;
+    /// The run-history progress column label.
+    fn run_progress_label(&self) -> &'static str;
+
+    // ---- #180 Agent Fleet pane ---------------------------------------------
+
+    /// Fleet attention group: stopped and needs a person.
+    fn fleet_attention_needs_person(&self) -> &'static str;
+    /// Fleet attention group: work failed.
+    fn fleet_attention_failed(&self) -> &'static str;
+    /// Fleet attention group: nominal.
+    fn fleet_attention_ok(&self) -> &'static str;
+    /// The per-row room label in the fleet.
+    fn fleet_room_label(&self) -> &'static str;
+    /// The Fleet empty state (only after the answer).
+    fn fleet_empty(&self) -> &'static str;
+    /// The "all agents" filter option.
+    fn fleet_filter_all(&self) -> &'static str;
+    /// The "Live" filter option (Working + Online).
+    fn fleet_filter_live(&self) -> &'static str;
+    /// The Fleet filter group's accessible name.
+    fn fleet_filter_label(&self) -> &'static str;
+
+    // ---- #180 Settings (aliases + diagnostics) -----------------------------
+
+    /// The device-local aliases section heading.
+    fn settings_aliases_heading(&self) -> &'static str;
+    /// The aliases help ("on this device, never sent").
+    fn settings_alias_help(&self) -> &'static str;
+    /// The alias-row identity label.
+    fn settings_alias_subject_label(&self) -> &'static str;
+    /// The alias editor's add-identity field label.
+    fn settings_alias_add_label(&self) -> &'static str;
+    /// The alias editor's add-identity help.
+    fn settings_alias_add_help(&self) -> &'static str;
+    /// The diagnostics section heading.
+    fn settings_diagnostics_heading(&self) -> &'static str;
+    /// The diagnostics client-state row label.
+    fn settings_diagnostics_state_label(&self) -> &'static str;
+    /// The diagnostics last-error row label.
+    fn settings_diagnostics_detail_label(&self) -> &'static str;
+    /// The "copy diagnostics" action.
+    fn settings_diagnostics_copy(&self) -> &'static str;
+    /// The diagnostics redaction note.
+    fn settings_diagnostics_redaction_note(&self) -> &'static str;
+
+    // ---- #180 Destructive/sensitive confirmation ---------------------------
+
+    /// The confirm dialog's cancel (abandon) action — where initial focus lands.
+    fn confirm_cancel(&self) -> &'static str;
+    /// The confirm dialog's room disambiguator label.
+    fn confirm_room_label(&self) -> &'static str;
+    /// Remove-member confirm title.
+    fn confirm_remove_title(&self) -> &'static str;
+    /// Remove-member confirm body.
+    fn confirm_remove_body(&self) -> &'static str;
+    /// Remove-member confirm action.
+    fn confirm_remove_confirm(&self) -> &'static str;
+    /// Leave-room confirm title.
+    fn confirm_leave_title(&self) -> &'static str;
+    /// Leave-room confirm body.
+    fn confirm_leave_body(&self) -> &'static str;
+    /// Leave-room confirm action.
+    fn confirm_leave_confirm(&self) -> &'static str;
+    /// Revoke-invite confirm title.
+    fn confirm_revoke_title(&self) -> &'static str;
+    /// Revoke-invite confirm body.
+    fn confirm_revoke_body(&self) -> &'static str;
+    /// Revoke-invite confirm action.
+    fn confirm_revoke_confirm(&self) -> &'static str;
+
+    // ---- #180 Read/mutation states -----------------------------------------
+
+    /// A read in flight (before the first answer).
+    fn state_loading(&self) -> &'static str;
+    /// A read interrupted by a transient disconnect (recoverable).
+    fn state_offline(&self) -> &'static str;
+    /// A shown value that could not be refreshed (possibly stale).
+    fn state_stale(&self) -> &'static str;
+    /// A read refused for authorization reasons.
+    fn state_unauthorized(&self) -> &'static str;
+    /// A terminal read-failure title.
+    fn state_failed_title(&self) -> &'static str;
+    /// A terminal read-failure body (no false recovery promise).
+    fn state_failed_body(&self) -> &'static str;
+    /// The bounded-page "show more" continuation.
+    fn load_show_more(&self) -> &'static str;
+    /// The ambiguous-mutation "couldn't confirm — reload to check" state.
+    fn couldnt_confirm(&self) -> &'static str;
+    // ---- #179 room Activity: timeline, composer, send state ----------------
+
+    /// The Activity pane's empty state, shown after the first convergence when
+    /// the room has no signed events yet.
+    fn activity_empty(&self) -> &'static str;
+    /// The Activity pane's loading state, before the first converged view (a
+    /// booting room is *unknown*, never an empty timeline — D7).
+    fn activity_loading(&self) -> &'static str;
+    /// A non-blocking notice that a reconciliation is in flight (every resync
+    /// cause is observable — #169 AC-1).
+    fn activity_resyncing(&self) -> &'static str;
+    /// An honest local-loss marker: some updates were dropped and are being
+    /// recovered by the next converged view.
+    fn activity_recovering_loss(&self) -> &'static str;
+    /// The "N new messages" affordance when every new item is a message. Plural:
+    /// the caller passes the count formatted under the formatting locale and the
+    /// category under the text locale.
+    fn activity_new_messages(&self, count_display: &str, category: PluralCategory) -> String;
+    /// The "N new updates" affordance when the new items are mixed (not only
+    /// messages). Plural, as above.
+    fn activity_new_activity(&self, count_display: &str, category: PluralCategory) -> String;
+    /// The read-only notice shown in place of the composer for a departed room
+    /// (no `MessageSend` capability): the signed timeline stays, the composer is
+    /// suppressed (invariant-5 floor, #91 owns the full archive).
+    fn activity_departed(&self) -> &'static str;
+
+    /// The self author's display name when no self-label alias is set ("You").
+    fn timeline_you(&self) -> &'static str;
+    /// The display name for an event whose author could not be resolved —
+    /// nothing is asserted about who they are (contract).
+    fn timeline_unresolved_sender(&self) -> &'static str;
+    /// The chip marking a message/status authored by an agent role.
+    fn timeline_agent_chip(&self) -> &'static str;
+    /// A folded agent-status run's honest evidence: how many status posts.
+    /// Plural, formatted count under the formatting locale.
+    fn timeline_run_summary(&self, count_display: &str, category: PluralCategory) -> String;
+
+    /// The activity filter chip for the conversation (messages) category.
+    fn filter_conversation(&self) -> &'static str;
+    /// The activity filter chip for the agent-runs (status) category.
+    fn filter_agent_runs(&self) -> &'static str;
+    /// The activity filter chip for the membership syslines category.
+    fn filter_membership(&self) -> &'static str;
+    /// The activity filter chip for the files category.
+    fn filter_files(&self) -> &'static str;
+    /// The activity filter chip for the pipes category.
+    fn filter_pipes(&self) -> &'static str;
+
+    /// Sysline: a room was created by `who`.
+    fn sysline_room_created(&self, who: &str) -> String;
+    /// Sysline: `who` joined as `role`.
+    fn sysline_member_joined(&self, who: &str, role: &str) -> String;
+    /// Sysline: `who` left.
+    fn sysline_member_left(&self, who: &str) -> String;
+    /// Sysline: `who` was removed by `by`.
+    fn sysline_member_removed(&self, who: &str, by: &str) -> String;
+    /// Sysline: an invitation was revoked (the id is never leaked as copy).
+    fn sysline_invite_revoked(&self) -> &'static str;
+    /// Sysline: a pipe was revoked.
+    fn sysline_pipe_revoked(&self) -> &'static str;
+    /// A file-reference tile's inert "open in Files" affordance (present but
+    /// disabled until #181 — an honest, not fake, action).
+    fn file_open_in_files(&self) -> &'static str;
+    /// A pipe-reference tile's inert "open in Pipes" affordance (until #181).
+    fn pipe_open_in_pipes(&self) -> &'static str;
+
+    /// The composer control's accessible label (associated via the `Field`
+    /// primitive), distinct from the placeholder.
+    fn composer_label(&self) -> &'static str;
+    /// The composer's empty-input placeholder.
+    fn composer_placeholder(&self) -> &'static str;
+    /// The composer's send action.
+    fn composer_send(&self) -> &'static str;
+    /// The desktop keyboard hint (Enter sends, Shift+Enter is a newline).
+    /// Withheld on compact, where the claim is false.
+    fn composer_enter_hint(&self) -> &'static str;
+    /// The composer's attachment action.
+    fn composer_attach(&self) -> &'static str;
+    /// The honest "attachments are not available yet" state (until #181).
+    fn composer_attach_unavailable(&self) -> &'static str;
+    /// The message is too long. Rendered as an inline error when the user's
+    /// draft exceeds the maximum message length.
+    fn composer_too_long(&self) -> &'static str;
+
+    /// A pending send's honest in-flight/awaiting-commit label — never a
+    /// delivery receipt.
+    fn send_sending(&self) -> &'static str;
+    /// A failed send that provably never left the client ("not sent").
+    fn send_failed_not_sent(&self) -> &'static str;
+    /// A failed send that may have executed ("may not have sent") — the honest
+    /// ambiguity; retry is offered but never auto-taken.
+    fn send_failed_maybe(&self) -> &'static str;
+    /// The per-send Retry action.
+    fn send_retry(&self) -> &'static str;
+
     // ---- #91 departed-room read-only archive ------------------------------
 
     /// Departure banner title when the caller voluntarily LEFT the room.

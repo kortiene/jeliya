@@ -12,10 +12,27 @@
 //! the same constant as its wire value: renaming a label renames no wire value,
 //! and translating one changes nothing the daemon is told.
 
-use jeliya_api::{Role, Standing};
+use jeliya_api::{Role, Standing, StatusLabel};
 use jeliya_client::State;
 
 use super::Catalog;
+
+/// The agent-status label as its verbatim wire token (#179 §5.2): the closed
+/// [`jeliya_api::StatusLabel`] vocabulary renders EXACTLY as the daemon writes
+/// it, never translated — a status word is a protocol token, not display copy.
+/// The enum is closed (deserialization fails on an unknown label), so every arm
+/// is a designed token and there is no passthrough.
+pub fn status_label_token(label: StatusLabel) -> &'static str {
+    match label {
+        StatusLabel::Online => "online",
+        StatusLabel::Idle => "idle",
+        StatusLabel::Claiming => "claiming",
+        StatusLabel::Working => "working",
+        StatusLabel::Done => "done",
+        StatusLabel::Failed => "failed",
+        StatusLabel::Blocked => "blocked",
+    }
+}
 
 /// The client lifecycle as a status word, from the catalog. A closed enum, so
 /// every arm is a designed label — there is no passthrough here because the

@@ -17,24 +17,33 @@
 //! and percent-encoded, so [`Route::to_path`] spells `/rooms/blake3%3A…`
 //! byte-identically to the shipped web shell's `encodeURIComponent`.
 
-use jeliya_api::{FileId, PipeId, RoomId};
+use jeliya_api::{FileId, PipeId, RoomId, SubjectId};
 
 /// One room's destination — the room tools, in the product contract's
 /// tab-strip order. `Activity` is the room's workspace, a real destination,
 /// not a synonym for "a room is selected".
 ///
-/// Only [`RoomDest::Files`] and [`RoomDest::Pipes`] select an individual item
-/// (#67): the item is part of the *type*, so an item selection under People —
-/// a selection people cannot have — is unrepresentable rather than merely
-/// rejected.
+/// [`RoomDest::Files`] and [`RoomDest::Pipes`] select an individual item by its
+/// opaque id (#67); [`RoomDest::People`] and [`RoomDest::Agents`] select an
+/// individual **member/agent** by its [`SubjectId`] (#180 Q1). In every case
+/// the selected item is part of the *type*, so a member selection under Files —
+/// or a file selection under People — is unrepresentable rather than merely
+/// rejected, and a selection is a genuinely stable deep link that Back closes.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RoomDest {
     /// The room's workspace.
     Activity,
-    /// Members and presence.
-    People,
-    /// Agents and runs.
-    Agents,
+    /// Members and presence, optionally with one member selected.
+    People {
+        /// The selected member, when the route deep-links one.
+        item: Option<SubjectId>,
+    },
+    /// Agents and runs, optionally with one agent selected (its run history
+    /// open).
+    Agents {
+        /// The selected agent, when the route deep-links one.
+        item: Option<SubjectId>,
+    },
     /// Files shared in this room, optionally with one file open.
     Files {
         /// The selected file, when the route deep-links one.
@@ -244,8 +253,8 @@ impl Route {
             ["rooms", id, dest] => {
                 let dest = match *dest {
                     "activity" => RoomDest::Activity,
-                    "people" => RoomDest::People,
-                    "agents" => RoomDest::Agents,
+                    "people" => RoomDest::People { item: None },
+                    "agents" => RoomDest::Agents { item: None },
                     "files" => RoomDest::Files { item: None },
                     "pipes" => RoomDest::Pipes { item: None },
                     _ => return Err(RouteParseError),
@@ -255,9 +264,22 @@ impl Route {
                     dest,
                 })
             }
-            // A 4th segment is the selected item, but ONLY under a
-            // destination that has items (#67); `/rooms/:id/people/:x` is a
-            // selection people cannot have and fails closed.
+            // A 4th segment is the selected item, under the four
+            // item-bearing destinations. People/Agents select a member/agent
+            // by SubjectId (#180 Q1); Files/Pipes select a file/pipe (#67).
+            // Activity has no item, so `/rooms/:id/activity/:x` fails closed.
+            ["rooms", id, "people", item] => Ok(Route::Room {
+                room_id: RoomId::new(*id),
+                dest: RoomDest::People {
+                    item: Some(SubjectId::new(*item)),
+                },
+            }),
+            ["rooms", id, "agents", item] => Ok(Route::Room {
+                room_id: RoomId::new(*id),
+                dest: RoomDest::Agents {
+                    item: Some(SubjectId::new(*item)),
+                },
+            }),
             ["rooms", id, "files", item] => Ok(Route::Room {
                 room_id: RoomId::new(*id),
                 dest: RoomDest::Files {
@@ -288,8 +310,20 @@ impl Route {
                 let mut path = format!("/rooms/{}", encode_segment(room_id.as_str()));
                 match dest {
                     RoomDest::Activity => path.push_str("/activity"),
-                    RoomDest::People => path.push_str("/people"),
-                    RoomDest::Agents => path.push_str("/agents"),
+                    RoomDest::People { item } => {
+                        path.push_str("/people");
+                        if let Some(item) = item {
+                            path.push('/');
+                            path.push_str(&encode_segment(item.as_str()));
+                        }
+                    }
+                    RoomDest::Agents { item } => {
+                        path.push_str("/agents");
+                        if let Some(item) = item {
+                            path.push('/');
+                            path.push_str(&encode_segment(item.as_str()));
+                        }
+                    }
                     RoomDest::Files { item } => {
                         path.push_str("/files");
                         if let Some(item) = item {
@@ -374,6 +408,8 @@ mod tests {
             "/rooms/r-1/activity",
             "/rooms/r-1/people",
             "/rooms/r-1/agents",
+            "/rooms/r-1/people/blake3%3Amember",
+            "/rooms/r-1/agents/blake3%3Aagent",
             "/rooms/r-1/files",
             "/rooms/r-1/pipes",
             "/rooms/r-1/files/f-9",
@@ -479,7 +515,7 @@ mod tests {
         let unreserved = RoomId::new("AZaz09-_.!~*'()");
         let route = Route::Room {
             room_id: unreserved,
-            dest: RoomDest::People,
+            dest: RoomDest::People { item: None },
         };
         assert_eq!(route.to_path(), "/rooms/AZaz09-_.!~*'()/people");
     }
@@ -508,12 +544,14 @@ mod tests {
         assert!(Route::parse("/rooms/%A/activity").is_err());
         // An empty interior segment must not invent room "activity".
         assert!(Route::parse("/rooms//activity").is_err());
-        // An item segment under a non-item destination is unrepresentable.
-        assert!(Route::parse("/rooms/x/people/extra").is_err());
+        // An item segment under the item-free Activity destination is
+        // unrepresentable (People/Agents DO carry an item — #180 Q1).
+        assert!(Route::parse("/rooms/x/activity/extra").is_err());
         // Unknown forms fail closed — never a silently defaulted route.
         assert!(Route::parse("/nope").is_err());
         assert!(Route::parse("/rooms/x/unknown").is_err());
         assert!(Route::parse("/rooms/x/files/f/extra").is_err());
+        assert!(Route::parse("/rooms/x/people/m/extra").is_err());
         assert!(Route::parse("rooms").is_err(), "a path starts with '/'");
     }
 
@@ -523,7 +561,7 @@ mod tests {
         assert!(!Route::Settings.is_rooms());
         let room = Route::Room {
             room_id: RoomId::new("r-1"),
-            dest: RoomDest::Agents,
+            dest: RoomDest::Agents { item: None },
         };
         assert!(!room.is_rooms());
         assert_eq!(room.room_id().map(RoomId::as_str), Some("r-1"));

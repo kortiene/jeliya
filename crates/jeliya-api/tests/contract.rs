@@ -557,6 +557,7 @@ fn hello_carries_t_discriminator() {
     let h = Hello {
         protocol: 2,
         storage_generation: 1,
+        incarnation: Incarnation::new("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"),
         limits: Limits {
             max_shared_file_bytes: 104857600,
             max_message_body_bytes: 1,
@@ -581,6 +582,11 @@ fn hello_carries_t_discriminator() {
     let json = serde_json::to_string(&h).unwrap();
     assert!(json.contains("\"t\":\"hello\""));
     assert!(json.contains("\"protocol\":2"));
+    // The incarnation is a top-level opaque string key that round-trips.
+    assert!(json.contains("\"incarnation\":\"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6\""));
+    let back: Hello = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.incarnation, h.incarnation);
+    assert_eq!(back, h);
 }
 
 /// A progress percent outside 0..=100 is refused at deserialization.

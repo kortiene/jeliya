@@ -32,6 +32,7 @@ ui = [
     # backing and never fire. It adds no dependency to the lockfile.
     "dioxus/mounted",
     "dep:futures",
+    "dep:time",
     "jeliya-client/mock",
     # The canonical platform-authority contract (#174) and its deterministic
     # fakes. `jeliya-platform` is renderer-agnostic and wasm32-clean by
@@ -40,13 +41,18 @@ ui = [
     # crate's wasm-graph check).
     "dep:jeliya-platform",
     "jeliya-platform/fake",
+    # #179: the pure `room/` core and the composer name `jeliya_api::Timestamp`
+    # (which wraps `time::OffsetDateTime`) and the wasm-safe `UNIX_EPOCH` const
+    # for a local send's ordering instant. `time` is already in the lock via
+    # `jeliya-api` and is wasm32-clean, so it adds no crate and no native edge.
+    "dep:time",
 ]
 
 # The browser DOM renderer. Built ONLY for `wasm32-unknown-unknown`, in the
 # dedicated web job. It adds `dioxus/web` on top of `ui`; it must never pull
 # `dioxus-desktop`/`wry`/`tao`/`tokio`/`openssl-sys` (asserted by
 # `scripts/check-jeliya-ui-wasm-graph.sh`).
-web = ["ui", "dioxus/web", "dep:web-sys", "dep:wasm-bindgen", "dep:js-sys"]
+web = ["ui", "dioxus/web", "dep:web-sys", "dep:wasm-bindgen", "dep:js-sys", "dep:gloo-timers"]
 
 # The system-WebView shell target (M4: #186-#189). This slice defines the
 # layering seam — `compose.rs` carries the mock-composed `NativeComposition` /
@@ -100,10 +106,20 @@ web-sys = { version = "0.3.103", optional = true, features = ["Window", "Navigat
 # adds nothing new to the wasm graph and never enters the default/`ui`/MSRV graph.
 wasm-bindgen = { version = "0.2.126", optional = true }
 js-sys = { version = "0.3.103", optional = true }
+# Web-only, gated by `web`: the Fleet poll interval's sleep (#180 §7.3/D7).
+# Pure setTimeout futures over the already-locked wasm-bindgen/js-sys — no new
+# graph edge beyond the crate itself, and never in the default/`ui`/MSRV graph.
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 # Executor-agnostic, wasm32-safe async primitives for the app root's event
 # consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
+# The wire timestamp type is `jeliya_api::Timestamp(time::OffsetDateTime)`. #179's pure
+# `room/` core and composer and #180's invite-expiry instants and date rendering both name
+# `time::Duration`/`OffsetDateTime` directly. Optional and enabled by `ui`; pure Rust and
+# wasm32-safe (no clock call is made — the base `now` is injected), already in the lock
+# via `jeliya-api`, out of the default/MSRV graph.
+time = { version = "0.3", optional = true }
 
 [dev-dependencies]
 # Needed by the compose_shape integration test to name `Durability`, `Preferences`,
@@ -111,17 +127,14 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # partially. The `fake` feature is active transitively through the `ui` feature
 # (which enables `jeliya-platform/fake`), so the test binary sees the full library.
 jeliya-platform = { path = "../jeliya-platform" }
-# TEST-ONLY: the #91 archive seam tests call async `ClientHandle::room_archive`
-# and need a synchronous executor to drive the future in a non-async test. The
-# `executor` module is not included in the `ui`-feature futures dep (which
-# carries only `std`+`async-await`), so it is pulled in here as a separate
-# dev-only activation. Resolves within the already-locked `futures` version.
+# TEST-ONLY: the #91 archive seam tests drive async `ClientHandle::room_archive`
+# calls through a synchronous executor. The `ui`-feature futures dep carries
+# only `std`+`async-await`, so `executor` is activated here, dev-only; it
+# resolves within the already-locked `futures` version.
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 # TEST-ONLY: the `room/` archive-fold unit tests build `jeliya_api::Event`
-# fixtures, whose `at` is a `jeliya_api::Timestamp` wrapping a
-# `time::OffsetDateTime`. Dev-only, already in the workspace lock (jeliya-api
-# depends on `time`), and excluded from the wasm graph (`--edges normal`) — so it
-# never enters the browser/MSRV build and is not a banned native crate.
+# fixtures whose `at` wraps `time::OffsetDateTime`. Dev-only, already in the
+# workspace lock, excluded from the wasm graph (`--edges normal`).
 time = { version = "0.3" }
 
 # Underscored so the cargo artifact, the wasm-bindgen module, and the import in
@@ -150,11 +163,11 @@ required-features = ["ui"]
 name = "shell_178"
 required-features = ["ui"]
 
-# Focused integration tests for #91 (departed-room read-only archive).
-# Covers: ARCHIVE_PAGE_LIMIT protocol bounds, archive l10n strings (non-empty,
-# translated, honesty-compliant), source scan that the archive pane dispatches
-# no live ops, and capability-set exhaustiveness. Requires `ui` for access to
-# `jeliya_ui::room` and `jeliya_ui::l10n`.
+# Integration tests for the #91 departed-room local archive: the paged
+# `room.archive` fold, the historical roster, the departure banner copy (EN/FR
+# parity, never implying presence/currency), the source scan that the archive
+# pane dispatches no live ops, and capability-set exhaustiveness. Requires
+# `ui` for `jeliya_ui::room`/`jeliya_ui::l10n` and `jeliya-client/mock`.
 [[test]]
 name = "archive_91"
 required-features = ["ui"]

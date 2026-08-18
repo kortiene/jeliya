@@ -993,8 +993,8 @@ function checkCase(c, file) {
       }
     }
   }
-  if ("blocked_on_upstream" in c && !["U1", "U2", "U3"].includes(c.blocked_on_upstream)) {
-    fail(file, name, "case", `blocked_on_upstream is "${c.blocked_on_upstream}" — must be U1, U2, or U3, or the key omitted`);
+  if ("blocked_on_upstream" in c && !["U1", "U2", "U3", "U4"].includes(c.blocked_on_upstream)) {
+    fail(file, name, "case", `blocked_on_upstream is "${c.blocked_on_upstream}" — must be U1, U2, U3, or U4, or the key omitted`);
   }
   if ("blocked_on_record" in c
       && (typeof c.blocked_on_record !== "string" || c.blocked_on_record.length === 0)) {
@@ -1317,11 +1317,11 @@ if (isObject(manifest)) {
   if (!sameJson(manifest.target_counts, expectedTargetCounts)) {
     fail("manifest.json", "(manifest)", "target_counts", `does not equal recomputed counts ${JSON.stringify(expectedTargetCounts)}`);
   }
-  const blocked = { U1: 0, U2: 0, U3: 0 };
-  const blockedOnUpstreamCases = { U1: [], U2: [], U3: [] };
+  const blocked = { U1: 0, U2: 0, U3: 0, U4: 0 };
+  const blockedOnUpstreamCases = { U1: [], U2: [], U3: [], U4: [] };
   const blockedOnRecordCases = [];
   for (const { file, case: c } of corpus) {
-    if (["U1", "U2", "U3"].includes(c.blocked_on_upstream)) {
+    if (["U1", "U2", "U3", "U4"].includes(c.blocked_on_upstream)) {
       blocked[c.blocked_on_upstream]++;
       blockedOnUpstreamCases[c.blocked_on_upstream].push({ file, case: c.name });
     }
@@ -1341,7 +1341,7 @@ if (isObject(manifest)) {
     conforming_to_the_dsl: fixtureProblemCount === 0 ? corpus.length : null,
     distinct_step_verbs_in_use: usedVerbs.size,
     quarantined: 0,
-    blocked_on_upstream: blocked.U1 + blocked.U2 + blocked.U3,
+    blocked_on_upstream: blocked.U1 + blocked.U2 + blocked.U3 + blocked.U4,
     blocked_on_record: blockedOnRecord,
   };
   if (attributed + operationNull !== corpus.length) {
@@ -1362,10 +1362,10 @@ if (isObject(manifest)) {
     }
   }
   if (!isObject(manifest.blocked_on_upstream)
-      || !sameJson(Object.keys(manifest.blocked_on_upstream).sort(), ["U1", "U2", "U3"])
+      || !sameJson(Object.keys(manifest.blocked_on_upstream).sort(), ["U1", "U2", "U3", "U4"])
       || Object.values(manifest.blocked_on_upstream).some((value) =>
         typeof value !== "string" || value.length === 0)) {
-    fail("manifest.json", "(manifest)", "blocked_on_upstream", "must preserve non-empty U1/U2/U3 descriptions");
+    fail("manifest.json", "(manifest)", "blocked_on_upstream", "must preserve non-empty U1/U2/U3/U4 descriptions");
   }
   const replayability = {
     structural_validation: true,
@@ -1492,10 +1492,10 @@ if (isObject(manifest)) {
   }
   const perFile = Object.fromEntries(files.map((file) => {
     const entries = corpus.filter((entry) => entry.file === file);
-    const perFileBlocked = { U1: 0, U2: 0, U3: 0 };
+    const perFileBlocked = { U1: 0, U2: 0, U3: 0, U4: 0 };
     let perFileBlockedOnRecord = 0;
     for (const { case: c } of entries) {
-      if (["U1", "U2", "U3"].includes(c.blocked_on_upstream)) {
+      if (["U1", "U2", "U3", "U4"].includes(c.blocked_on_upstream)) {
         perFileBlocked[c.blocked_on_upstream]++;
       }
       if (Object.hasOwn(c, "blocked_on_record")) perFileBlockedOnRecord++;
@@ -1527,12 +1527,12 @@ if (isObject(manifest)) {
     fail("manifest.json", "(manifest)", "codes_without_a_case.codes", `does not equal recomputed list ${JSON.stringify(codesWithoutCase)}`);
   }
   const manifestBlocked = manifest.blocked_case_counts;
-  const expectedBlocked = { U1: blocked.U1, U2: blocked.U2, U3: blocked.U3, blocked_on_record: blockedOnRecord };
+  const expectedBlocked = { U1: blocked.U1, U2: blocked.U2, U3: blocked.U3, U4: blocked.U4, blocked_on_record: blockedOnRecord };
   if (!sameJson(manifestBlocked, expectedBlocked)) {
     fail("manifest.json", "(manifest)", "blocked_case_counts", `does not equal recomputed counts ${JSON.stringify(expectedBlocked)}`);
   }
   if (!sameJson(manifest.blocked_on_upstream_cases, blockedOnUpstreamCases)) {
-    fail("manifest.json", "(manifest)", "blocked_on_upstream_cases", "does not equal the recomputed U1/U2/U3 case lists");
+    fail("manifest.json", "(manifest)", "blocked_on_upstream_cases", "does not equal the recomputed U1/U2/U3/U4 case lists");
   }
   if (!sameJson(manifest.blocked_on_record_cases, blockedOnRecordCases)) {
     fail("manifest.json", "(manifest)", "blocked_on_record_cases", "does not equal the recomputed blocked-on-record case list");

@@ -125,3 +125,7 @@ opaque_id!(
     OpId,
     "Client-generated request deduplication key (`<op_id>`); envelope-level, never inside `in`."
 );
+opaque_id!(
+    Incarnation,
+    "Opaque daemon-incarnation identity (`<incarnation>`); a per-process nonce, fresh at each daemon start and identical for every connection of one running process. Carried on `hello` so a client can fence replay of keyed mutations across a daemon restart. Orthogonal to `storage_generation` (which is persistent); it is never parsed or ordered, only compared for equality."
+);

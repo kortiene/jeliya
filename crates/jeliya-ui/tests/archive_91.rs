@@ -25,17 +25,23 @@ use jeliya_ui::room::{capability, ArchiveView, DepartureFact, ARCHIVE_PAGE_LIMIT
 /// bound for `room.archive` (#91 §6 / R3). A value of 0 would cause the daemon
 /// to refuse the call; a value > 1024 would violate the protocol ceiling and
 /// trigger a daemon refusal with `invalid_argument`.
+// A const block makes the check compile-time (the value IS a constant — a
+// runtime assert! trips the assertions_on_constants lint and, worse, would
+// only fire when the test runs rather than when the constant is edited).
+const _: () = assert!(
+    ARCHIVE_PAGE_LIMIT >= 1,
+    "ARCHIVE_PAGE_LIMIT is below the protocol minimum of 1"
+);
+const _: () = assert!(
+    ARCHIVE_PAGE_LIMIT <= 1024,
+    "ARCHIVE_PAGE_LIMIT exceeds the protocol maximum of 1024 (timeline_page_max per docs/protocol-v2.md)"
+);
+
 #[test]
 fn archive_page_limit_is_within_protocol_paging_bounds() {
-    assert!(
-        ARCHIVE_PAGE_LIMIT >= 1,
-        "ARCHIVE_PAGE_LIMIT={ARCHIVE_PAGE_LIMIT} is below the protocol minimum of 1"
-    );
-    assert!(
-        ARCHIVE_PAGE_LIMIT <= 1024,
-        "ARCHIVE_PAGE_LIMIT={ARCHIVE_PAGE_LIMIT} exceeds the protocol maximum of 1024 \
-         (timeline_page_max per docs/protocol-v2.md)"
-    );
+    // The compile-time guards above carry the proof; this documents the bound
+    // in the test report and fails if the constant ever stops being const.
+    assert!((1..=1024).contains(&ARCHIVE_PAGE_LIMIT));
 }
 
 // ---- Localization completeness and honesty ---------------------------------
