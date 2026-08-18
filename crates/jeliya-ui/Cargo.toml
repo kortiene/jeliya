@@ -41,6 +41,11 @@ ui = [
     # crate's wasm-graph check).
     "dep:jeliya-platform",
     "jeliya-platform/fake",
+    # #179: the pure `room/` core and the composer name `jeliya_api::Timestamp`
+    # (which wraps `time::OffsetDateTime`) and the wasm-safe `UNIX_EPOCH` const
+    # for a local send's ordering instant. `time` is already in the lock via
+    # `jeliya-api` and is wasm32-clean, so it adds no crate and no native edge.
+    "dep:time",
 ]
 
 # The browser DOM renderer. Built ONLY for `wasm32-unknown-unknown`, in the
@@ -109,12 +114,11 @@ gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 # consumption (`StreamExt`, `join!`). Optional and enabled by `ui`; the base
 # graph (already carrying `futures` via `jeliya-client`) is unchanged.
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
-# The wire timestamp type is `jeliya_api::Timestamp(time::OffsetDateTime)`. #180
-# computes absolute invite-expiry instants (`now + duration`) and renders dates,
-# so it names `time::Duration`/`OffsetDateTime` directly. Optional and enabled by
-# `ui`; `time` is pure Rust and wasm32-safe (no clock call is made — the base
-# `now` is injected), so it never enters the MSRV base graph and adds no native
-# edge to the audited browser graph. Already in the lock via `jeliya-api`.
+# The wire timestamp type is `jeliya_api::Timestamp(time::OffsetDateTime)`. #179's pure
+# `room/` core and composer and #180's invite-expiry instants and date rendering both name
+# `time::Duration`/`OffsetDateTime` directly. Optional and enabled by `ui`; pure Rust and
+# wasm32-safe (no clock call is made — the base `now` is injected), already in the lock
+# via `jeliya-api`, out of the default/MSRV graph.
 time = { version = "0.3", optional = true }
 
 [dev-dependencies]

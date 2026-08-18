@@ -18,13 +18,19 @@
 //! detail into the Diagnostics dialog while primary copy stays friendly catalog
 //! text.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use futures::StreamExt;
 use jeliya_api::{RoomId, RoomList, RoomRow};
-use jeliya_client::{CallError, ClientEvent, ClientHandle, Dedup, State};
+use jeliya_client::{
+    CallError, ClientEvent, ClientHandle, Dedup, ReconcileConfig, Reconciler, State,
+};
 use jeliya_platform::navigation::{RoomDest, Route};
 use jeliya_platform::PreferenceKey;
 
+use crate::components::SavedViewMap;
 use crate::components::{
     use_announce_context, BootScreen, EmptyCenter, FleetPane, GlobalNav, LiveRegion, NavLandmark,
     Onboarding, RecoveryBanner, RoomShell, RoomUnavailable, SettingsPane, SkipLink, SkipLinks,
@@ -34,6 +40,7 @@ use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
     LocaleState,
 };
+use crate::room::scroll::SavedView;
 use crate::shell::bootstrap::{
     derive_boot_view, BootView, ConnectionSnapshot, FailureView, OnboardStep, RecoveryView,
     RoomsKnowledge,
@@ -218,6 +225,32 @@ pub fn AppRoot(
     connection: Option<ConnectionSnapshot>,
 ) -> Element {
     let mut ui = use_signal(UiState::new);
+
+    // The authoritative per-room reconciler (#169), DERIVED from the injected
+    // `ClientHandle` (not a third root input — §3.1): constructed once, provided
+    // to the subtree so the Activity pane (#179) can activate rooms and fold its
+    // `RoomUpdate` fan-out. A single `use_future` drives `run()` for the app's
+    // lifetime (the driver never spawns). The App-level saved-view map lets a
+    // room switch restore the same reading position (§7 AC). Under the mock the
+    // reconciler's baseline reads are unscripted, so it parks quiescently (a
+    // failed read parks the room, never a busy loop); the pane shows Loading
+    // honestly until #171's `WsWeb` (or the offline timeline fixture) feeds it.
+    let reconciler_handle = handle.clone();
+    let reconciler = use_hook(|| {
+        Rc::new(Reconciler::new(
+            reconciler_handle,
+            ReconcileConfig::default(),
+        ))
+    });
+    use_context_provider(|| reconciler.clone());
+    use_context_provider(|| Signal::new(HashMap::<RoomId, SavedView>::new()) as SavedViewMap);
+    {
+        let reconciler = reconciler.clone();
+        use_future(move || {
+            let reconciler = reconciler.clone();
+            async move { reconciler.run().await }
+        });
+    }
 
     // Resolve the locale from the two persisted preferences AND the injected
     // platform language, in that precedence (Decision-5, `LocaleState::resolve`):
@@ -836,6 +869,7 @@ pub fn AppRoot(
                                                 services: services_room.clone(),
                                                 now,
                                                 self_id: self_id.clone(),
+                                                shell: active_shell,
                                             }
                                         },
                                         None if reachable => rsx! {

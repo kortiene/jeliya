@@ -16,10 +16,11 @@ audience: ["contributors", "maintainers", "release-engineers"]
 **Status: DECIDED 2026-07-27. M1's typed-API slices have landed (the #165,
 #166, and #233 remainders stay open); the M2 entry seam (#167), the M2
 transport-independent kernel (#168), the M2 authoritative room/session
-reconciler (#169), the M2 platform-authority boundary (#174), the M3 web
+reconciler (#169), the M2 platform-authority boundary (#174), the M2
+DirectClient Android adapter (#173), the M3 web
 foundation (#176), the M3 CSS/l10n/a11y foundation (#177), the M3
-bootstrap/shell/routing/preferences (#178), the M3 room
-activity/timeline/composer (#179), the M3
+bootstrap/shell/routing/preferences (#178), the M3 room Activity/timeline/
+composer/drafts/pending-send (#179), the M3
 People/Agents/Fleet/Settings/diagnostics (#180), and the M4 daemon supervisor
 (#170) are implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
@@ -200,6 +201,15 @@ distinguishes never-sent work from work that may have executed; only
 operations with an explicit, tested v2 deduplication guarantee may replay,
 and everything else never auto-replays; generations are fenced.
 
+**The stream lifecycle layer** (#269) extends the kernel: `call_stream::<FileShare>`
+(upload) and `call_stream::<FileRead>` (download) now drive a full
+`OPEN → DATA/CREDIT → END → Text reply` lifecycle through the kernel, with
+credit-bounded outbound bytes, a per-stream absolute deadline
+(`transfer_connect_allowance + floor-throughput term`), and a stall timer. The
+byte-free sub-core (`kernel/streaming`) holds only offset scalars; framing stays
+owned by `jeliya-codec` and the daemon executor (#233/#242/#243), executed at
+the driver boundary exactly as `WireFrame`↔bytes are today.
+
 **One resync path** (#169): `ResyncRequired { generation, reason }` is the
 only gap and resync path for v2 clients. There is no legacy bootstrap
 fallback.
@@ -214,9 +224,9 @@ fallback.
 Pretending `DirectClient` reconnects is an explicit non-goal (#173). One
 fault-injected suite must prove all four expose the same view-level contract
 while retaining honest transport-specific lifecycle differences (#175). No
-such suite exists; of the four adapters only the deterministic mock has
-landed (shipped with the seam, #167) — `WsWeb`, `WsNative`, and
-`DirectClient` do not yet exist.
+such suite exists yet; `DirectClient` (#173) has landed alongside the
+deterministic mock (shipped with the seam, #167). `WsWeb` (#171) and
+`WsNative` (#172) land in parallel branches.
 
 **`PlatformServices`** (#174) keeps platform authority out of shared RSX
 components through one injectable boundary covering files, persistence,
@@ -478,6 +488,7 @@ The slices that carry this record:
 | #178 | The M3 browser shell, routing, and preferences (`crates/jeliya-ui/src/shell/`, `prefs/`, `platform_web.rs`, six new components). Host-testable pure modules: `Shell`/`shell_for` with fractional breakpoints, the router (`use_route` + canonicalization + fail-safe + last-room restore), the bootstrap/onboarding state machine, the preference schema (`jeliya.dx.v1` namespace, versioned envelope, corrupt/unsupported-version recovery, `reset_all`). Browser bindings: `WebNavigation` (History API pushState/replaceState/popstate), `WebLifecycle` (browser events → `LifecycleBus`), `WebPreferences` (session-scoped in-memory schema + boot-time legacy purge), `WebSecretStore` (tab-scoped in-memory), assembled as `WebPlatform`. New components: `GlobalNav`, `RoomShell`, `Fleet`, `Settings`, `Onboarding`, `Recovery`. Additive `Navigation::navigate_replace` (defaulted; `jeliya-platform` fake records it). The `ClientHandle` stays the deterministic mock until `WsWeb` (#171) slots in. | Landed |
 | #179 | The M3 room Activity destination (`crates/jeliya-ui/src/room/`, `components/{activity,timeline_row,composer}.rs`): pure host-testable room activity state (`RoomActivityState`, `PendingSends`, `ScrollModel`, `build_render_units`/`decorate`); AppRoot `Reconciler` integration (constructed per use_hook, driven per use_future, `activate_room` on pane mount); exhaustive compile-total 10-kind `EventKind` match (unknown kinds fail the typed read → reconciler resync, never a silent drop); honest pending-send model (Pending→Syncing{event_id}→dropped when the reconciler timeline carries that event_id; `CallError::execution()` classifies never-sent vs may-have-executed; no "delivered"); message retry reuses the same `op_id` for same-connection idempotency (`stable_principal` deferred to #270); draft persistence under `jeliya.dx.v1`; composer gated on `CapabilityToken::MessageSend` (absent, not disabled, for departed rooms). Transport stays the deterministic mock until `WsWeb` (#171); live re-qualification follows at #182. | Landed |
 | #180 | The M3 People, Agents & Runs, global Agent Fleet, Settings/alias editor, diagnostics card, and destructive-confirm primitive (`crates/jeliya-ui/src/{view/,status/,components/{people,agents,fleet,settings,confirm,invite_form,read}.rs}`). Pure host-testable view-model folds (`view/`): `roster.rs` (signed `room.members` + distinct `room.peers` presence as two separate facts; Closed room ⇒ presence unknown, never zero), `invites.rs` (expiry/redeemability classification, re-invite target derivation), `agents.rs` (fleet.list-by-room + status.history runs), `fleet.rs` (attention/severity grouping), `poll.rs` (Fleet active-and-visible polling state machine, resume-once, no background polling), `capability.rs` (typed affordance gate: control renders only when its `CapabilityToken` is present), `load.rs` (six-state `LoadState<T>`). `status/mod.rs`: exhaustive closed-vocabulary display seam for all product enums with safe localized fallback for absent/unknown arms; forward-unknown wire values fail the typed read, never reclassify. `view/alias.rs`: hand-rolled versioned alias codec + `ResolvedName` (no serde). Additive `item: Option<SubjectId>` on `RoomDest::{People,Agents}` in `crates/jeliya-platform::navigation` for stable member/agent deep links (`/rooms/:id/people/:m`). `ConfirmDialog` repeats the room disambiguator, defaults focus to the abandoning control, and is single-submit. Capability-gated actions are absent not disabled (contract invariant 5). AC-4 (late-join #46, expired-ticket re-invite #47) is proved in the conformance corpus (#161); Playwright/real-daemon path follows at #182 after `WsWeb` (#171). 151 host tests pass. | Landed |
+| #179 | The M3 room Activity destination: the signed timeline, composer, and evidence-backed send lifecycle under `/rooms/:roomId/activity` (`crates/jeliya-ui/src/room/` + `components/{activity,timeline_row,composer}.rs`). Pure host-testable `room/` core (`projection`, `runs`, `send`, `scroll`, `reconcile`) — no Dioxus, no `web-sys`, no `cfg` (Decision-3/-6) — enforced exhaustive by `rustc`; thin Dioxus components own DOM measurement through the mounted element API. `AppRoot` wires the `Reconciler` (constructed via `use_hook`, driven via `use_future`); the pane activates/deactivates its room and folds `RoomUpdate` into `RoomActivityState`. Key guarantees: exhaustive-total 10-kind event projection (no silent drop, D2); folding/grouping as reversible view state (D1); evidence-backed send state machine (`Pending` → `Syncing{event_id}` → dropped-when-committed, `Failed` sub-classified by `CallError::execution()`, D3); stable-`op_id` idempotent retry (D4, contract rule 7); per-room session-scoped drafts through `PreferenceKey::Draft{room_id}`; capability-gated composer (D8, invariant 5 floor); pure scroll model + "N new messages/activity" affordance (D6). Renders against the deterministic mock until `WsWeb` (#171) lands; host tests pass; offline Playwright fixtures and live re-qualification deferred to tests phase (#182). | Landed |
 | #183 | The one content-addressed embedded artifact. | Planned |
 | #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |
 

@@ -2889,8 +2889,11 @@ dependencies = [
  "dioxus",
  "futures",
  "jeliya-api",
+ "jeliya-codec",
+ "jeliya-core",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

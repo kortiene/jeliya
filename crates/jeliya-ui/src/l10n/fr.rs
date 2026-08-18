@@ -713,4 +713,126 @@ impl Catalog for Fr {
     fn couldnt_confirm(&self) -> &'static str {
         "Impossible de confirmer le résultat — rechargez pour vérifier."
     }
+    fn activity_empty(&self) -> &'static str {
+        "Aucune activité pour l’instant."
+    }
+    fn activity_loading(&self) -> &'static str {
+        "Chargement de l’activité…"
+    }
+    fn activity_resyncing(&self) -> &'static str {
+        "Réconciliation avec le démon…"
+    }
+    fn activity_recovering_loss(&self) -> &'static str {
+        "Des mises à jour ont été perdues — récupération…"
+    }
+    fn activity_new_messages(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} nouveau message"),
+            PluralCategory::Other => format!("{count_display} nouveaux messages"),
+        }
+    }
+    fn activity_new_activity(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} nouvelle mise à jour"),
+            PluralCategory::Other => format!("{count_display} nouvelles mises à jour"),
+        }
+    }
+    fn activity_departed(&self) -> &'static str {
+        "Vous n’êtes plus dans ce salon. Son historique reste ici, en lecture seule."
+    }
+
+    fn timeline_you(&self) -> &'static str {
+        "Vous"
+    }
+    fn timeline_unresolved_sender(&self) -> &'static str {
+        "Expéditeur inconnu"
+    }
+    fn timeline_agent_chip(&self) -> &'static str {
+        // `agent` is a never-translate lexicon term (docs/glossary-fr.md),
+        // identical to English on purpose.
+        "agent"
+    }
+    fn timeline_run_summary(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} mise à jour de statut"),
+            PluralCategory::Other => format!("{count_display} mises à jour de statut"),
+        }
+    }
+
+    fn filter_conversation(&self) -> &'static str {
+        "Discussion"
+    }
+    fn filter_agent_runs(&self) -> &'static str {
+        "Exécutions d’agents"
+    }
+    fn filter_membership(&self) -> &'static str {
+        "Membres"
+    }
+    fn filter_files(&self) -> &'static str {
+        "Fichiers"
+    }
+    fn filter_pipes(&self) -> &'static str {
+        // Coined protocol term, kept verbatim (never-translate lexicon).
+        "Pipes"
+    }
+
+    fn sysline_room_created(&self, who: &str) -> String {
+        format!("{who} a créé le salon")
+    }
+    fn sysline_member_joined(&self, who: &str, role: &str) -> String {
+        format!("{who} a rejoint en tant que {role}")
+    }
+    fn sysline_member_left(&self, who: &str) -> String {
+        format!("{who} est parti")
+    }
+    fn sysline_member_removed(&self, who: &str, by: &str) -> String {
+        format!("{who} a été retiré par {by}")
+    }
+    fn sysline_invite_revoked(&self) -> &'static str {
+        "Une invitation a été révoquée"
+    }
+    fn sysline_pipe_revoked(&self) -> &'static str {
+        "Un pipe a été révoqué"
+    }
+    fn file_open_in_files(&self) -> &'static str {
+        "Ouvrir dans Fichiers"
+    }
+    fn pipe_open_in_pipes(&self) -> &'static str {
+        "Ouvrir dans Pipes"
+    }
+
+    fn composer_label(&self) -> &'static str {
+        "Votre message"
+    }
+    fn composer_placeholder(&self) -> &'static str {
+        "Écrivez un message…"
+    }
+    fn composer_send(&self) -> &'static str {
+        "Envoyer"
+    }
+    fn composer_enter_hint(&self) -> &'static str {
+        "Entrée pour envoyer, Maj+Entrée pour un saut de ligne"
+    }
+    fn composer_attach(&self) -> &'static str {
+        "Joindre un fichier"
+    }
+    fn composer_attach_unavailable(&self) -> &'static str {
+        "Les pièces jointes ne sont pas encore disponibles."
+    }
+    fn composer_too_long(&self) -> &'static str {
+        "Message trop long — tronqué à la longueur maximale."
+    }
+
+    fn send_sending(&self) -> &'static str {
+        "Envoi…"
+    }
+    fn send_failed_not_sent(&self) -> &'static str {
+        "Non envoyé"
+    }
+    fn send_failed_maybe(&self) -> &'static str {
+        "Peut-être pas envoyé"
+    }
+    fn send_retry(&self) -> &'static str {
+        "Réessayer"
+    }
 }

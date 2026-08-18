@@ -125,6 +125,71 @@ async fn a_silent_nonzero_exit_surfaces_wedged_not_handshake() {
     );
 }
 
+/// A child that CLOSES stdout and only THEN exits non-zero after a short delay,
+/// forcing the EOF-before-reap ordering that intermittently caused the flaky CI
+/// failure (#277). The pre-fix single nonblocking `try_wait` returned `Ok(None)`
+/// (child still sleeping) and fell into `abandon_child` → `Handshake`; the bounded
+/// exit-status wait catches the eventual nonzero exit → `Wedged`.
+fn write_close_stdout_then_delayed_exit_stub(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    // `exec 1>&-` closes fd 1 so the supervisor's read sees EOF immediately while the
+    // child is still alive; `sleep 0.5` keeps it alive long enough that a single
+    // nonblocking `try_wait` always observes `Ok(None)` at EOF time. Fractional
+    // `sleep` is already used by this file's forking stub (`sleep 0.02`) and is a
+    // proven-portable pattern on the CI Unix targets.
+    std::fs::write(path, "#!/bin/sh\nexec 1>&-\nsleep 0.5\nexit 1\n")
+        .expect("write delayed-exit stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// Deterministic regression for #277: a child that closes stdout FIRST and exits
+/// non-zero only AFTER a delay forces the exact EOF-before-reap ordering that
+/// caused the intermittent `Handshake("stdout closed before the announcement")`
+/// failure. The bounded exit-status wait introduced by the fix catches the delayed
+/// exit and surfaces `Wedged`.
+///
+/// Red-before-green: before the fix, the single nonblocking `try_wait` at EOF
+/// time returned `Ok(None)` (the child was still sleeping) → `abandon_child` →
+/// `Handshake`; after the fix the bounded `wait()` resolves when the child exits
+/// (~0.5 s later) → `Wedged`. The `teardown` budget (3 s) is the ceiling; the
+/// 6× margin against the stub's sleep keeps the green path reliable on loaded CI.
+#[tokio::test]
+async fn stdout_eof_before_a_nonzero_exit_still_surfaces_wedged() {
+    let root = std::env::temp_dir().join(format!(
+        "jeliya-sup-eof-delay-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).expect("data dir");
+    let stub = root.join("jeliyad-eof-then-exit");
+    write_close_stdout_then_delayed_exit_stub(&stub);
+
+    let config = SupervisorConfig {
+        data_dir: Some(data),
+        binary: Some(stub),
+        // teardown MUST exceed the stub's post-EOF sleep (0.5 s) so the bounded wait
+        // catches the exit; spawn/health stay short so a lost race fails fast.
+        timeouts: Timeouts {
+            teardown: Duration::from_secs(3),
+            ..short_timeouts()
+        },
+        ..SupervisorConfig::new(Generation::new(2, 2))
+    };
+    let sup = Supervisor::resolve(config).expect("resolve");
+    let result = sup.start_or_adopt().await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        matches!(result, Err(SupervisorError::Wedged)),
+        "stdout EOF observed before the reap of a nonzero exit must still be Wedged \
+         (the bounded exit-status wait must catch the delayed exit); got: {result:?}"
+    );
+}
+
 /// The P1 pre-spawn gate: a data dir holding a stale INCOMPATIBLE portfile
 /// (v1, no live daemon) must fail closed with `GenerationMismatch` BEFORE the
 /// v2 daemon is spawned — otherwise the fresh daemon overwrites `daemon.json`

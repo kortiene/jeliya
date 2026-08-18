@@ -1,7 +1,8 @@
-//! The room shell (#178 §5.F): the room header + destination strip. #180 fills
-//! the **People** and **Agents** destinations with real content
-//! ([`super::people::PeoplePane`] / [`super::agents::AgentsPane`]); Activity is
-//! #179 and Files/Pipes are #181, still per-destination skeletons.
+//! The room shell (#178 §5.F): the room header + destination strip. Activity
+//! (#179, [`super::activity::ActivityPane`]) and, from #180, the **People** and
+//! **Agents** destinations ([`super::people::PeoplePane`] /
+//! [`super::agents::AgentsPane`]) render real content; Files/Pipes (#181) are
+//! still per-destination skeletons.
 //!
 //! A route naming an unreachable/departed room renders the recoverable state
 //! ([`RoomUnavailable`]) with Rooms as the way out — never a blank panel (D7 /
@@ -14,9 +15,10 @@ use jeliya_platform::navigation::{RoomDest, Route};
 
 use super::agents::AgentsPane;
 use super::people::PeoplePane;
-use super::NavLandmark;
+use super::{ActivityPane, NavLandmark};
 use crate::l10n::use_strings;
 use crate::shell::router::NavIntent;
+use crate::shell::Shell;
 use crate::PlatformServices;
 
 /// A short, human-scannable disambiguator for a room id (the header's
@@ -51,6 +53,9 @@ pub fn RoomShell(
     services: PlatformServices,
     now: Timestamp,
     #[props(default)] self_id: Option<SubjectId>,
+    /// The responsive shell (the Activity composer's keyboard fork; #178 §8).
+    #[props(default = Shell::Wide)]
+    shell: Shell,
 ) -> Element {
     let strings = use_strings();
     let nav_label = strings.room_nav_label().to_string();
@@ -110,6 +115,16 @@ pub fn RoomShell(
             }
             // The destination pane.
             match dest.clone() {
+                RoomDest::Activity => rsx! {
+                    ActivityPane {
+                        handle: handle.clone(),
+                        services: services.clone(),
+                        room_id: room_id.clone(),
+                        capabilities: room.capabilities.clone(),
+                        shell,
+                        self_id: self_id.clone(),
+                    }
+                },
                 RoomDest::People { item } => rsx! {
                     PeoplePane {
                         room: room.clone(),
@@ -131,7 +146,7 @@ pub fn RoomShell(
                         self_id: self_id.clone(),
                     }
                 },
-                // Activity (#179) and Files/Pipes (#181) remain skeletons.
+                // Files/Pipes (#181) remain skeletons.
                 _ => rsx! {
                     div { class: "room-pane-skeleton muted", id: "room-pane-skeleton", "{skeleton}" }
                 },

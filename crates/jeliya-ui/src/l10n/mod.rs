@@ -673,6 +673,100 @@ pub trait Catalog {
     fn load_show_more(&self) -> &'static str;
     /// The ambiguous-mutation "couldn't confirm — reload to check" state.
     fn couldnt_confirm(&self) -> &'static str;
+    // ---- #179 room Activity: timeline, composer, send state ----------------
+
+    /// The Activity pane's empty state, shown after the first convergence when
+    /// the room has no signed events yet.
+    fn activity_empty(&self) -> &'static str;
+    /// The Activity pane's loading state, before the first converged view (a
+    /// booting room is *unknown*, never an empty timeline — D7).
+    fn activity_loading(&self) -> &'static str;
+    /// A non-blocking notice that a reconciliation is in flight (every resync
+    /// cause is observable — #169 AC-1).
+    fn activity_resyncing(&self) -> &'static str;
+    /// An honest local-loss marker: some updates were dropped and are being
+    /// recovered by the next converged view.
+    fn activity_recovering_loss(&self) -> &'static str;
+    /// The "N new messages" affordance when every new item is a message. Plural:
+    /// the caller passes the count formatted under the formatting locale and the
+    /// category under the text locale.
+    fn activity_new_messages(&self, count_display: &str, category: PluralCategory) -> String;
+    /// The "N new updates" affordance when the new items are mixed (not only
+    /// messages). Plural, as above.
+    fn activity_new_activity(&self, count_display: &str, category: PluralCategory) -> String;
+    /// The read-only notice shown in place of the composer for a departed room
+    /// (no `MessageSend` capability): the signed timeline stays, the composer is
+    /// suppressed (invariant-5 floor, #91 owns the full archive).
+    fn activity_departed(&self) -> &'static str;
+
+    /// The self author's display name when no self-label alias is set ("You").
+    fn timeline_you(&self) -> &'static str;
+    /// The display name for an event whose author could not be resolved —
+    /// nothing is asserted about who they are (contract).
+    fn timeline_unresolved_sender(&self) -> &'static str;
+    /// The chip marking a message/status authored by an agent role.
+    fn timeline_agent_chip(&self) -> &'static str;
+    /// A folded agent-status run's honest evidence: how many status posts.
+    /// Plural, formatted count under the formatting locale.
+    fn timeline_run_summary(&self, count_display: &str, category: PluralCategory) -> String;
+
+    /// The activity filter chip for the conversation (messages) category.
+    fn filter_conversation(&self) -> &'static str;
+    /// The activity filter chip for the agent-runs (status) category.
+    fn filter_agent_runs(&self) -> &'static str;
+    /// The activity filter chip for the membership syslines category.
+    fn filter_membership(&self) -> &'static str;
+    /// The activity filter chip for the files category.
+    fn filter_files(&self) -> &'static str;
+    /// The activity filter chip for the pipes category.
+    fn filter_pipes(&self) -> &'static str;
+
+    /// Sysline: a room was created by `who`.
+    fn sysline_room_created(&self, who: &str) -> String;
+    /// Sysline: `who` joined as `role`.
+    fn sysline_member_joined(&self, who: &str, role: &str) -> String;
+    /// Sysline: `who` left.
+    fn sysline_member_left(&self, who: &str) -> String;
+    /// Sysline: `who` was removed by `by`.
+    fn sysline_member_removed(&self, who: &str, by: &str) -> String;
+    /// Sysline: an invitation was revoked (the id is never leaked as copy).
+    fn sysline_invite_revoked(&self) -> &'static str;
+    /// Sysline: a pipe was revoked.
+    fn sysline_pipe_revoked(&self) -> &'static str;
+    /// A file-reference tile's inert "open in Files" affordance (present but
+    /// disabled until #181 — an honest, not fake, action).
+    fn file_open_in_files(&self) -> &'static str;
+    /// A pipe-reference tile's inert "open in Pipes" affordance (until #181).
+    fn pipe_open_in_pipes(&self) -> &'static str;
+
+    /// The composer control's accessible label (associated via the `Field`
+    /// primitive), distinct from the placeholder.
+    fn composer_label(&self) -> &'static str;
+    /// The composer's empty-input placeholder.
+    fn composer_placeholder(&self) -> &'static str;
+    /// The composer's send action.
+    fn composer_send(&self) -> &'static str;
+    /// The desktop keyboard hint (Enter sends, Shift+Enter is a newline).
+    /// Withheld on compact, where the claim is false.
+    fn composer_enter_hint(&self) -> &'static str;
+    /// The composer's attachment action.
+    fn composer_attach(&self) -> &'static str;
+    /// The honest "attachments are not available yet" state (until #181).
+    fn composer_attach_unavailable(&self) -> &'static str;
+    /// The message is too long. Rendered as an inline error when the user's
+    /// draft exceeds the maximum message length.
+    fn composer_too_long(&self) -> &'static str;
+
+    /// A pending send's honest in-flight/awaiting-commit label — never a
+    /// delivery receipt.
+    fn send_sending(&self) -> &'static str;
+    /// A failed send that provably never left the client ("not sent").
+    fn send_failed_not_sent(&self) -> &'static str;
+    /// A failed send that may have executed ("may not have sent") — the honest
+    /// ambiguity; retry is offered but never auto-taken.
+    fn send_failed_maybe(&self) -> &'static str;
+    /// The per-send Retry action.
+    fn send_retry(&self) -> &'static str;
 }
 
 /// Provide the resolved-locale context to a subtree and return its signal.

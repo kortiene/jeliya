@@ -49,6 +49,11 @@ export default defineConfig({
     // render, capability-gated affordances, deep links, Fleet filter, and the
     // bounded diagnostics field set. Runs offline against the same dist/ artifact.
     { name: "shell-180", testMatch: /shell-180\.spec\.ts$/ },
+    // The #179 Activity pane smoke: pane structure, loading state, filter chip
+    // interactions, composer keyboard contract (desktop enter hint / compact
+    // suppression), and per-room draft persistence across in-app route changes.
+    // Runs at the default Desktop Chrome viewport; the compact describe overrides.
+    { name: "activity", testMatch: /activity-179\.spec\.ts$/ },
     ...Object.entries(A11Y_VIEWPORTS).map(([name, viewport]) => ({
       name,
       testMatch: /a11y[^/]*\.spec\.ts$/,
