@@ -1028,6 +1028,7 @@ pub async fn serve_ws<S>(
     let hello = jeliya_api::Hello {
         protocol: jeliya_core::engine::PROTOCOL_VERSION,
         storage_generation: jeliya_core::engine::STORAGE_GENERATION,
+        incarnation: state.engine.incarnation(),
         limits: state.engine.limits(),
         subject,
         resume: jeliya_api::Resume::Fresh,
@@ -4924,13 +4925,28 @@ mod tests {
         )
         .await;
 
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        // Drive the timers off a PAUSED virtual clock (matching this test's two
+        // paused-clock siblings), so concurrent CI load cannot drift a real
+        // sleep against the daemon's `Instant`-based stall/deadline timers. The
+        // clock is frozen only after OPEN/staging completes on the real clock,
+        // the same point the siblings freeze, so paused time never races the
+        // asynchronous staging setup.
+        tokio::time::pause();
+
+        // Advance to the mid-transfer progress point (~800 ms after OPEN),
+        // crossing no timer boundary, then send the single DATA byte.
+        tokio::time::advance(std::time::Duration::from_millis(800)).await;
+        tokio::task::yield_now().await;
         client
             .send(Message::Binary(
                 stream_data_wire(REQUEST_ID, identity.stream_id().get(), 0, b"x").into(),
             ))
             .await
             .unwrap();
+        // Await the CREDIT before advancing further: it proves the byte was
+        // durably accepted and the stall timer was reset (to ~1,800 ms). If the
+        // clock jumped first, the reset would not yet have happened and the
+        // stall/deadline race would re-enter.
         let Message::Binary(sentinel_credit) = next_socket_message(&mut client).await else {
             panic!("durably accepted progress must advance CREDIT");
         };
@@ -4945,6 +4961,14 @@ mod tests {
             }
         );
 
+        // Cross the ABSOLUTE deadline (1,600 ms from OPEN) while staying below
+        // the reset stall boundary (~1,800 ms): only the absolute deadline may
+        // fire, so the ABORT carries `accepted_through: 1`. Bracket the advance
+        // with the record it triggers — the paused-clock siblings use exactly
+        // this advance-then-await cadence so the clock never crosses two timer
+        // boundaries in one step.
+        tokio::time::advance(std::time::Duration::from_millis(DEADLINE_BUDGET_MS - 800)).await;
+        tokio::task::yield_now().await;
         let Message::Binary(abort) = next_socket_message(&mut client).await else {
             panic!("absolute deadline must receive daemon ABORT after progress");
         };
@@ -5687,6 +5711,218 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), server)
             .await
             .expect("connection teardown")
+            .expect("serve task");
+    }
+
+    // ── #271 pipe.revoke idempotency e2e ─────────────────────────────────────
+
+    /// Exercises the full WebSocket → serve.rs → TypedSupervisor → RoomSupervisor
+    /// path for `pipe.revoke` idempotency.  A second revoke with a **distinct**
+    /// `op_id` (domain-state idempotency, not op_id-replay) must return the
+    /// ORIGINAL `event_id`, `revoked_at`, and `pos` and must not author a second
+    /// `pipe.closed` event.  Regression for #271: before the fix the second
+    /// revoke authored a fresh event, causing `revoked_at` to drift under load.
+    ///
+    /// Also confirms `pipe.list` returns `pipes: []` after revocation.
+    #[tokio::test]
+    async fn websocket_pipe_revoke_idempotency_with_distinct_op_id() {
+        let (_dir, state) = test_state(SOCKET_FRAME_BYTES as u64);
+
+        state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::SubjectEnsure(
+                jeliya_api::SubjectEnsure {},
+            ))
+            .await
+            .reply
+            .expect("subject.ensure");
+        let created = state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::RoomCreate(
+                jeliya_api::RoomCreate {
+                    name: "pipe-revoke-idempotency".into(),
+                },
+            ))
+            .await
+            .reply
+            .expect("room.create");
+        let jeliya_core::typed::TypedReply::RoomCreate(created) = created else {
+            panic!("wrong room.create reply");
+        };
+        let room_id = created.room_id.clone();
+        state
+            .engine
+            .execute(jeliya_core::typed::TypedCall::RoomActivate(
+                jeliya_api::RoomActivate {
+                    room_id: room_id.clone(),
+                },
+            ))
+            .await
+            .reply
+            .expect("room.activate");
+
+        // Loopback TCP listener — the only address family pipe.publish accepts.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_port = listener.local_addr().unwrap().port();
+
+        let (mut client, server) = socket_pair(state).await;
+        assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+        // 1. pipe.publish
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 10,
+                    "op_id": "op-publish-1",
+                    "op": "pipe.publish",
+                    "in": {
+                        "room_id": room_id,
+                        "target": { "host": "127.0.0.1", "port": target_port },
+                        "audience": { "state": "room" },
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(publish_msg) = next_socket_message(&mut client).await else {
+            panic!("pipe.publish must reply with Text JSON");
+        };
+        let publish_reply: jeliya_codec::Reply = serde_json::from_str(&publish_msg).unwrap();
+        assert_eq!(publish_reply.id, 10);
+        assert!(
+            publish_reply.ok,
+            "pipe.publish must succeed: {:?}",
+            publish_reply.err
+        );
+        let pipe_id = publish_reply
+            .out
+            .as_ref()
+            .and_then(|o| o["pipe_id"].as_str())
+            .expect("pipe.publish out must contain pipe_id")
+            .to_owned();
+
+        // 2. First pipe.revoke — authors the withdrawal.
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 11,
+                    "op_id": "op-revoke-first",
+                    "op": "pipe.revoke",
+                    "in": { "room_id": room_id, "pipe_id": pipe_id }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(revoke1_msg) = next_socket_message(&mut client).await else {
+            panic!("first pipe.revoke must reply with Text JSON");
+        };
+        let revoke1: jeliya_codec::Reply = serde_json::from_str(&revoke1_msg).unwrap();
+        assert_eq!(revoke1.id, 11);
+        assert!(
+            revoke1.ok,
+            "first pipe.revoke must succeed: {:?}",
+            revoke1.err
+        );
+        let out1 = revoke1.out.as_ref().expect("first pipe.revoke out");
+        let event_id_1 = out1["event_id"]
+            .as_str()
+            .expect("event_id in first revoke out")
+            .to_owned();
+        let revoked_at_1 = out1["revoked_at"]
+            .as_str()
+            .expect("revoked_at in first revoke out")
+            .to_owned();
+        let pos_1 = out1["pos"].as_u64().expect("pos in first revoke out");
+
+        // 3. Second pipe.revoke with a DISTINCT op_id — domain-state idempotency
+        //    (§2.1), not op_id-replay dedup.  Must replay the ORIGINAL withdrawal.
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 12,
+                    "op_id": "op-revoke-distinct",
+                    "op": "pipe.revoke",
+                    "in": { "room_id": room_id, "pipe_id": pipe_id }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(revoke2_msg) = next_socket_message(&mut client).await else {
+            panic!("second pipe.revoke must reply with Text JSON");
+        };
+        let revoke2: jeliya_codec::Reply = serde_json::from_str(&revoke2_msg).unwrap();
+        assert_eq!(revoke2.id, 12);
+        assert!(
+            revoke2.ok,
+            "distinct-op_id second pipe.revoke must succeed idempotently: {:?}",
+            revoke2.err
+        );
+        let out2 = revoke2.out.as_ref().expect("second pipe.revoke out");
+        assert_eq!(
+            out2["event_id"].as_str().unwrap(),
+            event_id_1,
+            "second revoke must replay the ORIGINAL event_id, not author a fresh one"
+        );
+        assert_eq!(
+            out2["revoked_at"].as_str().unwrap(),
+            revoked_at_1,
+            "second revoke must return the FIRST revocation instant"
+        );
+        assert_eq!(
+            out2["pos"].as_u64().unwrap(),
+            pos_1,
+            "second revoke must return the FIRST timeline position"
+        );
+
+        // 4. pipe.list must be empty — the pipe is settled as revoked.
+        client
+            .send(Message::Text(
+                serde_json::json!({
+                    "id": 13,
+                    "op": "pipe.list",
+                    "in": {
+                        "room_id": room_id,
+                        "cursor": { "state": "start" },
+                        "direction": "forward",
+                        "limit": 50,
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let Message::Text(list_msg) = next_socket_message(&mut client).await else {
+            panic!("pipe.list must reply with Text JSON");
+        };
+        let list_reply: jeliya_codec::Reply = serde_json::from_str(&list_msg).unwrap();
+        assert_eq!(list_reply.id, 13);
+        assert!(
+            list_reply.ok,
+            "pipe.list must succeed after revocation: {:?}",
+            list_reply.err
+        );
+        let pipes = list_reply
+            .out
+            .as_ref()
+            .and_then(|o| o["pipes"].as_array())
+            .expect("pipe.list out must contain pipes array");
+        assert!(
+            pipes.is_empty(),
+            "pipe.list must return no pipes after revocation, got: {pipes:?}"
+        );
+
+        drop(listener);
+        client.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("connection teardown after pipe-revoke idempotency test")
             .expect("serve task");
     }
 }

@@ -18,7 +18,7 @@ audience: ["contributors", "maintainers", "release-engineers"]
 transport-independent kernel (#168), the M2 authoritative room/session
 reconciler (#169), the M2 platform-authority boundary (#174), the M3 web
 foundation (#176), the M3 CSS/l10n/a11y foundation (#177), the M3
-bootstrap/shell/routing/preferences (#178), the M3 room Activity/timeline/
+bootstrap/shell/routing/preferences (#178), and the M3 room Activity/timeline/
 composer/drafts/pending-send (#179), and the M4 daemon supervisor
 (#170) are implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
@@ -198,6 +198,15 @@ and `QueueFull` is visible rather than absorbed; connection loss
 distinguishes never-sent work from work that may have executed; only
 operations with an explicit, tested v2 deduplication guarantee may replay,
 and everything else never auto-replays; generations are fenced.
+
+**The stream lifecycle layer** (#269) extends the kernel: `call_stream::<FileShare>`
+(upload) and `call_stream::<FileRead>` (download) now drive a full
+`OPEN → DATA/CREDIT → END → Text reply` lifecycle through the kernel, with
+credit-bounded outbound bytes, a per-stream absolute deadline
+(`transfer_connect_allowance + floor-throughput term`), and a stall timer. The
+byte-free sub-core (`kernel/streaming`) holds only offset scalars; framing stays
+owned by `jeliya-codec` and the daemon executor (#233/#242/#243), executed at
+the driver boundary exactly as `WireFrame`↔bytes are today.
 
 **One resync path** (#169): `ResyncRequired { generation, reason }` is the
 only gap and resync path for v2 clients. There is no legacy bootstrap

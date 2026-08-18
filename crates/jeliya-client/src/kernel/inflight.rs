@@ -78,6 +78,12 @@ pub(crate) struct Entry {
     /// sent: the entry is kept (a tombstone) so a real late reply is absorbed,
     /// but no value is delivered and the call is never replayed (§K9).
     pub(crate) cancelled: bool,
+    /// Set when the op is a client-driven byte stream (`file.share`/`file.read`,
+    /// §S1): the first reply is an OPEN record that installs a `StreamEntry`
+    /// rather than settling the call, and the terminal Text reply settles it
+    /// only after the record exchange completes. The stream layer keys its
+    /// `StreamEntry` by this call's [`CallId`].
+    pub(crate) stream: bool,
 }
 
 impl Entry {
@@ -231,6 +237,7 @@ mod tests {
             phase: Phase::Queued,
             ever_sent: false,
             cancelled: false,
+            stream: false,
         }
     }
 

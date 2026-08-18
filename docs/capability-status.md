@@ -23,7 +23,7 @@ exact `v0.6.1` source candidate is
 `a1af1cdc974bc307317779afa0765c3988cb871f`; no current v0.6.0 evidence
 transfers to it.
 
-**Amended 2026-07-27 (issue #157); further amended 2026-08-17 (issue #179).** Every capability recorded below belongs to
+**Amended 2026-07-27 (issue #157); further amended 2026-08-16 (issue #178) and 2026-08-17 (issue #179).** Every capability recorded below belongs to
 the retiring stack. The
 [Dioxus clean-slate architecture](dioxus-architecture.md) record decides that
 React, Flutter, the Dart protocol package, the C ABI, and `jeliya-ffi` are
