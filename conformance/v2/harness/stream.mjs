@@ -453,6 +453,20 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   if (fault === 'client_abort') {
     return await driveClientAbortUpload({ session, tracker, replyState, waitMs });
   }
+  // `raw_record` is a client protocol violation: after admission the client
+  // sends one structurally malformed Binary record on the live binding (a
+  // nonzero reserved byte — a full 48-byte header the daemon can correlate,
+  // so it is stream-local, not the header-unparseable 4007 class). The daemon
+  // (receiver) aborts only that stream with ABORT(protocol_error) at accepted
+  // offset zero, the client ACKs (0x05), and the request resolves to the
+  // correlated `malformed_frame` terminal reply while the connection stays
+  // usable — the "recoverable stream-local violation" leg of the framing
+  // record (docs/protocol-v2.md § Malformed stream records; matched by the
+  // daemon integration test websocket_data_too_large_within_frame_limit_
+  // aborts_stream_not_connection in crates/jeliyad/src/serve.rs).
+  if (fault === 'raw_record') {
+    return await driveRawRecordUpload({ session, tracker, replyState, waitMs });
+  }
   if (fault !== undefined) {
     throw new Error(`unknown stream fault ${JSON.stringify(fault)} on file.share`);
   }
@@ -721,6 +735,95 @@ async function driveClientAbortUpload({ session, tracker, replyState, waitMs }) 
   if (err.transferred_bytes !== undefined && err.transferred_bytes !== accepted) {
     throw new AssertFailure(
       `terminal transferred_bytes ${err.transferred_bytes} disagrees with the ${accepted} receiver-accepted bytes`,
+    );
+  }
+  return reply;
+}
+
+/**
+ * Drive a client-originated raw-record protocol violation. After admission the
+ * client sends exactly one structurally malformed DATA record on the active
+ * binding: a valid 48-byte header and magic, correct id and stream id, but a
+ * nonzero reserved byte (bytes 5..8 MUST be zero). Because the header is
+ * correlatable to the live stream, the daemon rejects only that stream rather
+ * than closing the connection: it sends ABORT(protocol_error) at accepted
+ * offset zero (nothing was accepted), the client ACKs it (0x05), and the
+ * request resolves to the correlated `malformed_frame` terminal reply. A
+ * daemon that instead closes the connection, replies success, or answers
+ * without first ABORTing is a violation. Receiver-accepted bytes are zero.
+ */
+async function driveRawRecordUpload({ session, tracker, replyState, waitMs }) {
+  const accepted = 0;
+  // One malformed DATA record: correct binding, corrupt reserved byte 5.
+  const raw = encodeRecord({
+    kind: KIND.DATA,
+    id: tracker.id,
+    streamId: tracker.streamId,
+    offset: 0,
+    payload: Buffer.from([0x00]),
+  });
+  raw.writeUInt8(0x01, 5); // reserved bytes MUST be zero — this makes it malformed
+  session.sendBinary(raw);
+
+  let ackSeen = false;
+  for (;;) {
+    if (replyState.done && tracker.queue.length === 0) break;
+    const ev = await tracker.next(replyState, waitMs, ackSeen ? 'the terminal reply' : 'the daemon ABORT for the malformed record');
+    if (ev.reply) break;
+    const rec = ev.record;
+    checkBinding(tracker, rec);
+    if (rec.kind === KIND.CREDIT) {
+      // A send window granted before the daemon parsed our malformed record is
+      // tolerated, but it can never acknowledge bytes we never sent, and none
+      // may arrive after the ABORT retires the binding.
+      if (ackSeen) {
+        throw new AssertFailure('daemon sent CREDIT after acknowledging the malformed-record ABORT — the binding retired at ACK');
+      }
+      if (rec.offset > accepted) {
+        throw new AssertFailure(`daemon CREDIT acknowledged ${rec.offset} bytes after a zero-progress malformed record`);
+      }
+      continue;
+    }
+    if (rec.kind === KIND.ABORT) {
+      // The daemon aborts the stream it could correlate. Its reason is
+      // protocol_error (0x04) and its accepted high-water is zero.
+      validateAbort(rec, accepted, UPLOAD_DAEMON_ABORT_REASONS);
+      if (rec.value !== ABORT_REASON.protocol_error) {
+        throw new AssertFailure(
+          `daemon ABORT reason ${rec.value} for a malformed record is not protocol_error (0x04)`,
+        );
+      }
+      if (rec.offset !== accepted) {
+        throw new AssertFailure(
+          `daemon ABORT accepted count ${rec.offset} disagrees with the ${accepted} bytes it accepted from a malformed record`,
+        );
+      }
+      if (tracker.replySeq !== undefined) {
+        throw new AssertFailure('daemon sent its terminal reply before receiving the malformed-record ABORT acknowledgement');
+      }
+      tracker.accepted = accepted;
+      session.sendBinary(
+        encodeRecord({ kind: KIND.ACK, id: tracker.id, streamId: tracker.streamId, offset: accepted, value: 0x05 }),
+      );
+      ackSeen = true;
+      continue;
+    }
+    throw new AssertFailure(`daemon sent unexpected ${rec.kindName} after a client malformed record`);
+  }
+  if (tracker.queue.length) {
+    throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after the terminal reply`);
+  }
+  if (!ackSeen) {
+    throw new AssertFailure('daemon replied to a malformed record without first ABORTing the stream');
+  }
+  const reply = await settleReply(replyState);
+  if (reply && reply.ok) {
+    throw new AssertFailure('file.share replied success after a client malformed record');
+  }
+  const err = (reply && reply.err) || {};
+  if (err.code !== 'malformed_frame') {
+    throw new AssertFailure(
+      `a stream-local malformed record must resolve to malformed_frame, got ${JSON.stringify(reply.err)}`,
     );
   }
   return reply;

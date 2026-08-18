@@ -32,7 +32,7 @@ claims:
 |---|---|---|
 | Structural validation | Implemented for all 342 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
 | Selected JSON-envelope/subject slice | Partial (22 CI-selected cases) | The Node harness runs this selected JSON-envelope, subject-lifecycle, and executable-file slice against `jeliyad`; this is not corpus coverage. It is not a smoke, E2E, or Dart execution claim. |
-| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the one client-originated fault the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes. The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the raw-record, credit-pause, and transport-drop fault controls remain unimplemented, so malformed/backpressure stream cases are still declarative. |
+| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the two client-originated upload faults the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes; and `stream: {send_bytes, fault: "raw_record"}`, one structurally malformed record (nonzero reserved byte) on the live binding that must draw a stream-local daemon ABORT(protocol_error), the client ACK, and a correlated `malformed_frame` terminal reply while the connection stays usable. The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the credit-pause and transport-drop fault controls remain unimplemented, so backpressure and disconnect stream cases are still declarative. |
 | Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
 
 | Computed corpus fact | Value |
@@ -266,17 +266,26 @@ is invalid, because no other operation streams. The value is a `<uint>`, a
 limit" without compiling the number in.
 
 An upload may carry an optional **`fault`** beside `send_bytes` to make the
-*client* misbehave on purpose. The vocabulary is closed. The only value the
-single-subject harness executes today is `client_abort`: after the daemon admits
-the stream (OPEN) but before any DATA is sent, the client issues
-`ABORT(cancelled)`; the daemon must acknowledge the ABORT and then reply
-`stream_aborted{cancelled}` accounting for zero receiver-accepted bytes — the
-"client ABORT wins" leg of the race table. `fault` is legal only on `file.share`,
-because `file.read` has no executable download fixture at all (it needs a
-peer-fetched file the single-subject harness cannot stage). The record's other
-client faults — raw-record injection, credit-pause, and transport-drop — remain
-declarative until the executor drives them, and adding a value here without the
-executor to run it is not permitted.
+*client* misbehave on purpose. The vocabulary is closed. Two values are executed
+end-to-end by the single-subject harness today:
+
+- `client_abort`: after the daemon admits the stream (OPEN) but before any DATA
+  is sent, the client issues `ABORT(cancelled)`; the daemon must acknowledge the
+  ABORT and then reply `stream_aborted{cancelled}` accounting for zero
+  receiver-accepted bytes — the "client ABORT wins" leg of the race table.
+- `raw_record`: after admission the client sends one structurally malformed
+  record on the live binding (a nonzero reserved byte — a full, correlatable
+  48-byte header, so it is stream-local rather than the header-unparseable 4007
+  class). The daemon aborts only that stream with `ABORT(protocol_error)` at
+  accepted offset zero, the client ACKs (0x05), and the request resolves to the
+  correlated `malformed_frame` reply while the connection stays usable — the
+  "recoverable stream-local violation" leg of the framing record.
+
+`fault` is legal only on `file.share`, because `file.read` has no executable
+download fixture at all (it needs a peer-fetched file the single-subject harness
+cannot stage). The record's remaining client faults — credit-pause and
+transport-drop — remain declarative until the executor drives them, and adding a
+value here without the executor to run it is not permitted.
 
 A fresh admitted daemon `file.share` or `file.read` requires its matching stream.
 A terminal refusal before OPEN has no stream and records zero receiver-accepted
