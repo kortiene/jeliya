@@ -16,9 +16,11 @@ audience: ["contributors", "maintainers", "release-engineers"]
 **Status: DECIDED 2026-07-27. M1's typed-API slices have landed (the #165,
 #166, and #233 remainders stay open); the M2 entry seam (#167), the M2
 transport-independent kernel (#168), the M2 authoritative room/session
-reconciler (#169), the M2 platform-authority boundary (#174), the M3 web
+reconciler (#169), the M2 platform-authority boundary (#174), the M2
+DirectClient Android adapter (#173), the M3 web
 foundation (#176), the M3 CSS/l10n/a11y foundation (#177), the M3
-bootstrap/shell/routing/preferences (#178), and the M4 daemon supervisor
+bootstrap/shell/routing/preferences (#178), and the M3 room Activity/timeline/
+composer/drafts/pending-send (#179), and the M4 daemon supervisor
 (#170) are implemented.** Jeliya
 replaces its two user-facing clients with one clean-slate typed Rust client
 stack rendered by Dioxus 0.7 in the platform's system WebView, defines one
@@ -221,6 +223,9 @@ fallback.
 Pretending `DirectClient` reconnects is an explicit non-goal (#173). One
 fault-injected suite must prove all four expose the same view-level contract
 while retaining honest transport-specific lifecycle differences (#175). No
+such suite exists yet; `DirectClient` (#173) has landed alongside the
+deterministic mock (shipped with the seam, #167). `WsWeb` (#171) and
+`WsNative` (#172) land in parallel branches.
 such suite exists yet. Of the four adapters, the deterministic mock shipped
 with the seam (#167) and `WsNative` has landed (#172); `WsWeb` and
 `DirectClient` do not yet exist.
@@ -484,6 +489,7 @@ The slices that carry this record:
 | #172 | `WsNative` — the native protocol-v2 WebSocket adapter (`crates/jeliya-client/src/adapter/`, behind the default-off `ws-native` feature): binds the transport-independent kernel (#168) to a real `tokio` + `tokio-tungstenite` transport dialing a loopback `jeliyad` via the `TargetResolver` from #170. Delivers: (1) the codec client direction (`jeliya-codec/src/client.rs` — `encode_request` + `decode_client_frame` / `ClientFrame`, keeping JSON in the codec and `jeliya-client` free of `serde_json::Value`); (2) the `DriverIo` seam refactor that makes the kernel's async shell reusable across all adapters, with the existing `test-transport`/`kernel_fault` suite green byte-for-byte as the acceptance gate; (3) the native `DriverIo` + runtime (`source.rs`, `runtime.rs`, `ws_native.rs`, `clock.rs`) — resolver runs on every attempt, only verified loopback endpoints are dialed, bearer stays in `Redacted<String>` and never surfaces to WebView JS, `Connected` is not reported until resolver health + daemon upgrade gate + matching `hello` generation all agree, stale/malformed discovery fails closed, reconnect routes through #169's reconciler; (4) a new wasm-graph boundary assertion in `tests/boundaries.rs` confirming `tokio`, `tokio-tungstenite`, and `jeliya-supervisor` never enter the `jeliya-ui` `web` wasm graph. `stable_principal = false` by default until #270 provides an incarnation fence; the real-daemon integration matrix is `#[ignore]`-deferred to the dedicated tests phase. | Landed |
 | #177 | The CSS/l10n/a11y foundation (`crates/jeliya-ui/src/l10n/`): typed-Rust catalog with compiler-enforced EN/FR key and placeholder parity (`En`/`Fr` implement a single `Catalog` trait; `rustc` enforces agreement); the wire/error display seam; the identity-palette token source; formatting locale independence from day one. Node-side gates (empty value, `fr==en`, French typography, literal scan) apply unchanged. | Landed |
 | #178 | The M3 browser shell, routing, and preferences (`crates/jeliya-ui/src/shell/`, `prefs/`, `platform_web.rs`, six new components). Host-testable pure modules: `Shell`/`shell_for` with fractional breakpoints, the router (`use_route` + canonicalization + fail-safe + last-room restore), the bootstrap/onboarding state machine, the preference schema (`jeliya.dx.v1` namespace, versioned envelope, corrupt/unsupported-version recovery, `reset_all`). Browser bindings: `WebNavigation` (History API pushState/replaceState/popstate), `WebLifecycle` (browser events → `LifecycleBus`), `WebPreferences` (session-scoped in-memory schema + boot-time legacy purge), `WebSecretStore` (tab-scoped in-memory), assembled as `WebPlatform`. New components: `GlobalNav`, `RoomShell`, `Fleet`, `Settings`, `Onboarding`, `Recovery`. Additive `Navigation::navigate_replace` (defaulted; `jeliya-platform` fake records it). The `ClientHandle` stays the deterministic mock until `WsWeb` (#171) slots in. | Landed |
+| #179 | The M3 room Activity destination: the signed timeline, composer, and evidence-backed send lifecycle under `/rooms/:roomId/activity` (`crates/jeliya-ui/src/room/` + `components/{activity,timeline_row,composer}.rs`). Pure host-testable `room/` core (`projection`, `runs`, `send`, `scroll`, `reconcile`) — no Dioxus, no `web-sys`, no `cfg` (Decision-3/-6) — enforced exhaustive by `rustc`; thin Dioxus components own DOM measurement through the mounted element API. `AppRoot` wires the `Reconciler` (constructed via `use_hook`, driven via `use_future`); the pane activates/deactivates its room and folds `RoomUpdate` into `RoomActivityState`. Key guarantees: exhaustive-total 10-kind event projection (no silent drop, D2); folding/grouping as reversible view state (D1); evidence-backed send state machine (`Pending` → `Syncing{event_id}` → dropped-when-committed, `Failed` sub-classified by `CallError::execution()`, D3); stable-`op_id` idempotent retry (D4, contract rule 7); per-room session-scoped drafts through `PreferenceKey::Draft{room_id}`; capability-gated composer (D8, invariant 5 floor); pure scroll model + "N new messages/activity" affordance (D6). Renders against the deterministic mock until `WsWeb` (#171) lands; host tests pass; offline Playwright fixtures and live re-qualification deferred to tests phase (#182). | Landed |
 | #183 | The one content-addressed embedded artifact. | Planned |
 | #189 | The system-WebView security, lifecycle, and accessibility matrix. | Planned |
 

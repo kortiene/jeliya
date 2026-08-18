@@ -347,6 +347,108 @@
   `src/kernel/**` token scan covers the new module unchanged.
   MSRV 1.91.
 
+- `crates/jeliya-ui` gains the room **Activity** destination (#179 — M3,
+  first room-content slice): the signed timeline, composer, and
+  evidence-backed send lifecycle under `/rooms/:roomId/activity`, replacing
+  the `RoomShell` Activity skeleton with the real pane. The split is a pure,
+  renderer-/web-sys-free `room/` core (`projection`, `runs`, `send`, `scroll`,
+  `reconcile`) whose exhaustiveness the compiler enforces, and thin Dioxus
+  components (`ActivityPane`, `Composer`, `TimelineRowView`) that own DOM
+  measurement through the renderer-agnostic mounted element API — no `web-sys`,
+  no `cfg` (Decision-3/-6).
+
+  Key properties:
+
+  - **Exhaustive, total event projection.** A `match` over the closed
+    10-kind `EventKindContent` that `rustc` forces to be exhaustive — no
+    `return null` silent drop of any signed fact. A kind without a bespoke
+    card renders as an inspectable generic row (author + signed time + localized
+    kind label + safe metadata); a genuinely undecodable wire kind never reaches
+    the view (the reconciler's `DecodeFailed` path forces a resync first).
+  - **Folding / grouping as reversible view state.** Maximal same-author
+    `AgentStatus` run folding (`RunSummary { count, first_at, last_at }`), five
+    view-only activity filters (conversation / agent-runs / membership / files /
+    pipes), day dividers, and 5-minute same-sender message compacting — all
+    computed on top of the signed list, never mutating or dropping a signed
+    fact. The counter and scroll accounting count the unfolded, unfiltered items.
+  - **Evidence-backed send state machine.** `Pending` (call in flight) →
+    `Syncing { event_id }` (daemon authored the event; awaiting the committed
+    row) → **dropped** the instant the reconciler surfaces that `event_id`. A
+    failed call classifies through `CallError::execution()`: `DefinitelyNot`
+    ("not sent", clean retry), `Unknown` ("may not have sent", retry offered,
+    never auto-taken), `Definitely` (treated as `Syncing`; a committed row will
+    arrive). No fabricated "delivered" or checkmark (contract no-fake-state
+    rules).
+  - **Stable-`op_id` idempotent retry.** Each send mints one stable `OpId`
+    (derived from the local `SendId`); Retry re-issues with the same `op_id`,
+    so the daemon ledger returns the original `event_id` with no second effect
+    on this connection (D4, contract rule 7). No auto-replay.
+  - **Reconciler wired into `AppRoot`.** `AppRoot` constructs one
+    `Reconciler` via `use_hook` and drives `reconciler.run()` via `use_future`;
+    the Activity pane activates/deactivates its room on mount/unmount and
+    folds the `RoomUpdateSubscription` into a `RoomActivityState` signal.
+    Pending `Syncing` entries drop the instant the converged timeline contains
+    their `event_id`; no duplicate can appear on reconnect.
+  - **Pure scroll model.** `room/scroll.rs` holds stick-to-bottom / restore /
+    new-item accounting as plain Rust math (no DOM); `ActivityPane` feeds it
+    Dioxus-measured numbers and applies the result through the mounted element
+    API. The "N new messages / N new activity" affordance words itself by what
+    the trailing new items actually are.
+  - **Per-room drafts across route changes.** `PreferenceKey::Draft{room_id}`
+    in the `jeliya.dx.v1` namespace (session-scoped `WebPreferences`). Draft
+    restoration on failure is guarded against clobbering fresh user input.
+    Autosize re-derives from the restored draft on remount; no stored geometry.
+  - **Capability-gated composer.** When the room lacks `MessageSend` (a
+    departed room), the composer is suppressed as a typed capability outcome —
+    not a disabled textarea — and the signed left/removed fact is stated
+    plainly (D8, invariant 5 floor). Files/Pipes events render as inspectable
+    inert references until #181.
+  - **l10n.** All copy through the #177 typed catalog with
+    compiler-enforced EN/FR parity; new timeline/composer catalog methods.
+
+  The real-browser transport (`WsWeb`, #171) is not yet in place; the surface
+  renders against the deterministic mock exactly as #176/#178 do. Host tests
+  (pure `room/` modules) pass. The offline reconciler-read Playwright fixtures
+  and the live re-qualification are deferred to the tests phase (#182).
+
+- `crates/jeliya-client` gains the `DirectClient` Android adapter (#173),
+  the production replacement for `crates/jeliya-ffi/src/host.rs`. Enabled by
+  the default-off, native-only `direct` feature; `wasm32` and
+  `--no-default-features` graphs are unchanged. Key properties:
+
+  - **No JSON, Dart, C ABI, socket, token, or portfile in the data path.**
+    The engine is called only through `Engine::execute_with(TypedCall, …)` and
+    observed only through `subscribe_pushes() -> Push`. The one in-process
+    struct↔struct transform (the shared `ClientHandle` edge forces it) reuses
+    the daemon's own router (`route` → `TypedCall`), so adapter contract tests
+    match WS view-level outcomes by construction, not by coincidence.
+  - **Serialized dispatch** through a bounded mpsc request channel.
+    `DirectEngineActor` runs one call at a time — the WAL-race guard inherited
+    from the FFI host — so "calls execute serially" is structural, not a
+    contract the adapter has to maintain separately.
+  - **One owner per canonical data directory.** `OwnershipRegistry` mints an
+    `OwnerToken` for the first caller and refuses all subsequent `start` calls
+    with `OwnershipError` until the token is dropped.
+  - **Push loop runs for the engine's whole life,** not only while subscribers
+    are present, so the join-bootstrap `accept_joins` window stays open.
+  - **Honest lifecycle.** DirectClient never fabricates a reconnect: it emits
+    no `StateChanged(Connecting)` after the first open, never arms a backoff
+    timer, and never calls `Reconciler::resume` on behalf of the caller. Resume
+    is explicitly the caller's responsibility, via `Reconciler::resume()`, which
+    re-baselines every active room with `ResyncReason::Resume`.
+  - **Bounded teardown.** Stop drains accepted calls and awaits
+    `close_all_rooms` (10 s) before dropping the engine. The teardown outcome
+    (`TeardownOutcome::clean`) is propagated truthfully.
+  - **Reuses the kernel and reconciler unchanged** (`KernelConfig::stable_principal = true`
+    is the one DirectClient-specific setting: the in-process principal is
+    session-stable, enabling op-id dedup within the session).
+
+  New public API exported from `jeliya_client`: `DirectConfig`, `connect_direct`,
+  `OwnershipError` (all behind the `direct` feature). `jeliya-codec` gains
+  `pub use` re-exports of `route` and `Call` so the shared in-process bridge
+  compiles in one place. CI gains a dedicated `jeliya-client DirectClient
+  adapter` job (clippy + tests under `--features direct`). MSRV 1.91.
+
 - `jeliya-client` gains the native protocol-v2 WebSocket adapter `WsNative`
   (#172), behind the default-off, native-only `ws-native` feature. It binds
   the transport-independent kernel (#168) to a real `tokio` +

@@ -71,6 +71,15 @@ mod stream;
 // kernel/reconcile scan). The web (wasm32) build never enables `ws-native`.
 #[cfg(all(feature = "ws-native", not(target_arch = "wasm32")))]
 mod adapter;
+// The Android in-process DirectClient adapter (#173): the fourth kernel adapter,
+// binding the bounded kernel core to the typed `jeliya-core` `Engine` in-process
+// through one serialized actor. Native-only and behind the default-off `direct`
+// feature, so it never enters the wasm build or the library's transport-free
+// dependency tree (asserted by `tests/boundaries.rs`); its `tokio`/clock/engine
+// machinery lives entirely here, never under `src/kernel/**` or
+// `src/reconcile/**`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "direct"))]
+mod direct;
 
 #[cfg(feature = "mock")]
 pub mod mock;
@@ -84,6 +93,9 @@ pub use reconcile::{
     RoomUpdate, RoomUpdateSubscription, RoomView,
 };
 pub use stream::{StreamCall, StreamCancel};
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "direct"))]
+pub use direct::{connect_direct, DirectConfig, OwnershipError};
 
 // The deterministic in-memory kernel driver and its controller are the
 // reference substrate the four real adapters (#171/#172/#173) are diffed

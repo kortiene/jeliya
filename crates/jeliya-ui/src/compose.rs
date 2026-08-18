@@ -19,7 +19,9 @@
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use jeliya_api::{LastEvent, Role, RoomId, RoomList, RoomListOut, RoomRow, Standing};
+use jeliya_api::{
+    CapabilityToken, LastEvent, Role, RoomId, RoomList, RoomListOut, RoomRow, Standing,
+};
 use jeliya_client::mock::{MockController, MockScript, Program};
 use jeliya_client::{ClientHandle, State};
 
@@ -366,7 +368,10 @@ fn fixture_rooms() -> Vec<RoomRow> {
             role: Role::Member,
             member_count: 1,
             last_event: LastEvent::Absent,
-            capabilities: Vec::new(),
+            // The Activity composer is gated on `MessageSend` (#179 D8); the
+            // populated-shell fixture grants it so the offline pane renders a
+            // live composer rather than the departed-room read-only floor.
+            capabilities: vec![CapabilityToken::MessageSend],
         })
         .collect()
 }

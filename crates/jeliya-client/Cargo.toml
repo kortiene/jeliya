@@ -41,6 +41,16 @@ test-transport = []
 # `cargo test -p jeliya-client --features ws-native`.
 ws-native = ["dep:tokio", "dep:tokio-tungstenite", "dep:http", "dep:url", "dep:jeliya-codec", "dep:jeliya-supervisor"]
 
+# The Android in-process DirectClient adapter (#173): binds the bounded kernel
+# core (#168) to `jeliya-core`'s typed `Engine` in-process, through one
+# serialized actor, with no daemon, socket, token, portfile, Dart, or C ABI.
+# Default-off and **native-only** (the module is `cfg`-gated out on wasm) with
+# **optional** dependencies, so a `--no-default-features`/wasm build never pulls
+# `tokio` or `jeliya-core` (which transitively links `iroh-rooms`) — exactly the
+# boundary `tests/boundaries.rs` asserts. CI runs the adapter suite with
+# `cargo test -p jeliya-client --features direct` on a native target only.
+direct = ["dep:tokio", "dep:jeliya-core", "dep:jeliya-codec"]
+
 [dependencies]
 jeliya-api = { path = "../jeliya-api" }
 # `serde_json` is confined to the erased `RawJson` boundary in `handle.rs` and
@@ -80,6 +90,22 @@ jeliya-codec = { path = "../jeliya-codec", optional = true }
 # verified loopback endpoint + redacted token facts. The adapter holds only a
 # `TargetResolver`, never a `Sidecar`, so it can dial but never kill a daemon.
 jeliya-supervisor = { path = "../jeliya-supervisor", optional = true }
+
+# The DirectClient adapter (#173) is native-only and default-off. These are
+# OPTIONAL (compiled only when `direct` is on) and confined to
+# `cfg(not(target_arch = "wasm32"))`, so the wasm build and the library's normal
+# `--no-default-features` tree carry neither `tokio` nor `jeliya-core`
+# (transitively `iroh-rooms`) — the ban `tests/boundaries.rs` enforces. Only the
+# executor-agnostic runtime pieces the kernel already needs stay unconditional.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `rt-multi-thread` matches how the in-process engine is hosted in production
+# (`jeliya-ffi`'s own multi-thread runtime): `Engine::new` sets up iroh, which
+# needs a driven reactor, so a single-threaded caller would stall. The library
+# never constructs a runtime itself (`tokio::spawn` alone suffices) — the flavor
+# is the app's choice — but the adapter's own tests build a multi-thread runtime.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros"], optional = true }
+jeliya-core = { path = "../jeliya-core", optional = true }
+jeliya-codec = { path = "../jeliya-codec", optional = true }
 
 [dev-dependencies]
 # `block_on` for the native behaviour suite; the `executor` feature is dev-only
