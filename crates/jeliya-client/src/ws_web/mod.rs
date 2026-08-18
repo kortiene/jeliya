@@ -18,6 +18,7 @@
 //! this slice.
 
 mod diag;
+mod media;
 mod session;
 mod socket;
 mod timers;
@@ -78,7 +79,15 @@ pub fn connect_ws_web(config: WsWebConfig) -> ClientHandle {
     }
 
     let session: Rc<dyn SessionResolver> = Rc::from(config.session);
-    let driver = WsWebDriver::new(config.endpoint, session, config.hello_timeout_ms);
+    // The media registry's inbound quarantine cap follows the kernel's
+    // stream window (captured before `kernel` moves into the runtime).
+    let stream_window_bytes = kernel.streams.stream_window_bytes;
+    let driver = WsWebDriver::new(
+        config.endpoint,
+        session,
+        config.hello_timeout_ms,
+        stream_window_bytes,
+    );
     // `now_tick` reads `performance.now()` transiently; the fn value is
     // `Send + Sync`, so the backend can read the clock fresh on every step.
     let (handle, pump) = crate::kernel::runtime::build(kernel, driver, Box::new(timers::now_tick));
