@@ -602,6 +602,24 @@ impl StreamTable {
         )
     }
 
+    /// The driver decoded a structurally malformed nonterminal DATA/CREDIT on
+    /// this active binding (protocol §Malformed stream records): abort only
+    /// this stream with the closed `protocol_error` tag — the stream-local
+    /// half of the codec's severity rule. A late fault for a stream already
+    /// terminal is absorbed by the retired entry.
+    pub(crate) fn on_protocol_fault(
+        &mut self,
+        call_id: CallId,
+        actions: &mut Vec<Action>,
+    ) -> StreamOutcome {
+        self.fail(
+            call_id,
+            StreamAbortReason::ProtocolError,
+            CallError::Timeout,
+            actions,
+        )
+    }
+
     /// Inbound END (receiver direction, §S4): accept only once the full byte
     /// sequence is sink-accepted and the count agrees, then enter FINALIZING
     /// (timers cancelled) to await the terminal Text reply.
@@ -779,7 +797,12 @@ impl StreamTable {
             return;
         }
         let up_to = entry.producer_grant(limits.stream_window_bytes);
-        if up_to > 0 {
+        if up_to > 0 || entry.total == 0 {
+            // A zero-total source is granted a zero-length read: the driver's
+            // `read_at(0, &mut [])` observes EOF and reports `SourceEnd{0}`,
+            // which is the only path to the mandatory END(0) — without this
+            // grant an empty `file.share` stalls until timeout (the driver
+            // never touches an ungranted source).
             actions.push(Action::ProduceData {
                 id: entry.wire_id,
                 call_id,

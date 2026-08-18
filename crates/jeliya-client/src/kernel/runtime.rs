@@ -474,6 +474,9 @@ where
                     DriverEvent::GateRefused { token } => Input::GateRefused { token },
                     DriverEvent::Interrupted { generation } => Input::Interrupted { generation },
                     DriverEvent::TimerFired(id) => Input::TimerFired(id),
+                    DriverEvent::StreamFault { generation, id } => {
+                        Input::StreamFault { generation, id }
+                    }
                     DriverEvent::Media(media) => match media {
                         MediaEvent::Produced {
                             call_id,

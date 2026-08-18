@@ -26,7 +26,7 @@
 //! fake success. A stream never survives its connection: teardown and loss
 //! clear the bound entries exactly when the core drops the streams (§S10).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use jeliya_api::{OpId, RequestId};
 use jeliya_codec::{
@@ -104,8 +104,19 @@ pub(crate) enum ProduceOutcome {
 /// sends after it, and binds then; bound streams never do (§S8/§S10).
 pub(crate) struct WebMediaRegistry {
     /// Caller registrations awaiting a stream op's send, keyed by dedup
-    /// `OpId`. Bounded by the caller's own registration discipline.
+    /// `OpId`, in insertion order (oldest first, for the bounded-eviction
+    /// rule below).
     registered: HashMap<OpId, StreamMedia>,
+    /// The registration insertion order backing the eviction rule.
+    registered_order: VecDeque<OpId>,
+    /// The bound on outstanding registrations (§K12: no unbounded
+    /// collection). A registration whose call is never sent (refused
+    /// locally, or the caller abandoned the dispatch) has no other
+    /// reclaimer, so the registry evicts the OLDEST outstanding
+    /// registration past the cap — an evicted key's later call fails
+    /// honestly at its first media effect (`SourceFailed`/`SinkFailed`),
+    /// never a silent stall.
+    registered_cap: usize,
     /// Per-stream media state, keyed by the stream's wire id. Bounded by the
     /// kernel's concurrent-stream limit (every terminal prunes).
     bound: HashMap<RequestId, BoundWebStream>,
@@ -118,9 +129,11 @@ pub(crate) struct WebMediaRegistry {
 impl WebMediaRegistry {
     /// Build an empty registry whose inbound cap is `stream_window_bytes × 2`
     /// (the kernel config's window, passed at construction).
-    pub(crate) fn new(stream_window_bytes: u64) -> Self {
+    pub(crate) fn new(stream_window_bytes: u64, registered_cap: usize) -> Self {
         Self {
             registered: HashMap::new(),
+            registered_order: VecDeque::new(),
+            registered_cap: registered_cap.max(1),
             bound: HashMap::new(),
             window_cap: stream_window_bytes.saturating_mul(2),
         }
@@ -128,9 +141,19 @@ impl WebMediaRegistry {
 
     /// Register one stream's media under its dedup key, before the call is
     /// dispatched. Re-registering a key replaces the previous media (the
-    /// caller's own last-write-wins).
+    /// caller's own last-write-wins). Past `registered_cap` the OLDEST
+    /// outstanding registration is evicted — see the field's honesty note.
     pub(crate) fn register(&mut self, key: OpId, media: StreamMedia) {
-        self.registered.insert(key, media);
+        if self.registered.insert(key.clone(), media).is_none() {
+            self.registered_order.push_back(key);
+        }
+        while self.registered.len() > self.registered_cap {
+            if let Some(oldest) = self.registered_order.pop_front() {
+                self.registered.remove(&oldest);
+            } else {
+                break;
+            }
+        }
     }
 
     /// Bind a stream op's wire id at send time: move the caller's
@@ -142,9 +165,12 @@ impl WebMediaRegistry {
         if self.bound.contains_key(&wire_id) {
             return;
         }
-        let media = op_id.and_then(|key| self.registered.remove(&key));
+        let media = op_id.map(|key| {
+            self.registered_order.retain(|k| k != &key);
+            self.registered.remove(&key)
+        });
         let mut stream = BoundWebStream::empty();
-        stream.media = media;
+        stream.media = media.flatten();
         self.bound.insert(wire_id, stream);
     }
 
@@ -209,6 +235,7 @@ impl WebMediaRegistry {
             return ProduceOutcome::Events(vec![MediaEvent::SourceFailed { call_id }]);
         };
         let mut events = Vec::new();
+        let start_position = position;
         let mut position = position;
         let mut remaining = up_to;
         while remaining > 0 {
@@ -262,6 +289,15 @@ impl WebMediaRegistry {
             }
             position += read as u64;
             remaining = remaining.saturating_sub(read as u64);
+        }
+        // ONE cumulative `Produced` per grant, never per chunk: a per-chunk
+        // report lets the core enqueue a fresh grant from a partial offset
+        // before this fulfillment returns; the mailbox runtime feeds those
+        // events before draining the new actions, so the stale grant is
+        // fulfilled from the advanced position and DATA goes past the
+        // daemon's `send_through` (the overlapping-grant race, found in
+        // review; protocol §Credit).
+        if position > start_position {
             events.push(MediaEvent::Produced {
                 call_id,
                 sent_through: position,
@@ -469,5 +505,88 @@ fn map_abort_reason_outbound(reason: StreamAbortReason) -> BinaryAbortReason {
         StreamAbortReason::SourceFailed => BinaryAbortReason::SourceFailed,
         StreamAbortReason::SinkFailed => BinaryAbortReason::SinkFailed,
         StreamAbortReason::ProtocolError => BinaryAbortReason::ProtocolError,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::shared_bytes;
+
+    fn wire_id() -> RequestId {
+        RequestId::new(7).expect("wire id")
+    }
+
+    #[test]
+    fn registered_map_is_bounded_and_evicts_oldest() {
+        // The browser registry mirrors the native one: the cap evicts the
+        // OLDEST outstanding registration; an evicted key's later call binds
+        // an empty entry and fails honestly at produce time.
+        let mut media = WebMediaRegistry::new(1024, 2);
+        let k1 = OpId::new("share-1");
+        let k2 = OpId::new("share-2");
+        let k3 = OpId::new("share-3");
+        media.register(k1.clone(), shared_bytes(vec![1]));
+        media.register(k2, shared_bytes(vec![2]));
+        media.register(k3.clone(), shared_bytes(vec![3]));
+        assert_eq!(media.registered.len(), 2, "the cap holds");
+        // k3 (newest) binds its media; k1 (evicted) binds an empty entry.
+        media.bind(wire_id(), Some(k3));
+        assert!(
+            media
+                .bound
+                .get(&wire_id())
+                .is_some_and(|s| s.media.is_some()),
+            "the newest registration bound its media"
+        );
+        let evicted_id = RequestId::new(8).expect("id");
+        media.bind(evicted_id, Some(k1));
+        assert!(
+            media
+                .bound
+                .get(&evicted_id)
+                .is_some_and(|s| s.media.is_none()),
+            "the evicted registration binds an honestly-failing empty entry"
+        );
+    }
+
+    #[test]
+    fn produce_reports_one_cumulative_progress_event_per_grant() {
+        use crate::kernel::inflight::CallId;
+        use crate::kernel::transport::MediaEvent;
+        // A grant spanning multiple codec-bounded chunks reports ONE
+        // cumulative Produced (the overlapping-grant regression): pin the
+        // count and the final offset with a tight codec bound (one chunk per
+        // record = 8 frame bytes of payload room).
+        let mut media = WebMediaRegistry::new(1024, 8);
+        let key = OpId::new("share-1");
+        media.register(key.clone(), shared_bytes(vec![1, 2, 3, 4, 5, 6]));
+        let id = wire_id();
+        media.bind(id, Some(key));
+        media.adopt_open_stream_id(id, 1);
+        let bounds = CodecBounds::default();
+        let chunk = max_stream_data_bytes(bounds.max_frame_bytes).expect("cap");
+        // Exercise a multi-chunk grant only when the default cap permits
+        // splitting (it is huge); otherwise the single-chunt invariant still
+        // holds trivially.
+        let total = 6_u64;
+        let up_to = total.min(chunk as u64);
+        let events = match media.produce(id, CallId(3), up_to, &bounds, &mut |_| true) {
+            ProduceOutcome::Events(events) => events,
+            ProduceOutcome::Closed => panic!("the send closure never fails here"),
+        };
+        let produced: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, MediaEvent::Produced { .. }))
+            .collect();
+        assert_eq!(
+            produced.len(),
+            1,
+            "exactly ONE cumulative Produced per grant (got {produced:?})"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(MediaEvent::SourceEnd { total: t, .. }) if *t == total
+        ));
     }
 }

@@ -945,3 +945,376 @@ fn unregistered_stream_aborts_honestly_with_an_on_wire_abort() {
         server.abort();
     });
 }
+
+// ---------------------------------------------------------------------------
+// Review-driven conformance: overlapping grants, and the malformed-record
+// severity ladder (protocol §Malformed stream records / §Size and record
+// refusal)
+// ---------------------------------------------------------------------------
+
+/// A staircase-credit upload whose grant spans MULTIPLE DATA chunks: every
+/// chunk after the first would, under a per-chunk `Produced` report, let the
+/// kernel pump a fresh grant while the media task is still consuming the
+/// current one — the stale grant is then fulfilled from the advanced
+/// position and DATA goes past the daemon's `send_through`. The regression:
+/// the window is pinned BELOW the total, credit arrives staircase-fashion,
+/// and every received DATA record must satisfy `offset + len <= send_through`
+/// granted so far.
+#[test]
+fn multi_chunk_grants_never_overshoot_the_granted_credit() {
+    let rt = test_runtime();
+    rt.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let sg = 1_u64;
+        let url = url::Url::parse(&format!("ws://127.0.0.1:{port}/ws?v=2&sg={sg}")).expect("url");
+
+        // 150_000 bytes against a 70_000-byte window: each grant spans more
+        // than one 65_536-byte DATA chunk, so the per-chunk race is live.
+        let payload: Vec<u8> = (0..150_000_u32).map(|i| (i % 199) as u8).collect();
+        let expected = payload.clone();
+        let window: u64 = 70_000;
+
+        let server = tokio::spawn(async move {
+            use futures::SinkExt;
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("upgrade");
+            ws.send(Message::text(hello_json(sg))).await.expect("hello");
+
+            let (id, op, input) = read_request(&mut ws).await;
+            assert_eq!(op, "file.share");
+            let total = input["declared_bytes"].as_u64().expect("declared_bytes");
+
+            let identity = StreamIdentity::new(id, 1).expect("identity");
+            let bounds = CodecBounds::default();
+            ws.send(frame(identity, StreamRecordBody::Open { total }))
+                .await
+                .expect("OPEN");
+
+            // Staircase: credit exactly one window at a time, acknowledging
+            // only what has actually arrived.
+            let mut received: u64 = 0;
+            let mut send_through: u64 = 0;
+            while received < total {
+                let next = (send_through + window).min(total);
+                ws.send(frame(
+                    identity,
+                    StreamRecordBody::Credit {
+                        accepted_through: received,
+                        send_through: next,
+                    },
+                ))
+                .await
+                .expect("staircase CREDIT");
+                send_through = next;
+
+                // Drain until the client pauses AT the ceiling (it cannot
+                // send past send_through) — i.e. keep reading DATA while the
+                // daemon's outstanding window has room.
+                loop {
+                    let record = match ws.next().await {
+                        Some(Ok(Message::Binary(bytes))) => {
+                            decode_stream_record(&bytes, &bounds).expect("client record decodes")
+                        }
+                        Some(Ok(Message::Ping(_))) => continue,
+                        other => panic!("expected DATA, got {other:?}"),
+                    };
+                    match record.body {
+                        StreamRecordBody::Data { offset, payload } => {
+                            assert_eq!(
+                                offset, received,
+                                "DATA stays contiguous with what was acknowledged"
+                            );
+                            let len = payload.len() as u64;
+                            assert!(
+                                offset + len <= send_through,
+                                "DATA overshoot: offset {offset} + len {len} > send_through {send_through}"
+                            );
+                            received += len;
+                            if received == send_through {
+                                // THE REGRESSION DETECTOR: at the ceiling
+                                // with no further credit, the client MUST go
+                                // quiet. A stale overlapping grant (the
+                                // per-chunk `Produced` race) sends unbidden
+                                // DATA past `send_through`; the fixed driver
+                                // pauses for credit. One quiet window here
+                                // catches it deterministically.
+                                ws.send(frame(
+                                    identity,
+                                    StreamRecordBody::Credit {
+                                        accepted_through: received,
+                                        send_through,
+                                    },
+                                ))
+                                .await
+                                .expect("ack CREDIT");
+                                // Only at an INTERMEDIATE ceiling: the final
+                                // ceiling's ack legitimately unlocks END.
+                                if send_through >= total {
+                                    break;
+                                }
+                                loop {
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_millis(400),
+                                        ws.next(),
+                                    )
+                                    .await
+                                    {
+                                        Err(_elapsed) => break, // quiet: correct
+                                        Ok(Some(Ok(Message::Binary(bytes)))) => panic!(
+                                            "stale grant sent DATA past send_through={send_through}: {:?}",
+                                            decode_stream_record(&bytes, &CodecBounds::default()).map(|r| r.body)
+                                        ),
+                                        Ok(Some(Ok(Message::Ping(_)))) => continue,
+                                        other => panic!("unexpected frame in the quiet window: {other:?}"),
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        other => panic!("expected DATA in the staircase, got {other:?}"),
+                    }
+                }
+            }
+            assert_eq!(received, total);
+            // Read END (the client's DATA already covered the file).
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        let end =
+                            decode_stream_record(&bytes, &bounds).expect("END decodes");
+                        assert_eq!(end.body, StreamRecordBody::End { total });
+                        break;
+                    }
+                    Some(Ok(Message::Ping(_))) => continue,
+                    other => panic!("expected END, got {other:?}"),
+                }
+            }
+            let out = serde_json::json!({
+                "room_id": "room-staircase",
+                "file_id": "file-1",
+                "event_id": "event-1",
+                "pos": 1,
+                "bytes": total,
+                "digest": "sha256:test",
+            });
+            ws.send(reply_text(id, out.to_string()))
+                .await
+                .expect("reply");
+        });
+
+        let mut config = fast_config();
+        config.kernel.streams.stream_window_bytes = window;
+        let handle = connect_ws_native(FixedSource { url }, config).expect("creates");
+        handle.start();
+        let op_id = OpId::new("staircase-share-1");
+        handle
+            .register_stream_media(op_id.clone(), shared_bytes(payload))
+            .expect("register");
+        let out = handle
+            .call_stream::<jeliya_api::FileShare>(
+                jeliya_api::FileShare {
+                    room_id: RoomId::new("room-staircase"),
+                    name: String::from("staircase.bin"),
+                    declared_bytes: expected.len() as u64,
+                    declared_content_type: String::from("application/octet-stream"),
+                },
+                Dedup::Key(op_id),
+            )
+            .await
+            .expect("the staircase upload succeeds");
+        assert_eq!(out.bytes, 150_000);
+        server.abort();
+    });
+}
+
+/// A structurally malformed nonterminal CREDIT on an active binding (here: a
+/// CREDIT carrying a forbidden payload) aborts ONLY that stream: the client
+/// answers ABORT `protocol_error` and the connection stays alive — proven by
+/// a second, ordinary request completing on the same socket afterwards
+/// (protocol §Malformed stream records).
+#[test]
+fn malformed_bound_credit_aborts_only_that_stream() {
+    let rt = test_runtime();
+    rt.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let sg = 1_u64;
+        let url = url::Url::parse(&format!("ws://127.0.0.1:{port}/ws?v=2&sg={sg}")).expect("url");
+
+        let server = tokio::spawn(async move {
+            use futures::SinkExt;
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("upgrade");
+            ws.send(Message::text(hello_json(sg))).await.expect("hello");
+
+            let (id, op, _) = read_request(&mut ws).await;
+            assert_eq!(op, "file.share");
+            let identity = StreamIdentity::new(id, 1).expect("identity");
+            let bounds = CodecBounds::default();
+            ws.send(frame(identity, StreamRecordBody::Open { total: 128 }))
+                .await
+                .expect("OPEN");
+
+            // A CREDIT with a forbidden payload: the codec refuses the
+            // structure (require_no_payload) while the binding is live —
+            // exactly the stream-local class.
+            let mut malformed = encode_stream_record(
+                &StreamRecord {
+                    identity,
+                    body: StreamRecordBody::Credit {
+                        accepted_through: 0,
+                        send_through: 128,
+                    },
+                },
+                &bounds,
+            )
+            .expect("encodes");
+            malformed.push(0); // the forbidden payload byte
+            ws.send(Message::Binary(malformed.into()))
+                .await
+                .expect("malformed CREDIT");
+
+            // The client answers ABORT protocol_error; the connection lives.
+            let abort = loop {
+                match ws.next().await {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        break decode_stream_record(&bytes, &bounds).expect("ABORT decodes");
+                    }
+                    Some(Ok(Message::Ping(_))) => continue,
+                    Some(Ok(Message::Close(frame))) => {
+                        panic!("connection dropped on a stream-local fault: {frame:?}")
+                    }
+                    other => panic!("expected ABORT, got {other:?}"),
+                }
+            };
+            assert!(matches!(
+                abort.body,
+                StreamRecordBody::Abort {
+                    reason: BinaryAbortReason::ProtocolError,
+                    ..
+                }
+            ));
+
+            // The same connection serves a later ordinary request.
+            let (id2, op2, _) = read_request(&mut ws).await;
+            assert_eq!(op2, "room.list");
+            ws.send(reply_text(id2, "{\"rooms\":[]}".to_owned()))
+                .await
+                .expect("second reply");
+        });
+
+        let handle = connect_ws_native(FixedSource { url }, fast_config()).expect("creates");
+        handle.start();
+        let op_id = OpId::new("malformed-credit-1");
+        handle
+            .register_stream_media(op_id.clone(), shared_bytes(vec![7_u8; 128]))
+            .expect("register");
+        let err = handle
+            .call_stream::<jeliya_api::FileShare>(
+                jeliya_api::FileShare {
+                    room_id: RoomId::new("room-malformed"),
+                    name: String::from("m.bin"),
+                    declared_bytes: 128,
+                    declared_content_type: String::from("application/octet-stream"),
+                },
+                Dedup::Key(op_id),
+            )
+            .await
+            .expect_err("the faulted stream fails honestly");
+        assert!(
+            matches!(
+                err,
+                CallError::Timeout | CallError::Cancelled { .. } | CallError::Wire(_)
+            ),
+            "a classified terminal, got {err:?}"
+        );
+        // The connection survived: an ordinary request completes.
+        let list = handle
+            .call::<jeliya_api::RoomList>(jeliya_api::RoomList {}, Dedup::None)
+            .await
+            .expect("the connection serves later requests");
+        assert!(list.rooms.is_empty());
+        server.abort();
+    });
+}
+
+/// A Binary message with no trustworthy shape (bad magic) is
+/// connection-fatal: the client closes the socket carrying the protocol's
+/// `4007` and the in-flight stream call settles as a transport loss — never
+/// a silent drop, never a hang (protocol §Malformed stream records).
+#[test]
+fn bad_magic_binary_is_connection_fatal_4007() {
+    let rt = test_runtime();
+    rt.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let sg = 1_u64;
+        let url = url::Url::parse(&format!("ws://127.0.0.1:{port}/ws?v=2&sg={sg}")).expect("url");
+
+        let server = tokio::spawn(async move {
+            use futures::SinkExt;
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut ws = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("upgrade");
+            ws.send(Message::text(hello_json(sg))).await.expect("hello");
+
+            let (id, op, _) = read_request(&mut ws).await;
+            assert_eq!(op, "file.share");
+            let identity = StreamIdentity::new(id, 1).expect("identity");
+            ws.send(frame(identity, StreamRecordBody::Open { total: 16 }))
+                .await
+                .expect("OPEN");
+
+            // Garbage: a full-size binary message with no JBS2 magic.
+            ws.send(Message::Binary(vec![0xDE_u8; 64].into()))
+                .await
+                .expect("garbage");
+
+            // The client closes the connection with 4007.
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(Some(frame)))) => {
+                        assert_eq!(u16::from(frame.code), 4007, "the protocol's fatal code");
+                        break;
+                    }
+                    Some(Ok(Message::Close(None))) => panic!("close must carry 4007"),
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) | None => panic!("expected a 4007 close frame"),
+                }
+            }
+        });
+
+        let handle = connect_ws_native(FixedSource { url }, fast_config()).expect("creates");
+        handle.start();
+        let op_id = OpId::new("bad-magic-1");
+        handle
+            .register_stream_media(op_id.clone(), shared_bytes(vec![1_u8; 16]))
+            .expect("register");
+        let err = handle
+            .call_stream::<jeliya_api::FileShare>(
+                jeliya_api::FileShare {
+                    room_id: RoomId::new("room-badmagic"),
+                    name: String::from("b.bin"),
+                    declared_bytes: 16,
+                    declared_content_type: String::from("application/octet-stream"),
+                },
+                Dedup::Key(op_id),
+            )
+            .await
+            .expect_err("a fatal record settles the stream as a loss");
+        assert!(
+            matches!(
+                err,
+                CallError::Disconnected { .. } | CallError::Timeout | CallError::Cancelled { .. }
+            ),
+            "a classified transport-loss terminal, got {err:?}"
+        );
+        server.abort();
+    });
+}

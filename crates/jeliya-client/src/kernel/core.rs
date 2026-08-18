@@ -123,6 +123,23 @@ pub(crate) enum Input {
         /// The stream call.
         call_id: CallId,
     },
+    /// The driver detected a structurally malformed **nonterminal** DATA or
+    /// CREDIT record on an active binding (protocol §Malformed stream
+    /// records): bad reserved byte, wrong direction, invalid credit, empty
+    /// or oversized-within-frame DATA, or bad offset arithmetic. The core
+    /// aborts only that stream (`protocol_error`), never the connection —
+    /// the stream-local half of the codec's connection-fatal vs stream-local
+    /// rule, surfaced here because a record that fails structural decode
+    /// cannot travel the ordinary `Inbound::Record` path. The driver reports
+    /// connection-fatal conditions (bad magic, short header, no trustworthy
+    /// binding, malformed OPEN/END/ABORT) as a transport loss instead.
+    StreamFault {
+        /// The generation the delivering connection is on (fenced as a reply
+        /// is, §K7/§S10).
+        generation: u64,
+        /// The malformed record's reply-correlation id.
+        id: RequestId,
+    },
 }
 
 /// One action the driver performs after a [`Core::step`]. The core decides;
@@ -374,6 +391,19 @@ impl Core {
             Input::SinkFailed { call_id } => {
                 let outcome = self.streams.on_sink_failed(call_id, &mut actions);
                 self.apply_stream_outcome(call_id, outcome, now, &mut actions);
+            }
+            Input::StreamFault { generation, id } => {
+                // Generation-fenced exactly as a record is (§S10); a fault
+                // for an unknown/settled/stale call resolves to nothing and
+                // strands no call.
+                if let Some(call_id) = self.ledger.resolve_reply(id, generation) {
+                    if self.ledger.get(call_id).map(|e| e.stream).unwrap_or(false)
+                        && self.streams.contains(call_id)
+                    {
+                        let outcome = self.streams.on_protocol_fault(call_id, &mut actions);
+                        self.apply_stream_outcome(call_id, outcome, now, &mut actions);
+                    }
+                }
             }
         }
         actions

@@ -138,7 +138,9 @@ struct SocketCtx {
     token: u64,
     /// The storage generation presented at the gate; the `hello` must match it.
     expected_sg: u64,
-    bounds: CodecBounds,
+    /// This connection's decode/media bounds — the compiled ceiling until a
+    /// valid `hello` narrows it to the served `max_frame_bytes`.
+    bounds: Cell<CodecBounds>,
     /// Set once a valid `hello` is seen; flips the message handler to steady
     /// state and disarms the pre-connect failure paths.
     validated: Cell<bool>,
@@ -166,6 +168,7 @@ impl WsWebDriver {
         session: Rc<dyn SessionResolver>,
         hello_timeout_ms: u32,
         stream_window_bytes: u64,
+        registered_cap: usize,
     ) -> Self {
         let config = Rc::new(DialConfig {
             endpoint,
@@ -183,7 +186,7 @@ impl WsWebDriver {
             active_dial_token: None,
             dial_abort: None,
             timers: HashMap::new(),
-            media: WebMediaRegistry::new(stream_window_bytes),
+            media: WebMediaRegistry::new(stream_window_bytes, registered_cap),
         }));
         Self { state, config }
     }
@@ -231,8 +234,15 @@ impl Driver for WsWebDriver {
 
     fn send_record(&mut self, intent: StreamRecordIntent) -> Result<(), TransportClosed> {
         let record = media::intent_record(&intent).ok_or(TransportClosed)?;
-        let framed = jeliya_codec::encode_stream_record(&record, &self.config.bounds)
-            .map_err(|_| TransportClosed)?;
+        let bounds = self
+            .state
+            .borrow()
+            .socket_ctx
+            .as_ref()
+            .map(|ctx| ctx.bounds.get())
+            .unwrap_or(self.config.bounds);
+        let framed =
+            jeliya_codec::encode_stream_record(&record, &bounds).map_err(|_| TransportClosed)?;
         let state = self.state.borrow();
         match &state.socket {
             Some(ws) => ws.send_with_u8_array(&framed).map_err(|_| TransportClosed),
@@ -245,14 +255,20 @@ impl Driver for WsWebDriver {
         let generation = state.generation;
         let outcome = {
             let socket = state.socket.clone();
+            // The live connection's hello-negotiated bounds (the served
+            // `max_frame_bytes`), falling back to the compiled ceiling only
+            // before the first validated connection.
+            let bounds = state
+                .socket_ctx
+                .as_ref()
+                .map(|ctx| ctx.bounds.get())
+                .unwrap_or(self.config.bounds);
             let mut send = |framed: &[u8]| -> bool {
                 socket
                     .as_ref()
                     .is_some_and(|ws| ws.send_with_u8_array(framed).is_ok())
             };
-            state
-                .media
-                .produce(id, call_id, up_to, &self.config.bounds, &mut send)
+            state.media.produce(id, call_id, up_to, &bounds, &mut send)
         };
         match outcome {
             ProduceOutcome::Events(events) => {
@@ -437,7 +453,7 @@ fn wire_socket(
         state: state.clone(),
         token,
         expected_sg: sg,
-        bounds: config.bounds,
+        bounds: std::cell::Cell::new(config.bounds),
         validated: Cell::new(false),
         socket_gen: Cell::new(0),
         signalled_loss: Cell::new(false),
@@ -502,7 +518,7 @@ fn on_first_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
         // A non-text first frame is not a v2 hello.
         return protocol_fail(ctx);
     };
-    match decode_client_frame(text.as_bytes(), &ctx.bounds) {
+    match decode_client_frame(text.as_bytes(), &ctx.bounds.get()) {
         Ok(ClientFrame::Hello(hello)) => {
             if hello.protocol != CLIENT_PROTOCOL {
                 return protocol_fail(ctx);
@@ -519,6 +535,15 @@ fn on_first_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
                 return;
             }
             // Validated: only now is the connection reported to the core.
+            // Adopt the SERVED frame limit for this connection's decode and
+            // media bounds (never larger than the codec's compiled ceiling),
+            // exactly as the native adapter does — a daemon serving a tighter
+            // `max_frame_bytes` must never receive oversized DATA from us.
+            ctx.bounds.set(CodecBounds {
+                max_frame_bytes: (CodecBounds::default().max_frame_bytes as u64)
+                    .min(hello.limits.max_frame_bytes) as usize,
+                ..CodecBounds::default()
+            });
             cancel_hello_deadline(ctx);
             ctx.validated.set(true);
             let mut state = ctx.state.borrow_mut();
@@ -549,7 +574,7 @@ fn on_steady_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
     let generation = ctx.socket_gen.get();
     let data = ev.data();
     let inbound = match data.as_string() {
-        Some(text) => match decode_client_frame(text.as_bytes(), &ctx.bounds) {
+        Some(text) => match decode_client_frame(text.as_bytes(), &ctx.bounds.get()) {
             Ok(ClientFrame::Reply { id, result }) => match RequestId::new(id) {
                 Ok(request_id) => {
                     let reply = match result {
@@ -573,15 +598,34 @@ fn on_steady_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
         },
         // Binary = a byte-stream record (§S3/§S10): staged decode per the
         // codec's documented order — identity, binding lookup, kind, full
-        // structural view — then the byte-free meta reaches the core. A
-        // codec-fatal or unbindable record strands nothing: `Malformed`,
-        // exactly as for text (§K4).
+        // structural view — then the byte-free meta reaches the core, with
+        // refusals routed by the protocol's severity ladder (§Malformed
+        // stream records): stream-local faults abort only their stream;
+        // connection-fatal conditions close the socket carrying the
+        // protocol's code and surface as a transport loss.
         None => match data.dyn_into::<js_sys::ArrayBuffer>() {
             Ok(buffer) => {
                 let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
                 match decode_inbound_stream_record(ctx, &bytes) {
                     Ok(record) => Inbound::Record { generation, record },
-                    Err(()) => Inbound::Malformed,
+                    Err(WebRecordRefusal::StreamLocal(id)) => {
+                        ctx.state
+                            .borrow_mut()
+                            .push(DriverEvent::StreamFault { generation, id });
+                        // Nothing further flows through this handler for the
+                        // faulted record; the core aborts only that stream.
+                        return;
+                    }
+                    Err(WebRecordRefusal::Fatal(code)) => {
+                        // Close the socket carrying the protocol's code
+                        // (best-effort), then surface the loss.
+                        let mut state = ctx.state.borrow_mut();
+                        if let Some(ws) = state.socket.as_ref() {
+                            let _ = ws.close_with_code_and_reason(code, "");
+                        }
+                        state.push(DriverEvent::Interrupted { generation });
+                        return;
+                    }
                 }
             }
             // Neither text nor an ArrayBuffer (a Blob or unknown binary
@@ -599,33 +643,60 @@ fn on_steady_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
     ctx.state.borrow_mut().push(DriverEvent::Inbound(inbound));
 }
 
+/// The severity of a refused inbound Binary record (protocol §Malformed
+/// stream records / §Size and record refusal) — the browser mirror of the
+/// native adapter's classification.
+enum WebRecordRefusal {
+    /// Connection-fatal: `4005` for an over-ceiling message, `4007` for an
+    /// untrustworthy binding or a malformed terminal control. The socket
+    /// closes and the core tears every stream down as `transport_lost`.
+    Fatal(u16),
+    /// Stream-local: a structurally malformed nonterminal DATA/CREDIT on an
+    /// active binding. Only the named stream aborts (`protocol_error`).
+    StreamLocal(RequestId),
+}
+
 /// Decode one inbound Binary message into the byte-free record meta the core
 /// consumes, performing the driver-side media work first (§S3/§S10):
 ///
-/// 1. [`decode_stream_identity`] — codec-fatal (bad magic, short header,
-///    over-ceiling) fails closed as `Malformed`;
-/// 2. the media registry's binding lookup by request id — a record for a
-///    wire id this connection never bound correlates to nothing;
-/// 3. [`decode_stream_kind`] and [`decode_stream_record_view`] — the full
-///    structural decode, still borrowing the payload;
-/// 4. per-kind media work: DATA quarantines its payload (a cap breach is
-///    protocol trouble → `Malformed`) **before** the meta is handed onward,
-///    so the `WriteSink` the meta provokes always finds its bytes buffered.
-///    OPEN spawns nothing — fulfillment on this adapter is single-threaded
-///    and pull-driven by the kernel's `ProduceData` grant.
-///
-/// `Err(())` is the `Inbound::Malformed` signal; the generation tag is the
-/// caller's (this socket's), so the core fences stragglers itself.
-fn decode_inbound_stream_record(ctx: &Rc<SocketCtx>, bytes: &[u8]) -> Result<StreamRecordMeta, ()> {
-    let identity = decode_stream_identity(bytes, &ctx.bounds).map_err(|_| ())?;
+/// 1. [`decode_stream_identity`] — over the frame ceiling is `Fatal(4005)`;
+///    a short header, bad magic, or invalid identity is `Fatal(4007)`;
+/// 2. the media registry's binding lookup by request id — a record with no
+///    trustworthy outstanding binding is `Fatal(4007)`;
+/// 3. [`decode_stream_kind`] — an unknown kind cannot be classified and is
+///    `Fatal(4007)`;
+/// 4. [`decode_stream_record_view`] — a malformed daemon OPEN/END/ABORT/ACK
+///    is `Fatal(4007)` (a terminal/binding failure); a malformed nonterminal
+///    DATA/CREDIT on the active binding is `StreamLocal`;
+/// 5. per-kind media work: DATA quarantines its payload (a cap breach or
+///    discontinuity is a credit/offset violation → `StreamLocal`) **before**
+///    the meta is handed onward, so the `WriteSink` the meta provokes always
+///    finds its bytes buffered. OPEN spawns nothing — fulfillment on this
+///    adapter is single-threaded and pull-driven by the kernel's
+///    `ProduceData` grant.
+fn decode_inbound_stream_record(
+    ctx: &Rc<SocketCtx>,
+    bytes: &[u8],
+) -> Result<StreamRecordMeta, WebRecordRefusal> {
+    let identity =
+        decode_stream_identity(bytes, &ctx.bounds.get()).map_err(|error| match error {
+            jeliya_codec::StreamCodecError::FrameTooLarge { .. } => WebRecordRefusal::Fatal(4005),
+            _ => WebRecordRefusal::Fatal(4007),
+        })?;
     let wire_id = identity.request_id();
     let stream_id = identity.stream_id().get();
     let mut state = ctx.state.borrow_mut();
     if !state.media.is_bound(wire_id) {
-        return Err(());
+        return Err(WebRecordRefusal::Fatal(4007));
     }
-    decode_stream_kind(bytes, &ctx.bounds).map_err(|_| ())?;
-    let view = decode_stream_record_view(bytes, &ctx.bounds).map_err(|_| ())?;
+    let kind =
+        decode_stream_kind(bytes, &ctx.bounds.get()).map_err(|_| WebRecordRefusal::Fatal(4007))?;
+    let view = decode_stream_record_view(bytes, &ctx.bounds.get()).map_err(|_| match kind {
+        jeliya_codec::StreamRecordKind::Data | jeliya_codec::StreamRecordKind::Credit => {
+            WebRecordRefusal::StreamLocal(wire_id)
+        }
+        _ => WebRecordRefusal::Fatal(4007),
+    })?;
     let record = match view.body {
         StreamRecordBodyView::Open { total } => {
             // Adopt the daemon's stream id BEFORE the meta reaches the core:
@@ -639,7 +710,9 @@ fn decode_inbound_stream_record(ctx: &Rc<SocketCtx>, bytes: &[u8]) -> Result<Str
         }
         StreamRecordBodyView::Data { offset, payload } => {
             if !state.media.deliver_data(wire_id, offset, payload) {
-                return Err(());
+                // A cap breach or offset discontinuity on a bound stream is
+                // a credit/offset violation: stream-local, never fatal.
+                return Err(WebRecordRefusal::StreamLocal(wire_id));
             }
             StreamRecordMeta::Data {
                 id: wire_id,

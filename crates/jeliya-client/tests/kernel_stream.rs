@@ -238,3 +238,114 @@ fn file_read_receiver_reports_terminal_acceptance_credit() {
     assert_eq!(controller.stream_timers(), 0, "no stream timer survives");
     assert_eq!(controller.outstanding(), 0, "the call is fully settled");
 }
+
+/// The zero-byte producer handshake (§4/§S4): a `file.share` with
+/// `declared_bytes == 0` must still observe its (empty) source and emit the
+/// mandatory END(0). Without the zero-length grant the driver never touches
+/// the source, `SourceEnd{0}` never arrives, and the call stalls to timeout —
+/// exactly the failure the review found. The daemon's mandatory probe
+/// (`send_through = declared+1 = 1`) scripts the credit side.
+#[test]
+fn file_share_zero_byte_producer_reaches_end_zero() {
+    let (handle, controller) = ready();
+    block_on(async {
+        let fut = handle.call_stream::<FileShare>(
+            FileShare {
+                room_id: RoomId::new("r1"),
+                name: String::from("empty.bin"),
+                declared_bytes: 0,
+                declared_content_type: String::from("application/octet-stream"),
+            },
+            Dedup::None,
+        );
+        let sent = controller.take_outbound();
+        assert_eq!(sent.len(), 1);
+        let wire = sent[0].id;
+
+        // OPEN admits a zero-byte stream. A conforming daemon MUST credit the
+        // probe byte (send_through = declared+1 = 1), whose zero-byte read
+        // observes EOF on its own; script the HARDER case — a daemon that
+        // sends CREDIT(0,0) instead — which stalls unless the kernel grants
+        // the empty source a zero-length read.
+        controller.open(wire, 0);
+        controller.credit(wire, 0, 0);
+
+        // The driver observed the empty source (the zero-length grant) and
+        // END(0) followed — no DATA ever, END exactly once at offset zero.
+        let records = controller.take_outbound_records();
+        assert!(
+            records.iter().all(|r| r.kind != "data"),
+            "an empty source never frames DATA"
+        );
+        let ends: Vec<_> = records.iter().filter(|r| r.kind == "end").collect();
+        assert_eq!(ends.len(), 1, "exactly one END");
+        assert_eq!(ends[0].a, 0, "END at offset zero");
+
+        controller.deliver_reply(
+            wire,
+            "{\"room_id\":\"r1\",\"file_id\":\"f0\",\"event_id\":\"e1\",\"pos\":0,\"bytes\":0,\"digest\":\"d\"}",
+        );
+        let out: FileShareOut = fut.await.expect("zero-byte share resolves terminal");
+        assert_eq!(out.bytes, 0);
+    });
+    assert_eq!(controller.streams(), 0, "stream retired after END(0)");
+    assert_eq!(controller.outstanding(), 0, "call fully settled");
+}
+
+/// A driver-detected structural fault (malformed nonterminal DATA/CREDIT on an
+/// active binding) aborts ONLY that stream with `protocol_error` (§Malformed
+/// stream records): the faulted call settles, a concurrent ordinary request
+/// is untouched, and the outbound records carry the ABORT.
+#[test]
+fn stream_fault_aborts_only_the_faulted_stream() {
+    let (handle, controller) = ready();
+    block_on(async {
+        let stream_fut = handle.call_stream::<FileShare>(
+            FileShare {
+                room_id: RoomId::new("r1"),
+                name: String::from("a.bin"),
+                declared_bytes: 200,
+                declared_content_type: String::from("application/octet-stream"),
+            },
+            Dedup::None,
+        );
+        let sent = controller.take_outbound();
+        let wire = sent[0].id;
+        controller.open(wire, 200);
+        controller.credit(wire, 0, 200);
+
+        // A concurrent ordinary request on the same connection.
+        let plain_fut = handle.call::<jeliya_api::RoomList>(jeliya_api::RoomList {}, Dedup::None);
+        let plain_wire = controller.take_outbound()[0].id;
+
+        // The driver refuses a structurally malformed DATA/CREDIT for the
+        // stream: only that stream aborts (protocol_error), the connection
+        // and the plain request survive.
+        controller.stream_fault(wire);
+        let records = controller.take_outbound_records();
+        let aborts: Vec<_> = records.iter().filter(|r| r.kind == "abort").collect();
+        assert_eq!(aborts.len(), 1, "exactly one ABORT for the faulted stream");
+
+        // The plain request still completes normally afterwards.
+        controller.deliver_reply(plain_wire, "{\"rooms\":[]}");
+        let list = plain_fut.await.expect("the ordinary request survives");
+        assert!(list.rooms.is_empty());
+
+        // The faulted stream's terminal settles honestly (the kernel's
+        // Timeout classification for a stream fault), never a hang.
+        let stream_err = stream_fut.await.expect_err("the faulted stream fails");
+        assert!(
+            matches!(
+                stream_err,
+                jeliya_client::CallError::Timeout
+                    | jeliya_client::CallError::Cancelled { .. }
+                    | jeliya_client::CallError::Wire(_)
+            ),
+            "a classified terminal, got {stream_err:?}"
+        );
+        // The aborted stream lingers ONLY as a bounded tombstone (§S10), the
+        // same convention as the cancel fault tests: drain_all reclaims it.
+        controller.interrupt();
+    });
+    assert_eq!(controller.streams(), 0, "the tombstone collapsed on ACK");
+}

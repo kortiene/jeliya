@@ -1176,6 +1176,16 @@ mod in_memory {
             self.drive_serialized(Input::Inbound(Inbound::Record { generation, record }));
         }
 
+        /// Deliver a driver-detected structural fault on `wire_id`'s stream
+        /// (a malformed nonterminal DATA/CREDIT the codec refused): the core
+        /// aborts only that stream with `protocol_error` (§Malformed stream
+        /// records). Mirrors what a real driver injects.
+        pub fn stream_fault(&self, wire_id: u64) {
+            let generation = self.generation();
+            let id = RequestId::new(wire_id).expect("wire id within range");
+            self.drive_serialized(Input::StreamFault { generation, id });
+        }
+
         /// Take the client-authored outbound stream records since the last drain,
         /// as redaction-safe [`SentRecord`] views (§S3).
         pub fn take_outbound_records(&self) -> Vec<SentRecord> {

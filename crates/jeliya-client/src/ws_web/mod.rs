@@ -80,13 +80,17 @@ pub fn connect_ws_web(config: WsWebConfig) -> ClientHandle {
 
     let session: Rc<dyn SessionResolver> = Rc::from(config.session);
     // The media registry's inbound quarantine cap follows the kernel's
-    // stream window (captured before `kernel` moves into the runtime).
+    // stream window and its outstanding-registration bound the in-flight
+    // limit + margin (mirroring the native adapter's sizing) — both
+    // captured before `kernel` moves into the runtime.
     let stream_window_bytes = kernel.streams.stream_window_bytes;
+    let registered_cap = (kernel.limits.in_flight as usize).saturating_add(64);
     let driver = WsWebDriver::new(
         config.endpoint,
         session,
         config.hello_timeout_ms,
         stream_window_bytes,
+        registered_cap,
     );
     // `now_tick` reads `performance.now()` transiently; the fn value is
     // `Send + Sync`, so the backend can read the clock fresh on every step.

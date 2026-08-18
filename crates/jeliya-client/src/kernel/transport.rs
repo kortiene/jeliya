@@ -482,6 +482,18 @@ pub(crate) enum DriverEvent {
     /// the core's other media inputs — the runtime maps it onto the matching
     /// [`Input`](crate::kernel::core::Input) variant.
     Media(MediaEvent),
+    /// The driver decoded a structurally malformed **nonterminal** DATA or
+    /// CREDIT record on an active binding (protocol §Malformed stream
+    /// records): the stream-local half of the codec's severity rule, mapped
+    /// onto [`Input::StreamFault`](crate::kernel::core::Input::StreamFault).
+    /// Connection-fatal conditions arrive as
+    /// [`DriverEvent::Interrupted`] instead.
+    StreamFault {
+        /// The generation the delivering connection is on.
+        generation: u64,
+        /// The malformed record's reply-correlation id.
+        id: RequestId,
+    },
 }
 
 /// What an adapter provides so the generic runtime (`kernel/runtime.rs`) can

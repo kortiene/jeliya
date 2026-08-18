@@ -11,7 +11,8 @@
 //! (`resource:fetched_file` is "unestablishable single-subject"). Two daemons
 //! is the honest minimum for a live round trip.
 //!
-//! Run (both daemons in `--loopback`):
+//! Run (both daemons WITHOUT `--loopback` — RealNetwork mode: the invited
+//! join dials the minter via discovery, which loopback mode cannot do):
 //!   JELIYAD_PROBE_URL=ws://127.0.0.1:P1/ws JELIYAD_PROBE_HTTP=http://127.0.0.1:P1 \
 //!   JELIYAD_PROBE_TOKEN=... JELIYAD_PROBE2_URL=ws://127.0.0.1:P2/ws \
 //!   JELIYAD_PROBE2_HTTP=http://127.0.0.1:P2 JELIYAD_PROBE2_TOKEN=... \

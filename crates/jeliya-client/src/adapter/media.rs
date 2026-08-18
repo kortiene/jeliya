@@ -101,8 +101,19 @@ impl BoundStream {
 /// then; bound streams never do (§S8/§S10).
 pub(crate) struct MediaRegistry {
     /// Caller registrations awaiting a stream op's send, keyed by dedup
-    /// `OpId`. Bounded by the caller's own registration discipline.
+    /// `OpId`, in insertion order (oldest first, for the bounded-eviction
+    /// rule below).
     registered: HashMap<OpId, StreamMedia>,
+    /// The registration insertion order backing the eviction rule.
+    registered_order: VecDeque<OpId>,
+    /// The bound on outstanding registrations (§K12: no unbounded
+    /// collection). A registration whose call is never sent (refused
+    /// locally, or the caller abandoned the dispatch) has no other
+    /// reclaimer, so the registry evicts the OLDEST outstanding
+    /// registration past the cap — an evicted key's later call fails
+    /// honestly at its first media effect (`SourceFailed`/`SinkFailed`),
+    /// never a silent stall.
+    registered_cap: usize,
     /// Per-stream media state, keyed by the stream's wire id. Bounded by the
     /// kernel's concurrent-stream limit (every terminal prunes).
     bound: HashMap<RequestId, BoundStream>,
@@ -120,9 +131,11 @@ pub(crate) struct MediaRegistry {
 impl MediaRegistry {
     /// Build an empty registry whose inbound cap is `stream_window_bytes × 2`
     /// (the kernel config's window, passed at construction).
-    pub(crate) fn new(stream_window_bytes: u64) -> Self {
+    pub(crate) fn new(stream_window_bytes: u64, registered_cap: usize) -> Self {
         Self {
             registered: HashMap::new(),
+            registered_order: VecDeque::new(),
+            registered_cap: registered_cap.max(1),
             bound: HashMap::new(),
             window_cap: stream_window_bytes.saturating_mul(2),
             pending: VecDeque::new(),
@@ -131,9 +144,19 @@ impl MediaRegistry {
 
     /// Register one stream's media under its dedup key, before the call is
     /// dispatched. Re-registering a key replaces the previous media (the
-    /// caller's own last-write-wins).
+    /// caller's own last-write-wins). Past `registered_cap` the OLDEST
+    /// outstanding registration is evicted — see the field's honesty note.
     pub(crate) fn register(&mut self, key: OpId, media: StreamMedia) {
-        self.registered.insert(key, media);
+        if self.registered.insert(key.clone(), media).is_none() {
+            self.registered_order.push_back(key);
+        }
+        while self.registered.len() > self.registered_cap {
+            if let Some(oldest) = self.registered_order.pop_front() {
+                self.registered.remove(&oldest);
+            } else {
+                break;
+            }
+        }
     }
 
     /// Bind a stream op's wire id at send time: move the caller's
@@ -146,9 +169,12 @@ impl MediaRegistry {
         if self.bound.contains_key(&wire_id) {
             return;
         }
-        let media = op_id.and_then(|key| self.registered.remove(&key));
+        let media = op_id.map(|key| {
+            self.registered_order.retain(|k| k != &key);
+            self.registered.remove(&key)
+        });
         let mut stream = BoundStream::empty();
-        stream.media = media;
+        stream.media = media.flatten();
         self.bound.insert(wire_id, stream);
     }
 
@@ -361,6 +387,20 @@ impl MediaRegistry {
     pub(crate) fn bound_len(&self) -> usize {
         self.bound.len()
     }
+
+    /// The number of outstanding registrations (test observability).
+    #[cfg(test)]
+    pub(crate) fn registered_len(&self) -> usize {
+        self.registered.len()
+    }
+
+    /// Whether a bound stream carries caller media (test observability).
+    #[cfg(test)]
+    pub(crate) fn bound_has_media(&self, wire_id: RequestId) -> bool {
+        self.bound
+            .get(&wire_id)
+            .is_some_and(|stream| stream.media.is_some())
+    }
 }
 
 /// Encode one payload-free control record under the codec's default bounds.
@@ -475,6 +515,7 @@ async fn source_task(
     };
     let mut position: u64 = 0;
     while let Some(grant) = grants.recv().await {
+        let grant_start = position;
         let mut remaining = grant.up_to;
         while remaining > 0 {
             let want = remaining.min(chunk_cap as u64) as usize;
@@ -520,6 +561,15 @@ async fn source_task(
             }
             position += read as u64;
             remaining = remaining.saturating_sub(read as u64);
+        }
+        // ONE cumulative `Produced` per grant, after the whole grant is on
+        // wire — never per chunk. A per-chunk report lets the kernel pump a
+        // fresh grant while this task is still consuming the current one;
+        // that stale grant is then fulfilled from the advanced position and
+        // sends DATA past the daemon's `send_through`, so a multi-chunk
+        // upload (source larger than one DATA record) aborts for credit
+        // overshoot (found in review; protocol §Credit).
+        if position > grant_start {
             inject(Input::Produced {
                 call_id: grant.call_id,
                 sent_through: position,
@@ -551,7 +601,42 @@ mod tests {
     }
 
     fn registry() -> MediaRegistry {
-        MediaRegistry::new(1024)
+        MediaRegistry::new(1024, 64)
+    }
+
+    #[test]
+    fn registered_map_is_bounded_and_evicts_oldest() {
+        // Cap 2: the third registration evicts the oldest. An evicted key's
+        // later call still BINDS (empty) and fails honestly at produce time.
+        let mut media = MediaRegistry::new(1024, 2);
+        let k1 = OpId::new("share-1");
+        let k2 = OpId::new("share-2");
+        let k3 = OpId::new("share-3");
+        media.register(k1.clone(), shared_bytes(vec![1]));
+        media.register(k2, shared_bytes(vec![2]));
+        media.register(k3.clone(), shared_bytes(vec![3]));
+        assert_eq!(media.registered_len(), 2, "the cap holds");
+        // k3 binds its media; k1 was evicted, so its stream binds empty.
+        media.bind(wire_id(), Some(k3));
+        assert!(
+            media.bound_has_media(wire_id()),
+            "the newest registration bound its media"
+        );
+        let evicted_id = RequestId::new(8).expect("id");
+        media.bind(evicted_id, Some(k1));
+        assert!(
+            !media.bound_has_media(evicted_id),
+            "the evicted registration binds an honestly-failing empty entry"
+        );
+        // Consuming a bound registration frees its slot.
+        let mut media2 = MediaRegistry::new(1024, 1);
+        let a = OpId::new("a");
+        let b = OpId::new("b");
+        media2.register(a.clone(), shared_bytes(vec![9]));
+        media2.bind(wire_id(), Some(a));
+        assert_eq!(media2.registered_len(), 0, "bind consumes the registration");
+        media2.register(b, shared_bytes(vec![8]));
+        assert_eq!(media2.registered_len(), 1, "the slot was reclaimed");
     }
 
     #[test]

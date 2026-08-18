@@ -122,15 +122,16 @@ pub(crate) struct ConnRegistry {
 
 impl ConnRegistry {
     /// A fresh registry whose inbound quarantine cap is the kernel's
-    /// `stream_window_bytes` doubled.
-    pub(crate) fn new(stream_window_bytes: u64) -> Self {
+    /// `stream_window_bytes` doubled, and whose outstanding-registration
+    /// bound is `registered_cap`.
+    pub(crate) fn new(stream_window_bytes: u64, registered_cap: usize) -> Self {
         Self {
             generation: 0,
             writer: None,
             read_task: None,
             write_task: None,
             keepalive_task: None,
-            media: MediaRegistry::new(stream_window_bytes),
+            media: MediaRegistry::new(stream_window_bytes, registered_cap),
         }
     }
 
@@ -442,9 +443,15 @@ pub fn connect_ws_native<S: TargetSource>(
 
     let source: Arc<dyn TargetSource> = Arc::new(source);
     // The media registry's inbound quarantine cap follows the kernel's
-    // stream window (captured before `kernel` moves into the runtime).
+    // stream window, and its outstanding-registration bound the in-flight
+    // limit + margin (mirroring the write channel's sizing rationale) —
+    // both captured before `kernel` moves into the runtime.
     let stream_window_bytes = kernel.streams.stream_window_bytes;
-    let conn = Arc::new(Mutex::new(ConnRegistry::new(stream_window_bytes)));
+    let registered_cap = (kernel.limits.in_flight as usize).saturating_add(64);
+    let conn = Arc::new(Mutex::new(ConnRegistry::new(
+        stream_window_bytes,
+        registered_cap,
+    )));
     let deadlines = Deadlines {
         connect: config.connect_timeout,
         hello: config.hello_timeout,
