@@ -391,7 +391,14 @@ fn boot_fixture_state() -> Option<State> {
 /// production (no marker), which render the honest empty list. Mirrors the
 /// `test_room` shape used by the state-fold unit tests.
 fn fixture_rooms() -> Vec<RoomRow> {
-    let caps = fixture_caps();
+    let mut caps = fixture_caps();
+    // The Activity composer is gated on `MessageSend` (#179 D8): the populated
+    // fixture always grants it so the offline Activity pane renders a live
+    // composer rather than the departed-room read-only floor. The `?caps=1`
+    // fixture adds the full #180 affordance set on top.
+    if !caps.contains(&CapabilityToken::MessageSend) {
+        caps.push(CapabilityToken::MessageSend);
+    }
     (0..rooms_fixture_count())
         .map(|i| RoomRow {
             room_id: RoomId::new(format!("fixture-room-{i}")),
