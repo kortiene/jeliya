@@ -217,6 +217,7 @@ mod tests {
     #[test]
     fn decode_hello_is_recognized() {
         let hello = Hello {
+            incarnation: jeliya_api::Incarnation::new("codec-test-incarnation"),
             protocol: 2,
             storage_generation: 2,
             limits: limits(),

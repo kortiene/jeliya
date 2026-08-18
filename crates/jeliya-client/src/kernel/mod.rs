@@ -50,7 +50,9 @@ use crate::backend::{ClientBackend, ErasedCall, RawJson};
 use crate::error::{CallError, LocalError};
 use crate::event::{ClientEvent, EventBus, EventSubscription, State};
 use crate::kernel::core::{Action, Core, Input};
-use crate::kernel::driver_io::{DriverIo, InMemoryIo, StreamMedia};
+#[cfg(feature = "test-transport")]
+use crate::kernel::driver_io::StreamMedia;
+use crate::kernel::driver_io::{DriverIo, InMemoryIo};
 use crate::kernel::inflight::CallId;
 
 // The redaction-safe outbound view is public only through the feature-gated
