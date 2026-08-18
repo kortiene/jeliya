@@ -630,7 +630,7 @@ jobs:
           toolchain: 1.96.0
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
           tool: cargo-audit@0.22.1
 
@@ -696,7 +696,7 @@ jobs:
       # a prebuilt binary — no `dx`, no OpenSSL. build-web.sh fails if the CLI
       # version does not equal the locked library version.
       - name: Install pinned wasm-bindgen-cli
-        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
           tool: wasm-bindgen-cli@0.2.126
 
@@ -802,7 +802,7 @@ jobs:
       # Pinned CLI matching the locked wasm-bindgen 0.2.126; installs
       # wasm-bindgen-test-runner (the browser test executor) alongside the CLI.
       - name: Install pinned wasm-bindgen-cli
-        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
           tool: wasm-bindgen-cli@0.2.126
 
@@ -953,7 +953,7 @@ jobs:
           key: jeliya-ui-a11y
 
       - name: Install pinned wasm-bindgen-cli
-        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
           tool: wasm-bindgen-cli@0.2.126
 
