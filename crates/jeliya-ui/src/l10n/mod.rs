@@ -892,6 +892,51 @@ pub trait Catalog {
     fn send_failed_maybe(&self) -> &'static str;
     /// The per-send Retry action.
     fn send_retry(&self) -> &'static str;
+
+    // ---- #91 departed-room read-only archive ------------------------------
+
+    /// Departure banner title when the caller voluntarily LEFT the room.
+    fn archive_banner_left_title(&self) -> &'static str;
+    /// Departure banner title when the caller was REMOVED from the room.
+    fn archive_banner_removed_title(&self) -> &'static str;
+    /// The permanent banner body: this is a local, read-only, non-live archive.
+    fn archive_banner_body(&self) -> &'static str;
+    /// The banner's rejoin explanation: rejoining needs a fresh invite (there is
+    /// no self-service rejoin affordance, so this is a statement, not a control).
+    fn archive_banner_rejoin(&self) -> &'static str;
+    /// The archived timeline region's accessible name.
+    fn archive_timeline_label(&self) -> &'static str;
+    /// The historical roster heading — named historical ("as of your departure"),
+    /// never "current".
+    fn archive_roster_heading(&self) -> &'static str;
+    /// The "load the next (older) page" control.
+    fn archive_load_more(&self) -> &'static str;
+    /// The honest notice when `room.archive` reports the room is active again
+    /// (the room_still_active race, #91 D8).
+    fn archive_still_active(&self) -> &'static str;
+    /// The archived-timeline empty state (an answered read with no events).
+    fn archive_empty(&self) -> &'static str;
+    /// The archived-timeline loading state, shown before the first page lands.
+    fn archive_loading(&self) -> &'static str;
+
+    /// Timeline activity label: a `room_created` event.
+    fn event_room_created(&self) -> &'static str;
+    /// Timeline activity label: an `agent_status` event.
+    fn event_agent_status(&self) -> &'static str;
+    /// Timeline activity label: a `member_joined` event.
+    fn event_member_joined(&self) -> &'static str;
+    /// Timeline activity label: a `member_left` event.
+    fn event_member_left(&self) -> &'static str;
+    /// Timeline activity label: a `member_removed` event.
+    fn event_member_removed(&self) -> &'static str;
+    /// Timeline activity label: an `invite_revoked` event.
+    fn event_invite_revoked(&self) -> &'static str;
+    /// Timeline activity label: a `file_shared` event.
+    fn event_file_shared(&self) -> &'static str;
+    /// Timeline activity label: a `pipe_published` event.
+    fn event_pipe_published(&self) -> &'static str;
+    /// Timeline activity label: a `pipe_revoked` event.
+    fn event_pipe_revoked(&self) -> &'static str;
 }
 
 /// Provide the resolved-locale context to a subtree and return its signal.

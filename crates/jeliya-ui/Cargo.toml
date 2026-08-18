@@ -127,11 +127,19 @@ time = { version = "0.3", optional = true }
 # partially. The `fake` feature is active transitively through the `ui` feature
 # (which enables `jeliya-platform/fake`), so the test binary sees the full library.
 jeliya-platform = { path = "../jeliya-platform" }
+# TEST-ONLY: the #91 archive seam tests drive async `ClientHandle::room_archive`
+# calls through a synchronous executor. The `ui`-feature futures dep carries
+# only `std`+`async-await`, so `executor` is activated here, dev-only; it
+# resolves within the already-locked `futures` version.
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+# TEST-ONLY: the `room/` archive-fold unit tests build `jeliya_api::Event`
+# fixtures whose `at` wraps `time::OffsetDateTime`. Dev-only, already in the
+# workspace lock, excluded from the wasm graph (`--edges normal`).
+time = { version = "0.3", default-features = false }
 # Needed only by #181's `files::`/`pipes::` unit-test fixtures to build a
 # `jeliya_api::Timestamp` (whose constructor takes an `OffsetDateTime`). A
 # dev-dependency, so it never enters the shipped default/`ui`/`web` graph or the
 # wasm-graph scan.
-time = { version = "0.3", default-features = false }
 # Synchronous single-threaded executor for #181's async flow integration tests.
 # `futures-executor` is already in the workspace lockfile (pulled by jeliya-client
 # and others); declaring it here adds no new download and never enters the shipped
@@ -162,6 +170,15 @@ required-features = ["ui"]
 # to `jeliya_ui::shell` / `jeliya_ui::prefs` and `jeliya_platform::fake`.
 [[test]]
 name = "shell_178"
+required-features = ["ui"]
+
+# Integration tests for the #91 departed-room local archive: the paged
+# `room.archive` fold, the historical roster, the departure banner copy (EN/FR
+# parity, never implying presence/currency), the source scan that the archive
+# pane dispatches no live ops, and capability-set exhaustiveness. Requires
+# `ui` for `jeliya_ui::room`/`jeliya_ui::l10n` and `jeliya-client/mock`.
+[[test]]
+name = "archive_91"
 required-features = ["ui"]
 
 # End-to-end async-flow integration tests for #181 (Files + Pipes + browser

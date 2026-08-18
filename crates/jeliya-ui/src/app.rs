@@ -33,8 +33,8 @@ use jeliya_platform::PreferenceKey;
 use crate::components::SavedViewMap;
 use crate::components::{
     use_announce_context, BootScreen, EmptyCenter, FleetPane, GlobalNav, LiveRegion, NavLandmark,
-    Onboarding, RecoveryBanner, RoomShell, RoomUnavailable, SettingsPane, SkipLink, SkipLinks,
-    StatusFooter,
+    Onboarding, RecoveryBanner, RoomArchivePane, RoomShell, RoomUnavailable, SettingsPane,
+    SkipLink, SkipLinks, StatusFooter,
 };
 use crate::l10n::{
     catalog_for, plural_category, use_locale_context, use_strings, ErrorDisplay, Formats,
@@ -327,6 +327,11 @@ pub fn AppRoot(
     // / Fleet), which issue their own reads and mutations through it. Taken here
     // because the prop is moved into the event-consumption future below.
     let panes_handle = handle.clone();
+    // A clone of the client seam for the departed-room archive pane (#91). The
+    // prop `handle` is moved into the event-consumption future below, so the
+    // render body cannot name it; the archive pane dispatches `room.archive`
+    // through this clone (every clone is the same client — an `Arc` bump).
+    let archive_handle = handle.clone();
     // The user's local onboarding advance (§5.D "user advanced past onboarding"),
     // folded over daemon truth by `advance_boot`. Starts `Following` (pure fold);
     // the onboarding step callbacks advance it as the user completes each step.
@@ -866,8 +871,12 @@ pub fn AppRoot(
                                 .unwrap_or(false);
                             rsx! {
                                 main { class: "destination", id: "main-content", tabindex: "-1",
+                                    // The composition is selected by the row's STANDING
+                                    // (#91 D1/§7), a standing-driven, dest-agnostic choice —
+                                    // no new `Route` variant: Active -> the live `RoomShell`;
+                                    // Left/Removed -> the read-only `RoomArchivePane` (#91).
                                     match room_row {
-                                        Some(room) => rsx! {
+                                        Some(room) if room.standing == Standing::Active => rsx! {
                                             RoomShell {
                                                 room,
                                                 dest,
@@ -878,6 +887,20 @@ pub fn AppRoot(
                                                 self_id: self_id.clone(),
                                                 read_only,
                                                 shell: active_shell,
+                                            }
+                                        },
+                                        Some(room) => rsx! {
+                                            // The departed room opens as a local read-only
+                                            // archive. Keyed by room id so navigating
+                                            // between two departed rooms re-mounts the pane
+                                            // and re-reads its `room.archive`.
+                                            RoomArchivePane {
+                                                key: "{room_id}",
+                                                room_id: room_id.clone(),
+                                                my_standing: room.standing,
+                                                me: self_id.clone(),
+                                                navigate,
+                                                handle: archive_handle.clone(),
                                             }
                                         },
                                         None if reachable => rsx! {

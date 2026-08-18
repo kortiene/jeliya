@@ -169,6 +169,17 @@ impl PendingSends {
     }
 }
 
+// The departed-room read-only archive (#91): the paged `room.archive` →
+// `ArchiveView` fold, the historical-roster fold over signed membership events
+// (the roster a departed caller cannot read from `room.members`), and the
+// forbidden-capability set — same renderer-free discipline (Decision-3).
+pub mod archive;
+pub mod capability;
+pub mod roster;
+
+pub use archive::{ArchiveView, DepartureFact, ARCHIVE_PAGE_LIMIT};
+pub use roster::HistoricalMember;
+
 #[cfg(test)]
 mod tests {
     use super::*;
