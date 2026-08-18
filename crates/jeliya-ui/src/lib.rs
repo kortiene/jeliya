@@ -67,6 +67,34 @@ pub mod compose;
 // cannot see (empty value, `fr==en`, plurals, French typography, literal scan).
 #[cfg(feature = "ui")]
 pub mod l10n;
+// The fresh, namespaced, versioned browser preference schema (#178 §6): the
+// pure "decision" half of `WebPreferences` — namespace, envelope, key
+// derivation, corrupt/unsupported-version recovery, and the enumerated
+// legacy-key purge policy (data only; never a reader). Host-testable; the
+// browser binding (`jeliya-platform-web`) supplies only the storage.
+#[cfg(feature = "ui")]
+pub mod prefs;
+// The pure, renderer-agnostic core of the room Activity destination (#179): the
+// exhaustive event projection, agent-status run folding + activity filters, the
+// evidence-backed send state machine, the pure scroll math, and the fold of the
+// reconciler's `RoomUpdate` stream into a per-room view. Host-testable; the thin
+// Dioxus components in `components::{activity,composer,timeline_row}` render it
+// and own DOM measurement through the mounted element API (Decision-3/-6).
+#[cfg(feature = "ui")]
+pub mod room;
+// The global-shell logic (#178 §5/§8): responsive shell selection, the router
+// (canonicalization + fail-safe + last-room restore), and the bootstrap/
+// onboarding state machine. The pure decisions live here, host-testable; the
+// `web-sys` bindings live in `jeliya-platform-web` and `compose`.
+#[cfg(feature = "ui")]
+pub mod shell;
+// The browser `Platform` bindings (#178 §5.A): `web-sys` shims over the History
+// API, browser lifecycle events, and the session-scoped preference/secret store
+// + legacy purge. Confined behind `web` (Decision-3); the decisions live in the
+// host-testable `prefs`/`shell` modules. The module form is the spec's
+// sanctioned fallback to a separate `jeliya-platform-web` crate (§3.1).
+#[cfg(feature = "web")]
+pub mod platform_web;
 #[cfg(feature = "ui")]
 mod state;
 

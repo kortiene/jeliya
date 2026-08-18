@@ -50,6 +50,58 @@ fn library_dependency_tree_is_free_of_transport_and_ui_crates() {
     }
 }
 
+/// The native adapter (#172) lives behind the default-off, native-only
+/// `ws-native` feature, and the browser (wasm32) build must NEVER enable it —
+/// or `tokio`, `tokio-tungstenite`, and `jeliya-supervisor` would enter the
+/// wasm graph. The shared UI crate (`jeliya-ui`) is the browser consumer; its
+/// full `web`-feature graph, resolved for `wasm32-unknown-unknown` without
+/// compiling it, must contain none of them. This is the jeliya-client-side twin
+/// of `jeliya-supervisor`'s own "absent from the wasm graph" assertion (§4.2).
+#[test]
+fn ws_native_dependencies_never_enter_the_wasm_ui_graph() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--locked",
+            "-p",
+            "jeliya-ui",
+            "--features",
+            "web",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--no-dedupe",
+        ])
+        .output()
+        .expect("cargo tree runs");
+    assert!(
+        output.status.success(),
+        "cargo tree failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tree = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    // With `--prefix none`, every crate in the graph starts a line; a banned
+    // crate anywhere in the graph therefore starts some line. Order matters:
+    // check the longer names first so the message names the specific crate.
+    for banned in [
+        "tokio-tungstenite",
+        "tokio ",
+        "tungstenite",
+        "jeliya-supervisor",
+        "jeliya-codec",
+    ] {
+        assert!(
+            !tree.lines().any(|line| line.starts_with(banned)),
+            "'{}' (a ws-native-only dependency) leaked into the wasm32 jeliya-ui \
+             `web` graph — the web build must never enable `ws-native`:\n{tree}",
+            banned.trim()
+        );
+    }
+}
+
 /// No `serde_json::Value` may appear in any public source. The erased boundary
 /// carries a JSON *text* newtype (`RawJson`), so the token appears nowhere —
 /// untrusted values are never hidden in raw JSON here. This scans every source
@@ -143,6 +195,101 @@ fn reconciler_source_has_no_wall_clock_rng_or_runtime() {
     assert!(
         offenders.is_empty(),
         "reconciler source must carry no wall clock, RNG, or runtime token: {offenders:?}"
+    );
+}
+
+/// The `direct` feature's optional native deps (`tokio`, `jeliya-core`,
+/// `jeliya-codec`) and their transitive `iroh-rooms` must not appear in the
+/// `jeliya-ui` browser (`wasm32`) build graph: the `direct` feature is
+/// native-only and must never leak into the browser artifact.
+///
+/// `cargo tree --target wasm32-unknown-unknown` resolves the wasm32 dependency
+/// graph without compiling it, so this assertion runs even where the wasm32
+/// std target is not installed — exactly as `jeliya-platform`'s twin test does.
+///
+/// This is the Rust counterpart of `scripts/check-jeliya-ui-wasm-graph.sh`
+/// scoped to the `direct` feature's contribution (§11).
+#[test]
+fn direct_feature_deps_absent_from_jeliya_ui_wasm_graph() {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "-p",
+            "jeliya-ui",
+            "--features",
+            "web",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--edges",
+            "no-dev",
+        ])
+        .output()
+        .expect("cargo tree runs");
+    assert!(
+        output.status.success(),
+        "cargo tree failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tree = String::from_utf8_lossy(&output.stdout);
+    // The direct feature's three optional deps plus the iroh family they
+    // transitively carry must never appear in the browser build. `jeliya-core`
+    // and `jeliya-codec` are cfg-guarded `cfg(not(wasm32))` + optional, so a
+    // misconfiguration (e.g. moving them to base deps or removing the cfg)
+    // would fail this check before it could ship.
+    for banned in ["tokio", "jeliya-core", "jeliya-codec", "iroh-rooms"] {
+        assert!(
+            !tree
+                .lines()
+                .any(|line| line.to_lowercase().contains(banned)),
+            "forbidden dep '{banned}' is reachable from the jeliya-ui wasm32 'web' build — \
+             the 'direct' feature's native deps must not leak into the browser graph:\n{tree}"
+        );
+    }
+}
+
+/// The `src/direct/**` module must contain no retired v1 seam, Dart, or C-ABI
+/// tokens (§10.5, §13 AC-1). The direct data path is in-process and typed;
+/// these strings have no legitimate use in it.
+///
+/// Banned patterns:
+/// - `handle_frame` — the retired v1 JSON-envelope seam (`Engine::handle_frame(String)`).
+/// - `nativePort` / `SendPort` — Dart `SendPort` API; gone with `jeliya-ffi`.
+/// - `portfile` — daemon portfile; DirectClient uses no daemon.
+/// - `extern "C"` — C-ABI export; gone with `jeliya-ffi`.
+#[test]
+fn direct_source_has_no_forbidden_v1_or_ffi_tokens() {
+    let direct_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/direct"));
+    if !direct_dir.exists() {
+        // The `direct` module may not be present on all builds; the feature
+        // is default-off. If the source directory is absent, the constraint
+        // is vacuously satisfied.
+        return;
+    }
+    const BANNED: [&str; 5] = [
+        "handle_frame",
+        "nativePort",
+        "SendPort",
+        "portfile",
+        r#"extern "C""#,
+    ];
+    let mut offenders = Vec::new();
+    for path in rust_sources(direct_dir) {
+        let text = std::fs::read_to_string(&path).expect("readable direct source");
+        for (index, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for banned in BANNED {
+                if line.contains(banned) {
+                    offenders.push(format!("{}:{} ({banned})", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "forbidden v1/FFI token found in src/direct — the direct path must contain \
+         no handle_frame, Dart port, C-ABI, or daemon portfile: {offenders:?}"
     );
 }
 

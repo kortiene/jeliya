@@ -40,6 +40,16 @@ export default defineConfig({
     // compact describe overrides per-test), so its contract is exactly what
     // shipped with the foundation.
     { name: "render", testMatch: /render\.spec\.ts$/ },
+    // The #178 shell/routing/preference smoke: URL canonicalization, malformed-URL
+    // recovery, in-app navigation, room deep link, responsive nav topology, and
+    // legacy key purge. Runs at the default Desktop Chrome viewport; compact/wide
+    // topology tests override per-describe via test.use({ viewport }).
+    { name: "shell", testMatch: /shell-178\.spec\.ts$/ },
+    // The #179 Activity pane smoke: pane structure, loading state, filter chip
+    // interactions, composer keyboard contract (desktop enter hint / compact
+    // suppression), and per-room draft persistence across in-app route changes.
+    // Runs at the default Desktop Chrome viewport; the compact describe overrides.
+    { name: "activity", testMatch: /activity-179\.spec\.ts$/ },
     ...Object.entries(A11Y_VIEWPORTS).map(([name, viewport]) => ({
       name,
       testMatch: /a11y[^/]*\.spec\.ts$/,

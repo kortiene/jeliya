@@ -57,11 +57,17 @@ pub use byte_stream::{
     StreamHeaderField, StreamIdentity, StreamRecord, StreamRecordBody, StreamRecordBodyView,
     StreamRecordKind, StreamRecordView, MAX_STREAM_DATA_BYTES, STREAM_HEADER_BYTES,
 };
-pub use client::{decode_client_frame, encode_request, ClientInbound};
+pub use client::{decode_client_frame, encode_request, ClientFrame};
 pub use error::{CodecError, GateRejection};
 pub use frame::push_to_bytes;
 pub use frame::{Frame, Reply, Request};
 pub use gate::{gate, GateDecision, GateParams, SessionPrincipal};
+// The in-process request router: an `op` name plus its `in` value to a typed
+// [`Call`], the same routing `Request` decoding runs. The Android DirectClient
+// (#173) reuses it to turn the shared client seam's erased `{ op, input }` back
+// into a typed engine call without any byte framing or socket — the `Call` type
+// is already part of the public surface as `Request.call`.
+pub use routing::{route, Call};
 
 pub use jeliya_api::MAX_REQUEST_ID;
 use jeliya_api::{ApiError, Operation};

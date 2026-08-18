@@ -40,6 +40,14 @@ impl Tick {
     /// The origin instant. A fresh virtual clock starts here.
     pub(crate) const ZERO: Tick = Tick(0);
 
+    /// Build a tick from a millisecond count. A native adapter maps its
+    /// monotonic clock to logical time at **1 tick = 1 ms** (matching the
+    /// [`KernelLimits`](crate::KernelLimits) default comment); the sans-IO core
+    /// never calls this — it only ever receives a `Tick` as an input.
+    pub(crate) const fn from_millis(ms: u64) -> Tick {
+        Tick(ms)
+    }
+
     /// The instant `delta` after `self`, saturating at [`u64::MAX`] rather than
     /// wrapping — a non-representable deadline never silently becomes an
     /// *earlier* one (mirrors the protocol's "not representable by a finite
@@ -51,6 +59,18 @@ impl Tick {
     /// Advance in place by `delta` (the virtual clock's step).
     pub(crate) fn advance(&mut self, delta: TickDelta) {
         self.0 = self.0.saturating_add(delta.0);
+    }
+
+    /// The milliseconds from `earlier` to `self` (1 tick = 1 ms), saturating at
+    /// zero when `self` is not after `earlier`. A native driver uses this to
+    /// turn an absolute deadline `Tick` into a `sleep` delay.
+    pub(crate) fn saturating_ms_from(self, earlier: Tick) -> u64 {
+        self.0.saturating_sub(earlier.0)
+    }
+
+    /// The underlying tick count, for span arithmetic in the stream layer.
+    pub(crate) fn ticks(self) -> u64 {
+        self.0
     }
 }
 

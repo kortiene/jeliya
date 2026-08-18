@@ -490,6 +490,19 @@ struct DedupLedger {
     entries: HashMap<(String, OpId), LedgerEntry>,
 }
 
+/// Mint a fresh daemon incarnation: a 128-bit OS-CSPRNG nonce, hex-encoded,
+/// minted once per engine (one per process). It mirrors how the daemon mints
+/// its per-start WS auth token (`getrandom::fill` + `hex::encode`), but the
+/// incarnation is not a secret — it carries no capability and is disclosed to
+/// every post-gate client. A missing OS CSPRNG at startup is fatal: the
+/// daemon cannot honestly fence replay without a per-process nonce, so a
+/// panic here is preferable to serving a forgeable or repeatable one.
+fn mint_incarnation() -> jeliya_api::Incarnation {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).expect("OS CSPRNG unavailable to mint daemon incarnation");
+    jeliya_api::Incarnation::new(hex::encode(nonce))
+}
+
 /// The engine: a [`RoomSupervisor`] plus the typed push fan-out channel.
 /// Cheap to share (`Arc`); no engine-wide lock — the supervisor guards its
 /// own maps internally, never across an `.await`.
@@ -507,6 +520,15 @@ pub struct Engine {
     /// detached effect task can record the reply after the connection that
     /// requested it has dropped.
     ledger: Arc<Mutex<DedupLedger>>,
+    /// This process's daemon incarnation: a per-process CSPRNG nonce, minted
+    /// once when the engine is built and served in every `hello`. It is the
+    /// lifetime-identity of the in-memory [`DedupLedger`] above — co-located
+    /// so "one incarnation per process" is structural. A client compares it
+    /// across reconnects to fence replay: a changed incarnation is a
+    /// restarted daemon whose ledger is empty (orthogonal to
+    /// [`STORAGE_GENERATION`], which is persistent). Not a secret and not a
+    /// credential — disclosed only post-gate in `hello`.
+    incarnation: jeliya_api::Incarnation,
 }
 
 /// The result of executing one typed call: the reply to encode, plus the
@@ -761,7 +783,18 @@ impl Engine {
             config,
             stopping: Arc::new(AtomicBool::new(false)),
             ledger: Arc::new(Mutex::new(DedupLedger::default())),
+            incarnation: mint_incarnation(),
         })
+    }
+
+    /// This process's daemon incarnation, cloned for the `hello` builder. A
+    /// per-process nonce minted once at engine construction and identical for
+    /// every connection; a client compares it across reconnects to fence
+    /// replay of keyed mutations across a daemon restart (the in-memory dedup
+    /// ledger empties on restart while [`STORAGE_GENERATION`] does not).
+    #[must_use]
+    pub fn incarnation(&self) -> jeliya_api::Incarnation {
+        self.incarnation.clone()
     }
 
     /// The resolved data directory.
@@ -1393,6 +1426,56 @@ mod tests {
         assert_eq!(MIN_PROTOCOL_VERSION, 2);
         assert_eq!(STORAGE_GENERATION, 2);
         let _ = engine;
+    }
+
+    /// #270 §9 "API/daemon": the daemon incarnation is a non-empty hex string.
+    /// `mint_incarnation` encodes 16 random bytes as 32 hex characters; a
+    /// zero-length or truncated value would defeat the fence entirely.
+    #[tokio::test]
+    async fn engine_incarnation_is_non_empty_hex() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = test_engine(&dir);
+        let inc = engine.incarnation();
+        let s = inc.as_str();
+        assert!(!s.is_empty(), "incarnation must not be empty");
+        assert_eq!(s.len(), 32, "16 random bytes → 32 hex chars");
+        assert!(
+            s.chars().all(|c| c.is_ascii_hexdigit()),
+            "incarnation must be lowercase hex, got {s:?}"
+        );
+    }
+
+    /// #270 §9 "API/daemon" (stability across connections): two calls to
+    /// `engine.incarnation()` on the same engine return equal values. A
+    /// per-connection nonce would make every reconnect look like a restart,
+    /// dropping all held work (conformance case 2 equivalent).
+    #[tokio::test]
+    async fn engine_incarnation_is_stable_across_calls() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = test_engine(&dir);
+        let inc1 = engine.incarnation();
+        let inc2 = engine.incarnation();
+        assert_eq!(
+            inc1, inc2,
+            "the same engine must return identical incarnations on every call"
+        );
+    }
+
+    /// #270 D1: two distinct engine instances have different incarnations
+    /// (CSPRNG nonce). Collision probability is 1/2^128 — effectively zero.
+    /// A collision here would mean the OS CSPRNG produced identical 128-bit
+    /// values, which is a catastrophic system failure, not a code defect.
+    #[tokio::test]
+    async fn two_engine_instances_have_different_incarnations() {
+        let dir1 = TempDir::new().expect("tempdir 1");
+        let dir2 = TempDir::new().expect("tempdir 2");
+        let engine1 = test_engine(&dir1);
+        let engine2 = test_engine(&dir2);
+        assert_ne!(
+            engine1.incarnation(),
+            engine2.incarnation(),
+            "distinct engines must have distinct incarnations (CSPRNG nonce)"
+        );
     }
 
     #[tokio::test]

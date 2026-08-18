@@ -318,6 +318,201 @@ pub trait Catalog {
     /// the caller passes the count already formatted under the formatting locale
     /// and the [`PluralCategory`] computed under the text locale.
     fn rooms_count(&self, count_display: &str, category: PluralCategory) -> String;
+
+    // ---- #178 global shell, onboarding, settings, recovery -----------------
+
+    /// The global-destination navigation landmark's accessible name.
+    fn nav_global_label(&self) -> &'static str;
+    /// Global destination: the Rooms list.
+    fn dest_rooms(&self) -> &'static str;
+    /// Global destination: the Agent Fleet.
+    fn dest_fleet(&self) -> &'static str;
+    /// Global destination: Settings.
+    fn dest_settings(&self) -> &'static str;
+
+    /// Onboarding identity step: the title.
+    fn onboarding_identity_title(&self) -> &'static str;
+    /// Onboarding identity step: the explanatory body.
+    fn onboarding_identity_body(&self) -> &'static str;
+    /// Onboarding identity step: the "create identity" action.
+    fn onboarding_create_identity(&self) -> &'static str;
+    /// The label beside the shortened, copyable subject id.
+    fn identity_id_label(&self) -> &'static str;
+    /// The "copy" action for the subject id.
+    fn identity_copy(&self) -> &'static str;
+    /// The note that the identity is the unrecoverable P2P identity.
+    fn identity_unrecoverable(&self) -> &'static str;
+
+    /// Onboarding rooms step: the title.
+    fn onboarding_rooms_title(&self) -> &'static str;
+    /// Onboarding rooms step: the "create a room" action.
+    fn onboarding_create_room(&self) -> &'static str;
+    /// The room-name field label.
+    fn room_name_label(&self) -> &'static str;
+    /// Onboarding rooms step: the "join with a ticket" action.
+    fn onboarding_join_room(&self) -> &'static str;
+    /// The invite-ticket field label.
+    fn ticket_label(&self) -> &'static str;
+    /// Help text for the invite-ticket field.
+    fn ticket_help(&self) -> &'static str;
+
+    /// The self-label field label (shared by onboarding and settings).
+    fn self_label_label(&self) -> &'static str;
+    /// Help text for the self-label field ("on this device, never sent").
+    fn self_label_help(&self) -> &'static str;
+
+    /// The Settings destination heading.
+    fn settings_heading(&self) -> &'static str;
+    /// The Settings identity section heading.
+    fn settings_identity_heading(&self) -> &'static str;
+    /// The Settings language section heading.
+    fn settings_language_heading(&self) -> &'static str;
+    /// The text-locale switcher label.
+    fn settings_text_locale_label(&self) -> &'static str;
+    /// The formatting-locale switcher label.
+    fn settings_formatting_locale_label(&self) -> &'static str;
+    /// The "follow system" option in a locale switcher.
+    fn settings_locale_follow_system(&self) -> &'static str;
+    /// The honesty note that a browser preference applies this session only.
+    fn settings_session_only_note(&self) -> &'static str;
+
+    /// The Agent Fleet destination heading.
+    fn fleet_heading(&self) -> &'static str;
+    /// The Agent Fleet skeleton/loading placeholder.
+    fn fleet_loading(&self) -> &'static str;
+
+    /// The room-destination navigation strip's accessible name.
+    fn room_nav_label(&self) -> &'static str;
+    /// Room destination: Activity.
+    fn room_dest_activity(&self) -> &'static str;
+    /// Room destination: People.
+    fn room_dest_people(&self) -> &'static str;
+    /// Room destination: Agents.
+    fn room_dest_agents(&self) -> &'static str;
+    /// Room destination: Files.
+    fn room_dest_files(&self) -> &'static str;
+    /// Room destination: Pipes.
+    fn room_dest_pipes(&self) -> &'static str;
+    /// A per-destination skeleton placeholder shown while its content
+    /// (#179–#181) is not yet built.
+    fn room_dest_skeleton(&self) -> &'static str;
+    /// The recoverable state for a route naming an unreachable/departed room:
+    /// the plain fact, with Rooms as the way out.
+    fn room_unavailable(&self) -> &'static str;
+
+    /// The recovery banner title (corrupt/unsupported new-format state was reset).
+    fn recovery_title(&self) -> &'static str;
+    /// The recovery banner body: a plain "your local preferences were reset".
+    fn recovery_body(&self) -> &'static str;
+    /// The recovery banner's explicit "reset local preferences" action.
+    fn recovery_reset_action(&self) -> &'static str;
+
+    // ---- Onboarding operation errors ( Finding 1 — honest error surface ) ----
+
+    /// The user-facing title when identity creation fails.
+    fn err_onboarding_identity(&self) -> &'static str;
+    /// The user-facing body when identity creation fails (retryable).
+    fn err_onboarding_identity_body(&self) -> &'static str;
+
+    /// The user-facing title when room creation fails.
+    fn err_onboarding_room_create(&self) -> &'static str;
+    /// The user-facing body when room creation fails (retryable).
+    fn err_onboarding_room_create_body(&self) -> &'static str;
+
+    // ---- #179 room Activity: timeline, composer, send state ----------------
+
+    /// The Activity pane's empty state, shown after the first convergence when
+    /// the room has no signed events yet.
+    fn activity_empty(&self) -> &'static str;
+    /// The Activity pane's loading state, before the first converged view (a
+    /// booting room is *unknown*, never an empty timeline — D7).
+    fn activity_loading(&self) -> &'static str;
+    /// A non-blocking notice that a reconciliation is in flight (every resync
+    /// cause is observable — #169 AC-1).
+    fn activity_resyncing(&self) -> &'static str;
+    /// An honest local-loss marker: some updates were dropped and are being
+    /// recovered by the next converged view.
+    fn activity_recovering_loss(&self) -> &'static str;
+    /// The "N new messages" affordance when every new item is a message. Plural:
+    /// the caller passes the count formatted under the formatting locale and the
+    /// category under the text locale.
+    fn activity_new_messages(&self, count_display: &str, category: PluralCategory) -> String;
+    /// The "N new updates" affordance when the new items are mixed (not only
+    /// messages). Plural, as above.
+    fn activity_new_activity(&self, count_display: &str, category: PluralCategory) -> String;
+    /// The read-only notice shown in place of the composer for a departed room
+    /// (no `MessageSend` capability): the signed timeline stays, the composer is
+    /// suppressed (invariant-5 floor, #91 owns the full archive).
+    fn activity_departed(&self) -> &'static str;
+
+    /// The self author's display name when no self-label alias is set ("You").
+    fn timeline_you(&self) -> &'static str;
+    /// The display name for an event whose author could not be resolved —
+    /// nothing is asserted about who they are (contract).
+    fn timeline_unresolved_sender(&self) -> &'static str;
+    /// The chip marking a message/status authored by an agent role.
+    fn timeline_agent_chip(&self) -> &'static str;
+    /// A folded agent-status run's honest evidence: how many status posts.
+    /// Plural, formatted count under the formatting locale.
+    fn timeline_run_summary(&self, count_display: &str, category: PluralCategory) -> String;
+
+    /// The activity filter chip for the conversation (messages) category.
+    fn filter_conversation(&self) -> &'static str;
+    /// The activity filter chip for the agent-runs (status) category.
+    fn filter_agent_runs(&self) -> &'static str;
+    /// The activity filter chip for the membership syslines category.
+    fn filter_membership(&self) -> &'static str;
+    /// The activity filter chip for the files category.
+    fn filter_files(&self) -> &'static str;
+    /// The activity filter chip for the pipes category.
+    fn filter_pipes(&self) -> &'static str;
+
+    /// Sysline: a room was created by `who`.
+    fn sysline_room_created(&self, who: &str) -> String;
+    /// Sysline: `who` joined as `role`.
+    fn sysline_member_joined(&self, who: &str, role: &str) -> String;
+    /// Sysline: `who` left.
+    fn sysline_member_left(&self, who: &str) -> String;
+    /// Sysline: `who` was removed by `by`.
+    fn sysline_member_removed(&self, who: &str, by: &str) -> String;
+    /// Sysline: an invitation was revoked (the id is never leaked as copy).
+    fn sysline_invite_revoked(&self) -> &'static str;
+    /// Sysline: a pipe was revoked.
+    fn sysline_pipe_revoked(&self) -> &'static str;
+    /// A file-reference tile's inert "open in Files" affordance (present but
+    /// disabled until #181 — an honest, not fake, action).
+    fn file_open_in_files(&self) -> &'static str;
+    /// A pipe-reference tile's inert "open in Pipes" affordance (until #181).
+    fn pipe_open_in_pipes(&self) -> &'static str;
+
+    /// The composer control's accessible label (associated via the `Field`
+    /// primitive), distinct from the placeholder.
+    fn composer_label(&self) -> &'static str;
+    /// The composer's empty-input placeholder.
+    fn composer_placeholder(&self) -> &'static str;
+    /// The composer's send action.
+    fn composer_send(&self) -> &'static str;
+    /// The desktop keyboard hint (Enter sends, Shift+Enter is a newline).
+    /// Withheld on compact, where the claim is false.
+    fn composer_enter_hint(&self) -> &'static str;
+    /// The composer's attachment action.
+    fn composer_attach(&self) -> &'static str;
+    /// The honest "attachments are not available yet" state (until #181).
+    fn composer_attach_unavailable(&self) -> &'static str;
+    /// The message is too long. Rendered as an inline error when the user's
+    /// draft exceeds the maximum message length.
+    fn composer_too_long(&self) -> &'static str;
+
+    /// A pending send's honest in-flight/awaiting-commit label — never a
+    /// delivery receipt.
+    fn send_sending(&self) -> &'static str;
+    /// A failed send that provably never left the client ("not sent").
+    fn send_failed_not_sent(&self) -> &'static str;
+    /// A failed send that may have executed ("may not have sent") — the honest
+    /// ambiguity; retry is offered but never auto-taken.
+    fn send_failed_maybe(&self) -> &'static str;
+    /// The per-send Retry action.
+    fn send_retry(&self) -> &'static str;
 }
 
 /// Provide the resolved-locale context to a subtree and return its signal.

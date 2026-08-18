@@ -1,19 +1,24 @@
 //! The streaming-call surface for the duplex byte-stream operations (#167
-//! §D11). **Surface only; depth deferred.**
+//! §D11), now driven by the kernel's stream lifecycle (#269).
 //!
 //! `file.share` and `file.read` are duplex byte-stream operations (protocol
-//! §Byte-stream framing), not simple request→reply. This issue defines the
-//! seam surface so the client is not painted into a corner, but the executor
-//! is out of scope here: the daemon side is #233/#242/#243 and the client
-//! kernel's stream hooks are #269 (assigned to #168 by spec §K16 but not
-//! shipped with it). Their credit / `OPEN` / `END` / `ABORT` semantics are
-//! that layer's to implement against the protocol.
+//! §Byte-stream framing), not simple request→reply. The **framing** — the
+//! `JBS2` byte layout, offset arithmetic, and per-kind field rules — stays owned
+//! by `jeliya-codec` and the daemon executor (#233/#242/#243). The **client
+//! control plane** — the `OPEN/DATA/CREDIT/END/ABORT` state, credit accounting,
+//! and the per-stream deadline/stall timers — is the kernel's stream layer
+//! ([`crate::kernel::streaming`], #269, assigned to #168 by spec §K16 but
+//! shipped here).
 //!
-//! What #167 fixes now is the *type*: a [`StreamCall`] exposes (a) a cancel
-//! path that maps to [`CallError::Cancelled`] with the [`Execution`]
+//! The surface below is deliberately unchanged: a [`StreamCall`] exposes (a) a
+//! cancel path that maps to [`CallError::Cancelled`] with the [`Execution`]
 //! classification preserved, and (b) a terminal `Result<O::Output, CallError>`.
-//! The mock is not required to drive full byte-stream framing — only to prove
-//! that a `call_stream` cancellation yields a delivery-classified `Cancelled`.
+//! Its terminal **is** the request's dispatch future (§S9): the kernel admits
+//! the Text request, an OPEN record installs the stream state, the record
+//! exchange runs under the kernel's bounds, and the terminal Text reply settles
+//! this future. Cancellation drops the dispatch future, which drives the
+//! kernel's `Input::Cancel` — for a stream past OPEN that emits a client ABORT
+//! so the daemon's transfer reservation is released, never a silent drop.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -32,11 +37,13 @@ impl ClientHandle {
     /// [`CallError`]), and which can be cancelled with a preserved
     /// [`Execution`] classification.
     ///
-    /// Depth is deferred: today the terminal is driven by the same erased
-    /// dispatch as [`call`](ClientHandle::call), so the mock's scripted
-    /// programs and the cancel path are exercised end-to-end. #269 replaces the
-    /// body with real credit/OPEN/END/ABORT framing without changing this
-    /// surface (the hooks were assigned to #168 but did not ship with it).
+    /// The terminal is driven by the same erased dispatch as
+    /// [`call`](ClientHandle::call); with a kernel backend, the dispatch admits
+    /// the Text request and the kernel's stream layer (#269) runs the
+    /// credit/OPEN/DATA/END/ABORT exchange under its bounds, settling this
+    /// terminal on the daemon's final Text reply (or a classified stream
+    /// failure). The public surface is unchanged; the framing stays owned by
+    /// #233/#242/#243.
     pub fn call_stream<O: Operation>(&self, input: O, dedup: Dedup) -> StreamCall<O>
     where
         O::Output: 'static,
@@ -77,10 +84,16 @@ where
 {
     /// Cancel this call, resolving its terminal to
     /// [`CallError::Cancelled`]` { execution }`. Returns `false` if the call
-    /// was already cancelled or its cancel path was detached. The `execution`
-    /// the caller passes is authoritative: `DefinitelyNot` if the stream never
-    /// opened, `Unknown` once bytes may have gone out — the kernel's stream
-    /// hooks (#269) will supply the true value from framing state.
+    /// was already cancelled or its cancel path was detached.
+    ///
+    /// Cancellation drops the underlying dispatch future, which drives the
+    /// kernel's `Input::Cancel`: for a stream past OPEN the kernel emits a client
+    /// ABORT so the daemon's transfer reservation is released, and retires the
+    /// stream's state (§S9). The `execution` the caller passes classifies the
+    /// resolved terminal (`DefinitelyNot` if the stream never opened, `Unknown`
+    /// once bytes may have gone out); deriving it from the kernel's framing state
+    /// instead — superseding the caller's value — needs a backend seam this issue
+    /// deliberately leaves untouched, and is tracked as a follow-up.
     pub fn cancel(&mut self, execution: Execution) -> bool {
         match self.cancel_tx.take() {
             Some(tx) => tx.send(execution).is_ok(),

@@ -210,10 +210,273 @@ impl Catalog for Fr {
         )
     }
 
+    fn nav_global_label(&self) -> &'static str {
+        "Principal"
+    }
+    fn dest_rooms(&self) -> &'static str {
+        "Salons"
+    }
+    fn dest_fleet(&self) -> &'static str {
+        "Flotte d’agents"
+    }
+    fn dest_settings(&self) -> &'static str {
+        "Paramètres"
+    }
+
+    fn onboarding_identity_title(&self) -> &'static str {
+        "Créez votre identité"
+    }
+    fn onboarding_identity_body(&self) -> &'static str {
+        "Votre identité est une paire de clés sur cet appareil. Il n’y a ni compte ni mot de passe à récupérer."
+    }
+    fn onboarding_create_identity(&self) -> &'static str {
+        "Créer l’identité"
+    }
+    fn identity_id_label(&self) -> &'static str {
+        "Votre identité"
+    }
+    fn identity_copy(&self) -> &'static str {
+        "Copier"
+    }
+    fn identity_unrecoverable(&self) -> &'static str {
+        "Ceci est votre identité pair-à-pair permanente. Elle est irrécupérable en cas de perte."
+    }
+
+    fn onboarding_rooms_title(&self) -> &'static str {
+        "Créez ou rejoignez un salon"
+    }
+    fn onboarding_create_room(&self) -> &'static str {
+        "Créer un salon"
+    }
+    fn room_name_label(&self) -> &'static str {
+        "Nom du salon"
+    }
+    fn onboarding_join_room(&self) -> &'static str {
+        "Rejoindre avec un ticket"
+    }
+    fn ticket_label(&self) -> &'static str {
+        "Ticket d’invitation"
+    }
+    fn ticket_help(&self) -> &'static str {
+        "Collez un ticket d’invitation qu’un membre du salon a partagé avec vous."
+    }
+
+    fn self_label_label(&self) -> &'static str {
+        "Votre nom"
+    }
+    fn self_label_help(&self) -> &'static str {
+        "Affiché uniquement sur cet appareil. Il n’est jamais envoyé à personne."
+    }
+
+    fn settings_heading(&self) -> &'static str {
+        "Paramètres"
+    }
+    fn settings_identity_heading(&self) -> &'static str {
+        "Identité"
+    }
+    fn settings_language_heading(&self) -> &'static str {
+        "Langue"
+    }
+    fn settings_text_locale_label(&self) -> &'static str {
+        "Langue de l’interface"
+    }
+    fn settings_formatting_locale_label(&self) -> &'static str {
+        "Format des nombres et des dates"
+    }
+    fn settings_locale_follow_system(&self) -> &'static str {
+        "Suivre le système"
+    }
+    fn settings_session_only_note(&self) -> &'static str {
+        "S’applique à cette session — non enregistré sur ce navigateur."
+    }
+
+    fn fleet_heading(&self) -> &'static str {
+        "Flotte d’agents"
+    }
+    fn fleet_loading(&self) -> &'static str {
+        "La flotte d’agents n’est pas encore disponible."
+    }
+
+    fn room_nav_label(&self) -> &'static str {
+        "Salon"
+    }
+    fn room_dest_activity(&self) -> &'static str {
+        "Activité"
+    }
+    fn room_dest_people(&self) -> &'static str {
+        "Personnes"
+    }
+    fn room_dest_agents(&self) -> &'static str {
+        // `agents` is a never-translate lexicon term (docs/glossary-fr.md);
+        // identical to English on purpose, as the retiring React catalog had it.
+        "Agents"
+    }
+    fn room_dest_files(&self) -> &'static str {
+        "Fichiers"
+    }
+    fn room_dest_pipes(&self) -> &'static str {
+        // Coined protocol term, kept verbatim — the retiring React catalog
+        // rendered `Pipes` identically in French too.
+        "Pipes"
+    }
+    fn room_dest_skeleton(&self) -> &'static str {
+        "Rien à afficher ici pour l’instant."
+    }
+    fn room_unavailable(&self) -> &'static str {
+        "Ce salon n’est pas disponible sur cet appareil. Revenez aux salons."
+    }
+
+    fn recovery_title(&self) -> &'static str {
+        "Préférences locales réinitialisées"
+    }
+    fn recovery_body(&self) -> &'static str {
+        "Certaines préférences locales n’ont pas pu être lues et ont été réinitialisées."
+    }
+    fn recovery_reset_action(&self) -> &'static str {
+        "Réinitialiser les préférences locales"
+    }
+
+    fn err_onboarding_identity(&self) -> &'static str {
+        "Échec de la création de votre identité"
+    }
+    fn err_onboarding_identity_body(&self) -> &'static str {
+        "Le démon n’a pas répondu. Vérifiez votre connexion et réessayez."
+    }
+
+    fn err_onboarding_room_create(&self) -> &'static str {
+        "Échec de la création du salon"
+    }
+    fn err_onboarding_room_create_body(&self) -> &'static str {
+        "Le démon n’a pas répondu. Vérifiez votre connexion et réessayez."
+    }
+
     fn rooms_count(&self, count_display: &str, category: PluralCategory) -> String {
         match category {
             PluralCategory::One => format!("{count_display} salon"),
             PluralCategory::Other => format!("{count_display} salons"),
         }
+    }
+
+    fn activity_empty(&self) -> &'static str {
+        "Aucune activité pour l’instant."
+    }
+    fn activity_loading(&self) -> &'static str {
+        "Chargement de l’activité…"
+    }
+    fn activity_resyncing(&self) -> &'static str {
+        "Réconciliation avec le démon…"
+    }
+    fn activity_recovering_loss(&self) -> &'static str {
+        "Des mises à jour ont été perdues — récupération…"
+    }
+    fn activity_new_messages(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} nouveau message"),
+            PluralCategory::Other => format!("{count_display} nouveaux messages"),
+        }
+    }
+    fn activity_new_activity(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} nouvelle mise à jour"),
+            PluralCategory::Other => format!("{count_display} nouvelles mises à jour"),
+        }
+    }
+    fn activity_departed(&self) -> &'static str {
+        "Vous n’êtes plus dans ce salon. Son historique reste ici, en lecture seule."
+    }
+
+    fn timeline_you(&self) -> &'static str {
+        "Vous"
+    }
+    fn timeline_unresolved_sender(&self) -> &'static str {
+        "Expéditeur inconnu"
+    }
+    fn timeline_agent_chip(&self) -> &'static str {
+        // `agent` is a never-translate lexicon term (docs/glossary-fr.md),
+        // identical to English on purpose.
+        "agent"
+    }
+    fn timeline_run_summary(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} mise à jour de statut"),
+            PluralCategory::Other => format!("{count_display} mises à jour de statut"),
+        }
+    }
+
+    fn filter_conversation(&self) -> &'static str {
+        "Discussion"
+    }
+    fn filter_agent_runs(&self) -> &'static str {
+        "Exécutions d’agents"
+    }
+    fn filter_membership(&self) -> &'static str {
+        "Membres"
+    }
+    fn filter_files(&self) -> &'static str {
+        "Fichiers"
+    }
+    fn filter_pipes(&self) -> &'static str {
+        // Coined protocol term, kept verbatim (never-translate lexicon).
+        "Pipes"
+    }
+
+    fn sysline_room_created(&self, who: &str) -> String {
+        format!("{who} a créé le salon")
+    }
+    fn sysline_member_joined(&self, who: &str, role: &str) -> String {
+        format!("{who} a rejoint en tant que {role}")
+    }
+    fn sysline_member_left(&self, who: &str) -> String {
+        format!("{who} est parti")
+    }
+    fn sysline_member_removed(&self, who: &str, by: &str) -> String {
+        format!("{who} a été retiré par {by}")
+    }
+    fn sysline_invite_revoked(&self) -> &'static str {
+        "Une invitation a été révoquée"
+    }
+    fn sysline_pipe_revoked(&self) -> &'static str {
+        "Un pipe a été révoqué"
+    }
+    fn file_open_in_files(&self) -> &'static str {
+        "Ouvrir dans Fichiers"
+    }
+    fn pipe_open_in_pipes(&self) -> &'static str {
+        "Ouvrir dans Pipes"
+    }
+
+    fn composer_label(&self) -> &'static str {
+        "Votre message"
+    }
+    fn composer_placeholder(&self) -> &'static str {
+        "Écrivez un message…"
+    }
+    fn composer_send(&self) -> &'static str {
+        "Envoyer"
+    }
+    fn composer_enter_hint(&self) -> &'static str {
+        "Entrée pour envoyer, Maj+Entrée pour un saut de ligne"
+    }
+    fn composer_attach(&self) -> &'static str {
+        "Joindre un fichier"
+    }
+    fn composer_attach_unavailable(&self) -> &'static str {
+        "Les pièces jointes ne sont pas encore disponibles."
+    }
+    fn composer_too_long(&self) -> &'static str {
+        "Message trop long — tronqué à la longueur maximale."
+    }
+
+    fn send_sending(&self) -> &'static str {
+        "Envoi…"
+    }
+    fn send_failed_not_sent(&self) -> &'static str {
+        "Non envoyé"
+    }
+    fn send_failed_maybe(&self) -> &'static str {
+        "Peut-être pas envoyé"
+    }
+    fn send_retry(&self) -> &'static str {
+        "Réessayer"
     }
 }

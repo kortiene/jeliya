@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use jeliya_api::RequestId;
-use jeliya_codec::{decode_client_frame, encode_request, ClientInbound, CodecBounds};
+use jeliya_codec::{decode_client_frame, encode_request, ClientFrame, CodecBounds};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
@@ -186,9 +186,7 @@ impl Driver for WsWebDriver {
             frame.op,
             frame.op_id.as_ref(),
             frame.input.as_str(),
-            &self.config.bounds,
-        )
-        .map_err(|_| TransportClosed)?;
+        );
         let text = String::from_utf8(bytes).map_err(|_| TransportClosed)?;
         let state = self.state.borrow();
         match &state.socket {
@@ -424,7 +422,7 @@ fn on_first_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
         return protocol_fail(ctx);
     };
     match decode_client_frame(text.as_bytes(), &ctx.bounds) {
-        ClientInbound::Hello(hello) => {
+        Ok(ClientFrame::Hello(hello)) => {
             if hello.protocol != CLIENT_PROTOCOL {
                 return protocol_fail(ctx);
             }
@@ -451,13 +449,17 @@ fn on_first_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
             ctx.socket_gen.set(generation);
             state.active_dial_token = None;
             state.dial_abort = None;
-            state.push(DriverEvent::Connected { token: ctx.token });
+            state.push(DriverEvent::Connected {
+                token: ctx.token,
+                incarnation: hello.incarnation.clone(),
+            });
         }
-        // A reply, push, or malformed first frame means this is not a
-        // hello-first v2 daemon: fail closed rather than pretend Ready.
-        ClientInbound::Reply { .. } | ClientInbound::Push(_) | ClientInbound::Malformed => {
-            protocol_fail(ctx)
-        }
+        // A reply, push, malformed, or undecodable first frame means this is
+        // not a hello-first v2 daemon: fail closed rather than pretend Ready.
+        Ok(ClientFrame::Reply { .. })
+        | Ok(ClientFrame::Push(_))
+        | Ok(ClientFrame::Malformed(_))
+        | Err(_) => protocol_fail(ctx),
     }
 }
 
@@ -466,10 +468,10 @@ fn on_steady_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
     let generation = ctx.socket_gen.get();
     let inbound = match ev.data().as_string() {
         Some(text) => match decode_client_frame(text.as_bytes(), &ctx.bounds) {
-            ClientInbound::Reply { id, result } => match RequestId::new(id) {
+            Ok(ClientFrame::Reply { id, result }) => match RequestId::new(id) {
                 Ok(request_id) => {
                     let reply = match result {
-                        Ok(raw) => WireReply::Ok(RawJson::from_string(raw.get().to_string())),
+                        Ok(raw) => WireReply::Ok(RawJson::from_string(raw)),
                         Err(api) => WireReply::Err(api),
                     };
                     Inbound::Reply {
@@ -480,9 +482,12 @@ fn on_steady_message(ctx: &Rc<SocketCtx>, ev: MessageEvent) {
                 }
                 Err(_) => Inbound::Malformed,
             },
-            ClientInbound::Push(push) => Inbound::Push { generation, push },
-            // A second hello, or anything unparseable, strands nothing.
-            ClientInbound::Hello(_) | ClientInbound::Malformed => Inbound::Malformed,
+            Ok(ClientFrame::Push(push)) => Inbound::Push { generation, push },
+            // A second hello, a malformed frame, or an undecodable one strands
+            // nothing.
+            Ok(ClientFrame::Hello(_)) | Ok(ClientFrame::Malformed(_)) | Err(_) => {
+                Inbound::Malformed
+            }
         },
         // A Binary frame (byte-stream media) is out of #171's scope; drop it
         // safely — the core discards a Malformed inbound and never panics.

@@ -174,6 +174,18 @@ select {
   min-height: 0;
 }
 
+/* Destinations that replace the whole content area — a room's workspace, the
+   Fleet and Settings surfaces — span BOTH columns. They are full-surface
+   content, never rail content, so the 272px rail column must not squeeze
+   them while the workspace sits empty. */
+.app > .destination {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Medium: the inspector shares the workspace cell and pins to its right edge —
    a drawer, in flow, under the reserved banner row rather than over it. */
 .app > .right-panel {
@@ -396,7 +408,8 @@ select {
      is (0,0,2); the pane-* show rules below are (0,0,3) and win in turn. */
   .app .sidebar,
   .app .center,
-  .app .right-panel {
+  .app .right-panel,
+  .app .destination {
     display: none;
     grid-column: 1;
     grid-row: 2;
@@ -428,6 +441,13 @@ select {
     display: flex;
   }
 
+  /* Full-surface destinations show as the one compact pane for their route. */
+  .app.pane-room .destination,
+  .app.pane-fleet .destination,
+  .app.pane-settings .destination {
+    display: flex;
+  }
+
   .app.pane-inspector .right-panel {
     display: flex;
   }
@@ -436,6 +456,7 @@ select {
      these two panes must not reserve its height — that reservation was ~72px
      of dead space between the composer and the bottom of a 568px phone. */
   .app.pane-room .center,
+  .app.pane-room .destination,
   .app.pane-inspector .right-panel {
     padding-bottom: var(--safe-bottom);
   }
@@ -1154,6 +1175,77 @@ button.sender-name:not(:disabled):hover {
 
 .nav-label {
   flex: 1;
+}
+
+/* ---------- global-nav-item (WCAG colour-contrast + target-size) ----------
+   The global-nav buttons are plain <button> elements with the
+   `.global-nav-item` class but no explicit colour or sizing — they inherited
+   a dimmed context and measured ~60×27 px in compact viewports.  This block
+   codifies the DESIGN.md ink tokens and enforces the 44 px hit-area floor
+   required on compact viewports (WCAG 2.5.5 / target-size). */
+
+.global-nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13.5px;
+  padding: 10px 12px;
+  min-height: 44px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.global-nav-item:hover:not(:disabled) {
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.global-nav-item.selected {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.global-nav-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------- the NavLandmark wrapper (global-nav) ----------
+   Rail placement (wide/medium): vertical stack inside the sidebar.
+   Bottom-bar placement (compact): horizontal strip across the viewport bottom. */
+
+.global-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.global-nav-rail {
+  padding: 8px 10px 0;
+}
+
+.global-nav-bottom {
+  display: none;  /* visible only under the compact @media below */
+}
+
+@media (max-width: 899.98px) {
+  .global-nav-rail {
+    display: none;
+  }
+
+  .global-nav-bottom {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0;
+    background: var(--bg-raise);
+    border-top: 1px solid var(--border);
+    padding: 0;
+  }
 }
 
 .nav-soon {
@@ -2286,6 +2378,14 @@ button.sender-name:not(:disabled):hover {
 
 .agent-run-toggle {
   font-size: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-mute);
+  cursor: pointer;
+  text-decoration: underline;
+  /* The compact target-size floor applies to every interactive control. */
+  min-height: 44px;
 }
 
 .agent-run-history {

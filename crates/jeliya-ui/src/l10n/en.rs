@@ -215,4 +215,260 @@ impl Catalog for En {
             PluralCategory::Other => format!("{count_display} rooms"),
         }
     }
+
+    fn nav_global_label(&self) -> &'static str {
+        "Primary"
+    }
+    fn dest_rooms(&self) -> &'static str {
+        "Rooms"
+    }
+    fn dest_fleet(&self) -> &'static str {
+        "Agent Fleet"
+    }
+    fn dest_settings(&self) -> &'static str {
+        "Settings"
+    }
+
+    fn onboarding_identity_title(&self) -> &'static str {
+        "Create your identity"
+    }
+    fn onboarding_identity_body(&self) -> &'static str {
+        "Your identity is a keypair on this device. There is no account and no password to recover."
+    }
+    fn onboarding_create_identity(&self) -> &'static str {
+        "Create identity"
+    }
+    fn identity_id_label(&self) -> &'static str {
+        "Your identity"
+    }
+    fn identity_copy(&self) -> &'static str {
+        "Copy"
+    }
+    fn identity_unrecoverable(&self) -> &'static str {
+        "This is your permanent peer-to-peer identity. It cannot be recovered if lost."
+    }
+
+    fn onboarding_rooms_title(&self) -> &'static str {
+        "Start or join a room"
+    }
+    fn onboarding_create_room(&self) -> &'static str {
+        "Create a room"
+    }
+    fn room_name_label(&self) -> &'static str {
+        "Room name"
+    }
+    fn onboarding_join_room(&self) -> &'static str {
+        "Join with a ticket"
+    }
+    fn ticket_label(&self) -> &'static str {
+        "Invite ticket"
+    }
+    fn ticket_help(&self) -> &'static str {
+        "Paste an invite ticket a room member shared with you."
+    }
+
+    fn self_label_label(&self) -> &'static str {
+        "Your name"
+    }
+    fn self_label_help(&self) -> &'static str {
+        "Shown on this device only. It is never sent to anyone."
+    }
+
+    fn settings_heading(&self) -> &'static str {
+        "Settings"
+    }
+    fn settings_identity_heading(&self) -> &'static str {
+        "Identity"
+    }
+    fn settings_language_heading(&self) -> &'static str {
+        "Language"
+    }
+    fn settings_text_locale_label(&self) -> &'static str {
+        "Interface language"
+    }
+    fn settings_formatting_locale_label(&self) -> &'static str {
+        "Number and date format"
+    }
+    fn settings_locale_follow_system(&self) -> &'static str {
+        "Follow system"
+    }
+    fn settings_session_only_note(&self) -> &'static str {
+        "Applies this session — not saved on this browser."
+    }
+
+    fn fleet_heading(&self) -> &'static str {
+        "Agent Fleet"
+    }
+    fn fleet_loading(&self) -> &'static str {
+        "Agent Fleet is not available yet."
+    }
+
+    fn room_nav_label(&self) -> &'static str {
+        "Room"
+    }
+    fn room_dest_activity(&self) -> &'static str {
+        "Activity"
+    }
+    fn room_dest_people(&self) -> &'static str {
+        "People"
+    }
+    fn room_dest_agents(&self) -> &'static str {
+        "Agents"
+    }
+    fn room_dest_files(&self) -> &'static str {
+        "Files"
+    }
+    fn room_dest_pipes(&self) -> &'static str {
+        "Pipes"
+    }
+    fn room_dest_skeleton(&self) -> &'static str {
+        "Nothing to show here yet."
+    }
+    fn room_unavailable(&self) -> &'static str {
+        "This room isn’t available on this device. Return to Rooms."
+    }
+
+    fn recovery_title(&self) -> &'static str {
+        "Local preferences reset"
+    }
+    fn recovery_body(&self) -> &'static str {
+        "Some local preferences couldn’t be read and were reset to their defaults."
+    }
+    fn recovery_reset_action(&self) -> &'static str {
+        "Reset local preferences"
+    }
+
+    fn err_onboarding_identity(&self) -> &'static str {
+        "Couldn't create your identity"
+    }
+    fn err_onboarding_identity_body(&self) -> &'static str {
+        "The daemon did not respond. Check your connection and try again."
+    }
+
+    fn err_onboarding_room_create(&self) -> &'static str {
+        "Couldn't create the room"
+    }
+    fn err_onboarding_room_create_body(&self) -> &'static str {
+        "The daemon did not respond. Check your connection and try again."
+    }
+
+    fn activity_empty(&self) -> &'static str {
+        "No activity yet."
+    }
+    fn activity_loading(&self) -> &'static str {
+        "Loading activity…"
+    }
+    fn activity_resyncing(&self) -> &'static str {
+        "Reconciling with the daemon…"
+    }
+    fn activity_recovering_loss(&self) -> &'static str {
+        "Some updates were dropped — recovering…"
+    }
+    fn activity_new_messages(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} new message"),
+            PluralCategory::Other => format!("{count_display} new messages"),
+        }
+    }
+    fn activity_new_activity(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} new update"),
+            PluralCategory::Other => format!("{count_display} new updates"),
+        }
+    }
+    fn activity_departed(&self) -> &'static str {
+        "You are no longer in this room. Its history stays here, read-only."
+    }
+
+    fn timeline_you(&self) -> &'static str {
+        "You"
+    }
+    fn timeline_unresolved_sender(&self) -> &'static str {
+        "Unknown sender"
+    }
+    fn timeline_agent_chip(&self) -> &'static str {
+        "agent"
+    }
+    fn timeline_run_summary(&self, count_display: &str, category: PluralCategory) -> String {
+        match category {
+            PluralCategory::One => format!("{count_display} status update"),
+            PluralCategory::Other => format!("{count_display} status updates"),
+        }
+    }
+
+    fn filter_conversation(&self) -> &'static str {
+        "Messages"
+    }
+    fn filter_agent_runs(&self) -> &'static str {
+        "Agent runs"
+    }
+    fn filter_membership(&self) -> &'static str {
+        "Membership"
+    }
+    fn filter_files(&self) -> &'static str {
+        "Files"
+    }
+    fn filter_pipes(&self) -> &'static str {
+        "Pipes"
+    }
+
+    fn sysline_room_created(&self, who: &str) -> String {
+        format!("{who} created the room")
+    }
+    fn sysline_member_joined(&self, who: &str, role: &str) -> String {
+        format!("{who} joined as {role}")
+    }
+    fn sysline_member_left(&self, who: &str) -> String {
+        format!("{who} left")
+    }
+    fn sysline_member_removed(&self, who: &str, by: &str) -> String {
+        format!("{who} was removed by {by}")
+    }
+    fn sysline_invite_revoked(&self) -> &'static str {
+        "An invitation was revoked"
+    }
+    fn sysline_pipe_revoked(&self) -> &'static str {
+        "A pipe was revoked"
+    }
+    fn file_open_in_files(&self) -> &'static str {
+        "Open in Files"
+    }
+    fn pipe_open_in_pipes(&self) -> &'static str {
+        "Open in Pipes"
+    }
+
+    fn composer_label(&self) -> &'static str {
+        "Message"
+    }
+    fn composer_placeholder(&self) -> &'static str {
+        "Write a message…"
+    }
+    fn composer_send(&self) -> &'static str {
+        "Send"
+    }
+    fn composer_enter_hint(&self) -> &'static str {
+        "Enter to send, Shift+Enter for a new line"
+    }
+    fn composer_attach(&self) -> &'static str {
+        "Attach a file"
+    }
+    fn composer_attach_unavailable(&self) -> &'static str {
+        "Attachments are not available yet."
+    }
+    fn composer_too_long(&self) -> &'static str {
+        "Message too long — trimmed to the maximum length."
+    }
+
+    fn send_sending(&self) -> &'static str {
+        "Sending…"
+    }
+    fn send_failed_not_sent(&self) -> &'static str {
+        "Not sent"
+    }
+    fn send_failed_maybe(&self) -> &'static str {
+        "May not have sent"
+    }
+    fn send_retry(&self) -> &'static str {
+        "Retry"
+    }
 }

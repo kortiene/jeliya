@@ -123,6 +123,13 @@ impl RuntimeShared {
             }
             Action::Emit(event) => deferred.work.push(DeferredWake::Emit(event)),
             Action::CloseBus => deferred.work.push(DeferredWake::CloseBus),
+            // Byte-stream media is not wired on the browser adapter yet: the
+            // effect is dropped and the stream's stall timer settles the call
+            // honestly (Timeout), never a silent success. The debug assertion
+            // keeps the gap loud in tests until the browser media drive lands.
+            Action::SendRecord(_) | Action::ProduceData { .. } | Action::WriteSink { .. } => {
+                debug_assert!(false, "stream effects are not yet wired on the web adapter");
+            }
         }
     }
 }
@@ -374,7 +381,9 @@ where
                 progressed = true;
                 let input = match event {
                     DriverEvent::Inbound(inbound) => Input::Inbound(inbound),
-                    DriverEvent::Connected { token } => Input::Connected { token },
+                    DriverEvent::Connected { token, incarnation } => {
+                        Input::Connected { token, incarnation }
+                    }
                     DriverEvent::DialFailed { token } => Input::DialFailed { token },
                     DriverEvent::GateRefused { token } => Input::GateRefused { token },
                     DriverEvent::Interrupted { generation } => Input::Interrupted { generation },
@@ -564,7 +573,10 @@ mod tests {
         };
 
         // Feed Connected — the runtime turns it into Input::Connected.
-        inner.borrow_mut().push(DriverEvent::Connected { token });
+        inner.borrow_mut().push(DriverEvent::Connected {
+                        token,
+                        incarnation: jeliya_api::Incarnation::new("runtime-test"),
+                    });
         pool.run_until_stalled();
 
         assert_eq!(
@@ -635,7 +647,10 @@ mod tests {
         handle.start();
         pool.run_until_stalled();
         let token = inner.borrow().dials[0];
-        inner.borrow_mut().push(DriverEvent::Connected { token });
+        inner.borrow_mut().push(DriverEvent::Connected {
+                        token,
+                        incarnation: jeliya_api::Incarnation::new("runtime-test"),
+                    });
         pool.run_until_stalled();
         assert_eq!(handle.state(), State::Ready);
 
@@ -677,7 +692,10 @@ mod tests {
         let token1 = inner.borrow().dials[0];
         inner
             .borrow_mut()
-            .push(DriverEvent::Connected { token: token1 });
+            .push(DriverEvent::Connected {
+                token: token1,
+                incarnation: jeliya_api::Incarnation::new("runtime-test"),
+            });
         pool.run_until_stalled();
         assert_eq!(handle.state(), State::Ready);
 
