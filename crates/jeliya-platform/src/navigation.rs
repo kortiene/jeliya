@@ -335,8 +335,21 @@ pub trait Navigation {
     fn route(&self) -> Route;
 
     /// Navigate to `route`. The route *is* the state; there is no second
-    /// machine to keep in sync.
+    /// machine to keep in sync. This **pushes** a history entry, so Back
+    /// returns to where the user was.
     fn navigate(&self, route: Route);
+
+    /// Navigate to `route`, **replacing** the current history entry rather than
+    /// pushing a new one (#178 D4). Canonicalizing redirects (`/`→`/rooms`),
+    /// a malformed URL rewritten to its recoverable state, and a legacy URL
+    /// rewrite must all use replace, so Back never walks through a state the
+    /// user never performed. Defaulted to [`Navigation::navigate`] so every
+    /// existing implementation keeps compiling; only a platform whose history
+    /// distinguishes push from replace (the browser's `history.replaceState`)
+    /// overrides it.
+    fn navigate_replace(&self, route: Route) {
+        self.navigate(route);
+    }
 
     /// Hand an unconsumed back gesture back to the platform (the explicit
     /// alternative to an in-app pop). A

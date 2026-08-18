@@ -58,6 +58,10 @@ const NEVER_TRANSLATE = new Set([
   'endpoints',
   'ticket',
   'tickets',
+  // Coined Jeliya protocol terms kept verbatim in French, as the retiring React
+  // catalog rendered them (`roomDestPipes: 'Pipes'` in fr.ts).
+  'pipe',
+  'pipes',
   'id',
   'ids',
   'hash',
@@ -1166,7 +1170,12 @@ const PRIMITIVE_OWNERSHIP = new Map([
   // NAME (presence): the primitive owns the whole attribute/element it renders.
   ['components/dialog.rs', new Set(['role=dialog', 'aria-modal'])],
   ['components/live_region.rs', new Set(['role=status', 'aria-live'])],
-  ['components/nav.rs', new Set(['nav'])],
+  ['components/nav.rs', new Set(['nav', 'role=tablist'])],
+  // ARIA roles owned by component files: `tablist` for nav.rs tablist variant,
+  // `tab` for room_shell.rs destination tabs, `alert` for onboarding error regions.
+  // These are structural ARIA roles, not copy — they express UI semantics.
+  ['components/onboarding.rs', new Set(['role=alert'])],
+  ['components/room_shell.rs', new Set(['role=tab'])],
 ]);
 
 const NO_OWNED_CONSTRUCTS = new Set();

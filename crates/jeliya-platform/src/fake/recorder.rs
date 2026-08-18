@@ -196,8 +196,15 @@ pub enum RecordedEffect {
         /// The secret key.
         key: SecretKey,
     },
-    /// The route was navigated.
+    /// The route was navigated (a pushed history entry).
     Navigated {
+        /// The route navigated to.
+        route: Route,
+    },
+    /// The route was navigated by **replacing** the current history entry
+    /// (#178 D4), recorded distinctly from a push so a test can assert a
+    /// canonicalizing redirect used replace and did not grow Back history.
+    NavigatedReplace {
         /// The route navigated to.
         route: Route,
     },
