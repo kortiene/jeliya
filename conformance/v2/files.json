@@ -634,6 +634,75 @@
       ]
     },
     {
+      "name": "share_malformed_stream_record_aborts_that_stream_as_malformed_frame",
+      "kind": "error",
+      "operation": "file.share",
+      "intent": "Proves a client protocol violation mid-stream is stream-local, not connection-fatal: after admission the client sends one structurally malformed byte-stream record (a nonzero reserved byte) on the live (request id, stream id) binding, whose full 48-byte header the daemon can correlate. The daemon aborts only that stream with ABORT(protocol_error) at accepted offset zero, the client ACKs, and file.share resolves to the correlated malformed_frame reply while the connection stays usable. Catches a daemon that closes the connection (4005/4007) on a correlatable malformed record, replies success, or answers without first ABORTing, and a harness that cannot drive a raw malformed record.",
+      "requires": [
+        "subject",
+        "room:live"
+      ],
+      "steps": [
+        {
+          "upgrade": {
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "call": "room.create",
+          "in": {
+            "name": "RawRecord"
+          },
+          "save": {
+            "rid": "out.room_id"
+          },
+          "op_id": "op-rawrecord-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
+        },
+        {
+          "call": "file.share",
+          "in": {
+            "room_id": "$rid",
+            "name": "malformed.bin",
+            "declared_bytes": 1024,
+            "declared_content_type": "application/octet-stream"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "malformed_frame"
+            }
+          },
+          "op_id": "op-rawrecord-2",
+          "stream": {
+            "send_bytes": 1024,
+            "fault": "raw_record"
+          }
+        }
+      ]
+    },
+    {
       "name": "share_one_byte_past_the_served_limit_is_refused_at_stage_declared",
       "kind": "boundary",
       "operation": "file.share",

@@ -455,9 +455,10 @@ jobs:
           # gate pins the reliably-green slice so a regression in the
           # implemented surface goes red. The file cases exercise the binary
           # byte-stream executor (upload streaming, pre-OPEN refusals with
-          # bytes_streamed 0, and a declared-size-mismatch stream); the
-          # at-limit and over-limit cases stream the served 100 MiB bound and
-          # stay local-only.
+          # bytes_streamed 0, and a declared-size-mismatch stream) and both
+          # executed client-fault controls (producer cancel, stream-local
+          # malformed record); the at-limit and over-limit cases stream the
+          # served 100 MiB bound and stay local-only.
           node main.mjs ../../../target/debug/jeliyad \
             --case subject_ensure_creates_the_subject_on_a_fresh_daemon \
             --case subject_ensure_never_returns_secret_material \
@@ -478,6 +479,8 @@ jobs:
             --case share_size_refusal_is_never_reported_as_digest_mismatch \
             --case share_completed_result_replays_without_a_second_stream_and_authors_once \
             --case a_stream_that_disagrees_with_its_declaration_is_declared_size_mismatch \
+            --case share_cancelled_by_the_client_before_any_bytes_aborts_as_cancelled \
+            --case share_malformed_stream_record_aborts_that_stream_as_malformed_frame \
             --case list_of_a_room_that_is_not_available_answers_room_not_available \
             --case fetch_of_a_file_id_not_in_this_rooms_history_fails_with_file_unknown \
             --case transfer_cancel_of_an_unknown_op_id_fails_with_transfer_unknown

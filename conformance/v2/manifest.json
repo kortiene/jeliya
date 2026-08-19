@@ -7,7 +7,7 @@
     "structural_validation": true,
     "selected_json_envelope_subject_slice": {
       "status": "partial",
-      "ci_selected_cases": 22
+      "ci_selected_cases": 24
     },
     "binary_byte_stream_executor": {
       "status": "partial",
@@ -15,7 +15,8 @@
       "receive_bytes": "implemented_no_executable_case",
       "bytes_streamed_observation": "implemented",
       "client_abort_fault": "implemented",
-      "raw_record_credit_pause_transport_drop_faults": "unimplemented"
+      "raw_record_fault": "implemented",
+      "credit_pause_transport_drop_faults": "unimplemented"
     },
     "adapter_targeted_declarative_cases": "declarative_only"
   },
@@ -116,16 +117,16 @@
     }
   ],
   "target_counts": {
-    "untargeted": 339,
+    "untargeted": 340,
     "daemon": 0,
     "in_process_core": 1,
     "client_adapter": 5
   },
   "totals": {
-    "cases": 345,
-    "attributed_to_an_operation": 238,
+    "cases": 346,
+    "attributed_to_an_operation": 239,
     "not_operation_scoped": 107,
-    "conforming_to_the_dsl": 345,
+    "conforming_to_the_dsl": 346,
     "distinct_step_verbs_in_use": 7,
     "quarantined": 0,
     "blocked_on_upstream": 15,
@@ -133,8 +134,8 @@
   },
   "per_file_totals": {
     "files.json": {
-      "cases": 44,
-      "attributed_to_an_operation": 42,
+      "cases": 45,
+      "attributed_to_an_operation": 43,
       "not_operation_scoped": 2,
       "blocked_on_upstream": {
         "U1": 0,
@@ -268,7 +269,7 @@
       "satisfies_required_kinds": true
     },
     "file.share": {
-      "cases": 15,
+      "cases": 16,
       "success": true,
       "distinctive_code": "declared_size_mismatch",
       "distinctive_code_has_a_case": true,
@@ -485,7 +486,7 @@
     }
   },
   "operation_null_cases": {
-    "note": "operation:null is legal for genuinely cross-cutting cases \u2014 gate behaviour, envelope framing, handshake, non-oracle properties spanning several operations, and multi-operation invariants. Every one of these is cross-cutting by intent (its own `intent` names a property no single operation owns), never by omission. The count here feeds totals.not_operation_scoped.",
+    "note": "operation:null is legal for genuinely cross-cutting cases — gate behaviour, envelope framing, handshake, non-oracle properties spanning several operations, and multi-operation invariants. Every one of these is cross-cutting by intent (its own `intent` names a property no single operation owns), never by omission. The count here feeds totals.not_operation_scoped.",
     "by_file": {
       "files.json": [
         "file_operations_are_not_a_membership_oracle",

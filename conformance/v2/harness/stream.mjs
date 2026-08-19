@@ -241,6 +241,12 @@ const STREAM_ONLY_ERRORS = new Set([
   'transfer_stalled',
   'transfer_deadline_exceeded',
   'stream_aborted',
+  // A correlated malformed_frame for a byte-stream record is only reachable
+  // AFTER OPEN installed the (request id, stream id) binding — the daemon has
+  // to have admitted the stream and examined the injected record to produce
+  // it. Treating it as pre-OPEN-legal would let a daemon fabricate the
+  // raw_record outcome without ever admitting or parsing the record.
+  'malformed_frame',
 ]);
 
 function checkPreOpenError(reply, op) {
@@ -452,6 +458,20 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   // only an admitted upload, no peer-fetched file.
   if (fault === 'client_abort') {
     return await driveClientAbortUpload({ session, tracker, replyState, waitMs });
+  }
+  // `raw_record` is a client protocol violation: after admission the client
+  // sends one structurally malformed Binary record on the live binding (a
+  // nonzero reserved byte — a full 48-byte header the daemon can correlate,
+  // so it is stream-local, not the header-unparseable 4007 class). The daemon
+  // (receiver) aborts only that stream with ABORT(protocol_error) at accepted
+  // offset zero, the client ACKs (0x05), and the request resolves to the
+  // correlated `malformed_frame` terminal reply while the connection stays
+  // usable — the "recoverable stream-local violation" leg of the framing
+  // record (docs/protocol-v2.md § Malformed stream records; matched by the
+  // daemon integration test websocket_data_too_large_within_frame_limit_
+  // aborts_stream_not_connection in crates/jeliyad/src/serve.rs).
+  if (fault === 'raw_record') {
+    return await driveRawRecordUpload({ session, tracker, replyState, waitMs, limitBytes });
   }
   if (fault !== undefined) {
     throw new Error(`unknown stream fault ${JSON.stringify(fault)} on file.share`);
@@ -723,6 +743,159 @@ async function driveClientAbortUpload({ session, tracker, replyState, waitMs }) 
       `terminal transferred_bytes ${err.transferred_bytes} disagrees with the ${accepted} receiver-accepted bytes`,
     );
   }
+  return reply;
+}
+
+/**
+ * Drive a client-originated raw-record protocol violation. After admission the
+ * client sends exactly one structurally malformed DATA record on the active
+ * binding: a valid 48-byte header and magic, correct id and stream id, but a
+ * nonzero reserved byte (bytes 5..8 MUST be zero). Because the header is
+ * correlatable to the live stream, the daemon rejects only that stream rather
+ * than closing the connection: it sends ABORT(protocol_error) at accepted
+ * offset zero (nothing was accepted), the client ACKs it (0x05), and the
+ * request resolves to the correlated `malformed_frame` terminal reply. A
+ * daemon that instead closes the connection, replies success, or answers
+ * without first ABORTing is a violation. Receiver-accepted bytes are zero.
+ */
+async function driveRawRecordUpload({ session, tracker, replyState, waitMs, limitBytes }) {
+  const accepted = 0;
+  // The served shared-file bound gates CREDIT range validation; a daemon that
+  // fails to serve it as a usable integer fails, never gets an invented cap.
+  if (typeof limitBytes !== 'number' || !Number.isInteger(limitBytes) || limitBytes < 0) {
+    throw new AssertFailure(
+      `served max_shared_file_bytes ${JSON.stringify(limitBytes)} is unusable for byte streaming`,
+    );
+  }
+  const limit = limitBytes;
+  let sendThrough = 0;
+  // One malformed DATA record: correct binding, corrupt reserved byte 5.
+  const raw = encodeRecord({
+    kind: KIND.DATA,
+    id: tracker.id,
+    streamId: tracker.streamId,
+    offset: 0,
+    payload: Buffer.from([0x00]),
+  });
+  raw.writeUInt8(0x01, 5); // reserved bytes MUST be zero — this makes it malformed
+  session.sendBinary(raw);
+
+  let ackSeen = false;
+  for (;;) {
+    if (replyState.done && tracker.queue.length === 0) break;
+    const ev = await tracker.next(replyState, waitMs, ackSeen ? 'the terminal reply' : 'the daemon ABORT for the malformed record');
+    if (ev.reply) break;
+    const rec = ev.record;
+    checkBinding(tracker, rec);
+    if (rec.kind === KIND.CREDIT) {
+      // A send window granted before the daemon parsed our malformed record is
+      // tolerated, but its SHAPE and RANGE must satisfy the same rules the
+      // normal upload path enforces: a payload, a regressing or inverted
+      // window, or a send_through beyond the served bound is malformed
+      // regardless of the injected fault — accepting one here would let a
+      // non-conformant daemon pass this case.
+      if (ackSeen) {
+        throw new AssertFailure('daemon sent CREDIT after acknowledging the malformed-record ABORT — the binding retired at ACK');
+      }
+      if (rec.payload) throw new AssertFailure('daemon CREDIT carried a payload');
+      if (rec.value < sendThrough || rec.offset > rec.value) {
+        throw new AssertFailure(
+          `daemon CREDIT regressed or inverted: (${rec.offset}, ${rec.value}) after (${accepted}, ${sendThrough})`,
+        );
+      }
+      if (rec.value > limit + 1) {
+        // The wire bound on upload credit is max_shared_file_bytes + 1.
+        throw new AssertFailure(
+          `daemon CREDIT send_through ${rec.value} exceeds max_shared_file_bytes + 1 (${limit + 1})`,
+        );
+      }
+      // It can never acknowledge bytes we never sent.
+      if (rec.offset > accepted) {
+        throw new AssertFailure(`daemon CREDIT acknowledged ${rec.offset} bytes after a zero-progress malformed record`);
+      }
+      sendThrough = rec.value;
+      continue;
+    }
+    if (rec.kind === KIND.ABORT) {
+      // The client ACK retires the binding ("Only ACK or that timeout retires
+      // the binding"; "Any later DATA, CREDIT, END, or terminal control for
+      // the retired stream is malformed" — docs/protocol-v2.md §END, abort,
+      // and cancellation). A SECOND daemon ABORT after our ACK is therefore
+      // malformed traffic on a dead stream, never a terminal we re-acknowledge.
+      if (ackSeen) {
+        throw new AssertFailure(
+          'daemon sent a second ABORT after the malformed-record ACK retired the binding',
+        );
+      }
+      // The daemon aborts the stream it could correlate. Its reason is
+      // protocol_error (0x04) and its accepted high-water is zero.
+      validateAbort(rec, accepted, UPLOAD_DAEMON_ABORT_REASONS);
+      if (rec.value !== ABORT_REASON.protocol_error) {
+        throw new AssertFailure(
+          `daemon ABORT reason ${rec.value} for a malformed record is not protocol_error (0x04)`,
+        );
+      }
+      if (rec.offset !== accepted) {
+        throw new AssertFailure(
+          `daemon ABORT accepted count ${rec.offset} disagrees with the ${accepted} bytes it accepted from a malformed record`,
+        );
+      }
+      if (tracker.replySeq !== undefined) {
+        throw new AssertFailure('daemon sent its terminal reply before receiving the malformed-record ABORT acknowledgement');
+      }
+      tracker.accepted = accepted;
+      session.sendBinary(
+        encodeRecord({ kind: KIND.ACK, id: tracker.id, streamId: tracker.streamId, offset: accepted, value: 0x05 }),
+      );
+      ackSeen = true;
+      continue;
+    }
+    throw new AssertFailure(`daemon sent unexpected ${rec.kindName} after a client malformed record`);
+  }
+  if (tracker.queue.length) {
+    throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after the terminal reply`);
+  }
+  if (!ackSeen) {
+    throw new AssertFailure('daemon replied to a malformed record without first ABORTing the stream');
+  }
+  const reply = await settleReply(replyState);
+  if (reply && reply.ok) {
+    throw new AssertFailure('file.share replied success after a client malformed record');
+  }
+  const err = (reply && reply.err) || {};
+  if (err.code !== 'malformed_frame') {
+    throw new AssertFailure(
+      `a stream-local malformed record must resolve to malformed_frame, got ${JSON.stringify(reply.err)}`,
+    );
+  }
+  // A recoverable stream-local violation must leave the WebSocket usable —
+  // "Other requests remain usable only on the request-local paths above"
+  // (docs/protocol-v2.md §Malformed stream records). Prove it: send an
+  // unrelated, idempotent typed request on the SAME session after the terminal
+  // reply. A daemon that runs the correct ABORT→ACK→malformed_frame exchange
+  // and THEN closes the connection (the 4005/4007 class this case exists to
+  // catch) fails here instead of passing. subject.ensure carries no tracker,
+  // so it never enters callRecords and cannot perturb a later bytes_streamed
+  // observation, which reads only the runner's per-step records.
+  const liveness = await session.call('subject.ensure', {}, { timeoutMs: Math.min(waitMs, 10_000) });
+  if (!liveness || !liveness.ok) {
+    throw new AssertFailure(
+      `connection was not usable after a stream-local malformed_frame: ${JSON.stringify(liveness)}`,
+    );
+  }
+  // Re-examine the retired stream after the liveness await: a daemon that sent
+  // a late DATA/CREDIT/END/ABORT while subject.ensure was pending had the
+  // record queued into this still-registered tracker without failing the
+  // liveness call, and any traffic on a binding retired by the ACK is
+  // malformed. (Anything arriving after this check, once the runner retires
+  // the tracker, becomes the connection-fatal unbindable-record class and is
+  // surfaced by the case-end sticky-violation scan.)
+  if (tracker.queue.length) {
+    throw new AssertFailure(
+      `daemon sent ${tracker.queue[0].kindName} for the retired stream after the terminal reply`,
+    );
+  }
+  if (tracker.failure) throw tracker.failure;
   return reply;
 }
 

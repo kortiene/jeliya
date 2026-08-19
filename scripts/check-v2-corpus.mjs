@@ -46,12 +46,17 @@ const STREAMING_OPS = new Map([
 ]);
 // Client-originated stream faults expressible alongside a direction on an
 // upload's `stream` key. The vocabulary is closed so a misspelling fails loudly.
-// Only `client_abort` (a producer cancel after admission but before any DATA)
-// is executed by the harness today; the daemon must ACK it and reply
-// stream_aborted{cancelled}. The other client faults named by the framing
-// record (raw-record injection, credit-pause, transport-drop) and every
-// download-side fault remain declarative until the executor drives them.
-const STREAM_FAULTS = new Set(["client_abort"]);
+// Executed by the harness today:
+//   - `client_abort`: a producer cancel after admission but before any DATA;
+//     the daemon ACKs it and replies stream_aborted{cancelled}.
+//   - `raw_record`: a structurally malformed record (nonzero reserved byte) on
+//     the live binding; the daemon aborts only that stream with
+//     ABORT(protocol_error), the client ACKs, and the request resolves to the
+//     correlated malformed_frame reply while the connection stays usable.
+// Still declarative until the executor drives them: credit-pause and
+// transport-drop, and every download-side fault (the download path has no
+// executable single-subject fixture — see the manifest ledger).
+const STREAM_FAULTS = new Set(["client_abort", "raw_record"]);
 const KINDS = new Set(["success", "error", "malformed", "boundary", "authorization", "handshake", "push", "ordering"]);
 const PRE_OPEN_STREAM_CODES = new Set([
   "invalid_argument", "subject_absent", "room_not_available", "membership_ended",
@@ -108,6 +113,13 @@ const FILE_ERROR_KEYS = new Map([
   ["subject_absent", ["code"]],
   ["op_id_conflict", ["code", "op_id"]],
   ["file_index_unreadable", ["code"]],
+  // A stream-local malformed record on an admitted file.share resolves to the
+  // request's own correlated `malformed_frame` terminal reply (not a connection
+  // close), so it appears as a file-domain terminal. Its wire shape is the bare
+  // code — the daemon carries no extra fields (crates/jeliyad/src/serve.rs
+  // asserts `terminal.err == MalformedFrame`). It remains a transport code too
+  // (see TRANSPORT_CODE_FIXTURES), where it is represented by the 4007 close.
+  ["malformed_frame", ["code"]],
 ]);
 const TRANSPORT_CODE_FIXTURES = new Map([
   ["frame_too_large", "close_code_4005_is_emitted_for_frame_too_large"],
@@ -1379,7 +1391,8 @@ if (isObject(manifest)) {
       receive_bytes: "implemented_no_executable_case",
       bytes_streamed_observation: "implemented",
       client_abort_fault: "implemented",
-      raw_record_credit_pause_transport_drop_faults: "unimplemented",
+      raw_record_fault: "implemented",
+      credit_pause_transport_drop_faults: "unimplemented",
     },
     adapter_targeted_declarative_cases: "declarative_only",
   };
