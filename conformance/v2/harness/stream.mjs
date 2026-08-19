@@ -473,6 +473,24 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   if (fault === 'raw_record') {
     return await driveRawRecordUpload({ session, tracker, replyState, waitMs, limitBytes });
   }
+  // `transport_drop` is a pre-END transport loss (docs/protocol-v2.md
+  // § Disconnects and retries): the client streams a healthy PARTIAL upload
+  // — one DATA record, acknowledged by the daemon's cumulative CREDIT — and
+  // then drops the WebSocket with no close frame (the same terminate() the
+  // control:{do:disconnect} verb drives; a stream step cannot use that verb
+  // because a duplex call cannot return before its terminal reply, which
+  // this fault deliberately never lets arrive). No byte stream survives its
+  // connection: the daemon must abort the share, drop staging, release its
+  // reservation, author nothing, and — under the request's op_id — record
+  // stream_aborted{transport_lost} for replay. The step has NO wire reply,
+  // so the driver returns a LOCAL OBSERVATION marker (never a synthetic
+  // reply envelope) and the runner treats it as reply-less; the fixture's
+  // reconnect + same-op_id replay asserts the recorded failure (matched by
+  // the daemon integration test websocket_file_share_disconnect_replays_
+  // pre_and_post_end_results in crates/jeliyad/src/serve.rs).
+  if (fault === 'transport_drop') {
+    return await driveTransportDropUpload({ session, tracker, replyState, sendBytes, waitMs, limitBytes, maxPayload });
+  }
   if (fault !== undefined) {
     throw new Error(`unknown stream fault ${JSON.stringify(fault)} on file.share`);
   }
@@ -897,6 +915,190 @@ async function driveRawRecordUpload({ session, tracker, replyState, waitMs, limi
   }
   if (tracker.failure) throw tracker.failure;
   return reply;
+}
+
+/** The marker a transport_drop step returns: this fault deliberately ends
+ * with NO terminal reply on the wire (the socket is dropped pre-END), so the
+ * driver reports a local observation — never a synthetic reply envelope. The
+ * runner treats a step carrying this marker as reply-less: nothing to match,
+ * capture, or expose under out/err/frame. */
+export function isTransportDroppedMarker(value) {
+  return value !== null && typeof value === 'object' && value.transportDropped === true;
+}
+
+/**
+ * Drive a pre-END transport loss on a healthy partial upload. The daemon's
+ * cumulative CREDIT is the only forward-progress signal, and its refill
+ * policy acknowledges a DATA record only when the record consumed the whole
+ * granted window (or completed the file) — so the healthy partial here is
+ * exactly ONE FULL WINDOW: the declared total must exceed one window (the
+ * served max DATA payload), the client sends a single DATA record of that
+ * size, and the daemon's cumulative CREDIT must acknowledge exactly those
+ * bytes. That acknowledgement pins what the daemon must later record. The
+ * client then terminates the socket with no close frame. No byte stream
+ * survives its connection: the daemon aborts the share, removes staging,
+ * releases its reservation, authors no event, and (under the request's
+ * op_id) records stream_aborted{transport_lost, transferred_bytes: the
+ * acknowledged count} — asserted by the fixture's reconnect + same-op_id
+ * replay, not here, because there is no reply on this connection to assert
+ * against.
+ *
+ * Guards before the drop: the declared total exceeds one window (else the
+ * fault would be a whole-file upload, not a partial — a fixture/sizing
+ * error, never a daemon failure), the initial CREDIT shape and bound, the
+ * acknowledgement landing exactly on the DATA record's end boundary, no
+ * credit beyond what was sent, no daemon ABORT of the healthy stream, and
+ * no terminal reply arriving before the drop (a reply here would mean the
+ * daemon settled the request while the producer was still active).
+ */
+async function driveTransportDropUpload({ session, tracker, replyState, sendBytes, waitMs, limitBytes, maxPayload }) {
+  if (typeof limitBytes !== 'number' || !Number.isInteger(limitBytes) || limitBytes < 0) {
+    throw new AssertFailure(
+      `served max_shared_file_bytes ${JSON.stringify(limitBytes)} is unusable for byte streaming`,
+    );
+  }
+  const limit = limitBytes;
+  // One full window is the only healthy partial the daemon's refill policy
+  // acknowledges mid-file; a declared total within one window would make the
+  // acknowledgement arrive only with the whole file, which is not a partial.
+  if (!Number.isInteger(sendBytes) || sendBytes <= maxPayload) {
+    throw new Error(
+      `transport_drop needs a declared total above one DATA window (${maxPayload} bytes) so a single full-window record is a healthy partial, got ${sendBytes}`,
+    );
+  }
+  const chunkLen = maxPayload;
+  const sent = chunkLen;
+  let creditWindow = null;
+  let acknowledged = null;
+  let dataSent = false;
+  let dropped = false;
+  // The previous CREDIT's (offset, value), for the monotonicity contract.
+  let prevCredit = null;
+
+  const drop = () => {
+    // The same primitive the control:{do:disconnect} verb drives — no close
+    // frame, no drain. Outstanding waiters on this connection fail; the
+    // marker below is returned before any such failure can be misread as
+    // this step's reply.
+    session.disconnect();
+    dropped = true;
+  };
+
+  for (;;) {
+    const what = dropped
+      ? 'the local drop'
+      : acknowledged === null
+        ? (creditWindow === null ? 'the initial CREDIT' : `the cumulative CREDIT acknowledging ${sent}`)
+        : 'the drop';
+    if (dropped) break;
+    if (creditWindow !== null && !dataSent && acknowledged === null && tracker.queue.length === 0 && !replyState.done) {
+      // Send the one full-window DATA record as soon as the initial window
+      // exists — exactly once (a second record at the same offset would be
+      // client malformation, not this fault).
+      const payload = patternChunk(0, chunkLen);
+      tracker.generated += chunkLen;
+      session.sendBinary(
+        encodeRecord({ kind: KIND.DATA, id: tracker.id, streamId: tracker.streamId, offset: 0, payload }),
+      );
+      tracker.socketSent += chunkLen;
+      dataSent = true;
+      await yieldAfterSend(session, tracker);
+      continue;
+    }
+    const ev = await tracker.next(replyState, waitMs, what);
+    if (ev.reply) {
+      throw new AssertFailure(
+        `file.share settled its terminal reply while the producer was still active — the transport had not dropped yet`,
+      );
+    }
+    const rec = ev.record;
+    checkBinding(tracker, rec);
+    if (rec.kind === KIND.CREDIT) {
+      if (rec.payload) throw new AssertFailure('daemon CREDIT carried a payload');
+      // The spec's credit contract is monotonic and non-inverted
+      // (accepted_through <= send_through, both only ever advance) — the
+      // same rule the normal upload path enforces on every window.
+      if (rec.offset > rec.value) {
+        throw new AssertFailure(
+          `daemon CREDIT inverted: accepted ${rec.offset} through a send_through of ${rec.value}`,
+        );
+      }
+      if (prevCredit && (rec.offset < prevCredit.offset || rec.value < prevCredit.value)) {
+        throw new AssertFailure(
+          `daemon CREDIT regressed: (${rec.offset}, ${rec.value}) after (${prevCredit.offset}, ${prevCredit.value})`,
+        );
+      }
+      if (rec.offset > sent) {
+        throw new AssertFailure(
+          `daemon CREDIT acknowledged ${rec.offset} bytes beyond the ${sent} actually sent`,
+        );
+      }
+      if (rec.value > limit + 1) {
+        throw new AssertFailure(
+          `daemon CREDIT send_through ${rec.value} exceeds max_shared_file_bytes + 1 (${limit + 1})`,
+        );
+      }
+      if (creditWindow === null) {
+        if (rec.offset !== 0) {
+          throw new AssertFailure(
+            `daemon CREDIT acknowledged ${rec.offset} bytes when the client had sent none`,
+          );
+        }
+        if (rec.value < chunkLen) {
+          throw new AssertFailure(
+            `daemon initial CREDIT window ${rec.value} cannot carry the one full-window DATA record (${chunkLen}) this fault sends`,
+          );
+        }
+        creditWindow = rec.value;
+        prevCredit = { offset: rec.offset, value: rec.value };
+        continue;
+      }
+      // Cumulative credit may only advance on the accepted record boundary —
+      // the daemon has seen exactly one DATA record, so the only legal
+      // positive acknowledgement is exactly the record's end.
+      if (rec.offset !== 0 && rec.offset !== sent) {
+        throw new AssertFailure(
+          `daemon CREDIT acknowledged ${rec.offset}, inside the single ${sent}-byte DATA record rather than on its boundary`,
+        );
+      }
+      if (rec.offset === sent) {
+        if (!dataSent) {
+          // A cumulative acknowledgement of bytes that were never put on the
+          // wire — e.g. a daemon batching initial + cumulative CREDIT before
+          // the client could send its one record — is fabricated progress:
+          // the daemon cannot have accepted bytes it never received.
+          throw new AssertFailure(
+            `daemon CREDIT acknowledged ${rec.offset} bytes before the client's DATA record was on the wire`,
+          );
+        }
+        acknowledged = rec.offset;
+        tracker.accepted = acknowledged;
+        prevCredit = { offset: rec.offset, value: rec.value };
+        // The precondition is proven: the daemon has accepted exactly the
+        // partial bytes. Drop the transport now, pre-END.
+        drop();
+        break;
+      }
+      prevCredit = { offset: rec.offset, value: rec.value };
+      continue;
+    }
+    if (rec.kind === KIND.ABORT) {
+      throw new AssertFailure(
+        `daemon ABORTed a healthy partial upload (accepted ${rec.offset}) while the client awaited the cumulative CREDIT — a receiver must acknowledge the bytes it accepted`,
+      );
+    }
+    throw new AssertFailure(`daemon sent unexpected ${rec.kindName} before the transport drop`);
+  }
+  if (!dropped) {
+    throw new AssertFailure('transport_drop failed to drop the connection');
+  }
+  if (acknowledged !== sent) {
+    throw new AssertFailure(
+      `transport_drop dropped the connection before the daemon acknowledged the ${sent} accepted bytes`,
+    );
+  }
+  // No terminal reply exists for this step; report the local observation.
+  return { transportDropped: true, acceptedBytes: acknowledged };
 }
 
 /** Download: grant a bounded window, accept DATA, advance cumulative CREDIT

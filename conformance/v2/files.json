@@ -703,6 +703,143 @@
       ]
     },
     {
+      "name": "share_upload_transport_drop_records_stream_aborted_for_replay",
+      "kind": "error",
+      "operation": "file.share",
+      "intent": "Proves no byte stream survives its WebSocket connection: an upload whose transport drops after the daemon has CREDIT-acknowledged a healthy partial record -- one full 65536-byte window of a 131072-byte declaration, before any END -- must be aborted with all staging dropped, no authored share, and, under the request's op_id, a recorded stream_aborted{transport_lost} carrying exactly the bytes the daemon can prove it accepted, so the same principal's replay of that op_id returns the recorded failure without opening a second stream. Catches a daemon that leaves the op_id unrecorded (a replay would re-stream from zero), records success or a different reason, miscounts the accepted bytes, or authors the share despite losing the transport.",
+      "requires": [
+        "subject",
+        "room:live",
+        "control:reconnect"
+      ],
+      "steps": [
+        {
+          "upgrade": {
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "call": "room.create",
+          "in": {
+            "name": "TransportDrop"
+          },
+          "save": {
+            "rid": "out.room_id"
+          },
+          "op_id": "op-tdrop-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
+        },
+        {
+          "call": "file.share",
+          "in": {
+            "room_id": "$rid",
+            "name": "dropped.bin",
+            "declared_bytes": 131072,
+            "declared_content_type": "application/octet-stream"
+          },
+          "note": "The executor streams one full 65536-byte DATA window, waits for the cumulative CREDIT that proves the daemon accepted it, then drops the socket with no close frame. The step has no terminal reply on this connection, so it carries no expect and no save.",
+          "op_id": "op-tdrop-2",
+          "stream": {
+            "send_bytes": 131072,
+            "fault": "transport_drop"
+          }
+        },
+        {
+          "control": {
+            "do": "reconnect",
+            "on": "subject:self"
+          }
+        },
+        {
+          "call": "file.share",
+          "in": {
+            "room_id": "$rid",
+            "name": "dropped.bin",
+            "declared_bytes": 131072,
+            "declared_content_type": "application/octet-stream"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "stream_aborted",
+              "transferred_bytes": 65536,
+              "total": {
+                "state": "known",
+                "bytes": 131072
+              },
+              "reason": "transport_lost"
+            }
+          },
+          "op_id": "op-tdrop-2"
+        },
+        {
+          "assert": [
+            {
+              "observe": "bytes_streamed",
+              "call": "step:5",
+              "value": {
+                "op": "eq",
+                "value": 65536
+              }
+            },
+            {
+              "observe": "bytes_streamed",
+              "call": "step:7",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            }
+          ]
+        },
+        {
+          "call": "file.list",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "on": "subject:self"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.files",
+              "op": "len",
+              "value": {
+                "op": "eq",
+                "value": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "share_one_byte_past_the_served_limit_is_refused_at_stage_declared",
       "kind": "boundary",
       "operation": "file.share",
