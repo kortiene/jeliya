@@ -1,616 +1,616 @@
 {
- "corpus": "jeliya protocol v2",
- "spec": "../../docs/protocol-v2.md",
- "dsl": "./README.md",
- "authored": "by hand, from the specification. NOT generated from any implementation.",
- "replayable": {
-  "structural_validation": true,
-  "selected_json_envelope_subject_slice": {
-   "status": "partial",
-   "ci_selected_cases": 22
+  "corpus": "jeliya protocol v2",
+  "spec": "../../docs/protocol-v2.md",
+  "dsl": "./README.md",
+  "authored": "by hand, from the specification. NOT generated from any implementation.",
+  "replayable": {
+    "structural_validation": true,
+    "selected_json_envelope_subject_slice": {
+      "status": "partial",
+      "ci_selected_cases": 22
+    },
+    "binary_byte_stream_executor": {
+      "status": "partial",
+      "send_bytes": "implemented",
+      "receive_bytes": "implemented_no_executable_case",
+      "bytes_streamed_observation": "implemented",
+      "client_abort_fault": "implemented",
+      "raw_record_fault": "implemented",
+      "credit_pause_transport_drop_faults": "unimplemented"
+    },
+    "adapter_targeted_declarative_cases": "declarative_only"
   },
-  "binary_byte_stream_executor": {
-   "status": "partial",
-   "send_bytes": "implemented",
-   "receive_bytes": "implemented_no_executable_case",
-   "bytes_streamed_observation": "implemented",
-   "client_abort_fault": "implemented",
-   "raw_record_fault": "implemented",
-   "credit_pause_transport_drop_faults": "unimplemented"
+  "rules": {
+    "required_per_operation": "at least one success case, and at least one error case using that operation's OWN most specific code. A cross-cutting code such as subject_absent or room_not_available does NOT satisfy the error requirement.",
+    "exemptions_fail": "a case marked blocked_on_upstream FAILS until the named upstream change lands. It is never skipped: a skipped case reads as coverage, a failing case reads as work.",
+    "distinctive_code_exemption": "an operation may be exempt from the distinctive-code rule only with a stated reason in `exemptions`. An unexplained null is not an exemption.",
+    "counts_are_computed": "every count in this file is derived from the current fixture JSON, not asserted alongside it. totals.cases equals the sum of coverage[].cases plus totals.not_operation_scoped."
   },
-  "adapter_targeted_declarative_cases": "declarative_only"
- },
- "rules": {
-  "required_per_operation": "at least one success case, and at least one error case using that operation's OWN most specific code. A cross-cutting code such as subject_absent or room_not_available does NOT satisfy the error requirement.",
-  "exemptions_fail": "a case marked blocked_on_upstream FAILS until the named upstream change lands. It is never skipped: a skipped case reads as coverage, a failing case reads as work.",
-  "distinctive_code_exemption": "an operation may be exempt from the distinctive-code rule only with a stated reason in `exemptions`. An unexplained null is not an exemption.",
-  "counts_are_computed": "every count in this file is derived from the current fixture JSON, not asserted alongside it. totals.cases equals the sum of coverage[].cases plus totals.not_operation_scoped."
- },
- "blocked_on_upstream": {
-  "U1": "ConnEvent must carry the connection generation and a typed offline reason",
-  "U2": "a progress-observing or streaming blob-fetch API (8 cases: 3 progress/stall, 1 deadline, 4 cancellation)",
-  "U3": "a size-distinguishable fetch outcome (1 fetch-stream size case)",
-  "U4": "harness cannot restart a daemon within a case"
- },
- "blocked_case_counts": {
-  "U1": 5,
-  "U2": 8,
-  "U3": 1,
-  "U4": 1,
-  "blocked_on_record": 1
- },
- "blocked_on_upstream_cases": {
-  "U1": [
-   {
-    "file": "handshake.json",
-    "case": "peer_push_carries_t_no_id_a_generation_and_a_tagged_offline_reason"
-   },
-   {
-    "file": "pipes.json",
-    "case": "a_stale_generation_teardown_does_not_rewrite_presence_or_pipe_reachability"
-   },
-   {
-    "file": "rooms.json",
-    "case": "room_peers_ignores_a_stale_generation_teardown"
-   },
-   {
-    "file": "rooms.json",
-    "case": "room_peers_reports_a_typed_reason_for_a_device_it_cannot_reach"
-   },
-   {
-    "file": "timeline-streams.json",
-    "case": "peer_push_carries_the_connection_generation_and_a_typed_offline_reason"
-   }
-  ],
-  "U2": [
-   {
-    "file": "files.json",
-    "case": "a_transfer_with_no_forward_progress_fails_with_transfer_stalled"
-   },
-   {
-    "file": "files.json",
-    "case": "cancel_result_reports_bytes_transferred"
-   },
-   {
-    "file": "files.json",
-    "case": "fetch_deadline_scales_with_the_declared_size"
-   },
-   {
-    "file": "files.json",
-    "case": "transfer_cancel_after_the_originating_connection_dropped"
-   },
-   {
-    "file": "files.json",
-    "case": "transfer_cancel_by_a_different_principal_is_indistinguishable_from_unknown"
-   },
-   {
-    "file": "files.json",
-    "case": "transfer_cancel_releases_the_concurrent_transfer_slot"
-   },
-   {
-    "file": "files.json",
-    "case": "transfer_progress_is_delivered_only_to_the_initiating_principal"
-   },
-   {
-    "file": "files.json",
-    "case": "transfer_progress_pushes_report_monotonic_transferred_bytes"
-   }
-  ],
-  "U3": [
-   {
-    "file": "files.json",
-    "case": "fetch_stream_refuses_a_peer_serving_more_than_it_declared"
-   }
-  ],
-  "U4": [
-   {
-    "file": "handshake.json",
-    "case": "the_daemon_incarnation_changes_across_a_restart"
-   }
-  ]
- },
- "blocked_on_record_cases": [
-  {
-   "file": "timeline-streams.json",
-   "case": "message_send_omitting_op_id_is_refused_naming_the_field",
-   "record": "op_id_optional_but_deduplicated"
-  }
- ],
- "target_counts": {
-  "untargeted": 340,
-  "daemon": 0,
-  "in_process_core": 1,
-  "client_adapter": 5
- },
- "totals": {
-  "cases": 346,
-  "attributed_to_an_operation": 239,
-  "not_operation_scoped": 107,
-  "conforming_to_the_dsl": 346,
-  "distinct_step_verbs_in_use": 7,
-  "quarantined": 0,
-  "blocked_on_upstream": 15,
-  "blocked_on_record": 1
- },
- "per_file_totals": {
-  "files.json": {
-   "cases": 45,
-   "attributed_to_an_operation": 43,
-   "not_operation_scoped": 2,
-   "blocked_on_upstream": {
-    "U1": 0,
+  "blocked_on_upstream": {
+    "U1": "ConnEvent must carry the connection generation and a typed offline reason",
+    "U2": "a progress-observing or streaming blob-fetch API (8 cases: 3 progress/stall, 1 deadline, 4 cancellation)",
+    "U3": "a size-distinguishable fetch outcome (1 fetch-stream size case)",
+    "U4": "harness cannot restart a daemon within a case"
+  },
+  "blocked_case_counts": {
+    "U1": 5,
     "U2": 8,
     "U3": 1,
-    "U4": 0
-   },
-   "blocked_on_record": 0
+    "U4": 1,
+    "blocked_on_record": 1
   },
-  "handshake.json": {
-   "cases": 72,
-   "attributed_to_an_operation": 0,
-   "not_operation_scoped": 72,
-   "blocked_on_upstream": {
-    "U1": 1,
-    "U2": 0,
-    "U3": 0,
-    "U4": 1
-   },
-   "blocked_on_record": 0
+  "blocked_on_upstream_cases": {
+    "U1": [
+      {
+        "file": "handshake.json",
+        "case": "peer_push_carries_t_no_id_a_generation_and_a_tagged_offline_reason"
+      },
+      {
+        "file": "pipes.json",
+        "case": "a_stale_generation_teardown_does_not_rewrite_presence_or_pipe_reachability"
+      },
+      {
+        "file": "rooms.json",
+        "case": "room_peers_ignores_a_stale_generation_teardown"
+      },
+      {
+        "file": "rooms.json",
+        "case": "room_peers_reports_a_typed_reason_for_a_device_it_cannot_reach"
+      },
+      {
+        "file": "timeline-streams.json",
+        "case": "peer_push_carries_the_connection_generation_and_a_typed_offline_reason"
+      }
+    ],
+    "U2": [
+      {
+        "file": "files.json",
+        "case": "a_transfer_with_no_forward_progress_fails_with_transfer_stalled"
+      },
+      {
+        "file": "files.json",
+        "case": "cancel_result_reports_bytes_transferred"
+      },
+      {
+        "file": "files.json",
+        "case": "fetch_deadline_scales_with_the_declared_size"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_cancel_after_the_originating_connection_dropped"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_cancel_by_a_different_principal_is_indistinguishable_from_unknown"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_cancel_releases_the_concurrent_transfer_slot"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_progress_is_delivered_only_to_the_initiating_principal"
+      },
+      {
+        "file": "files.json",
+        "case": "transfer_progress_pushes_report_monotonic_transferred_bytes"
+      }
+    ],
+    "U3": [
+      {
+        "file": "files.json",
+        "case": "fetch_stream_refuses_a_peer_serving_more_than_it_declared"
+      }
+    ],
+    "U4": [
+      {
+        "file": "handshake.json",
+        "case": "the_daemon_incarnation_changes_across_a_restart"
+      }
+    ]
   },
-  "invites.json": {
-   "cases": 37,
-   "attributed_to_an_operation": 34,
-   "not_operation_scoped": 3,
-   "blocked_on_upstream": {
-    "U1": 0,
-    "U2": 0,
-    "U3": 0,
-    "U4": 0
-   },
-   "blocked_on_record": 0
+  "blocked_on_record_cases": [
+    {
+      "file": "timeline-streams.json",
+      "case": "message_send_omitting_op_id_is_refused_naming_the_field",
+      "record": "op_id_optional_but_deduplicated"
+    }
+  ],
+  "target_counts": {
+    "untargeted": 340,
+    "daemon": 0,
+    "in_process_core": 1,
+    "client_adapter": 5
   },
-  "pipes.json": {
-   "cases": 43,
-   "attributed_to_an_operation": 37,
-   "not_operation_scoped": 6,
-   "blocked_on_upstream": {
-    "U1": 1,
-    "U2": 0,
-    "U3": 0,
-    "U4": 0
-   },
-   "blocked_on_record": 0
+  "totals": {
+    "cases": 346,
+    "attributed_to_an_operation": 239,
+    "not_operation_scoped": 107,
+    "conforming_to_the_dsl": 346,
+    "distinct_step_verbs_in_use": 7,
+    "quarantined": 0,
+    "blocked_on_upstream": 15,
+    "blocked_on_record": 1
   },
-  "rooms.json": {
-   "cases": 65,
-   "attributed_to_an_operation": 59,
-   "not_operation_scoped": 6,
-   "blocked_on_upstream": {
-    "U1": 2,
-    "U2": 0,
-    "U3": 0,
-    "U4": 0
-   },
-   "blocked_on_record": 0
+  "per_file_totals": {
+    "files.json": {
+      "cases": 45,
+      "attributed_to_an_operation": 43,
+      "not_operation_scoped": 2,
+      "blocked_on_upstream": {
+        "U1": 0,
+        "U2": 8,
+        "U3": 1,
+        "U4": 0
+      },
+      "blocked_on_record": 0
+    },
+    "handshake.json": {
+      "cases": 72,
+      "attributed_to_an_operation": 0,
+      "not_operation_scoped": 72,
+      "blocked_on_upstream": {
+        "U1": 1,
+        "U2": 0,
+        "U3": 0,
+        "U4": 1
+      },
+      "blocked_on_record": 0
+    },
+    "invites.json": {
+      "cases": 37,
+      "attributed_to_an_operation": 34,
+      "not_operation_scoped": 3,
+      "blocked_on_upstream": {
+        "U1": 0,
+        "U2": 0,
+        "U3": 0,
+        "U4": 0
+      },
+      "blocked_on_record": 0
+    },
+    "pipes.json": {
+      "cases": 43,
+      "attributed_to_an_operation": 37,
+      "not_operation_scoped": 6,
+      "blocked_on_upstream": {
+        "U1": 1,
+        "U2": 0,
+        "U3": 0,
+        "U4": 0
+      },
+      "blocked_on_record": 0
+    },
+    "rooms.json": {
+      "cases": 65,
+      "attributed_to_an_operation": 59,
+      "not_operation_scoped": 6,
+      "blocked_on_upstream": {
+        "U1": 2,
+        "U2": 0,
+        "U3": 0,
+        "U4": 0
+      },
+      "blocked_on_record": 0
+    },
+    "subject-daemon.json": {
+      "cases": 24,
+      "attributed_to_an_operation": 19,
+      "not_operation_scoped": 5,
+      "blocked_on_upstream": {
+        "U1": 0,
+        "U2": 0,
+        "U3": 0,
+        "U4": 0
+      },
+      "blocked_on_record": 0
+    },
+    "timeline-streams.json": {
+      "cases": 60,
+      "attributed_to_an_operation": 47,
+      "not_operation_scoped": 13,
+      "blocked_on_upstream": {
+        "U1": 1,
+        "U2": 0,
+        "U3": 0,
+        "U4": 0
+      },
+      "blocked_on_record": 1
+    }
   },
-  "subject-daemon.json": {
-   "cases": 24,
-   "attributed_to_an_operation": 19,
-   "not_operation_scoped": 5,
-   "blocked_on_upstream": {
-    "U1": 0,
-    "U2": 0,
-    "U3": 0,
-    "U4": 0
-   },
-   "blocked_on_record": 0
+  "exemptions": {
+    "room.deactivate": {
+      "from": "required_per_operation",
+      "reason": "Every way room.deactivate can fail is already a cross-cutting refusal: no subject, no such room, or membership ended. Deactivating a room the caller may act in always succeeds, because it withdraws local participation and asks nothing of the network. A code that no reachable state produces would buy a green cell in this table and nothing else.",
+      "reviewed_in": "#212"
+    }
   },
-  "timeline-streams.json": {
-   "cases": 60,
-   "attributed_to_an_operation": 47,
-   "not_operation_scoped": 13,
-   "blocked_on_upstream": {
-    "U1": 1,
-    "U2": 0,
-    "U3": 0,
-    "U4": 0
-   },
-   "blocked_on_record": 1
-  }
- },
- "exemptions": {
-  "room.deactivate": {
-   "from": "required_per_operation",
-   "reason": "Every way room.deactivate can fail is already a cross-cutting refusal: no subject, no such room, or membership ended. Deactivating a room the caller may act in always succeeds, because it withdraws local participation and asks nothing of the network. A code that no reachable state produces would buy a green cell in this table and nothing else.",
-   "reviewed_in": "#212"
-  }
- },
- "taxonomy_code_count": 64,
- "codes_without_a_case": {
-  "note": "Computed from literal expect.err.code on a direct call matching case.operation, with canonical file-error validation; notes, intents, setup calls, generic nested objects, and authoring_notes do not count. frame_too_large, idle_timeout, malformed_frame, and not_ready count only through their verified named close/status fixtures.",
-  "codes": [
-   "forbidden_origin",
-   "pairing_code_invalid",
-   "protocol_unsupported",
-   "role_not_grantable",
-   "session_expired",
-   "storage_generation_mismatch",
-   "unauthenticated",
-   "unknown_operation"
-  ]
- },
- "coverage": {
-  "daemon.stop": {
-   "cases": 4,
-   "success": true,
-   "distinctive_code": "shutdown_in_progress",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
+  "taxonomy_code_count": 64,
+  "codes_without_a_case": {
+    "note": "Computed from literal expect.err.code on a direct call matching case.operation, with canonical file-error validation; notes, intents, setup calls, generic nested objects, and authoring_notes do not count. frame_too_large, idle_timeout, malformed_frame, and not_ready count only through their verified named close/status fixtures.",
+    "codes": [
+      "forbidden_origin",
+      "pairing_code_invalid",
+      "protocol_unsupported",
+      "role_not_grantable",
+      "session_expired",
+      "storage_generation_mismatch",
+      "unauthenticated",
+      "unknown_operation"
+    ]
   },
-  "file.fetch": {
-   "cases": 14,
-   "success": true,
-   "distinctive_code": "provider_unreachable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
+  "coverage": {
+    "daemon.stop": {
+      "cases": 4,
+      "success": true,
+      "distinctive_code": "shutdown_in_progress",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "file.fetch": {
+      "cases": 14,
+      "success": true,
+      "distinctive_code": "provider_unreachable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "file.list": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "file_index_unreadable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "file.read": {
+      "cases": 3,
+      "success": true,
+      "distinctive_code": "file_not_fetched",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "file.share": {
+      "cases": 16,
+      "success": true,
+      "distinctive_code": "declared_size_mismatch",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "fleet.list": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "fleet_projection_unavailable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "invite.list": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "invite_index_unreadable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "invite.mint": {
+      "cases": 11,
+      "success": true,
+      "distinctive_code": "invitee_already_member",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "invite.redeem": {
+      "cases": 11,
+      "success": true,
+      "distinctive_code": "capability_invalid",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "invite.revoke": {
+      "cases": 7,
+      "success": true,
+      "distinctive_code": "capability_redeemed",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "member.remove": {
+      "cases": 10,
+      "success": true,
+      "distinctive_code": "authority_cannot_be_removed",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "message.send": {
+      "cases": 11,
+      "success": true,
+      "distinctive_code": "message_too_large",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "pipe.connect": {
+      "cases": 7,
+      "success": true,
+      "distinctive_code": "pipe_unreachable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "pipe.list": {
+      "cases": 7,
+      "success": true,
+      "distinctive_code": "pipe_index_unreadable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "pipe.publish": {
+      "cases": 16,
+      "success": true,
+      "distinctive_code": "pipe_target_refused",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "pipe.release": {
+      "cases": 3,
+      "success": true,
+      "distinctive_code": "connection_unknown",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "pipe.revoke": {
+      "cases": 4,
+      "success": true,
+      "distinctive_code": "pipe_not_publisher",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.activate": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "transport_unavailable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.archive": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "room_still_active",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.create": {
+      "cases": 9,
+      "success": true,
+      "distinctive_code": "room_name_invalid",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.deactivate": {
+      "cases": 3,
+      "success": true,
+      "distinctive_code": null,
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.leave": {
+      "cases": 4,
+      "success": true,
+      "distinctive_code": "sole_authority_cannot_leave",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.list": {
+      "cases": 6,
+      "success": true,
+      "distinctive_code": "room_index_unreadable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.members": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "membership_unresolved",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.peers": {
+      "cases": 6,
+      "success": true,
+      "distinctive_code": "room_not_live",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "room.timeline": {
+      "cases": 9,
+      "success": true,
+      "distinctive_code": "cursor_unknown",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "status.history": {
+      "cases": 7,
+      "success": true,
+      "distinctive_code": "status_subject_unknown",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "status.post": {
+      "cases": 12,
+      "success": true,
+      "distinctive_code": "status_label_unknown",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "stream.resync": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "resync_required",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "stream.subscribe": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "subscription_limit_reached",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "stream.unsubscribe": {
+      "cases": 2,
+      "success": true,
+      "distinctive_code": "subscription_unknown",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "subject.ensure": {
+      "cases": 12,
+      "success": true,
+      "distinctive_code": "subject_store_unwritable",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    },
+    "transfer.cancel": {
+      "cases": 5,
+      "success": true,
+      "distinctive_code": "transfer_unknown",
+      "distinctive_code_has_a_case": true,
+      "satisfies_required_kinds": true
+    }
   },
-  "file.list": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "file_index_unreadable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
+  "operations_not_yet_satisfying_required_kinds": [],
+  "severity_derivation": {
+    "note": "severity is derived from the closed label set and SERVED; no signed severity field exists",
+    "map": {
+      "online": "ok",
+      "idle": "ok",
+      "claiming": "ok",
+      "working": "ok",
+      "done": "ok",
+      "failed": "failed",
+      "blocked": "review"
+    }
   },
-  "file.read": {
-   "cases": 3,
-   "success": true,
-   "distinctive_code": "file_not_fetched",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
+  "operation_null_cases": {
+    "note": "operation:null is legal for genuinely cross-cutting cases — gate behaviour, envelope framing, handshake, non-oracle properties spanning several operations, and multi-operation invariants. Every one of these is cross-cutting by intent (its own `intent` names a property no single operation owns), never by omission. The count here feeds totals.not_operation_scoped.",
+    "by_file": {
+      "files.json": [
+        "file_operations_are_not_a_membership_oracle",
+        "handshake_serves_the_file_and_transfer_limits_as_integers"
+      ],
+      "handshake.json": [
+        "a_duplicate_in_flight_id_is_refused_and_executes_only_once",
+        "a_frame_of_exactly_max_frame_bytes_is_parsed_and_answered",
+        "a_frame_one_byte_past_max_frame_bytes_closes_4005_without_being_parsed",
+        "a_frame_with_no_id_is_not_executed",
+        "a_gate_refused_upgrade_consumes_no_connection_slot",
+        "a_non_object_in_is_refused_and_a_null_in_is_refused",
+        "a_push_carries_t_and_never_id",
+        "an_array_at_the_length_bound_parses_and_one_past_it_is_invalid_argument",
+        "an_envelope_id_may_be_reused_after_its_reply_completes",
+        "an_op_name_at_the_codec_bound_parses_and_one_past_it_is_invalid_argument",
+        "an_over_limit_frame_mutates_nothing",
+        "an_unknown_op_is_a_correlated_error_reply_not_a_close",
+        "close_code_4003_is_emitted_when_the_daemon_is_not_ready",
+        "close_code_4004_is_emitted_on_idle_timeout",
+        "close_code_4005_is_emitted_for_frame_too_large",
+        "connections_at_the_served_limit_are_admitted_and_one_past_is_resource_exhausted",
+        "credential_comparison_is_timing_indistinguishable",
+        "daemon_token_is_refused_in_a_url_or_a_body",
+        "error_envelopes_for_a_foreign_room_and_an_unknown_room_are_indistinguishable",
+        "error_reply_carries_ok_false_a_code_and_no_hint",
+        "every_application_close_code_in_the_corpus_is_in_the_defined_table",
+        "gate_admits_a_supported_generation_and_a_matching_storage_generation",
+        "gate_check_1_refuses_a_non_loopback_host_with_forbidden_origin",
+        "gate_check_2_admits_an_absent_origin",
+        "gate_check_2_refuses_a_non_loopback_origin_with_forbidden_origin",
+        "gate_check_3_refuses_a_non_canonical_v_value",
+        "gate_check_3_refuses_a_repeated_v_parameter",
+        "gate_check_3_refuses_an_absent_v_which_is_exactly_a_v1_client",
+        "gate_check_3_refuses_an_unsupported_declared_generation",
+        "gate_check_4_refuses_a_mismatched_storage_generation",
+        "gate_check_4_refuses_an_absent_sg",
+        "gate_check_5_refuses_an_absent_and_a_wrong_credential",
+        "gate_order_host_precedes_protocol_and_storage_and_credential",
+        "gate_order_origin_precedes_protocol",
+        "gate_order_protocol_precedes_storage",
+        "gate_order_storage_precedes_credential",
+        "gate_refusal_mutates_nothing",
+        "gate_rejection_reveals_nothing_about_local_state",
+        "gate_runs_before_the_upgrade_so_a_refusal_is_a_status_not_a_close_code",
+        "health_limits_object_carries_all_sixteen_named_integer_fields",
+        "health_serves_the_version_object_and_no_data_dir",
+        "hello_carries_a_daemon_incarnation_identity",
+        "hello_carries_no_pid_no_port_and_no_data_dir",
+        "hello_is_the_first_frame_and_arrives_exactly_once",
+        "hello_limits_are_identical_to_the_layer_0_limits",
+        "hello_protocol_and_storage_generation_echo_the_admitted_gate_values",
+        "hello_resume_state_is_a_tagged_variant_never_a_null",
+        "hello_subject_absent_is_a_tagged_variant_with_no_null_ids",
+        "hello_subject_present_is_a_tagged_variant_with_both_ids",
+        "inflight_requests_at_the_served_limit_are_all_answered",
+        "limits_are_read_from_the_wire_not_compiled_in",
+        "max_shared_file_bytes_is_the_ratified_integer_never_a_string",
+        "min_protocol_equals_protocol_because_v2_supports_one_generation",
+        "nesting_at_the_depth_bound_parses_and_one_past_it_is_invalid_argument",
+        "no_frame_in_the_corpus_uses_a_semantic_null",
+        "no_push_frame_reaches_a_connection_that_is_not_a_member",
+        "one_request_past_max_inflight_is_resource_exhausted_not_a_close",
+        "op_id_dedup_survives_reconnection_and_a_new_envelope_id",
+        "op_ids_do_not_collide_across_session_principals",
+        "peer_push_carries_t_no_id_a_generation_and_a_tagged_offline_reason",
+        "rejection_body_is_the_v2_error_envelope_never_plain_text_and_never_a_hint",
+        "replies_may_arrive_out_of_order_and_pushes_are_not_held_behind_a_call",
+        "request_and_reply_correlate_by_id",
+        "sec_fetch_site_is_not_a_credential",
+        "session_endpoint_requires_an_exact_loopback_origin_and_is_rate_limited",
+        "session_ticket_expires_and_never_carries_the_daemon_token",
+        "session_ticket_is_single_use_and_burned_on_redemption",
+        "storage_generation_is_discoverable_before_the_gate",
+        "the_daemon_incarnation_changes_across_a_restart",
+        "the_daemon_incarnation_is_stable_across_connections",
+        "version_object_is_byte_identical_across_ready_line_portfile_and_health",
+        "wrong_typed_envelope_members_are_refused_without_executing"
+      ],
+      "invites.json": [
+        "an_unredeemed_capability_grants_no_room_scoped_answer",
+        "an_unredeemed_capability_holder_receives_no_pushes_for_the_room",
+        "revocation_and_redemption_facts_advance_the_room_position_without_gaps"
+      ],
+      "pipes.json": [
+        "a_stale_generation_teardown_does_not_rewrite_presence_or_pipe_reachability",
+        "membership_presence_availability_and_pipe_reachability_are_four_distinct_answers",
+        "pipe_facts_reach_subscribers_with_strictly_increasing_room_positions",
+        "pipe_operations_are_not_a_membership_oracle",
+        "pipe_pushes_stop_at_the_membership_boundary",
+        "pipe_release_and_pipe_revoke_are_not_the_same_withdrawal"
+      ],
+      "rooms.json": [
+        "lifecycle_left_room_refuses_every_write_and_every_live_read",
+        "lifecycle_removed_room_refuses_every_write_and_every_live_read",
+        "membership_pushes_carry_strictly_increasing_per_room_positions",
+        "non_oracle_absent_and_foreign_rooms_are_indistinguishable",
+        "non_oracle_an_unredeemed_invite_grants_no_room_scoped_access",
+        "non_oracle_timing_is_indistinguishable"
+      ],
+      "subject-daemon.json": [
+        "a_frame_with_no_recoverable_id_closes_4007_malformed_frame",
+        "hello_carries_subject_state_and_omits_pid_port_and_data_dir",
+        "no_frame_in_a_subject_session_ever_echoes_the_daemon_credential",
+        "one_precondition_gets_one_answer_across_every_subject_requiring_operation",
+        "subject_store_unreadable_fails_the_connection_closed_and_does_not_clobber"
+      ],
+      "timeline-streams.json": [
+        "a_position_discontinuity_is_detectable_without_any_gap_frame",
+        "a_push_never_carries_an_id_and_a_reply_always_does",
+        "gap_frame_open_variant_omits_pos_rather_than_nulling_it",
+        "gap_frame_states_a_bounded_range_as_a_tagged_variant",
+        "invariant_147_multi_room_routing_loses_nothing_and_skips_nothing",
+        "peer_push_carries_the_connection_generation_and_a_typed_offline_reason",
+        "positions_are_strictly_increasing_and_contiguous_within_one_room",
+        "positions_carry_no_cross_room_order_and_are_never_comparable_between_rooms",
+        "pushes_are_forwarded_while_a_request_is_still_outstanding",
+        "pushes_stop_when_membership_ends",
+        "reconnect_reports_resume_state_and_does_not_silently_restore_subscriptions",
+        "served_limits_are_mutually_consistent_so_an_at_limit_body_fits_one_frame",
+        "the_push_stream_is_not_a_membership_oracle"
+      ]
+    },
+    "count": 107
   },
-  "file.share": {
-   "cases": 16,
-   "success": true,
-   "distinctive_code": "declared_size_mismatch",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "fleet.list": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "fleet_projection_unavailable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "invite.list": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "invite_index_unreadable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "invite.mint": {
-   "cases": 11,
-   "success": true,
-   "distinctive_code": "invitee_already_member",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "invite.redeem": {
-   "cases": 11,
-   "success": true,
-   "distinctive_code": "capability_invalid",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "invite.revoke": {
-   "cases": 7,
-   "success": true,
-   "distinctive_code": "capability_redeemed",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "member.remove": {
-   "cases": 10,
-   "success": true,
-   "distinctive_code": "authority_cannot_be_removed",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "message.send": {
-   "cases": 11,
-   "success": true,
-   "distinctive_code": "message_too_large",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "pipe.connect": {
-   "cases": 7,
-   "success": true,
-   "distinctive_code": "pipe_unreachable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "pipe.list": {
-   "cases": 7,
-   "success": true,
-   "distinctive_code": "pipe_index_unreadable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "pipe.publish": {
-   "cases": 16,
-   "success": true,
-   "distinctive_code": "pipe_target_refused",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "pipe.release": {
-   "cases": 3,
-   "success": true,
-   "distinctive_code": "connection_unknown",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "pipe.revoke": {
-   "cases": 4,
-   "success": true,
-   "distinctive_code": "pipe_not_publisher",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.activate": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "transport_unavailable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.archive": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "room_still_active",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.create": {
-   "cases": 9,
-   "success": true,
-   "distinctive_code": "room_name_invalid",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.deactivate": {
-   "cases": 3,
-   "success": true,
-   "distinctive_code": null,
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.leave": {
-   "cases": 4,
-   "success": true,
-   "distinctive_code": "sole_authority_cannot_leave",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.list": {
-   "cases": 6,
-   "success": true,
-   "distinctive_code": "room_index_unreadable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.members": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "membership_unresolved",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.peers": {
-   "cases": 6,
-   "success": true,
-   "distinctive_code": "room_not_live",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "room.timeline": {
-   "cases": 9,
-   "success": true,
-   "distinctive_code": "cursor_unknown",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "status.history": {
-   "cases": 7,
-   "success": true,
-   "distinctive_code": "status_subject_unknown",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "status.post": {
-   "cases": 12,
-   "success": true,
-   "distinctive_code": "status_label_unknown",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "stream.resync": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "resync_required",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "stream.subscribe": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "subscription_limit_reached",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "stream.unsubscribe": {
-   "cases": 2,
-   "success": true,
-   "distinctive_code": "subscription_unknown",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "subject.ensure": {
-   "cases": 12,
-   "success": true,
-   "distinctive_code": "subject_store_unwritable",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  },
-  "transfer.cancel": {
-   "cases": 5,
-   "success": true,
-   "distinctive_code": "transfer_unknown",
-   "distinctive_code_has_a_case": true,
-   "satisfies_required_kinds": true
-  }
- },
- "operations_not_yet_satisfying_required_kinds": [],
- "severity_derivation": {
-  "note": "severity is derived from the closed label set and SERVED; no signed severity field exists",
-  "map": {
-   "online": "ok",
-   "idle": "ok",
-   "claiming": "ok",
-   "working": "ok",
-   "done": "ok",
-   "failed": "failed",
-   "blocked": "review"
-  }
- },
- "operation_null_cases": {
-  "note": "operation:null is legal for genuinely cross-cutting cases \u2014 gate behaviour, envelope framing, handshake, non-oracle properties spanning several operations, and multi-operation invariants. Every one of these is cross-cutting by intent (its own `intent` names a property no single operation owns), never by omission. The count here feeds totals.not_operation_scoped.",
-  "by_file": {
-   "files.json": [
-    "file_operations_are_not_a_membership_oracle",
-    "handshake_serves_the_file_and_transfer_limits_as_integers"
-   ],
-   "handshake.json": [
-    "a_duplicate_in_flight_id_is_refused_and_executes_only_once",
-    "a_frame_of_exactly_max_frame_bytes_is_parsed_and_answered",
-    "a_frame_one_byte_past_max_frame_bytes_closes_4005_without_being_parsed",
-    "a_frame_with_no_id_is_not_executed",
-    "a_gate_refused_upgrade_consumes_no_connection_slot",
-    "a_non_object_in_is_refused_and_a_null_in_is_refused",
-    "a_push_carries_t_and_never_id",
-    "an_array_at_the_length_bound_parses_and_one_past_it_is_invalid_argument",
-    "an_envelope_id_may_be_reused_after_its_reply_completes",
-    "an_op_name_at_the_codec_bound_parses_and_one_past_it_is_invalid_argument",
-    "an_over_limit_frame_mutates_nothing",
-    "an_unknown_op_is_a_correlated_error_reply_not_a_close",
-    "close_code_4003_is_emitted_when_the_daemon_is_not_ready",
-    "close_code_4004_is_emitted_on_idle_timeout",
-    "close_code_4005_is_emitted_for_frame_too_large",
-    "connections_at_the_served_limit_are_admitted_and_one_past_is_resource_exhausted",
-    "credential_comparison_is_timing_indistinguishable",
-    "daemon_token_is_refused_in_a_url_or_a_body",
-    "error_envelopes_for_a_foreign_room_and_an_unknown_room_are_indistinguishable",
-    "error_reply_carries_ok_false_a_code_and_no_hint",
-    "every_application_close_code_in_the_corpus_is_in_the_defined_table",
-    "gate_admits_a_supported_generation_and_a_matching_storage_generation",
-    "gate_check_1_refuses_a_non_loopback_host_with_forbidden_origin",
-    "gate_check_2_admits_an_absent_origin",
-    "gate_check_2_refuses_a_non_loopback_origin_with_forbidden_origin",
-    "gate_check_3_refuses_a_non_canonical_v_value",
-    "gate_check_3_refuses_a_repeated_v_parameter",
-    "gate_check_3_refuses_an_absent_v_which_is_exactly_a_v1_client",
-    "gate_check_3_refuses_an_unsupported_declared_generation",
-    "gate_check_4_refuses_a_mismatched_storage_generation",
-    "gate_check_4_refuses_an_absent_sg",
-    "gate_check_5_refuses_an_absent_and_a_wrong_credential",
-    "gate_order_host_precedes_protocol_and_storage_and_credential",
-    "gate_order_origin_precedes_protocol",
-    "gate_order_protocol_precedes_storage",
-    "gate_order_storage_precedes_credential",
-    "gate_refusal_mutates_nothing",
-    "gate_rejection_reveals_nothing_about_local_state",
-    "gate_runs_before_the_upgrade_so_a_refusal_is_a_status_not_a_close_code",
-    "health_limits_object_carries_all_sixteen_named_integer_fields",
-    "health_serves_the_version_object_and_no_data_dir",
-    "hello_carries_a_daemon_incarnation_identity",
-    "hello_carries_no_pid_no_port_and_no_data_dir",
-    "hello_is_the_first_frame_and_arrives_exactly_once",
-    "hello_limits_are_identical_to_the_layer_0_limits",
-    "hello_protocol_and_storage_generation_echo_the_admitted_gate_values",
-    "hello_resume_state_is_a_tagged_variant_never_a_null",
-    "hello_subject_absent_is_a_tagged_variant_with_no_null_ids",
-    "hello_subject_present_is_a_tagged_variant_with_both_ids",
-    "inflight_requests_at_the_served_limit_are_all_answered",
-    "limits_are_read_from_the_wire_not_compiled_in",
-    "max_shared_file_bytes_is_the_ratified_integer_never_a_string",
-    "min_protocol_equals_protocol_because_v2_supports_one_generation",
-    "nesting_at_the_depth_bound_parses_and_one_past_it_is_invalid_argument",
-    "no_frame_in_the_corpus_uses_a_semantic_null",
-    "no_push_frame_reaches_a_connection_that_is_not_a_member",
-    "one_request_past_max_inflight_is_resource_exhausted_not_a_close",
-    "op_id_dedup_survives_reconnection_and_a_new_envelope_id",
-    "op_ids_do_not_collide_across_session_principals",
-    "peer_push_carries_t_no_id_a_generation_and_a_tagged_offline_reason",
-    "rejection_body_is_the_v2_error_envelope_never_plain_text_and_never_a_hint",
-    "replies_may_arrive_out_of_order_and_pushes_are_not_held_behind_a_call",
-    "request_and_reply_correlate_by_id",
-    "sec_fetch_site_is_not_a_credential",
-    "session_endpoint_requires_an_exact_loopback_origin_and_is_rate_limited",
-    "session_ticket_expires_and_never_carries_the_daemon_token",
-    "session_ticket_is_single_use_and_burned_on_redemption",
-    "storage_generation_is_discoverable_before_the_gate",
-    "the_daemon_incarnation_changes_across_a_restart",
-    "the_daemon_incarnation_is_stable_across_connections",
-    "version_object_is_byte_identical_across_ready_line_portfile_and_health",
-    "wrong_typed_envelope_members_are_refused_without_executing"
-   ],
-   "invites.json": [
-    "an_unredeemed_capability_grants_no_room_scoped_answer",
-    "an_unredeemed_capability_holder_receives_no_pushes_for_the_room",
-    "revocation_and_redemption_facts_advance_the_room_position_without_gaps"
-   ],
-   "pipes.json": [
-    "a_stale_generation_teardown_does_not_rewrite_presence_or_pipe_reachability",
-    "membership_presence_availability_and_pipe_reachability_are_four_distinct_answers",
-    "pipe_facts_reach_subscribers_with_strictly_increasing_room_positions",
-    "pipe_operations_are_not_a_membership_oracle",
-    "pipe_pushes_stop_at_the_membership_boundary",
-    "pipe_release_and_pipe_revoke_are_not_the_same_withdrawal"
-   ],
-   "rooms.json": [
-    "lifecycle_left_room_refuses_every_write_and_every_live_read",
-    "lifecycle_removed_room_refuses_every_write_and_every_live_read",
-    "membership_pushes_carry_strictly_increasing_per_room_positions",
-    "non_oracle_absent_and_foreign_rooms_are_indistinguishable",
-    "non_oracle_an_unredeemed_invite_grants_no_room_scoped_access",
-    "non_oracle_timing_is_indistinguishable"
-   ],
-   "subject-daemon.json": [
-    "a_frame_with_no_recoverable_id_closes_4007_malformed_frame",
-    "hello_carries_subject_state_and_omits_pid_port_and_data_dir",
-    "no_frame_in_a_subject_session_ever_echoes_the_daemon_credential",
-    "one_precondition_gets_one_answer_across_every_subject_requiring_operation",
-    "subject_store_unreadable_fails_the_connection_closed_and_does_not_clobber"
-   ],
-   "timeline-streams.json": [
-    "a_position_discontinuity_is_detectable_without_any_gap_frame",
-    "a_push_never_carries_an_id_and_a_reply_always_does",
-    "gap_frame_open_variant_omits_pos_rather_than_nulling_it",
-    "gap_frame_states_a_bounded_range_as_a_tagged_variant",
-    "invariant_147_multi_room_routing_loses_nothing_and_skips_nothing",
-    "peer_push_carries_the_connection_generation_and_a_typed_offline_reason",
-    "positions_are_strictly_increasing_and_contiguous_within_one_room",
-    "positions_carry_no_cross_room_order_and_are_never_comparable_between_rooms",
-    "pushes_are_forwarded_while_a_request_is_still_outstanding",
-    "pushes_stop_when_membership_ends",
-    "reconnect_reports_resume_state_and_does_not_silently_restore_subscriptions",
-    "served_limits_are_mutually_consistent_so_an_at_limit_body_fits_one_frame",
-    "the_push_stream_is_not_a_membership_oracle"
-   ]
-  },
-  "count": 107
- },
- "normalization": "Normalized in #213; `files.json` re-transcribed in pass 3, which added the `stream` DSL key (the files domain is not expressible without it), restored the record's file request and reply shapes, repaired the split assertion fragments, and retired two cases whose subject - an unknown declared size - v2 does not represent."
+  "normalization": "Normalized in #213; `files.json` re-transcribed in pass 3, which added the `stream` DSL key (the files domain is not expressible without it), restored the record's file request and reply shapes, repaired the split assertion fragments, and retired two cases whose subject - an unknown declared size - v2 does not represent."
 }
