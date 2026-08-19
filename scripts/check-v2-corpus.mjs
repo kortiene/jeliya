@@ -57,11 +57,17 @@ const STREAMING_OPS = new Map([
 //     single-subject form — the client consumes the initial CREDIT window with
 //     no DATA); zero accepted progress for transfer_stall_ms must abort the
 //     stream and resolve transfer_stalled{transferred_bytes: 0}.
-// Still declarative until the executor drives them: transport-drop, and every
-// download-side fault (the download path has no executable single-subject
-// fixture — see the manifest ledger; download-side credit-pause is parked on
-// the same R-A gap).
-const STREAM_FAULTS = new Set(["client_abort", "raw_record", "credit_pause"]);
+//   - `transport_drop`: a pre-END transport loss on a healthy partial upload
+//     (the client streams one acknowledged DATA record, then drops the socket
+//     with no close frame); the daemon must abort, drop staging, release its
+//     reservation, author nothing, and record stream_aborted{transport_lost}
+//     under the op_id for replay. The step itself has NO terminal reply, so a
+//     transport_drop stream step carries no expect and no save; the recorded
+//     result is asserted by the fixture's replay step.
+// Still declarative until an executor drives them: every download-side fault
+// (the download path has no executable single-subject fixture — see the
+// manifest ledger; download-side credit-pause is parked on the same R-A gap).
+const STREAM_FAULTS = new Set(["client_abort", "raw_record", "credit_pause", "transport_drop"]);
 const KINDS = new Set(["success", "error", "malformed", "boundary", "authorization", "handshake", "push", "ordering"]);
 const PRE_OPEN_STREAM_CODES = new Set([
   "invalid_argument", "subject_absent", "room_not_available", "membership_ended",
@@ -781,6 +787,20 @@ function checkStep(step, file, caseName, stepIdx) {
           } else if (!STREAM_FAULTS.has(step.stream.fault)) {
             fail(file, caseName, where,
               `stream.fault "${step.stream.fault}" is not in the closed set {${[...STREAM_FAULTS].join(", ")}}`);
+          } else if (step.stream.fault === "transport_drop") {
+            // This fault deliberately ends with NO terminal reply on the wire
+            // (the socket is dropped pre-END), so there is nothing a matcher
+            // could match or a capture could read — a fixture carrying
+            // expect/save here would be fabricating a reply the daemon never
+            // sent. The recorded outcome is asserted by a later replay step.
+            if (step.expect !== undefined) {
+              fail(file, caseName, where,
+                `a transport_drop stream step has no terminal reply to match — assert the recorded result on the replay step instead`);
+            }
+            if (step.save !== undefined) {
+              fail(file, caseName, where,
+                `a transport_drop stream step has no reply to capture from — the recorded result is read on the replay step instead`);
+            }
           }
         }
       }
@@ -1398,7 +1418,7 @@ if (isObject(manifest)) {
       client_abort_fault: "implemented",
       raw_record_fault: "implemented",
       credit_pause_fault: "implemented",
-      transport_drop_fault: "unimplemented",
+      transport_drop_fault: "implemented",
     },
     adapter_targeted_declarative_cases: "declarative_only",
   };

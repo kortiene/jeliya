@@ -12,7 +12,7 @@ import { startDaemon } from './daemon.mjs';
 import { Session } from './session.mjs';
 import { AssertContext, AssertFailure, TransportFailure, evalAssert, subsetMatch } from './assert.mjs';
 import { resolvePath, resolveValue } from './values.mjs';
-import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall, streamWaitMs } from './stream.mjs';
+import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall, streamWaitMs, isTransportDroppedMarker } from './stream.mjs';
 
 /** The outcome of one case. */
 export const Outcome = {
@@ -507,6 +507,26 @@ export class Runner {
     let reply;
     if (streamSpec) {
       reply = await this.#streamCall(s, step.call, input, streamSpec, { opId, record });
+      if (isTransportDroppedMarker(reply)) {
+        // A transport_drop step ends with NO terminal reply on the wire —
+        // the socket is deliberately dropped pre-END. Treat the step as
+        // reply-less: nothing is exposed under out/err/frame (there is no
+        // reply to expose, and fabricating one is forbidden), the call
+        // counts as not-ok for the refused-baseline semantics, and the
+        // validator forbids expect/save on this shape so no matcher ever
+        // runs. The reply roots are CLEARED, not left holding the previous
+        // step's reply — a later assert or save-only step reading out/err/
+        // frame must find nothing rather than silently match stale values
+        // from before the drop. The tracker's accepted count (already
+        // recorded) is what a later bytes_streamed observation reads.
+        vars.out = undefined;
+        vars.err = undefined;
+        vars.frame = undefined;
+        ctxState.lastCallOk = false;
+        ctxState.networkActivity++;
+        this.log(`  -> transport dropped (accepted ${record.accepted})`);
+        return reply;
+      }
       this.log(`  -> ${reply.ok ? 'ok' : 'err ' + JSON.stringify(reply.err)} (accepted ${record.accepted})`);
     } else {
       const { id, reply: replyPromise } = s.startCall(step.call, input, { opId });
