@@ -326,9 +326,9 @@ export function streamWaitMs(spec, servedLimits = {}, timeoutScale = 1) {
   return Math.min(waitMs, 80_000) * timeoutScale;
 }
 
-export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs = 60_000 }) {
+export async function runStreamingCall({ session, tracker, replyState, spec, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, allowanceMs, floorBps, waitMs = 60_000 }) {
   if (spec.send_bytes !== undefined) {
-    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs, fault: spec.fault });
+    return runUpload({ session, tracker, replyState, sendBytes: Number(spec.send_bytes), declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, allowanceMs, floorBps, waitMs, fault: spec.fault });
   }
   if (spec.receive_bytes !== undefined) {
     // Client-originated download faults (credit-pause, receiver ABORT) are not
@@ -423,7 +423,7 @@ async function yieldAfterSend(session, tracker) {
 }
 
 /** Upload: race a pre-OPEN terminal reply against OPEN, then honour CREDIT. */
-async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, waitMs, fault }) {
+async function runUpload({ session, tracker, replyState, sendBytes, declaredBytes, maxPayload, limitBytes, inflightBytes, concurrentLimit, stallMs, allowanceMs, floorBps, waitMs, fault }) {
   const first = await tracker.next(replyState, waitMs, 'OPEN or a pre-OPEN terminal reply');
   if (first.reply) {
     // Terminal before admission: zero bytes, no stream. A `stream`-carrying
@@ -472,6 +472,23 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   // aborts_stream_not_connection in crates/jeliyad/src/serve.rs).
   if (fault === 'raw_record') {
     return await driveRawRecordUpload({ session, tracker, replyState, waitMs, limitBytes });
+  }
+  // `credit_pause` is a legal credit-bounded pause: after admission the client
+  // consumes the initial CREDIT with NO DATA at all and waits, a producer
+  // correctly paused for credit (docs/protocol-v2.md § Credit and bounded
+  // backpressure: the producer "pauses both source reads and WebSocket writes
+  // when it has no credit"; an active transfer counts as connection activity,
+  // so idle_timeout_ms does not race it). The daemon's accepted progress stays
+  // at zero, so after transfer_stall_ms it must abort the stream and resolve
+  // the request to transfer_stalled{transferred_bytes: 0} — with a known total,
+  // since the OPEN total exists (the upload-side, single-subject form of the
+  // record's no-forward-progress case; matched by the daemon integration test
+  // websocket_file_share_no_progress_stalls_and_survives_exact_ack in
+  // crates/jeliyad/src/serve.rs). The stall must win the race with the
+  // absolute deadline for this declared size, or the fixture would be asserting
+  // the wrong timer — the driver proves the served budget ordering up front.
+  if (fault === 'credit_pause') {
+    return await driveCreditPauseUpload({ session, tracker, replyState, waitMs, declaredBytes, stallMs, allowanceMs, floorBps, limitBytes });
   }
   if (fault !== undefined) {
     throw new Error(`unknown stream fault ${JSON.stringify(fault)} on file.share`);
@@ -890,6 +907,216 @@ async function driveRawRecordUpload({ session, tracker, replyState, waitMs, limi
   // malformed. (Anything arriving after this check, once the runner retires
   // the tracker, becomes the connection-fatal unbindable-record class and is
   // surfaced by the case-end sticky-violation scan.)
+  if (tracker.queue.length) {
+    throw new AssertFailure(
+      `daemon sent ${tracker.queue[0].kindName} for the retired stream after the terminal reply`,
+    );
+  }
+  if (tracker.failure) throw tracker.failure;
+  return reply;
+}
+
+/**
+ * Drive a legal credit-bounded upload pause. After OPEN the client consumes
+ * the daemon's initial CREDIT by sending NO DATA at all — a producer
+ * legitimately paused for credit with nothing to send — and holds the stream
+ * open. Accepted progress stays at zero, so the daemon's stall timer
+ * (transfer_stall_ms) must fire: it sends ABORT(operation_error, 0x05) at
+ * accepted offset zero, the client ACKs (kind 0x06, value 0x05, offset 0),
+ * and only then does the request resolve to the terminal typed error
+ * transfer_stalled{transferred_bytes: 0, total: known}.
+ *
+ * The served stall budget must win the race with the absolute deadline for
+ * this declared size (budget = transfer_connect_allowance_ms +
+ * ceil(declared*8*1000/floor)); the driver proves that ordering from the
+ * served limits BEFORE idling, so a fixture whose size would hit the deadline
+ * first (and thus assert the wrong timer) is an executor error, never a
+ * silent pass. A daemon that ignores a zero-progress pause, closes the
+ * connection, replies without first ABORTing, miscounts its accepted bytes,
+ * or answers with any other terminal fails here.
+ */
+async function driveCreditPauseUpload({ session, tracker, replyState, waitMs, declaredBytes, stallMs, allowanceMs, floorBps, limitBytes }) {
+  // The stall gauge contract: these served budgets must be positive JSON
+  // integers — a malformed value is an invalid configuration, never a
+  // disabled check (same rule the stall gauge applies to transfer_stall_ms).
+  if (typeof stallMs !== 'number' || !Number.isInteger(stallMs) || stallMs <= 0) {
+    throw new AssertFailure(`served transfer_stall_ms ${JSON.stringify(stallMs)} is unusable for the credit-pause fault`);
+  }
+  if (typeof allowanceMs !== 'number' || !Number.isInteger(allowanceMs) || allowanceMs < 0) {
+    throw new AssertFailure(`served transfer_connect_allowance_ms ${JSON.stringify(allowanceMs)} is unusable for the credit-pause fault`);
+  }
+  if (typeof floorBps !== 'number' || !Number.isInteger(floorBps) || floorBps <= 0) {
+    throw new AssertFailure(`served transfer_floor_bits_per_second ${JSON.stringify(floorBps)} is unusable for the credit-pause fault`);
+  }
+  // The served shared-file bound gates the upload credit window (the spec's
+  // wire bound is max_shared_file_bytes + 1 — the observation sentinel may
+  // legitimately exceed the OPEN total, so openTotal is NOT the bound here).
+  if (typeof limitBytes !== 'number' || !Number.isInteger(limitBytes) || limitBytes < 0) {
+    throw new AssertFailure(
+      `served max_shared_file_bytes ${JSON.stringify(limitBytes)} is unusable for byte streaming`,
+    );
+  }
+  const limit = limitBytes;
+  const declared = Number(declaredBytes);
+  if (!Number.isFinite(declared) || !Number.isInteger(declared) || declared < 0) {
+    throw new Error(`declared_bytes ${JSON.stringify(declaredBytes)} is unusable for the credit-pause fault`);
+  }
+  // The absolute budget the daemon arms at admission. For the stall to be the
+  // asserted timer it must be STRICTLY longer than the stall window; equality
+  // would make the outcome timer-order-dependent (the spec's ACTIVE race
+  // order is cancellation, then deadline, then stall), which a conformance
+  // case must never assert. A fixture/served-limits mismatch is an executor
+  // error (the runner's ERROR verdict), never a daemon conformance failure —
+  // the daemon is fully conformant under limits the fixture was not sized
+  // for, and blaming it would be a dishonest red.
+  const budgetMs = allowanceMs + Math.ceil((declared * 8 * 1000) / floorBps);
+  if (budgetMs <= stallMs) {
+    throw new Error(
+      `credit_pause fixture is mis-sized for these served limits: the absolute budget ${budgetMs}ms (allowance ${allowanceMs} + ceil(${declared}*8*1000/${floorBps})) does not strictly exceed transfer_stall_ms ${stallMs}, so the stall timer would not be the asserted outcome — a fixture/served-limits mismatch, not a daemon conformance failure`,
+    );
+  }
+  // The stall outcome must also be observable inside the harness patience
+  // (capped under the case watchdog): a served stall window at or beyond the
+  // wait cannot be awaited honestly, and timing out late would misreport it.
+  if (stallMs >= waitMs) {
+    throw new Error(
+      `credit_pause fixture is unrunnable under these served limits: transfer_stall_ms ${stallMs} is not observable within the harness patience ${waitMs}ms (capped under the case watchdog) — a fixture/served-limits mismatch, not a daemon conformance failure`,
+    );
+  }
+
+  const accepted = 0;
+  let abortSeen = null;
+  let ackSent = false;
+  let creditWindow = null;
+  for (;;) {
+    if (replyState.done && tracker.queue.length === 0) break;
+    const what = abortSeen
+      ? 'the terminal reply'
+      : creditWindow !== null
+        ? 'the stall ABORT'
+        : 'the initial CREDIT, a pre-emptive daemon ABORT, or the terminal reply';
+    const ev = await tracker.next(replyState, waitMs, what);
+    if (ev.reply) break;
+    const rec = ev.record;
+    checkBinding(tracker, rec);
+    // Per-direction ordering means nothing delivered after the daemon's ABORT
+    // can be an older in-flight record — the binding is retired by our ACK.
+    if (ackSent) {
+      throw new AssertFailure(`daemon sent ${rec.kindName} after its ABORT was acknowledged — the binding retired at ACK`);
+    }
+    if (rec.kind === KIND.CREDIT) {
+      // The initial send window is the pause's precondition: the client
+      // holds granted credit and sends nothing. Its offset must be zero
+      // (nothing was sent, so nothing can be acknowledged) and its value is
+      // bound by the upload wire bound max_shared_file_bytes + 1 — the
+      // one-byte observation sentinel may exceed the OPEN total, exactly as
+      // the normal upload path allows.
+      if (rec.payload) throw new AssertFailure('daemon CREDIT carried a payload');
+      if (rec.offset !== 0) {
+        throw new AssertFailure(
+          `daemon CREDIT acknowledged ${rec.offset} bytes when the client has sent none`,
+        );
+      }
+      if (rec.value > limit + 1) {
+        throw new AssertFailure(
+          `daemon CREDIT send_through ${rec.value} exceeds max_shared_file_bytes + 1 (${limit + 1})`,
+        );
+      }
+      if (creditWindow === null) {
+        creditWindow = rec.value;
+        continue;
+      }
+      // The client sent nothing and nothing was accepted, so cumulative
+      // credit may not move — an identical repeat is idempotent and legal,
+      // but any change would mean the daemon counted progress that never
+      // happened (or regressed a monotonic counter).
+      if (rec.value !== creditWindow) {
+        throw new AssertFailure(
+          `daemon moved cumulative CREDIT (send_through ${creditWindow} -> ${rec.value}) while the client was paused at zero sent bytes`,
+        );
+      }
+      continue;
+    }
+    if (rec.kind === KIND.ABORT) {
+      // The stall (or any ACTIVE-race) abort. A zero-progress pause can only
+      // be aborted at accepted offset zero — validateAbort already bounds the
+      // offset by the zero bytes actually sent — and the ABORT must precede
+      // the typed terminal reply (reply only after ACK).
+      validateAbort(rec, accepted, UPLOAD_DAEMON_ABORT_REASONS);
+      if (tracker.replySeq !== undefined) {
+        // Observable prefix only: this catches a reply that arrived with (or
+        // before) the ABORT itself. A reply the daemon SENT after the ABORT
+        // but before reading our ACK crosses the ACK on the wire and is not
+        // distinguishable from a legal post-ACK reply by a black-box client;
+        // that deeper obligation is unobservable here (the same boundary the
+        // client_abort and raw_record drivers document).
+        throw new AssertFailure('daemon sent its terminal reply before receiving the stall ABORT acknowledgement');
+      }
+      abortSeen = rec;
+      tracker.accepted = accepted;
+      session.sendBinary(
+        encodeRecord({ kind: KIND.ACK, id: tracker.id, streamId: tracker.streamId, offset: accepted, value: 0x05 }),
+      );
+      ackSent = true;
+      continue;
+    }
+    throw new AssertFailure(`daemon sent unexpected ${rec.kindName} while the client was paused for credit`);
+  }
+  if (tracker.queue.length) {
+    throw new AssertFailure(`daemon sent ${tracker.queue[0].kindName} after the terminal reply`);
+  }
+  if (!abortSeen) {
+    throw new AssertFailure(
+      'file.share resolved without a daemon ABORT while the client was paused at zero accepted progress',
+    );
+  }
+  const reply = await settleReply(replyState);
+  if (reply && reply.ok) {
+    throw new AssertFailure('file.share replied success for a stream the daemon aborted at zero progress');
+  }
+  const err = (reply && reply.err) || {};
+  if (err.code !== 'transfer_stalled') {
+    throw new AssertFailure(
+      `a zero-progress credit pause must resolve to transfer_stalled, got ${JSON.stringify(reply.err)}`,
+    );
+  }
+  if (err.transferred_bytes !== undefined && err.transferred_bytes !== accepted) {
+    throw new AssertFailure(
+      `terminal transferred_bytes ${err.transferred_bytes} disagrees with the ${accepted} receiver-accepted bytes`,
+    );
+  }
+  if (err.total !== undefined) {
+    if (!err.total || err.total.state !== 'known' || err.total.bytes !== tracker.openTotal) {
+      throw new AssertFailure(
+        `terminal total ${JSON.stringify(err.total)} disagrees with the admitted OPEN total ${tracker.openTotal}`,
+      );
+    }
+  }
+  if (abortSeen) {
+    // Bind the ABORT's claimed reason to the terminal reply — the same
+    // correlation the normal upload and download paths enforce: reasons
+    // 0x01-0x03 must resolve to stream_aborted carrying that reason, 0x04 to
+    // malformed_frame, and operation_error to the typed operation error. A
+    // daemon that ABORTs claiming cancelled or sink_failed and then replies
+    // transfer_stalled contradicts its own claimed reason; a daemon that
+    // ABORTs with protocol_error and replies transfer_stalled resolves the
+    // wrong error class.
+    checkAbortReplyCorrelation(abortSeen, reply, { accepted: abortSeen.offset, total: tracker.openTotal });
+  }
+  // A stream-local terminal failure must leave the connection usable, exactly
+  // like the raw_record leg: prove it with an unrelated idempotent call on
+  // the same session after the terminal reply (subject.ensure carries no
+  // tracker, so it cannot perturb a later bytes_streamed observation).
+  const liveness = await session.call('subject.ensure', {}, { timeoutMs: Math.min(waitMs, 10_000) });
+  if (!liveness || !liveness.ok) {
+    throw new AssertFailure(
+      `connection was not usable after a stall-aborted upload: ${JSON.stringify(liveness)}`,
+    );
+  }
+  // Re-examine the retired stream after the liveness await: late traffic on a
+  // binding retired by the ACK is malformed and must surface here rather than
+  // pass (anything after the runner retires the tracker is the connection-
+  // fatal unbindable-record class, caught by the case-end sticky scan).
   if (tracker.queue.length) {
     throw new AssertFailure(
       `daemon sent ${tracker.queue[0].kindName} for the retired stream after the terminal reply`,

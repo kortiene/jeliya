@@ -30,23 +30,23 @@ claims:
 
 | Slice | Status | What the claim means |
 |---|---|---|
-| Structural validation | Implemented for all 346 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
-| Selected JSON-envelope/subject slice | Partial (22 CI-selected cases) | The Node harness runs this selected JSON-envelope, subject-lifecycle, and executable-file slice against `jeliyad`; this is not corpus coverage. It is not a smoke, E2E, or Dart execution claim. |
-| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the two client-originated upload faults the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes; and `stream: {send_bytes, fault: "raw_record"}`, one structurally malformed record (nonzero reserved byte) on the live binding that must draw a stream-local daemon ABORT(protocol_error), the client ACK, and a correlated `malformed_frame` terminal reply while the connection stays usable. The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the credit-pause and transport-drop fault controls remain unimplemented, so backpressure and disconnect stream cases are still declarative. |
+| Structural validation | Implemented for all 347 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
+| Selected JSON-envelope/subject slice | Partial (25 CI-selected cases) | The Node harness runs this selected JSON-envelope, subject-lifecycle, and executable-file slice against `jeliyad`; this is not corpus coverage. It is not a smoke, E2E, or Dart execution claim. |
+| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the three client-originated upload faults the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes; `stream: {send_bytes, fault: "raw_record"}`, one structurally malformed record (nonzero reserved byte) on the live binding that must draw a stream-local daemon ABORT(protocol_error), the client ACK, and a correlated `malformed_frame` terminal reply while the connection stays usable; and `stream: {send_bytes, fault: "credit_pause"}`, a producer legally paused for credit (the upload-side form: the initial CREDIT window is consumed with no DATA at all) whose zero accepted progress must make the daemon abort the stream at accepted offset zero, draw the client ACK, and resolve `transfer_stalled{transferred_bytes: 0}` with the known declared total while the connection stays usable (the abort's wire reason is not asserted — the record grounds `operation_error` only for deadline expiry). The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the transport-drop fault control remains unimplemented, so disconnect stream cases are still declarative. |
 | Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
 
 | Computed corpus fact | Value |
 |---|---:|
-| Cases | 346 |
-| Attributed to an operation | 239 |
+| Cases | 347 |
+| Attributed to an operation | 240 |
 | `operation: null` | 107 |
-| Untargeted / in-process-core / client-adapter targeted | 340 / 1 / 5 |
+| Untargeted / in-process-core / client-adapter targeted | 341 / 1 / 5 |
 | Distinct step verbs in use | 7 |
 | Taxonomy codes / without a direct canonical operation case or verified transport representation | 64 / 8 (`forbidden_origin`, `pairing_code_invalid`, `protocol_unsupported`, `role_not_grantable`, `session_expired`, `storage_generation_mismatch`, `unauthenticated`, `unknown_operation`) |
 | Blocked on upstream | 15 (U1: 5, U2: 8, U3: 1, U4: 1) |
 | Blocked on a settled record contradiction | 1 |
 
-Per-file case totals are: `files.json` 45, `handshake.json` 72,
+Per-file case totals are: `files.json` 46, `handshake.json` 72,
 `invites.json` 37, `pipes.json` 43, `rooms.json` 65,
 `subject-daemon.json` 24, and `timeline-streams.json` 60.
 
@@ -266,7 +266,7 @@ is invalid, because no other operation streams. The value is a `<uint>`, a
 limit" without compiling the number in.
 
 An upload may carry an optional **`fault`** beside `send_bytes` to make the
-*client* misbehave on purpose. The vocabulary is closed. Two values are executed
+*client* misbehave on purpose. The vocabulary is closed. Three values are executed
 end-to-end by the single-subject harness today:
 
 - `client_abort`: after the daemon admits the stream (OPEN) but before any DATA
@@ -280,11 +280,22 @@ end-to-end by the single-subject harness today:
   accepted offset zero, the client ACKs (0x05), and the request resolves to the
   correlated `malformed_frame` reply while the connection stays usable — the
   "recoverable stream-local violation" leg of the framing record.
+- `credit_pause`: after admission the client consumes the daemon's initial
+  CREDIT window by sending no DATA at all — a producer legally paused for
+  credit, the upload-side (single-subject) form of the backpressure control.
+  Zero accepted progress for `transfer_stall_ms` must make the daemon abort the
+  stream at accepted offset zero, the client ACKs, and the request resolves to
+  `transfer_stalled{transferred_bytes: 0}` with the known declared total while
+  the connection stays usable (the abort's wire reason is not asserted — the
+  record grounds `operation_error` only for deadline expiry). The fixture's
+  size must make the stall window strictly shorter than the size-aware
+  absolute budget, or it would be asserting the wrong timer; the executor
+  proves that ordering from the served limits before idling.
 
 `fault` is legal only on `file.share`, because `file.read` has no executable
 download fixture at all (it needs a peer-fetched file the single-subject harness
-cannot stage). The record's remaining client faults — credit-pause and
-transport-drop — remain declarative until the executor drives them, and adding a
+cannot stage). The record's remaining client fault — transport-drop — remains
+declarative until the executor drives it, and adding a
 value here without the executor to run it is not permitted.
 
 A fresh admitted daemon `file.share` or `file.read` requires its matching stream.
