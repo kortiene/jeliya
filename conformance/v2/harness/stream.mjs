@@ -471,7 +471,7 @@ async function runUpload({ session, tracker, replyState, sendBytes, declaredByte
   // daemon integration test websocket_data_too_large_within_frame_limit_
   // aborts_stream_not_connection in crates/jeliyad/src/serve.rs).
   if (fault === 'raw_record') {
-    return await driveRawRecordUpload({ session, tracker, replyState, waitMs });
+    return await driveRawRecordUpload({ session, tracker, replyState, waitMs, limitBytes });
   }
   if (fault !== undefined) {
     throw new Error(`unknown stream fault ${JSON.stringify(fault)} on file.share`);
@@ -758,8 +758,17 @@ async function driveClientAbortUpload({ session, tracker, replyState, waitMs }) 
  * daemon that instead closes the connection, replies success, or answers
  * without first ABORTing is a violation. Receiver-accepted bytes are zero.
  */
-async function driveRawRecordUpload({ session, tracker, replyState, waitMs }) {
+async function driveRawRecordUpload({ session, tracker, replyState, waitMs, limitBytes }) {
   const accepted = 0;
+  // The served shared-file bound gates CREDIT range validation; a daemon that
+  // fails to serve it as a usable integer fails, never gets an invented cap.
+  if (typeof limitBytes !== 'number' || !Number.isInteger(limitBytes) || limitBytes < 0) {
+    throw new AssertFailure(
+      `served max_shared_file_bytes ${JSON.stringify(limitBytes)} is unusable for byte streaming`,
+    );
+  }
+  const limit = limitBytes;
+  let sendThrough = 0;
   // One malformed DATA record: correct binding, corrupt reserved byte 5.
   const raw = encodeRecord({
     kind: KIND.DATA,
@@ -780,14 +789,31 @@ async function driveRawRecordUpload({ session, tracker, replyState, waitMs }) {
     checkBinding(tracker, rec);
     if (rec.kind === KIND.CREDIT) {
       // A send window granted before the daemon parsed our malformed record is
-      // tolerated, but it can never acknowledge bytes we never sent, and none
-      // may arrive after the ABORT retires the binding.
+      // tolerated, but its SHAPE and RANGE must satisfy the same rules the
+      // normal upload path enforces: a payload, a regressing or inverted
+      // window, or a send_through beyond the served bound is malformed
+      // regardless of the injected fault — accepting one here would let a
+      // non-conformant daemon pass this case.
       if (ackSeen) {
         throw new AssertFailure('daemon sent CREDIT after acknowledging the malformed-record ABORT — the binding retired at ACK');
       }
+      if (rec.payload) throw new AssertFailure('daemon CREDIT carried a payload');
+      if (rec.value < sendThrough || rec.offset > rec.value) {
+        throw new AssertFailure(
+          `daemon CREDIT regressed or inverted: (${rec.offset}, ${rec.value}) after (${accepted}, ${sendThrough})`,
+        );
+      }
+      if (rec.value > limit + 1) {
+        // The wire bound on upload credit is max_shared_file_bytes + 1.
+        throw new AssertFailure(
+          `daemon CREDIT send_through ${rec.value} exceeds max_shared_file_bytes + 1 (${limit + 1})`,
+        );
+      }
+      // It can never acknowledge bytes we never sent.
       if (rec.offset > accepted) {
         throw new AssertFailure(`daemon CREDIT acknowledged ${rec.offset} bytes after a zero-progress malformed record`);
       }
+      sendThrough = rec.value;
       continue;
     }
     if (rec.kind === KIND.ABORT) {
@@ -857,6 +883,19 @@ async function driveRawRecordUpload({ session, tracker, replyState, waitMs }) {
       `connection was not usable after a stream-local malformed_frame: ${JSON.stringify(liveness)}`,
     );
   }
+  // Re-examine the retired stream after the liveness await: a daemon that sent
+  // a late DATA/CREDIT/END/ABORT while subject.ensure was pending had the
+  // record queued into this still-registered tracker without failing the
+  // liveness call, and any traffic on a binding retired by the ACK is
+  // malformed. (Anything arriving after this check, once the runner retires
+  // the tracker, becomes the connection-fatal unbindable-record class and is
+  // surfaced by the case-end sticky-violation scan.)
+  if (tracker.queue.length) {
+    throw new AssertFailure(
+      `daemon sent ${tracker.queue[0].kindName} for the retired stream after the terminal reply`,
+    );
+  }
+  if (tracker.failure) throw tracker.failure;
   return reply;
 }
 
