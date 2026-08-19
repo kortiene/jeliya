@@ -241,6 +241,12 @@ const STREAM_ONLY_ERRORS = new Set([
   'transfer_stalled',
   'transfer_deadline_exceeded',
   'stream_aborted',
+  // A correlated malformed_frame for a byte-stream record is only reachable
+  // AFTER OPEN installed the (request id, stream id) binding — the daemon has
+  // to have admitted the stream and examined the injected record to produce
+  // it. Treating it as pre-OPEN-legal would let a daemon fabricate the
+  // raw_record outcome without ever admitting or parsing the record.
+  'malformed_frame',
 ]);
 
 function checkPreOpenError(reply, op) {
@@ -785,6 +791,16 @@ async function driveRawRecordUpload({ session, tracker, replyState, waitMs }) {
       continue;
     }
     if (rec.kind === KIND.ABORT) {
+      // The client ACK retires the binding ("Only ACK or that timeout retires
+      // the binding"; "Any later DATA, CREDIT, END, or terminal control for
+      // the retired stream is malformed" — docs/protocol-v2.md §END, abort,
+      // and cancellation). A SECOND daemon ABORT after our ACK is therefore
+      // malformed traffic on a dead stream, never a terminal we re-acknowledge.
+      if (ackSeen) {
+        throw new AssertFailure(
+          'daemon sent a second ABORT after the malformed-record ACK retired the binding',
+        );
+      }
       // The daemon aborts the stream it could correlate. Its reason is
       // protocol_error (0x04) and its accepted high-water is zero.
       validateAbort(rec, accepted, UPLOAD_DAEMON_ABORT_REASONS);
@@ -824,6 +840,21 @@ async function driveRawRecordUpload({ session, tracker, replyState, waitMs }) {
   if (err.code !== 'malformed_frame') {
     throw new AssertFailure(
       `a stream-local malformed record must resolve to malformed_frame, got ${JSON.stringify(reply.err)}`,
+    );
+  }
+  // A recoverable stream-local violation must leave the WebSocket usable —
+  // "Other requests remain usable only on the request-local paths above"
+  // (docs/protocol-v2.md §Malformed stream records). Prove it: send an
+  // unrelated, idempotent typed request on the SAME session after the terminal
+  // reply. A daemon that runs the correct ABORT→ACK→malformed_frame exchange
+  // and THEN closes the connection (the 4005/4007 class this case exists to
+  // catch) fails here instead of passing. subject.ensure carries no tracker,
+  // so it never enters callRecords and cannot perturb a later bytes_streamed
+  // observation, which reads only the runner's per-step records.
+  const liveness = await session.call('subject.ensure', {}, { timeoutMs: Math.min(waitMs, 10_000) });
+  if (!liveness || !liveness.ok) {
+    throw new AssertFailure(
+      `connection was not usable after a stream-local malformed_frame: ${JSON.stringify(liveness)}`,
     );
   }
   return reply;
