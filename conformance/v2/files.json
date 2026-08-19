@@ -826,6 +826,7 @@
           "on": "subject:self"
         },
         {
+          "note": "The settled staging-residue half of the no_durable_mutation observation proves the aborted upload left no stranded staging file; the signature half compares against the baseline refreshed after file.list, so only post-list mutation fails it. Reservation release is not observable here (the served inflight budget dwarfs one upload) and stays pinned by the daemon's own integration test.",
           "assert": [
             {
               "path": "out.files",
@@ -834,6 +835,10 @@
                 "op": "eq",
                 "value": 0
               }
+            },
+            {
+              "observe": "no_durable_mutation",
+              "scope": "step"
             }
           ]
         }

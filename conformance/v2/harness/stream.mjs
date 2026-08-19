@@ -961,9 +961,17 @@ async function driveTransportDropUpload({ session, tracker, replyState, sendByte
   // One full window is the only healthy partial the daemon's refill policy
   // acknowledges mid-file; a declared total within one window would make the
   // acknowledgement arrive only with the whole file, which is not a partial.
-  if (!Number.isInteger(sendBytes) || sendBytes <= maxPayload) {
+  // Both quantities gate the design: the OPEN total (already validated equal
+  // to declared_bytes by the caller) must exceed one window so the record is
+  // a genuine partial of the declaration, and send_bytes must cover the
+  // window so the record stays within the bytes the fixture declares it
+  // streams. send_bytes alone is not enough — it is deliberately independent
+  // of declared_bytes in the DSL, so a fixture declaring less than it sends
+  // would otherwise slip a whole-file or over-declaration record through and
+  // misreport the daemon's refusal as a conformance failure.
+  if (!Number.isInteger(sendBytes) || sendBytes < maxPayload || tracker.openTotal <= maxPayload) {
     throw new Error(
-      `transport_drop needs a declared total above one DATA window (${maxPayload} bytes) so a single full-window record is a healthy partial, got ${sendBytes}`,
+      `transport_drop needs a declared total (OPEN ${tracker.openTotal}) above one DATA window (${maxPayload} bytes) and a send_bytes (${sendBytes}) that covers the window, so a single full-window record is a healthy partial — a fixture/executor sizing mismatch, not a daemon conformance failure`,
     );
   }
   const chunkLen = maxPayload;
@@ -1045,8 +1053,27 @@ async function driveTransportDropUpload({ session, tracker, replyState, sendByte
           );
         }
         if (rec.value < chunkLen) {
-          throw new AssertFailure(
-            `daemon initial CREDIT window ${rec.value} cannot carry the one full-window DATA record (${chunkLen}) this fault sends`,
+          // A window smaller than the design's one full record is not a
+          // daemon violation — the record makes maxPayload a per-record
+          // maximum only, and the receiver's byte-bounded capacity may be
+          // any smaller window. But this fixture's one-full-window partial
+          // (and its exact byte-count assertions) are sized to the canonical
+          // window, so a divergent flow-control window is a fixture/limits
+          // mismatch: an executor error, never a conformance failure blamed
+          // on the daemon. Truly honoring arbitrary windows needs the
+          // fixture's transferred_bytes to be dynamic — recorded as a
+          // follow-up, not silently accepted here.
+          throw new Error(
+            `transport_drop fixture is mis-sized for this daemon's flow control: the initial CREDIT window is ${rec.value} bytes, not the one full window (${chunkLen}) this fixture's partial and its byte-count assertions are built on — a fixture/limits mismatch, not a daemon conformance failure`,
+          );
+        }
+        if (rec.value > chunkLen) {
+          // Larger windows break the design the other way: one record would
+          // not consume the window, so the refill policy would never
+          // acknowledge mid-file and the drop precondition could not be
+          // established honestly. Same mismatch class.
+          throw new Error(
+            `transport_drop fixture is mis-sized for this daemon's flow control: the initial CREDIT window is ${rec.value} bytes, larger than the one full window (${chunkLen}) the single-record partial is built on, so no mid-file acknowledgement would ever arrive — a fixture/limits mismatch, not a daemon conformance failure`,
           );
         }
         creditWindow = rec.value;
@@ -1074,6 +1101,17 @@ async function driveTransportDropUpload({ session, tracker, replyState, sendByte
         acknowledged = rec.offset;
         tracker.accepted = acknowledged;
         prevCredit = { offset: rec.offset, value: rec.value };
+        // The transport has NOT dropped yet: if the daemon already settled a
+        // terminal reply (batched with this CREDIT — Session stamps
+        // replySeq synchronously on delivery), it fabricated an outcome
+        // while the connection was still live. The drop must never bury that
+        // violation; the same wire-order stamp the sibling drivers check is
+        // authoritative here too.
+        if (tracker.replySeq !== undefined) {
+          throw new AssertFailure(
+            'daemon settled its terminal reply before the transport dropped — the request was still live on an open connection',
+          );
+        }
         // The precondition is proven: the daemon has accepted exactly the
         // partial bytes. Drop the transport now, pre-END.
         drop();

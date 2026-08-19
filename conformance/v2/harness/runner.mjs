@@ -514,8 +514,14 @@ export class Runner {
         // reply to expose, and fabricating one is forbidden), the call
         // counts as not-ok for the refused-baseline semantics, and the
         // validator forbids expect/save on this shape so no matcher ever
-        // runs. The tracker's accepted count (already recorded) is what a
-        // later bytes_streamed observation reads.
+        // runs. The reply roots are CLEARED, not left holding the previous
+        // step's reply — a later assert or save-only step reading out/err/
+        // frame must find nothing rather than silently match stale values
+        // from before the drop. The tracker's accepted count (already
+        // recorded) is what a later bytes_streamed observation reads.
+        vars.out = undefined;
+        vars.err = undefined;
+        vars.frame = undefined;
         ctxState.lastCallOk = false;
         ctxState.networkActivity++;
         this.log(`  -> transport dropped (accepted ${record.accepted})`);
