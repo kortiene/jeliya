@@ -985,6 +985,10 @@ async function driveCreditPauseUpload({ session, tracker, replyState, waitMs, de
   }
 
   const accepted = 0;
+  // Stamped when this driver takes over (OPEN delivered) — the daemon's stall
+  // timer starts at admission, strictly earlier, which is why the lower-bound
+  // check below carries slack for that delivery offset.
+  const openReceivedAt = Date.now();
   let abortSeen = null;
   let ackSent = false;
   let creditWindow = null;
@@ -1043,6 +1047,30 @@ async function driveCreditPauseUpload({ session, tracker, replyState, waitMs, de
       // offset by the zero bytes actually sent — and the ABORT must precede
       // the typed terminal reply (reply only after ACK).
       validateAbort(rec, accepted, UPLOAD_DAEMON_ABORT_REASONS);
+      // The pause's PREMISE is the initial CREDIT window: the record makes
+      // the receiver's initial CREDIT after OPEN mandatory ("The receiver
+      // sends initial CREDIT after OPEN"), and this fixture holds that window
+      // unsent. A daemon that aborts before granting it was never paused FOR
+      // CREDIT — accepting its ABORT would let a CREDIT-omitting daemon pass
+      // the case the premise exists to pin.
+      if (creditWindow === null) {
+        throw new AssertFailure(
+          'daemon ABORTed before sending the mandatory initial CREDIT — the credit-pause premise was never established',
+        );
+      }
+      // The stall window must have elapsed before transfer_stalled is a
+      // truthful code ("No forward progress within the stall window"): the
+      // daemon's timer starts at admission, the harness stamps OPEN at
+      // delivery (a strictly later instant), so the bound carries slack for
+      // that delivery offset rather than false-reding a compliant daemon.
+      // Only the LOWER bound is asserted — how long the daemon waited past
+      // the window is deadline territory, owned by deadline-designed
+      // fixtures, and an upper bound would trade determinism for flake.
+      if (Date.now() - openReceivedAt < stallMs - Math.min(5_000, Math.floor(stallMs / 2))) {
+        throw new AssertFailure(
+          `daemon ABORTed the zero-progress pause ${Date.now() - openReceivedAt}ms after OPEN, before the served transfer_stall_ms ${stallMs} window elapsed — transfer_stalled is not yet a truthful outcome`,
+        );
+      }
       if (tracker.replySeq !== undefined) {
         // Observable prefix only: this catches a reply that arrived with (or
         // before) the ABORT itself. A reply the daemon SENT after the ABORT
