@@ -53,6 +53,10 @@ const STREAMING_OPS = new Map([
 //     the live binding; the daemon aborts only that stream with
 //     ABORT(protocol_error), the client ACKs, and the request resolves to the
 //     correlated malformed_frame reply while the connection stays usable.
+//   - `credit_pause`: a producer legally paused for credit (the upload-side,
+//     single-subject form — the client consumes the initial CREDIT window with
+//     no DATA); zero accepted progress for transfer_stall_ms must abort the
+//     stream and resolve transfer_stalled{transferred_bytes: 0}.
 //   - `transport_drop`: a pre-END transport loss on a healthy partial upload
 //     (the client streams one acknowledged DATA record, then drops the socket
 //     with no close frame); the daemon must abort, drop staging, release its
@@ -60,11 +64,10 @@ const STREAMING_OPS = new Map([
 //     under the op_id for replay. The step itself has NO terminal reply, so a
 //     transport_drop stream step carries no expect and no save; the recorded
 //     result is asserted by the fixture's replay step.
-// Still declarative until the executor drives them: credit-pause (its
-// upload-side executor lands on a sibling branch) and every download-side
-// fault (the download path has no executable single-subject fixture — see
-// the manifest ledger; download-side credit-pause is parked on R-A).
-const STREAM_FAULTS = new Set(["client_abort", "raw_record", "transport_drop"]);
+// Still declarative until an executor drives them: every download-side fault
+// (the download path has no executable single-subject fixture — see the
+// manifest ledger; download-side credit-pause is parked on the same R-A gap).
+const STREAM_FAULTS = new Set(["client_abort", "raw_record", "credit_pause", "transport_drop"]);
 const KINDS = new Set(["success", "error", "malformed", "boundary", "authorization", "handshake", "push", "ordering"]);
 const PRE_OPEN_STREAM_CODES = new Set([
   "invalid_argument", "subject_absent", "room_not_available", "membership_ended",
@@ -1414,7 +1417,7 @@ if (isObject(manifest)) {
       bytes_streamed_observation: "implemented",
       client_abort_fault: "implemented",
       raw_record_fault: "implemented",
-      credit_pause_fault: "unimplemented",
+      credit_pause_fault: "implemented",
       transport_drop_fault: "implemented",
     },
     adapter_targeted_declarative_cases: "declarative_only",

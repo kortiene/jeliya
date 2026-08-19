@@ -654,6 +654,8 @@ export class Runner {
         inflightBytes: hello.limits?.max_transfer_bytes_inflight,
         concurrentLimit: hello.limits?.max_concurrent_transfers,
         stallMs: hello.limits?.transfer_stall_ms,
+        allowanceMs: hello.limits?.transfer_connect_allowance_ms,
+        floorBps: hello.limits?.transfer_floor_bits_per_second,
         waitMs,
       });
     } finally {

@@ -703,6 +703,80 @@
       ]
     },
     {
+      "name": "share_upload_paused_for_credit_stalls_and_terminates_transfer_stalled",
+      "kind": "error",
+      "operation": "file.share",
+      "intent": "Proves a producer legally paused for credit -- it consumes the daemon's initial CREDIT window with no DATA at all, and an active transfer counts as connection activity so no idle timeout races it -- is neither left hanging nor answered at the wrong time: with zero accepted progress the daemon's stall window fires, the stream is aborted locally (daemon ABORT operation_error at accepted offset zero, acknowledged by the client) and only then does file.share terminate with transfer_stalled accounting zero transferred bytes against the known declared total, while the connection stays usable for later requests. Catches a daemon that ignores a zero-progress pause until the absolute deadline or forever, counts the unaccepted credit window as progress, replies without first aborting, miscounts accepted bytes, or closes the connection.",
+      "requires": [
+        "subject",
+        "room:live"
+      ],
+      "steps": [
+        {
+          "upgrade": {
+            "query": {
+              "v": 2,
+              "sg": "$daemon.storage_generation"
+            },
+            "headers": {
+              "Authorization": "Bearer <bearer_from_portfile>"
+            }
+          }
+        },
+        {
+          "await": {
+            "frame": {
+              "t": "hello"
+            }
+          }
+        },
+        {
+          "call": "room.create",
+          "in": {
+            "name": "CreditPause"
+          },
+          "save": {
+            "rid": "out.room_id"
+          },
+          "op_id": "op-creditpause-1"
+        },
+        {
+          "call": "room.activate",
+          "in": {
+            "room_id": "$rid"
+          },
+          "expect": {
+            "ok": true
+          }
+        },
+        {
+          "call": "file.share",
+          "in": {
+            "room_id": "$rid",
+            "name": "paused.bin",
+            "declared_bytes": 65536,
+            "declared_content_type": "application/octet-stream"
+          },
+          "expect": {
+            "ok": false,
+            "err": {
+              "code": "transfer_stalled",
+              "transferred_bytes": 0,
+              "total": {
+                "state": "known",
+                "bytes": 65536
+              }
+            }
+          },
+          "op_id": "op-creditpause-2",
+          "stream": {
+            "send_bytes": 65536,
+            "fault": "credit_pause"
+          }
+        }
+      ]
+    },
+    {
       "name": "share_upload_transport_drop_records_stream_aborted_for_replay",
       "kind": "error",
       "operation": "file.share",

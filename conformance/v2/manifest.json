@@ -7,7 +7,7 @@
     "structural_validation": true,
     "selected_json_envelope_subject_slice": {
       "status": "partial",
-      "ci_selected_cases": 25
+      "ci_selected_cases": 26
     },
     "binary_byte_stream_executor": {
       "status": "partial",
@@ -16,7 +16,7 @@
       "bytes_streamed_observation": "implemented",
       "client_abort_fault": "implemented",
       "raw_record_fault": "implemented",
-      "credit_pause_fault": "unimplemented",
+      "credit_pause_fault": "implemented",
       "transport_drop_fault": "implemented"
     },
     "adapter_targeted_declarative_cases": "declarative_only"
@@ -118,16 +118,16 @@
     }
   ],
   "target_counts": {
-    "untargeted": 341,
+    "untargeted": 342,
     "daemon": 0,
     "in_process_core": 1,
     "client_adapter": 5
   },
   "totals": {
-    "cases": 347,
-    "attributed_to_an_operation": 240,
+    "cases": 348,
+    "attributed_to_an_operation": 241,
     "not_operation_scoped": 107,
-    "conforming_to_the_dsl": 347,
+    "conforming_to_the_dsl": 348,
     "distinct_step_verbs_in_use": 7,
     "quarantined": 0,
     "blocked_on_upstream": 15,
@@ -135,8 +135,8 @@
   },
   "per_file_totals": {
     "files.json": {
-      "cases": 46,
-      "attributed_to_an_operation": 44,
+      "cases": 47,
+      "attributed_to_an_operation": 45,
       "not_operation_scoped": 2,
       "blocked_on_upstream": {
         "U1": 0,
@@ -270,7 +270,7 @@
       "satisfies_required_kinds": true
     },
     "file.share": {
-      "cases": 17,
+      "cases": 18,
       "success": true,
       "distinctive_code": "declared_size_mismatch",
       "distinctive_code_has_a_case": true,

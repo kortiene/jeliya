@@ -456,11 +456,11 @@ jobs:
           # implemented surface goes red. The file cases exercise the binary
           # byte-stream executor (upload streaming, pre-OPEN refusals with
           # bytes_streamed 0, and a declared-size-mismatch stream) and all
-          # three executed client-fault controls (producer cancel, stream-local
-          # malformed record, and a transport-dropped partial upload whose
-          # op_id replay must return the recorded stream_aborted{transport_
-          # lost}); the at-limit and over-limit cases stream the served
-          # 100 MiB bound and stay local-only.
+          # four executed client-fault controls (producer cancel, stream-local
+          # malformed record, a credit-paused upload stalling at zero accepted
+          # progress, and a transport-dropped partial upload whose op_id replay
+          # must return the recorded stream_aborted{transport_lost}); the at-limit and over-limit cases stream the
+          # served 100 MiB bound and stay local-only.
           node main.mjs ../../../target/debug/jeliyad \
             --case subject_ensure_creates_the_subject_on_a_fresh_daemon \
             --case subject_ensure_never_returns_secret_material \
@@ -483,6 +483,7 @@ jobs:
             --case a_stream_that_disagrees_with_its_declaration_is_declared_size_mismatch \
             --case share_cancelled_by_the_client_before_any_bytes_aborts_as_cancelled \
             --case share_malformed_stream_record_aborts_that_stream_as_malformed_frame \
+            --case share_upload_paused_for_credit_stalls_and_terminates_transfer_stalled \
             --case share_upload_transport_drop_records_stream_aborted_for_replay \
             --case list_of_a_room_that_is_not_available_answers_room_not_available \
             --case fetch_of_a_file_id_not_in_this_rooms_history_fails_with_file_unknown \
