@@ -30,23 +30,23 @@ claims:
 
 | Slice | Status | What the claim means |
 |---|---|---|
-| Structural validation | Implemented for all 342 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
+| Structural validation | Implemented for all 346 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
 | Selected JSON-envelope/subject slice | Partial (22 CI-selected cases) | The Node harness runs this selected JSON-envelope, subject-lifecycle, and executable-file slice against `jeliyad`; this is not corpus coverage. It is not a smoke, E2E, or Dart execution claim. |
 | Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the two client-originated upload faults the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes; and `stream: {send_bytes, fault: "raw_record"}`, one structurally malformed record (nonzero reserved byte) on the live binding that must draw a stream-local daemon ABORT(protocol_error), the client ACK, and a correlated `malformed_frame` terminal reply while the connection stays usable. The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the credit-pause and transport-drop fault controls remain unimplemented, so backpressure and disconnect stream cases are still declarative. |
 | Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
 
 | Computed corpus fact | Value |
 |---|---:|
-| Cases | 342 |
-| Attributed to an operation | 238 |
-| `operation: null` | 104 |
-| Untargeted / in-process-core / client-adapter targeted | 336 / 1 / 5 |
+| Cases | 346 |
+| Attributed to an operation | 239 |
+| `operation: null` | 107 |
+| Untargeted / in-process-core / client-adapter targeted | 340 / 1 / 5 |
 | Distinct step verbs in use | 7 |
 | Taxonomy codes / without a direct canonical operation case or verified transport representation | 64 / 8 (`forbidden_origin`, `pairing_code_invalid`, `protocol_unsupported`, `role_not_grantable`, `session_expired`, `storage_generation_mismatch`, `unauthenticated`, `unknown_operation`) |
-| Blocked on upstream | 14 (U1: 5, U2: 8, U3: 1) |
+| Blocked on upstream | 15 (U1: 5, U2: 8, U3: 1, U4: 1) |
 | Blocked on a settled record contradiction | 1 |
 
-Per-file case totals are: `files.json` 43, `handshake.json` 69,
+Per-file case totals are: `files.json` 45, `handshake.json` 72,
 `invites.json` 37, `pipes.json` 43, `rooms.json` 65,
 `subject-daemon.json` 24, and `timeline-streams.json` 60.
 
