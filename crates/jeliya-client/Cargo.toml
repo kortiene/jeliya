@@ -29,6 +29,16 @@ example = ["mock", "dep:dioxus"]
 # own fault suite can reuse them. CI runs the kernel suite with
 # `cargo test -p jeliya-client --features test-transport`.
 test-transport = []
+# The #175 parameterized adapter contract suite core (`src/contract`): the
+# ten view-level contracts and the `Rig` seam, written once and replayed by
+# the rig matrix in `tests/contract_suite/` against the mock, the native
+# adapter (a real spawned jeliyad), and the direct adapter (a real
+# in-process Engine). Default-off like every test-scaffolding feature so the
+# library's normal build carries none of it; adds no dependencies — the
+# module uses only types this crate already exports. CI runs the matrix with:
+#   cargo test -p jeliya-client \
+#     --features "contract mock ws-native direct" --test contract_suite
+contract = []
 # The browser WebSocket/session adapter (#171). Pulls the codec's client edge
 # plus the wasm-only browser crates (`web-sys`/`js-sys`/`wasm-bindgen`), and is
 # default-off so the native library tree stays free of them and the
@@ -233,3 +243,15 @@ name = "live_native_probe"
 # like the ws-native suite it mirrors; run with -- --ignored against two
 # live --loopback daemons (coordinates via JELIYAD_PROBE* env vars).
 required-features = ["ws-native"]
+
+[[test]]
+name = "contract_suite"
+# The #175 parameterized adapter contract matrix: one set of contracts
+# replayed against the mock, the native adapter (a REAL spawned jeliyad —
+# JELIYAD_BIN must point at it or default to target/debug/jeliyad, and the
+# rig FAILS when the binary is missing; a missing oracle never reads as a
+# skipped contract), and the direct adapter (a real in-process Engine).
+# Requires all three backend features at once. CI runs:
+#   cargo test -p jeliya-client \
+#     --features "contract mock ws-native direct" --test contract_suite
+required-features = ["contract", "mock", "ws-native", "direct"]

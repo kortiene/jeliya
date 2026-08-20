@@ -369,6 +369,21 @@ jobs:
           cargo clippy --locked -p jeliya-client --features ws-native --all-targets -- -D warnings
           cargo test --locked -p jeliya-client --features ws-native
 
+      # The #175 parameterized adapter contract matrix
+      # (tests/contract_suite/): ten view-level contracts replayed against
+      # the scripted mock, the native adapter driving a REAL spawned
+      # jeliyad, and the direct adapter over a real in-process Engine. The
+      # native rig spawns `target/debug/jeliyad` (built by the step above)
+      # and FAILS when the binary is missing — a skipped oracle must never
+      # read as green. Clippy runs under the same combined feature set the
+      # suite requires, so an unlinted feature combination cannot slip in.
+      - name: jeliya-client adapter contract matrix (#175)
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p jeliya-client --features "contract mock ws-native direct" --all-targets -- -D warnings
+          JELIYAD_BIN="$PWD/target/debug/jeliyad" \
+            cargo test --locked -p jeliya-client --features "contract mock ws-native direct" --test contract_suite
+
       # The #174 PlatformServices behaviour suite (tests/capabilities.rs, AC-6)
       # drives the deterministic fakes behind the default-off `fake` feature, so
       # the `--workspace` run above compiles it to nothing. Run it explicitly —
