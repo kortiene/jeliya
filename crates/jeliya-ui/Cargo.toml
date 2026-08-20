@@ -87,7 +87,7 @@ jeliya-platform = { path = "../jeliya-platform", optional = true }
 # `default-features = false` keeps the base graph minimal; the `ui`/`web`
 # features select `minimal`/`web` explicitly. Pinned to the 0.7.9 line the
 # architecture record selects and the root `Cargo.lock` already resolves.
-dioxus = { version = "=0.7.9", default-features = false, optional = true }
+dioxus = { version = "=0.7.10", default-features = false, optional = true }
 # Web-only, gated by the `web` feature: read the browser UI language
 # (`navigator.language`) at composition to seed locale resolution (#177). Already
 # in the lock via `dioxus-web`; declaring it directly only enables the
