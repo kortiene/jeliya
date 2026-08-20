@@ -403,11 +403,24 @@ impl ClientBackend for MockBackend {
 
 /// The test-driven controller half of the mock. Every method is deterministic
 /// and clock-free; nothing here observes real time or scheduling order.
+///
+/// `Clone` so the #175 contract matrix can run a driver task that resolves
+/// scripted steps while the contract future awaits on the same executor —
+/// both halves share one backend through the `Arc`.
+#[derive(Clone)]
 pub struct MockController {
     inner: Arc<Mutex<MockInner>>,
 }
 
 impl MockController {
+    /// Whether the mock has begun stopping (accepted work settling,
+    /// subscriptions closing). The contract matrix's driver task exits on
+    /// this instead of spinning on `pending_call`, which resolves
+    /// immediately-and-forever once stopping has begun.
+    pub fn is_stopping(&self) -> bool {
+        self.inner.lock().expect("mock poisoned").stopping
+    }
+
     /// Deliver the next pending scripted step (a reply and/or its `before`
     /// events). Returns `true` if a call was resolved, `false` if none was
     /// deliverable (all pending calls are hanging, or none are pending).

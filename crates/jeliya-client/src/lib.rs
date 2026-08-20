@@ -64,6 +64,16 @@ pub mod media;
 mod reconcile;
 mod stream;
 
+// The #175 parameterized adapter contract suite core: the ten contracts, the
+// `Rig` seam adapter rigs implement, and the shared evidence helpers.
+// Default-off like the other test-scaffolding features (`mock`,
+// `test-transport`) so the library's normal build carries none of it. CI
+// runs the matrix with:
+//   cargo test -p jeliya-client \
+//     --features "contract mock ws-native direct" --test contract_suite
+#[cfg(feature = "contract")]
+pub mod contract;
+
 // The browser WebSocket/session adapter (#171). Target-cfg + feature gated so
 // the wasm-only browser crates never enter the native library tree (the
 // `cargo tree` boundary test) and the module is invisible to the native build.
