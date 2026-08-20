@@ -63,7 +63,7 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # without depending on Dioxus), asserted by `tests/boundaries.rs`. `minimal`
 # gives the macro, signals, and hooks without pulling `tao`/`wry`/a web
 # renderer, so the component links on native and wasm32 alike.
-dioxus = { version = "=0.7.9", default-features = false, features = ["minimal"], optional = true }
+dioxus = { version = "=0.7.10", default-features = false, features = ["minimal"], optional = true }
 
 [dev-dependencies]
 # `block_on` for the native behaviour suite; the `executor` feature is dev-only
