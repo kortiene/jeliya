@@ -188,7 +188,7 @@ jobs:
 
       - name: Install pinned cargo-zigbuild
         if: ${{ matrix.zigbuild == true }}
-        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: cargo-zigbuild@0.23.0
 
