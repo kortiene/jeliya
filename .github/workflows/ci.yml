@@ -467,7 +467,12 @@ jobs:
       - name: Protocol-v2 conformance harness unit tests
         run: |
           set -euo pipefail
-          node --test conformance/v2/harness/stream.test.mjs conformance/v2/harness/harness.test.mjs
+          # The harness tests import runner/session (the 'ws' dependency), so
+          # install the harness package first — the replay step below repeats
+          # the same install for its own run.
+          cd conformance/v2/harness
+          npm ci --ignore-scripts
+          node --test stream.test.mjs harness.test.mjs
 
       - name: Protocol-v2 conformance replay (handshake + subject lifecycle + file streams)
         run: |
