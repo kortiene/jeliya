@@ -38,6 +38,77 @@ export function requestId() {
   return nextRequestId++;
 }
 
+/** Is this `send` value the padded-envelope form?
+ * `{envelope, pad_field, pad_byte, pad_to_total_frame_bytes}` builds one
+ * frame whose TOTAL serialized length hits an exact byte target — the shape
+ * the boundary fixtures need to probe max_frame_bytes at and past the bound.
+ * (The checker shape-validates this form; anything else is sent as-is.) */
+export function isPaddedEnvelope(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && 'envelope' in value && 'pad_field' in value;
+}
+
+/** A send value of exactly `{envelope}` sends that envelope raw — the form
+ * the malformed-input fixtures use to put a type-violating field inside an
+ * otherwise well-formed frame. */
+export function isBareEnvelope(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1 && 'envelope' in value;
+}
+
+/** Build the padded frame text: serialize the envelope with the pad field's
+ * value grown by `pad_byte` repetitions until the whole JSON text is exactly
+ * `pad_to_total_frame_bytes` bytes. Throws when the target is unreachable
+ * (smaller than the un-padded envelope, or not a positive integer). */
+export function buildPaddedEnvelope(value) {
+  const keys = Object.keys(value).sort();
+  const expected = ['envelope', 'pad_byte', 'pad_field', 'pad_to_total_frame_bytes'].sort();
+  if (keys.length !== expected.length || keys.some((k, i) => k !== expected[i])) {
+    throw new AssertFailure(
+      `padded send takes exactly {envelope, pad_field, pad_byte, pad_to_total_frame_bytes}, got {${Object.keys(value).join(', ')}}`,
+    );
+  }
+  const { envelope, pad_field, pad_byte, pad_to_total_frame_bytes } = value;
+  const target = Number(pad_to_total_frame_bytes);
+  if (!Number.isFinite(target) || !Number.isInteger(target) || target <= 0) {
+    throw new AssertFailure(
+      `pad_to_total_frame_bytes must resolve to a positive integer, got ${JSON.stringify(pad_to_total_frame_bytes)}`,
+    );
+  }
+  if (typeof pad_byte !== 'string' || [...pad_byte].length !== 1) {
+    throw new AssertFailure(`pad_byte must be exactly one character, got ${JSON.stringify(pad_byte)}`);
+  }
+  // Resolve the (dotted) pad field inside the envelope; it must exist and be
+  // a string so it can grow without changing the JSON's structure.
+  const parts = String(pad_field).split('.');
+  let cur = envelope;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur === null || typeof cur !== 'object') {
+      throw new AssertFailure(`pad_field ${pad_field} does not resolve inside the envelope`);
+    }
+    cur = cur[parts[i]];
+  }
+  if (cur === null || typeof cur !== 'object' || !(parts.at(-1) in cur)) {
+    throw new AssertFailure(`pad_field ${pad_field} does not resolve inside the envelope`);
+  }
+  const leaf = parts.at(-1);
+  const original = cur[leaf];
+  if (typeof original !== 'string') {
+    throw new AssertFailure(`pad_field ${pad_field} must name a string field to grow, got ${typeof original}`);
+  }
+  cur[leaf] = '';
+  const base = Buffer.byteLength(serializeWithRaw(envelope), 'utf8');
+  const originalBytes = Buffer.byteLength(JSON.stringify(original), 'utf8') - 2; // minus quotes
+  const fill = target - base - originalBytes;
+  if (fill < 0) {
+    throw new AssertFailure(
+      `pad_to_total_frame_bytes ${target} is smaller than the envelope itself (${base + originalBytes} bytes)`,
+    );
+  }
+  cur[leaf] = original + pad_byte.repeat(fill);
+  return serializeWithRaw(envelope);
+}
+
 export class Session {
   constructor(label, clientId = null) {
     this.label = label;
