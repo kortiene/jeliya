@@ -1822,6 +1822,7 @@ function mapFromLists(lists) {
 }
 
 const printLedger = process.argv.includes("--print-ledger");
+let printLedgerDone = false;
 const ledgerPath = join(dirname(fileURLToPath(import.meta.url)), "v2-corpus-debt-ledger.json");
 if (printLedger) {
   // Derivation aid: prints ONLY the ledger the CURRENT parsed corpus implies
@@ -1846,7 +1847,11 @@ if (printLedger) {
     structural: lists(structuralDebt),
     notes: lists(noteDebt),
   }, null, 1));
-  process.exit(problems.length === 0 ? 0 : 1);
+  // Natural exit, never process.exit(): on a pipe, process.exit can kill the
+  // stream before a large ledger (>64 KiB) flushes, silently truncating the
+  // derivation output mid-line.
+  process.exitCode = problems.length === 0 ? 0 : 1;
+  printLedgerDone = true;
 }
 let ledger = null;
 try {
@@ -1929,7 +1934,9 @@ computed.debt_ratchet = {
   unselected_note_disjoint_partition: disjointCounts,
 };
 
-if (process.argv.includes("--json")) {
+if (printLedgerDone) {
+  // --print-ledger printed only the ledger JSON; no summary noise after it.
+} else if (process.argv.includes("--json")) {
   console.log(JSON.stringify({ cases: caseCount, steps: stepCount, computed, problems }, null, 1));
 } else {
   console.log(`v2 corpus: ${caseCount} cases, ${stepCount} steps`);
@@ -1955,4 +1962,4 @@ if (process.argv.includes("--json")) {
     }
   }
 }
-process.exit(problems.length === 0 ? 0 : 1);
+process.exitCode = problems.length === 0 ? 0 : 1;
