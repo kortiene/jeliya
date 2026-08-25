@@ -39,15 +39,35 @@ export function requestId() {
 }
 
 /** Build one masked client text-frame header for a payload of `length`
- * bytes: FIN+text, MASK set, 64-bit extended length, then the 4 mask bytes.
- * Pure — unit-tested (the mask MUST land at offset 10; a zero mask with a
- * masked payload is protocol garbage the daemon can only abort). */
+ * bytes, using the CANONICAL RFC 6455 length encoding for the payload's
+ * range (0–125 inline, 126–65535 as 16-bit, else 64-bit) followed by the 4
+ * mask bytes. A non-minimal length form is a protocol error a conforming
+ * peer may reject, which would exercise the wrong refusal. Pure —
+ * unit-tested (the mask must land immediately after the length field; a
+ * zero mask with a masked payload is protocol garbage). */
 export function buildMaskedFrameHeader(length, mask) {
-  const header = Buffer.alloc(14);
-  header[0] = 0x81;
-  header[1] = 0x80 | 127;
-  header.writeBigUInt64BE(BigInt(length), 2);
-  Buffer.from(mask).copy(header, 10);
+  if (!Number.isInteger(length) || length < 0) {
+    throw new AssertFailure(`frame length must be a nonnegative integer, got ${length}`);
+  }
+  let header;
+  if (length <= 125) {
+    header = Buffer.alloc(2 + 4);
+    header[0] = 0x81;
+    header[1] = 0x80 | length;
+    Buffer.from(mask).copy(header, 2);
+  } else if (length <= 65_535) {
+    header = Buffer.alloc(4 + 4);
+    header[0] = 0x81;
+    header[1] = 0x80 | 126;
+    header.writeUInt16BE(length, 2);
+    Buffer.from(mask).copy(header, 4);
+  } else {
+    header = Buffer.alloc(10 + 4);
+    header[0] = 0x81;
+    header[1] = 0x80 | 127;
+    header.writeBigUInt64BE(BigInt(length), 2);
+    Buffer.from(mask).copy(header, 10);
+  }
   return header;
 }
 
@@ -88,8 +108,16 @@ export function buildPaddedEnvelope(value) {
       `pad_to_total_frame_bytes must resolve to a positive integer, got ${JSON.stringify(pad_to_total_frame_bytes)}`,
     );
   }
-  if (typeof pad_byte !== 'string' || [...pad_byte].length !== 1) {
-    throw new AssertFailure(`pad_byte must be exactly one character, got ${JSON.stringify(pad_byte)}`);
+  // The pad byte must serialize to exactly ONE byte with NO JSON escaping:
+  // `fill` counts repetitions against a per-repeat budget of one byte, so a
+  // character that escapes (quote, backslash, control) or encodes to
+  // multiple UTF-8 bytes (é, emoji) would grow the frame past the target by
+  // (width-1)*fill bytes and silently invalidate the exact boundary probe.
+  if (typeof pad_byte !== 'string' || Buffer.byteLength(pad_byte, 'utf8') !== 1
+      || JSON.stringify(pad_byte) !== `"${pad_byte}"`) {
+    throw new AssertFailure(
+      `pad_byte must be a single unescaped ASCII byte (a character that JSON-escapes or UTF-8 multiencodes grows the frame past the target), got ${JSON.stringify(pad_byte)}`,
+    );
   }
   // Resolve the (dotted) pad field inside the envelope; it must exist and be
   // a string so it can grow without changing the JSON's structure.

@@ -803,15 +803,22 @@ that names no code is a signal the taxonomy is incomplete — which is how
 **Runner honesty:** the vocabulary above is closed for AUTHORING (the checker
 rejects a token outside it), but not every token is ESTABLISHED by the replay
 runner. `capabilities.mjs` carries the single implemented set (today: the
-`subject`/`daemon`/`room`/`member`/`resource:tcp_service`/`resource:shared_file`
-tokens the staging code drives, plus `control:reconnect` (the verb is
-executable), `control:limits` (the served limits are surfaced to every case),
-and `control:clock` (the capped real wait)). A case declaring any other
-well-formed token — `link:*`, `room:removed`, `room:foreign`, `member:agent`,
-`member:non_agent`, `daemon:restartable`, `observe:*`, `control:concurrency`,
-`resource:large_file`, `resource:fetched_file`, `fault:*` — is REFUSED before
-staging begins, with the token named: running it silently half-staged is the
-false green this harness exists to prevent.
+`subject`/`daemon` families, `room:plain`, `room:live`,
+`resource:tcp_service`, `resource:shared_file`, plus `control:reconnect`
+(the verb is executable), `control:limits` (the served limits are surfaced
+to every case), and `control:clock` (the capped real wait)). A case
+declaring any other well-formed token — `link:*`, `room:removed`,
+`room:foreign`, `room:quiescent`, `room:left`, `room:with_history`,
+`member:*`, `daemon:restartable`, `observe:*`, `control:concurrency`,
+`resource:large_file`, `resource:fetched_file`, `fault:*` — is REFUSED
+before staging begins, with the token named: running it silently
+half-staged is the false green this harness exists to prevent. The
+room-state and member tokens are refused not because staging crashes but
+because it would be UNFAITHFUL: the runner stages `room:quiescent` and
+`room:with_history` exactly like `room:live` (no history is authored),
+`room:left` without anyone joining and leaving, and `member:b`/`c`
+sessions on the primary daemon whose one subject is the authority's —
+so a case would run against preconditions it does not actually have.
 
 ## Debt ratchet
 

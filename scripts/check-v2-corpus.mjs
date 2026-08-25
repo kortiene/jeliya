@@ -1049,8 +1049,12 @@ function checkStep(step, file, caseName, stepIdx) {
               "send-shape:pad-field");
           }
         }
-        if (typeof send.pad_byte !== "string" || [...send.pad_byte].length !== 1) {
-          fail(file, caseName, where, `pad_byte must be exactly one character`, "send-shape:pad-byte");
+        if (typeof send.pad_byte !== "string"
+            || Buffer.byteLength(send.pad_byte, "utf8") !== 1
+            || JSON.stringify(send.pad_byte) !== `"${send.pad_byte}"`) {
+          fail(file, caseName, where,
+            `pad_byte must be a single unescaped ASCII byte (a JSON-escaped or UTF-8 multibyte character grows the frame past the target)`,
+            "send-shape:pad-byte");
         }
         if (!isValueNode(send.pad_to_total_frame_bytes, { positive: true })) {
           fail(file, caseName, where,
@@ -1910,8 +1914,13 @@ if (isObject(ledger)) {
 
 // Aggregate summary uses the DISJOINT partition of marker sets per location
 // (a dual marker counts once), never the sum of facet counts.
+// UNSELECTED notes only: the split-provenance markers the selected slice is
+// allowed to carry are not unselected debt, and counting them here made the
+// "unselected" aggregates disagree with the ledger (55 reported vs 53
+// ledgered — PR #311 review round).
+const unselectedNotes = noteFindings.filter((f) => !selectedCases.has(f.case));
 const disjoint = new Map();
-for (const f of noteFindings) {
+for (const f of unselectedNotes) {
   const key = fingerprint(f);
   const set = disjoint.get(key) ?? new Set();
   set.add(f.facet);
@@ -1923,7 +1932,7 @@ for (const facets of disjoint.values()) {
   disjointCounts[tag] = (disjointCounts[tag] ?? 0) + 1;
 }
 const facetCounts = {};
-for (const f of noteFindings) facetCounts[f.facet] = (facetCounts[f.facet] ?? 0) + 1;
+for (const f of unselectedNotes) facetCounts[f.facet] = (facetCounts[f.facet] ?? 0) + 1;
 computed ??= {};
 computed.debt_ratchet = {
   selected_cases: selectedCases.size,

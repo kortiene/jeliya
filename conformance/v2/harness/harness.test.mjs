@@ -269,18 +269,42 @@ test('the padded envelope refuses unreachable and malformed targets', () => {
   }), /does not resolve inside the envelope/);
   assert.throws(() => buildPaddedEnvelope({
     envelope: env, pad_field: 'in.op_id', pad_byte: 'ab', pad_to_total_frame_bytes: 100,
-  }), /exactly one character/);
+  }), /single unescaped ASCII byte/);
 });
 
-test('the masked frame header carries the mask at offset 10 and the exact length', () => {
+test('the masked frame header uses the canonical RFC 6455 length form per range', () => {
   const mask = Buffer.from([0x11, 0x22, 0x33, 0x44]);
-  for (const len of [5, 65_536, 128 * 1024 * 1024 + 1]) {
-    const h = buildMaskedFrameHeader(len, mask);
-    assert.equal(h.length, 14);
-    assert.equal(h[0], 0x81); // FIN + text
-    assert.equal(h[1], 0xff); // MASK + 64-bit extended length
-    assert.equal(h.readBigUInt64BE(2), BigInt(len));
-    assert.deepEqual(h.subarray(10, 14), mask, 'a zero/absent mask with a masked payload is protocol garbage');
+  // 0–125: length inline in byte 1, mask at offset 2.
+  const small = buildMaskedFrameHeader(42, mask);
+  assert.equal(small.length, 6);
+  assert.equal(small[0], 0x81);
+  assert.equal(small[1], 0x80 | 42);
+  assert.deepEqual(small.subarray(2, 6), mask, 'the mask must land right after the length field');
+  // 126–65535: 16-bit extended length, mask at offset 4.
+  const medium = buildMaskedFrameHeader(30_000, mask);
+  assert.equal(medium.length, 8);
+  assert.equal(medium[1], 0x80 | 126);
+  assert.equal(medium.readUInt16BE(2), 30_000);
+  assert.deepEqual(medium.subarray(4, 8), mask);
+  // >65535: 64-bit extended length, mask at offset 10.
+  const large = buildMaskedFrameHeader(128 * 1024 * 1024 + 1, mask);
+  assert.equal(large.length, 14);
+  assert.equal(large[1], 0x80 | 127);
+  assert.equal(large.readBigUInt64BE(2), BigInt(128 * 1024 * 1024 + 1));
+  assert.deepEqual(large.subarray(10, 14), mask);
+  assert.throws(() => buildMaskedFrameHeader(-1, mask), /nonnegative integer/);
+});
+
+test('a pad byte that JSON-escapes or UTF-8 multibyte-encodes is rejected', () => {
+  const env = () => ({ id: 1, op: 'subject.ensure', in: { op_id: 'x' } });
+  for (const bad of ['"', '\\', 'é', '😀', 'ab', '']) {
+    assert.throws(
+      () => buildPaddedEnvelope({
+        envelope: env(), pad_field: 'in.op_id', pad_byte: bad, pad_to_total_frame_bytes: 100,
+      }),
+      /single unescaped ASCII byte/,
+      `pad_byte ${JSON.stringify(bad)} must be rejected — its serialized width is not one byte per repetition`,
+    );
   }
 });
 

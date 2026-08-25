@@ -49,12 +49,24 @@ export const EXECUTABLE_CONTROLS = new Set(
 );
 
 /**
- * `requires` tokens this runner establishes (or honestly satisfies) today.
+ * `requires` tokens this runner genuinely establishes today.
  * Every OTHER well-formed token in the checker's closed `requires`
  * vocabulary — link:*, room:removed, room:foreign, member:agent,
  * member:non_agent, daemon:restartable, observe:*, resource:large_file,
  * resource:fetched_file, fault:*, control:concurrency — is NOT established,
  * and the runner throws before staging anything when a case declares it.
+ *
+ * Deliberately NOT listed (staged unfaithfully — refusing loudly is the
+ * honest state until their setup is real; PR #311 review round):
+ *  - `room:quiescent` / `room:with_history`: #establishRequires stages both
+ *    exactly like `room:live` (activate; no history is ever authored), so
+ *    claiming either state would be a claim the staging cannot back.
+ *  - `room:left`: `$rid_left` is created but no member ever joins and
+ *    leaves it, so it is not a left room.
+ *  - `member:b` / `member:c`: their sessions route to the PRIMARY daemon
+ *    (the routing regex matches second/outsider/principal_b/peer/remote
+ *    only), whose single subject is the authority's — the "member" is not
+ *    a distinct invited subject.
  *
  * `control:limits` is listed because the runner surfaces the daemon's served
  * limits to every case (the hello capture and the pre-seeded `$limits`); the
@@ -73,11 +85,6 @@ export const REQUIRES_IMPLEMENTED = Object.freeze(new Set([
   'daemon:second',
   'room:plain',
   'room:live',
-  'room:quiescent',
-  'room:left',
-  'room:with_history',
-  'member:b',
-  'member:c',
   'resource:tcp_service',
   'resource:shared_file',
   'control:reconnect',
