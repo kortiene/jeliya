@@ -1872,35 +1872,34 @@ if (isObject(ledger)) {
   const ledgerStructural = mapFromLists(ledger.structural);
   const ledgerNotes = mapFromLists(ledger.notes);
   const splitKey = (key) => [key.slice(0, key.indexOf("|")), key.slice(key.indexOf("|") + 1)];
+  // NOTE: these push to `problems` directly — a rule-bearing fail() would be
+  // swallowed into structuralFindings (ratcheted findings are not problems
+  // until the ledger judges them), and a ledger mismatch IS the verdict.
   const s = multisetDiff(ledgerStructural, structuralDebt);
   for (const key of s.extra) {
     const [rule, fp] = splitKey(key);
     const [file, caseName, where] = fp.split("|");
-    fail(file, caseName, where,
-      `new/moved structural debt (${rule}) at ${fp} is not in the ledger — repair it, or extend the ledger deliberately`,
-      "ratchet");
+    problems.push({ file, case: caseName, where,
+      msg: `new/moved structural debt (${rule}) at ${fp} is not in the ledger — repair it, or extend the ledger deliberately` });
   }
   for (const key of s.missing) {
     const [rule, fp] = splitKey(key);
     const [file, caseName, where] = fp.split("|");
-    fail(file, caseName, where,
-      `ledger entry (${rule}) at ${fp} no longer matches any finding — debt was removed; shrink the ledger`,
-      "ratchet");
+    problems.push({ file, case: caseName, where,
+      msg: `ledger entry (${rule}) at ${fp} no longer matches any finding — debt was removed; shrink the ledger` });
   }
   const n = multisetDiff(ledgerNotes, noteDebt);
   for (const key of n.extra) {
     const [facet, fp] = splitKey(key);
     const [file, caseName, where] = fp.split("|");
-    fail(file, caseName, where,
-      `new/moved ${facet} note marker at ${fp} is not in the ledger — retranscribe/retire it, or extend the ledger deliberately`,
-      "ratchet");
+    problems.push({ file, case: caseName, where,
+      msg: `new/moved ${facet} note marker at ${fp} is not in the ledger — retranscribe/retire it, or extend the ledger deliberately` });
   }
   for (const key of n.missing) {
     const [facet, fp] = splitKey(key);
     const [file, caseName, where] = fp.split("|");
-    fail(file, caseName, where,
-      `ledger ${facet} entry at ${fp} no longer matches any marker — debt was removed; shrink the ledger`,
-      "ratchet");
+    problems.push({ file, case: caseName, where,
+      msg: `ledger ${facet} entry at ${fp} no longer matches any marker — debt was removed; shrink the ledger` });
   }
 }
 
