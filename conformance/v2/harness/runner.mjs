@@ -9,10 +9,11 @@
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon } from './daemon.mjs';
-import { Session } from './session.mjs';
+import { Session, isPaddedEnvelope, buildPaddedEnvelope, isBareEnvelope } from './session.mjs';
 import { AssertContext, AssertFailure, TransportFailure, evalAssert, subsetMatch } from './assert.mjs';
 import { resolvePath, resolveValue } from './values.mjs';
 import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall, streamWaitMs, isTransportDroppedMarker } from './stream.mjs';
+import { CONTROL_CAPABILITIES, unimplementedRequire } from './capabilities.mjs';
 
 /** The outcome of one case. */
 export const Outcome = {
@@ -86,6 +87,9 @@ export class Runner {
       // One record per `call` step: {step (1-based), label, accepted, opened}.
       // `bytes_streamed` observations read receiver-accepted bytes from here.
       callRecords: [],
+      // Raw-send write aborts, recorded not thrown (see #runStep's send
+      // branch and the case-end honesty guard).
+      sendWriteErrors: [],
     };
 
     const cleanup = async () => {
@@ -166,6 +170,23 @@ export class Runner {
         if (s.stickyBinaryViolation) throw s.stickyBinaryViolation;
       }
 
+      // Send-write honesty guard: a raw `send` whose write was aborted may
+      // only end green when a LATER step observed the connection state
+      // (close_code / connection_open / process_exited). Otherwise a failed
+      // probe would read as a passed one.
+      for (const sendErr of ctxState.sendWriteErrors) {
+        const observed = fixture.steps
+          .slice(sendErr.step)
+          .some((later) => Array.isArray(later?.assert) && later.assert.some((a) =>
+            a && (a.observe === 'close_code' || a.observe === 'connection_open'
+              || a.observe === 'process_exited')));
+        if (!observed) {
+          throw new AssertFailure(
+            `step ${sendErr.step}'s raw send failed to write (${sendErr.message}) and no later step observed the connection state — the probe's outcome is unobserved`,
+          );
+        }
+      }
+
       // A case that ran all steps without a failing assertion passes. A block
       // may name an upstream dependency or a settled record/corpus
       // contradiction awaiting fixture retirement (e.g. the old "op_id is
@@ -205,6 +226,13 @@ export class Runner {
   /** Establish the case's `requires` (daemons, subjects, rooms, links). */
   async #establishRequires(fixture, daemons, sessions, vars) {
     const requires = fixture.requires || [];
+    // Requires honesty, BEFORE any staging: a well-formed token this runner
+    // does not establish must fail the case loudly, never run half-staged.
+    // The checker owns token SHAPE (its vocabulary is closed); this guard
+    // owns token EXECUTION. It runs before the first daemon spawns so a
+    // refused case costs no process and cannot leave partial state.
+    const unimplemented = unimplementedRequire(requires);
+    if (unimplemented) throw unimplemented;
     const needsSecondDaemon = requires.some((r) => r === 'daemon:second');
 
     // Every case runs against at least one daemon. `daemon:fresh` (and the
@@ -433,11 +461,34 @@ export class Runner {
     }
     if (step.send !== undefined) {
       const s = await this.#sessionFor(onLabel, env.daemons, sessions, vars);
-      const value = resolveValue(step.send, vars);
+      let value = resolveValue(step.send, vars);
+      // The padded-envelope form builds one frame whose total serialized
+      // length hits an exact byte target (the max_frame_bytes boundary
+      // fixtures); the bare-envelope form sends the envelope itself raw
+      // (malformed-input fixtures). Resolve computed nodes first, then build.
+      // A padded frame is delivered as a TRICKLED write: an oversize frame
+      // is decided by the daemon from its header while the write is still
+      // in flight, and a one-shot 128 MiB write races the TCP RST (provoked
+      // by the daemon-side unread backlog) against our reading of the close
+      // frame — the close loses often enough to flake CI. A write the
+      // daemon aborts is recorded, not fatal: the case's later assertions
+      // observe the reaction, and the case-end guard refuses a green
+      // verdict when nothing observed the connection state after it.
       try {
-        await s.sendRaw(value);
+        if (isPaddedEnvelope(value)) {
+          value = buildPaddedEnvelope(value);
+          this.log(`send padded frame (trickled): ${String(value).length} chars`);
+          await s.sendPaddedTrickled(value);
+        } else {
+          if (isBareEnvelope(value)) {
+            value = value.envelope;
+            this.log(`send raw envelope id=${value?.id}`);
+          }
+          await s.sendRaw(value);
+        }
       } catch (err) {
-        throw new TransportFailure(`send failed: ${err.message}`);
+        env.ctxState.sendWriteErrors.push({ step: index + 1, message: err.message });
+        this.log(`send write failed (recorded; later assertions must observe the reaction): ${err.message}`);
       }
       return;
     }
@@ -1134,6 +1185,15 @@ export class Runner {
   async #doControl(step, index, env) {
     const { sessions, vars } = env;
     const c = step.control;
+    // Capability honesty: a verb the DSL documents but this harness does not
+    // execute fails loudly here — never a silent no-op. The classification
+    // lives in capabilities.mjs and is shared with the checker and README.
+    if (CONTROL_CAPABILITIES[c?.do] === 'documented_only') {
+      throw new Error(
+        `control ${c.do} is documented in the DSL but not executed by this harness ` +
+          `(capabilities.mjs classifies it documented_only) — the case cannot run honestly`,
+      );
+    }
     switch (c.do) {
       case 'idle':
         await new Promise((r) => setTimeout(r, Number(resolveValue(c.ms, vars)) || 0));
@@ -1164,15 +1224,10 @@ export class Runner {
       case 'stop_daemon':
         await (vars.__case||{}).primary.proc.kill('SIGTERM');
         return;
-      case 'start_daemon':
-        // A restart is out of scope for this runner's single-shot daemon.
-        throw new Error('control start_daemon is not supported by this harness yet');
-      case 'set_limit':
-      case 'start_transfers':
-      case 'pause_link':
-      case 'inject_fault':
-        throw new Error(`control ${c.do} is not supported by this harness yet`);
       default:
+        // Unreachable for classified verbs: every documented_only verb is
+        // refused before the switch, so this names a verb outside the
+        // checker's closed set reaching the runner anyway.
         throw new Error(`unknown control do ${c.do}`);
     }
   }

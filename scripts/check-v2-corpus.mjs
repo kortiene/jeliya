@@ -13,7 +13,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "conformance", "v2");
 
@@ -267,8 +267,82 @@ let stepCount = 0;
 let fixtureProblemCount = 0;
 let computed = null;
 
-function fail(file, caseName, where, msg) {
-  problems.push({ file, case: caseName, where, msg });
+// ── Debt-ratchet state ────────────────────────────────────────────────────
+// The generalized structural rules (assert shape, empty asserts, variable
+// binding) and the note facets (UNMAPPED / unrepaired / split) apply to EVERY
+// domain. Debt they find in the CI-selected slice fails outright; debt in the
+// unselected corpus is grandfathered by an EXACT multiset ledger keyed by
+// rule-id + semantic location (never a count alone): a new or moved
+// fingerprint fails, and a removal forces the ledger to shrink.
+const structuralFindings = []; // {rule, file, case, where}
+const noteFindings = []; // {facet, file, case, where}
+
+// The CI-selected case names, parsed from the live replay step's --case
+// selectors (NOT raw-grepped elsewhere): the same selectors the checker's
+// existence/unique guard below verifies. Hoisted here because case checking
+// needs the selected set before the ledger comparison runs.
+function readCiSelectors() {
+  try {
+    const ci = readFileSync(join(DIR, "..", "..", ".github", "workflows", "ci.yml"), "utf8");
+    const liveStep = ci.match(/- name: Protocol-v2 conformance replay[\s\S]*?(?=\n      - name:|$)/)?.[0] ?? "";
+    return [...liveStep.matchAll(/--case\s+([^\s\\]+)/g)].map((match) => match[1]);
+  } catch {
+    return null;
+  }
+}
+const ciSelectors = readCiSelectors();
+const selectedCases = new Set(ciSelectors ?? []);
+
+/** Record which debt facets a note string carries, attached to its location.
+ * `executable` is whether the attached step is now executable (a DSL verb or
+ * a non-empty assert) — split-only provenance may remain only on such steps
+ * in the CI-selected slice, so the flag gates that facet's selected check. */
+function recordNoteFacets(note, file, caseName, where, executable) {
+  if (note.includes("UNMAPPED dialect")) noteFindings.push({ facet: "unmapped", file, case: caseName, where, executable });
+  if (note.includes("unrepaired dialect step")) noteFindings.push({ facet: "unrepaired", file, case: caseName, where, executable });
+  if (note.includes("[split from a multi-verb step; review]")) noteFindings.push({ facet: "split", file, case: caseName, where, executable });
+}
+
+function fail(file, caseName, where, msg, rule) {
+  if (rule === undefined) {
+    problems.push({ file, case: caseName, where, msg });
+    return;
+  }
+  // A ratcheted finding is NOT yet a problem: selected-case debt fails
+  // outright below, unselected debt is judged against the exact ledger, and
+  // with no ledger on disk every finding fails strict (no recorded debt may
+  // pass unrecorded).
+  structuralFindings.push({ rule, file, case: caseName, where, msg });
+}
+
+// ── Capability classification drift guard (175c0a) ─────────────────────────
+// The ONE executable/documented-only classification lives in
+// conformance/v2/harness/capabilities.mjs and is shared by the checker, the
+// runner, the README control table, and the harness tests. The checker here
+// refuses to validate a corpus whose control vocabulary and the shared
+// classification have drifted apart.
+const capabilitiesUrl = pathToFileURL(join(DIR, "harness", "capabilities.mjs")).href;
+try {
+  const { CONTROL_CAPABILITIES, REQUIRES_IMPLEMENTED } = await import(capabilitiesUrl);
+  const classified = Object.keys(CONTROL_CAPABILITIES).sort();
+  const vocabulary = [...CONTROL_DO].sort();
+  if (!isDeepStrictEqual(classified, vocabulary)) {
+    fail("conformance/v2/harness/capabilities.mjs", "(drift)", "controls",
+      `CONTROL_CAPABILITIES keys ${JSON.stringify(classified)} do not equal the checker's closed CONTROL_DO set ${JSON.stringify(vocabulary)} — the classification and the vocabulary must change together`);
+  }
+  for (const token of REQUIRES_IMPLEMENTED) {
+    const [ns, arg] = token.split(":", 2);
+    const wellFormed = BARE_REQUIRES.has(token)
+      || (REQUIRE_NAMESPACES.has(ns) && arg !== undefined
+        && (!REQUIRE_ARGS[ns] || REQUIRE_ARGS[ns].has(arg)));
+    if (!wellFormed) {
+      fail("conformance/v2/harness/capabilities.mjs", "(drift)", "requires",
+        `REQUIRES_IMPLEMENTED token "${token}" is not well-formed corpus vocabulary — the runner and the checker have drifted`);
+    }
+  }
+} catch (err) {
+  fail("conformance/v2/harness/capabilities.mjs", "(drift)", "import",
+    `could not import the shared capability classification: ${err.message}`);
 }
 
 function isObject(value) {
@@ -323,15 +397,15 @@ function checkExactKeySet(value, required) {
   return got.length === want.length && got.every((key, i) => key === want[i]);
 }
 
-function checkExactKeys(value, required, file, caseName, where) {
+function checkExactKeys(value, required, file, caseName, where, rule) {
   if (!isObject(value)) {
-    fail(file, caseName, where, `must be an object with keys {${required.join(", ")}}`);
+    fail(file, caseName, where, `must be an object with keys {${required.join(", ")}}`, rule === undefined ? undefined : `${rule}:shape`);
     return false;
   }
   if (!checkExactKeySet(value, required)) {
     const got = Object.keys(value).sort();
     const want = [...required].sort();
-    fail(file, caseName, where, `takes exactly {${want.join(", ")}}, got {${got.join(", ")}}`);
+    fail(file, caseName, where, `takes exactly {${want.join(", ")}}, got {${got.join(", ")}}`, rule === undefined ? undefined : `${rule}:shape`);
     return false;
   }
   return true;
@@ -634,53 +708,55 @@ function checkAssertion(a, file, caseName, where) {
   if ("op" in a && !ASSERT_OPS.has(a.op)) {
     fail(file, caseName, where, `unknown assert op "${a.op}" (closed set of ${ASSERT_OPS.size})`);
   }
-  if (file === "files.json") {
+  // Assert-shape contract, EVERY domain (was files.json-only; generalized by
+  // the 175c0a debt ratchet — grandfathered debt lives in the exact ledger).
+  {
     const unknownKeys = keys.filter((key) => !ASSERTION_KEYS.has(key));
     if (unknownKeys.length > 0) {
-      fail(file, caseName, where, `file assertion has unknown key(s): ${unknownKeys.join(", ")}`);
+      fail(file, caseName, where, `assertion has unknown key(s): ${unknownKeys.join(", ")}`, "assert-shape:unknown-key");
     }
     if (!("path" in a) || !("op" in a)) {
-      fail(file, caseName, where, `file value assertion requires both path and op`);
+      fail(file, caseName, where, `value assertion requires both path and op`, "assert-shape:path-op");
     }
     if (ASSERTIONS_WITHOUT_VALUE.has(a.op) && "value" in a) {
-      fail(file, caseName, where, `${a.op} takes no value`);
+      fail(file, caseName, where, `${a.op} takes no value`, "assert-shape:no-value");
     }
     if (ASSERTIONS_WITH_VALUE.has(a.op) && !("value" in a)) {
-      fail(file, caseName, where, `${a.op} requires value`);
+      fail(file, caseName, where, `${a.op} requires value`, "assert-shape:requires-value");
     }
     if (a.op === "ne" && Array.isArray(a.value)) {
-      fail(file, caseName, where, `array-valued ne is ambiguous — use one ne assertion per forbidden value`);
+      fail(file, caseName, where, `array-valued ne is ambiguous — use one ne assertion per forbidden value`, "assert-shape:array-ne");
     }
     if (["lt", "lte", "gt", "gte"].includes(a.op) && !isNumericAssertionValue(a.value)) {
-      fail(file, caseName, where, `${a.op}.value must be a finite number, $variable, or arithmetic computed node`);
+      fail(file, caseName, where, `${a.op}.value must be a finite number, $variable, or arithmetic computed node`, "assert-shape:numeric");
     }
     if (a.op === "member_of" && (!Array.isArray(a.value) || a.value.length === 0)) {
-      fail(file, caseName, where, `member_of.value must be a non-empty array`);
+      fail(file, caseName, where, `member_of.value must be a non-empty array`, "assert-shape:member-of");
     }
     if (a.op === "type" && (typeof a.value !== "string" || !TYPE_TAGS.has(a.value))) {
-      fail(file, caseName, where, `type.value must be one of the ${TYPE_TAGS.size} type-tag names without angle brackets`);
+      fail(file, caseName, where, `type.value must be one of the ${TYPE_TAGS.size} type-tag names without angle brackets`, "assert-shape:type");
     }
     if (a.op === "exact_keys"
         && (!Array.isArray(a.value) || a.value.length === 0
           || a.value.some((key) => typeof key !== "string" || key.length === 0)
           || new Set(a.value).size !== a.value.length)) {
-      fail(file, caseName, where, `exact_keys.value must be a non-empty unique array of non-empty strings`);
+      fail(file, caseName, where, `exact_keys.value must be a non-empty unique array of non-empty strings`, "assert-shape:exact-keys");
     }
     if (["len", "byte_len"].includes(a.op)) {
-      if (checkExactKeys(a.value, ["op", "value"], file, caseName, `${where} value`)
+      if (checkExactKeys(a.value, ["op", "value"], file, caseName, `${where} value`, "assert-shape:len")
           && (!COMPARISON_OPS.has(a.value.op) || !isNumericAssertionValue(a.value.value))) {
-        fail(file, caseName, where, `${a.op}.value must contain a comparison op and numeric assertion value`);
+        fail(file, caseName, where, `${a.op}.value must contain a comparison op and numeric assertion value`, "assert-shape:len");
       }
     }
     if (a.op === "eq_except") {
-      if (checkExactKeys(a.value, ["path", "keys"], file, caseName, `${where} value`)) {
+      if (checkExactKeys(a.value, ["path", "keys"], file, caseName, `${where} value`, "assert-shape:eq-except")) {
         if (typeof a.value.path !== "string" || a.value.path.length === 0) {
-          fail(file, caseName, where, `eq_except.value.path must be a non-empty path string`);
+          fail(file, caseName, where, `eq_except.value.path must be a non-empty path string`, "assert-shape:eq-except");
         }
         if (!Array.isArray(a.value.keys) || a.value.keys.length === 0
             || a.value.keys.some((key) => typeof key !== "string" || key.length === 0)
             || new Set(a.value.keys).size !== a.value.keys.length) {
-          fail(file, caseName, where, `eq_except.value.keys must be a non-empty unique array of non-empty strings`);
+          fail(file, caseName, where, `eq_except.value.keys must be a non-empty unique array of non-empty strings`, "assert-shape:eq-except");
         }
       }
     }
@@ -888,8 +964,8 @@ function checkStep(step, file, caseName, stepIdx) {
     if (!Array.isArray(step.assert)) {
       fail(file, caseName, where, `assert is ${Array.isArray(step.assert) ? "array" : typeof step.assert}, must be an array`);
     } else {
-      if (file === "files.json" && step.assert.length === 0) {
-        fail(file, caseName, where, `files.json assert arrays must not be empty`);
+      if (step.assert.length === 0) {
+        fail(file, caseName, where, `assert arrays must not be empty — an empty list vacuously passes and reads as coverage`, "empty-assert");
       }
       step.assert.forEach((a, i) => checkAssertion(a, file, caseName, `${where} assert[${i}]`));
     }
@@ -936,7 +1012,66 @@ function checkStep(step, file, caseName, stepIdx) {
       checkTypeTags(a, file, caseName, `${where} await`);
     }
   }
-  if (step.send !== undefined) checkTypeTags(step.send, file, caseName, `${where} send`);
+  if (step.send !== undefined) {
+    checkTypeTags(step.send, file, caseName, `${where} send`);
+    // The padded-envelope send form is a closed shape (175c0a made the
+    // runner actually build it, so the checker pins its shape): a raw
+    // envelope object with an `envelope` key and no pad keys would be
+    // serialized as instructions the daemon never understands.
+    const send = step.send;
+    if (isObject(send) && Object.keys(send).includes("envelope")) {
+      const isPadded = "pad_field" in send;
+      const got = Object.keys(send).sort();
+      const want = isPadded
+        ? ["envelope", "pad_byte", "pad_field", "pad_to_total_frame_bytes"].sort()
+        : ["envelope"];
+      if (!isDeepStrictEqual(got, want)) {
+        fail(file, caseName, where,
+          isPadded
+            ? `padded send takes exactly {envelope, pad_field, pad_byte, pad_to_total_frame_bytes}, got {${Object.keys(send).join(", ")}}`
+            : `a bare-envelope send takes exactly {envelope} (sent raw); padding needs {envelope, pad_field, pad_byte, pad_to_total_frame_bytes} — got {${Object.keys(send).join(", ")}}`,
+          "send-shape:keys");
+      } else if (isPadded) {
+        const env = send.envelope;
+        if (!isObject(env) || !Number.isInteger(env.id) || typeof env.op !== "string"
+            || env.op.length === 0 || !isObject(env.in)) {
+          fail(file, caseName, where,
+            `padded send envelope must be {id: <int>, op: <string>, in: {…}} with a pre-resolvable dotted pad path`,
+            "send-shape:envelope");
+        } else {
+          const parts = String(send.pad_field).split(".");
+          let cur = env;
+          for (let i = 0; i < parts.length - 1; i++) cur = isObject(cur) ? cur[parts[i]] : undefined;
+          const leaf = cur !== undefined && isObject(cur) ? cur[parts.at(-1)] : undefined;
+          if (typeof leaf !== "string") {
+            fail(file, caseName, where,
+              `pad_field "${send.pad_field}" must name an existing STRING field inside envelope.in so padding grows it in place`,
+              "send-shape:pad-field");
+          }
+        }
+        if (typeof send.pad_byte !== "string"
+            || Buffer.byteLength(send.pad_byte, "utf8") !== 1
+            || JSON.stringify(send.pad_byte) !== `"${send.pad_byte}"`) {
+          fail(file, caseName, where,
+            `pad_byte must be a single unescaped ASCII byte (a JSON-escaped or UTF-8 multibyte character grows the frame past the target)`,
+            "send-shape:pad-byte");
+        }
+        if (!isValueNode(send.pad_to_total_frame_bytes, { positive: true })) {
+          fail(file, caseName, where,
+            `pad_to_total_frame_bytes must be a positive <uint>, $variable, or arithmetic computed node`,
+            "send-shape:target");
+        }
+      } else {
+        const env = send.envelope;
+        if (!isObject(env) || !Number.isInteger(env.id) || typeof env.op !== "string"
+            || env.op.length === 0) {
+          fail(file, caseName, where,
+            `bare-envelope send must carry {id: <int>, op: <string>, …} — the runner serializes it as the frame itself`,
+            "send-shape:bare-envelope");
+        }
+      }
+    }
+  }
   if (Array.isArray(step.assert)) checkTypeTags(step.assert, file, caseName, `${where} assert`);
   if (step.save !== undefined) {
     if (!isObject(step.save) || Object.keys(step.save).length === 0) {
@@ -1159,11 +1294,12 @@ function checkCase(c, file) {
         `deferred handle ${handle} has ${deferred.terminals} terminal paths; exactly one later await or same-session disconnect is required`);
     }
   }
-  // Variable-binding contract (files.json): every $name a step reads must be
-  // captured by a save on an EARLIER step of this case, or be a documented
-  // variable whose binding precondition the case DECLARES in requires.
-  // Bindings are case-scoped, so nothing carries over from other cases.
-  if (file === "files.json" && Array.isArray(c.steps)) {
+  // Variable-binding contract, EVERY domain (was files.json-only; generalized
+  // by the 175c0a debt ratchet): every $name a step reads must be captured by
+  // a save on an EARLIER step of this case, or be a documented variable whose
+  // binding precondition the case DECLARES in requires. Bindings are
+  // case-scoped, so nothing carries over from other cases.
+  if (Array.isArray(c.steps)) {
     const requires = Array.isArray(c.requires)
       ? c.requires.filter((token) => typeof token === "string") : [];
     const exempt = PRECONDITION_GAP_CASES.get(c.name) ?? new Set();
@@ -1175,7 +1311,8 @@ function checkCase(c, file) {
       // replay time and must not count as a binding here.
       if ("send" in step || "control" in step) {
         fail(file, name, `step ${i + 1}`,
-          `save on a ${"send" in step ? "send" : "control"} step captures nothing — the runner applies captures only where a step produces a result (call, http, upgrade, await, assert, or a verbless capture step)`);
+          `save on a ${"send" in step ? "send" : "control"} step captures nothing — the runner applies captures only where a step produces a result (call, http, upgrade, await, assert, or a verbless capture step)`,
+          "bind:ghost-save");
         return;
       }
       for (const variable of Object.keys(step.save)) {
@@ -1187,7 +1324,8 @@ function checkCase(c, file) {
         const { name: variable, at } = reference;
         if (variable === null) {
           fail(file, name, `step ${i + 1}`,
-            `${JSON.stringify(reference.raw)} (${at}) is not a well-formed $variable reference — it resolves against nothing (a value degrades to a literal string; a path names a variable that cannot exist), so it asserts nothing`);
+            `${JSON.stringify(reference.raw)} (${at}) is not a well-formed $variable reference — it resolves against nothing (a value degrades to a literal string; a path names a variable that cannot exist), so it asserts nothing`,
+            "bind:malformed");
           continue;
         }
         const saved = savedAt.get(variable);
@@ -1197,7 +1335,8 @@ function checkCase(c, file) {
         // resolves against nothing.
         if (!savedEarlier && reference.hasTail && SCALAR_PROVIDED_VARIABLES.has(variable)) {
           fail(file, name, `step ${i + 1}`,
-            `"$${variable}" (${at}) carries a dotted tail, but the documented ${variable} binding is a scalar — the tail resolves against nothing`);
+            `"$${variable}" (${at}) carries a dotted tail, but the documented ${variable} binding is a scalar — the tail resolves against nothing`,
+            "bind:dotted-tail");
           continue;
         }
         if (savedEarlier) continue;
@@ -1206,16 +1345,43 @@ function checkCase(c, file) {
         if (binder) {
           if (binder(requires) || exempt.has(variable)) continue;
           fail(file, name, `step ${i + 1}`,
-            `"$${variable}" (${at}) names a precondition variable, but this case declares no precondition that binds it and no earlier save captures it`);
+            `"$${variable}" (${at}) names a precondition variable, but this case declares no precondition that binds it and no earlier save captures it`,
+            "bind:precondition");
         } else if (saved === undefined) {
           fail(file, name, `step ${i + 1}`,
-            `"$${variable}" (${at}) is never bound: no save captures it and it is not a documented runner/precondition variable — the harness degrades an unbound reference to a literal string, so the step asserts nothing`);
+            `"$${variable}" (${at}) is never bound: no save captures it and it is not a documented runner/precondition variable — the harness degrades an unbound reference to a literal string, so the step asserts nothing`,
+            "bind:never-bound");
         } else {
           fail(file, name, `step ${i + 1}`,
-            `"$${variable}" (${at}) is used before its save on step ${saved + 1} — a capture binds later steps only`);
+            `"$${variable}" (${at}) is used before its save on step ${saved + 1} — a capture binds later steps only`,
+            "bind:before-save");
         }
       }
     });
+  }
+  // Note-facet ratchet (175c0a): the corpus's authoring-debt markers are
+  // accounted by STRUCTURAL ATTACHMENT — which step, and which assertion
+  // within it, carries the marker — never by raw grep over file text. A note
+  // carrying two markers (a split tag quoted inside an unrepaired step, or
+  // any other dual form) counts in BOTH facet ledgers by design; aggregate
+  // summaries therefore use the disjoint partition of marker sets, never a
+  // sum of facet counts. `executable` records whether the attached step is
+  // NOW executable (carries a DSL verb or a non-empty assert): split-only
+  // provenance may remain only on such steps in the selected slice.
+  for (let i = 0; i < c.steps.length; i++) {
+    const step = c.steps[i];
+    const executable = isObject(step)
+      && ([...DSL_VERBS].some((v) => Object.hasOwn(step, v))
+        || (Array.isArray(step.assert) && step.assert.length > 0));
+    const stepNote = isObject(step) ? step.note : undefined;
+    if (typeof stepNote === "string") recordNoteFacets(stepNote, file, name, `step ${i + 1}`, executable);
+    if (isObject(step) && Array.isArray(step.assert)) {
+      step.assert.forEach((a, j) => {
+        if (isObject(a) && typeof a.note === "string") {
+          recordNoteFacets(a.note, file, name, `step ${i + 1} assert[${j}]`, executable);
+        }
+      });
+    }
   }
   if (PRINCIPAL_ISOLATION_CASES.has(name)) {
     if (c.requires.includes("subject:second")) {
@@ -1598,10 +1764,196 @@ if (isObject(manifest)) {
   fail("manifest.json", "(file)", "file", "manifest must be an object");
 }
 
-if (process.argv.includes("--json")) {
+// ── Debt-ledger comparison (175c0a) ────────────────────────────────────────
+// The CI-selected slice must carry ZERO structural findings and ZERO note
+// markers — selected debt fails outright, ledger or no ledger. Unselected
+// debt is grandfathered by an EXACT multiset ledger
+// (scripts/v2-corpus-debt-ledger.json) keyed by rule-id/facet + semantic
+// location: a new or moved fingerprint fails, a removed one forces the
+// ledger to shrink. Fingerprints are "file|case|where", so renaming a case
+// or renumbering a step intentionally breaks the ledger — that is the
+// ratchet doing its job.
+const fingerprint = (f) => `${f.file}|${f.case}|${f.where}`;
+const structuralDebt = new Map(); // "rule|fingerprint" -> count
+const noteDebt = new Map(); // "facet|fingerprint" -> count
+for (const f of [...structuralFindings]) {
+  if (selectedCases.has(f.case)) {
+    problems.push({ file: f.file, case: f.case, where: f.where,
+      msg: `CI-selected case carries structural debt (rule ${f.rule}) — the selected slice stays debt-free; repair the finding, do not ledger it` });
+  } else {
+    const key = `${f.rule}|${fingerprint(f)}`;
+    structuralDebt.set(key, (structuralDebt.get(key) ?? 0) + 1);
+  }
+}
+for (const f of [...noteFindings]) {
+  // Split-only provenance may remain on a NOW-EXECUTABLE step of a selected
+  // case (it records where the step's content came from, and the step runs);
+  // every other selected marker — and a split marker on a dead step — is debt.
+  const selectedDebt = selectedCases.has(f.case)
+    && !(f.facet === "split" && f.executable);
+  if (selectedDebt) {
+    problems.push({ file: f.file, case: f.case, where: f.where,
+      msg: `CI-selected case carries a ${f.facet} note marker${f.facet === "split" ? " on a step that executes nothing" : ""} — the selected slice stays debt-free; retranscribe or retire the marker` });
+  } else if (!selectedCases.has(f.case)) {
+    const key = `${f.facet}|${fingerprint(f)}`;
+    noteDebt.set(key, (noteDebt.get(key) ?? 0) + 1);
+  }
+}
+
+function multisetDiff(expected, actual) {
+  // Returns {extra: [...], missing: [...]} over sorted key lists.
+  const extra = [];
+  const missing = [];
+  const keys = new Set([...expected.keys(), ...actual.keys()]);
+  for (const key of [...keys].sort()) {
+    const want = expected.get(key) ?? 0;
+    const got = actual.get(key) ?? 0;
+    for (let n = got; n > want; n--) extra.push(key);
+    for (let n = want; n > got; n--) missing.push(key);
+  }
+  return { extra, missing };
+}
+
+function mapFromLists(lists) {
+  const m = new Map();
+  for (const [group, entries] of Object.entries(lists ?? {})) {
+    for (const fp of entries ?? []) {
+      const key = `${group}|${fp}`;
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+  }
+  return m;
+}
+
+const printLedger = process.argv.includes("--print-ledger");
+let printLedgerDone = false;
+const ledgerPath = join(dirname(fileURLToPath(import.meta.url)), "v2-corpus-debt-ledger.json");
+if (printLedger) {
+  // Derivation aid: prints ONLY the ledger the CURRENT parsed corpus implies
+  // (unselected findings, selected debt already excluded). Writing it into
+  // v2-corpus-debt-ledger.json is a deliberate human/agent act — the ratchet
+  // exists to force that act. Note: run this AFTER the selected cleanup; a
+  // dirty selected slice silently excludes its findings from the printout.
+  const lists = (m) => {
+    const out = {};
+    for (const key of [...m.keys()].sort()) {
+      const group = key.slice(0, key.indexOf("|"));
+      const fp = key.slice(key.indexOf("|") + 1);
+      // Multiset: a fingerprint with count n appears n times, so the file
+      // round-trips exactly (two findings at one semantic location are one
+      // key with count two, not one entry).
+      for (let i = 0; i < m.get(key); i++) (out[group] ??= []).push(fp);
+    }
+    return out;
+  };
+  console.log(JSON.stringify({
+    version: 1,
+    structural: lists(structuralDebt),
+    notes: lists(noteDebt),
+  }, null, 1));
+  // Natural exit, never process.exit(): on a pipe, process.exit can kill the
+  // stream before a large ledger (>64 KiB) flushes, silently truncating the
+  // derivation output mid-line.
+  process.exitCode = problems.length === 0 ? 0 : 1;
+  printLedgerDone = true;
+}
+let ledger = null;
+try {
+  ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+} catch (err) {
+  fail("v2-corpus-debt-ledger.json", "(ledger)", "file",
+    `the debt ledger is missing or unreadable (${err.message}) — derive it with --print-ledger and write it deliberately`);
+  // STRICT MODE: with no ledger on disk there is no recorded debt, so every
+  // ratcheted finding and every note marker fails as a plain problem. This
+  // is what a synthetic corpus (unit tests) or a deleted ledger sees.
+  for (const f of structuralFindings) {
+    problems.push({ file: f.file, case: f.case, where: f.where, msg: f.msg });
+  }
+  for (const f of noteFindings) {
+    problems.push({ file: f.file, case: f.case, where: f.where,
+      msg: `${f.facet} note marker with no debt ledger on disk — unrecorded debt may not pass` });
+  }
+}
+if (isObject(ledger)) {
+  if (ledger.version !== 1) {
+    fail("v2-corpus-debt-ledger.json", "(ledger)", "version", `unsupported ledger version ${JSON.stringify(ledger.version)}`);
+  }
+  const ledgerStructural = mapFromLists(ledger.structural);
+  const ledgerNotes = mapFromLists(ledger.notes);
+  const splitKey = (key) => [key.slice(0, key.indexOf("|")), key.slice(key.indexOf("|") + 1)];
+  // NOTE: these push to `problems` directly — a rule-bearing fail() would be
+  // swallowed into structuralFindings (ratcheted findings are not problems
+  // until the ledger judges them), and a ledger mismatch IS the verdict.
+  const s = multisetDiff(ledgerStructural, structuralDebt);
+  for (const key of s.extra) {
+    const [rule, fp] = splitKey(key);
+    const [file, caseName, where] = fp.split("|");
+    problems.push({ file, case: caseName, where,
+      msg: `new/moved structural debt (${rule}) at ${fp} is not in the ledger — repair it, or extend the ledger deliberately` });
+  }
+  for (const key of s.missing) {
+    const [rule, fp] = splitKey(key);
+    const [file, caseName, where] = fp.split("|");
+    problems.push({ file, case: caseName, where,
+      msg: `ledger entry (${rule}) at ${fp} no longer matches any finding — debt was removed; shrink the ledger` });
+  }
+  const n = multisetDiff(ledgerNotes, noteDebt);
+  for (const key of n.extra) {
+    const [facet, fp] = splitKey(key);
+    const [file, caseName, where] = fp.split("|");
+    problems.push({ file, case: caseName, where,
+      msg: `new/moved ${facet} note marker at ${fp} is not in the ledger — retranscribe/retire it, or extend the ledger deliberately` });
+  }
+  for (const key of n.missing) {
+    const [facet, fp] = splitKey(key);
+    const [file, caseName, where] = fp.split("|");
+    problems.push({ file, case: caseName, where,
+      msg: `ledger ${facet} entry at ${fp} no longer matches any marker — debt was removed; shrink the ledger` });
+  }
+}
+
+// Aggregate summary uses the DISJOINT partition of marker sets per location
+// (a dual marker counts once), never the sum of facet counts.
+// UNSELECTED notes only: the split-provenance markers the selected slice is
+// allowed to carry are not unselected debt, and counting them here made the
+// "unselected" aggregates disagree with the ledger (55 reported vs 53
+// ledgered — PR #311 review round).
+const unselectedNotes = noteFindings.filter((f) => !selectedCases.has(f.case));
+const disjoint = new Map();
+for (const f of unselectedNotes) {
+  const key = fingerprint(f);
+  const set = disjoint.get(key) ?? new Set();
+  set.add(f.facet);
+  disjoint.set(key, set);
+}
+const disjointCounts = {};
+for (const facets of disjoint.values()) {
+  const tag = [...facets].sort().join("+");
+  disjointCounts[tag] = (disjointCounts[tag] ?? 0) + 1;
+}
+const facetCounts = {};
+for (const f of unselectedNotes) facetCounts[f.facet] = (facetCounts[f.facet] ?? 0) + 1;
+computed ??= {};
+computed.debt_ratchet = {
+  selected_cases: selectedCases.size,
+  selected_structural_findings: structuralFindings.filter((f) => selectedCases.has(f.case)).length,
+  selected_note_markers: noteFindings.filter((f) => selectedCases.has(f.case)).length,
+  unselected_structural_fingerprints: [...structuralDebt.values()].reduce((a, b) => a + b, 0),
+  unselected_note_facet_counts: facetCounts,
+  unselected_note_disjoint_partition: disjointCounts,
+};
+
+if (printLedgerDone) {
+  // --print-ledger printed only the ledger JSON; no summary noise after it.
+} else if (process.argv.includes("--json")) {
   console.log(JSON.stringify({ cases: caseCount, steps: stepCount, computed, problems }, null, 1));
 } else {
   console.log(`v2 corpus: ${caseCount} cases, ${stepCount} steps`);
+  console.log(
+    `debt ratchet: ${computed.debt_ratchet.unselected_structural_fingerprints} structural fingerprints grandfathered; ` +
+    `notes unmapped ${facetCounts.unmapped ?? 0} / unrepaired ${facetCounts.unrepaired ?? 0} / split ${facetCounts.split ?? 0} ` +
+    `(disjoint partition: ${Object.entries(disjointCounts).map(([k, v]) => `${k} ${v}`).join(", ") || "none"})`,
+  );
   if (problems.length === 0) {
     console.log("v2-corpus-check: OK — every case conforms to the DSL");
   } else {
@@ -1619,4 +1971,4 @@ if (process.argv.includes("--json")) {
     }
   }
 }
-process.exit(problems.length === 0 ? 0 : 1);
+process.exitCode = problems.length === 0 ? 0 : 1;

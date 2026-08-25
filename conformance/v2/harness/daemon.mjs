@@ -109,7 +109,13 @@ export async function startDaemon(binary, { loopback = true } = {}) {
   });
   try {
     const pf = await readPortfile(dataDir, READY_TIMEOUT_MS);
-    return new Daemon(proc, dataDir, pf.port, pf.auth_token, pf.protocol);
+    // The portfile carries BOTH generation axes: `protocol` (the wire
+    // protocol number a client must speak) and `storage_generation` (the
+    // storage era the upgrade's `sg` must declare). Both are 2 today, which
+    // masked a false-green window — reading `protocol` here satisfied every
+    // generation-gated replay by coincidence. Bind the field the handshake
+    // actually requires.
+    return new Daemon(proc, dataDir, pf.port, pf.auth_token, pf.storage_generation);
   } catch (err) {
     proc.kill('SIGKILL');
     rmSync(dataDir, { recursive: true, force: true });

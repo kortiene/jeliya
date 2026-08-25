@@ -31,7 +31,7 @@
             }
           },
           "save": {
-            "limits": "frame.hello.limits"
+            "limits": "frame.limits"
           }
         },
         {
@@ -60,8 +60,7 @@
           "in": {},
           "save": {
             "sid": "out.subject_id",
-            "did": "out.device_id",
-            "first_out": "$out"
+            "did": "out.device_id"
           },
           "expect": {
             "ok": true,
@@ -81,9 +80,14 @@
               "op": "no_nulls"
             },
             {
+              "path": "out.subject_id",
+              "op": "ne",
+              "value": "$did",
+              "note": "retranscribed from the dialect's distinct_values [\"subject_id\", \"device_id\"]: the two ids must differ — same value would mean one identifier masquerading as two"
+            },
+            {
               "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert distinct_values: [\"subject_id\", \"device_id\"] \u2014 needs manual retranscription"
+              "scope": "case"
             }
           ],
           "on": "subject:A"
@@ -452,18 +456,22 @@
         {
           "assert": [
             {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert forbid_keys_deep: [\"secret\", \"secret_key\", \"secretkey\", \"private_key\", \"privatekey\", \"signing_key\", \"signingkey\", \"seed\", \"keypair\", \"key_pair\", \"sk\", \"mnemonic\", \"entropy\", \"passphrase\", \"password\", \"key_material\", \"k \u2014 needs manual retranscription"
-            },
-            {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert exact_top_level_keys: [\"subject_id\", \"device_id\", \"created\"] \u2014 needs manual retranscription"
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "subject_id",
+                "device_id",
+                "created"
+              ],
+              "note": "retranscribed from the dialect's forbid_keys_deep + exact_top_level_keys: the reply's top level is exactly the three documented fields, so no key any secret name could hide under can exist; the expect's <string> pins on the call step make each of the three a scalar, so there is no deeper level to hide one in"
             },
             {
               "path": "out",
               "op": "no_nulls"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
             }
           ],
           "on": "subject:A"
@@ -485,18 +493,22 @@
         {
           "assert": [
             {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert forbid_keys_deep: [\"secret\", \"secret_key\", \"secretkey\", \"private_key\", \"privatekey\", \"signing_key\", \"signingkey\", \"seed\", \"keypair\", \"key_pair\", \"sk\", \"mnemonic\", \"entropy\", \"passphrase\", \"password\", \"key_material\", \"k \u2014 needs manual retranscription"
-            },
-            {
-              "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert exact_top_level_keys: [\"subject_id\", \"device_id\", \"created\"] \u2014 needs manual retranscription"
+              "path": "out",
+              "op": "exact_keys",
+              "value": [
+                "subject_id",
+                "device_id",
+                "created"
+              ],
+              "note": "retranscribed from the dialect's forbid_keys_deep + exact_top_level_keys: the reply's top level is exactly the three documented fields, so no key any secret name could hide under can exist; the expect's <string> pins on the call step make each of the three a scalar, so there is no deeper level to hide one in"
             },
             {
               "path": "out",
               "op": "no_nulls"
+            },
+            {
+              "observe": "no_event_authored",
+              "scope": "case"
             }
           ],
           "on": "subject:A"
@@ -686,8 +698,13 @@
           "op_id": "cf-subject-ensure-0007b"
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"must_not_error_with\": [\"identity_exists\", \"subject_exists\", \"already_exists\", \"conflict\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+          "assert": [
+            {
+              "path": "frame.err",
+              "op": "absent",
+              "note": "retranscribed from the dialect's must_not_error_with [identity_exists, subject_exists, already_exists, conflict]: a successful reply carries no error at all, which forbids every conflict-flavoured code at once"
+            }
+          ]
         },
         {
           "call": "subject.ensure",
@@ -703,17 +720,27 @@
           "op_id": "cf-subject-ensure-0007c"
         },
         {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"must_not_error_with\": [\"identity_exists\", \"subject_exists\", \"already_exists\", \"conflict\"], \"note\": \"[split from a multi-verb step; review]\"}]"
+          "assert": [
+            {
+              "path": "frame.err",
+              "op": "absent",
+              "note": "retranscribed from the dialect's must_not_error_with [identity_exists, subject_exists, already_exists, conflict]: a successful reply carries no error at all, which forbids every conflict-flavoured code at once"
+            }
+          ]
         },
         {
           "assert": [
             {
+              "path": "frame.err",
+              "op": "absent",
+              "note": "retranscribed from the dialect's assert_over_session {forbid_error_codes: [identity_exists]}: session A issued exactly the three ensures above and each expect pinned ok:true, so the session's last reply carrying no error closes the forbidden-code claim over every frame the session received"
+            },
+            {
               "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert assert_over_session: {\"session\": \"A\", \"scope\": \"all_frames\", \"forbid_error_codes\": [\"identity_exists\"]} \u2014 needs manual retranscription"
+              "scope": "case"
             }
-          ]
+          ],
+          "on": "subject:A"
         }
       ]
     },
@@ -1201,7 +1228,7 @@
             }
           },
           "save": {
-            "max_frame": "frame.hello.limits.max_frame_bytes"
+            "max_frame": "frame.limits.max_frame_bytes"
           }
         },
         {
@@ -1221,11 +1248,24 @@
           }
         },
         {
+          "await": {
+            "frame": {
+              "id": 81
+            }
+          },
+          "on": "subject:A",
+          "note": "retranscribed from the dialect's assert_frame_size_equals \"$max_frame\": the frame's exact byte length is now construction-guaranteed by the padded send (the runner pads in.op_id until the serialized frame is exactly $max_frame bytes, unit-tested in harness.test.mjs), so what the case must observe is the consequence — a correlated reply for envelope id 81 arrives. Whether the huge op_id itself is accepted is unpinned by the record, so the matcher pins the id only, never the ok arm."
+        },
+        {
           "assert": [
             {
+              "observe": "connection_open",
+              "on": "subject:A",
+              "note": "the frame was exactly AT the bound, not past it — a close of any code (4005 above all) fails this"
+            },
+            {
               "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert assert_frame_size_equals: \"$max_frame\" \u2014 needs manual retranscription"
+              "scope": "case"
             }
           ],
           "on": "subject:A"
@@ -1262,7 +1302,7 @@
             }
           },
           "save": {
-            "max_frame": "frame.hello.limits.max_frame_bytes"
+            "max_frame": "frame.limits.max_frame_bytes"
           }
         },
         {
@@ -1288,18 +1328,28 @@
             },
             "pad_field": "in.op_id",
             "pad_byte": "a",
-            "pad_to_total_frame_bytes": "$max_frame + 1"
+            "pad_to_total_frame_bytes": {
+              "$add": [
+                "$max_frame",
+                1
+              ]
+            }
           }
         },
         {
           "assert": [
             {
+              "observe": "close_code",
+              "value": 4005,
+              "on": "subject:A"
+            },
+            {
               "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert assert_frame_size_equals: \"$max_frame + 1\" \u2014 needs manual retranscription"
+              "scope": "case"
             }
           ],
-          "on": "subject:A"
+          "on": "subject:A",
+          "note": "retranscribed from the dialect's assert_frame_size_equals \"$max_frame + 1\": the padded send now constructs a frame of exactly one byte past the served bound, and the record's close table names 4005 frame_too_large for it"
         },
         {
           "note": "Still absent. The oversize frame was discarded before dispatch, so its mutating operation never ran.",
@@ -1377,7 +1427,7 @@
             }
           },
           "save": {
-            "n": "frame.hello.limits.max_inflight_requests"
+            "n": "frame.limits.max_inflight_requests"
           }
         },
         {
@@ -1394,8 +1444,19 @@
           "op_id": "cf-subject-ensure-0091"
         },
         {
-          "assert": [],
-          "note": "[split from a multi-verb step; review]"
+          "assert": [
+            {
+              "path": "$n",
+              "op": "type",
+              "value": "uint"
+            },
+            {
+              "path": "$n",
+              "op": "gte",
+              "value": 1
+            }
+          ],
+          "note": "The at-limit and one-past burst legs this case exists for (see intent) need a runtime-count burst control; the DSL's start_transfers {count} is its designated form and this harness documents it without executing it (capabilities.mjs), so the legs run when that control lands. What this step proves today is what the burst would run against: the served max_inflight_requests is a positive integer, captured live from the hello — never a hardcoded constant, per the corpus independence rule."
         }
       ]
     },
@@ -1446,16 +1507,48 @@
               "op": "no_nulls"
             },
             {
+              "path": "out.secret",
+              "op": "absent"
+            },
+            {
+              "path": "out.secret_key",
+              "op": "absent"
+            },
+            {
+              "path": "out.private_key",
+              "op": "absent"
+            },
+            {
+              "path": "out.signing_key",
+              "op": "absent"
+            },
+            {
+              "path": "out.seed",
+              "op": "absent"
+            },
+            {
+              "path": "out.token",
+              "op": "absent"
+            },
+            {
+              "path": "out.credential",
+              "op": "absent"
+            },
+            {
+              "path": "out.data_dir",
+              "op": "absent"
+            },
+            {
+              "path": "out.path",
+              "op": "absent",
+              "note": "retranscribed from the dialect's forbid_keys_deep over the same nine names: the closed assert-op set expresses per-key absence (one absent per forbidden name); out's key set is deliberately unpinned by the record, so exact_keys here would be transcription. The deep form has no v2 op; the record names no nested shape for this out, and absent keys under unpinned nesting cannot be named without inventing one — the no-nulls + per-key absence over the top level is the expressible part of the claim."
+            },
+            {
               "observe": "no_event_authored",
-              "scope": "case",
-              "note": "UNMAPPED dialect assert forbid_keys_deep: [\"secret\", \"secret_key\", \"private_key\", \"signing_key\", \"seed\", \"token\", \"credential\", \"data_dir\", \"path\"] \u2014 needs manual retranscription"
+              "scope": "case"
             }
           ],
           "on": "subject:A"
-        },
-        {
-          "assert": [],
-          "note": "[unrepaired dialect step: {\"expect_transport\": {\"closed\": true}, \"note\": \"The close code after an accepted daemon.stop is not defined by the spec (the 4001-4006 table covers rejections), so it is deliberately not pinned.\"}]"
         },
         {
           "assert": [
@@ -1463,7 +1556,8 @@
               "observe": "process_exited",
               "value": 0
             }
-          ]
+          ],
+          "note": "The dialect step between the flushed reply and the exit check asserted expect_transport {closed: true} with the close code deliberately unpinned (the 4001-4006 table covers rejections only). The closed observe vocabulary cannot say \"a named session's transport closed with any code\" — close_code pins a number the record never names, connection_open asserts the opposite — so that check is folded here rather than transcribed into a shape the record does not license. Teardown itself is proven twice below."
         },
         {
           "note": "Deterministic termination: the daemon does not linger accepting connections after replying.",
@@ -1681,16 +1775,13 @@
           "op_id": "cf-daemon-stop-0131"
         },
         {
-          "assert": [],
-          "note": "[split from a multi-verb step; review]"
-        },
-        {
           "assert": [
             {
               "observe": "process_exited",
               "value": 0
             }
-          ]
+          ],
+          "note": "The split dialect step that stood here asserted the transport closing after the accepted stop; as in daemon_stop_flushes_its_reply_before_teardown, the closed observe vocabulary cannot express \"closed with any code\" for a named session without pinning a number the record never names, so the check is folded into the teardown proof rather than transcribed into an unpinned shape."
         }
       ]
     },
@@ -1759,9 +1850,7 @@
             {
               "path": "err.code",
               "op": "ne",
-              "value": [
-                "invalid_argument"
-              ]
+              "value": "invalid_argument"
             }
           ],
           "on": "subject:A"
@@ -2092,9 +2181,6 @@
             "direction": "forward",
             "limit": 50
           },
-          "save": {
-            "e_wellformed": "$err"
-          },
           "on": "subject:A",
           "expect": {
             "ok": false,
@@ -2112,10 +2198,12 @@
             {
               "path": "err.code",
               "op": "ne",
-              "value": [
-                "room_not_available",
-                "invalid_argument"
-              ]
+              "value": "room_not_available"
+            },
+            {
+              "path": "err.code",
+              "op": "ne",
+              "value": "invalid_argument"
             }
           ],
           "on": "subject:A"

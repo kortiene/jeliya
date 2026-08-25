@@ -458,6 +458,22 @@ jobs:
           node --test scripts/check-v2-corpus.test.mjs
           node scripts/check-v2-corpus.mjs
 
+      # 175c0a: the harness's own honesty foundations run as unit tests in
+      # CI — selector hygiene, requires honesty, the shared capability
+      # classification (drift vs the README control table and the checker's
+      # vocabulary), the portfile storage_generation binding, and the
+      # padded-frame builder — alongside the stream codec suite. Before this,
+      # only shape validation and the live replay were wired.
+      - name: Protocol-v2 conformance harness unit tests
+        run: |
+          set -euo pipefail
+          # The harness tests import runner/session (the 'ws' dependency), so
+          # install the harness package first — the replay step below repeats
+          # the same install for its own run.
+          cd conformance/v2/harness
+          npm ci --ignore-scripts
+          node --test stream.test.mjs harness.test.mjs
+
       - name: Protocol-v2 conformance replay (handshake + subject lifecycle + file streams)
         run: |
           set -euo pipefail
@@ -475,7 +491,12 @@ jobs:
           # malformed record, a credit-paused upload stalling at zero accepted
           # progress, and a transport-dropped partial upload whose op_id replay
           # must return the recorded stream_aborted{transport_lost}); the at-limit and over-limit cases stream the
-          # served 100 MiB bound and stay local-only.
+          # served 100 MiB bound and stay local-only. The two max-frame
+          # boundary cases now send REAL frames at the served bound (the
+          # padded-envelope builder grows in.op_id to exactly
+          # $max_frame_bytes, resp. one past via $add) — the at-limit case
+          # observes the correlated answer and the one-past case observes
+          # the 4005 close — so this job moves ~2x128 MiB through loopback.
           node main.mjs ../../../target/debug/jeliyad \
             --case subject_ensure_creates_the_subject_on_a_fresh_daemon \
             --case subject_ensure_never_returns_secret_material \

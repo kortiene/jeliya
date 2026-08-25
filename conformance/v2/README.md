@@ -30,9 +30,9 @@ claims:
 
 | Slice | Status | What the claim means |
 |---|---|---|
-| Structural validation | Implemented for all 348 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary, strengthened file-domain assertion/error semantics (including per-case `$variable` binding in `files.json`), and manifest ledgers. It does not establish every case's semantic correctness and is not protocol evidence. |
+| Structural validation | Implemented for all 348 cases | `scripts/check-v2-corpus.mjs` parses every fixture and validates the closed DSL vocabulary and file-domain error semantics, the per-case `$variable` binding contract in EVERY domain, the send forms, and manifest ledgers — all under the exact-multiset debt ratchet (see "Debt ratchet" below): the CI-selected slice stays debt-free and unselected debt is ledgered. It does not establish every case's semantic correctness and is not protocol evidence. |
 | Selected JSON-envelope/subject slice | Partial (26 CI-selected cases) | The Node harness runs this selected JSON-envelope, subject-lifecycle, and executable-file slice against `jeliyad`; this is not corpus coverage. It is not a smoke, E2E, or Dart execution claim. |
-| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the four client-originated upload faults the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes; `stream: {send_bytes, fault: "raw_record"}`, one structurally malformed record (nonzero reserved byte) on the live binding that must draw a stream-local daemon ABORT(protocol_error), the client ACK, and a correlated `malformed_frame` terminal reply while the connection stays usable; and `stream: {send_bytes, fault: "credit_pause"}`, a producer legally paused for credit (the upload-side form: the initial CREDIT window is consumed with no DATA at all) whose zero accepted progress must make the daemon abort the stream at accepted offset zero, draw the client ACK, and resolve `transfer_stalled{transferred_bytes: 0}` with the known declared total while the connection stays usable (the abort's wire reason is not asserted — the record grounds `operation_error` only for deadline expiry); and `stream: {send_bytes, fault: "transport_drop"}`, a pre-END transport loss on a healthy partial upload (one full CREDIT-acknowledged DATA window, then the socket dropped with no close frame — the same disconnect the `control: {do: disconnect}` verb drives, needed here mid-duplex-call where a control step cannot run) whose op_id replay on a reconnected same-principal session must return the recorded `stream_aborted{transport_lost}` with exactly the acknowledged byte count, open no second stream, and author no share (a transport_drop step carries no expect and no save — it has no terminal reply to match; the recorded outcome is asserted by the replay step). The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject), and the transport-drop fault control remains unimplemented, so disconnect stream cases are still declarative. |
+| Binary byte-stream executor | Partial | The harness encodes/decodes Binary OPEN/DATA/CREDIT/END/ABORT/ACK records and drives `stream: {send_bytes}` uploads and `stream: {receive_bytes}` downloads with real receiver-accepted `bytes_streamed` accounting. It also drives the four client-originated upload faults the single-subject harness can execute end-to-end: `stream: {send_bytes, fault: "client_abort"}`, a producer cancel before any DATA that must draw the daemon's ACK and a `stream_aborted{cancelled}` terminal accounting for zero accepted bytes; `stream: {send_bytes, fault: "raw_record"}`, one structurally malformed record (nonzero reserved byte) on the live binding that must draw a stream-local daemon ABORT(protocol_error), the client ACK, and a correlated `malformed_frame` terminal reply while the connection stays usable; and `stream: {send_bytes, fault: "credit_pause"}`, a producer legally paused for credit (the upload-side form: the initial CREDIT window is consumed with no DATA at all) whose zero accepted progress must make the daemon abort the stream at accepted offset zero, draw the client ACK, and resolve `transfer_stalled{transferred_bytes: 0}` with the known declared total while the connection stays usable (the abort's wire reason is not asserted — the record grounds `operation_error` only for deadline expiry); and `stream: {send_bytes, fault: "transport_drop"}`, a pre-END transport loss on a healthy partial upload (one full CREDIT-acknowledged DATA window, then the socket dropped with no close frame — the same disconnect the `control: {do: disconnect}` verb drives, needed here mid-duplex-call where a control step cannot run) whose op_id replay on a reconnected same-principal session must return the recorded `stream_aborted{transport_lost}` with exactly the acknowledged byte count, open no second stream, and author no share (a transport_drop step carries no expect and no save — it has no terminal reply to match; the recorded outcome is asserted by the replay step). The download path still has no executable fixture (`resource:fetched_file` and `link:*` preconditions are unestablishable single-subject); all four upload-side fault controls are executed end-to-end. |
 | Adapter-target executors | Unimplemented / declarative | Cases may name adapters to which they apply, but no executor proves an in-process-core or client-adapter obligation. A target mismatch is not a pass. |
 
 | Computed corpus fact | Value |
@@ -190,7 +190,7 @@ A step has **exactly one verb**. The table below is the closed verb set.
 | `call` | operation name | Invoke an operation on the current session |
 | `http` | `{method, path, headers, body}` | A Layer 0 or `/api/session` request |
 | `upgrade` | `{query, headers}` | A Layer 1 `/ws` upgrade attempt |
-| `send` | raw frame value | Write bytes that may not be a valid frame |
+| `send` | raw frame value, `{envelope}`, or `{envelope, pad_field, pad_byte, pad_to_total_frame_bytes}` | Write bytes that may not be a valid frame |
 | `await` | `{push}`, `{frame}`, or `{reply}` | Wait for a specific frame, by type or by correlating `id` |
 | `control` | `{do, …}` | Drive the harness, not the daemon |
 | `assert` | array of assertions | Everything else |
@@ -345,24 +345,24 @@ would have let every harness invent its own dialect — which is what the commit
 corpus already did, spelling this idea four ways (`harness`, `control`, `fault`,
 `trigger`) split cleanly by authoring file.
 
-| `do` | Keys | Effect |
-|---|---|---|
-| `advance_clock` | `ms` | Move the harness clock forward |
-| `idle` | `ms` | Wait without producing activity |
-| `disconnect` | `on` | Drop a session's transport without a close frame |
-| `reconnect` | `on` | Re-establish it, same principal |
-| `inject_fault` | `fault` | Force a named fault condition |
-| `set_limit` | `limit`, `value` | Override a served limit for this case |
-| `set_link_rate` | `between`, `bits_per_second` | Cap the harness link between exactly two session/provider labels; the rate is a positive value node |
-| `set_provider_response_bytes` | `file_id`, `bytes` | Make the named provider serve the nonnegative byte count |
-| `client_preflight` | `source_bytes`, `source_reports_size` | Exercise client preflight with a nonnegative byte-count value node and a boolean size-report flag |
-| `client_render_limit` | `served_bytes` | Render a limit from a nonnegative served-byte value node |
-| `client_render_file` | `declared_content_type`, `body_kind` | Exercise client rendering with two non-empty strings |
-| `stop_daemon` | `daemon` | Terminate a daemon process |
-| `start_daemon` | `daemon` | Start a previously stopped daemon — restart cases cannot be written without it; the pair expresses one restart, never a fresh daemon |
-| `start_transfers` | `count`, `aggregate_bytes`, `op_id_prefix` | Begin a positive number of file transfers reserving a nonnegative aggregate byte count under a non-empty prefix |
-| `cancel_transfers` | `op_id_prefix` | Cancel the harness-started file-transfer set under a non-empty prefix |
-| `pause_link` | `between` | Suspend transport between two daemons |
+| `do` | Keys | Effect | Harness |
+|---|---|---|---|
+| `advance_clock` | `ms` | Move the harness clock forward — the harness executes a real wait capped at 1 s; it cannot move the daemon's clock | executable |
+| `idle` | `ms` | Wait without producing activity | executable |
+| `disconnect` | `on` | Drop a session's transport without a close frame | executable |
+| `reconnect` | `on` | Re-establish it, same principal | executable |
+| `inject_fault` | `fault` | Force a named fault condition | documented_only |
+| `set_limit` | `limit`, `value` | Override a served limit for this case | documented_only |
+| `set_link_rate` | `between`, `bits_per_second` | Cap the harness link between exactly two session/provider labels; the rate is a positive value node | documented_only |
+| `set_provider_response_bytes` | `file_id`, `bytes` | Make the named provider serve the nonnegative byte count | documented_only |
+| `client_preflight` | `source_bytes`, `source_reports_size` | Exercise client preflight with a nonnegative byte-count value node and a boolean size-report flag | documented_only |
+| `client_render_limit` | `served_bytes` | Render a limit from a nonnegative served-byte value node | documented_only |
+| `client_render_file` | `declared_content_type`, `body_kind` | Exercise client rendering with two non-empty strings | documented_only |
+| `stop_daemon` | `daemon` | Terminate a daemon process | executable |
+| `start_daemon` | `daemon` | Start a previously stopped daemon — restart cases cannot be written without it; the pair expresses one restart, never a fresh daemon | documented_only |
+| `start_transfers` | `count`, `aggregate_bytes`, `op_id_prefix` | Begin a positive number of file transfers reserving a nonnegative aggregate byte count under a non-empty prefix | documented_only |
+| `cancel_transfers` | `op_id_prefix` | Cancel the harness-started file-transfer set under a non-empty prefix | documented_only |
+| `pause_link` | `between` | Suspend transport between two daemons | documented_only |
 
 Each file-domain form above is closed and includes `do`: exactly
 `{do,file_id,bytes}`, `{do,source_bytes,source_reports_size}`,
@@ -372,6 +372,13 @@ The two pre-existing handshake request-concurrency fixtures retain their exact
 legacy `start_transfers` shape `{do,count}`; it drives requests rather than file
 transfers. `set_link_rate` remains exactly `{do,between,bits_per_second}`. These
 controls make fixtures declarative; they do not add a protocol or executor.
+The **Harness** column is the ONE capability classification
+(`conformance/v2/harness/capabilities.mjs`), shared by this table, the
+checker (which refuses to validate on drift), the runner (which refuses a
+documented-only verb loudly, never silently), and `harness.test.mjs` — so
+the executable and documented-only lists cannot drift apart. Shape errors
+fail for BOTH classes: a malformed `documented_only` control is exactly as
+invalid as a malformed executable one.
 
 `inject_fault`'s `fault` is a **taxonomy code**, so a fault a case wants that
 names no code is a signal the taxonomy is incomplete — that is how
@@ -390,6 +397,27 @@ distinct non-empty session/provider labels, and `bits_per_second` is a positive
 `<uint>`, a `$variable`, or a computed node. It makes the size-aware deadline
 cases declarative, but the U2 cases still fail until executable progress/rate
 support exists.
+
+### `send` — raw frames, bare envelopes, padded envelopes
+
+A plain value is written as-is (a string goes out verbatim; `{"$bytes_of_len": n}`
+sends n bytes of filler). Two object forms build real frames:
+
+- **Bare envelope** `{envelope}` — exactly one key. The runner serializes the
+  envelope itself and writes it as the frame; this is how a fixture puts a
+  type-violating field (an integer `op_id`, a non-object `in`, a JSON null)
+  inside an otherwise well-formed envelope.
+- **Padded envelope** `{envelope, pad_field, pad_byte, pad_to_total_frame_bytes}` —
+  the runner pads the named string field with the single pad character until
+  the whole serialized frame is EXACTLY the total byte target, which may be a
+  served limit captured by a save (`$max_frame`) or an arithmetic computed
+  node on one (`{"$add": ["$max_frame", 1]}`). This is how the
+  `max_frame_bytes` boundary cases hit the bound at and past the limit
+  without ever compiling the number in. A write the daemon aborts by closing
+  (an oversize frame is closed from its header while megabytes are still in
+  flight) is recorded, not thrown: the case's later `close_code` /
+  `connection_open` / `process_exited` assertions observe the reaction, and
+  the runner refuses a green verdict when nothing did.
 
 ### `on` — which session
 
@@ -643,7 +671,8 @@ and binds `$fid` from the daemon's reply; `resource:fetched_file` and
 `resource:large_file` stay unestablished because a fetched file needs a
 provider peer the single-subject harness cannot honestly supply.
 
-In `files.json` the validator enforces the contract: every `$name` a step
+The validator enforces the contract in **every domain** (generalized from
+`files.json` by the 175c0a debt ratchet): every `$name` a step
 reads must be captured by a `save` on an **earlier** step of the same case,
 or be documented above **with its binding precondition declared** — a
 documented name alone is never evidence, because the historical failure was
@@ -770,6 +799,55 @@ A bare `subject` is shorthand for `subject:self`; a bare `daemon` for
 `fault:` takes **a code from the taxonomy**, so a fault a fixture wants to inject
 that names no code is a signal the taxonomy is incomplete — which is how
 `room_index_unreadable` and its four siblings were found in the first place.
+
+**Runner honesty:** the vocabulary above is closed for AUTHORING (the checker
+rejects a token outside it), but not every token is ESTABLISHED by the replay
+runner. `capabilities.mjs` carries the single implemented set (today: the
+`subject`/`daemon` families, `room:plain`, `room:live`,
+`resource:tcp_service`, `resource:shared_file`, plus `control:reconnect`
+(the verb is executable), `control:limits` (the served limits are surfaced
+to every case), and `control:clock` (the capped real wait)). A case
+declaring any other well-formed token — `link:*`, `room:removed`,
+`room:foreign`, `room:quiescent`, `room:left`, `room:with_history`,
+`member:*`, `daemon:restartable`, `observe:*`, `control:concurrency`,
+`resource:large_file`, `resource:fetched_file`, `fault:*` — is REFUSED
+before staging begins, with the token named: running it silently
+half-staged is the false green this harness exists to prevent. The
+room-state and member tokens are refused not because staging crashes but
+because it would be UNFAITHFUL: the runner stages `room:quiescent` and
+`room:with_history` exactly like `room:live` (no history is authored),
+`room:left` without anyone joining and leaving, and `member:b`/`c`
+sessions on the primary daemon whose one subject is the authority's —
+so a case would run against preconditions it does not actually have.
+
+## Debt ratchet
+
+The structural rules — assertion shape (closed key set, op/value pairing, no
+array-valued `ne`, numeric comparison operands, `member_of`/`type`/
+`exact_keys`/`len`/`byte_len`/`eq_except` shapes, path roots), no empty
+`assert` arrays, and the variable-binding contract — apply to **every
+domain**, as do the authoring-debt note markers (`UNMAPPED dialect`,
+`unrepaired dialect step`, `[split from a multi-verb step; review]`).
+
+The CI-selected live slice must carry **zero** findings and zero markers
+(split-only provenance may remain only on steps that now execute). Debt in
+the unselected corpus is grandfathered by an **exact multiset ledger**
+(`scripts/v2-corpus-debt-ledger.json`) keyed by rule-id/facet plus semantic
+location (`file|case|step N[.assert[i]]`), never a count alone:
+
+- a **new or moved** fingerprint fails — repairing one debt may not silently
+  bless another;
+- a **removed** fingerprint fails until the ledger is shrunk — the ledger
+  records debt that exists, never debt that used to;
+- **no ledger on disk means strict mode**: every finding fails, because
+  unrecorded debt may not pass.
+
+Notes are parsed by structural attachment (which step, which assertion),
+never raw grep; a note carrying two markers counts in both facet ledgers, so
+aggregate summaries use the disjoint partition of marker sets, never a sum of
+facets. `node scripts/check-v2-corpus.mjs --print-ledger` prints the ledger
+the current parsed corpus implies — writing it is a deliberate act the
+ratchet exists to force.
 
 ## Adding a case
 

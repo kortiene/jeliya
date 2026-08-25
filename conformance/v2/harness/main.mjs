@@ -7,17 +7,19 @@
 // Options:
 //   --filter <substr>     run only cases whose name contains the substring
 //   --file <name>         run only one corpus file (e.g. rooms, handshake)
-//   --case <name>         run only the named case
+//   --case <name>         run only the named case (repeatable)
 //   --verbose             per-step logging
 //   --jobs <n>            cases to run concurrently (default 1; daemons use
 //                         OS-chosen ports, so parallelism is safe but noisy)
 //
 // Exit status: 0 when every non-blocked case passed and every blocked case
-// failed as expected; 1 otherwise.
+// failed as expected; 1 otherwise; 2 for a selector usage error. Every
+// selector error is reported BEFORE any daemon starts — a typo must not cost
+// a process, and must never silently select nothing and exit 0.
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Outcome, Runner } from './runner.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -32,7 +34,7 @@ const FILES = [
   'pipes.json',
 ];
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = { binary: null, filter: null, file: null, caseNames: [], verbose: false, jobs: 1 };
   const rest = [...argv];
   while (rest.length) {
@@ -47,7 +49,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function loadCases(fileFilter) {
+export function loadCases(fileFilter) {
   const cases = [];
   for (const f of FILES) {
     if (fileFilter && !f.startsWith(fileFilter)) continue;
@@ -58,18 +60,85 @@ function loadCases(fileFilter) {
   return cases;
 }
 
+/**
+ * Apply the selector options to the loaded corpus, enforcing selector
+ * hygiene BEFORE the caller constructs a Runner (and therefore before any
+ * daemon spawns). Returns the selected case list, or a usage error
+ * `{ code, message }` the caller must report and exit with.
+ */
+export function selectCases(cases, args) {
+  if (args.caseNames.length > 0 && args.filter !== null) {
+    return {
+      error: {
+        code: 2,
+        message:
+          '--case and --filter are mutually exclusive: --case names exact cases, ' +
+          '--filter matches substrings — combine them and neither selector means what it says',
+      },
+    };
+  }
+  const duplicates = args.caseNames.filter((n, i) => args.caseNames.indexOf(n) !== i);
+  if (duplicates.length > 0) {
+    return {
+      error: {
+        code: 2,
+        message: `duplicate --case selector(s): ${[...new Set(duplicates)].join(', ')}`,
+      },
+    };
+  }
+  if (args.file !== null && FILES.filter((f) => f.startsWith(args.file)).length === 0) {
+    return {
+      error: {
+        code: 2,
+        message: `--file ${args.file} matches no corpus file (available: ${FILES.join(', ')})`,
+      },
+    };
+  }
+  if (args.caseNames.length > 0) {
+    const wanted = new Set(args.caseNames);
+    const selected = cases.filter((c) => wanted.has(c.name));
+    const unknown = args.caseNames.filter((n) => !cases.some((c) => c.name === n));
+    if (unknown.length > 0) {
+      return {
+        error: {
+          code: 2,
+          message:
+            `--case names no corpus case: ${unknown.join(', ')} ` +
+            `(${cases.length} cases in scope — a typo must fail, not silently select nothing)`,
+        },
+      };
+    }
+    return { cases: selected };
+  }
+  if (args.filter !== null) {
+    const selected = cases.filter((c) => c.name.includes(args.filter));
+    if (selected.length === 0) {
+      return {
+        error: {
+          code: 2,
+          message: `--filter ${args.filter} matches none of the ${cases.length} corpus cases`,
+        },
+      };
+    }
+    return { cases: selected };
+  }
+  return { cases };
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.binary) {
     console.error('usage: node main.mjs <path-to-jeliyad> [--filter s] [--file f] [--case n] [--verbose] [--jobs n]');
     process.exit(2);
   }
-  let cases = loadCases(args.file);
-  if (args.caseNames.length) {
-    const wanted = new Set(args.caseNames);
-    cases = cases.filter((c) => wanted.has(c.name));
+  // Selector hygiene first: every guard below exits before the Runner (and
+  // any daemon) is constructed.
+  const selection = selectCases(loadCases(args.file), args);
+  if (selection.error) {
+    console.error(`selector error: ${selection.error.message}`);
+    process.exit(selection.error.code);
   }
-  else if (args.filter) cases = cases.filter((c) => c.name.includes(args.filter));
+  const cases = selection.cases;
 
   const runner = new Runner(args.binary, { verbose: args.verbose });
   const results = [];
@@ -119,7 +188,11 @@ async function main() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-main().catch((err) => {
-  console.error('harness crashed:', err);
-  process.exit(2);
-});
+// Run only when invoked as a script; the test suite imports the helpers.
+const isDirect = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isDirect) {
+  main().catch((err) => {
+    console.error('harness crashed:', err);
+    process.exit(2);
+  });
+}

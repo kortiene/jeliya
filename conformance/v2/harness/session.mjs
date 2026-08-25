@@ -38,6 +38,118 @@ export function requestId() {
   return nextRequestId++;
 }
 
+/** Build one masked client text-frame header for a payload of `length`
+ * bytes, using the CANONICAL RFC 6455 length encoding for the payload's
+ * range (0–125 inline, 126–65535 as 16-bit, else 64-bit) followed by the 4
+ * mask bytes. A non-minimal length form is a protocol error a conforming
+ * peer may reject, which would exercise the wrong refusal. Pure —
+ * unit-tested (the mask must land immediately after the length field; a
+ * zero mask with a masked payload is protocol garbage). */
+export function buildMaskedFrameHeader(length, mask) {
+  if (!Number.isInteger(length) || length < 0) {
+    throw new AssertFailure(`frame length must be a nonnegative integer, got ${length}`);
+  }
+  let header;
+  if (length <= 125) {
+    header = Buffer.alloc(2 + 4);
+    header[0] = 0x81;
+    header[1] = 0x80 | length;
+    Buffer.from(mask).copy(header, 2);
+  } else if (length <= 65_535) {
+    header = Buffer.alloc(4 + 4);
+    header[0] = 0x81;
+    header[1] = 0x80 | 126;
+    header.writeUInt16BE(length, 2);
+    Buffer.from(mask).copy(header, 4);
+  } else {
+    header = Buffer.alloc(10 + 4);
+    header[0] = 0x81;
+    header[1] = 0x80 | 127;
+    header.writeBigUInt64BE(BigInt(length), 2);
+    Buffer.from(mask).copy(header, 10);
+  }
+  return header;
+}
+
+/** Is this `send` value the padded-envelope form?
+ * `{envelope, pad_field, pad_byte, pad_to_total_frame_bytes}` builds one
+ * frame whose TOTAL serialized length hits an exact byte target — the shape
+ * the boundary fixtures need to probe max_frame_bytes at and past the bound.
+ * (The checker shape-validates this form; anything else is sent as-is.) */
+export function isPaddedEnvelope(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && 'envelope' in value && 'pad_field' in value;
+}
+
+/** A send value of exactly `{envelope}` sends that envelope raw — the form
+ * the malformed-input fixtures use to put a type-violating field inside an
+ * otherwise well-formed frame. */
+export function isBareEnvelope(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1 && 'envelope' in value;
+}
+
+/** Build the padded frame text: serialize the envelope with the pad field's
+ * value grown by `pad_byte` repetitions until the whole JSON text is exactly
+ * `pad_to_total_frame_bytes` bytes. Throws when the target is unreachable
+ * (smaller than the un-padded envelope, or not a positive integer). */
+export function buildPaddedEnvelope(value) {
+  const keys = Object.keys(value).sort();
+  const expected = ['envelope', 'pad_byte', 'pad_field', 'pad_to_total_frame_bytes'].sort();
+  if (keys.length !== expected.length || keys.some((k, i) => k !== expected[i])) {
+    throw new AssertFailure(
+      `padded send takes exactly {envelope, pad_field, pad_byte, pad_to_total_frame_bytes}, got {${Object.keys(value).join(', ')}}`,
+    );
+  }
+  const { envelope, pad_field, pad_byte, pad_to_total_frame_bytes } = value;
+  const target = Number(pad_to_total_frame_bytes);
+  if (!Number.isFinite(target) || !Number.isInteger(target) || target <= 0) {
+    throw new AssertFailure(
+      `pad_to_total_frame_bytes must resolve to a positive integer, got ${JSON.stringify(pad_to_total_frame_bytes)}`,
+    );
+  }
+  // The pad byte must serialize to exactly ONE byte with NO JSON escaping:
+  // `fill` counts repetitions against a per-repeat budget of one byte, so a
+  // character that escapes (quote, backslash, control) or encodes to
+  // multiple UTF-8 bytes (é, emoji) would grow the frame past the target by
+  // (width-1)*fill bytes and silently invalidate the exact boundary probe.
+  if (typeof pad_byte !== 'string' || Buffer.byteLength(pad_byte, 'utf8') !== 1
+      || JSON.stringify(pad_byte) !== `"${pad_byte}"`) {
+    throw new AssertFailure(
+      `pad_byte must be a single unescaped ASCII byte (a character that JSON-escapes or UTF-8 multiencodes grows the frame past the target), got ${JSON.stringify(pad_byte)}`,
+    );
+  }
+  // Resolve the (dotted) pad field inside the envelope; it must exist and be
+  // a string so it can grow without changing the JSON's structure.
+  const parts = String(pad_field).split('.');
+  let cur = envelope;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur === null || typeof cur !== 'object') {
+      throw new AssertFailure(`pad_field ${pad_field} does not resolve inside the envelope`);
+    }
+    cur = cur[parts[i]];
+  }
+  if (cur === null || typeof cur !== 'object' || !(parts.at(-1) in cur)) {
+    throw new AssertFailure(`pad_field ${pad_field} does not resolve inside the envelope`);
+  }
+  const leaf = parts.at(-1);
+  const original = cur[leaf];
+  if (typeof original !== 'string') {
+    throw new AssertFailure(`pad_field ${pad_field} must name a string field to grow, got ${typeof original}`);
+  }
+  cur[leaf] = '';
+  const base = Buffer.byteLength(serializeWithRaw(envelope), 'utf8');
+  const originalBytes = Buffer.byteLength(JSON.stringify(original), 'utf8') - 2; // minus quotes
+  const fill = target - base - originalBytes;
+  if (fill < 0) {
+    throw new AssertFailure(
+      `pad_to_total_frame_bytes ${target} is smaller than the envelope itself (${base + originalBytes} bytes)`,
+    );
+  }
+  cur[leaf] = original + pad_byte.repeat(fill);
+  return serializeWithRaw(envelope);
+}
+
 export class Session {
   constructor(label, clientId = null) {
     this.label = label;
@@ -239,7 +351,95 @@ export class Session {
     return this.startCall(op, input, { opId, timeoutMs }).reply;
   }
 
-  /** Send one request envelope, returning its id and pending reply promise —
+/** Send one text frame whose payload is written in a trickle. The frame
+   * declares its FULL byte length up front (so a per-frame bound is decided
+   * from the header alone), but the payload streams out in slices, yielding
+   * to the event loop between them. This is what makes an oversize-frame
+   * probe deterministic: the daemon decides 4005 from the header while the
+   * write is still in flight, and a one-shot 128 MiB write races the TCP
+   * RST (provoked by the daemon-side unread backlog) against our reading
+   * of the close frame — the close loses often enough to flake CI. Trickled
+   * delivery lets the close frame arrive and be parsed while we still have
+   * write capacity left, so `closeCode` records the real code. Stops and
+   * resolves as soon as the connection leaves the open state. */
+  async sendPaddedTrickled(payloadText, { chunkBytes = 64 * 1024 } = {}) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('connection is not open'));
+    }
+    const sock = this.ws._socket;
+    const mask = Buffer.from([
+      (Math.random() * 0x100) | 0, (Math.random() * 0x100) | 0,
+      (Math.random() * 0x100) | 0, (Math.random() * 0x100) | 0,
+    ]);
+    const payload = Buffer.from(payloadText, 'utf8');
+    // FIN + text opcode, MASK set, 64-bit extended length, then the mask.
+    const header = buildMaskedFrameHeader(payload.length, mask);
+    // A stop signal: once the ws layer saw a close frame (or the socket
+    // died), further payload is pointless — the verdict is already in.
+    let stopped = false;
+    const onStop = () => { stopped = true; };
+    this.ws.on('close', onStop);
+    sock.on('close', onStop);
+    sock.on('error', onStop);
+    try {
+      sock.write(header);
+      // HEADER-FIRST PAUSE: an oversize frame is refused by the daemon from
+      // the declared length alone (tungstenite's capacity check), BEFORE any
+      // payload is read. Writing the header and briefly waiting means the
+      // close frame arrives while our unread backlog at the daemon is ZERO
+      // bytes — no RST to race, the close is read deterministically. Only
+      // when the header is NOT refused do we stream the payload.
+      const headerGraceMs = 250;
+      const slept = await this.#sleepUnlessStopped(headerGraceMs, () => stopped);
+      if (slept && stopped) return { stopped };
+      for (let off = 0; off < payload.length && !stopped; off += chunkBytes) {
+        const slice = payload.subarray(off, Math.min(off + chunkBytes, payload.length));
+        const masked = Buffer.allocUnsafe(slice.length);
+        for (let i = 0; i < slice.length; i++) {
+          masked[i] = slice[i] ^ mask[(off + i) & 3];
+        }
+        const canContinue = sock.write(masked);
+        if (!canContinue && off + chunkBytes < payload.length && !stopped) {
+          // Race the drain against the stop signals: once the daemon stops
+          // reading (it already decided from the header), drain never comes.
+          await new Promise((resolve) => {
+            const done = () => {
+              sock.off('drain', done);
+              this.ws.off('close', done);
+              sock.off('close', done);
+              sock.off('error', done);
+              resolve();
+            };
+            sock.once('drain', done);
+            this.ws.once('close', done);
+            sock.once('close', done);
+            sock.once('error', done);
+          });
+          if (stopped) break;
+        }
+        // Yield so incoming frames (the close) get parsed between chunks.
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    } finally {
+      this.ws.off('close', onStop);
+      sock.off('close', onStop);
+      sock.off('error', onStop);
+    }
+    return { stopped };
+  }
+
+  /** Sleep in small slices, ending early when `isStopped()` turns true.
+   * Returns true when the full duration elapsed, false when cut short. */
+  async #sleepUnlessStopped(ms, isStopped) {
+    const slice = 10;
+    for (let t = 0; t < ms; t += slice) {
+      if (isStopped()) return false;
+      await new Promise((resolve) => setTimeout(resolve, slice));
+    }
+    return !isStopped();
+  }
+
+  /** Wait for one request envelope, returning its id and pending reply promise —
    * the duplex form a streaming call needs (the reply stays pending while
    * Binary records flow). */
   startCall(op, input, { opId, timeoutMs = 10_000 } = {}) {
