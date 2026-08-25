@@ -464,7 +464,15 @@ jobs:
       # vocabulary), the portfile storage_generation binding, and the
       # padded-frame builder — alongside the stream codec suite. Before this,
       # only shape validation and the live replay were wired.
+      # 175c0b adds topology.test.mjs: the actor-catalog meta-test, the
+      # four-axis resolver, the RealNetwork mode rules, the witness poll —
+      # and the LIVE RealNetwork canary plus the total-cleanup leak check
+      # (against the jeliyad built by the earlier step; a missing binary
+      # fails hard, never skips — the same RealNetwork mode the ws-web
+      # browser job already exercises).
       - name: Protocol-v2 conformance harness unit tests
+        env:
+          JELIYAD_BIN: ${{ github.workspace }}/target/debug/jeliyad
         run: |
           set -euo pipefail
           # The harness tests import runner/session (the 'ws' dependency), so
@@ -472,7 +480,7 @@ jobs:
           # the same install for its own run.
           cd conformance/v2/harness
           npm ci --ignore-scripts
-          node --test stream.test.mjs harness.test.mjs
+          node --test stream.test.mjs harness.test.mjs topology.test.mjs
 
       - name: Protocol-v2 conformance replay (handshake + subject lifecycle + file streams)
         run: |

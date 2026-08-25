@@ -31,20 +31,25 @@ export class Daemon {
     return `ws://127.0.0.1:${this.port}/ws`;
   }
 
-  /** Stop the daemon (SIGTERM) and wait for exit. */
+  /** Stop the daemon (SIGTERM) and wait for exit. Total cleanup: the data
+   * dir is removed even when the process already exited on its own (a
+   * case-level stop_daemon control, a crash) — an early return here is how
+   * temp dirs used to leak one per such case (caught by the 175c0b leak
+   * probe: zero new jeliya-conf-* dirs after a run). */
   async stop() {
-    if (this.exited) return;
-    this.proc.kill('SIGTERM');
-    await new Promise((resolve) => {
-      const t = setTimeout(() => {
-        this.proc.kill('SIGKILL');
-        resolve();
-      }, 5_000);
-      this.proc.once('exit', () => {
-        clearTimeout(t);
-        resolve();
+    if (!this.exited) {
+      this.proc.kill('SIGTERM');
+      await new Promise((resolve) => {
+        const t = setTimeout(() => {
+          this.proc.kill('SIGKILL');
+          resolve();
+        }, 5_000);
+        this.proc.once('exit', () => {
+          clearTimeout(t);
+          resolve();
+        });
       });
-    });
+    }
     this.cleanup();
   }
 

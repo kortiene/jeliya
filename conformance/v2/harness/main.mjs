@@ -21,6 +21,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Outcome, Runner } from './runner.mjs';
+import { caseNeedsRealNetwork } from './topology.mjs';
+import { runRealNetworkCanary } from './canary.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS_DIR = join(HERE, '..');
@@ -139,6 +141,43 @@ async function main() {
     process.exit(selection.error.code);
   }
   const cases = selection.cases;
+
+  // RealNetwork serialization (175c0b): a case whose daemons must reach each
+  // other (`link:up`, or a member join — member:b/member:c/room:left) runs
+  // discovery-bound daemons whose convergence the witness polls; running
+  // several at once multiplies relay dial load and port churn for zero
+  // throughput gain, so jobs>1 over such a selection is an explicit usage
+  // error BEFORE any daemon spawns. Loopback-only selections keep
+  // parallelism.
+  const realNetworkCases = cases.filter((c) => caseNeedsRealNetwork(c.requires));
+  if (realNetworkCases.length > 0 && args.jobs > 1) {
+    console.error(
+      `--jobs ${args.jobs} is not available for RealNetwork cases (link:up / member:b / ` +
+        `member:c / room:left stage cross-daemon discovery): ${realNetworkCases.map((c) => c.name).join(', ')} ` +
+        `— rerun with --jobs 1`,
+    );
+    process.exit(2);
+  }
+
+  // The run-level RealNetwork canary: when a selected case uses link:up, prove
+  // the RealNetwork path itself works BEFORE any case runs — a bounded,
+  // disposable, two-daemon round (subjects, room, mint/redeem, joiner
+  // timeline, total cleanup). A canary failure is a harness setup error that
+  // aborts the run; it is never a fallback to loopback and never a substitute
+  // for the per-case link witness.
+  if (realNetworkCases.some((c) => (c.requires || []).includes('link:up'))) {
+    try {
+      const canary = await runRealNetworkCanary(args.binary, {
+        onLog: (line) => console.error(line),
+      });
+      console.error(
+        `RealNetwork canary OK (redeem ${canary.redeemMs}ms, joiner timeline ${canary.convergeMs}ms)`,
+      );
+    } catch (err) {
+      console.error(`RealNetwork canary FAILED — the run aborts before any case: ${err.message}`);
+      process.exit(1);
+    }
+  }
 
   const runner = new Runner(args.binary, { verbose: args.verbose });
   const results = [];

@@ -14,6 +14,7 @@ import { AssertContext, AssertFailure, TransportFailure, evalAssert, subsetMatch
 import { resolvePath, resolveValue } from './values.mjs';
 import { CallStreamTracker, maxDataPayloadBytes, runStreamingCall, streamWaitMs, isTransportDroppedMarker } from './stream.mjs';
 import { CONTROL_CAPABILITIES, unimplementedRequire } from './capabilities.mjs';
+import { resolveActor, planCaseTopology, CaseTopology, pollUntil } from './topology.mjs';
 
 /** The outcome of one case. */
 export const Outcome = {
@@ -25,6 +26,12 @@ export const Outcome = {
 };
 
 let opIdCounter = 1;
+
+/** Bounded wait for cross-daemon timeline convergence (the link witness).
+ * Generous against the observed ~2.5s redeem dial: a deadline that expires
+ * is a harness setup ERROR, so it must never false-red a healthy topology
+ * under CI load. */
+const LINK_WITNESS_DEADLINE_MS = 45_000;
 
 /** A loopback TCP echo service for pipe-target fixtures. */
 function startEchoService() {
@@ -233,81 +240,84 @@ export class Runner {
     // refused case costs no process and cannot leave partial state.
     const unimplemented = unimplementedRequire(requires);
     if (unimplemented) throw unimplemented;
-    const needsSecondDaemon = requires.some((r) => r === 'daemon:second');
+    // Actor honesty, also pre-spawn: every label the case uses must be a
+    // declared catalog role (four-axis resolution; no regex, no guessing).
+    this.#validateActorLabels(fixture);
 
-    // Every case runs against at least one daemon. `daemon:fresh` (and the
-    // bare `daemon`/`daemon:self`) get a fresh one; without a daemon token we
-    // still spawn one because a session needs somewhere to connect.
-    const primary = await startDaemon(this.binary, { loopback: true });
+    // Topology plan: which slots the requires stage, and whether the
+    // daemons must run RealNetwork (cross-daemon discovery). Non-link cases
+    // stay loopback — there is NO fallback either way.
+    const plan = planCaseTopology(requires);
+    const topology = new CaseTopology(fixture._file || '');
+    vars.__case = { topology, domain: fixture._file || '', primary: null, closers: [], joins: [] };
+
+    // Every case runs against at least one daemon (the authority slot).
+    const primary = await startDaemon(this.binary, { loopback: !plan.realNetwork });
     daemons.push(primary);
+    topology.setDaemon('authority', primary);
+    vars.__case.primary = primary;
     vars['daemon.storage_generation'] = primary.storageGeneration;
     vars.daemon_sg = primary.storageGeneration;
     vars['daemon'] = { storage_generation: primary.storageGeneration };
-    vars.__case = { primary, second: null, closers: [] };
 
-    if (needsSecondDaemon) {
-      const second = await startDaemon(this.binary, { loopback: true });
-      daemons.push(second);
-      vars.__case.second = second;
+    // The other planned slots: one daemon per distinct subject (a daemon
+    // holds exactly one).
+    for (const slot of plan.slots) {
+      if (slot === 'authority') continue;
+      const d = await startDaemon(this.binary, { loopback: !plan.realNetwork });
+      daemons.push(d);
+      topology.setDaemon(slot, d);
     }
 
     // Establish the subjects, room, and members the case names. `subject`
-    // (bare) means a primary subject on the primary daemon; `room:live`/`plain`
-    // means a room exists (`$rid`) and is live for `live`; `member:b`/`c` add
-    // members via the invite flow. A case that names none of these needs no
-    // setup beyond the daemon (e.g. subject-lifecycle cases on `subject:none`).
-    const wantsRoom = requires.some((r) => /^room:(plain|live|quiescent|with_history)$/.test(r));
-    const wantsLeftRoom = requires.some((r) => r === 'room:left');
-    const memberLabels = requires.filter((r) => /^member:[a-z]$/.test(r));
-    const wantsMembers = memberLabels.length > 0;
+    // (bare) means the authority subject exists; `room:live`/`plain` means a
+    // room exists (`$rid`) and is live for `live`; `member:b`/`member:c`
+    // stage a REAL additional member on its own daemon: subject.ensure,
+    // invite.mint by the authority, invite.redeem over the RealNetwork link,
+    // room.activate — the joiner timeline.
+    const wantsRoom = requires.some((r) => r === 'room:plain' || r === 'room:live');
+    const wantsLeftRoom = requires.includes('room:left');
+    const wantsMembers = requires.includes('member:b') || requires.includes('member:c');
+    const roomLive = requires.includes('room:live');
 
-    // Only room/member setup pre-creates the daemon's (single) subject — a bare
-    // `requires: subject` does NOT, because subject-lifecycle cases assert on
-    // `subject.ensure`'s `created` flag themselves. The subject is global to the
-    // daemon, so any room setup establishes it as a side effect.
     if (wantsRoom || wantsLeftRoom || wantsMembers) {
-      // The authority's session and subject.
+      // The authority's session and subject ($sa / $self_sid).
       const authority = await this.#sessionFor('subject:authority', daemons, sessions, vars);
       const authHello = await authority.call('subject.ensure', {});
       vars.self_sid = authHello.out?.subject_id;
+      vars.sa = vars.self_sid;
 
-      if (wantsRoom || wantsLeftRoom || wantsMembers) {
-        const created = await authority.call('room.create', { name: 'conformance' });
-        vars.rid = created.out?.room_id;
-        if (requires.some((r) => r === 'room:live' || r === 'room:quiescent' || r === 'room:with_history')) {
-          await authority.call('room.activate', { room_id: vars.rid });
-        }
+      const created = await authority.call('room.create', { name: 'conformance' });
+      vars.rid = created.out?.room_id;
+      if (roomLive) {
+        await authority.call('room.activate', { room_id: vars.rid });
       }
 
-      // Additional members. Each gets a daemon-side subject and redeems an
-      // invite minted by the authority. `member:b` -> subject:member_b, etc.
-      for (const m of memberLabels) {
-        const letter = m.split(':')[1];
-        const label = `subject:member_${letter}`;
-        const sess = await this.#sessionFor(label, daemons, sessions, vars);
-        await sess.call('subject.ensure', {});
-        const ensured = await sess.call('subject.ensure', {});
-        const sid = ensured.out?.subject_id;
-        const mint = await authority.call('invite.mint', {
-          room_id: vars.rid,
-          subject_id: sid,
-          role: 'member',
-          expires_at: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z'),
+      // Additional members, each on its own daemon: a real invite flow, not
+      // a same-daemon alias. `member:b` → the member slot ($sd), `member:c`
+      // → the member2 slot.
+      if (requires.includes('member:b')) {
+        await this.#stageMemberJoin({
+          slot: 'member', label: 'subject:member_b', roomVar: 'rid', activate: roomLive,
+          bind: { sd: true, member_b_sid: true }, daemons, sessions, vars,
         });
-        const cap = mint.out?.capability;
-        if (cap) {
-          await sess.call('invite.redeem', { capability: cap });
-          if (requires.some((r) => r === 'room:live' || r === 'room:quiescent')) {
-            await sess.call('room.activate', { room_id: vars.rid });
-          }
-        }
-        vars[`member_${letter}_sid`] = sid;
+      }
+      if (requires.includes('member:c')) {
+        await this.#stageMemberJoin({
+          slot: 'member2', label: 'subject:member_c', roomVar: 'rid', activate: roomLive,
+          bind: { member_c_sid: true }, daemons, sessions, vars,
+        });
       }
 
-      // A `room:left` room is created, joined by member_b, then left by them.
+      // A `room:left` room is created, joined by the member, and LEFT by
+      // them — a departed member, not an empty room id.
       if (wantsLeftRoom) {
         const left = await authority.call('room.create', { name: 'left room' });
         vars.rid_left = left.out?.room_id;
+        await this.#stageMemberJoin({
+          slot: 'member', label: 'subject:member_b', roomVar: 'rid_left', activate: true,
+          bind: {}, depart: true, daemons, sessions, vars,
+        });
       }
 
       // `resource:shared_file` — a real file genuinely streamed into the room
@@ -333,6 +343,25 @@ export class Runner {
       }
     }
 
+    // `link:up` with no other staged peer: the member slot is the link peer
+    // (the files-domain provider/consumer shape) and joins the room so the
+    // link is genuinely UP, not merely dialable. Cases that already staged a
+    // second subject use it as the peer.
+    if (plan.linkUp && plan.slots.includes('member')
+      && !requires.includes('member:b') && !requires.includes('room:left')) {
+      if (!vars.rid) {
+        // No room to join: the peer daemon exists as a RealNetwork endpoint
+        // only. (resource:* tokens that would stage the room themselves stay
+        // unimplemented; this shape is recorded, not silently skipped.)
+        this.log('link:up peer daemon staged without a room join (no room require present)');
+      } else {
+        await this.#stageMemberJoin({
+          slot: 'member', label: 'subject:B', roomVar: 'rid', activate: roomLive,
+          bind: { sd: true }, daemons, sessions, vars,
+        });
+      }
+    }
+
     // Bare `subject` means the daemon's one subject exists (`subject:none` is
     // the absence form). Room/member setup ensures it as a side effect. A case
     // whose own steps call subject.ensure manages the lifecycle itself (some
@@ -347,6 +376,7 @@ export class Runner {
         throw new Error(`requires subject: subject.ensure failed: ${JSON.stringify(ensured.err)}`);
       }
       vars.self_sid = ensured.out.subject_id;
+      vars.sa = vars.self_sid;
     }
 
     // `resource:tcp_service` — a loopback TCP echo service a pipe can target;
@@ -360,66 +390,231 @@ export class Runner {
     }
 
     // Subject-id vars the fixtures name but the runner must bind. Each is a
-    // real ensured subject; the fixtures reference the id (an invitee, an
-    // outsider) without authoring it inline. `$sb` is the second subject (the
-    // invitee a capability is bound to), `$sc` the outsider (a subject with
-    // no room relationship). A daemon holds exactly ONE subject, so a
-    // `subject:second` / `subject:outsider` require implies a second daemon
-    // even when `daemon:second` is not named — spawn one so the ids are
-    // genuinely distinct from the authority's. Bound only when the case
-    // declares the matching subject require, so a case that does not name one
-    // never sees an id it did not ask for.
-    const ensureSecondDaemon = async () => {
-      if (!vars.__case.second) {
-        const second = await startDaemon(this.binary, { loopback: true });
-        daemons.push(second);
-        vars.__case.second = second;
-      }
-      return vars.__case.second;
-    };
-    const bindSubject = async (requireToken, sessionLabel, varName, onSecond) => {
-      if (!requires.includes(requireToken)) return;
-      if (onSecond) await ensureSecondDaemon();
-      const sess = await this.#sessionFor(sessionLabel, daemons, sessions, vars);
+    // real ensured subject on its own daemon — one daemon, one subject, so
+    // these ids are genuinely distinct from the authority's. `$sb` is the
+    // invitee (the subject a capability is bound to; the invitee slot stages
+    // with `daemon:second` or `subject:second`), `$sc` the outsider (a
+    // subject with no room relationship, staged by `subject:outsider`). A
+    // case that stages neither slot never sees a var it did not ask for.
+    const ensureSlotSubject = async (label, varName) => {
+      const sess = await this.#sessionFor(label, daemons, sessions, vars);
       const ensured = await sess.call('subject.ensure', {});
       vars[varName] = ensured.out?.subject_id;
     };
-    await bindSubject('subject:second', 'subject:second', 'sb', true);
-    await bindSubject('subject:outsider', 'subject:outsider', 'sc', true);
+    if (vars.__case.topology.daemonFor('invitee')) {
+      await ensureSlotSubject('subject:second', 'sb');
+    }
+    if (vars.__case.topology.daemonFor('outsider')) {
+      await ensureSlotSubject('subject:outsider', 'sc');
+    }
+
+    // The per-case link witness: a RealNetwork case re-verifies its staged
+    // topology BEFORE the authored steps (the run-level canary is never a
+    // substitute). Joins converge on the timeline; a case whose link:up
+    // staged no join (the invites shape: the case authors its own redeem)
+    // witnesses the staged sessions are live.
+    if (plan.realNetwork) {
+      await this.#verifyLinkTopology({ plan, vars, sessions });
+    }
+  }
+
+  /**
+   * Stage one additional member on its own daemon: subject.ensure, mint by
+   * the authority, redeem over the link, activate (when the room is live),
+   * and optionally depart (room:left). Records the join for the witness.
+   *
+   * The redeem DIALS the authority's live room session — an invite into a
+   * room the authority never serves cannot be redeemed (verified live: the
+   * join times out with no reply). The staging therefore activates the
+   * target room on the authority before minting (idempotent — the corpus
+   * itself pins `room_activate_is_naturally_idempotent`), so a case that
+   * wants a non-live room authors its OWN room.deactivate afterwards
+   * (room_peers_on_a_room_that_is_not_live does exactly that).
+   */
+  async #stageMemberJoin({ slot, label, roomVar, activate, bind, depart = false, daemons, sessions, vars }) {
+    const authority = await this.#sessionFor('subject:authority', daemons, sessions, vars);
+    const sess = await this.#sessionFor(label, daemons, sessions, vars);
+    const ensured = await sess.call('subject.ensure', {});
+    const sid = ensured.out?.subject_id;
+    if (!sid) throw new Error(`${label} staging: subject.ensure failed: ${JSON.stringify(ensured.err)}`);
+    if (bind?.sd) vars.sd = sid;
+    if (bind?.member_b_sid) vars.member_b_sid = sid;
+    if (bind?.member_c_sid) vars.member_c_sid = sid;
+    const liveUp = await authority.call('room.activate', { room_id: vars[roomVar] });
+    if (!liveUp.ok) {
+      throw new Error(`${label} staging: authority room.activate failed: ${JSON.stringify(liveUp.err)}`);
+    }
+    const mint = await authority.call('invite.mint', {
+      room_id: vars[roomVar],
+      subject_id: sid,
+      role: 'member',
+      expires_at: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z'),
+    });
+    if (!mint.ok || !mint.out?.capability) {
+      throw new Error(`${label} staging: invite.mint failed: ${JSON.stringify(mint.err)}`);
+    }
+    const redeem = await sess.call('invite.redeem', { capability: mint.out.capability });
+    if (!redeem.ok) {
+      throw new Error(
+        `${label} staging: invite.redeem failed (the cross-daemon dial): ${JSON.stringify(redeem.err)}`,
+      );
+    }
+    if (activate) {
+      const act = await sess.call('room.activate', { room_id: vars[roomVar] });
+      if (!act.ok) {
+        throw new Error(`${label} staging: room.activate failed: ${JSON.stringify(act.err)}`);
+      }
+    }
+    if (depart) {
+      const left = await sess.call('room.leave', { room_id: vars[roomVar] });
+      if (!left.ok) {
+        throw new Error(`${label} staging: room.leave failed: ${JSON.stringify(left.err)}`);
+      }
+      return;
+    }
+    vars.__case.joins.push({ slot, label, roomVar });
+  }
+
+  /**
+   * The per-case link witness: repeats the actual topology checks before the
+   * authored steps. Every staged join must be visible on both ends — the
+   * joiner's timeline shows authority-authored events (cross-daemon sync),
+   * and the authority's timeline shows the member's join. A link:up case
+   * with no staged join (its steps author the cross-daemon work themselves)
+   * witnesses the staged sessions are still open. Never uses room.peers:
+   * provider/consumer reachability observability is #50's oracle.
+   */
+  async #verifyLinkTopology({ plan, vars, sessions }) {
+    const deadlineMs = LINK_WITNESS_DEADLINE_MS * this.timeoutScale;
+    for (const join of vars.__case.joins) {
+      // Resolve the join's session exactly as #sessionFor keys it: canonical
+      // family labels (subject:B / subject:member_b) share the member slot's
+      // ONE canonical connection.
+      const joinActor = resolveActor(vars.__case.domain, join.label);
+      const joinLookup = joinActor.connectionKind === 'canonical'
+        ? (vars.__case.topology.canonicalLabelFor(joinActor.slot) ?? join.label)
+        : join.label;
+      const sess = sessions.get(joinLookup);
+      if (!sess || !sess.open) {
+        throw new Error(`link witness: the staged join ${join.label} has no open session`);
+      }
+      const rid = vars[join.roomVar];
+      const sa = vars.sa;
+      await pollUntil({
+        deadlineMs,
+        describe: `joiner ${join.label} timeline shows authority-authored events for ${join.roomVar}`,
+        probe: async () => {
+          const tl = await sess.call('room.timeline', {
+            room_id: rid, cursor: { state: 'start' }, direction: 'forward', limit: 100,
+          });
+          const events = tl.out?.events || [];
+          const ok = events.some((e) => e.author?.subject_id === sa);
+          return { done: ok, detail: `${events.length} events, authority-authored=${ok}` };
+        },
+      });
+    }
+    if (vars.__case.joins.length > 0) {
+      const authority = sessions.get(vars.__case.topology.canonicalLabelFor('authority'));
+      const rids = [...new Set(vars.__case.joins.map((j) => vars[j.roomVar]))];
+      for (const rid of rids) {
+        await pollUntil({
+          deadlineMs,
+          describe: `authority timeline shows the member join for room`,
+          probe: async () => {
+            const tl = await authority.call('room.timeline', {
+              room_id: rid, cursor: { state: 'start' }, direction: 'forward', limit: 100,
+            });
+            const events = tl.out?.events || [];
+            const ok = events.some((e) => e.kind === 'member_joined');
+            return { done: ok, detail: events.map((e) => e.kind).join(',') || 'none' };
+          },
+        });
+      }
+    } else if (plan.linkUp) {
+      // No staged join: witness the staged sessions are live. The case's own
+      // steps perform the cross-daemon operations (the invites shape).
+      for (const s of sessions.values()) {
+        if (!s.open) throw new Error(`link witness: staged session ${s.label} is not open`);
+      }
+      this.log('link:up witnessed with no staged join (the case authors its own cross-daemon steps)');
+    }
+  }
+
+  /** Pre-spawn actor-label validation: every label the case uses (step `on`,
+   * control target, observe target) must be declared in the catalog. */
+  #validateActorLabels(fixture) {
+    const labels = new Set();
+    for (const step of fixture.steps || []) {
+      if (typeof step.on === 'string') labels.add(step.on);
+      if (step.control && typeof step.control.on === 'string') labels.add(step.control.on);
+      for (const a of step.assert || []) {
+        if (a && typeof a.on === 'string') labels.add(a.on);
+      }
+    }
+    labels.delete('none'); // observe-only: probes daemon unreachability
+    for (const label of labels) {
+      resolveActor(fixture._file || '', label); // throws ActorResolutionError
+    }
   }
 
   /** The session for an `on` label, connecting lazily. Every step path
    * resolves its session here, so a sticky binary violation recorded on the
    * connection surfaces before the next interaction of any kind. */
   async #sessionFor(onLabel, daemons, sessions, vars) {
-    const label = onLabel || 'subject:self';
-    if (sessions.has(label)) {
-      const existing = sessions.get(label);
+    const rawLabel = onLabel || 'subject:self';
+    const topology = vars.__case?.topology;
+    const actor = resolveActor(vars.__case?.domain || '', rawLabel);
+    const daemon = topology?.daemonFor(actor.slot);
+    if (!daemon) {
+      // Missing role: the label is declared, but the case's requires staged
+      // no daemon for its slot. A setup ERROR (never an assertion FAIL, and
+      // never a silent default to the primary daemon).
+      throw new Error(
+        `missing role: actor label "${rawLabel}" resolves to topology slot "${actor.slot}", ` +
+          `but the case's requires staged no daemon there — stage it with the matching require ` +
+          `(member:b / member:c / subject:second / daemon:second / subject:outsider)`,
+      );
+    }
+    // Canonical-family labels (subject:A / subject:authority / subject:self)
+    // share the slot's ONE canonical connection; `same_principal` reconnects
+    // replace it. Extra connections (`#N`) and own-principal labels get
+    // their own session entries.
+    const lookupLabel = actor.connectionKind === 'canonical'
+      ? (topology.canonicalLabelFor(actor.slot) ?? rawLabel)
+      : rawLabel;
+    if (sessions.has(lookupLabel)) {
+      const existing = sessions.get(lookupLabel);
       if (existing.stickyBinaryViolation) throw existing.stickyBinaryViolation;
       return existing;
     }
     // The case authored an upgrade for this label and the daemon refused it;
     // auto-connecting here would silently substitute a different admission.
-    const refused = vars.__case?.refusedUpgrades?.[label];
+    const refused = vars.__case?.refusedUpgrades?.[rawLabel]
+      ?? vars.__case?.refusedUpgrades?.[lookupLabel];
     if (refused !== undefined) {
       throw new AssertFailure(
-        `the authored upgrade for ${label} was refused (status ${refused}); refusing to substitute an auto-connected session`,
+        `the authored upgrade for ${rawLabel} was refused (status ${refused}); refusing to substitute an auto-connected session`,
       );
     }
-    // Route to the second daemon for labels that clearly name a distinct
-    // subject (a daemon holds one subject, so second/outsider/peer subjects
-    // live on the second daemon).
-    const cs = vars.__case || {};
-    const daemon =
-      cs.second && /second|outsider|principal_b|peer|remote/i.test(label)
-        ? cs.second
-        : cs.primary;
-    const clientId = vars.__case?.clientIds?.[label] || `cf-client-${opIdCounter++}`;
-    if (vars.__case) {
-      vars.__case.clientIds ||= Object.create(null);
-      vars.__case.clientIds[label] = clientId;
+    const clientId = topology.principalIdFor(actor.slot, actor.principalKey, actor.principalKind);
+    let registerAs = lookupLabel;
+    if (actor.connectionKind === 'replace') {
+      // `same_principal`: same cid, and the new connection REPLACES the
+      // canonical one — the outgoing session is closed (and kept for the
+      // case-end sticky-violation scan), the replacement registers under
+      // this label, and later canonical-label steps resolve to it.
+      const outgoingLabel = topology.canonicalLabelFor(actor.slot);
+      const outgoing = outgoingLabel ? sessions.get(outgoingLabel) : undefined;
+      if (outgoing) {
+        if (outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
+        outgoing.close();
+        sessions.delete(outgoingLabel);
+        (vars.__case.replacedSessions ||= []).push(outgoing);
+      }
+      topology.setCanonicalLabel(actor.slot, rawLabel);
+      registerAs = rawLabel;
     }
-    const s = new Session(label, clientId);
+    const s = new Session(rawLabel, clientId);
     await s.connect(
       daemon,
       { v: 2, sg: daemon.storageGeneration, token: daemon.token },
@@ -434,11 +629,11 @@ export class Runner {
       hello = await s.awaitFrame((f) => f.t === 'hello');
     } catch (err) {
       s.close();
-      throw new TransportFailure(`session ${label} failed before hello: ${err.message}`);
+      throw new TransportFailure(`session ${rawLabel} failed before hello: ${err.message}`);
     }
     vars.frame = hello;
     vars.hello = hello;
-    sessions.set(label, s);
+    sessions.set(registerAs, s);
     return s;
   }
 
@@ -742,8 +937,20 @@ export class Runner {
   /** An `upgrade` step: a fresh WS upgrade attempt with the given query/headers. */
   async #doUpgrade(step, env) {
     const { vars, sessions } = env;
-    const daemon = (vars.__case||{}).primary;
     const u = step.upgrade;
+    // Resolve the actor FIRST: the upgrade targets the label's topology slot
+    // (daemon), and its placeholders (<port>, <token>) substitute against
+    // THAT daemon — never an implicit primary.
+    const label = step.on || 'subject:self';
+    const actor = resolveActor(vars.__case?.domain || '', label);
+    const lookupLabel = actor.connectionKind === 'canonical'
+      ? (vars.__case?.topology?.canonicalLabelFor(actor.slot) ?? label)
+      : label;
+    // A same-label upgrade replaces the registered session; a sticky
+    // violation on the outgoing connection must not vanish with it.
+    const outgoing = sessions.get(lookupLabel);
+    if (outgoing && outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
+    const daemon = vars.__case?.topology?.daemonFor(actor.slot) ?? (vars.__case || {}).primary;
     const query = {};
     for (const [k, v] of Object.entries(u.query || {})) {
       const resolved = resolveValue(v, vars);
@@ -762,24 +969,17 @@ export class Runner {
     // becomes the `on` session's live connection so a following `await` reads
     // THIS connection's hello, not a stale one from before the upgrade.
     // A setup upgrade (no expect) is the label's ordinary admitted
-    // connection, so it presents the label's STABLE client id exactly as
+    // connection, so it presents the label's STABLE principal exactly as
     // #sessionFor does — an omitted `cid` is an ephemeral per-connection
     // dedup principal on the daemon, which would make every later
     // same-principal reconnect (op_id replay cases) silently miss the ledger.
     // A probing upgrade (any expect) sends exactly what the fixture wrote.
-    const label = step.on || 'subject:self';
-    // A same-label upgrade replaces the registered session; a sticky
-    // violation on the outgoing connection must not vanish with it.
-    const outgoing = sessions.get(label);
-    if (outgoing && outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
     let clientId = null;
     if (!step.expect && query.cid === undefined && query.ct === undefined && vars.__case) {
-      vars.__case.clientIds ||= Object.create(null);
-      vars.__case.clientIds[label] ||= `cf-client-${opIdCounter++}`;
-      clientId = vars.__case.clientIds[label];
+      clientId = vars.__case.topology.principalIdFor(actor.slot, actor.principalKey, actor.principalKind);
       query.cid = clientId;
     }
-    const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions, clientId);
+    const result = await this.#attemptUpgrade(daemon, query, headers, label, sessions, clientId, lookupLabel);
     // The precheck ran before the await; a violation recorded on the
     // outgoing connection during the upgrade must still surface, and the
     // replaced session stays scanned at case end.
@@ -829,7 +1029,7 @@ export class Runner {
 
   /** Attempt a WS upgrade, returning {status, body, frame}. On admission the
    * socket stays open and is registered as the `label` session's connection. */
-  async #attemptUpgrade(daemon, query, headers, label, sessions, clientId = null) {
+  async #attemptUpgrade(daemon, query, headers, label, sessions, clientId = null, registerAs = null) {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) params.set(k, String(v));
     const url = `${daemon.wsBase}?${params.toString()}`;
@@ -878,7 +1078,7 @@ export class Runner {
           }
           settled = true;
           if (helloTimer) clearTimeout(helloTimer);
-          if (sessions) sessions.set(label, session);
+          if (sessions) sessions.set(registerAs ?? label, session);
           resolve({ status: 101, frame, body: frame, headers: {} });
         });
         helloTimer = setTimeout(
@@ -1210,10 +1410,19 @@ export class Runner {
       }
       case 'reconnect': {
         const label = c.on || step.on || 'subject:self';
-        const s = sessions.get(label);
+        // Close whatever connection currently serves the label's canonical
+        // family (subject:A and subject:self are one actor), then reconnect
+        // presenting the SAME principal id — the per-(slot, principal) map
+        // survives, so an op_id replay after reconnect hits the same dedup
+        // ledger.
+        const actor = resolveActor(vars.__case?.domain || '', label);
+        const lookupLabel = actor.connectionKind === 'canonical'
+          ? (vars.__case?.topology?.canonicalLabelFor(actor.slot) ?? label)
+          : label;
+        const s = sessions.get(lookupLabel);
         if (s) {
           s.close();
-          sessions.delete(label);
+          sessions.delete(lookupLabel);
           // A violation delivered to the outgoing connection while the
           // replacement is awaited must survive to the case-end scan.
           if (vars.__case) (vars.__case.replacedSessions ||= []).push(s);
@@ -1395,21 +1604,32 @@ export class Runner {
           if (reachable) throw new AssertFailure('expected none to be open (daemon still reachable)');
           return;
         }
-        const s = sessions.get(label);
-        // The corpus uses logical connection names (c1, c2) that do not map to
-        // the harness's `subject:*` session labels; treat an unknown label as
-        // "any connection still open".
+        // Named connections resolve through the actor catalog: an observe
+        // alias (`c1` → the canonical extra connection) maps onto the session
+        // the case actually opened, and an undeclared label is an error — the
+        // old "unknown label means any connection" fallback could pass on a
+        // connection the fixture never named. Observing never OPENS a
+        // connection: asserting one that was never opened is a failure.
+        const actor = resolveActor(vars.__case?.domain || '', label);
+        const lookupLabel = actor.connectionKind === 'canonical'
+          ? (vars.__case?.topology?.canonicalLabelFor(actor.slot) ?? label)
+          : label;
+        const s = sessions.get(lookupLabel);
         if (!s) {
-          const anyOpen = [...sessions.values()].some((x) => x.open);
-          if (!anyOpen) throw new AssertFailure(`expected ${label} (any connection) to be open`);
-          return;
+          throw new AssertFailure(`expected ${label} to be open, but no session was ever opened for it`);
         }
         if (!s.open) throw new AssertFailure(`expected ${label} to be open`);
         return;
       }
       case 'close_code': {
         const label = a.on || 'subject:self';
-        const s = sessions.get(label);
+        // Canonical-family labels (subject:A / subject:self) observe the one
+        // canonical connection; observe aliases (c1) resolve onto it too.
+        const closeActor = resolveActor(vars.__case?.domain || '', label);
+        const closeLookup = closeActor.connectionKind === 'canonical'
+          ? (vars.__case?.topology?.canonicalLabelFor(closeActor.slot) ?? label)
+          : label;
+        const s = sessions.get(closeLookup);
         const want = Number(resolveValue(a.value, vars));
         // Wait briefly for a close if not yet observed.
         const deadline = Date.now() + 2000;

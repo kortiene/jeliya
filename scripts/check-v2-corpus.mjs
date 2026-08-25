@@ -189,12 +189,22 @@ const bindsOwnRoom = (requires) => requires.some((token) =>
 const PRECONDITION_BINDINGS = new Map([
   ["rid", bindsOwnRoom],
   ["self_sid", bindsOwnRoom],
+  // 175c0b: the authority subject also binds as $sa wherever $self_sid
+  // binds — the topology staging ensures the authority subject and binds
+  // both names from the same subject.ensure reply (invites.json's domain
+  // header names authority_daemon→$sa).
+  ["sa", bindsOwnRoom],
   ["rid_left", (requires) => requires.includes("room:left")],
   ["foreign_rid", (requires) => requires.includes("room:foreign")],
   ["foreign_fid", (requires) => requires.includes("room:foreign")],
   ["member_b_sid", (requires) => requires.includes("member:b")],
   ["member_c_sid", (requires) => requires.includes("member:c")],
-  ["sb", (requires) => requires.includes("subject:second")],
+  // 175c0b: the member-daemon subject binds as $sd with member:b (the
+  // invites domain header's member_daemon→$sd); same value as $member_b_sid.
+  ["sd", (requires) => requires.includes("member:b")],
+  // 175c0b: the invitee slot stages (and ensures its subject) with
+  // daemon:second as well as subject:second, so either binds $sb.
+  ["sb", (requires) => requires.includes("subject:second") || requires.includes("daemon:second")],
   ["sc", (requires) => requires.includes("subject:outsider")],
   ["svc_port", (requires) => requires.includes("resource:tcp_service")],
   ["svc_port_v6", (requires) => requires.includes("resource:tcp_service")],
