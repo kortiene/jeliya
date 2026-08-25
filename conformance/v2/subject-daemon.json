@@ -60,8 +60,7 @@
           "in": {},
           "save": {
             "sid": "out.subject_id",
-            "did": "out.device_id",
-            "first_out": "out"
+            "did": "out.device_id"
           },
           "expect": {
             "ok": true,
@@ -2181,9 +2180,6 @@
             },
             "direction": "forward",
             "limit": 50
-          },
-          "save": {
-            "e_wellformed": "err"
           },
           "on": "subject:A",
           "expect": {

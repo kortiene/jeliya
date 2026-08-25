@@ -38,6 +38,19 @@ export function requestId() {
   return nextRequestId++;
 }
 
+/** Build one masked client text-frame header for a payload of `length`
+ * bytes: FIN+text, MASK set, 64-bit extended length, then the 4 mask bytes.
+ * Pure — unit-tested (the mask MUST land at offset 10; a zero mask with a
+ * masked payload is protocol garbage the daemon can only abort). */
+export function buildMaskedFrameHeader(length, mask) {
+  const header = Buffer.alloc(14);
+  header[0] = 0x81;
+  header[1] = 0x80 | 127;
+  header.writeBigUInt64BE(BigInt(length), 2);
+  Buffer.from(mask).copy(header, 10);
+  return header;
+}
+
 /** Is this `send` value the padded-envelope form?
  * `{envelope, pad_field, pad_byte, pad_to_total_frame_bytes}` builds one
  * frame whose TOTAL serialized length hits an exact byte target — the shape
@@ -310,7 +323,95 @@ export class Session {
     return this.startCall(op, input, { opId, timeoutMs }).reply;
   }
 
-  /** Send one request envelope, returning its id and pending reply promise —
+/** Send one text frame whose payload is written in a trickle. The frame
+   * declares its FULL byte length up front (so a per-frame bound is decided
+   * from the header alone), but the payload streams out in slices, yielding
+   * to the event loop between them. This is what makes an oversize-frame
+   * probe deterministic: the daemon decides 4005 from the header while the
+   * write is still in flight, and a one-shot 128 MiB write races the TCP
+   * RST (provoked by the daemon-side unread backlog) against our reading
+   * of the close frame — the close loses often enough to flake CI. Trickled
+   * delivery lets the close frame arrive and be parsed while we still have
+   * write capacity left, so `closeCode` records the real code. Stops and
+   * resolves as soon as the connection leaves the open state. */
+  async sendPaddedTrickled(payloadText, { chunkBytes = 64 * 1024 } = {}) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('connection is not open'));
+    }
+    const sock = this.ws._socket;
+    const mask = Buffer.from([
+      (Math.random() * 0x100) | 0, (Math.random() * 0x100) | 0,
+      (Math.random() * 0x100) | 0, (Math.random() * 0x100) | 0,
+    ]);
+    const payload = Buffer.from(payloadText, 'utf8');
+    // FIN + text opcode, MASK set, 64-bit extended length, then the mask.
+    const header = buildMaskedFrameHeader(payload.length, mask);
+    // A stop signal: once the ws layer saw a close frame (or the socket
+    // died), further payload is pointless — the verdict is already in.
+    let stopped = false;
+    const onStop = () => { stopped = true; };
+    this.ws.on('close', onStop);
+    sock.on('close', onStop);
+    sock.on('error', onStop);
+    try {
+      sock.write(header);
+      // HEADER-FIRST PAUSE: an oversize frame is refused by the daemon from
+      // the declared length alone (tungstenite's capacity check), BEFORE any
+      // payload is read. Writing the header and briefly waiting means the
+      // close frame arrives while our unread backlog at the daemon is ZERO
+      // bytes — no RST to race, the close is read deterministically. Only
+      // when the header is NOT refused do we stream the payload.
+      const headerGraceMs = 250;
+      const slept = await this.#sleepUnlessStopped(headerGraceMs, () => stopped);
+      if (slept && stopped) return { stopped };
+      for (let off = 0; off < payload.length && !stopped; off += chunkBytes) {
+        const slice = payload.subarray(off, Math.min(off + chunkBytes, payload.length));
+        const masked = Buffer.allocUnsafe(slice.length);
+        for (let i = 0; i < slice.length; i++) {
+          masked[i] = slice[i] ^ mask[(off + i) & 3];
+        }
+        const canContinue = sock.write(masked);
+        if (!canContinue && off + chunkBytes < payload.length && !stopped) {
+          // Race the drain against the stop signals: once the daemon stops
+          // reading (it already decided from the header), drain never comes.
+          await new Promise((resolve) => {
+            const done = () => {
+              sock.off('drain', done);
+              this.ws.off('close', done);
+              sock.off('close', done);
+              sock.off('error', done);
+              resolve();
+            };
+            sock.once('drain', done);
+            this.ws.once('close', done);
+            sock.once('close', done);
+            sock.once('error', done);
+          });
+          if (stopped) break;
+        }
+        // Yield so incoming frames (the close) get parsed between chunks.
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    } finally {
+      this.ws.off('close', onStop);
+      sock.off('close', onStop);
+      sock.off('error', onStop);
+    }
+    return { stopped };
+  }
+
+  /** Sleep in small slices, ending early when `isStopped()` turns true.
+   * Returns true when the full duration elapsed, false when cut short. */
+  async #sleepUnlessStopped(ms, isStopped) {
+    const slice = 10;
+    for (let t = 0; t < ms; t += slice) {
+      if (isStopped()) return false;
+      await new Promise((resolve) => setTimeout(resolve, slice));
+    }
+    return !isStopped();
+  }
+
+  /** Wait for one request envelope, returning its id and pending reply promise —
    * the duplex form a streaming call needs (the reply stays pending while
    * Binary records flow). */
   startCall(op, input, { opId, timeoutMs = 10_000 } = {}) {

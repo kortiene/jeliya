@@ -21,7 +21,7 @@ const MAIN = join(HERE, 'main.mjs');
 const { parseArgs, loadCases, selectCases } = await import(MAIN);
 const { CONTROL_CAPABILITIES, REQUIRES_IMPLEMENTED, unimplementedRequire } =
   await import(join(HERE, 'capabilities.mjs'));
-const { buildPaddedEnvelope, isPaddedEnvelope, isBareEnvelope } = await import(join(HERE, 'session.mjs'));
+const { buildPaddedEnvelope, isPaddedEnvelope, isBareEnvelope, buildMaskedFrameHeader } = await import(join(HERE, 'session.mjs'));
 const { startDaemon } = await import(join(HERE, 'daemon.mjs'));
 
 const tempDirs = [];
@@ -270,6 +270,18 @@ test('the padded envelope refuses unreachable and malformed targets', () => {
   assert.throws(() => buildPaddedEnvelope({
     envelope: env, pad_field: 'in.op_id', pad_byte: 'ab', pad_to_total_frame_bytes: 100,
   }), /exactly one character/);
+});
+
+test('the masked frame header carries the mask at offset 10 and the exact length', () => {
+  const mask = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+  for (const len of [5, 65_536, 128 * 1024 * 1024 + 1]) {
+    const h = buildMaskedFrameHeader(len, mask);
+    assert.equal(h.length, 14);
+    assert.equal(h[0], 0x81); // FIN + text
+    assert.equal(h[1], 0xff); // MASK + 64-bit extended length
+    assert.equal(h.readBigUInt64BE(2), BigInt(len));
+    assert.deepEqual(h.subarray(10, 14), mask, 'a zero/absent mask with a masked payload is protocol garbage');
+  }
 });
 
 test('form discriminators: padded vs bare vs ordinary values', () => {

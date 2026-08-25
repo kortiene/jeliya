@@ -466,22 +466,26 @@ export class Runner {
       // length hits an exact byte target (the max_frame_bytes boundary
       // fixtures); the bare-envelope form sends the envelope itself raw
       // (malformed-input fixtures). Resolve computed nodes first, then build.
-      if (isPaddedEnvelope(value)) {
-        value = buildPaddedEnvelope(value);
-        this.log(`send padded frame: ${String(value).length} chars`);
-      } else if (isBareEnvelope(value)) {
-        value = value.envelope;
-        this.log(`send raw envelope id=${value?.id}`);
-      }
-      // A raw `send` exists to provoke daemon-side reactions — including a
-      // close that aborts the write mid-flight (an oversize frame is closed
-      // from its header alone while megabytes are still in flight). A write
-      // error is therefore RECORDED, not fatal: the case's later assertions
-      // (close_code, connection_open, process_exited) observe the reaction,
-      // and the case-end guard below refuses a green verdict when nothing
-      // observed the connection state after a failed write.
+      // A padded frame is delivered as a TRICKLED write: an oversize frame
+      // is decided by the daemon from its header while the write is still
+      // in flight, and a one-shot 128 MiB write races the TCP RST (provoked
+      // by the daemon-side unread backlog) against our reading of the close
+      // frame — the close loses often enough to flake CI. A write the
+      // daemon aborts is recorded, not fatal: the case's later assertions
+      // observe the reaction, and the case-end guard refuses a green
+      // verdict when nothing observed the connection state after it.
       try {
-        await s.sendRaw(value);
+        if (isPaddedEnvelope(value)) {
+          value = buildPaddedEnvelope(value);
+          this.log(`send padded frame (trickled): ${String(value).length} chars`);
+          await s.sendPaddedTrickled(value);
+        } else {
+          if (isBareEnvelope(value)) {
+            value = value.envelope;
+            this.log(`send raw envelope id=${value?.id}`);
+          }
+          await s.sendRaw(value);
+        }
       } catch (err) {
         env.ctxState.sendWriteErrors.push({ step: index + 1, message: err.message });
         this.log(`send write failed (recorded; later assertions must observe the reaction): ${err.message}`);
