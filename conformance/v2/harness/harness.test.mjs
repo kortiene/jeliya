@@ -91,7 +91,7 @@ test('a legal --case selection passes the guards and reports the count', () => {
   assert.equal(selection.cases[0].name, 'daemon_stop_does_not_require_a_subject');
 });
 
-test('the 26 CI-selected cases select cleanly through the same path', async () => {
+test('the 27 CI-selected cases select cleanly through the same path', async () => {
   const cases = loadCases(null);
   const args = parseArgs(['bin', ...cases.slice(0, 0).map(() => '').filter(() => false)]);
   // Rebuild the CI selector list from the workflow the checker itself parses.
@@ -99,11 +99,11 @@ test('the 26 CI-selected cases select cleanly through the same path', async () =
     readFileSync(join(HERE, '..', '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8'));
   const liveStep = ci.match(/- name: Protocol-v2 conformance replay[\s\S]*?(?=\n      - name:|$)/)?.[0] ?? '';
   const selectors = [...liveStep.matchAll(/--case\s+([^\s\\]+)/g)].map((m) => m[1]);
-  assert.equal(selectors.length, 26);
+  assert.equal(selectors.length, 27);
   for (const s of selectors) args.caseNames.push(s);
   const selection = selectCases(cases, args);
   assert.equal(selection.error, undefined, JSON.stringify(selection.error));
-  assert.equal(selection.cases.length, 26);
+  assert.equal(selection.cases.length, 27);
 });
 
 // ── Requires honesty ───────────────────────────────────────────────────────

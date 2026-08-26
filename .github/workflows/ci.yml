@@ -531,6 +531,7 @@ jobs:
             --case share_upload_transport_drop_records_stream_aborted_for_replay \
             --case list_of_a_room_that_is_not_available_answers_room_not_available \
             --case fetch_of_a_file_id_not_in_this_rooms_history_fails_with_file_unknown \
+            --case list_serves_provider_availability_as_its_own_transport_fact \
             --case transfer_cancel_of_an_unknown_op_id_fails_with_transfer_unknown
 
       # The network evidence harness (scripts/realnet-*.mjs) drove the retired
