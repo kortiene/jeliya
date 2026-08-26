@@ -380,7 +380,13 @@ export class Runner {
     // joins just above), so the consumer is a member with a live link first.
     if (vars.__case.pendingSharedFile !== undefined) {
       const fid = vars.__case.pendingSharedFile;
-      const consumerLabel = vars.__case.topology.canonicalLabelFor('member') ?? 'subject:member_b';
+      // No fallback label: a member daemon without its canonical connection
+      // label is an invariant break that must fail loudly here, never route
+      // the confirmation onto another slot's session.
+      const consumerLabel = vars.__case.topology.canonicalLabelFor('member');
+      if (!consumerLabel) {
+        throw new Error('shared-file staging: the member slot has no canonical connection label');
+      }
       const consumer = await this.#sessionFor(consumerLabel, daemons, sessions, vars);
       await pollUntil({
         deadlineMs: LINK_WITNESS_DEADLINE_MS * this.timeoutScale,

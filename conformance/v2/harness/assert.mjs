@@ -158,8 +158,14 @@ export function evalValueAssertion(a, ctx) {
   const root = rootName.startsWith('$') ? ctx.vars[rootName.slice(1)] : ctx.vars[rootName];
   const subPath = rest.join('.');
 
+  // Wildcard matches carry their elements as resolved values ({found,
+  // value} wrappers, exactly what `each` and the wildcard-level ops consume).
+  // The pre-175c1a engine fed RAW values here, so every wildcard value op
+  // (type/eq/member_of/len/no_nulls/…) false-reded with "did not resolve"
+  // and unique/increasing compared JSON.stringify(undefined) — the README's
+  // own canonical example (`out.rooms[*].role` + member_of) could not run.
   const values = hasWildcard
-    ? collectWildcard(root, subPath)
+    ? collectWildcard(root, subPath).map((value) => ({ found: true, value }))
     : [resolvePath(root, subPath)];
 
   // `present`/`absent` operate on resolvability, not value.
@@ -172,6 +178,14 @@ export function evalValueAssertion(a, ctx) {
     const r = hasWildcard ? { found: values.length > 0 } : values[0];
     if (r.found) throw new AssertFailure(`expected ${rawPath} to be absent`, { got: r.value });
     return;
+  }
+
+  // A wildcard that matched NO elements cannot satisfy a value assertion:
+  // "holds for every element" is vacuously true over the empty set, and a
+  // vacuous pass is the false-green the DSL forbids. (`absent`, handled
+  // above, is the one op an empty match legitimately satisfies.)
+  if (hasWildcard && values.length === 0) {
+    throw new AssertFailure(`path ${rawPath} matched no elements — a wildcard value assertion cannot pass vacuously`);
   }
 
   // Resolve the expected value, but NOT when it is a type tag or the assertion

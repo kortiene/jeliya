@@ -2175,7 +2175,7 @@
                 {
                   "subject_id": "<subject_id>",
                   "role": "<string>",
-                  "standing": "<string>",
+                  "standing": "<standing>",
                   "joined_at": "<ts>"
                 }
               ]
@@ -2231,7 +2231,8 @@
             },
             {
               "path": "out.peers[*].link.since",
-              "op": "present"
+              "op": "type",
+              "value": "ts"
             }
           ],
           "on": "subject:B"
@@ -2305,7 +2306,8 @@
             },
             {
               "path": "out.files[0].providers[*].link.since",
-              "op": "present"
+              "op": "type",
+              "value": "ts"
             }
           ],
           "on": "subject:B"
@@ -2403,7 +2405,8 @@
             },
             {
               "path": "out.files[0].providers[*].link.since",
-              "op": "present"
+              "op": "type",
+              "value": "ts"
             }
           ],
           "on": "subject:B"

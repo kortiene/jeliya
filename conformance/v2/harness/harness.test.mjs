@@ -326,6 +326,79 @@ test('form discriminators: padded vs bare vs ordinary values', () => {
   assert.ok(!isBareEnvelope('plain string'));
 });
 
+// ── Wildcard value assertions (175c1a: the engine repair) ──────────────────
+// The README's own canonical example is a wildcard value assertion
+// (`out.rooms[*].role` + member_of), but the engine's wildcard branch fed
+// RAW values to an `each()` that expects {found, value} wrappers — every
+// wildcard value-op (type/eq/member_of/len/no_nulls/…) false-reded with
+// "did not resolve", and unique/increasing compared JSON.stringify(undefined).
+// These pins hold the repaired semantics: value ops iterate the matched
+// elements, and a wildcard matching NOTHING fails every op except `absent`
+// (an empty iteration is the vacuous pass the DSL forbids).
+
+test('wildcard value assertions iterate the matched elements', async () => {
+  const { evalValueAssertion } = await import(join(HERE, 'assert.mjs'));
+  const ctx = () => ({
+    vars: {
+      out: {
+        peers: [
+          { device_id: 'd1', link: { state: 'direct', since: '2026-08-26T00:00:00Z' } },
+          { device_id: 'd2', link: { state: 'relay', since: '2026-08-26T00:00:01Z' } },
+        ],
+      },
+    },
+    observe: null,
+    sessions: null,
+  });
+  // type: holds for every element, fails on any wrong one.
+  evalValueAssertion({ path: 'out.peers[*].link.since', op: 'type', value: 'ts' }, ctx());
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link.since', op: 'type', value: 'uint' }, ctx()),
+    /not of domain/,
+  );
+  // member_of over a wildcard.
+  evalValueAssertion({ path: 'out.peers[*].link.state', op: 'member_of', value: ['direct', 'relay'] }, ctx());
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link.state', op: 'member_of', value: ['direct'] }, ctx()),
+    /not in/,
+  );
+  // no_nulls sees INTO every matched element.
+  evalValueAssertion({ path: 'out.peers[*].link', op: 'no_nulls' }, ctx());
+  const withNull = ctx();
+  withNull.vars.out.peers[1].link.since = null;
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link', op: 'no_nulls' }, withNull),
+    /contains a null/,
+  );
+  // unique distinguishes real values (undefined-stringifying was the bug).
+  evalValueAssertion({ path: 'out.peers[*].device_id', op: 'unique' }, ctx());
+  const dup = ctx();
+  dup.vars.out.peers[1].device_id = 'd1';
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].device_id', op: 'unique' }, dup),
+    /not unique/,
+  );
+});
+
+test('a wildcard that matches no elements fails every value op and never passes vacuously', async () => {
+  const { evalValueAssertion } = await import(join(HERE, 'assert.mjs'));
+  const ctx = { vars: { out: { peers: [] } }, observe: null, sessions: null };
+  for (const a of [
+    { path: 'out.peers[*].device_id', op: 'type', value: 'string' },
+    { path: 'out.peers[*].device_id', op: 'unique' },
+    { path: 'out.peers[*].link', op: 'no_nulls' },
+  ]) {
+    assert.throws(
+      () => evalValueAssertion(a, ctx),
+      /matched no elements/,
+      `${a.op} on an empty wildcard must fail, not pass vacuously`,
+    );
+  }
+  // present on an empty wildcard still fails; absent still holds.
+  assert.throws(() => evalValueAssertion({ path: 'out.peers[*].device_id', op: 'present' }, ctx), /present/);
+  evalValueAssertion({ path: 'out.peers[*].device_id', op: 'absent' }, ctx);
+});
+
 process.on('exit', () => {
   for (const d of tempDirs.splice(0)) {
     try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
